@@ -1,0 +1,41 @@
+package main
+
+import "fmt"
+
+// Export main function to WebAssembly
+func main() {
+    fmt.Println("Hello from Goo WebAssembly!")
+    
+    // Test basic arithmetic
+    result := add(10, 20)
+    fmt.Printf("10 + 20 = %d\n", result)
+    
+    // Test goroutine in WASM (transforms to Promise)
+    go processAsync()
+    
+    // Test channel operations
+    ch := make(chan int, 1)
+    ch <- 42
+    value := <-ch
+    fmt.Printf("Channel value: %d\n", value)
+}
+
+// Export this function for JavaScript interop
+func export_add(a int, b int) int {
+    return a + b
+}
+
+func add(a int, b int) int {
+    return a + b
+}
+
+func processAsync() {
+    fmt.Println("Async processing in WASM")
+}
+
+// Import JavaScript function
+func import_console_log(message string)
+
+func testJSInterop() {
+    import_console_log("Hello from Goo to JavaScript!")
+}

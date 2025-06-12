@@ -1,0 +1,6 @@
+package main
+
+func test() {
+    var name string
+    var value int = 42
+}

@@ -1,0 +1,20 @@
+package main
+
+func send_value(ch chan int, val int) {
+    ch <- val
+}
+
+func main() {
+    x := 42
+    ch := make_chan(int, 10)
+    
+    go send_value(ch, x)
+    result := <-ch
+    
+    select {
+    case ch <- result:
+        return
+    default:
+        break
+    }
+}

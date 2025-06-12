@@ -1,0 +1,12 @@
+package main
+
+func testTry() {
+    result := try someFunction()
+}
+
+func testCatch() {
+    result := someFunction() catch err {
+        // handle error
+        return 0
+    }
+}

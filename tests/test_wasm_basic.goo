@@ -1,0 +1,11 @@
+package main
+
+func main() {
+    var x int = 10
+    var y int = 20
+    var result int = x + y
+}
+
+func export_add(a int, b int) int {
+    return a + b
+}

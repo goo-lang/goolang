@@ -1,0 +1,11 @@
+package main
+
+func testErrorUnion() !int {
+    return 42
+}
+
+func main() {
+    // Test error union type parsing
+    var result !int
+    result = testErrorUnion()
+}

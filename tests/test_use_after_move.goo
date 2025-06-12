@@ -1,0 +1,19 @@
+package main
+
+owned var data []byte
+
+func take_ownership(value []byte) {
+    // Takes ownership of value
+}
+
+func borrow_data(ref &[]byte) {
+    // Borrows data without taking ownership  
+}
+
+func main() {
+    take_ownership(data)
+    // data is moved and should not be usable
+    
+    // This should error: use after move
+    borrow_data(&data)
+}

@@ -1,0 +1,22 @@
+package main
+
+func main() {
+    x := 42
+    y := "hello"
+    ch := make_chan(int, 10)
+    
+    go func() {
+        ch <- x
+    }()
+    
+    result := <-ch
+    
+    select {
+    case ch <- y:
+        return
+    case val := <-ch:
+        x = val
+    default:
+        break
+    }
+}

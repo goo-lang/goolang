@@ -1,0 +1,40 @@
+package main
+
+// Test error union functionality
+
+// Function that returns an error union
+func readFile(path string) ![]byte {
+    if path == "" {
+        return Error("empty path")
+    }
+    // Mock file reading that could fail
+    if path == "nonexistent.txt" {
+        return Error("file not found")
+    }
+    return []byte{72, 101, 108, 108, 111}  // "Hello"
+}
+
+// Function using try to propagate errors
+func processFile(path string) !int {
+    data := try readFile(path)
+    return len(data)
+}
+
+// Function using catch to handle errors
+func safeProcess(path string) int {
+    result := processFile(path) catch |err| {
+        return 0
+    }
+    return result
+}
+
+func main() {
+    // Test successful case
+    size := safeProcess("test.txt")
+    
+    // Test error case
+    errorSize := safeProcess("nonexistent.txt")
+    
+    println("Success size:", size)
+    println("Error size:", errorSize)
+}

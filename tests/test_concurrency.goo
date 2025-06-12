@@ -1,0 +1,23 @@
+package main
+
+func worker(id int) {
+    println("Worker started")
+}
+
+func main() {
+    println("Starting concurrency test")
+    
+    // Test channel creation
+    ch := make_chan(int, 2)
+    
+    // Test goroutine creation
+    go worker(1)
+    
+    // Test channel send
+    ch <- 42
+    
+    // Test channel receive
+    value := <-ch
+    
+    println("Test completed")
+}

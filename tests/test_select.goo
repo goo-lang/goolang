@@ -1,0 +1,16 @@
+package main
+
+func main() {
+    ch1 := make_chan(int, 1)
+    ch2 := make_chan(int, 1)
+    
+    // Simple select example
+    select {
+    case ch1 <- 42:
+        println("Sent to ch1")
+    case value := <-ch2:
+        println("Received from ch2")
+    default:
+        println("No channel ready")
+    }
+}

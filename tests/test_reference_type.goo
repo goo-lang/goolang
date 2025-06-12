@@ -1,0 +1,12 @@
+package main
+
+var myInt int
+var myRef &int
+
+func process(data &[]byte) {
+    // Use data without taking ownership
+}
+
+func main() {
+    // Test reference type
+}

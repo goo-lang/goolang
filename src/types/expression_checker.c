@@ -1,0 +1,414 @@
+#include "types.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+// Expression type checking implementation
+
+Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr) return NULL;
+    
+    switch (expr->type) {
+        case AST_IDENTIFIER:
+            return type_check_identifier(checker, expr);
+        case AST_LITERAL:
+            return type_check_literal(checker, expr);
+        case AST_BINARY_EXPR:
+            return type_check_binary_expr(checker, expr);
+        case AST_UNARY_EXPR:
+            return type_check_unary_expr(checker, expr);
+        case AST_CALL_EXPR:
+            return type_check_call_expr(checker, expr);
+        case AST_INDEX_EXPR:
+            return type_check_index_expr(checker, expr);
+        case AST_SELECTOR_EXPR:
+            return type_check_selector_expr(checker, expr);
+        case AST_TRY_EXPR:
+            return type_check_try_expr(checker, expr);
+        case AST_CATCH_EXPR:
+            return type_check_catch_expr(checker, expr);
+        default:
+            type_error(checker, expr->pos, "Unknown expression type");
+            return NULL;
+    }
+}
+
+Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_IDENTIFIER) return NULL;
+    
+    IdentifierNode* ident = (IdentifierNode*)expr;
+    Variable* var = type_checker_lookup_variable(checker, ident->name);
+    
+    if (!var) {
+        type_error(checker, expr->pos, "Undefined variable '%s'", ident->name);
+        return NULL;
+    }
+    
+    // Check if variable has been moved (ownership tracking)
+    if (var->is_moved) {
+        type_error(checker, expr->pos, 
+                  "Use of moved variable '%s' (moved at %s:%d:%d)",
+                  ident->name,
+                  var->declared_pos.filename ? var->declared_pos.filename : "<unknown>",
+                  var->declared_pos.line, var->declared_pos.column);
+        return NULL;
+    }
+    
+    // Check if variable is initialized
+    if (!var->is_initialized) {
+        type_error(checker, expr->pos, "Use of uninitialized variable '%s'", ident->name);
+        return NULL;
+    }
+    
+    // Store the resolved type in the AST node for later use
+    expr->node_type = var->type;
+    
+    return var->type;
+}
+
+Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_LITERAL) return NULL;
+    
+    LiteralNode* lit = (LiteralNode*)expr;
+    Type* type = NULL;
+    
+    switch (lit->literal_type) {
+        case TOKEN_INT:
+            // TODO: Better integer type inference based on value
+            type = type_checker_get_builtin(checker, TYPE_INT32);
+            break;
+        case TOKEN_FLOAT:
+            type = type_checker_get_builtin(checker, TYPE_FLOAT64);
+            break;
+        case TOKEN_STRING:
+            type = type_checker_get_builtin(checker, TYPE_STRING);
+            break;
+        case TOKEN_CHAR:
+            type = type_checker_get_builtin(checker, TYPE_CHAR);
+            break;
+        case TOKEN_TRUE:
+        case TOKEN_FALSE:
+            type = type_checker_get_builtin(checker, TYPE_BOOL);
+            break;
+        case TOKEN_NIL:
+            // nil has special type that can be assigned to any nullable type
+            type = type_new(TYPE_UNKNOWN);  // Special nil type
+            if (type) {
+                type->name = strdup("nil");
+            }
+            break;
+        default:
+            type_error(checker, expr->pos, "Unknown literal type");
+            return NULL;
+    }
+    
+    expr->node_type = type;
+    return type;
+}
+
+Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
+    
+    BinaryExprNode* binary = (BinaryExprNode*)expr;
+    
+    Type* left_type = type_check_expression(checker, binary->left);
+    Type* right_type = type_check_expression(checker, binary->right);
+    
+    if (!left_type || !right_type) return NULL;
+    
+    Type* result_type = NULL;
+    
+    switch (binary->operator) {
+        // Arithmetic operators
+        case TOKEN_PLUS:
+        case TOKEN_MINUS:
+        case TOKEN_MULTIPLY:
+        case TOKEN_DIVIDE:
+        case TOKEN_MODULO:
+            result_type = type_check_arithmetic_op(checker, left_type, right_type, binary->operator, expr->pos);
+            break;
+            
+        // Comparison operators
+        case TOKEN_EQ:
+        case TOKEN_NE:
+        case TOKEN_LT:
+        case TOKEN_LE:
+        case TOKEN_GT:
+        case TOKEN_GE:
+            result_type = type_check_comparison_op(checker, left_type, right_type, binary->operator, expr->pos);
+            break;
+            
+        // Logical operators
+        case TOKEN_AND:
+        case TOKEN_OR:
+            result_type = type_check_logical_op(checker, left_type, right_type, binary->operator, expr->pos);
+            break;
+            
+        // Bitwise operators
+        case TOKEN_BIT_AND:
+        case TOKEN_BIT_OR:
+        case TOKEN_BIT_XOR:
+        case TOKEN_LSHIFT:
+        case TOKEN_RSHIFT:
+            result_type = type_check_bitwise_op(checker, left_type, right_type, binary->operator, expr->pos);
+            break;
+            
+        // Assignment operators
+        case TOKEN_ASSIGN:
+            result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, expr->pos);
+            break;
+            
+        default:
+            type_error(checker, expr->pos, "Unknown binary operator");
+            return NULL;
+    }
+    
+    expr->node_type = result_type;
+    return result_type;
+}
+
+Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_UNARY_EXPR) return NULL;
+    
+    UnaryExprNode* unary = (UnaryExprNode*)expr;
+    Type* operand_type = type_check_expression(checker, unary->operand);
+    
+    if (!operand_type) return NULL;
+    
+    Type* result_type = NULL;
+    
+    switch (unary->operator) {
+        case TOKEN_MINUS:
+        case TOKEN_PLUS:
+            if (!type_is_numeric(operand_type)) {
+                type_error(checker, expr->pos, 
+                          "Unary %s requires numeric type, got %s",
+                          (unary->operator == TOKEN_MINUS) ? "-" : "+",
+                          type_to_string(operand_type));
+                return NULL;
+            }
+            result_type = operand_type;
+            break;
+            
+        case TOKEN_NOT:
+            if (operand_type->kind != TYPE_BOOL) {
+                type_error(checker, expr->pos, 
+                          "Logical not requires boolean type, got %s",
+                          type_to_string(operand_type));
+                return NULL;
+            }
+            result_type = operand_type;
+            break;
+            
+        case TOKEN_BIT_NOT:
+            if (!type_is_integer(operand_type)) {
+                type_error(checker, expr->pos, 
+                          "Bitwise not requires integer type, got %s",
+                          type_to_string(operand_type));
+                return NULL;
+            }
+            result_type = operand_type;
+            break;
+            
+        case TOKEN_BIT_AND:  // & - take reference/borrow
+            // Check if we can borrow this value
+            if (unary->operand->type == AST_IDENTIFIER) {
+                IdentifierNode* ident = (IdentifierNode*)unary->operand;
+                Variable* var = type_checker_lookup_variable(checker, ident->name);
+                if (var) {
+                    // Check if variable is moved
+                    if (var->is_moved) {
+                        type_error(checker, expr->pos,
+                                  "Cannot borrow moved variable '%s'", ident->name);
+                        return NULL;
+                    }
+                    // Mark as borrowed
+                    var->is_borrowed = 1;
+                    var->borrow_count++;
+                }
+            }
+            result_type = type_reference(operand_type, 0);  // immutable reference by default
+            break;
+            
+        case TOKEN_MULTIPLY:  // * - dereference
+            if (operand_type->kind == TYPE_POINTER) {
+                result_type = operand_type->data.pointer.pointee_type;
+            } else if (operand_type->kind == TYPE_REFERENCE) {
+                result_type = operand_type->data.reference.referenced_type;
+            } else {
+                type_error(checker, expr->pos,
+                          "Cannot dereference non-pointer/reference type %s",
+                          type_to_string(operand_type));
+                return NULL;
+            }
+            break;
+            
+        default:
+            type_error(checker, expr->pos, "Unknown unary operator");
+            return NULL;
+    }
+    
+    expr->node_type = result_type;
+    return result_type;
+}
+
+Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    
+    CallExprNode* call = (CallExprNode*)expr;
+    
+    // Check function expression
+    Type* func_type = type_check_expression(checker, call->function);
+    if (!func_type) return NULL;
+    
+    if (func_type->kind != TYPE_FUNCTION) {
+        type_error(checker, expr->pos, 
+                  "Cannot call non-function type %s", type_to_string(func_type));
+        return NULL;
+    }
+    
+    // Check arguments
+    ASTNode* arg = call->args;
+    size_t arg_count __attribute__((unused)) = 0;
+    while (arg) {
+        Type* arg_type = type_check_expression(checker, arg);
+        if (!arg_type) return NULL;
+        
+        // TODO: Check argument type compatibility with function parameters
+        
+        arg_count++;
+        arg = arg->next;
+    }
+    
+    // TODO: Check argument count against function parameters
+    
+    expr->node_type = func_type->data.function.return_type;
+    return func_type->data.function.return_type;
+}
+
+Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_INDEX_EXPR) return NULL;
+    
+    IndexExprNode* index = (IndexExprNode*)expr;
+    
+    Type* expr_type = type_check_expression(checker, index->expr);
+    Type* index_type = type_check_expression(checker, index->index);
+    
+    if (!expr_type || !index_type) return NULL;
+    
+    // Check index type
+    if (!type_is_integer(index_type)) {
+        type_error(checker, index->index->pos, 
+                  "Array index must be integer, got %s", type_to_string(index_type));
+        return NULL;
+    }
+    
+    Type* element_type = NULL;
+    
+    switch (expr_type->kind) {
+        case TYPE_ARRAY:
+            element_type = expr_type->data.array.element_type;
+            break;
+        case TYPE_SLICE:
+            element_type = expr_type->data.slice.element_type;
+            break;
+        case TYPE_MAP:
+            // For maps, check if index type is compatible with key type
+            if (!type_compatible(index_type, expr_type->data.map.key_type)) {
+                type_error(checker, index->index->pos,
+                          "Map key type mismatch: expected %s, got %s",
+                          type_to_string(expr_type->data.map.key_type),
+                          type_to_string(index_type));
+                return NULL;
+            }
+            element_type = expr_type->data.map.value_type;
+            break;
+        default:
+            type_error(checker, index->expr->pos, 
+                      "Cannot index type %s", type_to_string(expr_type));
+            return NULL;
+    }
+    
+    expr->node_type = element_type;
+    return element_type;
+}
+
+Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
+    
+    SelectorExprNode* selector = (SelectorExprNode*)expr;
+    
+    Type* expr_type = type_check_expression(checker, selector->expr);
+    if (!expr_type) return NULL;
+    
+    // TODO: Implement struct field access
+    type_error(checker, expr->pos, "Struct field access not yet implemented");
+    return NULL;
+}
+
+Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_TRY_EXPR) return NULL;
+    
+    TryExprNode* try_expr = (TryExprNode*)expr;
+    
+    Type* expr_type = type_check_expression(checker, try_expr->expr);
+    if (!expr_type) return NULL;
+    
+    // Expression must be an error union
+    if (!type_is_error_union(expr_type)) {
+        type_error(checker, expr->pos, 
+                  "try can only be used with error union types, got %s",
+                  type_to_string(expr_type));
+        return NULL;
+    }
+    
+    // try extracts the value type from the error union
+    Type* value_type = expr_type->data.error_union.value_type;
+    expr->node_type = value_type;
+    return value_type;
+}
+
+Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_CATCH_EXPR) return NULL;
+    
+    CatchExprNode* catch_expr = (CatchExprNode*)expr;
+    
+    Type* expr_type = type_check_expression(checker, catch_expr->expr);
+    if (!expr_type) return NULL;
+    
+    // Expression must be an error union
+    if (!type_is_error_union(expr_type)) {
+        type_error(checker, expr->pos,
+                  "catch can only be used with error union types, got %s",
+                  type_to_string(expr_type));
+        return NULL;
+    }
+    
+    // TODO: Add error variable to scope and check catch body
+    Type* catch_body_type __attribute__((unused)) = NULL;
+    if (catch_expr->catch_body) {
+        scope_push(checker);
+        
+        // Add error variable to scope
+        if (catch_expr->error_var) {
+            Type* error_type = expr_type->data.error_union.error_type;
+            if (!error_type) {
+                error_type = type_checker_get_builtin(checker, TYPE_STRING);  // Default error type
+            }
+            
+            Variable* error_var = variable_new(catch_expr->error_var, error_type, expr->pos);
+            if (error_var) {
+                scope_add_variable(checker->current_scope, error_var);
+            }
+        }
+        
+        catch_body_type = type_check_expression(checker, catch_expr->catch_body);
+        scope_pop(checker);
+    }
+    
+    // The type of a catch expression is the value type of the error union
+    Type* value_type = expr_type->data.error_union.value_type;
+    expr->node_type = value_type;
+    return value_type;
+}
+

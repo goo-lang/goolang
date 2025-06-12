@@ -1,0 +1,8 @@
+package main
+
+func testSimple() {
+    // Just test if let parsing
+    if let x = someValue {
+        println("Got value")
+    }
+}

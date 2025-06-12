@@ -1,0 +1,975 @@
+<context>
+# Overview  
+Goo is a systems programming language designed as a Go superset that incorporates the best features from Rust (memory safety), Zig (compile-time execution), Erlang (fault tolerance), and nng (advanced messaging patterns). It aims to provide Go's simplicity and readability while adding powerful safety and concurrency features needed for modern systems programming, particularly microkernel development like LughOS.
+
+The language solves the problem of choosing between safety and simplicity in systems programming. Currently, developers must choose between C (unsafe but simple), Rust (safe but complex), Go (simple but garbage-collected), or Zig (powerful but lacking high-level concurrency). Goo provides a unified solution that doesn't force these trade-offs.
+
+# Core Features  
+
+## Go Compatibility
+- **What it does**: Accepts any valid Go program without modification
+- **Why it's important**: Allows gradual migration and leverages existing Go ecosystem
+- **How it works**: Parser recognizes full Go syntax; compiler generates compatible output
+
+## Memory Safety
+- **What it does**: Prevents null pointer dereferences, buffer overflows, and use-after-free errors
+- **Why it's important**: Eliminates entire classes of security vulnerabilities
+- **How it works**: Ownership tracking (simplified from Rust), bounds checking, and nullable types (`?int`)
+
+## Error Unions (Zig-style)
+- **What it does**: Provides clean error handling with `!` return types
+- **Why it's important**: More ergonomic than Go's `if err != nil` or Rust's `Result<T,E>`
+- **How it works**: Functions return `!T` and use `try`/`catch` for propagation
+
+## Advanced Concurrency
+- **What it does**: Extends Go's goroutines with Erlang-style actors and supervision
+- **Why it's important**: Enables self-healing systems crucial for OS services
+- **How it works**: Actors with message passing, supervision trees for automatic restart
+
+## Channel Patterns
+- **What it does**: Native support for nng patterns (pub/sub, req/rep, push/pull)
+- **Why it's important**: Simplifies building distributed systems and microkernel IPC
+- **How it works**: Extended channel syntax: `make(pub chan Message)`
+
+## Compile-Time Execution
+- **What it does**: Execute code at compile time for optimization and configuration
+- **Why it's important**: Zero-overhead abstractions and kernel configuration
+- **How it works**: `comptime` blocks run during compilation, generating optimized code
+
+# User Experience  
+
+## User Personas
+
+### Systems Programmer Sarah
+- Building a microkernel or embedded system
+- Needs low-level control with high-level safety
+- Frustrated by Rust's complexity but wants its safety
+
+### Go Developer Dave
+- Writing network services and concurrent applications
+- Wants better error handling and null safety
+- Needs to gradually migrate existing Go code
+
+### Student Sam
+- Learning systems programming and OS development
+- Needs approachable syntax with powerful features
+- Building experimental OS like LughOS
+
+## Key User Flows
+
+### Basic Development Flow
+1. Write Go-compatible code with Goo enhancements
+2. Run `goo build` to compile
+3. Get clear error messages with suggestions
+4. Deploy single binary with no runtime dependencies
+
+### Migration Flow
+1. Take existing Go project
+2. Rename `.go` files to `.goo`
+3. Compile with Goo - everything works
+4. Gradually add Goo features where beneficial
+
+### OS Development Flow
+1. Write kernel modules as supervised actors
+2. Use comptime for hardware configuration
+3. Define IPC with channel patterns
+4. Compile to freestanding binary
+
+## UI/UX Considerations
+
+### Tooling
+- Single `goo` command for all operations (build, test, fmt, doc)
+- VSCode/IDE integration with syntax highlighting and autocomplete
+- Clear, actionable error messages with examples
+
+### Documentation
+- Interactive playground for learning
+- Gradual learning path: Go → Basic Goo → Advanced features
+- Comprehensive examples for each feature
+</context>
+
+<PRD>
+# Technical Architecture  
+
+## System Components
+
+### Compiler Pipeline
+```
+Source (.goo) → Lexer → Parser → AST → Type Checker → 
+Optimizer → LLVM IR → Native Code
+```
+
+### Core Components
+1. **Compiler (Go-based)**
+   - Lexer: Tokenizes Goo source code
+   - Parser: Builds AST supporting Go + Goo syntax
+   - Type Checker: Enforces safety with ownership tracking
+   - Code Generator: Produces LLVM IR
+   - Optimizer: Compile-time execution and optimizations
+
+2. **Runtime (C/Assembly)**
+   - Memory Manager: Arena/pool allocators
+   - Scheduler: M:N goroutine scheduling
+   - Channel System: Lock-free channels with patterns
+   - Actor System: Message passing and supervision
+   - FFI Layer: C interoperability
+
+3. **Standard Library (Goo)**
+   - Core types and traits
+   - I/O abstractions
+   - Networking (with channel patterns)
+   - OS interfaces
+   - Collections
+
+## Data Models
+
+### AST Nodes
+```go
+type Node interface {
+    Pos() Position
+    Type() Type
+}
+
+type FuncDecl struct {
+    Name       string
+    Params     []Param
+    ReturnType Type  // Can be error union
+    Body       []Stmt
+    Attributes []Attr  // comptime, unsafe, etc.
+}
+
+type ChannelType struct {
+    Pattern  ChannelPattern  // basic, pub, sub, req, rep
+    ElemType Type
+    Endpoint string  // Optional network endpoint
+}
+```
+
+### Type System
+```go
+type Type interface {
+    String() string
+    Size() int
+    Align() int
+}
+
+type OwnershipKind int
+const (
+    Owned OwnershipKind = iota
+    Borrowed
+    Shared
+)
+
+type QualifiedType struct {
+    Base      Type
+    Nullable  bool
+    Ownership OwnershipKind
+}
+```
+
+## APIs and Integrations
+
+### Compiler API
+```go
+// Programmatic compilation
+compiler := goo.NewCompiler()
+compiler.AddSource("main.goo", sourceCode)
+compiler.SetTarget("x86_64-linux")
+binary, err := compiler.Build()
+```
+
+### Runtime API (C)
+```c
+// Goroutine management
+goo_go(void (*func)(void*), void* arg);
+goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer);
+void goo_chan_send(goo_channel_t* ch, void* data);
+
+// Actor system
+goo_actor_t* goo_spawn_actor(actor_behavior_t* behavior);
+void goo_send_message(goo_actor_t* actor, message_t* msg);
+```
+
+### FFI Layer
+```goo
+// C interop
+@[link("sqlite3")]
+extern {
+    func sqlite3_open(filename: *c_char, db: **SQLite3) c_int
+}
+```
+
+## Infrastructure Requirements
+
+### Build Infrastructure
+- LLVM 17+ for code generation
+- C11 compiler for runtime
+- Git for package management
+
+### Development Tools
+- Language server (LSP) for IDE support
+- Formatter (goo fmt)
+- Documentation generator
+- Package registry
+
+# Development Roadmap  
+
+## Phase 1: Minimal Go Compiler
+**Goal**: Compile basic Go programs
+
+### Lexer & Parser
+- Tokenize Go keywords, operators, literals
+- Parse package, import, func declarations
+- Parse basic statements (if, for, return)
+- Parse expressions with precedence
+- Build AST structure
+
+### Type System
+- Primitive types (int, float, bool, string)
+- Function types
+- Basic type inference
+- Type checking for expressions
+
+### Code Generation
+- LLVM module setup
+- Function generation
+- Basic operations (arithmetic, comparison)
+- Control flow (if, for)
+- Function calls
+
+### Minimal Runtime
+- Main function entry point
+- Basic print functions
+- Memory allocation stubs
+
+**Deliverable**: Compile and run Go's "Hello, World"
+
+## Phase 2: Core Goo Extensions
+**Goal**: Add essential Goo features
+
+### Error Unions
+- Add `!` type syntax
+- Parse error union returns
+- Implement try/catch operators
+- Generate error propagation code
+- Error type definitions
+
+### Null Safety
+- Add `?` nullable type syntax
+- Nullable type checking
+- Safe unwrapping with if-let
+- Compiler errors for unchecked nulls
+
+### Ownership Basics
+- Add ownership qualifiers (owned, borrowed)
+- Basic move semantics
+- Borrow checking (simplified)
+- Compiler errors for use-after-move
+
+### Enhanced Channels
+- Extend channel syntax for patterns
+- Basic pub/sub implementation
+- Message passing infrastructure
+
+**Deliverable**: Goo-enhanced programs with safety features
+
+## Phase 3: Concurrency & Runtime
+**Goal**: Full concurrency support
+
+### Goroutine System
+- M:N scheduler implementation
+- Goroutine creation and switching
+- Stack management
+- Preemption support
+
+### Channel Implementation
+- Lock-free channel algorithms
+- Buffered and unbuffered channels
+- Select statement support
+- Channel patterns (pub/sub, req/rep)
+
+### Data Parallel Processing (OpenMP-like)
+- Parallel for loops with work distribution
+- Shared memory synchronization primitives
+- Reduction operations (sum, product, min, max)
+- Thread-local storage management
+- Barrier synchronization for parallel sections
+- Integration with ownership system for memory safety
+
+### Parallel Programming Model
+```go
+// Data parallel loops
+parallel for i := 0; i < N; i++ {
+    shared mut result: []int32
+    private temp: int32
+    reduction(+) sum: int32
+    
+    temp = compute(data[i])
+    result[i] = temp
+    sum += temp
+}
+
+// Parallel sections
+parallel {
+    section { processDataA() }
+    section { processDataB() }
+    section { processDataC() }
+}
+
+// Work-sharing with channels
+parallel workers := runtime.NumCPU() {
+    for work := range workChannel {
+        result := process(work)
+        resultChannel <- result
+    }
+}
+```
+
+### Actor System
+- Actor spawn and lifecycle
+- Message queues per actor
+- Actor supervision trees
+- Restart strategies
+
+### Memory Management
+- Arena allocators
+- Pool allocators
+- Integration with ownership
+
+**Deliverable**: Concurrent Goo programs with actors
+
+## Phase 4: Advanced Features
+**Goal**: Complete language features
+
+### Compile-Time Execution
+- Comptime parser support
+- Compile-time interpreter
+- Constant folding
+- Code generation from comptime
+
+### Pattern Matching
+- Match expression syntax
+- Exhaustiveness checking
+- Pattern compilation
+- Guard conditions
+
+### Unsafe Blocks
+- Unsafe syntax and semantics
+- Raw pointer operations
+- Inline assembly support
+- FFI improvements
+- Hardware control primitives
+
+### Unsafe Programming Model
+```go
+// Hardware register access
+unsafe {
+    // Memory-mapped I/O
+    mmio_write(u32, 0xFED00000, 0x12345678)
+    value := mmio_read(u32, 0xFED00000)
+    
+    // Port I/O (x86)
+    port_out(u8, 0x80, 0xFF)
+    status := port_in(u8, 0x64)
+    
+    // Inline assembly
+    asm volatile (
+        "mov %0, %%rax"
+        : 
+        : "r" (value)
+        : "rax"
+    )
+    
+    // Raw pointer manipulation
+    ptr := @cast(*u8, 0x1000)
+    *ptr = 0xAB
+}
+
+// Interrupt handling
+interrupt handler keyboard_handler() {
+    // Hardware-specific interrupt handling
+    scancode := port_in(u8, 0x60)
+    // Process keyboard input
+    pic_send_eoi(1)  // Send end-of-interrupt
+}
+
+// Kernel-specific memory management
+kernel allocator: ArenaAllocator {
+    base: 0x100000,
+    size: 0x10000000,
+    no_std: true
+}
+```
+
+### Freestanding Runtime Features
+- Minimal runtime without standard library dependencies
+- Custom panic handlers for kernel environments
+- Stack overflow protection
+- Hardware abstraction layer (HAL)
+- Boot sequence support
+
+### GPU Programming Support
+- CUDA/OpenCL backend integration
+- Compute shader compilation targets
+- GPU memory management with ownership
+- Kernel launch and execution
+- GPU-CPU data transfer optimization
+
+### GPU Programming Model
+```go
+// GPU kernel definition
+gpu kernel vec_add(a: []float32, b: []float32, c: mut []float32) {
+    tid := gpu.thread_id()
+    if tid < len(a) {
+        c[tid] = a[tid] + b[tid]
+    }
+}
+
+// Host-side GPU execution
+func compute_on_gpu() !void {
+    // GPU memory allocation with ownership
+    gpu_a := try gpu.alloc_array(float32, 1000)
+    defer gpu_a.free()
+    
+    gpu_b := try gpu.alloc_array(float32, 1000)
+    defer gpu_b.free()
+    
+    gpu_c := try gpu.alloc_array(float32, 1000)
+    defer gpu_c.free()
+    
+    // Copy data to GPU
+    try gpu_a.copy_from(host_array_a)
+    try gpu_b.copy_from(host_array_b)
+    
+    // Launch kernel
+    try gpu.launch(vec_add, 
+        blocks: (1000 + 255) / 256,
+        threads: 256,
+        args: (gpu_a, gpu_b, gpu_c))
+    
+    // Synchronize and copy result back
+    try gpu.synchronize()
+    try gpu_c.copy_to(host_result)
+}
+
+// Advanced GPU patterns
+gpu kernel reduce_sum(input: []float32, output: mut []float32) {
+    shared data: [256]float32
+    tid := gpu.thread_id()
+    
+    // Load data into shared memory
+    data[tid] = if tid < len(input) { input[tid] } else { 0.0 }
+    gpu.sync_threads()
+    
+    // Parallel reduction
+    stride := 128
+    while stride > 0 {
+        if tid < stride {
+            data[tid] += data[tid + stride]
+        }
+        gpu.sync_threads()
+        stride /= 2
+    }
+    
+    if tid == 0 {
+        output[gpu.block_id()] = data[0]
+    }
+}
+```
+
+### GPU Integration with Ownership System
+- Automatic GPU memory deallocation
+- Transfer ownership between CPU/GPU
+- Compile-time checks for GPU pointer validity
+- Zero-copy operations where possible
+
+### Compilation Targets
+- NVPTX for NVIDIA GPUs (via LLVM)
+- AMDGPU for AMD GPUs (via LLVM)
+- SPIR-V for Vulkan compute shaders
+- Metal Shading Language for Apple GPUs
+
+### Standard Library
+- Core modules (io, fmt, strings)
+- Collections (vec, map, set)
+- Network programming
+- OS interfaces
+
+**Deliverable**: Full-featured Goo language
+
+## Phase 5: Production Ready
+**Goal**: Production deployment
+
+### Optimizations
+- LLVM optimization passes
+- Inlining strategies
+- Dead code elimination
+- Link-time optimization
+
+### Tooling
+- Package manager (like Cargo)
+- Build system improvements
+- Debugger support
+- Profiler integration
+
+### Documentation
+- Language specification
+- Standard library docs
+- Tutorial series
+- Migration guides
+
+### Platform Support
+- Linux x86_64 (primary)
+- macOS, Windows ports
+- ARM64 support
+- WebAssembly target
+
+**Deliverable**: Production-ready language and ecosystem
+
+## Phase 6: LughOS Integration
+**Goal**: Demonstrate OS development capabilities
+
+### Kernel Development Framework
+- Freestanding runtime with no_std support
+- Hardware abstraction layer (HAL)
+- Boot sequence and initialization
+- Interrupt descriptor table (IDT) management
+- Memory management unit (MMU) control
+- Hardware timer and scheduling integration
+
+### Kernel Services Architecture
+```go
+// Kernel service definition
+kernel service FileSystem: Actor {
+    state: FsState
+    
+    handle CreateFile(path: String, mode: FileMode) -> !FileHandle {
+        // Secure file creation with capability checking
+        try capability.check(self.caller(), FileCreate, path)
+        return try fs.create(path, mode)
+    }
+    
+    handle ReadFile(handle: FileHandle, buffer: mut []u8) -> !usize {
+        try capability.check(self.caller(), FileRead, handle)
+        return try fs.read(handle, buffer)
+    }
+}
+
+// Hardware driver framework
+driver PciDriver: HardwareDriver {
+    device_class: PciClass
+    
+    fn probe(device: PciDevice) -> bool {
+        return device.class == self.device_class
+    }
+    
+    fn init(device: PciDevice) -> !DriverInstance {
+        unsafe {
+            // Map device memory
+            mmio_base := map_device_memory(device.bar0)
+            // Initialize device registers
+            mmio_write(u32, mmio_base + 0x04, DEVICE_ENABLE)
+        }
+        return DriverInstance { device, mmio_base }
+    }
+}
+```
+
+### Security and Isolation
+- Capability-based security system
+- Isolated address spaces per service
+- Memory protection with ownership
+- Secure communication channels
+- Hardware security features (SMEP, SMAP)
+
+### Example OS
+- Basic microkernel in Goo
+- File system service
+- Network stack service
+- Device driver framework
+
+**Deliverable**: LughOS running with Goo services
+
+# Logical Dependency Chain
+
+## Foundation Layer (Must Build First)
+1. **Lexer**: Needed for all parsing
+2. **Parser**: Depends on lexer, needed for AST
+3. **AST**: Core data structure for entire compiler
+4. **Basic Type System**: Required for any code generation
+5. **Minimal Runtime**: Required to run any compiled code
+
+## First Visible Output
+**Target**: Compile and run "Hello, World" (Week 2-3)
+- Lexer for basic tokens → Parser for function declarations → Type checker for primitives → Code generator for print → Link with minimal runtime
+
+This provides immediate feedback and validates the architecture.
+
+## Feature Building Blocks
+1. **Error Unions** (builds on type system)
+   - Extends type system → Updates parser → Modifies code generation
+   - Can compile error-handling code
+
+2. **Null Safety** (builds on type system)
+   - Extends type system → Adds type checking rules
+   - Can write null-safe code
+
+3. **Ownership** (builds on type system + control flow)
+   - Needs CFG analysis → Borrow checker → Move semantics
+   - Enables memory safety
+
+4. **Goroutines** (builds on runtime)
+   - Needs scheduler → Stack management → Context switching
+   - Enables concurrency
+
+5. **Channels** (builds on goroutines + type system)
+   - Needs goroutines → Synchronization primitives
+   - Enables communication
+
+6. **Actors** (builds on goroutines + channels)
+   - Needs message passing → Supervision logic
+   - Enables fault tolerance
+
+## Incremental Improvements
+Each feature follows this pattern:
+1. **Syntax Support**: Add to lexer/parser
+2. **Semantic Support**: Add to type checker
+3. **Code Generation**: Add to LLVM backend
+4. **Runtime Support**: Add to runtime library
+5. **Testing**: Add test cases
+6. **Documentation**: Update docs
+
+This allows each feature to be fully functional before moving to the next.
+
+# Risks and Mitigations  
+
+## Technical Challenges
+
+### Risk: LLVM Complexity
+- **Challenge**: LLVM API is complex and changes between versions
+- **Mitigation**: Start with LLVM 17 (stable), create abstraction layer, maintain compatibility layer
+
+### Risk: Ownership Model Complexity
+- **Challenge**: Simplified ownership still needs to be correct
+- **Mitigation**: Start with basic move semantics, add borrowing gradually, provide clear error messages
+
+### Risk: Runtime Performance
+- **Challenge**: M:N scheduling and channels could be slow
+- **Mitigation**: Profile early, optimize hot paths, provide unsafe escapes for performance
+
+## MVP Scoping
+
+### Risk: Feature Creep
+- **Challenge**: Trying to implement everything at once
+- **Mitigation**: Strict phasing, Go compatibility first, add features incrementally
+
+### Risk: Incomplete Go Compatibility
+- **Challenge**: Missing Go features block adoption
+- **Mitigation**: Prioritize most-used Go features, document limitations, provide migration path
+
+## Resource Constraints
+
+### Risk: Single Developer Bandwidth
+- **Challenge**: Large scope for one person
+- **Mitigation**: Focus on core features, leverage existing tools (LLVM, parser generators), build community early
+
+### Risk: Testing Complexity
+- **Challenge**: Compiler testing is complex
+- **Mitigation**: Reuse Go's test suite where possible, start with simple tests, use property-based testing
+
+### Risk: Documentation Burden
+- **Challenge**: Docs needed for adoption
+- **Mitigation**: Document as you build, use examples as docs, leverage community
+
+# Appendix  
+
+## Research Findings
+
+### Language Adoption Factors
+1. **Easy Migration Path**: Languages that can gradually adopt (TypeScript, Kotlin) succeed
+2. **Clear Value Proposition**: Must solve real problems better than alternatives
+3. **Great Error Messages**: Rust's success partly due to helpful compiler
+4. **Active Community**: Early adopters become evangelists
+
+### Technical Precedents
+1. **Go's Simplicity**: Proven that simple languages can succeed
+2. **Rust's Safety**: Shown market demand for safe systems programming
+3. **Zig's Comptime**: Demonstrated value of compile-time execution
+4. **Erlang's Actors**: Proven model for fault-tolerant systems
+
+### Microkernel Requirements
+1. **No Runtime Dependencies**: Must run on bare metal
+2. **Predictable Performance**: No hidden allocations or GC pauses
+3. **Small Binary Size**: Kernel must be minimal
+4. **Hardware Control**: Need inline assembly and MMIO
+
+## Technical Specifications
+
+### Language Grammar (EBNF subset)
+```
+Program     = Package Imports Declarations
+Package     = "package" Identifier
+Import      = "import" StringLit
+Function    = "func" Identifier Parameters ["!"] Type Block
+Type        = BasicType | "?" Type | ChannelType
+ChannelType = ["pub"|"sub"|"req"|"rep"] "chan" Type
+```
+
+### Runtime ABI
+- C calling convention for FFI
+- Goroutine state in thread-local storage
+- Channels as opaque pointers
+- Actor mailboxes as lock-free queues
+
+### Optimization Levels
+- `-O0`: No optimization, fast compilation
+- `-O1`: Basic optimizations
+- `-O2`: Standard optimizations (default)
+- `-O3`: Aggressive optimizations
+- `-Osize`: Optimize for size (kernel mode)
+
+## WebAssembly (WASM) Support
+
+### Overview
+Goo provides first-class WebAssembly support through LLVM's WebAssembly backend, enabling deployment to web browsers, serverless environments, and edge computing platforms while maintaining the same safety guarantees and concurrency model.
+
+### Compilation Targets
+```goo
+// Compile to WebAssembly
+goo build -target=wasm32 -o program.wasm main.goo
+
+// With specific WASM features
+goo build -target=wasm32 -features=simd,bulk-memory main.goo
+
+// For browser environment
+goo build -target=wasm32-browser main.goo
+
+// For WASI (WebAssembly System Interface)
+goo build -target=wasm32-wasi main.goo
+```
+
+### WASM-Specific Runtime Adaptations
+
+#### Memory Management
+- Linear memory model with bounds checking
+- Garbage collection via reference types (when available)
+- Stack overflow protection using WASM stack limits
+- Integration with browser's garbage collector for DOM objects
+
+#### Concurrency Model
+```goo
+// Web Workers for true parallelism
+#[wasm_worker]
+func processData(data []byte) !Result {
+    // Runs in separate Web Worker
+    return computeIntensive(data)
+}
+
+// Cooperative concurrency for single-threaded environments
+func main() {
+    // Goroutines implemented as async/await in JavaScript
+    go func() {
+        // Yields control at channel operations
+        result := <-processChannel
+        handleResult(result)
+    }()
+}
+```
+
+#### Channel Implementation
+- Single-threaded: Event loop integration with async generators
+- Multi-threaded: SharedArrayBuffer with atomic operations
+- Cross-worker communication via MessagePort API
+
+### JavaScript Interoperability
+
+#### Import/Export Functions
+```goo
+// Export Goo functions to JavaScript
+#[wasm_export("add")]
+func Add(a: i32, b: i32) i32 {
+    return a + b
+}
+
+// Import JavaScript functions
+#[wasm_import("console", "log")]
+extern func jsLog(message: string)
+
+#[wasm_import("dom", "getElementById")]
+extern func getElementById(id: string) ?DOMElement
+```
+
+#### Type Marshaling
+```goo
+// Automatic marshaling for basic types
+func processUserData(name: string, age: i32) UserProfile {
+    return UserProfile{
+        name: name,
+        age: age,
+        created: time.Now(),
+    }
+}
+
+// Complex type marshaling
+#[wasm_bindgen]
+struct APIResponse {
+    data: []UserProfile `json:"data"`
+    status: i32 `json:"status"`
+    message: ?string `json:"message,omitempty"`
+}
+```
+
+#### DOM Integration
+```goo
+import "goo/wasm/dom"
+
+func setupEventHandler() !void {
+    button := dom.getElementById("submit-btn") or return error.ElementNotFound
+    
+    button.addEventListener("click", func(event: dom.Event) {
+        // Handle click event
+        form := dom.querySelector("form") or return
+        data := form.serialize()
+        
+        go submitData(data) // Non-blocking submission
+    })
+}
+```
+
+### Performance Optimizations
+
+#### SIMD Support
+```goo
+import "goo/wasm/simd"
+
+func vectorAdd(a: [4]f32, b: [4]f32) [4]f32 {
+    // Compiles to WASM SIMD instructions
+    return simd.add_f32x4(a, b)
+}
+```
+
+#### Memory Layout Optimization
+- Struct packing for minimal memory footprint
+- String interning for reduced memory usage
+- Lazy loading of large data structures
+
+#### Code Size Optimization
+- Dead code elimination for unused runtime features
+- Function merging for similar patterns
+- Constant pooling for repeated values
+
+### Deployment Integration
+
+#### Browser Environment
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <script type="module">
+        import init, { main } from './program.js';
+        
+        async function run() {
+            await init();
+            main();
+        }
+        
+        run();
+    </script>
+</head>
+</html>
+```
+
+#### Node.js Environment
+```javascript
+const fs = require('fs');
+const wasmModule = await WebAssembly.instantiate(
+    fs.readFileSync('./program.wasm')
+);
+
+// Call exported Goo functions
+const result = wasmModule.instance.exports.processData(inputData);
+```
+
+#### WASI (WebAssembly System Interface)
+```goo
+import "goo/wasi"
+
+func main() !void {
+    // Access file system through WASI
+    file := wasi.open("input.txt", wasi.O_RDONLY) or return error.FileNotFound
+    defer file.close()
+    
+    data := file.readAll() or return error.ReadFailed
+    result := processData(data)
+    
+    // Write to stdout
+    wasi.stdout.write(result.toString())
+}
+```
+
+### Error Handling and Debugging
+
+#### WASM-Specific Error Handling
+```goo
+#[wasm_error_handler]
+func handleWasmPanic(message: string, file: string, line: i32) {
+    // Custom panic handler for WASM environment
+    jsLog("Panic in " + file + ":" + line.toString() + ": " + message)
+    
+    // Send telemetry data
+    sendErrorReport(PanicReport{
+        message: message,
+        location: file + ":" + line.toString(),
+        timestamp: time.Now(),
+    })
+}
+```
+
+#### Source Maps and Debugging
+- Generate source maps for browser debugging
+- Integration with browser DevTools
+- Stack trace reconstruction from WASM
+
+### Limitations and Considerations
+
+#### Threading Limitations
+- Single-threaded in environments without SharedArrayBuffer
+- Cooperative multitasking via async/await transformation
+- Web Workers for CPU-intensive tasks
+
+#### Memory Constraints
+- Linear memory model with 4GB limit (32-bit addresses)
+- No direct memory sharing between instances
+- Garbage collection integration challenges
+
+#### Performance Considerations
+- Call overhead for imported functions
+- Serialization cost for complex data types
+- Limited SIMD instruction support in older browsers
+
+### Future Enhancements
+
+#### Component Model
+```goo
+// WebAssembly Component Model integration
+#[wasm_component]
+interface UserService {
+    func createUser(data: UserData) -> Result<User, CreateError>
+    func getUser(id: UserID) -> Result<User, NotFoundError>
+}
+```
+
+#### Streaming and Lazy Loading
+```goo
+// Streaming compilation for large modules
+#[wasm_streaming]
+func loadLargeDataset() AsyncIterator<DataChunk> {
+    // Progressive loading and processing
+}
+```
+
+#### Advanced Memory Features
+- Integration with WASM GC proposal
+- Custom allocators for specific use cases
+- Memory compression for large static data
+</PRD>

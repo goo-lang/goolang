@@ -1,0 +1,22 @@
+package main
+
+// Export main function to WebAssembly
+func main() {
+    x := 10
+    y := 20
+    result := add(x, y)
+    print(result)
+}
+
+// Export this function for JavaScript interop
+func export_add(a int, b int) int {
+    return a + b
+}
+
+func add(a int, b int) int {
+    return a + b
+}
+
+func print(value int) {
+    // This would be implemented as a runtime call
+}

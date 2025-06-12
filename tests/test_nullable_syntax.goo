@@ -1,0 +1,16 @@
+package main
+
+func testNullable() {
+    var name ?string
+    
+    if let actualName = name {
+        println("Hello,", actualName)
+    } else {
+        println("Hello, anonymous")
+    }
+    
+    // Test forced unwrapping
+    var value ?int = 42
+    result := value!
+    println("Result:", result)
+}

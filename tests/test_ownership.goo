@@ -1,0 +1,20 @@
+package main
+
+// Test move semantics
+var buffer []byte
+var newBuffer []byte
+
+// Test borrowing  
+func process(data &[]byte) {
+    // Can read data but not take ownership
+}
+
+func main() {
+    // Move ownership
+    newBuffer = buffer
+    // buffer should no longer be valid
+    
+    // Borrowing
+    process(&newBuffer)
+    // newBuffer should still be valid
+}

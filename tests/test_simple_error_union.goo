@@ -1,0 +1,13 @@
+package main
+
+func divide(a int, b int) !int {
+    if b == 0 {
+        return Error("division by zero")
+    }
+    return a / b
+}
+
+func main() {
+    result := try divide(10, 2)
+    println(result)
+}

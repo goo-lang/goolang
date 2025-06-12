@@ -1,0 +1,15 @@
+package main
+
+var nullableString ?string
+var nullableInt ?int
+
+func main() {
+    if let str = nullableString {
+        println("Got string:", str)
+    } else {
+        println("String is null")
+    }
+    
+    // This would be forced unwrapping (runtime check)
+    // value := nullableInt!
+}
