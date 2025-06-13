@@ -230,6 +230,9 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         return 0;
     }
     
+    // Store the type on the AST node for code generation
+    var_decl->base.node_type = final_type;
+    
     // Add variables to scope
     for (size_t i = 0; i < var_decl->name_count; i++) {
         Variable* var = variable_new(var_decl->names[i], final_type, var_decl->base.pos);
@@ -321,6 +324,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_block_stmt(checker, stmt);
         case AST_EXPR_STMT:
             return type_check_expr_stmt(checker, stmt);
+        case AST_VAR_DECL:
+            return type_check_var_decl(checker, stmt);
         case AST_IF_STMT:
             return type_check_if_stmt(checker, stmt);
         case AST_FOR_STMT:

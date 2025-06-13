@@ -178,19 +178,19 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     
     VarDeclNode* var_decl = (VarDeclNode*)decl;
     
+    // Get type from AST node (set during type checking)
+    Type* var_type = decl->node_type;
+    if (!var_type) {
+        codegen_error(codegen, decl->pos, "Variable declaration has no type information");
+        return 0;
+    }
+    
     // Generate code for each variable
     for (size_t i = 0; i < var_decl->name_count; i++) {
         const char* var_name = var_decl->names[i];
         
-        // Get type from type checker
-        Variable* var = type_checker_lookup_variable(checker, var_name);
-        if (!var) {
-            codegen_error(codegen, decl->pos, "Variable '%s' not found in type checker", var_name);
-            return 0;
-        }
-        
         // Convert type to LLVM type
-        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, var->type);
+        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, var_type);
         if (!llvm_type) {
             codegen_error(codegen, decl->pos, "Failed to convert type for variable '%s'", var_name);
             return 0;
@@ -238,7 +238,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         }
         
         // Add to symbol table
-        ValueInfo* value_info = value_info_new(var_name, alloca_inst, var->type);
+        ValueInfo* value_info = value_info_new(var_name, alloca_inst, var_type);
         if (!value_info) {
             codegen_error(codegen, decl->pos, "Failed to create value info for variable '%s'", var_name);
             return 0;
@@ -346,6 +346,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_block_stmt(codegen, checker, stmt);
         case AST_EXPR_STMT:
             return codegen_generate_expr_stmt(codegen, checker, stmt);
+        case AST_VAR_DECL:
+            return codegen_generate_var_decl(codegen, checker, stmt);
         case AST_IF_STMT:
             return codegen_generate_if_stmt(codegen, checker, stmt);
         case AST_FOR_STMT:

@@ -85,14 +85,14 @@ int main(int argc, char* argv[]) {
                 // Type checking
                 printf("\nStarting type checking...\n");
                 TypeChecker* checker = type_checker_new();
-                if (checker && type_check_program(checker, ast_root) == 0) {
+                if (checker && type_check_program(checker, ast_root) != 0) {
                     printf("Type checking successful!\n");
                     
                     // Code generation
                     printf("\nStarting code generation...\n");
                     CodeGenerator* codegen = codegen_new("test_module");
                     if (codegen) {
-                        if (codegen_generate_program(codegen, checker, ast_root) == 0) {
+                        if (codegen_generate_program(codegen, checker, ast_root) != 0) {
                             printf("Code generation successful!\n");
                             
                             // Output LLVM IR
