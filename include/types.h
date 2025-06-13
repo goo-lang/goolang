@@ -181,6 +181,12 @@ struct Scope {
     int scope_id;
 };
 
+// Forward declarations for enhanced interface system
+struct ConstraintInferenceEngine;
+struct ConceptRegistry;
+struct HKTRegistry;
+struct ProtocolRegistry;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -196,6 +202,12 @@ struct TypeChecker {
     Type** type_cache;
     size_t type_cache_size;
     size_t type_cache_capacity;
+    
+    // Enhanced interface system components
+    struct ConstraintInferenceEngine* constraint_engine;
+    struct ConceptRegistry* concept_registry;
+    struct HKTRegistry* hkt_registry;
+    struct ProtocolRegistry* protocol_registry;
 };
 
 // Type creation functions
