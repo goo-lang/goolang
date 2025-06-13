@@ -139,6 +139,7 @@ typedef struct {
     struct ASTNode* type;      // Type specification
     struct ASTNode* values;    // Initial values
     OwnershipKind ownership;   // Goo extension: ownership qualifier
+    int is_short_decl;         // True for := declarations
 } VarDeclNode;
 
 // Constant declaration

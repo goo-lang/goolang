@@ -69,7 +69,7 @@ static Position get_current_position(void);
 %type <node> package_clause import_decl_list import_decl import_spec import_spec_list
 %type <node> opt_import_decl_list opt_top_level_decl_list
 %type <node> top_level_decl_list top_level_decl
-%type <node> declaration func_decl var_decl const_decl type_decl
+%type <node> declaration func_decl var_decl const_decl type_decl short_var_decl
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
 %type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
@@ -323,6 +323,21 @@ var_decl:
     }
     ;
 
+// Short variable declaration
+short_var_decl:
+    identifier SHORT_ASSIGN expression {
+        VarDeclNode* var = ast_var_decl_new(get_current_position());
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        var->names = malloc(sizeof(char*));
+        var->names[0] = strdup(ident->name);
+        var->name_count = 1;
+        var->values = $3;
+        var->is_short_decl = 1;  // Mark as short declaration
+        ast_node_free($1);
+        $$ = (ASTNode*)var;
+    }
+    ;
+
 // Constant declaration
 const_decl:
     CONST identifier type ASSIGN expression {
@@ -435,6 +450,8 @@ simple_stmt:
         expr_stmt->expr = $1;
         $$ = (ASTNode*)expr_stmt;
     }
+    | short_var_decl { $$ = $1; }
+    | var_decl { $$ = $1; }
     ;
 
 if_stmt:
