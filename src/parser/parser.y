@@ -16,6 +16,7 @@ ASTNode* ast_root = NULL;
 
 // Helper functions
 static Position get_current_position(void);
+static TokenType bison_token_to_token_type(int bison_token);
 %}
 
 // Union type for semantic values
@@ -213,7 +214,7 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$2;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $4;
-        // TODO: Parse function signature
+        func->params = $3;  // Assign the function signature (parameters)
         ast_node_free($2);
         $$ = (ASTNode*)func;
     }
@@ -221,6 +222,7 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $5;
+        func->params = $4;  // Assign the function signature (parameters)
         func->is_comptime = 1;
         ast_node_free($3);
         $$ = (ASTNode*)func;
@@ -229,6 +231,7 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $5;
+        func->params = $4;  // Assign the function signature (parameters)
         func->is_unsafe = 1;
         ast_node_free($3);
         $$ = (ASTNode*)func;
@@ -263,11 +266,25 @@ func_params:
 
 func_param:
     identifier type {
-        // TODO: Create parameter node
-        $$ = $1;
+        // Create a variable declaration node for the parameter
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = malloc(sizeof(char*));
+        param->names[0] = strdup(ident->name);
+        param->name_count = 1;
+        param->type = $2;
+        param->values = NULL; // Parameters don't have initial values
+        ast_node_free($1);
+        $$ = (ASTNode*)param;
     }
     | type {
-        $$ = $1;
+        // Anonymous parameter - create a var decl with no name
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = NULL;
+        param->name_count = 0;
+        param->type = $1;
+        param->values = NULL;
+        $$ = (ASTNode*)param;
     }
     ;
 
@@ -633,31 +650,31 @@ expression:
 unary_expr:
     primary_expr { $$ = $1; }
     | NOT unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(NOT, $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(NOT), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
     | BIT_NOT unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(BIT_NOT, $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_NOT), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
     | MINUS unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(MINUS, $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MINUS), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
     | PLUS unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(PLUS, $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(PLUS), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
     | ARROW unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(ARROW, $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(ARROW), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
     | BIT_AND unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(BIT_AND, $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_AND), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
     | MULTIPLY unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(MULTIPLY, $2, get_current_position());
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MULTIPLY), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
     ;
@@ -671,67 +688,67 @@ postfix_expr:
 
 binary_expr:
     expression PLUS expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, PLUS, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(PLUS), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression MINUS expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, MINUS, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MINUS), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression MULTIPLY expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, MULTIPLY, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MULTIPLY), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression DIVIDE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, DIVIDE, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(DIVIDE), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression MODULO expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, MODULO, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MODULO), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression EQ expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, EQ, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(EQ), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression NE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, NE, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(NE), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression LT expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, LT, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LT), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression LE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, LE, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LE), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression GT expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, GT, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GT), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression GE expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, GE, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GE), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression AND expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, AND, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(AND), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression OR expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, OR, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(OR), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression ASSIGN expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, ASSIGN, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ASSIGN), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression SHORT_ASSIGN expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, SHORT_ASSIGN, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(SHORT_ASSIGN), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression ARROW expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, ARROW, $3, get_current_position());
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ARROW), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     ;
@@ -1027,4 +1044,34 @@ static Position get_current_position(void) {
         pos = current_lexer->pos;
     }
     return pos;
+}
+
+// Convert Bison tokens to TokenType enum values
+static TokenType bison_token_to_token_type(int bison_token) {
+    switch (bison_token) {
+        case PLUS: return TOKEN_PLUS;
+        case MINUS: return TOKEN_MINUS;
+        case MULTIPLY: return TOKEN_MULTIPLY;
+        case DIVIDE: return TOKEN_DIVIDE;
+        case MODULO: return TOKEN_MODULO;
+        case ASSIGN: return TOKEN_ASSIGN;
+        case SHORT_ASSIGN: return TOKEN_SHORT_ASSIGN;
+        case EQ: return TOKEN_EQ;
+        case NE: return TOKEN_NE;
+        case LT: return TOKEN_LT;
+        case LE: return TOKEN_LE;
+        case GT: return TOKEN_GT;
+        case GE: return TOKEN_GE;
+        case AND: return TOKEN_AND;
+        case OR: return TOKEN_OR;
+        case NOT: return TOKEN_NOT;
+        case BIT_AND: return TOKEN_BIT_AND;
+        case BIT_OR: return TOKEN_BIT_OR;
+        case BIT_XOR: return TOKEN_BIT_XOR;
+        case BIT_NOT: return TOKEN_BIT_NOT;
+        case LSHIFT: return TOKEN_LSHIFT;
+        case RSHIFT: return TOKEN_RSHIFT;
+        case ARROW: return TOKEN_ARROW;
+        default: return TOKEN_UNKNOWN;
+    }
 }

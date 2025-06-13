@@ -169,6 +169,7 @@ typedef struct Variable {
     int is_borrowed;        // Currently borrowed
     int borrow_count;       // Number of active borrows
     int is_initialized;
+    int is_builtin;         // Built-in function/variable
     Position declared_pos;
     struct Variable* next;  // For linked list in scope
 } Variable;
@@ -272,6 +273,8 @@ int type_check_expr_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_if_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt);
+int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt);
+int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt);
 
 // Helper functions
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node);
@@ -282,6 +285,7 @@ Type* type_check_literal(TypeChecker* checker, ASTNode* expr);
 Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr);
+Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNode* expr);
 Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr);
@@ -290,6 +294,8 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr);
 // Expression helper functions
 Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
+Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, Position pos);
+Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Position pos);
 Type* type_check_logical_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos);
@@ -300,6 +306,7 @@ void type_warning(TypeChecker* checker, Position pos, const char* format, ...);
 
 // Builtin types access
 void type_checker_init_builtins(TypeChecker* checker);
+void type_checker_add_builtin_functions(TypeChecker* checker);
 Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind);
 
 // Channel helper functions

@@ -76,6 +76,9 @@ void type_checker_init_builtins(TypeChecker* checker) {
     checker->builtin_types[TYPE_FLOAT64] = type_float(64);
     checker->builtin_types[TYPE_STRING] = type_string_type();
     checker->builtin_types[TYPE_CHAR] = type_char();
+    
+    // Add built-in functions to the global scope
+    type_checker_add_builtin_functions(checker);
 }
 
 Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
@@ -83,6 +86,38 @@ Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
         return NULL;
     }
     return checker->builtin_types[kind];
+}
+
+void type_checker_add_builtin_functions(TypeChecker* checker) {
+    if (!checker || !checker->current_scope) return;
+    
+    // make_chan(type, capacity) -> chan type
+    // For now, treat make_chan as a generic function - we'll handle it specially in expression checking
+    Type* make_chan_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* make_chan_var = variable_new("make_chan", make_chan_type, (Position){0, 0, 0, "builtin"});
+    if (make_chan_var) {
+        make_chan_var->is_builtin = 1;
+        make_chan_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, make_chan_var);
+    }
+    
+    // println(args...) -> void
+    Type* println_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]); // variadic
+    Variable* println_var = variable_new("println", println_type, (Position){0, 0, 0, "builtin"});
+    if (println_var) {
+        println_var->is_builtin = 1;
+        println_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, println_var);
+    }
+    
+    // print(args...) -> void
+    Type* print_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]); // variadic
+    Variable* print_var = variable_new("print", print_type, (Position){0, 0, 0, "builtin"});
+    if (print_var) {
+        print_var->is_builtin = 1;
+        print_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, print_var);
+    }
 }
 
 // Scope management
@@ -168,11 +203,49 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     
     FuncDeclNode* func = (FuncDeclNode*)decl;
     
+    // Add function to global scope first (for recursive calls and forward references)
+    Type* func_type = type_function(NULL, 0, type_checker_get_builtin(checker, TYPE_VOID)); // TODO: proper signature
+    Variable* func_var = variable_new(func->name, func_type, func->base.pos);
+    if (func_var) {
+        func_var->is_initialized = 1;
+        if (!scope_add_variable(checker->current_scope, func_var)) {
+            type_error(checker, func->base.pos, "Function '%s' already declared", func->name);
+            variable_free(func_var);
+            return 0;
+        }
+    }
+    
     // Create new scope for function
     scope_push(checker);
     
-    // TODO: Check parameters and return type
-    // TODO: Add parameters to scope
+    // Add function parameters to the function scope
+    if (func->params) {
+        ASTNode* param = func->params;
+        while (param) {
+            if (param->type == AST_VAR_DECL) {
+                VarDeclNode* param_decl = (VarDeclNode*)param;
+                
+                // Get parameter type
+                Type* param_type = NULL;
+                if (param_decl->type) {
+                    param_type = type_from_ast(checker, param_decl->type);
+                } else {
+                    param_type = type_checker_get_builtin(checker, TYPE_INT32); // Default type
+                }
+                
+                if (param_type) {
+                    for (size_t i = 0; i < param_decl->name_count; i++) {
+                        Variable* param_var = variable_new(param_decl->names[i], param_type, param_decl->base.pos);
+                        if (param_var) {
+                            param_var->is_initialized = 1; // Parameters are always initialized
+                            scope_add_variable(checker->current_scope, param_var);
+                        }
+                    }
+                }
+            }
+            param = param->next;
+        }
+    }
     
     // Type check function body
     int result = 1;
@@ -335,6 +408,10 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
         case AST_BREAK_STMT:
         case AST_CONTINUE_STMT:
             return 1;  // Always valid
+        case AST_GO_STMT:
+            return type_check_go_stmt(checker, stmt);
+        case AST_SELECT_STMT:
+            return type_check_select_stmt(checker, stmt);
         default:
             type_error(checker, stmt->pos, "Unknown statement type");
             return 0;
@@ -460,6 +537,38 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     return 1;
 }
 
+int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_GO_STMT) return 0;
+    
+    GoStmtNode* go_stmt = (GoStmtNode*)stmt;
+    
+    // Type check the function call expression
+    if (go_stmt->call) {
+        Type* call_type = type_check_expression(checker, go_stmt->call);
+        if (!call_type) return 0;
+        
+        // TODO: Validate that the expression is a function call
+    }
+    
+    return 1;
+}
+
+int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_SELECT_STMT) return 0;
+    
+    SelectStmtNode* select_stmt = (SelectStmtNode*)stmt;
+    
+    // Type check each case
+    ASTNode* case_node = select_stmt->cases;
+    while (case_node) {
+        // TODO: Implement proper select case type checking
+        // For now, just accept it as valid
+        case_node = case_node->next;
+    }
+    
+    return 1;
+}
+
 // Forward declarations for helper functions
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
@@ -469,6 +578,34 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
     if (!checker || !type_node) return NULL;
     
     switch (type_node->type) {
+        case AST_IDENTIFIER: {
+            // Handle type identifiers (for make_chan, etc.)
+            IdentifierNode* ident = (IdentifierNode*)type_node;
+            
+            // Map basic type names to TypeKind
+            if (strcmp(ident->name, "void") == 0) return type_checker_get_builtin(checker, TYPE_VOID);
+            if (strcmp(ident->name, "bool") == 0) return type_checker_get_builtin(checker, TYPE_BOOL);
+            if (strcmp(ident->name, "int8") == 0) return type_checker_get_builtin(checker, TYPE_INT8);
+            if (strcmp(ident->name, "int16") == 0) return type_checker_get_builtin(checker, TYPE_INT16);
+            if (strcmp(ident->name, "int32") == 0) return type_checker_get_builtin(checker, TYPE_INT32);
+            if (strcmp(ident->name, "int64") == 0) return type_checker_get_builtin(checker, TYPE_INT64);
+            if (strcmp(ident->name, "int") == 0) return type_checker_get_builtin(checker, TYPE_INT32);  // Default int
+            if (strcmp(ident->name, "uint8") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
+            if (strcmp(ident->name, "uint16") == 0) return type_checker_get_builtin(checker, TYPE_UINT16);
+            if (strcmp(ident->name, "uint32") == 0) return type_checker_get_builtin(checker, TYPE_UINT32);
+            if (strcmp(ident->name, "uint64") == 0) return type_checker_get_builtin(checker, TYPE_UINT64);
+            if (strcmp(ident->name, "uint") == 0) return type_checker_get_builtin(checker, TYPE_UINT32);  // Default uint
+            if (strcmp(ident->name, "float32") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT32);
+            if (strcmp(ident->name, "float64") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);
+            if (strcmp(ident->name, "float") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);  // Default float
+            if (strcmp(ident->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
+            if (strcmp(ident->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
+            if (strcmp(ident->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
+            
+            // TODO: Handle user-defined types
+            type_error(checker, type_node->pos, "Unknown type '%s'", ident->name);
+            return NULL;
+        }
         case AST_BASIC_TYPE: {
             BasicTypeNode* basic = (BasicTypeNode*)type_node;
             

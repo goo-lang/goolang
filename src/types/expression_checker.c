@@ -158,6 +158,11 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
             result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, expr->pos);
             break;
             
+        // Channel send operator
+        case TOKEN_ARROW:  // ch <- value
+            result_type = type_check_channel_send_op(checker, left_type, right_type, expr->pos);
+            break;
+            
         default:
             type_error(checker, expr->pos, "Unknown binary operator");
             return NULL;
@@ -243,6 +248,10 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
             }
             break;
             
+        case TOKEN_ARROW:  // <-ch (channel receive)
+            result_type = type_check_channel_receive_op(checker, operand_type, expr->pos);
+            break;
+            
         default:
             type_error(checker, expr->pos, "Unknown unary operator");
             return NULL;
@@ -252,10 +261,47 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
     return result_type;
 }
 
+Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNode* expr) {
+    if (!checker || !call || !call->args) {
+        type_error(checker, expr->pos, "make_chan requires type and capacity arguments");
+        return NULL;
+    }
+    
+    // First argument should be a type
+    ASTNode* type_arg = call->args;
+    Type* element_type = type_from_ast(checker, type_arg);
+    if (!element_type) {
+        type_error(checker, type_arg->pos, "Invalid type in make_chan");
+        return NULL;
+    }
+    
+    // Second argument should be capacity (optional)
+    if (type_arg->next) {
+        Type* capacity_type = type_check_expression(checker, type_arg->next);
+        if (!capacity_type || !type_is_integer(capacity_type)) {
+            type_error(checker, type_arg->next->pos, "Channel capacity must be an integer");
+            return NULL;
+        }
+    }
+    
+    // Create and return channel type
+    Type* chan_type = type_channel(element_type, CHAN_PATTERN_BASIC);
+    expr->node_type = chan_type;
+    return chan_type;
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
     
     CallExprNode* call = (CallExprNode*)expr;
+    
+    // Special handling for make_chan
+    if (call->function && call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* func_ident = (IdentifierNode*)call->function;
+        if (strcmp(func_ident->name, "make_chan") == 0) {
+            return type_check_make_chan_call(checker, call, expr);
+        }
+    }
     
     // Check function expression
     Type* func_type = type_check_expression(checker, call->function);
@@ -410,5 +456,40 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
     Type* value_type = expr_type->data.error_union.value_type;
     expr->node_type = value_type;
     return value_type;
+}
+
+// Channel operation type checking
+Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, Position pos) {
+    if (!checker || !channel_type || !value_type) return NULL;
+    
+    // Left operand must be a channel
+    if (channel_type->kind != TYPE_CHANNEL) {
+        type_error(checker, pos, "Cannot send to non-channel type %s", type_to_string(channel_type));
+        return NULL;
+    }
+    
+    // Check if value type is compatible with channel element type
+    Type* element_type = channel_type->data.channel.element_type;
+    if (!type_compatible(value_type, element_type)) {
+        type_error(checker, pos, "Cannot send %s to channel of %s", 
+                  type_to_string(value_type), type_to_string(element_type));
+        return NULL;
+    }
+    
+    // Channel send operation returns void
+    return type_checker_get_builtin(checker, TYPE_VOID);
+}
+
+Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Position pos) {
+    if (!checker || !channel_type) return NULL;
+    
+    // Operand must be a channel
+    if (channel_type->kind != TYPE_CHANNEL) {
+        type_error(checker, pos, "Cannot receive from non-channel type %s", type_to_string(channel_type));
+        return NULL;
+    }
+    
+    // Channel receive operation returns the element type
+    return channel_type->data.channel.element_type;
 }
 

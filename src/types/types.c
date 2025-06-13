@@ -539,6 +539,7 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->is_borrowed = 0;
     var->borrow_count = 0;
     var->is_initialized = 0;
+    var->is_builtin = 0;
     var->declared_pos = pos;
     var->next = NULL;
     
