@@ -1,0 +1,54 @@
+# Task ID: 6
+# Title: Implement Error Union System
+# Status: done
+# Dependencies: 3, 4
+# Priority: medium
+# Description: Implement Zig-style error unions with ! return types and try/catch operators
+# Details:
+Implement the error union system that provides clean error handling with ! return types. This includes:
+
+1. Extend the type system to support error union types (!T)
+2. Implement try operator for error propagation
+3. Implement catch blocks for error handling
+4. Generate appropriate LLVM IR for error checking and propagation
+
+Language Syntax:
+```go
+// Function that returns an error union
+func readFile(path: string) ![]byte {
+    // Implementation
+}
+
+// Using try to propagate errors
+func processFile(path: string) !Result {
+    data := try readFile(path)
+    // Process data
+    return result
+}
+
+// Using catch to handle errors
+func safeProcess(path: string) Result {
+    result := processFile(path) catch |err| {
+        log.Error("Failed to process file", err)
+        return defaultResult
+    }
+    return result
+}
+```
+
+Implementation Details:
+1. Modify the parser to recognize ! type syntax
+2. Extend the type checker to handle error union types
+3. Implement try/catch operators in the AST
+4. Generate LLVM IR for error checking and propagation
+5. Create runtime support for error handling
+6. Implement standard error types and interfaces
+
+# Test Strategy:
+1. Test parsing of error union syntax
+2. Test type checking of error unions
+3. Verify try operator correctly propagates errors
+4. Test catch blocks handle errors properly
+5. Benchmark performance compared to Go's error handling
+6. Test complex error handling scenarios
+7. Verify generated code correctly implements error propagation

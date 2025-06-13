@@ -1,0 +1,58 @@
+# Task ID: 2
+# Title: Develop Parser for AST Generation
+# Status: done
+# Dependencies: 1
+# Priority: high
+# Description: Create a parser that builds an Abstract Syntax Tree from the token stream
+# Details:
+Implement a recursive descent parser that converts the token stream from the lexer into an Abstract Syntax Tree (AST). The parser should:
+
+1. Support all Go syntax (packages, imports, declarations, statements, expressions)
+2. Add support for Goo extensions (error unions, nullable types, channel patterns)
+3. Build a complete AST with position information for error reporting
+4. Handle operator precedence correctly
+
+Core AST structures:
+```go
+type Node interface {
+    Pos() Position
+    Type() Type  // Will be filled during type checking
+}
+
+type Program struct {
+    Package     string
+    Imports     []ImportSpec
+    Declarations []Declaration
+}
+
+type FuncDecl struct {
+    Name       string
+    Params     []Param
+    ReturnType Type  // Can be error union with !
+    Body       []Stmt
+    Attributes []Attr  // comptime, unsafe, etc.
+}
+
+type ChannelType struct {
+    Pattern  ChannelPattern  // basic, pub, sub, req, rep
+    ElemType Type
+    Endpoint string  // Optional network endpoint
+}
+```
+
+Implementation approach:
+1. Create a Parser struct that takes a Lexer
+2. Implement recursive descent parsing for each grammar rule
+3. Use precedence climbing for expression parsing
+4. Build appropriate AST nodes for each construct
+5. Track and attach source positions to nodes
+6. Add special handling for Goo extensions
+
+# Test Strategy:
+1. Unit test parsing of individual constructs (functions, types, expressions)
+2. Test with complete Go programs to verify full syntax support
+3. Test Goo extensions specifically
+4. Test error recovery and reporting
+5. Verify AST structure matches expected output
+6. Test with malformed input to ensure robust error handling
+7. Compare parsed structure with Go's standard parser for compatibility

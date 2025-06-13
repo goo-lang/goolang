@@ -1,0 +1,9 @@
+# Exclude any files that might contain API keys or secrets
+*.key
+*.secret
+.env*
+**/api_keys/**
+**/secrets/**
+config_local.json
+auth.json
+credentials.json

@@ -1,0 +1,147 @@
+# Task ID: 13
+# Title: Implement Unsafe Blocks & Hardware Control
+# Status: pending
+# Dependencies: 4
+# Priority: high
+# Description: Add unsafe syntax and semantics to the language, including raw pointer operations, inline assembly support, FFI capabilities, and hardware control primitives for LughOS integration.
+# Details:
+This task involves implementing unsafe features that allow low-level system programming while maintaining the language's safety guarantees elsewhere:
+
+1. Unsafe Block Syntax:
+   - Implement `unsafe` keyword and block syntax
+   - Create parser rules for unsafe blocks in the AST
+   - Add type checking rules specific to unsafe contexts
+   - Ensure unsafe operations are only allowed within unsafe blocks
+
+2. Raw Pointer Operations:
+   - Implement pointer type syntax (e.g., `*unsafe.Pointer`)
+   - Add pointer arithmetic operations (+, -, [], etc.)
+   - Implement pointer casting between different types
+   - Support dereferencing operations with proper bounds checking options
+
+3. Inline Assembly Support:
+   - Create syntax for inline assembly blocks (e.g., `asm { ... }`)
+   - Support different assembly dialects (AT&T, Intel)
+   - Implement operand constraints and clobber lists
+   - Generate appropriate LLVM inline assembly instructions
+
+4. Foreign Function Interface (FFI):
+   - Implement C ABI compatibility layer
+   - Add support for `extern "C"` function declarations
+   - Create mechanisms for marshaling data between Goo and C types
+   - Support dynamic library loading and symbol resolution
+
+5. Hardware Control Primitives:
+   - Implement memory-mapped I/O operations
+   - Add port I/O instructions (in/out on x86)
+   - Support interrupt handling mechanisms
+   - Implement atomic operations for hardware synchronization
+
+6. Kernel-Specific Memory Management:
+   - Add page table manipulation primitives
+   - Implement physical memory allocation interfaces
+   - Support for memory protection and permission settings
+   - Create safe abstractions around unsafe memory operations
+
+7. LLVM IR Generation:
+   - Extend the LLVM IR code generator to handle unsafe operations
+   - Generate appropriate LLVM intrinsics for hardware operations
+   - Implement inline assembly translation to LLVM IR
+   - Ensure proper optimization barriers around volatile operations
+
+8. Safety Mechanisms:
+   - Implement compile-time warnings for unsafe code usage
+   - Add runtime checks at unsafe/safe boundaries where possible
+   - Create linting tools to identify potentially dangerous patterns
+   - Document best practices for using unsafe features safely
+
+Code examples:
+
+```go
+// Raw pointer operations
+unsafe {
+    ptr := (*int)(unsafe.Pointer(uintptr(0x1000)))
+    *ptr = 42
+    ptr = ptr + 1  // pointer arithmetic
+}
+
+// Inline assembly
+unsafe {
+    asm {
+        "mov $42, %eax"
+        "ret"
+        : "=a"(result)
+        :
+        : "memory"
+    }
+}
+
+// Memory-mapped I/O
+unsafe {
+    mmioReg := (*volatile uint32)(unsafe.Pointer(uintptr(0xFFFF0000)))
+    *mmioReg = 0x1  // Write to hardware register
+    value := *mmioReg  // Read from hardware register
+}
+
+// Port I/O (x86)
+unsafe {
+    outb(0x64, 0xFE)  // Send reset command to keyboard controller
+}
+```
+
+# Test Strategy:
+Testing unsafe features requires a comprehensive approach across multiple levels:
+
+1. Syntax and Parsing Tests:
+   - Create unit tests for parsing unsafe blocks and related syntax
+   - Verify AST correctly represents unsafe constructs
+   - Test error cases where unsafe operations appear outside unsafe blocks
+   - Ensure all unsafe syntax variations are properly recognized
+
+2. Type System Tests:
+   - Verify type checking rules for unsafe operations
+   - Test pointer type conversions and compatibility
+   - Ensure unsafe operations are properly typed
+   - Test boundary conditions between safe and unsafe code
+
+3. Code Generation Tests:
+   - Inspect generated LLVM IR for unsafe operations
+   - Verify inline assembly is correctly translated
+   - Test pointer arithmetic and memory operations
+   - Ensure volatile operations aren't optimized incorrectly
+
+4. Hardware Interaction Tests:
+   - Create test harnesses with mock hardware interfaces
+   - Verify memory-mapped I/O operations generate correct instructions
+   - Test port I/O operations on supported architectures
+   - Validate interrupt handling mechanisms
+
+5. FFI Tests:
+   - Test calling C functions from Goo code
+   - Verify data marshaling between Goo and C types
+   - Test dynamic library loading and symbol resolution
+   - Ensure ABI compatibility across different platforms
+
+6. Integration Tests:
+   - Create a test kernel module using the unsafe features
+   - Implement device drivers using the hardware control primitives
+   - Test memory management operations in kernel context
+   - Verify interrupt handlers function correctly
+
+7. Safety Boundary Tests:
+   - Test that unsafe operations can't escape unsafe blocks
+   - Verify runtime checks at safe/unsafe boundaries
+   - Test compiler warnings for dangerous patterns
+   - Ensure safe abstractions around unsafe operations work correctly
+
+8. Performance Tests:
+   - Benchmark unsafe operations against safe alternatives
+   - Measure overhead of safety checks at boundaries
+   - Compare performance with equivalent C code
+   - Verify optimizations work correctly with unsafe code
+
+9. LughOS Integration Tests:
+   - Test integration with LughOS kernel interfaces
+   - Verify hardware control primitives work in kernel context
+   - Test interrupt handling in real hardware environment
+   - Validate memory management operations with physical memory

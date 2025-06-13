@@ -1,0 +1,49 @@
+# Task ID: 7
+# Title: Implement Null Safety System
+# Status: done
+# Dependencies: 3, 4
+# Priority: medium
+# Description: Implement nullable types with ? syntax and safe unwrapping
+# Details:
+Implement the null safety system with ? nullable types and safe unwrapping. This includes:
+
+1. Extend the type system to support nullable types (?T)
+2. Implement null checking before dereference
+3. Add if-let syntax for safe unwrapping
+4. Generate appropriate LLVM IR for null checks
+
+Language Syntax:
+```go
+// Nullable variable declaration
+var name: ?string = nil
+
+// Safe unwrapping with if-let
+if let actualName = name {
+    // actualName is non-nullable string here
+    fmt.Println("Hello, " + actualName)
+} else {
+    fmt.Println("Hello, anonymous")
+}
+
+// Forced unwrapping (will panic if nil)
+fmt.Println("Hello, " + name!)
+```
+
+Implementation Details:
+1. Modify the parser to recognize ? type syntax
+2. Extend the type checker to handle nullable types
+3. Implement if-let syntax in the AST
+4. Generate LLVM IR for null checking
+5. Create runtime support for null checking
+6. Implement panic for forced unwrapping of nil values
+
+The null safety system should prevent null pointer dereferences at compile time when possible, and add runtime checks when needed.
+
+# Test Strategy:
+1. Test parsing of nullable type syntax
+2. Test type checking of nullable types
+3. Verify if-let correctly unwraps nullable values
+4. Test forced unwrapping with both nil and non-nil values
+5. Verify compiler prevents unchecked nullable access
+6. Test complex nullable type scenarios
+7. Benchmark performance impact of null safety

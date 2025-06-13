@@ -1,0 +1,70 @@
+# Task ID: 3
+# Title: Implement Type System and Type Checker
+# Status: done
+# Dependencies: 2
+# Priority: high
+# Description: Create the type system with Goo extensions and implement type checking for the AST
+# Details:
+Implement the type system and type checker that enforces type safety, including Goo's ownership tracking, nullable types, and error unions.
+
+Type System Components:
+```go
+type Type interface {
+    String() string
+    Size() int
+    Align() int
+}
+
+type OwnershipKind int
+const (
+    Owned OwnershipKind = iota
+    Borrowed
+    Shared
+)
+
+type QualifiedType struct {
+    Base      Type
+    Nullable  bool
+    Ownership OwnershipKind
+}
+
+type ErrorUnionType struct {
+    ValueType Type
+    ErrorType Type  // Usually a standard error type
+}
+
+type ChannelType struct {
+    Pattern  ChannelPattern
+    ElemType Type
+}
+```
+
+Type Checker Implementation:
+1. Create a TypeChecker struct that traverses the AST
+2. Implement type inference for expressions
+3. Verify type compatibility in assignments and function calls
+4. Check ownership rules (simplified from Rust)
+5. Enforce null safety with nullable types
+6. Validate error union handling
+7. Verify channel pattern usage
+
+Ownership Checking:
+- Track variable ownership through scopes
+- Detect use-after-move errors
+- Implement borrowing rules
+- Generate clear error messages for ownership violations
+
+Null Safety:
+- Ensure nullable types are checked before use
+- Track null state through control flow
+- Prevent null pointer dereferences
+
+# Test Strategy:
+1. Unit test type checking for basic expressions
+2. Test type inference in various contexts
+3. Test ownership tracking with move semantics
+4. Test nullable type safety enforcement
+5. Test error union handling and propagation
+6. Verify channel type compatibility
+7. Test with intentional type errors to verify error reporting
+8. Benchmark performance with large codebases

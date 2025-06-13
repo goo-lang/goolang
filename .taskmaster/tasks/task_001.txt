@@ -1,0 +1,70 @@
+# Task ID: 1
+# Title: Implement Lexer for Go Compatibility
+# Status: done
+# Dependencies: None
+# Priority: high
+# Description: Create a lexer that tokenizes Go source code with Goo extensions
+# Details:
+Implement a lexer that can tokenize all valid Go syntax plus Goo extensions including:
+- Standard Go tokens (keywords, operators, literals)
+- Goo-specific tokens: '!' for error unions, '?' for nullable types
+- Channel pattern keywords (pub, sub, req, rep)
+- 'comptime' keyword
+- Ownership qualifiers
+
+The lexer should:
+1. Read source code from .goo files
+2. Produce a token stream with position information
+3. Handle all Go escape sequences
+4. Support Unicode identifiers
+
+Implementation approach:
+```go
+type TokenType int
+
+const (
+    // Standard Go tokens
+    TOKEN_IDENT TokenType = iota
+    TOKEN_INT
+    TOKEN_FLOAT
+    TOKEN_STRING
+    // ... other Go tokens
+    
+    // Goo extensions
+    TOKEN_BANG        // !
+    TOKEN_QUESTION    // ?
+    TOKEN_COMPTIME    // comptime
+    TOKEN_PUB         // pub (channel pattern)
+    TOKEN_SUB         // sub (channel pattern)
+    TOKEN_REQ         // req (channel pattern)
+    TOKEN_REP         // rep (channel pattern)
+    // ... ownership tokens
+)
+
+type Token struct {
+    Type    TokenType
+    Literal string
+    Pos     Position
+}
+
+type Lexer struct {
+    input        string
+    position     int
+    readPosition int
+    ch           byte
+    line         int
+    column       int
+}
+
+func NewLexer(input string) *Lexer {...}
+func (l *Lexer) NextToken() Token {...}
+```
+
+# Test Strategy:
+1. Unit test each token type recognition
+2. Test with valid Go programs to ensure all syntax is recognized
+3. Test with Goo extensions to verify new token types
+4. Test error cases with invalid syntax
+5. Test Unicode handling
+6. Benchmark performance with large files
+7. Compare output with Go's standard lexer for compatibility validation

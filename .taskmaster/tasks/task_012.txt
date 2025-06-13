@@ -1,0 +1,104 @@
+# Task ID: 12
+# Title: Implement Pattern Matching
+# Status: pending
+# Dependencies: 3
+# Priority: medium
+# Description: Add match expressions with exhaustiveness checking, pattern compilation, and guard conditions for safe and ergonomic control flow.
+# Details:
+Implement pattern matching as a first-class language feature that provides a more powerful and safer alternative to switch statements. The implementation should include:
+
+1. AST Extensions:
+   - Create new AST node types for match expressions, patterns, and guards
+   - Define pattern types: literal patterns, variable bindings, destructuring patterns, type patterns, and wildcard patterns
+
+2. Pattern Compilation:
+   - Implement a pattern compiler that translates patterns into efficient runtime checks
+   - Support nested patterns for complex data structures
+   - Implement destructuring for structs, arrays, slices, and custom types
+
+3. Exhaustiveness Checking:
+   - Implement static analysis to verify all possible cases are handled
+   - Generate compile-time errors for non-exhaustive matches
+   - Consider type information to determine possible variants
+
+4. Guard Conditions:
+   - Support boolean expressions as additional filters on patterns
+   - Implement scoping rules for variables bound in patterns and used in guards
+
+5. Type Refinement:
+   - Track type narrowing through pattern matching
+   - Update the type environment for the scope of each match arm
+
+Example syntax:
+```go
+match value {
+  case 0:
+    fmt.Println("Zero")
+  case n if n < 0:
+    fmt.Println("Negative:", n)
+  case n if n > 0 && n < 10:
+    fmt.Println("Small positive:", n)
+  case n:
+    fmt.Println("Large positive:", n)
+}
+
+match err {
+  case nil:
+    // Success case
+  case io.EOF:
+    // Specific error handling
+  case e:
+    // Default error case
+}
+
+match obj {
+  case Person{Name: name, Age: age} if age > 18:
+    fmt.Println(name, "is an adult")
+  case Person{Name: name}:
+    fmt.Println(name, "is a minor")
+  case _:
+    fmt.Println("Not a person")
+}
+```
+
+Integration with the type system:
+- Leverage the existing type system to determine possible variants for exhaustiveness checking
+- Ensure pattern matching works with all Goo type extensions (nullable types, error unions)
+- Implement special handling for error unions to encourage proper error handling
+
+Performance considerations:
+- Compile patterns to efficient decision trees or jump tables where possible
+- Minimize runtime overhead for pattern evaluation
+- Optimize common patterns (like enum matching) for better performance
+
+# Test Strategy:
+1. Unit Tests:
+   - Create unit tests for each pattern type (literals, variables, destructuring, etc.)
+   - Test exhaustiveness checking with various type combinations
+   - Verify guard conditions work correctly with different expressions
+   - Test error cases (non-exhaustive matches, invalid patterns)
+
+2. Integration Tests:
+   - Test pattern matching with complex data structures
+   - Verify interaction with the type system, especially with nullable types and error unions
+   - Test compilation of match expressions to ensure correct code generation
+   - Benchmark performance against equivalent switch statements
+
+3. Specific Test Cases:
+   - Match against primitive types (integers, strings, booleans)
+   - Match against composite types (structs, arrays, slices)
+   - Match with type patterns and type assertions
+   - Match with nested patterns and complex destructuring
+   - Match with guard conditions of varying complexity
+   - Match against error unions and nullable types
+   - Edge cases: empty match statements, unreachable patterns
+
+4. Compiler Tests:
+   - Verify correct error messages for non-exhaustive matches
+   - Test that the compiler correctly identifies unreachable patterns
+   - Ensure proper scoping of variables bound in patterns
+
+5. Documentation Tests:
+   - Create examples demonstrating all pattern matching features
+   - Document best practices and common patterns
+   - Provide performance guidelines for efficient pattern matching

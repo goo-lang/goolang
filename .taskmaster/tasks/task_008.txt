@@ -1,0 +1,49 @@
+# Task ID: 8
+# Title: Implement Basic Ownership System
+# Status: done
+# Dependencies: 3, 4
+# Priority: medium
+# Description: Implement simplified ownership tracking with move semantics and borrowing
+# Details:
+Implement a simplified ownership system inspired by Rust but more approachable. This includes:
+
+1. Track ownership of values through the program
+2. Implement move semantics for assignments
+3. Support borrowing with references
+4. Prevent use-after-move errors
+
+Language Syntax:
+```go
+// Owned value
+var buffer: []byte = make([]byte, 1024)
+
+// Move ownership
+var newBuffer = buffer
+// buffer is no longer valid here
+
+// Borrowing
+func process(data: &[]byte) {
+    // Can use data but not take ownership
+}
+process(&newBuffer)
+// newBuffer is still valid here
+```
+
+Implementation Details:
+1. Extend the type system with ownership qualifiers
+2. Implement ownership tracking in the type checker
+3. Track variable state (owned, moved, borrowed)
+4. Generate appropriate LLVM IR for moves and borrows
+5. Implement borrow checking to prevent use-after-move
+6. Create clear error messages for ownership violations
+
+The ownership system should be simpler than Rust's but still prevent memory safety issues like use-after-free and double-free.
+
+# Test Strategy:
+1. Test basic move semantics
+2. Test borrowing with references
+3. Verify compiler prevents use-after-move
+4. Test ownership in function calls
+5. Test complex ownership scenarios
+6. Verify error messages are clear and helpful
+7. Benchmark performance impact of ownership tracking

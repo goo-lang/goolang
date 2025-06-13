@@ -1,0 +1,54 @@
+# Task ID: 4
+# Title: Develop LLVM IR Code Generator
+# Status: done
+# Dependencies: 3
+# Priority: high
+# Description: Create a code generator that translates the typed AST to LLVM IR
+# Details:
+Implement a code generator that translates the typed AST into LLVM IR for compilation to native code. The code generator should:
+
+1. Set up LLVM module, context, and builder
+2. Generate LLVM types from Goo types
+3. Generate function declarations and definitions
+4. Translate expressions to LLVM instructions
+5. Implement control flow (if, for, switch)
+6. Handle function calls and returns
+7. Support error unions and nullable types
+
+LLVM Integration:
+```go
+type CodeGenerator struct {
+    context  llvm.Context
+    module   llvm.Module
+    builder  llvm.Builder
+    function llvm.Value
+    typeMap  map[Type]llvm.Type
+    valueMap map[string]llvm.Value
+}
+
+func NewCodeGenerator(moduleName string) *CodeGenerator {...}
+func (g *CodeGenerator) GenerateProgram(program *Program) error {...}
+func (g *CodeGenerator) GenerateFunction(funcDecl *FuncDecl) (llvm.Value, error) {...}
+func (g *CodeGenerator) GenerateExpression(expr Expr) (llvm.Value, error) {...}
+```
+
+Special Handling:
+1. Error unions: Generate code for error checking and propagation
+2. Nullable types: Generate null checks before dereference
+3. Ownership: Generate move/copy operations based on ownership
+4. Channel operations: Generate runtime calls for channel operations
+
+Optimization:
+- Apply LLVM optimization passes
+- Implement inlining for small functions
+- Use LLVM's constant folding
+
+# Test Strategy:
+1. Unit test code generation for basic constructs
+2. Test generated LLVM IR for correctness
+3. Verify error union implementation
+4. Test nullable type implementation
+5. Test ownership tracking in generated code
+6. Benchmark generated code performance
+7. Compare with Go's code generation for compatibility
+8. Test with various optimization levels

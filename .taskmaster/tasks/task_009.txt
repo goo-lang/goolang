@@ -1,0 +1,61 @@
+# Task ID: 9
+# Title: Implement Basic Goroutine and Channel System
+# Status: done
+# Dependencies: 5
+# Priority: medium
+# Description: Implement Go-style goroutines and channels with Goo extensions
+# Details:
+Implement the basic concurrency system with goroutines and channels, including Goo's channel pattern extensions. This includes:
+
+1. Implement goroutine creation and scheduling
+2. Create basic channel implementation
+3. Add support for channel patterns (pub/sub, req/rep)
+4. Implement select statement for channel operations
+
+Runtime Components:
+```c
+// Goroutine management
+void goo_go(void (*func)(void*), void* arg);
+
+// Channel operations
+goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer);
+void goo_chan_send(goo_channel_t* ch, void* data);
+int goo_chan_recv(goo_channel_t* ch, void* data);
+
+// Pattern channels
+goo_channel_t* goo_make_pattern_chan(ChannelPattern pattern, size_t elem_size);
+```
+
+Language Syntax:
+```go
+// Basic goroutine and channel
+ch := make(chan int, 10)
+go func() {
+    ch <- 42
+}()
+value := <-ch
+
+// Pattern channels
+pub := make(pub chan Message)
+sub := make(sub chan Message, "topic")
+pub <- Message{Topic: "topic", Data: data}
+msg := <-sub
+```
+
+Implementation Details:
+1. Create an M:N scheduler for goroutines
+2. Implement stack management for goroutines
+3. Create lock-free channel implementation
+4. Implement channel patterns using the nng model
+5. Add select statement for multiplexing channels
+6. Generate appropriate LLVM IR for concurrency operations
+
+# Test Strategy:
+1. Test basic goroutine creation and execution
+2. Test channel send and receive operations
+3. Test buffered and unbuffered channels
+4. Verify channel patterns work correctly
+5. Test select statement with multiple channels
+6. Benchmark concurrency performance
+7. Test complex concurrency scenarios
+8. Verify deadlock detection
