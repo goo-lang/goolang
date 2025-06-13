@@ -1,6 +1,6 @@
 # Task ID: 14
 # Title: Implement GPU Programming Support
-# Status: pending
+# Status: done
 # Dependencies: 4
 # Priority: medium
 # Description: Add GPU backend integration with CUDA/OpenCL, implement compute shader compilation targets, GPU memory management, kernel execution, and support for multiple GPU architectures (NVPTX, AMDGPU, SPIR-V, and Metal).

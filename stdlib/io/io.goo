@@ -1,0 +1,432 @@
+// Package io provides basic I/O interfaces and operations for the Goo standard library
+package io
+
+// Error types for I/O operations
+type IOError struct {
+    message: string
+    kind: IOErrorKind
+}
+
+type IOErrorKind enum {
+    EOF,
+    UnexpectedEOF,
+    Timeout,
+    PermissionDenied,
+    NotFound,
+    BrokenPipe,
+    InvalidData,
+    Interrupted,
+    Other
+}
+
+// Standard error values
+var (
+    ErrEOF = IOError{message: "end of file", kind: IOErrorKind.EOF}
+    ErrUnexpectedEOF = IOError{message: "unexpected end of file", kind: IOErrorKind.UnexpectedEOF}
+    ErrTimeout = IOError{message: "operation timed out", kind: IOErrorKind.Timeout}
+    ErrBrokenPipe = IOError{message: "broken pipe", kind: IOErrorKind.BrokenPipe}
+)
+
+// Reader is the interface that wraps the basic Read method
+type Reader interface {
+    // Read reads up to len(buf) bytes into buf
+    // Returns the number of bytes read and any error encountered
+    Read(buf: []byte) -> (n: int, err: !IOError)
+}
+
+// Writer is the interface that wraps the basic Write method  
+type Writer interface {
+    // Write writes len(data) bytes from data to the underlying data stream
+    // Returns the number of bytes written and any error encountered
+    Write(data: []byte) -> (n: int, err: !IOError)
+}
+
+// ReadWriter combines Reader and Writer interfaces
+type ReadWriter interface {
+    Reader
+    Writer
+}
+
+// Closer is the interface that wraps the basic Close method
+type Closer interface {
+    // Close closes the underlying resource
+    Close() -> !IOError
+}
+
+// ReadCloser combines Reader and Closer interfaces
+type ReadCloser interface {
+    Reader
+    Closer
+}
+
+// WriteCloser combines Writer and Closer interfaces
+type WriteCloser interface {
+    Writer
+    Closer
+}
+
+// ReadWriteCloser combines Reader, Writer, and Closer interfaces
+type ReadWriteCloser interface {
+    Reader
+    Writer
+    Closer
+}
+
+// Seeker is the interface that wraps the basic Seek method
+type Seeker interface {
+    // Seek sets the offset for the next Read or Write operation
+    Seek(offset: int64, whence: SeekWhence) -> (new_offset: int64, err: !IOError)
+}
+
+type SeekWhence enum {
+    SeekStart,    // Seek relative to origin of file
+    SeekCurrent,  // Seek relative to current offset
+    SeekEnd       // Seek relative to end
+}
+
+// ReadSeeker combines Reader and Seeker interfaces
+type ReadSeeker interface {
+    Reader
+    Seeker
+}
+
+// WriteSeeker combines Writer and Seeker interfaces
+type WriteSeeker interface {
+    Writer
+    Seeker
+}
+
+// ReadWriteSeeker combines Reader, Writer, and Seeker interfaces
+type ReadWriteSeeker interface {
+    Reader
+    Writer
+    Seeker
+}
+
+// ReaderAt is the interface that wraps the basic ReadAt method
+type ReaderAt interface {
+    // ReadAt reads len(buf) bytes into buf starting at byte offset off
+    ReadAt(buf: []byte, off: int64) -> (n: int, err: !IOError)
+}
+
+// WriterAt is the interface that wraps the basic WriteAt method
+type WriterAt interface {
+    // WriteAt writes len(data) bytes from data to the underlying data stream at offset off
+    WriteAt(data: []byte, off: int64) -> (n: int, err: !IOError)
+}
+
+// ByteReader is the interface that wraps the ReadByte method
+type ByteReader interface {
+    ReadByte() -> (byte: byte, err: !IOError)
+}
+
+// ByteWriter is the interface that wraps the WriteByte method
+type ByteWriter interface {
+    WriteByte(byte: byte) -> !IOError
+}
+
+// Copy copies from src to dst until either EOF is reached on src or an error occurs
+// Returns the number of bytes copied and the first error encountered while copying
+func Copy(dst: Writer, src: Reader) -> (written: int64, err: !IOError) {
+    return copyBuffer(dst, src, nil)
+}
+
+// CopyBuffer is the same as Copy but uses the provided buffer (if not nil)
+func CopyBuffer(dst: Writer, src: Reader, buf: ?[]byte) -> (written: int64, err: !IOError) {
+    return copyBuffer(dst, src, buf)
+}
+
+// Internal copy function with optional buffer
+func copyBuffer(dst: Writer, src: Reader, buf: ?[]byte) -> (written: int64, err: !IOError) {
+    // Use provided buffer or create a default one
+    buffer := buf ?? make([]byte, 32 * 1024) // 32KB default buffer
+    
+    written = 0
+    
+    for {
+        nr, read_err := try src.Read(buffer)
+        if nr > 0 {
+            nw, write_err := try dst.Write(buffer[0:nr])
+            if nw < 0 || nr < nw {
+                if nw < 0 {
+                    nw = 0
+                }
+                return written, IOError{
+                    message: "invalid write result", 
+                    kind: IOErrorKind.InvalidData
+                }
+            }
+            written += int64(nw)
+            if write_err != nil {
+                return written, write_err
+            }
+            if nr != nw {
+                return written, IOError{
+                    message: "short write", 
+                    kind: IOErrorKind.Other
+                }
+            }
+        }
+        if read_err != nil {
+            if read_err.kind == IOErrorKind.EOF {
+                break
+            }
+            return written, read_err
+        }
+    }
+    
+    return written, nil
+}
+
+// CopyN copies n bytes (or until an error) from src to dst
+func CopyN(dst: Writer, src: Reader, n: int64) -> (written: int64, err: !IOError) {
+    written, err = Copy(dst, &LimitedReader{Reader: src, N: n})
+    if written == n {
+        return n, nil
+    }
+    if written < n && err == nil {
+        // src stopped early; must have been EOF
+        err = ErrUnexpectedEOF
+    }
+    return written, err
+}
+
+// LimitedReader reads from Reader but limits the amount of data returned
+type LimitedReader struct {
+    Reader: Reader  // underlying reader
+    N: int64       // max bytes remaining
+}
+
+func (l: *LimitedReader) Read(buf: []byte) -> (n: int, err: !IOError) {
+    if l.N <= 0 {
+        return 0, ErrEOF
+    }
+    
+    read_buf := buf
+    if int64(len(buf)) > l.N {
+        read_buf = buf[0:l.N]
+    }
+    
+    n, err = try l.Reader.Read(read_buf)
+    l.N -= int64(n)
+    return n, err
+}
+
+// ReadAll reads from reader until an error or EOF and returns the data it read
+func ReadAll(reader: Reader) -> (data: []byte, err: !IOError) {
+    buffer := make([]byte, 0, 512)
+    
+    for {
+        // Grow buffer if needed
+        if len(buffer) == cap(buffer) {
+            new_buffer := make([]byte, len(buffer), cap(buffer) * 2)
+            copy(new_buffer, buffer)
+            buffer = new_buffer
+        }
+        
+        // Ensure we have space to read
+        space := cap(buffer) - len(buffer)
+        if space < 512 {
+            new_buffer := make([]byte, len(buffer), cap(buffer) + 512)
+            copy(new_buffer, buffer)
+            buffer = new_buffer
+            space = cap(buffer) - len(buffer)
+        }
+        
+        // Read into available space
+        read_slice := buffer[len(buffer):cap(buffer)]
+        n, read_err := try reader.Read(read_slice)
+        buffer = buffer[0:len(buffer) + n]
+        
+        if read_err != nil {
+            if read_err.kind == IOErrorKind.EOF {
+                break
+            }
+            return buffer, read_err
+        }
+    }
+    
+    return buffer, nil
+}
+
+// ReadFull reads exactly len(buf) bytes from reader into buf
+func ReadFull(reader: Reader, buf: []byte) -> (n: int, err: !IOError) {
+    return readAtLeast(reader, buf, len(buf))
+}
+
+// ReadAtLeast reads from reader into buf until it has read at least min bytes
+func ReadAtLeast(reader: Reader, buf: []byte, min: int) -> (n: int, err: !IOError) {
+    if len(buf) < min {
+        return 0, IOError{
+            message: "buffer smaller than minimum read", 
+            kind: IOErrorKind.InvalidData
+        }
+    }
+    return readAtLeast(reader, buf, min)
+}
+
+func readAtLeast(reader: Reader, buf: []byte, min: int) -> (n: int, err: !IOError) {
+    n = 0
+    for n < min && err == nil {
+        nn, read_err := try reader.Read(buf[n:])
+        n += nn
+        err = read_err
+    }
+    
+    if n >= min {
+        err = nil
+    } else if n > 0 && err.kind == IOErrorKind.EOF {
+        err = ErrUnexpectedEOF
+    }
+    
+    return n, err
+}
+
+// WriteString writes the contents of the string s to writer
+func WriteString(writer: Writer, s: string) -> (n: int, err: !IOError) {
+    return writer.Write([]byte(s))
+}
+
+// MultiReader returns a Reader that's the logical concatenation of the provided input readers
+func MultiReader(readers: ...Reader) -> Reader {
+    return &multiReader{readers: readers}
+}
+
+type multiReader struct {
+    readers: []Reader
+}
+
+func (mr: *multiReader) Read(buf: []byte) -> (n: int, err: !IOError) {
+    for len(mr.readers) > 0 {
+        // Read from the current reader
+        n, err = try mr.readers[0].Read(buf)
+        if err != nil && err.kind == IOErrorKind.EOF {
+            // EOF on current reader, move to next
+            mr.readers = mr.readers[1:]
+            continue
+        }
+        return n, err
+    }
+    return 0, ErrEOF
+}
+
+// MultiWriter creates a writer that duplicates its writes to all the provided writers
+func MultiWriter(writers: ...Writer) -> Writer {
+    return &multiWriter{writers: writers}
+}
+
+type multiWriter struct {
+    writers: []Writer
+}
+
+func (mw: *multiWriter) Write(data: []byte) -> (n: int, err: !IOError) {
+    for i, writer := range mw.writers {
+        n, err = try writer.Write(data)
+        if err != nil {
+            return n, err
+        }
+        if n != len(data) {
+            return n, IOError{
+                message: "short write", 
+                kind: IOErrorKind.Other
+            }
+        }
+    }
+    return len(data), nil
+}
+
+// TeeReader returns a Reader that writes to writer what it reads from reader
+func TeeReader(reader: Reader, writer: Writer) -> Reader {
+    return &teeReader{reader: reader, writer: writer}
+}
+
+type teeReader struct {
+    reader: Reader
+    writer: Writer
+}
+
+func (t: *teeReader) Read(buf: []byte) -> (n: int, err: !IOError) {
+    n, err = try t.reader.Read(buf)
+    if n > 0 {
+        // Write what we read to the writer (ignore any write errors)
+        t.writer.Write(buf[0:n]) catch |_| {
+            // Ignore write errors in tee
+        }
+    }
+    return n, err
+}
+
+// Pipe creates a synchronous in-memory pipe
+func Pipe() -> (Reader, Writer) {
+    pipe_reader, pipe_writer := makePipe()
+    return pipe_reader, pipe_writer
+}
+
+// Implementation of synchronous pipe using channels
+type pipeReader struct {
+    data_chan: chan []byte
+    err_chan: chan !IOError
+    closed: bool
+}
+
+type pipeWriter struct {
+    data_chan: chan []byte
+    err_chan: chan !IOError
+    closed: bool
+}
+
+func makePipe() -> (*pipeReader, *pipeWriter) {
+    data_chan := make(chan []byte)
+    err_chan := make(chan !IOError)
+    
+    reader := &pipeReader{
+        data_chan: data_chan,
+        err_chan: err_chan,
+        closed: false
+    }
+    
+    writer := &pipeWriter{
+        data_chan: data_chan,
+        err_chan: err_chan,
+        closed: false
+    }
+    
+    return reader, writer
+}
+
+func (pr: *pipeReader) Read(buf: []byte) -> (n: int, err: !IOError) {
+    if pr.closed {
+        return 0, ErrEOF
+    }
+    
+    select {
+        case data := <-pr.data_chan:
+            n = copy(buf, data)
+            return n, nil
+        case err := <-pr.err_chan:
+            return 0, err
+    }
+}
+
+func (pw: *pipeWriter) Write(data: []byte) -> (n: int, err: !IOError) {
+    if pw.closed {
+        return 0, ErrBrokenPipe
+    }
+    
+    // Make a copy of the data since it might be modified after return
+    data_copy := make([]byte, len(data))
+    copy(data_copy, data)
+    
+    pw.data_chan <- data_copy
+    return len(data), nil
+}
+
+func (pw: *pipeWriter) Close() -> !IOError {
+    if !pw.closed {
+        pw.closed = true
+        close(pw.data_chan)
+        pw.err_chan <- ErrEOF
+        close(pw.err_chan)
+    }
+    return nil
+}

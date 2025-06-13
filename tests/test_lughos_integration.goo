@@ -1,0 +1,188 @@
+// LughOS Integration Features Test
+// Demonstrates Goo language features for operating system development
+
+@no_std  // Attribute to disable standard library
+package kernel
+
+// FFI declarations for interfacing with C code
+extern "C" malloc(size int) unsafe.Pointer
+extern "C" free(ptr unsafe.Pointer) 
+extern "C" memset(ptr unsafe.Pointer, value int, size int) unsafe.Pointer from "libc"
+
+// Volatile memory operations for hardware registers
+func read_hardware_register(addr uintptr) uint32 {
+    unsafe {
+        reg := volatile (*uint32)(unsafe.Pointer(addr))
+        return *reg
+    }
+}
+
+func write_hardware_register(addr uintptr, value uint32) {
+    unsafe {
+        reg := volatile (*uint32)(unsafe.Pointer(addr))
+        *reg = value
+    }
+}
+
+// Hardware abstraction with inline assembly
+func disable_interrupts() {
+    unsafe {
+        asm {"cli"}
+    }
+}
+
+func enable_interrupts() {
+    unsafe {
+        asm {"sti"}
+    }
+}
+
+func halt_cpu() {
+    unsafe {
+        asm {"hlt"}
+    }
+}
+
+// Port I/O operations for x86
+func outb(port uint16, value uint8) {
+    unsafe {
+        asm {"outb %1, %0" : : "Nd"(port), "a"(value) : "memory"}
+    }
+}
+
+func inb(port uint16) uint8 {
+    var result uint8
+    unsafe {
+        asm {"inb %1, %0" : "=a"(result) : "Nd"(port) : "memory"}
+    }
+    return result
+}
+
+// Memory management primitives
+@inline
+func copy_memory(dest unsafe.Pointer, src unsafe.Pointer, size int) {
+    unsafe {
+        // Raw memory copy using pointer arithmetic
+        dst := dest
+        src_ptr := src
+        for i := 0; i < size; i++ {
+            @(dst + i) = @(src_ptr + i)
+        }
+    }
+}
+
+// Kernel panic function with no return
+@inline
+func kernel_panic(message string) {
+    unsafe {
+        disable_interrupts()
+        // Print panic message (would interface with kernel console)
+        // ...
+        asm {"cli; hlt"}  // Halt forever
+    }
+}
+
+// Interrupt descriptor table entry
+struct IDTEntry {
+    offset_low   uint16
+    selector     uint16  
+    zero         uint8
+    type_attr    uint8
+    offset_high  uint16
+}
+
+// Page table entry for memory management
+struct PageTableEntry {
+    present    bool
+    writable   bool
+    user       bool
+    write_through bool
+    cache_disabled bool
+    accessed   bool
+    dirty      bool
+    size       bool
+    global     bool
+    available  uint8  // 3 bits
+    frame      uint32 // 20 bits
+}
+
+// Hardware timer interface
+func setup_timer(frequency uint32) {
+    const PIT_FREQUENCY = 1193180
+    const PIT_COMMAND_PORT = 0x43
+    const PIT_DATA_PORT = 0x40
+    
+    divisor := PIT_FREQUENCY / frequency
+    
+    unsafe {
+        // Configure PIT (Programmable Interval Timer)
+        outb(PIT_COMMAND_PORT, 0x36)  // Channel 0, square wave, binary
+        outb(PIT_DATA_PORT, uint8(divisor & 0xFF))
+        outb(PIT_DATA_PORT, uint8((divisor >> 8) & 0xFF))
+    }
+}
+
+// Memory-mapped I/O for hardware control
+func control_device(device_base uintptr, command uint32, data uint32) {
+    unsafe {
+        // Memory-mapped device registers
+        command_reg := volatile (*uint32)(unsafe.Pointer(device_base + 0x00))
+        data_reg := volatile (*uint32)(unsafe.Pointer(device_base + 0x04))
+        status_reg := volatile (*uint32)(unsafe.Pointer(device_base + 0x08))
+        
+        // Write command and data
+        *command_reg = command
+        *data_reg = data
+        
+        // Wait for device to complete operation
+        for (*status_reg & 0x1) == 0 {
+            // Busy wait
+        }
+    }
+}
+
+// Example of using extern function
+func allocate_kernel_memory(size int) unsafe.Pointer {
+    unsafe {
+        ptr := malloc(size)
+        if ptr == nil {
+            kernel_panic("Out of memory")
+        }
+        // Zero the allocated memory
+        memset(ptr, 0, size)
+        return ptr
+    }
+}
+
+func free_kernel_memory(ptr unsafe.Pointer) {
+    unsafe {
+        free(ptr)
+    }
+}
+
+// Main kernel entry point
+@no_std
+func kernel_main() {
+    unsafe {
+        // Disable interrupts during initialization
+        disable_interrupts()
+        
+        // Initialize hardware
+        setup_timer(1000)  // 1kHz timer
+        
+        // Example device control
+        control_device(0xFEDC0000, 0x1, 0x42)
+        
+        // Allocate some kernel memory
+        buffer := allocate_kernel_memory(4096)
+        defer free_kernel_memory(buffer)
+        
+        // Re-enable interrupts
+        enable_interrupts()
+        
+        // Kernel main loop would go here...
+        for {
+            halt_cpu()  // Halt until next interrupt
+        }
+    }
+}

@@ -1,6 +1,8 @@
 #ifndef PLATFORM_H
 #define PLATFORM_H
 
+#include <stdint.h>
+
 // Platform detection
 #if defined(__APPLE__) && defined(__MACH__)
     #define GOO_PLATFORM_MACOS 1

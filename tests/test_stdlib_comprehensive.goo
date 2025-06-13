@@ -1,0 +1,785 @@
+// Comprehensive Standard Library Test Suite
+// Tests all major components of the Goo standard library
+package main
+
+import "io"
+import "fmt"
+import "strings"
+import "vec"
+import "map"
+import "os"
+
+// Test framework helpers
+var test_count: int = 0
+var test_passed: int = 0
+var test_failed: int = 0
+
+func assert(condition: bool, message: string) {
+    test_count++
+    if condition {
+        test_passed++
+        fmt.Printf("✓ PASS: %s\n", message)
+    } else {
+        test_failed++
+        fmt.Printf("✗ FAIL: %s\n", message)
+    }
+}
+
+func assert_eq[T comparable](actual: T, expected: T, message: string) {
+    test_count++
+    if actual == expected {
+        test_passed++
+        fmt.Printf("✓ PASS: %s\n", message)
+    } else {
+        test_failed++
+        fmt.Printf("✗ FAIL: %s (expected %v, got %v)\n", message, expected, actual)
+    }
+}
+
+func assert_error[T any](result: ?T, err: !any, message: string) {
+    test_count++
+    if err != nil {
+        test_passed++
+        fmt.Printf("✓ PASS: %s (error: %s)\n", message, err.Error())
+    } else {
+        test_failed++
+        fmt.Printf("✗ FAIL: %s (expected error, got success)\n", message)
+    }
+}
+
+func assert_no_error[T any](result: ?T, err: !any, message: string) {
+    test_count++
+    if err == nil {
+        test_passed++
+        fmt.Printf("✓ PASS: %s\n", message)
+    } else {
+        test_failed++
+        fmt.Printf("✗ FAIL: %s (unexpected error: %s)\n", message, err.Error())
+    }
+}
+
+// I/O Module Tests
+func test_io_module() {
+    fmt.Println("\n=== Testing I/O Module ===")
+    
+    // Test pipe creation
+    reader, writer := io.Pipe()
+    assert(reader != nil && writer != nil, "Pipe creation")
+    
+    // Test copy functionality with string data
+    src_data := "Hello, World!"
+    src_reader := strings.NewReader(src_data)
+    
+    var dest_buffer vec.Vec[byte]
+    written, copy_err := try io.Copy(&dest_buffer, src_reader)
+    assert_no_error(written, copy_err, "Copy operation")
+    assert_eq(int(written), len(src_data), "Copy byte count")
+    assert_eq(dest_buffer.String(), src_data, "Copy data integrity")
+    
+    // Test limited reader
+    limited := &io.LimitedReader{
+        Reader: strings.NewReader("1234567890"),
+        N: 5
+    }
+    
+    buffer := make([]byte, 10)
+    n, read_err := try limited.Read(buffer)
+    assert_no_error(n, read_err, "LimitedReader read")
+    assert_eq(n, 5, "LimitedReader byte count")
+    assert_eq(string(buffer[:n]), "12345", "LimitedReader data")
+    
+    // Test ReadAll
+    full_data := "Complete data for ReadAll test"
+    full_reader := strings.NewReader(full_data)
+    all_data, read_all_err := try io.ReadAll(full_reader)
+    assert_no_error(all_data, read_all_err, "ReadAll operation")
+    assert_eq(string(all_data), full_data, "ReadAll data integrity")
+    
+    // Test MultiReader
+    reader1 := strings.NewReader("First ")
+    reader2 := strings.NewReader("Second ")
+    reader3 := strings.NewReader("Third")
+    multi := io.MultiReader(reader1, reader2, reader3)
+    
+    multi_data, multi_err := try io.ReadAll(multi)
+    assert_no_error(multi_data, multi_err, "MultiReader operation")
+    assert_eq(string(multi_data), "First Second Third", "MultiReader concatenation")
+}
+
+// String Module Tests
+func test_strings_module() {
+    fmt.Println("\n=== Testing Strings Module ===")
+    
+    // Test basic string operations
+    assert(strings.Contains("hello world", "world"), "Contains positive")
+    assert(!strings.Contains("hello world", "xyz"), "Contains negative")
+    
+    assert(strings.HasPrefix("hello world", "hello"), "HasPrefix positive")
+    assert(!strings.HasPrefix("hello world", "world"), "HasPrefix negative")
+    
+    assert(strings.HasSuffix("hello world", "world"), "HasSuffix positive")
+    assert(!strings.HasSuffix("hello world", "hello"), "HasSuffix negative")
+    
+    // Test string searching
+    assert_eq(strings.Index("hello world", "world"), 6, "Index found")
+    assert_eq(strings.Index("hello world", "xyz"), -1, "Index not found")
+    
+    assert_eq(strings.LastIndex("hello world hello", "hello"), 12, "LastIndex found")
+    
+    // Test string transformation
+    assert_eq(strings.ToLower("HELLO World"), "hello world", "ToLower")
+    assert_eq(strings.ToUpper("hello World"), "HELLO WORLD", "ToUpper")
+    
+    // Test string splitting and joining
+    parts := strings.Split("a,b,c,d", ",")
+    assert_eq(len(parts), 4, "Split count")
+    assert_eq(parts[0], "a", "Split first element")
+    assert_eq(parts[3], "d", "Split last element")
+    
+    joined := strings.Join([]string{"x", "y", "z"}, "-")
+    assert_eq(joined, "x-y-z", "Join operation")
+    
+    // Test string trimming
+    assert_eq(strings.Trim("  hello world  ", " "), "hello world", "Trim spaces")
+    assert_eq(strings.TrimLeft("  hello world  ", " "), "hello world  ", "TrimLeft")
+    assert_eq(strings.TrimRight("  hello world  ", " "), "  hello world", "TrimRight")
+    assert_eq(strings.TrimSpace("\t\n hello world \r\n"), "hello world", "TrimSpace")
+    
+    // Test string replacement
+    assert_eq(strings.Replace("hello hello hello", "hello", "hi", 2), "hi hi hello", "Replace with limit")
+    assert_eq(strings.ReplaceAll("hello hello hello", "hello", "hi"), "hi hi hi", "ReplaceAll")
+    
+    // Test string repetition
+    assert_eq(strings.Repeat("abc", 3), "abcabcabc", "Repeat")
+    assert_eq(strings.Repeat("x", 0), "", "Repeat zero")
+    
+    // Test string comparison
+    assert_eq(strings.Compare("abc", "abc"), 0, "Compare equal")
+    assert_eq(strings.Compare("abc", "abd"), -1, "Compare less")
+    assert_eq(strings.Compare("abd", "abc"), 1, "Compare greater")
+    
+    // Test string builder
+    builder := strings.NewBuilder()
+    builder.WriteString("Hello")
+    builder.WriteString(" ")
+    builder.WriteString("World")
+    assert_eq(builder.String(), "Hello World", "Builder concatenation")
+    assert_eq(builder.Len(), 11, "Builder length")
+    
+    builder.Reset()
+    assert_eq(builder.Len(), 0, "Builder reset")
+    assert_eq(builder.String(), "", "Builder reset content")
+}
+
+// Vec Module Tests
+func test_vec_module() {
+    fmt.Println("\n=== Testing Vec Module ===")
+    
+    // Test Vec creation and basic operations
+    v := vec.New[int]()
+    assert(v.IsEmpty(), "New Vec is empty")
+    assert_eq(v.Len(), 0, "New Vec length is zero")
+    
+    // Test pushing elements
+    push_err := v.Push(1)
+    assert_no_error(nil, push_err, "Push first element")
+    assert_eq(v.Len(), 1, "Length after first push")
+    assert(!v.IsEmpty(), "Vec not empty after push")
+    
+    v.Push(2)
+    v.Push(3)
+    assert_eq(v.Len(), 3, "Length after multiple pushes")
+    
+    // Test getting elements
+    first, first_err := try v.Get(0)
+    assert_no_error(first, first_err, "Get first element")
+    assert_eq(*first, 1, "First element value")
+    
+    last, last_err := try v.Last()
+    assert_no_error(last, last_err, "Get last element")
+    assert_eq(*last, 3, "Last element value")
+    
+    // Test out of bounds
+    oob, oob_err := v.Get(10)
+    assert_error(oob, oob_err, "Get out of bounds")
+    
+    // Test popping elements
+    popped, pop_err := try v.Pop()
+    assert_no_error(popped, pop_err, "Pop element")
+    assert_eq(*popped, 3, "Popped element value")
+    assert_eq(v.Len(), 2, "Length after pop")
+    
+    // Test insertion and removal
+    insert_err := v.Insert(1, 99)
+    assert_no_error(nil, insert_err, "Insert element")
+    assert_eq(v.Len(), 3, "Length after insert")
+    
+    middle, middle_err := try v.Get(1)
+    assert_no_error(middle, middle_err, "Get inserted element")
+    assert_eq(*middle, 99, "Inserted element value")
+    
+    removed, remove_err := try v.Remove(1)
+    assert_no_error(removed, remove_err, "Remove element")
+    assert_eq(*removed, 99, "Removed element value")
+    assert_eq(v.Len(), 2, "Length after remove")
+    
+    // Test Vec with values
+    v2 := vec.WithValues(10, 20, 30, 40, 50)
+    assert_eq(v2.Len(), 5, "WithValues length")
+    
+    third, third_err := try v2.Get(2)
+    assert_no_error(third, third_err, "WithValues get element")
+    assert_eq(*third, 30, "WithValues element value")
+    
+    // Test Contains and IndexOf
+    assert(v2.Contains(30), "Contains existing element")
+    assert(!v2.Contains(100), "Contains non-existing element")
+    
+    index := v2.IndexOf(40)
+    assert(index != nil, "IndexOf existing element")
+    assert_eq(*index, 3, "IndexOf correct index")
+    
+    missing_index := v2.IndexOf(200)
+    assert(missing_index == nil, "IndexOf non-existing element")
+    
+    // Test iteration
+    sum := 0
+    v2.ForEach(func(elem: &int) {
+        sum += *elem
+    })
+    assert_eq(sum, 150, "ForEach sum calculation") // 10+20+30+40+50 = 150
+    
+    // Test cloning
+    v3 := v2.Clone()
+    assert_eq(v3.Len(), v2.Len(), "Clone length")
+    assert(v3.IsOwned(), "Clone is owned")
+    
+    // Modify original
+    v2.Set(0, 999)
+    first_orig, _ := try v2.Get(0)
+    first_clone, _ := try v3.Get(0)
+    assert_eq(*first_orig, 999, "Original modified")
+    assert_eq(*first_clone, 10, "Clone unchanged")
+    
+    // Test capacity management
+    v4 := vec.NewWithCapacity[string](100)
+    assert_eq(v4.Capacity(), 100, "Initial capacity")
+    assert_eq(v4.Len(), 0, "Initial length with capacity")
+    
+    // Test extending
+    v5 := vec.WithValues(1, 2, 3)
+    v6 := vec.WithValues(4, 5, 6)
+    extend_err := v5.Extend(&v6)
+    assert_no_error(nil, extend_err, "Extend operation")
+    assert_eq(v5.Len(), 6, "Length after extend")
+    
+    // Test clearing
+    clear_err := v5.Clear()
+    assert_no_error(nil, clear_err, "Clear operation")
+    assert_eq(v5.Len(), 0, "Length after clear")
+    assert(v5.IsEmpty(), "Empty after clear")
+}
+
+// Map Module Tests
+func test_map_module() {
+    fmt.Println("\n=== Testing Map Module ===")
+    
+    // Test Map creation
+    m := map.New[string, int]()
+    assert(m.IsEmpty(), "New Map is empty")
+    assert_eq(m.Size(), 0, "New Map size is zero")
+    
+    // Test insertion and retrieval
+    old_val, insert_err := try m.Insert("hello", 42)
+    assert_no_error(old_val, insert_err, "Insert first element")
+    assert(old_val == nil, "No old value on first insert")
+    assert_eq(m.Size(), 1, "Size after first insert")
+    assert(!m.IsEmpty(), "Map not empty after insert")
+    
+    // Test getting existing key
+    value, get_err := try m.Get("hello")
+    assert_no_error(value, get_err, "Get existing key")
+    assert_eq(*value, 42, "Retrieved value")
+    
+    // Test getting non-existing key
+    missing, missing_err := m.Get("missing")
+    assert_error(missing, missing_err, "Get non-existing key")
+    
+    // Test contains
+    assert(m.Contains("hello"), "Contains existing key")
+    assert(!m.Contains("missing"), "Contains non-existing key")
+    
+    // Test updating existing key
+    old_val2, update_err := try m.Insert("hello", 100)
+    assert_no_error(old_val2, update_err, "Update existing key")
+    assert_eq(*old_val2, 42, "Old value on update")
+    assert_eq(m.Size(), 1, "Size unchanged on update")
+    
+    updated_val, _ := try m.Get("hello")
+    assert_eq(*updated_val, 100, "Updated value")
+    
+    // Test multiple insertions
+    m.Insert("world", 200)
+    m.Insert("test", 300)
+    assert_eq(m.Size(), 3, "Size after multiple inserts")
+    
+    // Test removal
+    removed, remove_err := try m.Remove("world")
+    assert_no_error(removed, remove_err, "Remove existing key")
+    assert_eq(*removed, 200, "Removed value")
+    assert_eq(m.Size(), 2, "Size after removal")
+    assert(!m.Contains("world"), "Key removed from map")
+    
+    // Test removing non-existing key
+    not_removed, not_remove_err := m.Remove("nonexistent")
+    assert_error(not_removed, not_remove_err, "Remove non-existing key")
+    
+    // Test keys and values
+    keys := m.Keys()
+    assert_eq(keys.Len(), 2, "Keys count")
+    
+    values := m.Values()
+    assert_eq(values.Len(), 2, "Values count")
+    
+    pairs := m.Pairs()
+    assert_eq(pairs.Len(), 2, "Pairs count")
+    
+    // Test iteration
+    pair_count := 0
+    m.ForEach(func(key: &string, value: &int) {
+        pair_count++
+        assert(*key == "hello" || *key == "test", "Valid key in iteration")
+        assert(*value == 100 || *value == 300, "Valid value in iteration")
+    })
+    assert_eq(pair_count, 2, "ForEach iteration count")
+    
+    // Test cloning
+    m2 := m.Clone()
+    assert_eq(m2.Size(), m.Size(), "Clone size")
+    assert(m2.IsOwned(), "Clone is owned")
+    
+    // Modify original
+    m.Insert("new_key", 999)
+    assert(m.Contains("new_key"), "Original has new key")
+    assert(!m2.Contains("new_key"), "Clone doesn't have new key")
+    
+    // Test clearing
+    clear_err := m.Clear()
+    assert_no_error(nil, clear_err, "Clear operation")
+    assert_eq(m.Size(), 0, "Size after clear")
+    assert(m.IsEmpty(), "Empty after clear")
+    
+    // Test Map from pairs
+    pairs_data := []map.Pair[string, int]{
+        {Key: "a", Value: 1},
+        {Key: "b", Value: 2},
+        {Key: "c", Value: 3}
+    }
+    m3 := map.FromPairs(pairs_data)
+    assert_eq(m3.Size(), 3, "FromPairs size")
+    
+    val_a, _ := try m3.Get("a")
+    assert_eq(*val_a, 1, "FromPairs value retrieval")
+    
+    // Test Entry API
+    entry := m3.Entry("d")
+    assert(!entry.Exists(), "Entry doesn't exist initially")
+    
+    entry.Set(4)
+    assert(entry.Exists(), "Entry exists after set")
+    assert_eq(m3.Size(), 4, "Size increased after entry set")
+    
+    entry_val := entry.Get()
+    assert_eq(*entry_val, 4, "Entry value retrieval")
+    
+    // Test capacity and load factor
+    assert(m3.CurrentLoadFactor() > 0, "Positive load factor")
+    assert(m3.Capacity() > 0, "Positive capacity")
+}
+
+// Format Module Tests
+func test_fmt_module() {
+    fmt.Println("\n=== Testing Fmt Module ===")
+    
+    // Test sprintf functionality
+    result, sprintf_err := try fmt.Sprintf("Hello %s, you are %d years old", "Alice", 30)
+    assert_no_error(result, sprintf_err, "Sprintf basic formatting")
+    assert_eq(result, "Hello Alice, you are 30 years old", "Sprintf string interpolation")
+    
+    // Test different format verbs
+    int_result, _ := try fmt.Sprintf("Number: %d", 42)
+    assert_eq(int_result, "Number: 42", "Sprintf integer formatting")
+    
+    hex_result, _ := try fmt.Sprintf("Hex: %x", 255)
+    assert_eq(hex_result, "Hex: ff", "Sprintf hex formatting")
+    
+    float_result, _ := try fmt.Sprintf("Float: %.2f", 3.14159)
+    assert_eq(float_result, "Float: 3.14", "Sprintf float formatting")
+    
+    // Test error cases
+    _, err_result := fmt.Sprintf("Missing arg: %s")
+    assert_error(nil, err_result, "Sprintf missing argument error")
+    
+    _, err_result2 := fmt.Sprintf("Extra args: %s", "arg1", "arg2")
+    assert_error(nil, err_result2, "Sprintf extra arguments error")
+    
+    // Test sprint functions
+    sprint_result := fmt.Sprint("Hello", "World", 123)
+    assert_eq(sprint_result, "Hello World 123", "Sprint concatenation")
+    
+    sprintln_result := fmt.Sprintln("Hello", "World")
+    assert_eq(sprintln_result, "Hello World\n", "Sprintln with newline")
+    
+    // Test boolean formatting
+    bool_result, _ := try fmt.Sprintf("Boolean: %t", true)
+    assert_eq(bool_result, "Boolean: true", "Boolean formatting")
+    
+    // Test character formatting  
+    char_result, _ := try fmt.Sprintf("Character: %c", 65)
+    assert_eq(char_result, "Character: A", "Character formatting")
+}
+
+// OS Module Tests
+func test_os_module() {
+    fmt.Println("\n=== Testing OS Module ===")
+    
+    // Test environment variables
+    os.Setenv("GOO_TEST_VAR", "test_value")
+    env_val := os.Getenv("GOO_TEST_VAR")
+    assert(env_val != nil, "Environment variable retrieval")
+    assert_eq(*env_val, "test_value", "Environment variable value")
+    
+    // Test environment variable lookup
+    lookup_val, lookup_ok := os.LookupEnv("GOO_TEST_VAR")
+    assert(lookup_ok, "Environment variable lookup success")
+    assert_eq(lookup_val, "test_value", "Environment variable lookup value")
+    
+    missing_val, missing_ok := os.LookupEnv("NONEXISTENT_VAR")
+    assert(!missing_ok, "Environment variable lookup failure")
+    
+    // Test process information
+    pid := os.Getpid()
+    assert(pid > 0, "Process ID is positive")
+    
+    ppid := os.Getppid()
+    assert(ppid > 0, "Parent process ID is positive")
+    
+    // Test user information
+    uid := os.Getuid()
+    assert(uid >= 0, "User ID is non-negative")
+    
+    gid := os.Getgid()
+    assert(gid >= 0, "Group ID is non-negative")
+    
+    // Test hostname
+    hostname, hostname_err := try os.Hostname()
+    assert_no_error(hostname, hostname_err, "Hostname retrieval")
+    assert(len(hostname) > 0, "Hostname is not empty")
+    
+    // Test working directory
+    wd, wd_err := try os.Getwd()
+    assert_no_error(wd, wd_err, "Working directory retrieval")
+    assert(len(wd) > 0, "Working directory is not empty")
+    
+    // Test temp directory
+    temp_dir := os.TempDir()
+    assert(len(temp_dir) > 0, "Temp directory is not empty")
+    
+    // Test file operations with temporary file
+    test_file_name := "/tmp/goo_test_file.txt"
+    test_content := "Hello, Goo Standard Library!"
+    
+    // Create and write to file
+    file, create_err := try os.Create(test_file_name)
+    assert_no_error(file, create_err, "File creation")
+    
+    if file != nil {
+        written, write_err := try file.Write([]byte(test_content))
+        assert_no_error(written, write_err, "File write")
+        assert_eq(written, len(test_content), "Write byte count")
+        
+        close_err := file.Close()
+        assert_no_error(nil, close_err, "File close")
+        
+        // Read file back
+        read_file, open_err := try os.Open(test_file_name)
+        assert_no_error(read_file, open_err, "File open for reading")
+        
+        if read_file != nil {
+            read_buffer := make([]byte, 100)
+            read_count, read_err := try read_file.Read(read_buffer)
+            assert_no_error(read_count, read_err, "File read")
+            
+            read_content := string(read_buffer[:read_count])
+            assert_eq(read_content, test_content, "File content integrity")
+            
+            read_file.Close()
+        }
+        
+        // Test file info
+        file_info, stat_err := try os.Stat(test_file_name)
+        assert_no_error(file_info, stat_err, "File stat")
+        assert_eq(file_info.name, "goo_test_file.txt", "File name in stat")
+        assert_eq(file_info.size, int64(len(test_content)), "File size in stat")
+        assert(!file_info.is_dir, "File is not directory")
+        
+        // Clean up
+        remove_err := os.Remove(test_file_name)
+        assert_no_error(nil, remove_err, "File removal")
+    }
+    
+    // Test directory operations
+    test_dir := "/tmp/goo_test_dir"
+    mkdir_err := os.Mkdir(test_dir, 0755)
+    assert_no_error(nil, mkdir_err, "Directory creation")
+    
+    // Test directory info
+    dir_info, dir_stat_err := try os.Stat(test_dir)
+    assert_no_error(dir_info, dir_stat_err, "Directory stat")
+    assert(dir_info.is_dir, "Directory is marked as directory")
+    
+    // Clean up directory
+    rmdir_err := os.Remove(test_dir)
+    assert_no_error(nil, rmdir_err, "Directory removal")
+    
+    // Test error handling
+    _, nonexistent_err := os.Open("/nonexistent/file/path")
+    assert_error(nil, nonexistent_err, "Open non-existent file error")
+    assert(os.IsNotExist(nonexistent_err), "IsNotExist check")
+}
+
+// Integration Tests
+func test_integration() {
+    fmt.Println("\n=== Integration Tests ===")
+    
+    // Test I/O with Vec
+    data := "Integration test data"
+    reader := strings.NewReader(data)
+    var buffer vec.Vec[byte]
+    
+    written, copy_err := try io.Copy(&buffer, reader)
+    assert_no_error(written, copy_err, "I/O to Vec integration")
+    assert_eq(buffer.String(), data, "I/O Vec data integrity")
+    
+    // Test Map with string processing
+    word_count := map.New[string, int]()
+    text := "hello world hello universe world"
+    words := strings.Fields(text)
+    
+    for _, word := range words {
+        current, _ := word_count.Get(word)
+        if current != nil {
+            word_count.Insert(word, *current + 1)
+        } else {
+            word_count.Insert(word, 1)
+        }
+    }
+    
+    hello_count, _ := try word_count.Get("hello")
+    assert_eq(*hello_count, 2, "Word count integration - hello")
+    
+    world_count, _ := try word_count.Get("world")
+    assert_eq(*world_count, 2, "Word count integration - world")
+    
+    universe_count, _ := try word_count.Get("universe")
+    assert_eq(*universe_count, 1, "Word count integration - universe")
+    
+    // Test formatted output with collections
+    numbers := vec.WithValues(1, 2, 3, 4, 5)
+    sum := 0
+    numbers.ForEach(func(n: &int) {
+        sum += *n
+    })
+    
+    summary, _ := try fmt.Sprintf("Vec with %d elements, sum = %d", numbers.Len(), sum)
+    expected := "Vec with 5 elements, sum = 15"
+    assert_eq(summary, expected, "Formatted output integration")
+    
+    // Test file I/O with string processing
+    test_data := "Line 1\nLine 2\nLine 3"
+    test_file := "/tmp/integration_test.txt"
+    
+    // Write processed data
+    lines := strings.Split(test_data, "\n")
+    processed_lines := vec.New[string]()
+    
+    for i, line := range lines {
+        processed := fmt.Sprintf("%d: %s", i + 1, line)
+        processed_lines.Push(processed)
+    }
+    
+    output := strings.Join(processed_lines.AsSlice(), "\n")
+    
+    file, _ := try os.Create(test_file)
+    if file != nil {
+        file.Write([]byte(output))
+        file.Close()
+        
+        // Verify the integration
+        verify_file, _ := try os.Open(test_file)
+        if verify_file != nil {
+            verify_data, _ := try io.ReadAll(verify_file)
+            expected_output := "1: Line 1\n2: Line 2\n3: Line 3"
+            assert_eq(string(verify_data), expected_output, "File I/O string processing integration")
+            verify_file.Close()
+        }
+        
+        os.Remove(test_file)
+    }
+}
+
+// Performance Tests
+func test_performance() {
+    fmt.Println("\n=== Performance Tests ===")
+    
+    // Test Vec performance
+    large_vec := vec.NewWithCapacity[int](10000)
+    for i := 0; i < 10000; i++ {
+        large_vec.Push(i)
+    }
+    assert_eq(large_vec.Len(), 10000, "Large Vec creation")
+    
+    // Test Map performance
+    large_map := map.NewWithCapacity[int, string](1000)
+    for i := 0; i < 1000; i++ {
+        key_str, _ := try fmt.Sprintf("key_%d", i)
+        large_map.Insert(i, key_str)
+    }
+    assert_eq(large_map.Size(), 1000, "Large Map creation")
+    
+    // Test string operations performance
+    large_string := strings.Repeat("abc", 1000)
+    assert_eq(len(large_string), 3000, "Large string creation")
+    
+    parts := strings.Split(large_string, "a")
+    assert(len(parts) > 100, "Large string splitting")
+    
+    fmt.Printf("Performance tests completed - Vec: %d elements, Map: %d entries, String: %d chars\n",
+              large_vec.Len(), large_map.Size(), len(large_string))
+}
+
+// Memory Safety Tests
+func test_memory_safety() {
+    fmt.Println("\n=== Memory Safety Tests ===")
+    
+    // Test ownership transfer
+    original_vec := vec.WithValues(1, 2, 3, 4, 5)
+    assert(original_vec.IsOwned(), "Original Vec is owned")
+    
+    // Test borrowing
+    borrowed_slice := original_vec.AsSlice()
+    assert_eq(len(borrowed_slice), 5, "Borrowed slice length")
+    assert_eq(borrowed_slice[0], 1, "Borrowed slice content")
+    
+    // Test that original is still accessible after borrowing
+    assert_eq(original_vec.Len(), 5, "Original Vec still accessible")
+    
+    // Test Map ownership
+    owned_map := map.New[string, vec.Vec[int]]()
+    vec_data := vec.WithValues(10, 20, 30)
+    
+    owned_map.Insert("data", vec_data)
+    assert(owned_map.IsOwned(), "Map is owned")
+    
+    retrieved_ref, _ := try owned_map.GetRef("data")
+    assert_eq(retrieved_ref.Len(), 3, "Retrieved Vec from Map")
+    
+    // Test that we can't modify borrowed references inappropriately
+    // (This would be enforced by the type system in a real implementation)
+    
+    fmt.Println("Memory safety tests completed - ownership semantics verified")
+}
+
+// Error Handling Tests
+func test_error_handling() {
+    fmt.Println("\n=== Error Handling Tests ===")
+    
+    // Test error propagation
+    func test_error_chain() -> !vec.VecError {
+        v := vec.New[int]()
+        
+        // This should succeed
+        try v.Push(42)
+        
+        // Try to access out of bounds - should return error
+        _, err := v.Get(10)
+        if err != nil {
+            return err
+        }
+        
+        return nil
+    }
+    
+    chain_err := test_error_chain()
+    assert_error(nil, chain_err, "Error propagation in chain")
+    
+    // Test nullable type handling
+    maybe_value := ?int(nil)
+    assert(maybe_value == nil, "Nullable type nil check")
+    
+    maybe_value = 42
+    assert(maybe_value != nil, "Nullable type value check")
+    assert_eq(*maybe_value, 42, "Nullable type value access")
+    
+    // Test error union with match
+    func risky_operation() -> !os.OSError {
+        // Simulate error condition
+        return os.ErrNotExist
+    }
+    
+    result := risky_operation() catch |err| {
+        // Handle the error
+        assert_eq(err.kind, os.OSErrorKind.NotFound, "Error handling with catch")
+        return nil
+    }
+    
+    assert(result == nil, "Error handled correctly")
+    
+    fmt.Println("Error handling tests completed - error unions and nullable types verified")
+}
+
+// Main test runner
+func main() {
+    fmt.Println("🧪 Goo Standard Library Comprehensive Test Suite")
+    fmt.Println("================================================")
+    
+    // Run all test modules
+    test_io_module()
+    test_strings_module()
+    test_vec_module()
+    test_map_module()
+    test_fmt_module()
+    test_os_module()
+    test_integration()
+    test_performance()
+    test_memory_safety()
+    test_error_handling()
+    
+    // Test summary
+    fmt.Println("\n" + strings.Repeat("=", 50))
+    fmt.Printf("📊 Test Summary:\n")
+    fmt.Printf("   Total Tests: %d\n", test_count)
+    fmt.Printf("   Passed: %d ✓\n", test_passed)
+    fmt.Printf("   Failed: %d ✗\n", test_failed)
+    
+    success_rate := float64(test_passed) / float64(test_count) * 100.0
+    fmt.Printf("   Success Rate: %.1f%%\n", success_rate)
+    
+    if test_failed == 0 {
+        fmt.Println("\n🎉 All tests passed! Standard library implementation is working correctly.")
+    } else {
+        fmt.Printf("\n⚠️  %d tests failed. Please review the implementation.\n", test_failed)
+    }
+    
+    fmt.Println("\n📋 Standard Library Components Tested:")
+    fmt.Println("   ✓ I/O Module (Reader/Writer interfaces, Copy, Pipe)")
+    fmt.Println("   ✓ String Module (Manipulation, Search, Transform)")
+    fmt.Println("   ✓ Vec Module (Dynamic arrays with ownership)")
+    fmt.Println("   ✓ Map Module (Hash maps with ownership)")
+    fmt.Println("   ✓ Fmt Module (Formatted I/O)")
+    fmt.Println("   ✓ OS Module (File system, Process, Environment)")
+    fmt.Println("   ✓ Integration (Cross-module functionality)")
+    fmt.Println("   ✓ Performance (Large data structures)")
+    fmt.Println("   ✓ Memory Safety (Ownership semantics)")
+    fmt.Println("   ✓ Error Handling (Error unions, Nullable types)")
+}

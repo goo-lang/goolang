@@ -1,0 +1,598 @@
+// Package fmt implements formatted I/O with functions analogous to C's printf and scanf
+package fmt
+
+import "io"
+import "strings"
+
+// Standard output destinations
+var (
+    Stdout: io.Writer = &stdoutWriter{}
+    Stderr: io.Writer = &stderrWriter{}
+    Stdin: io.Reader = &stdinReader{}
+)
+
+// Standard writer implementations (these would connect to actual system stdio)
+type stdoutWriter struct {}
+type stderrWriter struct {}
+type stdinReader struct {}
+
+func (w: *stdoutWriter) Write(data: []byte) -> (n: int, err: !io.IOError) {
+    // This would call the actual system write to stdout
+    return _write_stdout(data)
+}
+
+func (w: *stderrWriter) Write(data: []byte) -> (n: int, err: !io.IOError) {
+    // This would call the actual system write to stderr
+    return _write_stderr(data)
+}
+
+func (r: *stdinReader) Read(buf: []byte) -> (n: int, err: !io.IOError) {
+    // This would call the actual system read from stdin
+    return _read_stdin(buf)
+}
+
+// External functions that would be implemented in C runtime
+extern func _write_stdout(data: []byte) -> (n: int, err: !io.IOError)
+extern func _write_stderr(data: []byte) -> (n: int, err: !io.IOError)
+extern func _read_stdin(buf: []byte) -> (n: int, err: !io.IOError)
+
+// Formatter interface for custom formatting
+type Formatter interface {
+    Format(verb: rune, flags: FormatFlags) -> string
+}
+
+// Stringer interface for string representation
+type Stringer interface {
+    String() -> string
+}
+
+// GoStringer interface for Go-syntax representation
+type GoStringer interface {
+    GoString() -> string
+}
+
+// Format flags for controlling output formatting
+type FormatFlags struct {
+    minus: bool     // left-justify
+    plus: bool      // always show sign
+    sharp: bool     // alternate format
+    space: bool     // space for positive numbers
+    zero: bool      // zero-pad
+    width: int      // minimum width
+    precision: int  // precision for floating point
+    has_precision: bool
+}
+
+// Error types for formatting operations
+type FormatError struct {
+    message: string
+    position: int
+    verb: rune
+}
+
+func (e: FormatError) Error() -> string {
+    return e.message
+}
+
+// Print formats using the default formats for its operands and writes to standard output
+func Print(args: ...any) -> (n: int, err: !io.IOError) {
+    return Fprint(Stdout, args...)
+}
+
+// Println formats using the default formats for its operands and writes to standard output
+// Spaces are always added between operands and a newline is appended
+func Println(args: ...any) -> (n: int, err: !io.IOError) {
+    return Fprintln(Stdout, args...)
+}
+
+// Printf formats according to a format specifier and writes to standard output
+func Printf(format: string, args: ...any) -> (n: int, err: !io.IOError) {
+    return Fprintf(Stdout, format, args...)
+}
+
+// Fprint formats using the default formats for its operands and writes to w
+func Fprint(w: io.Writer, args: ...any) -> (n: int, err: !io.IOError) {
+    output := sprint(args...)
+    return io.WriteString(w, output)
+}
+
+// Fprintln formats using the default formats for its operands and writes to w
+// Spaces are always added between operands and a newline is appended
+func Fprintln(w: io.Writer, args: ...any) -> (n: int, err: !io.IOError) {
+    output := sprintln(args...)
+    return io.WriteString(w, output)
+}
+
+// Fprintf formats according to a format specifier and writes to w
+func Fprintf(w: io.Writer, format: string, args: ...any) -> (n: int, err: !io.IOError) {
+    output, format_err := try sprintf(format, args...)
+    if format_err != nil {
+        return 0, io.IOError{
+            message: format_err.message,
+            kind: io.IOErrorKind.InvalidData
+        }
+    }
+    return io.WriteString(w, output)
+}
+
+// Sprint formats using the default formats for its operands and returns the resulting string
+func Sprint(args: ...any) -> string {
+    return sprint(args...)
+}
+
+// Sprintln formats using the default formats for its operands and returns the resulting string
+// Spaces are always added between operands and a newline is appended
+func Sprintln(args: ...any) -> string {
+    return sprintln(args...)
+}
+
+// Sprintf formats according to a format specifier and returns the resulting string
+func Sprintf(format: string, args: ...any) -> (result: string, err: !FormatError) {
+    return sprintf(format, args...)
+}
+
+// Internal sprint function
+func sprint(args: ...any) -> string {
+    if len(args) == 0 {
+        return ""
+    }
+    
+    builder := strings.NewBuilder()
+    for i, arg := range args {
+        if i > 0 {
+            builder.WriteString(" ")
+        }
+        builder.WriteString(formatValue(arg, 'v', FormatFlags{}))
+    }
+    return builder.String()
+}
+
+// Internal sprintln function
+func sprintln(args: ...any) -> string {
+    result := sprint(args...)
+    return result + "\n"
+}
+
+// Internal sprintf function with format string parsing
+func sprintf(format: string, args: ...any) -> (result: string, err: !FormatError) {
+    builder := strings.NewBuilder()
+    arg_index := 0
+    i := 0
+    
+    for i < len(format) {
+        // Look for format specifiers
+        if format[i] == '%' {
+            if i + 1 < len(format) && format[i + 1] == '%' {
+                // Escaped percent
+                builder.WriteByte('%')
+                i += 2
+                continue
+            }
+            
+            // Parse format specifier
+            start := i
+            i++ // skip '%'
+            
+            // Parse flags
+            flags := FormatFlags{}
+            for i < len(format) {
+                match format[i] {
+                    case '-':
+                        flags.minus = true
+                    case '+':
+                        flags.plus = true
+                    case '#':
+                        flags.sharp = true
+                    case ' ':
+                        flags.space = true
+                    case '0':
+                        flags.zero = true
+                    default:
+                        break
+                }
+                i++
+            }
+            
+            // Parse width
+            width_start := i
+            for i < len(format) && isDigit(format[i]) {
+                i++
+            }
+            if i > width_start {
+                flags.width = parseInteger(format[width_start:i])
+            }
+            
+            // Parse precision
+            if i < len(format) && format[i] == '.' {
+                i++ // skip '.'
+                flags.has_precision = true
+                precision_start := i
+                for i < len(format) && isDigit(format[i]) {
+                    i++
+                }
+                if i > precision_start {
+                    flags.precision = parseInteger(format[precision_start:i])
+                }
+            }
+            
+            // Parse verb
+            if i >= len(format) {
+                return "", FormatError{
+                    message: "missing verb in format specifier",
+                    position: start,
+                    verb: 0
+                }
+            }
+            
+            verb := rune(format[i])
+            i++
+            
+            // Format the argument
+            if arg_index >= len(args) {
+                return "", FormatError{
+                    message: "too few arguments for format string",
+                    position: start,
+                    verb: verb
+                }
+            }
+            
+            formatted := formatValue(args[arg_index], verb, flags)
+            builder.WriteString(formatted)
+            arg_index++
+            
+        } else {
+            // Regular character
+            builder.WriteByte(format[i])
+            i++
+        }
+    }
+    
+    if arg_index < len(args) {
+        return "", FormatError{
+            message: "too many arguments for format string",
+            position: len(format),
+            verb: 0
+        }
+    }
+    
+    return builder.String(), nil
+}
+
+// Format a value according to the verb and flags
+func formatValue(value: any, verb: rune, flags: FormatFlags) -> string {
+    // Handle special interfaces first
+    if formatter, ok := value.(Formatter); ok {
+        return formatter.Format(verb, flags)
+    }
+    
+    if verb == 's' || verb == 'v' {
+        if stringer, ok := value.(Stringer); ok {
+            return stringer.String()
+        }
+    }
+    
+    if verb == 'q' || (verb == 'v' && flags.sharp) {
+        if go_stringer, ok := value.(GoStringer); ok {
+            return go_stringer.GoString()
+        }
+    }
+    
+    // Handle basic types
+    match value {
+        case v: bool:
+            return formatBool(v, verb, flags)
+        case v: int, v: int8, v: int16, v: int32, v: int64:
+            return formatInteger(int64(v), verb, flags)
+        case v: uint, v: uint8, v: uint16, v: uint32, v: uint64:
+            return formatUnsigned(uint64(v), verb, flags)
+        case v: float32, v: float64:
+            return formatFloat(float64(v), verb, flags)
+        case v: string:
+            return formatString(v, verb, flags)
+        case v: []byte:
+            return formatBytes(v, verb, flags)
+        case v: rune:
+            return formatRune(v, verb, flags)
+        default:
+            // For unknown types, use reflection or default representation
+            return formatDefault(value, verb, flags)
+    }
+}
+
+// Format boolean values
+func formatBool(value: bool, verb: rune, flags: FormatFlags) -> string {
+    match verb {
+        case 't', 'v':
+            return value ? "true" : "false"
+        case 's':
+            return value ? "true" : "false"
+        default:
+            return "<invalid verb for bool>"
+    }
+}
+
+// Format integer values
+func formatInteger(value: int64, verb: rune, flags: FormatFlags) -> string {
+    match verb {
+        case 'd', 'v':
+            return formatDecimal(value, flags)
+        case 'o':
+            return formatOctal(uint64(value), flags)
+        case 'x':
+            return formatHex(uint64(value), false, flags)
+        case 'X':
+            return formatHex(uint64(value), true, flags)
+        case 'b':
+            return formatBinary(uint64(value), flags)
+        case 'c':
+            return string(rune(value))
+        case 'q':
+            return quoteRune(rune(value))
+        default:
+            return "<invalid verb for integer>"
+    }
+}
+
+// Format unsigned integer values
+func formatUnsigned(value: uint64, verb: rune, flags: FormatFlags) -> string {
+    match verb {
+        case 'd', 'v':
+            return formatUnsignedDecimal(value, flags)
+        case 'o':
+            return formatOctal(value, flags)
+        case 'x':
+            return formatHex(value, false, flags)
+        case 'X':
+            return formatHex(value, true, flags)
+        case 'b':
+            return formatBinary(value, flags)
+        case 'c':
+            return string(rune(value))
+        case 'q':
+            return quoteRune(rune(value))
+        default:
+            return "<invalid verb for unsigned integer>"
+    }
+}
+
+// Format floating point values
+func formatFloat(value: float64, verb: rune, flags: FormatFlags) -> string {
+    match verb {
+        case 'f', 'F':
+            return formatFloatFixed(value, flags)
+        case 'e':
+            return formatFloatExponent(value, false, flags)
+        case 'E':
+            return formatFloatExponent(value, true, flags)
+        case 'g':
+            return formatFloatGeneral(value, false, flags)
+        case 'G':
+            return formatFloatGeneral(value, true, flags)
+        case 'v':
+            return formatFloatGeneral(value, false, flags)
+        default:
+            return "<invalid verb for float>"
+    }
+}
+
+// Format string values
+func formatString(value: string, verb: rune, flags: FormatFlags) -> string {
+    match verb {
+        case 's', 'v':
+            return applyStringWidth(value, flags)
+        case 'q':
+            return quote(value)
+        case 'x':
+            return formatStringHex(value, false)
+        case 'X':
+            return formatStringHex(value, true)
+        default:
+            return "<invalid verb for string>"
+    }
+}
+
+// Format byte slice values
+func formatBytes(value: []byte, verb: rune, flags: FormatFlags) -> string {
+    match verb {
+        case 's':
+            return applyStringWidth(string(value), flags)
+        case 'v':
+            if flags.sharp {
+                return formatBytesGoSyntax(value)
+            }
+            return formatBytesDefault(value)
+        case 'q':
+            return quote(string(value))
+        case 'x':
+            return formatBytesHex(value, false)
+        case 'X':
+            return formatBytesHex(value, true)
+        default:
+            return "<invalid verb for []byte>"
+    }
+}
+
+// Format rune values
+func formatRune(value: rune, verb: rune, flags: FormatFlags) -> string {
+    match verb {
+        case 'c', 'v':
+            return string(value)
+        case 'q':
+            return quoteRune(value)
+        case 'd':
+            return formatDecimal(int64(value), flags)
+        case 'o':
+            return formatOctal(uint64(value), flags)
+        case 'x':
+            return formatHex(uint64(value), false, flags)
+        case 'X':
+            return formatHex(uint64(value), true, flags)
+        default:
+            return "<invalid verb for rune>"
+    }
+}
+
+// Format unknown types with default representation
+func formatDefault(value: any, verb: rune, flags: FormatFlags) -> string {
+    // This would use reflection in a real implementation
+    return "<unformattable type>"
+}
+
+// Helper functions for number formatting
+func formatDecimal(value: int64, flags: FormatFlags) -> string {
+    // Implementation would convert integer to decimal string
+    // with appropriate sign, width, and zero-padding
+    return intToString(value)
+}
+
+func formatUnsignedDecimal(value: uint64, flags: FormatFlags) -> string {
+    return uintToString(value)
+}
+
+func formatOctal(value: uint64, flags: FormatFlags) -> string {
+    return "0" + uintToBaseString(value, 8)
+}
+
+func formatHex(value: uint64, uppercase: bool, flags: FormatFlags) -> string {
+    hex := uintToBaseString(value, 16)
+    if uppercase {
+        hex = strings.ToUpper(hex)
+    }
+    if flags.sharp && value != 0 {
+        hex = "0x" + hex
+    }
+    return hex
+}
+
+func formatBinary(value: uint64, flags: FormatFlags) -> string {
+    return uintToBaseString(value, 2)
+}
+
+func formatFloatFixed(value: float64, flags: FormatFlags) -> string {
+    precision := flags.precision
+    if !flags.has_precision {
+        precision = 6
+    }
+    return floatToFixedString(value, precision)
+}
+
+func formatFloatExponent(value: float64, uppercase: bool, flags: FormatFlags) -> string {
+    precision := flags.precision
+    if !flags.has_precision {
+        precision = 6
+    }
+    result := floatToExpString(value, precision)
+    if uppercase {
+        result = strings.Replace(result, "e", "E", -1)
+    }
+    return result
+}
+
+func formatFloatGeneral(value: float64, uppercase: bool, flags: FormatFlags) -> string {
+    // Choose between fixed and exponential based on magnitude
+    return floatToString(value)
+}
+
+// String formatting helpers
+func applyStringWidth(s: string, flags: FormatFlags) -> string {
+    if flags.width <= len(s) {
+        return s
+    }
+    
+    padding := strings.Repeat(" ", flags.width - len(s))
+    if flags.minus {
+        return s + padding
+    }
+    return padding + s
+}
+
+func quote(s: string) -> string {
+    return "\"" + escapeString(s) + "\""
+}
+
+func quoteRune(r: rune) -> string {
+    return "'" + escapeRune(r) + "'"
+}
+
+func formatStringHex(s: string, uppercase: bool) -> string {
+    result := ""
+    for _, r := range s {
+        hex := uintToBaseString(uint64(r), 16)
+        if uppercase {
+            hex = strings.ToUpper(hex)
+        }
+        result += hex
+    }
+    return result
+}
+
+func formatBytesDefault(bytes: []byte) -> string {
+    result := "["
+    for i, b := range bytes {
+        if i > 0 {
+            result += " "
+        }
+        result += uintToString(uint64(b))
+    }
+    result += "]"
+    return result
+}
+
+func formatBytesGoSyntax(bytes: []byte) -> string {
+    result := "[]byte{"
+    for i, b := range bytes {
+        if i > 0 {
+            result += ", "
+        }
+        result += "0x" + uintToBaseString(uint64(b), 16)
+    }
+    result += "}"
+    return result
+}
+
+func formatBytesHex(bytes: []byte, uppercase: bool) -> string {
+    result := ""
+    for _, b := range bytes {
+        hex := uintToBaseString(uint64(b), 16)
+        if len(hex) == 1 {
+            hex = "0" + hex
+        }
+        if uppercase {
+            hex = strings.ToUpper(hex)
+        }
+        result += hex
+    }
+    return result
+}
+
+// Utility functions (these would be implemented in the runtime or as external functions)
+func isDigit(c: byte) -> bool {
+    return c >= '0' && c <= '9'
+}
+
+func parseInteger(s: string) -> int {
+    // Simple integer parsing implementation
+    result := 0
+    for _, c := range s {
+        if c >= '0' && c <= '9' {
+            result = result * 10 + int(c - '0')
+        }
+    }
+    return result
+}
+
+// These functions would be implemented in the runtime
+extern func intToString(value: int64) -> string
+extern func uintToString(value: uint64) -> string
+extern func uintToBaseString(value: uint64, base: int) -> string
+extern func floatToString(value: float64) -> string
+extern func floatToFixedString(value: float64, precision: int) -> string
+extern func floatToExpString(value: float64, precision: int) -> string
+extern func escapeString(s: string) -> string
+extern func escapeRune(r: rune) -> string
+
+// Error output functions
+func Errorf(format: string, args: ...any) -> FormatError {
+    message, _ := sprintf(format, args...)
+    return FormatError{message: message, position: 0, verb: 0}
+}

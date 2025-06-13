@@ -56,10 +56,41 @@ typedef enum {
     TOKEN_TRY,          // try (error handling)
     TOKEN_CATCH,        // catch (error handling)
     TOKEN_UNSAFE,       // unsafe
+    TOKEN_ASM,          // asm (inline assembly)
+    TOKEN_EXTERN,       // extern (FFI declarations)
+    TOKEN_FROM,         // from (extern library)
+    TOKEN_VOLATILE,     // volatile (memory operations)
+    TOKEN_INLINE,       // inline (inline functions)
+    TOKEN_NO_STD,       // no_std (attribute)
+    TOKEN_PARALLEL,     // parallel (data parallel processing)
+    TOKEN_REDUCE,       // reduce (parallel reduction)
+    TOKEN_BARRIER,      // barrier (synchronization)
+    TOKEN_ATOMIC,       // atomic (atomic operations)
+    TOKEN_THREAD_LOCAL, // threadLocal (thread-local storage)
     TOKEN_OWNED,        // owned (ownership)
     TOKEN_BORROWED,     // borrowed (ownership)
     TOKEN_SHARED,       // shared (ownership)
     TOKEN_LET,          // let (nullable unwrapping)
+    TOKEN_MATCH,        // match (pattern matching)
+    TOKEN_KERNEL,       // kernel (GPU kernel function)
+    TOKEN_DEVICE,       // device (GPU device qualifier)
+    TOKEN_HOST,         // host (CPU host qualifier)
+    TOKEN_GLOBAL,       // global (GPU global memory)
+    TOKEN_SHARED_MEM,   // shared (GPU shared memory)
+    TOKEN_CONSTANT,     // constant (GPU constant memory)
+    TOKEN_LOCAL,        // local (GPU local memory)
+    
+    // WebAssembly Support
+    TOKEN_WASM,         // wasm (WebAssembly target)
+    TOKEN_EXPORT,       // export (WASM export)
+    TOKEN_MEMORY,       // memory (WASM linear memory)
+    TOKEN_TABLE,        // table (WASM table)
+    TOKEN_GLOBAL_WASM,  // global (WASM global variable)
+    TOKEN_FUNC_WASM,    // func (WASM function)
+    TOKEN_TYPE_WASM,    // type (WASM type)
+    TOKEN_START,        // start (WASM start function)
+    TOKEN_ELEM,         // elem (WASM element segment)
+    TOKEN_DATA,         // data (WASM data segment)
     
     // Operators and punctuation
     TOKEN_PLUS,         // +
@@ -113,6 +144,9 @@ typedef enum {
     TOKEN_QUESTION,     // ? (nullable type marker)
     TOKEN_TRY_OP,       // try operator
     TOKEN_CATCH_OP,     // catch operator
+    TOKEN_DEREF,        // @ (explicit dereference operator / attribute marker)
+    TOKEN_ADDR_OF,      // & (address-of operator, may conflict with BIT_AND)
+    TOKEN_ATTRIBUTE,    // @ (context-sensitive: attribute when followed by identifier)
     
     // Delimiters
     TOKEN_LPAREN,       // (

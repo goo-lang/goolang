@@ -1,0 +1,708 @@
+// Package map provides a hash map implementation with ownership semantics
+package map
+
+import "vec"
+
+// Map is a hash map implementation that respects Goo's ownership semantics
+type Map[K comparable, V any] struct {
+    buckets: vec.Vec[bucket[K, V]]  // array of hash buckets
+    size: int                       // number of key-value pairs
+    load_factor: float64           // load factor threshold for resizing
+    owned: bool                    // whether this Map owns its data
+}
+
+// bucket represents a single bucket in the hash table using separate chaining
+type bucket[K comparable, V any] struct {
+    entries: vec.Vec[entry[K, V]]
+}
+
+// entry represents a single key-value pair
+type entry[K comparable, V any] struct {
+    key: K
+    value: V
+    hash: uint64
+}
+
+// MapError represents errors that can occur with Map operations
+type MapError struct {
+    message: string
+    kind: MapErrorKind
+}
+
+type MapErrorKind enum {
+    KeyNotFound,
+    OwnershipViolation,
+    InvalidOperation,
+    CapacityExceeded
+}
+
+// Standard error values
+var (
+    ErrKeyNotFound = MapError{message: "key not found", kind: MapErrorKind.KeyNotFound}
+    ErrOwnershipViolation = MapError{message: "ownership violation", kind: MapErrorKind.OwnershipViolation}
+    ErrCapacityExceeded = MapError{message: "capacity exceeded", kind: MapErrorKind.CapacityExceeded}
+)
+
+func (e: MapError) Error() -> string {
+    return e.message
+}
+
+// Default constants
+const (
+    DEFAULT_INITIAL_CAPACITY = 16
+    DEFAULT_LOAD_FACTOR = 0.75
+    MAX_LOAD_FACTOR = 0.9
+    MIN_LOAD_FACTOR = 0.1
+)
+
+// New creates a new empty Map with default capacity and load factor
+func New[K comparable, V any]() -> Map[K, V] {
+    return NewWithCapacity[K, V](DEFAULT_INITIAL_CAPACITY)
+}
+
+// NewWithCapacity creates a new empty Map with the specified initial capacity
+func NewWithCapacity[K comparable, V any](capacity: int) -> Map[K, V] {
+    if capacity < 4 {
+        capacity = 4
+    }
+    
+    buckets := vec.NewWithCapacity[bucket[K, V]](capacity)
+    
+    // Initialize all buckets
+    for i := 0; i < capacity; i++ {
+        bucket := bucket[K, V]{
+            entries: vec.New[entry[K, V]]()
+        }
+        buckets.Push(bucket)
+    }
+    
+    return Map[K, V]{
+        buckets: buckets,
+        size: 0,
+        load_factor: DEFAULT_LOAD_FACTOR,
+        owned: true
+    }
+}
+
+// FromPairs creates a new Map from a slice of key-value pairs
+func FromPairs[K comparable, V any](pairs: []Pair[K, V]) -> Map[K, V] {
+    map := NewWithCapacity[K, V](len(pairs) * 2)
+    for _, pair := range pairs {
+        map.Insert(pair.Key, pair.Value)
+    }
+    return map
+}
+
+// Pair represents a key-value pair
+type Pair[K comparable, V any] struct {
+    Key: K
+    Value: V
+}
+
+// Size returns the number of key-value pairs in the Map
+func (m: *Map[K, V]) Size() -> int {
+    return m.size
+}
+
+// IsEmpty returns true if the Map contains no elements
+func (m: *Map[K, V]) IsEmpty() -> bool {
+    return m.size == 0
+}
+
+// Capacity returns the current capacity (number of buckets) of the Map
+func (m: *Map[K, V]) Capacity() -> int {
+    return m.buckets.Len()
+}
+
+// LoadFactor returns the current load factor of the Map
+func (m: *Map[K, V]) CurrentLoadFactor() -> float64 {
+    if m.buckets.Len() == 0 {
+        return 0.0
+    }
+    return float64(m.size) / float64(m.buckets.Len())
+}
+
+// IsOwned returns true if this Map owns its underlying data
+func (m: *Map[K, V]) IsOwned() -> bool {
+    return m.owned
+}
+
+// Insert adds a key-value pair to the Map, returning the old value if the key existed
+func (m: *Map[K, V]) Insert(key: K, value: V) -> (?V, !MapError) {
+    if !m.owned {
+        return nil, ErrOwnershipViolation
+    }
+    
+    // Check if we need to resize before inserting
+    if m.CurrentLoadFactor() > m.load_factor {
+        try m.resize(m.buckets.Len() * 2)
+    }
+    
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.buckets.Len()))
+    
+    bucket_ref, _ := try m.buckets.GetMut(bucket_index)
+    bucket := bucket_ref
+    
+    // Check if key already exists
+    for i := 0; i < bucket.entries.Len(); i++ {
+        entry_ref, _ := try bucket.entries.GetMut(i)
+        if entry_ref.key == key {
+            // Key exists, replace value
+            old_value := entry_ref.value
+            entry_ref.value = value
+            return old_value, nil
+        }
+    }
+    
+    // Key doesn't exist, add new entry
+    new_entry := entry[K, V]{
+        key: key,
+        value: value,
+        hash: hash
+    }
+    
+    bucket.entries.Push(new_entry)
+    m.size++
+    
+    return nil, nil
+}
+
+// Get retrieves the value associated with the given key
+func (m: *Map[K, V]) Get(key: K) -> (?V, !MapError) {
+    if m.buckets.Len() == 0 {
+        return nil, ErrKeyNotFound
+    }
+    
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.buckets.Len()))
+    
+    bucket_ref, _ := try m.buckets.Get(bucket_index)
+    bucket := bucket_ref
+    
+    for i := 0; i < bucket.entries.Len(); i++ {
+        entry_ref, _ := try bucket.entries.Get(i)
+        if entry_ref.key == key {
+            return entry_ref.value, nil
+        }
+    }
+    
+    return nil, ErrKeyNotFound
+}
+
+// GetRef returns a borrowed reference to the value associated with the given key
+func (m: *Map[K, V]) GetRef(key: K) -> (?&V, !MapError) {
+    if m.buckets.Len() == 0 {
+        return nil, ErrKeyNotFound
+    }
+    
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.buckets.Len()))
+    
+    bucket_ref, _ := try m.buckets.Get(bucket_index)
+    bucket := bucket_ref
+    
+    for i := 0; i < bucket.entries.Len(); i++ {
+        entry_ref, _ := try bucket.entries.Get(i)
+        if entry_ref.key == key {
+            return &entry_ref.value, nil
+        }
+    }
+    
+    return nil, ErrKeyNotFound
+}
+
+// GetMutRef returns a mutable borrowed reference to the value associated with the given key
+func (m: *Map[K, V]) GetMutRef(key: K) -> (?&mut V, !MapError) {
+    if !m.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if m.buckets.Len() == 0 {
+        return nil, ErrKeyNotFound
+    }
+    
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.buckets.Len()))
+    
+    bucket_ref, _ := try m.buckets.GetMut(bucket_index)
+    bucket := bucket_ref
+    
+    for i := 0; i < bucket.entries.Len(); i++ {
+        entry_ref, _ := try bucket.entries.GetMut(i)
+        if entry_ref.key == key {
+            return &mut entry_ref.value, nil
+        }
+    }
+    
+    return nil, ErrKeyNotFound
+}
+
+// Contains returns true if the Map contains the given key
+func (m: *Map[K, V]) Contains(key: K) -> bool {
+    _, err := m.Get(key)
+    return err == nil
+}
+
+// Remove removes the key-value pair associated with the given key
+func (m: *Map[K, V]) Remove(key: K) -> (?V, !MapError) {
+    if !m.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if m.buckets.Len() == 0 {
+        return nil, ErrKeyNotFound
+    }
+    
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.buckets.Len()))
+    
+    bucket_ref, _ := try m.buckets.GetMut(bucket_index)
+    bucket := bucket_ref
+    
+    for i := 0; i < bucket.entries.Len(); i++ {
+        entry_ref, _ := try bucket.entries.Get(i)
+        if entry_ref.key == key {
+            removed_entry, _ := try bucket.entries.Remove(i)
+            m.size--
+            
+            // Check if we should shrink the map
+            if m.CurrentLoadFactor() < MIN_LOAD_FACTOR && m.buckets.Len() > DEFAULT_INITIAL_CAPACITY {
+                m.resize(m.buckets.Len() / 2) catch |_| {
+                    // Ignore resize errors on shrinking
+                }
+            }
+            
+            return removed_entry.value, nil
+        }
+    }
+    
+    return nil, ErrKeyNotFound
+}
+
+// Clear removes all key-value pairs from the Map
+func (m: *Map[K, V]) Clear() -> !MapError {
+    if !m.owned {
+        return ErrOwnershipViolation
+    }
+    
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.GetMut(i)
+        bucket_ref.entries.Clear()
+    }
+    m.size = 0
+    return nil
+}
+
+// Keys returns a vector containing all keys in the Map
+func (m: *Map[K, V]) Keys() -> vec.Vec[K] {
+    keys := vec.NewWithCapacity[K](m.size)
+    
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.Get(i)
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.Get(j)
+            keys.Push(entry_ref.key)
+        }
+    }
+    
+    return keys
+}
+
+// Values returns a vector containing all values in the Map
+func (m: *Map[K, V]) Values() -> vec.Vec[V] {
+    values := vec.NewWithCapacity[V](m.size)
+    
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.Get(i)
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.Get(j)
+            values.Push(entry_ref.value)
+        }
+    }
+    
+    return values
+}
+
+// Pairs returns a vector containing all key-value pairs in the Map
+func (m: *Map[K, V]) Pairs() -> vec.Vec[Pair[K, V]] {
+    pairs := vec.NewWithCapacity[Pair[K, V]](m.size)
+    
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.Get(i)
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.Get(j)
+            pair := Pair[K, V]{
+                Key: entry_ref.key,
+                Value: entry_ref.value
+            }
+            pairs.Push(pair)
+        }
+    }
+    
+    return pairs
+}
+
+// Clone creates a deep copy of the Map
+func (m: *Map[K, V]) Clone() -> Map[K, V] {
+    clone := NewWithCapacity[K, V](m.buckets.Len())
+    clone.load_factor = m.load_factor
+    
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.Get(i)
+        clone_bucket_ref, _ := try clone.buckets.GetMut(i)
+        
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.Get(j)
+            clone_bucket_ref.entries.Push(*entry_ref)
+        }
+    }
+    
+    clone.size = m.size
+    return clone
+}
+
+// Extend adds all key-value pairs from another Map
+func (m: *Map[K, V]) Extend(other: &Map[K, V]) -> !MapError {
+    if !m.owned {
+        return ErrOwnershipViolation
+    }
+    
+    for i := 0; i < other.buckets.Len(); i++ {
+        bucket_ref, _ := try other.buckets.Get(i)
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.Get(j)
+            _, insert_err := try m.Insert(entry_ref.key, entry_ref.value)
+            if insert_err != nil {
+                return insert_err
+            }
+        }
+    }
+    
+    return nil
+}
+
+// Retain keeps only the key-value pairs that satisfy the predicate
+func (m: *Map[K, V]) Retain(predicate: func(K, V) -> bool) -> !MapError {
+    if !m.owned {
+        return ErrOwnershipViolation
+    }
+    
+    keys_to_remove := vec.New[K]()
+    
+    // Collect keys to remove
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.Get(i)
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.Get(j)
+            if !predicate(entry_ref.key, entry_ref.value) {
+                keys_to_remove.Push(entry_ref.key)
+            }
+        }
+    }
+    
+    // Remove the keys
+    for i := 0; i < keys_to_remove.Len(); i++ {
+        key_ref, _ := try keys_to_remove.Get(i)
+        m.Remove(*key_ref) catch |_| {
+            // Ignore errors during removal
+        }
+    }
+    
+    return nil
+}
+
+// ForEach applies a function to each key-value pair
+func (m: *Map[K, V]) ForEach(f: func(&K, &V)) {
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.Get(i)
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.Get(j)
+            f(&entry_ref.key, &entry_ref.value)
+        }
+    }
+}
+
+// ForEachMut applies a function to each key-value pair (mutable version)
+func (m: *Map[K, V]) ForEachMut(f: func(&K, &mut V)) -> !MapError {
+    if !m.owned {
+        return ErrOwnershipViolation
+    }
+    
+    for i := 0; i < m.buckets.Len(); i++ {
+        bucket_ref, _ := try m.buckets.GetMut(i)
+        for j := 0; j < bucket_ref.entries.Len(); j++ {
+            entry_ref, _ := try bucket_ref.entries.GetMut(j)
+            f(&entry_ref.key, &mut entry_ref.value)
+        }
+    }
+    return nil
+}
+
+// Entry API for advanced operations
+
+// Entry represents an entry in the Map that may or may not exist
+type Entry[K comparable, V any] struct {
+    map: *Map[K, V]
+    key: K
+    hash: uint64
+    bucket_index: int
+    entry_index: ?int  // nil if entry doesn't exist
+}
+
+// Entry returns an Entry for the given key
+func (m: *Map[K, V]) Entry(key: K) -> Entry[K, V] {
+    hash := hashKey(key)
+    bucket_index := 0
+    if m.buckets.Len() > 0 {
+        bucket_index = int(hash % uint64(m.buckets.Len()))
+    }
+    
+    entry_index := ?int(nil)
+    
+    if m.buckets.Len() > 0 {
+        bucket_ref, _ := try m.buckets.Get(bucket_index)
+        for i := 0; i < bucket_ref.entries.Len(); i++ {
+            entry_ref, _ := try bucket_ref.entries.Get(i)
+            if entry_ref.key == key {
+                entry_index = i
+                break
+            }
+        }
+    }
+    
+    return Entry[K, V]{
+        map: m,
+        key: key,
+        hash: hash,
+        bucket_index: bucket_index,
+        entry_index: entry_index
+    }
+}
+
+// Exists returns true if the entry exists in the Map
+func (e: *Entry[K, V]) Exists() -> bool {
+    return e.entry_index != nil
+}
+
+// Get returns the value if the entry exists
+func (e: *Entry[K, V]) Get() -> ?V {
+    if e.entry_index == nil {
+        return nil
+    }
+    
+    bucket_ref, _ := try e.map.buckets.Get(e.bucket_index)
+    entry_ref, _ := try bucket_ref.entries.Get(*e.entry_index)
+    return entry_ref.value
+}
+
+// GetRef returns a reference to the value if the entry exists
+func (e: *Entry[K, V]) GetRef() -> ?&V {
+    if e.entry_index == nil {
+        return nil
+    }
+    
+    bucket_ref, _ := try e.map.buckets.Get(e.bucket_index)
+    entry_ref, _ := try bucket_ref.entries.Get(*e.entry_index)
+    return &entry_ref.value
+}
+
+// Set sets the value for this entry, creating it if it doesn't exist
+func (e: *Entry[K, V]) Set(value: V) -> !MapError {
+    if !e.map.owned {
+        return ErrOwnershipViolation
+    }
+    
+    if e.entry_index != nil {
+        // Entry exists, update value
+        bucket_ref, _ := try e.map.buckets.GetMut(e.bucket_index)
+        entry_ref, _ := try bucket_ref.entries.GetMut(*e.entry_index)
+        entry_ref.value = value
+    } else {
+        // Entry doesn't exist, insert new
+        _, insert_err := try e.map.Insert(e.key, value)
+        if insert_err != nil {
+            return insert_err
+        }
+        // Update entry_index after insertion
+        bucket_ref, _ := try e.map.buckets.Get(e.bucket_index)
+        for i := 0; i < bucket_ref.entries.Len(); i++ {
+            entry_ref, _ := try bucket_ref.entries.Get(i)
+            if entry_ref.key == e.key {
+                e.entry_index = i
+                break
+            }
+        }
+    }
+    
+    return nil
+}
+
+// OrInsert sets the value if the entry doesn't exist, returns the existing value otherwise
+func (e: *Entry[K, V]) OrInsert(value: V) -> (?V, !MapError) {
+    if e.entry_index != nil {
+        // Entry exists, return existing value
+        return e.Get(), nil
+    } else {
+        // Entry doesn't exist, insert and return nil
+        try e.Set(value)
+        return nil, nil
+    }
+}
+
+// Remove removes the entry if it exists
+func (e: *Entry[K, V]) Remove() -> (?V, !MapError) {
+    if e.entry_index == nil {
+        return nil, ErrKeyNotFound
+    }
+    
+    return e.map.Remove(e.key)
+}
+
+// Iterator support
+
+// Iterator represents an iterator over Map entries
+type Iterator[K comparable, V any] struct {
+    map: &Map[K, V]
+    bucket_index: int
+    entry_index: int
+}
+
+// Iter returns an iterator over the Map's key-value pairs
+func (m: *Map[K, V]) Iter() -> Iterator[K, V] {
+    return Iterator[K, V]{
+        map: m,
+        bucket_index: 0,
+        entry_index: 0
+    }
+}
+
+// Next returns the next key-value pair in the iteration
+func (it: *Iterator[K, V]) Next() -> ?Pair[K, V] {
+    for it.bucket_index < it.map.buckets.Len() {
+        bucket_ref, _ := try it.map.buckets.Get(it.bucket_index)
+        
+        if it.entry_index < bucket_ref.entries.Len() {
+            entry_ref, _ := try bucket_ref.entries.Get(it.entry_index)
+            pair := Pair[K, V]{
+                Key: entry_ref.key,
+                Value: entry_ref.value
+            }
+            it.entry_index++
+            return pair
+        }
+        
+        // Move to next bucket
+        it.bucket_index++
+        it.entry_index = 0
+    }
+    
+    return nil
+}
+
+// HasNext returns true if there are more elements to iterate
+func (it: *Iterator[K, V]) HasNext() -> bool {
+    temp_bucket := it.bucket_index
+    temp_entry := it.entry_index
+    
+    for temp_bucket < it.map.buckets.Len() {
+        bucket_ref, _ := try it.map.buckets.Get(temp_bucket)
+        if temp_entry < bucket_ref.entries.Len() {
+            return true
+        }
+        temp_bucket++
+        temp_entry = 0
+    }
+    
+    return false
+}
+
+// Reset resets the iterator to the beginning
+func (it: *Iterator[K, V]) Reset() {
+    it.bucket_index = 0
+    it.entry_index = 0
+}
+
+// Private helper methods
+
+// resize resizes the hash table to the new capacity
+func (m: *Map[K, V]) resize(new_capacity: int) -> !MapError {
+    if new_capacity < 4 {
+        new_capacity = 4
+    }
+    
+    // Save old data
+    old_pairs := m.Pairs()
+    
+    // Create new bucket array
+    new_buckets := vec.NewWithCapacity[bucket[K, V]](new_capacity)
+    for i := 0; i < new_capacity; i++ {
+        bucket := bucket[K, V]{
+            entries: vec.New[entry[K, V]]()
+        }
+        new_buckets.Push(bucket)
+    }
+    
+    // Replace buckets and reset size
+    m.buckets = new_buckets
+    m.size = 0
+    
+    // Re-insert all entries
+    for i := 0; i < old_pairs.Len(); i++ {
+        pair_ref, _ := try old_pairs.Get(i)
+        _, insert_err := try m.Insert(pair_ref.Key, pair_ref.Value)
+        if insert_err != nil {
+            return insert_err
+        }
+    }
+    
+    return nil
+}
+
+// Hash function for keys
+func hashKey[K comparable](key: K) -> uint64 {
+    // This is a placeholder implementation
+    // In a real implementation, this would use a proper hash function
+    // that works with the specific type K
+    return simpleHash(key)
+}
+
+// Simple hash function (placeholder)
+func simpleHash[K comparable](key: K) -> uint64 {
+    // This would need to be implemented properly for each type
+    // For now, we'll use a simple approach
+    hash := uint64(0)
+    
+    // Convert key to bytes and hash
+    // This is highly simplified and would need proper implementation
+    match key {
+        case s: string:
+            for i, c := range s {
+                hash = hash * 31 + uint64(c)
+            }
+        case i: int:
+            hash = uint64(i * 2654435761) // Knuth's multiplicative hash
+        case i: int32:
+            hash = uint64(i * 2654435761)
+        case i: int64:
+            hash = uint64(i * 2654435761)
+        case u: uint:
+            hash = uint64(u * 2654435761)
+        case u: uint32:
+            hash = uint64(u * 2654435761)
+        case u: uint64:
+            hash = u * 2654435761
+        default:
+            // For other types, use a simple approach
+            hash = 42 // Placeholder
+    }
+    
+    return hash
+}
+
+// Collect creates a new Map from an iterator of key-value pairs
+func Collect[K comparable, V any](pairs: Iterator[K, V]) -> Map[K, V] {
+    map := New[K, V]()
+    for pair := pairs.Next(); pair != nil; pair = pairs.Next() {
+        map.Insert(pair.Key, pair.Value)
+    }
+    return map
+}

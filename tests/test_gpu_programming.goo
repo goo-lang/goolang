@@ -1,0 +1,509 @@
+// GPU Programming Test
+// Demonstrates CUDA-style GPU programming features in Goo
+
+package main
+
+import "cuda"
+import "math"
+
+// Simple vector addition kernel
+kernel func vectorAdd(a, b, c []float32, n int) {
+    // Get the global thread ID
+    i := blockIdx.x * blockDim.x + threadIdx.x
+    
+    if i < n {
+        c[i] = a[i] + b[i]
+    }
+}
+
+// Matrix multiplication kernel with shared memory
+kernel func matrixMul(A, B, C [][]float32, width int) {
+    // Block index
+    bx := blockIdx.x
+    by := blockIdx.y
+    
+    // Thread index
+    tx := threadIdx.x
+    ty := threadIdx.y
+    
+    // Calculate global row and column
+    row := by * blockDim.y + ty
+    col := bx * blockDim.x + tx
+    
+    // Shared memory for tiles
+    sharedMem var As [16][16]float32
+    sharedMem var Bs [16][16]float32
+    
+    var sum float32 = 0.0
+    
+    // Loop over tiles
+    for t := 0; t < (width + 15) / 16; t++ {
+        // Load data into shared memory
+        if row < width && (t * 16 + tx) < width {
+            As[ty][tx] = A[row][t * 16 + tx]
+        } else {
+            As[ty][tx] = 0.0
+        }
+        
+        if col < width && (t * 16 + ty) < width {
+            Bs[ty][tx] = B[t * 16 + ty][col]
+        } else {
+            Bs[ty][tx] = 0.0
+        }
+        
+        // Synchronize threads
+        __syncthreads()
+        
+        // Compute partial sum
+        for k := 0; k < 16; k++ {
+            sum += As[ty][k] * Bs[k][tx]
+        }
+        
+        // Synchronize again
+        __syncthreads()
+    }
+    
+    // Write result
+    if row < width && col < width {
+        C[row][col] = sum
+    }
+}
+
+// Reduction kernel
+kernel func reduce(input []float32, output []float32, n int) {
+    sharedMem var sdata [256]float32
+    
+    tid := threadIdx.x
+    i := blockIdx.x * blockDim.x + threadIdx.x
+    
+    // Load data into shared memory
+    if i < n {
+        sdata[tid] = input[i]
+    } else {
+        sdata[tid] = 0.0
+    }
+    
+    __syncthreads()
+    
+    // Reduction in shared memory
+    for s := blockDim.x / 2; s > 0; s = s >> 1 {
+        if tid < s {
+            sdata[tid] += sdata[tid + s]
+        }
+        __syncthreads()
+    }
+    
+    // Write result for this block
+    if tid == 0 {
+        output[blockIdx.x] = sdata[0]
+    }
+}
+
+// Host function for vector addition
+func testVectorAddition() {
+    const N = 1000000
+    
+    // Allocate host memory
+    var h_a = make([]float32, N)
+    var h_b = make([]float32, N)
+    var h_c = make([]float32, N)
+    
+    // Initialize host arrays
+    for i := 0; i < N; i++ {
+        h_a[i] = float32(i)
+        h_b[i] = float32(i * 2)
+    }
+    
+    // Allocate device memory
+    d_a := cuda.Malloc[float32](N * sizeof(float32))
+    d_b := cuda.Malloc[float32](N * sizeof(float32))
+    d_c := cuda.Malloc[float32](N * sizeof(float32))
+    
+    // Copy data to device
+    cuda.Memcpy(d_a, h_a, N * sizeof(float32), cuda.HostToDevice)
+    cuda.Memcpy(d_b, h_b, N * sizeof(float32), cuda.HostToDevice)
+    
+    // Launch kernel
+    blockSize := 256
+    gridSize := (N + blockSize - 1) / blockSize
+    
+    vectorAdd<<<gridSize, blockSize>>>(d_a, d_b, d_c, N)
+    
+    // Check for kernel errors
+    cuda.DeviceSync()
+    
+    // Copy result back to host
+    cuda.Memcpy(h_c, d_c, N * sizeof(float32), cuda.DeviceToHost)
+    
+    // Verify results
+    for i := 0; i < 10; i++ {
+        expected := float32(i + i * 2)
+        if h_c[i] != expected {
+            println("Error at index", i, ": expected", expected, "got", h_c[i])
+        }
+    }
+    
+    println("Vector addition completed successfully")
+    
+    // Free device memory
+    cuda.Free(d_a)
+    cuda.Free(d_b)
+    cuda.Free(d_c)
+}
+
+// Host function for matrix multiplication
+func testMatrixMultiplication() {
+    const WIDTH = 1024
+    
+    // Allocate host memory
+    h_A := make([][]float32, WIDTH)
+    h_B := make([][]float32, WIDTH)
+    h_C := make([][]float32, WIDTH)
+    
+    for i := 0; i < WIDTH; i++ {
+        h_A[i] = make([]float32, WIDTH)
+        h_B[i] = make([]float32, WIDTH)
+        h_C[i] = make([]float32, WIDTH)
+    }
+    
+    // Initialize matrices
+    for i := 0; i < WIDTH; i++ {
+        for j := 0; j < WIDTH; j++ {
+            h_A[i][j] = float32(i + j)
+            h_B[i][j] = float32(i - j)
+        }
+    }
+    
+    // Allocate device memory
+    size := WIDTH * WIDTH * sizeof(float32)
+    d_A := cuda.Malloc[float32](size)
+    d_B := cuda.Malloc[float32](size)
+    d_C := cuda.Malloc[float32](size)
+    
+    // Copy data to device
+    cuda.Memcpy(d_A, h_A, size, cuda.HostToDevice)
+    cuda.Memcpy(d_B, h_B, size, cuda.HostToDevice)
+    
+    // Launch kernel
+    blockSize := dim3{16, 16, 1}
+    gridSize := dim3{(WIDTH + 15) / 16, (WIDTH + 15) / 16, 1}
+    
+    matrixMul<<<gridSize, blockSize>>>(d_A, d_B, d_C, WIDTH)
+    
+    // Wait for completion
+    cuda.DeviceSync()
+    
+    // Copy result back
+    cuda.Memcpy(h_C, d_C, size, cuda.DeviceToHost)
+    
+    println("Matrix multiplication completed")
+    
+    // Free device memory
+    cuda.Free(d_A)
+    cuda.Free(d_B)
+    cuda.Free(d_C)
+}
+
+// Host function for reduction
+func testReduction() {
+    const N = 1000000
+    
+    // Allocate and initialize host data
+    h_input := make([]float32, N)
+    for i := 0; i < N; i++ {
+        h_input[i] = 1.0  // Sum should be N
+    }
+    
+    // Allocate device memory
+    d_input := cuda.Malloc[float32](N * sizeof(float32))
+    
+    blockSize := 256
+    gridSize := (N + blockSize - 1) / blockSize
+    d_output := cuda.Malloc[float32](gridSize * sizeof(float32))
+    
+    // Copy data to device
+    cuda.Memcpy(d_input, h_input, N * sizeof(float32), cuda.HostToDevice)
+    
+    // Launch reduction kernel
+    reduce<<<gridSize, blockSize>>>(d_input, d_output, N)
+    
+    // Copy partial results back
+    h_output := make([]float32, gridSize)
+    cuda.Memcpy(h_output, d_output, gridSize * sizeof(float32), cuda.DeviceToHost)
+    
+    // Final reduction on CPU
+    var total float32 = 0.0
+    for i := 0; i < gridSize; i++ {
+        total += h_output[i]
+    }
+    
+    println("Reduction result:", total, "Expected:", float32(N))
+    
+    // Free device memory
+    cuda.Free(d_input)
+    cuda.Free(d_output)
+}
+
+// GPU memory management examples
+func testMemoryManagement() {
+    // Different types of GPU memory allocation
+    
+    // Global memory
+    global_mem := cuda.Malloc[float32](1024 * sizeof(float32))
+    
+    // Managed/unified memory
+    managed_mem := cuda.MallocManaged[float32](1024 * sizeof(float32))
+    
+    // Constant memory (conceptual - would be handled differently)
+    constant var const_data [256]float32
+    
+    // Test memory copy patterns
+    host_data := make([]float32, 1024)
+    
+    // Async memory copy
+    stream := cuda.CreateStream()
+    cuda.MemcpyAsync(global_mem, host_data, 1024 * sizeof(float32), cuda.HostToDevice, stream)
+    
+    // Stream synchronization
+    cuda.StreamSync(stream)
+    
+    // Cleanup
+    cuda.Free(global_mem)
+    cuda.Free(managed_mem)
+    cuda.DestroyStream(stream)
+}
+
+// Multiple GPU support
+func testMultiGPU() {
+    deviceCount := cuda.GetDeviceCount()
+    println("Found", deviceCount, "GPU devices")
+    
+    for device := 0; device < deviceCount; device++ {
+        cuda.SetDevice(device)
+        
+        props := cuda.GetDeviceProperties(device)
+        println("Device", device, ":", props.name)
+        println("  Compute Capability:", props.major, ".", props.minor)
+        println("  Global Memory:", props.totalGlobalMem / (1024 * 1024), "MB")
+        println("  Shared Memory per Block:", props.sharedMemPerBlock, "bytes")
+        println("  Max Threads per Block:", props.maxThreadsPerBlock)
+    }
+}
+
+// Error handling
+func testErrorHandling() {
+    // Memory allocation with error checking
+    ptr, err := cuda.TryMalloc[float32](1024 * sizeof(float32))
+    
+    match err {
+        case nil:
+            println("Memory allocated successfully")
+            cuda.Free(ptr)
+        case cudaErrorMemoryAllocation:
+            println("Failed to allocate memory")
+        case e:
+            println("Unexpected CUDA error:", e)
+    }
+}
+
+// Texture memory example (conceptual)
+func testTextureMemory() {
+    // Create texture reference
+    tex := cuda.CreateTexture2D[float32]()
+    
+    // Bind array to texture
+    width := 1024
+    height := 1024
+    array := cuda.MallocArray[float32](width, height)
+    
+    cuda.BindTexture(tex, array)
+    
+    // Use texture in kernel would require texture fetch intrinsics
+    // This is a conceptual example
+    
+    // Cleanup
+    cuda.UnbindTexture(tex)
+    cuda.FreeArray(array)
+}
+
+// Occupancy calculation
+func testOccupancy() {
+    blockSize := 256
+    
+    // Calculate theoretical occupancy
+    occupancy := cuda.CalculateOccupancy(vectorAdd, blockSize, 0)
+    println("Kernel occupancy:", occupancy)
+    
+    // Get optimal block size
+    optimalBlockSize := cuda.GetOptimalBlockSize(vectorAdd)
+    println("Optimal block size:", optimalBlockSize)
+}
+
+// Event-based timing
+func testTiming() {
+    start := cuda.CreateEvent()
+    stop := cuda.CreateEvent()
+    
+    // Record start event
+    cuda.EventRecord(start)
+    
+    // Launch some work
+    const N = 1000000
+    blockSize := 256
+    gridSize := (N + blockSize - 1) / blockSize
+    
+    d_a := cuda.Malloc[float32](N * sizeof(float32))
+    d_b := cuda.Malloc[float32](N * sizeof(float32))
+    d_c := cuda.Malloc[float32](N * sizeof(float32))
+    
+    vectorAdd<<<gridSize, blockSize>>>(d_a, d_b, d_c, N)
+    
+    // Record stop event
+    cuda.EventRecord(stop)
+    cuda.EventSync(stop)
+    
+    // Calculate elapsed time
+    elapsed := cuda.EventElapsedTime(start, stop)
+    println("Kernel execution time:", elapsed, "ms")
+    
+    // Cleanup
+    cuda.DestroyEvent(start)
+    cuda.DestroyEvent(stop)
+    cuda.Free(d_a)
+    cuda.Free(d_b)
+    cuda.Free(d_c)
+}
+
+// Main function demonstrating all GPU features
+func main() {
+    println("=== Goo GPU Programming Tests ===")
+    
+    // Check CUDA availability
+    if !cuda.IsAvailable() {
+        println("CUDA is not available on this system")
+        return
+    }
+    
+    println("\n1. Testing Vector Addition:")
+    testVectorAddition()
+    
+    println("\n2. Testing Matrix Multiplication:")
+    testMatrixMultiplication()
+    
+    println("\n3. Testing Reduction:")
+    testReduction()
+    
+    println("\n4. Testing Memory Management:")
+    testMemoryManagement()
+    
+    println("\n5. Testing Multi-GPU:")
+    testMultiGPU()
+    
+    println("\n6. Testing Error Handling:")
+    testErrorHandling()
+    
+    println("\n7. Testing Texture Memory:")
+    testTextureMemory()
+    
+    println("\n8. Testing Occupancy:")
+    testOccupancy()
+    
+    println("\n9. Testing Timing:")
+    testTiming()
+    
+    println("\nGPU programming tests completed!")
+}
+
+// Additional GPU kernel examples
+
+// Stencil computation kernel
+kernel func stencil2D(input, output [][]float32, width, height int) {
+    i := blockIdx.x * blockDim.x + threadIdx.x
+    j := blockIdx.y * blockDim.y + threadIdx.y
+    
+    if i > 0 && i < width-1 && j > 0 && j < height-1 {
+        output[i][j] = 0.25 * (input[i-1][j] + input[i+1][j] + 
+                               input[i][j-1] + input[i][j+1])
+    }
+}
+
+// Transpose kernel with shared memory
+kernel func transpose(input, output [][]float32, width, height int) {
+    sharedMem var tile [16][16]float32
+    
+    x := blockIdx.x * 16 + threadIdx.x
+    y := blockIdx.y * 16 + threadIdx.y
+    
+    // Load data into shared memory
+    if x < width && y < height {
+        tile[threadIdx.y][threadIdx.x] = input[y][x]
+    }
+    
+    __syncthreads()
+    
+    // Transpose coordinates
+    x = blockIdx.y * 16 + threadIdx.x
+    y = blockIdx.x * 16 + threadIdx.y
+    
+    // Write transposed data
+    if x < height && y < width {
+        output[y][x] = tile[threadIdx.x][threadIdx.y]
+    }
+}
+
+// Histogram kernel
+kernel func histogram(data []int, hist []int, n int) {
+    tid := blockIdx.x * blockDim.x + threadIdx.x
+    
+    if tid < n {
+        value := data[tid]
+        if value >= 0 && value < 256 {
+            atomic.Add(&hist[value], 1)
+        }
+    }
+}
+
+// Scan (prefix sum) kernel
+kernel func scan(input, output []float32, n int) {
+    sharedMem var temp [256]float32
+    
+    tid := threadIdx.x
+    bid := blockIdx.x
+    
+    // Load data
+    if bid * blockDim.x + tid < n {
+        temp[tid] = input[bid * blockDim.x + tid]
+    } else {
+        temp[tid] = 0.0
+    }
+    
+    __syncthreads()
+    
+    // Up-sweep phase
+    for stride := 1; stride < blockDim.x; stride *= 2 {
+        if (tid + 1) % (2 * stride) == 0 {
+            temp[tid] += temp[tid - stride]
+        }
+        __syncthreads()
+    }
+    
+    // Down-sweep phase
+    if tid == blockDim.x - 1 {
+        temp[tid] = 0.0
+    }
+    __syncthreads()
+    
+    for stride := blockDim.x / 2; stride > 0; stride /= 2 {
+        if (tid + 1) % (2 * stride) == 0 {
+            t := temp[tid - stride]
+            temp[tid - stride] = temp[tid]
+            temp[tid] += t
+        }
+        __syncthreads()
+    }
+    
+    // Write result
+    if bid * blockDim.x + tid < n {
+        output[bid * blockDim.x + tid] = temp[tid]
+    }
+}

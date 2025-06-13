@@ -1,0 +1,748 @@
+// Package strings implements simple functions to manipulate UTF-8 encoded strings
+package strings
+
+import "io"
+
+// Builder is used to efficiently build a string using Write methods
+type Builder struct {
+    buf: []byte
+}
+
+// NewBuilder creates a new string builder
+func NewBuilder() -> *Builder {
+    return &Builder{buf: make([]byte, 0, 16)}
+}
+
+// Write appends the contents of p to the builder's buffer
+func (b: *Builder) Write(p: []byte) -> (n: int, err: !io.IOError) {
+    b.buf = append(b.buf, p...)
+    return len(p), nil
+}
+
+// WriteByte appends the byte c to the builder's buffer
+func (b: *Builder) WriteByte(c: byte) -> !io.IOError {
+    b.buf = append(b.buf, c)
+    return nil
+}
+
+// WriteRune appends the UTF-8 encoding of Unicode code point r to the builder's buffer
+func (b: *Builder) WriteRune(r: rune) -> (n: int, err: !io.IOError) {
+    // Convert rune to UTF-8 bytes and append
+    utf8_bytes := runeToUTF8(r)
+    b.buf = append(b.buf, utf8_bytes...)
+    return len(utf8_bytes), nil
+}
+
+// WriteString appends the contents of s to the builder's buffer
+func (b: *Builder) WriteString(s: string) -> (n: int, err: !io.IOError) {
+    b.buf = append(b.buf, []byte(s)...)
+    return len(s), nil
+}
+
+// String returns the accumulated string
+func (b: *Builder) String() -> string {
+    return string(b.buf)
+}
+
+// Len returns the number of accumulated bytes
+func (b: *Builder) Len() -> int {
+    return len(b.buf)
+}
+
+// Cap returns the capacity of the builder's underlying byte slice
+func (b: *Builder) Cap() -> int {
+    return cap(b.buf)
+}
+
+// Reset resets the builder to be empty
+func (b: *Builder) Reset() {
+    b.buf = b.buf[:0]
+}
+
+// Grow grows the builder's capacity, if necessary, to guarantee space for another n bytes
+func (b: *Builder) Grow(n: int) {
+    if cap(b.buf) - len(b.buf) < n {
+        new_buf := make([]byte, len(b.buf), 2 * cap(b.buf) + n)
+        copy(new_buf, b.buf)
+        b.buf = new_buf
+    }
+}
+
+// Reader type for reading from strings
+type Reader struct {
+    s: string
+    i: int64 // current reading index
+    prev_rune: int // index of previous rune; or < 0
+}
+
+// NewReader returns a new Reader reading from s
+func NewReader(s: string) -> *Reader {
+    return &Reader{s: s, i: 0, prev_rune: -1}
+}
+
+// Read implements the io.Reader interface
+func (r: *Reader) Read(b: []byte) -> (n: int, err: !io.IOError) {
+    if r.i >= int64(len(r.s)) {
+        return 0, io.ErrEOF
+    }
+    r.prev_rune = -1
+    n = copy(b, r.s[r.i:])
+    r.i += int64(n)
+    return n, nil
+}
+
+// ReadAt implements the io.ReaderAt interface
+func (r: *Reader) ReadAt(b: []byte, off: int64) -> (n: int, err: !io.IOError) {
+    if off < 0 {
+        return 0, io.IOError{message: "negative offset", kind: io.IOErrorKind.InvalidData}
+    }
+    if off >= int64(len(r.s)) {
+        return 0, io.ErrEOF
+    }
+    n = copy(b, r.s[off:])
+    if n < len(b) {
+        err = io.ErrEOF
+    }
+    return n, err
+}
+
+// ReadByte reads and returns the next byte from the input
+func (r: *Reader) ReadByte() -> (byte: byte, err: !io.IOError) {
+    r.prev_rune = -1
+    if r.i >= int64(len(r.s)) {
+        return 0, io.ErrEOF
+    }
+    b := r.s[r.i]
+    r.i++
+    return b, nil
+}
+
+// ReadRune reads and returns the next UTF-8-encoded Unicode code point from the input
+func (r: *Reader) ReadRune() -> (ch: rune, size: int, err: !io.IOError) {
+    if r.i >= int64(len(r.s)) {
+        r.prev_rune = -1
+        return 0, 0, io.ErrEOF
+    }
+    r.prev_rune = int(r.i)
+    ch, size = decodeRuneInString(r.s[r.i:])
+    r.i += int64(size)
+    return ch, size, nil
+}
+
+// Seek implements the io.Seeker interface
+func (r: *Reader) Seek(offset: int64, whence: io.SeekWhence) -> (int64, !io.IOError) {
+    r.prev_rune = -1
+    abs_offset := offset
+    
+    match whence {
+        case io.SeekWhence.SeekStart:
+            abs_offset = offset
+        case io.SeekWhence.SeekCurrent:
+            abs_offset = r.i + offset
+        case io.SeekWhence.SeekEnd:
+            abs_offset = int64(len(r.s)) + offset
+    }
+    
+    if abs_offset < 0 {
+        return 0, io.IOError{message: "negative position", kind: io.IOErrorKind.InvalidData}
+    }
+    r.i = abs_offset
+    return abs_offset, nil
+}
+
+// Size returns the original length of the underlying string
+func (r: *Reader) Size() -> int64 {
+    return int64(len(r.s))
+}
+
+// Reset resets the Reader to be reading from s, at the beginning
+func (r: *Reader) Reset(s: string) {
+    r.s = s
+    r.i = 0
+    r.prev_rune = -1
+}
+
+// UnreadByte complements ReadByte in implementing the io.ByteScanner interface
+func (r: *Reader) UnreadByte() -> !io.IOError {
+    if r.i <= 0 {
+        return io.IOError{message: "at beginning of string", kind: io.IOErrorKind.InvalidData}
+    }
+    r.prev_rune = -1
+    r.i--
+    return nil
+}
+
+// UnreadRune complements ReadRune in implementing the io.RuneScanner interface
+func (r: *Reader) UnreadRune() -> !io.IOError {
+    if r.prev_rune < 0 {
+        return io.IOError{message: "previous operation was not ReadRune", kind: io.IOErrorKind.InvalidData}
+    }
+    r.i = int64(r.prev_rune)
+    r.prev_rune = -1
+    return nil
+}
+
+// String comparison and searching functions
+
+// Compare returns an integer comparing two strings lexicographically
+// The result will be 0 if a==b, -1 if a < b, and +1 if a > b
+func Compare(a: string, b: string) -> int {
+    if a == b {
+        return 0
+    }
+    if a < b {
+        return -1
+    }
+    return 1
+}
+
+// Contains reports whether substr is within s
+func Contains(s: string, substr: string) -> bool {
+    return Index(s, substr) >= 0
+}
+
+// ContainsAny reports whether any Unicode code points in chars are within s
+func ContainsAny(s: string, chars: string) -> bool {
+    return IndexAny(s, chars) >= 0
+}
+
+// ContainsRune reports whether the Unicode code point r is within s
+func ContainsRune(s: string, r: rune) -> bool {
+    return IndexRune(s, r) >= 0
+}
+
+// Count counts the number of non-overlapping instances of substr in s
+func Count(s: string, substr: string) -> int {
+    if len(substr) == 0 {
+        return RuneCount(s) + 1
+    }
+    
+    count := 0
+    for {
+        i := Index(s, substr)
+        if i == -1 {
+            break
+        }
+        count++
+        s = s[i + len(substr):]
+    }
+    return count
+}
+
+// EqualFold reports whether s and t are equal under Unicode case-folding
+func EqualFold(s: string, t: string) -> bool {
+    return ToLower(s) == ToLower(t)
+}
+
+// HasPrefix tests whether the string s begins with prefix
+func HasPrefix(s: string, prefix: string) -> bool {
+    return len(s) >= len(prefix) && s[0:len(prefix)] == prefix
+}
+
+// HasSuffix tests whether the string s ends with suffix
+func HasSuffix(s: string, suffix: string) -> bool {
+    return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
+}
+
+// Index returns the index of the first instance of substr in s, or -1 if substr is not present in s
+func Index(s: string, substr: string) -> int {
+    if len(substr) == 0 {
+        return 0
+    }
+    if len(substr) > len(s) {
+        return -1
+    }
+    
+    // Simple string search algorithm (Boyer-Moore would be better for larger strings)
+    for i := 0; i <= len(s) - len(substr); i++ {
+        if s[i:i+len(substr)] == substr {
+            return i
+        }
+    }
+    return -1
+}
+
+// IndexAny returns the index of the first instance of any Unicode code point from chars in s
+func IndexAny(s: string, chars: string) -> int {
+    for i, r := range s {
+        if ContainsRune(chars, r) {
+            return i
+        }
+    }
+    return -1
+}
+
+// IndexByte returns the index of the first instance of the given byte in s
+func IndexByte(s: string, c: byte) -> int {
+    for i := 0; i < len(s); i++ {
+        if s[i] == c {
+            return i
+        }
+    }
+    return -1
+}
+
+// IndexRune returns the index of the first instance of the Unicode code point r
+func IndexRune(s: string, r: rune) -> int {
+    for i, rune_val := range s {
+        if rune_val == r {
+            return i
+        }
+    }
+    return -1
+}
+
+// LastIndex returns the index of the last instance of substr in s
+func LastIndex(s: string, substr: string) -> int {
+    if len(substr) == 0 {
+        return len(s)
+    }
+    if len(substr) > len(s) {
+        return -1
+    }
+    
+    for i := len(s) - len(substr); i >= 0; i-- {
+        if s[i:i+len(substr)] == substr {
+            return i
+        }
+    }
+    return -1
+}
+
+// LastIndexAny returns the index of the last instance of any Unicode code point from chars in s
+func LastIndexAny(s: string, chars: string) -> int {
+    for i := len(s) - 1; i >= 0; i-- {
+        r, _ := decodeLastRuneInString(s[:i+1])
+        if ContainsRune(chars, r) {
+            return i
+        }
+    }
+    return -1
+}
+
+// LastIndexByte returns the index of the last instance of the given byte in s
+func LastIndexByte(s: string, c: byte) -> int {
+    for i := len(s) - 1; i >= 0; i-- {
+        if s[i] == c {
+            return i
+        }
+    }
+    return -1
+}
+
+// String transformation functions
+
+// Join concatenates the elements of its first argument to create a single string
+func Join(elems: []string, sep: string) -> string {
+    if len(elems) == 0 {
+        return ""
+    }
+    if len(elems) == 1 {
+        return elems[0]
+    }
+    
+    // Calculate total length
+    total_len := 0
+    for _, elem := range elems {
+        total_len += len(elem)
+    }
+    total_len += len(sep) * (len(elems) - 1)
+    
+    // Build result
+    builder := make([]byte, 0, total_len)
+    for i, elem := range elems {
+        if i > 0 {
+            builder = append(builder, []byte(sep)...)
+        }
+        builder = append(builder, []byte(elem)...)
+    }
+    return string(builder)
+}
+
+// Repeat returns a new string consisting of count copies of the string s
+func Repeat(s: string, count: int) -> string {
+    if count < 0 {
+        return ""
+    }
+    if count == 0 || len(s) == 0 {
+        return ""
+    }
+    if count == 1 {
+        return s
+    }
+    
+    builder := make([]byte, 0, len(s) * count)
+    for i := 0; i < count; i++ {
+        builder = append(builder, []byte(s)...)
+    }
+    return string(builder)
+}
+
+// Replace returns a copy of the string s with the first n non-overlapping instances of old replaced by new
+func Replace(s: string, old: string, new: string, n: int) -> string {
+    if old == new || n == 0 {
+        return s
+    }
+    
+    if len(old) == 0 {
+        // Handle empty old string by inserting new before each rune
+        result := ""
+        for i, r := range s {
+            if i > 0 && n > 0 {
+                result += new
+                n--
+            }
+            result += string(r)
+        }
+        return result
+    }
+    
+    result := ""
+    remaining := s
+    
+    for n > 0 {
+        i := Index(remaining, old)
+        if i == -1 {
+            break
+        }
+        result += remaining[:i] + new
+        remaining = remaining[i + len(old):]
+        n--
+    }
+    
+    result += remaining
+    return result
+}
+
+// ReplaceAll returns a copy of the string s with all non-overlapping instances of old replaced by new
+func ReplaceAll(s: string, old: string, new: string) -> string {
+    return Replace(s, old, new, -1)
+}
+
+// Split slices s into all substrings separated by sep and returns a slice of the substrings between those separators
+func Split(s: string, sep: string) -> []string {
+    return splitGeneric(s, sep, 0, -1)
+}
+
+// SplitAfter slices s into all substrings after each instance of sep and returns a slice of those substrings
+func SplitAfter(s: string, sep: string) -> []string {
+    return splitGeneric(s, sep, len(sep), -1)
+}
+
+// SplitAfterN slices s into substrings after each instance of sep and returns a slice of those substrings
+func SplitAfterN(s: string, sep: string, n: int) -> []string {
+    return splitGeneric(s, sep, len(sep), n)
+}
+
+// SplitN slices s into substrings separated by sep and returns a slice of the substrings between those separators
+func SplitN(s: string, sep: string, n: int) -> []string {
+    return splitGeneric(s, sep, 0, n)
+}
+
+// Generic split function
+func splitGeneric(s: string, sep: string, sep_save: int, n: int) -> []string {
+    if n == 0 {
+        return nil
+    }
+    
+    if len(sep) == 0 {
+        // Split into individual runes
+        result := make([]string, 0, len(s))
+        for _, r := range s {
+            result = append(result, string(r))
+            if n > 0 && len(result) >= n {
+                break
+            }
+        }
+        return result
+    }
+    
+    if n < 0 {
+        n = Count(s, sep) + 1
+    }
+    
+    result := make([]string, 0, n)
+    start := 0
+    
+    for len(result) < n - 1 {
+        i := Index(s[start:], sep)
+        if i == -1 {
+            break
+        }
+        i += start
+        result = append(result, s[start:i + sep_save])
+        start = i + len(sep)
+    }
+    
+    // Add remaining part
+    result = append(result, s[start:])
+    return result
+}
+
+// Fields splits the string s around each instance of one or more consecutive white space characters
+func Fields(s: string) -> []string {
+    return FieldsFunc(s, isSpace)
+}
+
+// FieldsFunc splits the string s at each run of Unicode code points c satisfying f(c)
+func FieldsFunc(s: string, f: func(rune) -> bool) -> []string {
+    result := []string{}
+    field_start := -1
+    
+    for i, r := range s {
+        is_separator := f(r)
+        
+        if field_start < 0 && !is_separator {
+            // Start of a new field
+            field_start = i
+        } else if field_start >= 0 && is_separator {
+            // End of current field
+            result = append(result, s[field_start:i])
+            field_start = -1
+        }
+    }
+    
+    // Add last field if we were in one
+    if field_start >= 0 {
+        result = append(result, s[field_start:])
+    }
+    
+    return result
+}
+
+// Case conversion functions
+
+// ToLower returns s with all Unicode letters mapped to their lower case
+func ToLower(s: string) -> string {
+    return mapString(s, toLowerRune)
+}
+
+// ToUpper returns s with all Unicode letters mapped to their upper case
+func ToUpper(s: string) -> string {
+    return mapString(s, toUpperRune)
+}
+
+// ToTitle returns a copy of the string s with all Unicode letters mapped to their title case
+func ToTitle(s: string) -> string {
+    return mapString(s, toTitleRune)
+}
+
+// Title returns a copy of the string s with all Unicode letters that begin words mapped to their title case
+func Title(s: string) -> string {
+    prev_is_space := true
+    return mapString(s, func(r: rune) -> rune {
+        if prev_is_space {
+            prev_is_space = false
+            return toTitleRune(r)
+        }
+        prev_is_space = isSpace(r)
+        return toLowerRune(r)
+    })
+}
+
+// Map returns a copy of the string s with all its characters modified according to the mapping function
+func Map(mapping: func(rune) -> rune, s: string) -> string {
+    return mapString(s, mapping)
+}
+
+func mapString(s: string, mapping: func(rune) -> rune) -> string {
+    builder := NewBuilder()
+    for _, r := range s {
+        mapped := mapping(r)
+        builder.WriteRune(mapped)
+    }
+    return builder.String()
+}
+
+// Trimming functions
+
+// Trim returns a slice of the string s with all leading and trailing Unicode code points contained in cutset removed
+func Trim(s: string, cutset: string) -> string {
+    return TrimFunc(s, func(r: rune) -> bool {
+        return ContainsRune(cutset, r)
+    })
+}
+
+// TrimLeft returns a slice of the string s with all leading Unicode code points contained in cutset removed
+func TrimLeft(s: string, cutset: string) -> string {
+    return TrimLeftFunc(s, func(r: rune) -> bool {
+        return ContainsRune(cutset, r)
+    })
+}
+
+// TrimRight returns a slice of the string s, with all trailing Unicode code points contained in cutset removed
+func TrimRight(s: string, cutset: string) -> string {
+    return TrimRightFunc(s, func(r: rune) -> bool {
+        return ContainsRune(cutset, r)
+    })
+}
+
+// TrimSpace returns a slice of the string s, with all leading and trailing white space removed
+func TrimSpace(s: string) -> string {
+    return TrimFunc(s, isSpace)
+}
+
+// TrimFunc returns a slice of the string s with all leading and trailing Unicode code points c satisfying f(c) removed
+func TrimFunc(s: string, f: func(rune) -> bool) -> string {
+    return TrimRightFunc(TrimLeftFunc(s, f), f)
+}
+
+// TrimLeftFunc returns a slice of the string s with all leading Unicode code points c satisfying f(c) removed
+func TrimLeftFunc(s: string, f: func(rune) -> bool) -> string {
+    for i, r := range s {
+        if !f(r) {
+            return s[i:]
+        }
+    }
+    return ""
+}
+
+// TrimRightFunc returns a slice of the string s with all trailing Unicode code points c satisfying f(c) removed
+func TrimRightFunc(s: string, f: func(rune) -> bool) -> string {
+    for i := len(s); i > 0; {
+        r, size := decodeLastRuneInString(s[:i])
+        if !f(r) {
+            return s[:i]
+        }
+        i -= size
+    }
+    return ""
+}
+
+// TrimPrefix returns s without the provided leading prefix string
+func TrimPrefix(s: string, prefix: string) -> string {
+    if HasPrefix(s, prefix) {
+        return s[len(prefix):]
+    }
+    return s
+}
+
+// TrimSuffix returns s without the provided trailing suffix string
+func TrimSuffix(s: string, suffix: string) -> string {
+    if HasSuffix(s, suffix) {
+        return s[:len(s) - len(suffix)]
+    }
+    return s
+}
+
+// Utility functions
+
+// RuneCount returns the number of runes in s
+func RuneCount(s: string) -> int {
+    count := 0
+    for range s {
+        count++
+    }
+    return count
+}
+
+// Clone returns a fresh copy of s
+func Clone(s: string) -> string {
+    if len(s) == 0 {
+        return ""
+    }
+    clone := make([]byte, len(s))
+    copy(clone, []byte(s))
+    return string(clone)
+}
+
+// CutPrefix returns s without the provided leading prefix string and reports whether it found the prefix
+func CutPrefix(s: string, prefix: string) -> (after: string, found: bool) {
+    if !HasPrefix(s, prefix) {
+        return s, false
+    }
+    return s[len(prefix):], true
+}
+
+// CutSuffix returns s without the provided ending suffix string and reports whether it found the suffix
+func CutSuffix(s: string, suffix: string) -> (before: string, found: bool) {
+    if !HasSuffix(s, suffix) {
+        return s, false
+    }
+    return s[:len(s) - len(suffix)], true
+}
+
+// Cut slices s around the first instance of sep, returning the text before and after sep
+func Cut(s: string, sep: string) -> (before: string, after: string, found: bool) {
+    if i := Index(s, sep); i >= 0 {
+        return s[:i], s[i + len(sep):], true
+    }
+    return s, "", false
+}
+
+// Helper functions for character classification and conversion
+// These would typically be implemented using Unicode tables
+
+func isSpace(r: rune) -> bool {
+    return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f'
+}
+
+func toLowerRune(r: rune) -> rune {
+    if r >= 'A' && r <= 'Z' {
+        return r + ('a' - 'A')
+    }
+    return r
+}
+
+func toUpperRune(r: rune) -> rune {
+    if r >= 'a' && r <= 'z' {
+        return r - ('a' - 'A')
+    }
+    return r
+}
+
+func toTitleRune(r: rune) -> rune {
+    return toUpperRune(r)
+}
+
+// UTF-8 encoding/decoding functions
+// These would be implemented more efficiently in the runtime
+
+func runeToUTF8(r: rune) -> []byte {
+    // Simple UTF-8 encoding (full implementation would handle all Unicode ranges)
+    if r <= 0x7F {
+        return []byte{byte(r)}
+    } else if r <= 0x7FF {
+        return []byte{
+            byte(0xC0 | (r >> 6)),
+            byte(0x80 | (r & 0x3F))
+        }
+    } else if r <= 0xFFFF {
+        return []byte{
+            byte(0xE0 | (r >> 12)),
+            byte(0x80 | ((r >> 6) & 0x3F)),
+            byte(0x80 | (r & 0x3F))
+        }
+    } else {
+        return []byte{
+            byte(0xF0 | (r >> 18)),
+            byte(0x80 | ((r >> 12) & 0x3F)),
+            byte(0x80 | ((r >> 6) & 0x3F)),
+            byte(0x80 | (r & 0x3F))
+        }
+    }
+}
+
+func decodeRuneInString(s: string) -> (r: rune, size: int) {
+    // Simple UTF-8 decoding
+    if len(s) == 0 {
+        return 0, 0
+    }
+    
+    b := s[0]
+    if b < 0x80 {
+        return rune(b), 1
+    }
+    
+    // For full implementation, this would handle multi-byte UTF-8 sequences
+    return rune(b), 1
+}
+
+func decodeLastRuneInString(s: string) -> (r: rune, size: int) {
+    if len(s) == 0 {
+        return 0, 0
+    }
+    
+    // Simple implementation - would need proper UTF-8 boundary detection
+    return rune(s[len(s) - 1]), 1
+}

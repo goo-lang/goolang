@@ -41,8 +41,14 @@ static TokenType bison_token_to_token_type(int bison_token);
 %token TRUE FALSE NIL
 
 // Goo Extension Keywords
-%token COMPTIME PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE
-%token OWNED BORROWED SHARED LET
+%token COMPTIME PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM
+%token EXTERN FROM VOLATILE INLINE NO_STD
+%token PARALLEL REDUCE BARRIER ATOMIC THREAD_LOCAL
+%token OWNED BORROWED SHARED LET MATCH
+%token KERNEL DEVICE HOST GLOBAL SHARED_MEM CONSTANT LOCAL
+
+// WebAssembly Keywords
+%token WASM EXPORT MEMORY TABLE START ELEM DATA
 
 // Operators and punctuation
 %token PLUS MINUS MULTIPLY DIVIDE MODULO
@@ -55,7 +61,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %token ARROW
 
 // Goo Extension Operators
-%token BANG QUESTION TRY_OP CATCH_OP
+%token BANG QUESTION TRY_OP CATCH_OP DEREF
 
 // Delimiters
 %token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
@@ -70,22 +76,29 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> package_clause import_decl_list import_decl import_spec import_spec_list
 %type <node> opt_import_decl_list opt_top_level_decl_list
 %type <node> top_level_decl_list top_level_decl
-%type <node> declaration func_decl var_decl const_decl type_decl short_var_decl
+%type <node> declaration func_decl var_decl const_decl type_decl short_var_decl extern_decl
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
 %type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
+%type <node> unsafe_stmt asm_stmt parallel_for_stmt
+%type <node> parallel_reduce_expr barrier_call atomic_expr thread_local_decl
 %type <node> expression primary_expr unary_expr postfix_expr binary_expr
 %type <node> call_expr index_expr selector_expr
 %type <node> type type_name array_type slice_type map_type chan_type
-%type <node> func_type pointer_type reference_type
+%type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> identifier literal
 %type <node> expression_list
 
 // Goo Extensions
 %type <node> error_union_type nullable_type try_expr catch_expr
 %type <node> comptime_block ownership_qualifier if_let_stmt
-%type <token> chan_pattern
+%type <node> attribute volatile_expr
+%type <node> match_expr match_case_list match_case pattern guard_condition
+%type <node> kernel_decl kernel_launch gpu_memory_alloc gpu_memory_copy gpu_sync gpu_intrinsic
+%type <node> wasm_export wasm_import wasm_memory wasm_table wasm_global wasm_start
+%type <node> js_interop dom_access
+%type <token> chan_pattern gpu_memory_qualifier wasm_value_type
 
 // Operator precedence (lowest to highest)
 %left COMMA
@@ -199,6 +212,13 @@ top_level_decl_list:
 top_level_decl:
     declaration { $$ = $1; }
     | func_decl { $$ = $1; }
+    | kernel_decl { $$ = $1; }
+    | wasm_export { $$ = $1; }
+    | wasm_import { $$ = $1; }
+    | wasm_memory { $$ = $1; }
+    | wasm_table { $$ = $1; }
+    | wasm_global { $$ = $1; }
+    | wasm_start { $$ = $1; }
     ;
 
 
@@ -206,6 +226,7 @@ declaration:
     var_decl { $$ = $1; }
     | const_decl { $$ = $1; }
     | type_decl { $$ = $1; }
+    | extern_decl { $$ = $1; }
     ;
 
 // Function declaration
@@ -455,6 +476,10 @@ statement:
     | select_stmt { $$ = $1; }
     | block { $$ = $1; }
     | comptime_block { $$ = $1; }  // Goo extension
+    | unsafe_stmt { $$ = $1; }     // Goo extension
+    | asm_stmt SEMICOLON { $$ = $1; } // Goo extension
+    | asm_stmt { $$ = $1; }        // Goo extension
+    | parallel_for_stmt { $$ = $1; } // Goo extension
     ;
 
 simple_stmt:
@@ -645,6 +670,7 @@ expression:
     | binary_expr { $$ = $1; }
     | try_expr { $$ = $1; }      // Goo extension
     | catch_expr { $$ = $1; }    // Goo extension
+    | match_expr { $$ = $1; }    // Goo extension
     ;
 
 unary_expr:
@@ -759,6 +785,11 @@ primary_expr:
     | call_expr { $$ = $1; }
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }
+    | kernel_launch { $$ = $1; }
+    | gpu_memory_alloc { $$ = $1; }
+    | gpu_memory_copy { $$ = $1; }
+    | gpu_sync { $$ = $1; }
+    | gpu_intrinsic { $$ = $1; }
     | LPAREN expression RPAREN { $$ = $2; }
     ;
 
@@ -833,6 +864,7 @@ type:
     | func_type { $$ = $1; }
     | pointer_type { $$ = $1; }
     | reference_type { $$ = $1; }     // Goo extension
+    | unsafe_ptr_type { $$ = $1; }    // Goo extension  
     | error_union_type { $$ = $1; }   // Goo extension
     | nullable_type { $$ = $1; }      // Goo extension
     ;
@@ -936,6 +968,22 @@ reference_type:
     }
     ;
 
+unsafe_ptr_type:
+    UNSAFE DOT identifier {
+        // This matches "unsafe.Pointer" syntax (no multiply for now to avoid conflicts)
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        if (strcmp(ident->name, "Pointer") == 0) {
+            UnsafePtrTypeNode* unsafe_ptr = ast_unsafe_ptr_type_new(NULL, get_current_position());
+            ast_node_free($3);
+            $$ = (ASTNode*)unsafe_ptr;
+        } else {
+            yyerror("Expected 'Pointer' after 'unsafe.'");
+            ast_node_free($3);
+            $$ = NULL;
+        }
+    }
+    ;
+
 // Goo Extensions
 
 error_union_type:
@@ -975,10 +1023,142 @@ comptime_block:
     }
     ;
 
+unsafe_stmt:
+    UNSAFE block {
+        UnsafeStmtNode* unsafe_node = ast_unsafe_stmt_new($2, get_current_position());
+        $$ = (ASTNode*)unsafe_node;
+    }
+    ;
+
+asm_stmt:
+    ASM LBRACE STRING_LITERAL RBRACE {
+        AsmStmtNode* asm_node = ast_asm_stmt_new($3, get_current_position());
+        free($3);
+        $$ = (ASTNode*)asm_node;
+    }
+    ;
+
 ownership_qualifier:
     OWNED { $$ = NULL; /* TODO: Create ownership node */ }
     | BORROWED { $$ = NULL; }
     | SHARED { $$ = NULL; }
+    ;
+
+extern_decl:
+    EXTERN STRING_LITERAL identifier func_signature {
+        // extern "C" function_name(params) -> return_type
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, $4, NULL, NULL, get_current_position());
+        free($2);
+        ast_node_free($3);
+        $$ = (ASTNode*)extern_node;
+    }
+    | EXTERN STRING_LITERAL identifier func_signature FROM STRING_LITERAL {
+        // extern "C" function_name(params) -> return_type from "library"
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, $4, NULL, $6, get_current_position());
+        free($2);
+        free($6);
+        ast_node_free($3);
+        $$ = (ASTNode*)extern_node;
+    }
+    ;
+
+attribute:
+    DEREF identifier {
+        // @attribute_name
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        AttributeNode* attr = ast_attribute_new(ident->name, NULL, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)attr;
+    }
+    | DEREF identifier LPAREN expression_list RPAREN {
+        // @attribute_name(args)
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        AttributeNode* attr = ast_attribute_new(ident->name, $4, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)attr;
+    }
+    ;
+
+volatile_expr:
+    VOLATILE expression {
+        VolatileExprNode* volatile_node = ast_volatile_expr_new($2, get_current_position());
+        $$ = (ASTNode*)volatile_node;
+    }
+    ;
+
+parallel_for_stmt:
+    PARALLEL FOR identifier SHORT_ASSIGN expression SEMICOLON expression SEMICOLON expression block {
+        // parallel for i := 0; i < n; i++ { ... }
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        VarDeclNode* init = ast_var_decl_new(get_current_position());
+        init->names = malloc(sizeof(char*));
+        init->names[0] = strdup(ident->name);
+        init->name_count = 1;
+        init->values = $5;
+        init->is_short_decl = 1;
+        
+        ParallelForNode* parallel_for = ast_parallel_for_new((ASTNode*)init, $7, $9, $10, "dynamic", 0, get_current_position());
+        ast_node_free($3);
+        $$ = (ASTNode*)parallel_for;
+    }
+    ;
+
+parallel_reduce_expr:
+    PARALLEL REDUCE LPAREN expression COMMA expression COMMA expression RPAREN {
+        // parallel reduce(array, init_value, reduce_func)
+        ParallelReduceNode* reduce_node = ast_parallel_reduce_new($4, $6, $8, "custom", get_current_position());
+        $$ = (ASTNode*)reduce_node;
+    }
+    ;
+
+barrier_call:
+    BARRIER LPAREN RPAREN {
+        // barrier()
+        BarrierCallNode* barrier_node = ast_barrier_call_new(NULL, get_current_position());
+        $$ = (ASTNode*)barrier_node;
+    }
+    | BARRIER LPAREN STRING_LITERAL RPAREN {
+        // barrier("barrier_name")
+        BarrierCallNode* barrier_node = ast_barrier_call_new($3, get_current_position());
+        free($3);
+        $$ = (ASTNode*)barrier_node;
+    }
+    ;
+
+atomic_expr:
+    ATOMIC DOT identifier LPAREN expression RPAREN {
+        // atomic.Add(expr)
+        IdentifierNode* op_ident = (IdentifierNode*)$3;
+        AtomicExprNode* atomic_node = ast_atomic_expr_new($5, op_ident->name, NULL, get_current_position());
+        ast_node_free($3);
+        $$ = (ASTNode*)atomic_node;
+    }
+    | ATOMIC DOT identifier LPAREN expression COMMA expression RPAREN {
+        // atomic.CompareAndSwap(expr, operand)
+        IdentifierNode* op_ident = (IdentifierNode*)$3;
+        AtomicExprNode* atomic_node = ast_atomic_expr_new($5, op_ident->name, $7, get_current_position());
+        ast_node_free($3);
+        $$ = (ASTNode*)atomic_node;
+    }
+    ;
+
+thread_local_decl:
+    THREAD_LOCAL VAR identifier type {
+        // threadLocal var name type
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        ThreadLocalDeclNode* thread_local = ast_thread_local_decl_new(ident->name, $4, NULL, get_current_position());
+        ast_node_free($3);
+        $$ = (ASTNode*)thread_local;
+    }
+    | THREAD_LOCAL VAR identifier type ASSIGN expression {
+        // threadLocal var name type = init_value
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        ThreadLocalDeclNode* thread_local = ast_thread_local_decl_new(ident->name, $4, $6, get_current_position());
+        ast_node_free($3);
+        $$ = (ASTNode*)thread_local;
+    }
     ;
 
 // Basic elements
@@ -1019,6 +1199,343 @@ literal:
     | NIL {
         LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", get_current_position());
         $$ = (ASTNode*)lit;
+    }
+    ;
+
+// GPU Programming Support
+
+// Kernel function declaration
+kernel_decl:
+    KERNEL identifier func_signature block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $3, NULL, $4, GPU_TARGET_NVPTX, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)kernel;
+    }
+    | DEVICE KERNEL identifier func_signature block {
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $4, NULL, $5, GPU_TARGET_NVPTX, get_current_position());
+        ast_node_free($3);
+        $$ = (ASTNode*)kernel;
+    }
+    ;
+
+// Kernel launch expression  
+kernel_launch:
+    identifier LT LT LT expression COMMA expression GT GT GT LPAREN RPAREN {
+        // vectorAdd<<<gridSize, blockSize>>>()
+        IdentifierNode* kernel_name = (IdentifierNode*)$1;
+        KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, NULL, get_current_position());
+        $$ = (ASTNode*)launch;
+    }
+    | identifier LT LT LT expression COMMA expression GT GT GT LPAREN expression_list RPAREN {
+        // vectorAdd<<<gridSize, blockSize>>>(args)
+        IdentifierNode* kernel_name = (IdentifierNode*)$1;
+        KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, $12, get_current_position());
+        $$ = (ASTNode*)launch;
+    }
+    ;
+
+// GPU memory allocation
+gpu_memory_alloc:
+    identifier DOT identifier LBRACKET type RBRACKET LPAREN expression RPAREN {
+        // cuda.Malloc[float32](size)
+        IdentifierNode* package = (IdentifierNode*)$1;
+        IdentifierNode* func = (IdentifierNode*)$3;
+        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Malloc") == 0) {
+            GPUMemoryAllocNode* alloc = ast_gpu_memory_alloc_new($8, $5, GPU_MEMORY_GLOBAL, get_current_position());
+            ast_node_free($1);
+            ast_node_free($3);
+            $$ = (ASTNode*)alloc;
+        } else {
+            yyerror("Unknown GPU memory allocation function");
+            $$ = NULL;
+        }
+    }
+    ;
+
+// GPU memory copy
+gpu_memory_copy:
+    identifier DOT identifier LPAREN expression COMMA expression COMMA expression COMMA identifier RPAREN {
+        // cuda.Memcpy(dest, src, size, direction)
+        IdentifierNode* package = (IdentifierNode*)$1;
+        IdentifierNode* func = (IdentifierNode*)$3;
+        IdentifierNode* direction = (IdentifierNode*)$11;
+        
+        int dir = 0; // Default to HostToDevice
+        if (strcmp(direction->name, "HostToDevice") == 0) dir = 0;
+        else if (strcmp(direction->name, "DeviceToHost") == 0) dir = 1;
+        else if (strcmp(direction->name, "DeviceToDevice") == 0) dir = 2;
+        
+        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Memcpy") == 0) {
+            GPUMemoryCopyNode* copy = ast_gpu_memory_copy_new($5, $7, $9, dir, get_current_position());
+            ast_node_free($1);
+            ast_node_free($3);
+            ast_node_free($11);
+            $$ = (ASTNode*)copy;
+        } else {
+            yyerror("Unknown GPU memory copy function");
+            $$ = NULL;
+        }
+    }
+    ;
+
+// GPU synchronization
+gpu_sync:
+    identifier DOT identifier LPAREN RPAREN {
+        // cuda.DeviceSync()
+        IdentifierNode* package = (IdentifierNode*)$1;
+        IdentifierNode* func = (IdentifierNode*)$3;
+        
+        int sync_type = 0; // DeviceSync
+        if (strcmp(func->name, "DeviceSync") == 0) sync_type = 0;
+        else if (strcmp(func->name, "StreamSync") == 0) sync_type = 1;
+        
+        if (strcmp(package->name, "cuda") == 0) {
+            GPUSyncNode* sync = ast_gpu_sync_new(sync_type, NULL, NULL, get_current_position());
+            ast_node_free($1);
+            ast_node_free($3);
+            $$ = (ASTNode*)sync;
+        } else {
+            yyerror("Unknown GPU sync function");
+            $$ = NULL;
+        }
+    }
+    ;
+
+// GPU intrinsic functions
+gpu_intrinsic:
+    identifier DOT identifier {
+        // blockIdx.x, threadIdx.y, etc.
+        IdentifierNode* object = (IdentifierNode*)$1;
+        IdentifierNode* member = (IdentifierNode*)$3;
+        
+        char intrinsic_name[64];
+        snprintf(intrinsic_name, sizeof(intrinsic_name), "%s.%s", object->name, member->name);
+        
+        GPUIntrinsicNode* intrinsic = ast_gpu_intrinsic_new(intrinsic_name, NULL, GPU_CONTEXT_KERNEL, get_current_position());
+        ast_node_free($1);
+        ast_node_free($3);
+        $$ = (ASTNode*)intrinsic;
+    }
+    ;
+
+// GPU memory qualifiers
+gpu_memory_qualifier:
+    GLOBAL { $$ = (int)GPU_MEMORY_GLOBAL; }
+    | SHARED_MEM { $$ = (int)GPU_MEMORY_SHARED; }
+    | CONSTANT { $$ = (int)GPU_MEMORY_CONSTANT; }
+    | LOCAL { $$ = (int)GPU_MEMORY_LOCAL; }
+    ;
+
+// Pattern matching
+match_expr:
+    MATCH expression LBRACE match_case_list RBRACE {
+        MatchExprNode* match_node = ast_match_expr_new($2, $4, get_current_position());
+        $$ = (ASTNode*)match_node;
+    }
+    ;
+
+match_case_list:
+    match_case {
+        $$ = $1;
+    }
+    | match_case_list match_case {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+match_case:
+    CASE pattern COLON statement_list {
+        MatchCaseNode* case_node = ast_match_case_new($2, NULL, $4, get_current_position());
+        $$ = (ASTNode*)case_node;
+    }
+    | CASE pattern guard_condition COLON statement_list {
+        MatchCaseNode* case_node = ast_match_case_new($2, $3, $5, get_current_position());
+        $$ = (ASTNode*)case_node;
+    }
+    | DEFAULT COLON statement_list {
+        // Default case is represented as a wildcard pattern
+        PatternNode* wildcard = ast_pattern_new(PATTERN_WILDCARD, get_current_position());
+        MatchCaseNode* case_node = ast_match_case_new((ASTNode*)wildcard, NULL, $3, get_current_position());
+        $$ = (ASTNode*)case_node;
+    }
+    ;
+
+pattern:
+    literal {
+        // Literal pattern (e.g., 42, "hello", true)
+        PatternNode* pattern_node = ast_pattern_new(PATTERN_LITERAL, get_current_position());
+        pattern_node->data.literal.literal = $1;
+        $$ = (ASTNode*)pattern_node;
+    }
+    | identifier {
+        // Variable binding pattern (e.g., x, name) or wildcard pattern (_)
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        if (strcmp(ident->name, "_") == 0) {
+            // Wildcard pattern
+            PatternNode* pattern_node = ast_pattern_new(PATTERN_WILDCARD, get_current_position());
+            ast_node_free($1);
+            $$ = (ASTNode*)pattern_node;
+        } else {
+            // Variable binding pattern
+            PatternNode* pattern_node = ast_pattern_new(PATTERN_IDENTIFIER, get_current_position());
+            pattern_node->data.identifier.name = strdup(ident->name);
+            pattern_node->data.identifier.type = NULL;
+            ast_node_free($1);
+            $$ = (ASTNode*)pattern_node;
+        }
+    }
+    | identifier COLON type {
+        // Typed variable binding pattern (e.g., err: Error)
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        PatternNode* pattern_node = ast_pattern_new(PATTERN_IDENTIFIER, get_current_position());
+        pattern_node->data.identifier.name = strdup(ident->name);
+        pattern_node->data.identifier.type = $3;
+        ast_node_free($1);
+        $$ = (ASTNode*)pattern_node;
+    }
+    | identifier LBRACE expression_list RBRACE {
+        // Destructuring pattern (e.g., Person{Name: name, Age: age})
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        PatternNode* pattern_node = ast_pattern_new(PATTERN_DESTRUCTURE, get_current_position());
+        pattern_node->data.destructure.type_name = strdup(ident->name);
+        pattern_node->data.destructure.fields = $3;
+        ast_node_free($1);
+        $$ = (ASTNode*)pattern_node;
+    }
+    ;
+
+guard_condition:
+    IF expression {
+        GuardConditionNode* guard = ast_guard_condition_new($2, get_current_position());
+        $$ = (ASTNode*)guard;
+    }
+    ;
+
+// WebAssembly Support
+
+wasm_export:
+    EXPORT STRING_LITERAL identifier {
+        // export "functionName" myFunction
+        IdentifierNode* item = (IdentifierNode*)$3;
+        WasmExportNode* export_node = ast_wasm_export_new($2, $3, "func", get_current_position());
+        free($2);
+        $$ = (ASTNode*)export_node;
+    }
+    ;
+
+wasm_import:
+    IMPORT STRING_LITERAL STRING_LITERAL identifier {
+        // import "module" "function" localName
+        IdentifierNode* local = (IdentifierNode*)$4;
+        WasmImportNode* import_node = ast_wasm_import_new($2, $3, local->name, "func", NULL, get_current_position());
+        free($2);
+        free($3);
+        ast_node_free($4);
+        $$ = (ASTNode*)import_node;
+    }
+    ;
+
+wasm_memory:
+    MEMORY expression {
+        // memory 1 (1 page = 64KB)
+        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, NULL, 0, get_current_position());
+        $$ = (ASTNode*)memory_node;
+    }
+    | MEMORY expression expression {
+        // memory 1 16 (min 1 page, max 16 pages)
+        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, $3, 0, get_current_position());
+        $$ = (ASTNode*)memory_node;
+    }
+    ;
+
+wasm_table:
+    TABLE expression wasm_value_type {
+        // table 10 funcref
+        WasmTableNode* table_node = ast_wasm_table_new((WasmValueType)$3, $2, NULL, get_current_position());
+        $$ = (ASTNode*)table_node;
+    }
+    ;
+
+wasm_global:
+    GLOBAL identifier wasm_value_type expression {
+        // global myGlobal i32 42
+        IdentifierNode* name = (IdentifierNode*)$2;
+        WasmGlobalNode* global_node = ast_wasm_global_new(name->name, (WasmValueType)$3, 0, $4, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)global_node;
+    }
+    ;
+
+wasm_start:
+    START identifier {
+        // start main
+        WasmStartNode* start_node = ast_wasm_start_new($2, get_current_position());
+        $$ = (ASTNode*)start_node;
+    }
+    ;
+
+js_interop:
+    identifier DOT identifier LPAREN expression_list RPAREN {
+        // console.log(args) - JavaScript interop call
+        IdentifierNode* obj = (IdentifierNode*)$1;
+        IdentifierNode* method = (IdentifierNode*)$3;
+        
+        if (strcmp(obj->name, "console") == 0 || strcmp(obj->name, "window") == 0 || 
+            strcmp(obj->name, "document") == 0) {
+            JSInteropNode* js_node = ast_js_interop_new(JS_INTEROP_CALL, obj->name, method->name, $5, WASM_ENV_BROWSER, get_current_position());
+            ast_node_free($1);
+            ast_node_free($3);
+            $$ = (ASTNode*)js_node;
+        } else {
+            // Regular selector expression
+            yyerror("Unknown JavaScript object");
+            $$ = NULL;
+        }
+    }
+    ;
+
+dom_access:
+    identifier DOT identifier {
+        // document.body - DOM property access
+        IdentifierNode* api = (IdentifierNode*)$1;
+        IdentifierNode* prop = (IdentifierNode*)$3;
+        
+        if (strcmp(api->name, "document") == 0 || strcmp(api->name, "window") == 0) {
+            DOMAccessNode* dom_node = ast_dom_access_new(api->name, prop->name, NULL, 1, get_current_position());
+            ast_node_free($1);
+            ast_node_free($3);
+            $$ = (ASTNode*)dom_node;
+        } else {
+            yyerror("Unknown DOM API");
+            $$ = NULL;
+        }
+    }
+    ;
+
+wasm_value_type:
+    identifier {
+        // i32, i64, f32, f64, funcref, externref
+        IdentifierNode* type_name = (IdentifierNode*)$1;
+        if (strcmp(type_name->name, "i32") == 0) {
+            $$ = (int)WASM_TYPE_I32;
+        } else if (strcmp(type_name->name, "i64") == 0) {
+            $$ = (int)WASM_TYPE_I64;
+        } else if (strcmp(type_name->name, "f32") == 0) {
+            $$ = (int)WASM_TYPE_F32;
+        } else if (strcmp(type_name->name, "f64") == 0) {
+            $$ = (int)WASM_TYPE_F64;
+        } else if (strcmp(type_name->name, "funcref") == 0) {
+            $$ = (int)WASM_TYPE_FUNCREF;
+        } else if (strcmp(type_name->name, "externref") == 0) {
+            $$ = (int)WASM_TYPE_EXTERNREF;
+        } else {
+            yyerror("Unknown WebAssembly value type");
+            $$ = (int)WASM_TYPE_I32; // Default
+        }
+        ast_node_free($1);
     }
     ;
 

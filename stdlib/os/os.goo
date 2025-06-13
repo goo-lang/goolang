@@ -1,0 +1,651 @@
+// Package os provides a platform-independent interface to operating system functionality
+package os
+
+import "io"
+import "time"
+
+// File represents an open file descriptor
+type File struct {
+    fd: int           // file descriptor
+    name: string      // file name
+    owned: bool       // whether this File owns the descriptor
+    offset: int64     // current file offset
+    closed: bool      // whether the file has been closed
+}
+
+// FileInfo describes a file and is returned by Stat
+type FileInfo struct {
+    name: string      // base name of the file
+    size: int64       // length in bytes for regular files
+    mode: FileMode    // file mode bits
+    mod_time: time.Time // modification time
+    is_dir: bool      // abbreviation for Mode().IsDir()
+}
+
+// FileMode represents a file's mode and permission bits
+type FileMode uint32
+
+// File mode constants
+const (
+    // The single letters are the abbreviations used by the String method's formatting
+    ModeDir        FileMode = 1 << (32 - 1 - iota) // d: is a directory
+    ModeAppend                                      // a: append-only
+    ModeExclusive                                   // l: exclusive use
+    ModeTemporary                                   // T: temporary file; Plan 9 only
+    ModeSymlink                                     // L: symbolic link
+    ModeDevice                                      // D: device file
+    ModeNamedPipe                                   // p: named pipe (FIFO)
+    ModeSocket                                      // S: Unix domain socket
+    ModeSetuid                                      // u: setuid
+    ModeSetgid                                      // g: setgid
+    ModeCharDevice                                  // c: Unix character device, when ModeDevice is set
+    ModeSticky                                      // t: sticky
+    ModeIrregular                                   // ?: non-regular file; nothing else is known about this file
+    
+    // Mask for the type bits
+    ModeType = ModeDir | ModeSymlink | ModeNamedPipe | ModeSocket | ModeDevice | ModeCharDevice | ModeIrregular
+    
+    // Unix permission bits
+    ModePerm FileMode = 0777 // Unix permission bits
+)
+
+// Process represents a running process
+type Process struct {
+    pid: int          // process ID
+    owned: bool       // whether we own this process
+}
+
+// ProcessState holds information about a process
+type ProcessState struct {
+    pid: int          // process ID
+    exited: bool      // whether the process has exited
+    exit_code: int    // exit status
+    system_time: time.Duration   // system CPU time
+    user_time: time.Duration     // user CPU time
+}
+
+// ProcAttr holds attributes that will be applied to a new process
+type ProcAttr struct {
+    dir: string       // working directory; empty means inherit
+    env: []string     // environment variables; nil means inherit
+    files: []*File    // file descriptors for stdin, stdout, stderr
+    sys: *SysProcAttr // system-specific attributes
+}
+
+// SysProcAttr holds system-specific process attributes
+type SysProcAttr struct {
+    // Platform-specific fields would go here
+    chroot: string    // chroot directory (Unix)
+    credential: *Credential // user and group credentials (Unix)
+    noctty: bool      // don't assign controlling terminal (Unix)
+    setpgid: bool     // set process group ID (Unix)
+    foreground: bool  // place child in foreground process group (Unix)
+}
+
+// Credential holds user and group identities
+type Credential struct {
+    uid: uint32       // user ID
+    gid: uint32       // group ID
+    groups: []uint32  // supplementary group IDs
+}
+
+// Error types
+type OSError struct {
+    message: string
+    kind: OSErrorKind
+}
+
+type OSErrorKind enum {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    InvalidInput,
+    Interrupted,
+    Timeout,
+    Unsupported,
+    Other
+}
+
+// Standard error values
+var (
+    ErrNotExist = OSError{message: "file does not exist", kind: OSErrorKind.NotFound}
+    ErrExist = OSError{message: "file already exists", kind: OSErrorKind.AlreadyExists}
+    ErrPermission = OSError{message: "permission denied", kind: OSErrorKind.PermissionDenied}
+    ErrInvalid = OSError{message: "invalid argument", kind: OSErrorKind.InvalidInput}
+    ErrTimeout = OSError{message: "operation timed out", kind: OSErrorKind.Timeout}
+    ErrUnsupported = OSError{message: "operation not supported", kind: OSErrorKind.Unsupported}
+)
+
+func (e: OSError) Error() -> string {
+    return e.message
+}
+
+// Standard file descriptors
+var (
+    Stdin: *File = &File{fd: 0, name: "/dev/stdin", owned: false}
+    Stdout: *File = &File{fd: 1, name: "/dev/stdout", owned: false}
+    Stderr: *File = &File{fd: 2, name: "/dev/stderr", owned: false}
+)
+
+// File operations
+
+// Open opens the named file for reading
+func Open(name: string) -> (*File, !OSError) {
+    return OpenFile(name, O_RDONLY, 0)
+}
+
+// Create creates or truncates the named file
+func Create(name: string) -> (*File, !OSError) {
+    return OpenFile(name, O_RDWR | O_CREATE | O_TRUNC, 0666)
+}
+
+// OpenFile opens the named file with specified flag and perm
+func OpenFile(name: string, flag: int, perm: FileMode) -> (*File, !OSError) {
+    fd, err := _sys_open(name, flag, uint32(perm))
+    if err != nil {
+        return nil, err
+    }
+    
+    return &File{
+        fd: fd,
+        name: name,
+        owned: true,
+        offset: 0,
+        closed: false
+    }, nil
+}
+
+// File flag constants
+const (
+    O_RDONLY = 0        // open for reading only
+    O_WRONLY = 1        // open for writing only
+    O_RDWR   = 2        // open for reading and writing
+    O_APPEND = 1024     // append on each write
+    O_CREATE = 64       // create if non-existent
+    O_EXCL   = 128      // fail if file exists
+    O_SYNC   = 1052672  // synchronous writes
+    O_TRUNC  = 512      // truncate to zero length
+)
+
+// Read reads up to len(b) bytes from the File
+func (f: *File) Read(b: []byte) -> (n: int, err: !io.IOError) {
+    if f.closed {
+        return 0, io.IOError{message: "file is closed", kind: io.IOErrorKind.InvalidData}
+    }
+    
+    n, os_err := _sys_read(f.fd, b)
+    if os_err != nil {
+        return 0, io.IOError{message: os_err.message, kind: io.IOErrorKind.Other}
+    }
+    
+    f.offset += int64(n)
+    if n == 0 {
+        return 0, io.ErrEOF
+    }
+    
+    return n, nil
+}
+
+// Write writes len(b) bytes to the File
+func (f: *File) Write(b: []byte) -> (n: int, err: !io.IOError) {
+    if f.closed {
+        return 0, io.IOError{message: "file is closed", kind: io.IOErrorKind.InvalidData}
+    }
+    
+    n, os_err := _sys_write(f.fd, b)
+    if os_err != nil {
+        return 0, io.IOError{message: os_err.message, kind: io.IOErrorKind.Other}
+    }
+    
+    f.offset += int64(n)
+    return n, nil
+}
+
+// Seek sets the offset for the next Read or Write
+func (f: *File) Seek(offset: int64, whence: io.SeekWhence) -> (int64, !io.IOError) {
+    if f.closed {
+        return 0, io.IOError{message: "file is closed", kind: io.IOErrorKind.InvalidData}
+    }
+    
+    new_offset, os_err := _sys_seek(f.fd, offset, int(whence))
+    if os_err != nil {
+        return 0, io.IOError{message: os_err.message, kind: io.IOErrorKind.Other}
+    }
+    
+    f.offset = new_offset
+    return new_offset, nil
+}
+
+// Close closes the File
+func (f: *File) Close() -> !io.IOError {
+    if f.closed {
+        return nil
+    }
+    
+    if f.owned && f.fd > 2 { // Don't close stdin, stdout, stderr
+        os_err := _sys_close(f.fd)
+        if os_err != nil {
+            return io.IOError{message: os_err.message, kind: io.IOErrorKind.Other}
+        }
+    }
+    
+    f.closed = true
+    return nil
+}
+
+// Sync commits the current contents of the file to stable storage
+func (f: *File) Sync() -> !OSError {
+    if f.closed {
+        return OSError{message: "file is closed", kind: OSErrorKind.InvalidInput}
+    }
+    
+    return _sys_sync(f.fd)
+}
+
+// Truncate changes the size of the file
+func (f: *File) Truncate(size: int64) -> !OSError {
+    if f.closed {
+        return OSError{message: "file is closed", kind: OSErrorKind.InvalidInput}
+    }
+    
+    return _sys_truncate(f.fd, size)
+}
+
+// Stat returns a FileInfo describing the file
+func (f: *File) Stat() -> (FileInfo, !OSError) {
+    if f.closed {
+        return FileInfo{}, OSError{message: "file is closed", kind: OSErrorKind.InvalidInput}
+    }
+    
+    return _sys_fstat(f.fd)
+}
+
+// File system operations
+
+// Stat returns a FileInfo describing the named file
+func Stat(name: string) -> (FileInfo, !OSError) {
+    return _sys_stat(name)
+}
+
+// Lstat returns a FileInfo describing the named file (doesn't follow symlinks)
+func Lstat(name: string) -> (FileInfo, !OSError) {
+    return _sys_lstat(name)
+}
+
+// Remove removes the named file or empty directory
+func Remove(name: string) -> !OSError {
+    return _sys_remove(name)
+}
+
+// RemoveAll removes path and any children it contains
+func RemoveAll(path: string) -> !OSError {
+    return _sys_remove_all(path)
+}
+
+// Rename renames (moves) oldpath to newpath
+func Rename(oldpath: string, newpath: string) -> !OSError {
+    return _sys_rename(oldpath, newpath)
+}
+
+// Link creates newname as a hard link to the oldname file
+func Link(oldname: string, newname: string) -> !OSError {
+    return _sys_link(oldname, newname)
+}
+
+// Symlink creates newname as a symbolic link to oldname
+func Symlink(oldname: string, newname: string) -> !OSError {
+    return _sys_symlink(oldname, newname)
+}
+
+// Readlink returns the destination of the named symbolic link
+func Readlink(name: string) -> (string, !OSError) {
+    return _sys_readlink(name)
+}
+
+// Chmod changes the mode of the named file to mode
+func Chmod(name: string, mode: FileMode) -> !OSError {
+    return _sys_chmod(name, uint32(mode))
+}
+
+// Chown changes the numeric uid and gid of the named file
+func Chown(name: string, uid: int, gid: int) -> !OSError {
+    return _sys_chown(name, uid, gid)
+}
+
+// Directory operations
+
+// Mkdir creates a new directory with the specified name and permission bits
+func Mkdir(name: string, perm: FileMode) -> !OSError {
+    return _sys_mkdir(name, uint32(perm))
+}
+
+// MkdirAll creates a directory named path, along with any necessary parents
+func MkdirAll(path: string, perm: FileMode) -> !OSError {
+    return _sys_mkdir_all(path, uint32(perm))
+}
+
+// ReadDir reads the named directory and returns a list of entries
+func ReadDir(name: string) -> ([]FileInfo, !OSError) {
+    return _sys_readdir(name)
+}
+
+// Getwd returns the current working directory
+func Getwd() -> (string, !OSError) {
+    return _sys_getwd()
+}
+
+// Chdir changes the current working directory to the named directory
+func Chdir(dir: string) -> !OSError {
+    return _sys_chdir(dir)
+}
+
+// TempDir returns the default directory to use for temporary files
+func TempDir() -> string {
+    if dir := Getenv("TMPDIR"); dir != nil {
+        return *dir
+    }
+    if dir := Getenv("TMP"); dir != nil {
+        return *dir
+    }
+    if dir := Getenv("TEMP"); dir != nil {
+        return *dir
+    }
+    return "/tmp"
+}
+
+// Process operations
+
+// Getpid returns the process id of the caller
+func Getpid() -> int {
+    return _sys_getpid()
+}
+
+// Getppid returns the process id of the caller's parent
+func Getppid() -> int {
+    return _sys_getppid()
+}
+
+// StartProcess starts a new process with the program, arguments, and attributes
+func StartProcess(name: string, argv: []string, attr: *ProcAttr) -> (*Process, !OSError) {
+    pid, err := _sys_start_process(name, argv, attr)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &Process{pid: pid, owned: true}, nil
+}
+
+// FindProcess looks for a running process by its pid
+func FindProcess(pid: int) -> (*Process, !OSError) {
+    // Check if process exists
+    err := _sys_process_exists(pid)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &Process{pid: pid, owned: false}, nil
+}
+
+// Wait waits for the process to exit and returns the ProcessState
+func (p: *Process) Wait() -> (ProcessState, !OSError) {
+    return _sys_wait(p.pid)
+}
+
+// Kill causes the process to exit immediately
+func (p: *Process) Kill() -> !OSError {
+    return _sys_kill(p.pid, SIGKILL)
+}
+
+// Signal sends a signal to the process
+func (p: *Process) Signal(sig: Signal) -> !OSError {
+    return _sys_kill(p.pid, sig)
+}
+
+// Release releases any resources associated with the Process
+func (p: *Process) Release() -> !OSError {
+    // On Unix, this would typically be a no-op
+    // On Windows, this would close the process handle
+    p.owned = false
+    return nil
+}
+
+// Signal constants (Unix-like)
+type Signal int
+
+const (
+    SIGHUP    Signal = 1
+    SIGINT    Signal = 2
+    SIGQUIT   Signal = 3
+    SIGILL    Signal = 4
+    SIGTRAP   Signal = 5
+    SIGABRT   Signal = 6
+    SIGBUS    Signal = 7
+    SIGFPE    Signal = 8
+    SIGKILL   Signal = 9
+    SIGUSR1   Signal = 10
+    SIGSEGV   Signal = 11
+    SIGUSR2   Signal = 12
+    SIGPIPE   Signal = 13
+    SIGALRM   Signal = 14
+    SIGTERM   Signal = 15
+    SIGCHLD   Signal = 17
+    SIGCONT   Signal = 18
+    SIGSTOP   Signal = 19
+    SIGTSTP   Signal = 20
+    SIGTTIN   Signal = 21
+    SIGTTOU   Signal = 22
+    SIGURG    Signal = 23
+    SIGXCPU   Signal = 24
+    SIGXFSZ   Signal = 25
+    SIGVTALRM Signal = 26
+    SIGPROF   Signal = 27
+    SIGWINCH  Signal = 28
+    SIGIO     Signal = 29
+    SIGPWR    Signal = 30
+    SIGSYS    Signal = 31
+)
+
+// Environment variables
+
+// Getenv retrieves the value of the environment variable named by the key
+func Getenv(key: string) -> ?string {
+    value, err := _sys_getenv(key)
+    if err != nil {
+        return nil
+    }
+    return value
+}
+
+// Setenv sets the value of the environment variable named by the key
+func Setenv(key: string, value: string) -> !OSError {
+    return _sys_setenv(key, value)
+}
+
+// Unsetenv unsets a single environment variable
+func Unsetenv(key: string) -> !OSError {
+    return _sys_unsetenv(key)
+}
+
+// Clearenv deletes all environment variables
+func Clearenv() {
+    _sys_clearenv()
+}
+
+// Environ returns a copy of strings representing the environment
+func Environ() -> []string {
+    return _sys_environ()
+}
+
+// LookupEnv retrieves the value of the environment variable named by the key
+// It returns the value and a boolean indicating whether the variable was present
+func LookupEnv(key: string) -> (value: string, ok: bool) {
+    env_value, err := _sys_getenv(key)
+    if err != nil {
+        return "", false
+    }
+    return *env_value, true
+}
+
+// ExpandEnv replaces ${var} or $var in the string according to the values of the current environment variables
+func ExpandEnv(s: string) -> string {
+    return expand(s, Getenv)
+}
+
+// User and group operations
+
+// Getuid returns the numeric user id of the caller
+func Getuid() -> int {
+    return _sys_getuid()
+}
+
+// Geteuid returns the numeric effective user id of the caller
+func Geteuid() -> int {
+    return _sys_geteuid()
+}
+
+// Getgid returns the numeric group id of the caller
+func Getgid() -> int {
+    return _sys_getgid()
+}
+
+// Getegid returns the numeric effective group id of the caller
+func Getegid() -> int {
+    return _sys_getegid()
+}
+
+// Getgroups returns a list of the numeric ids of groups that the caller belongs to
+func Getgroups() -> ([]int, !OSError) {
+    return _sys_getgroups()
+}
+
+// Hostname returns the host name reported by the kernel
+func Hostname() -> (string, !OSError) {
+    return _sys_hostname()
+}
+
+// UserHomeDir returns the current user's home directory
+func UserHomeDir() -> (string, !OSError) {
+    if home := Getenv("HOME"); home != nil {
+        return *home, nil
+    }
+    return "", OSError{message: "home directory not found", kind: OSErrorKind.NotFound}
+}
+
+// UserCacheDir returns the default root directory to use for user-specific cached data
+func UserCacheDir() -> (string, !OSError) {
+    if cache := Getenv("XDG_CACHE_HOME"); cache != nil {
+        return *cache, nil
+    }
+    home, err := UserHomeDir()
+    if err != nil {
+        return "", err
+    }
+    return home + "/.cache", nil
+}
+
+// UserConfigDir returns the default root directory to use for user-specific configuration data
+func UserConfigDir() -> (string, !OSError) {
+    if config := Getenv("XDG_CONFIG_HOME"); config != nil {
+        return *config, nil
+    }
+    home, err := UserHomeDir()
+    if err != nil {
+        return "", err
+    }
+    return home + "/.config", nil
+}
+
+// Utility functions
+
+// IsNotExist returns a boolean indicating whether the error is known to report that a file or directory does not exist
+func IsNotExist(err: error) -> bool {
+    if os_err, ok := err.(OSError); ok {
+        return os_err.kind == OSErrorKind.NotFound
+    }
+    return false
+}
+
+// IsExist returns a boolean indicating whether the error is known to report that a file or directory already exists
+func IsExist(err: error) -> bool {
+    if os_err, ok := err.(OSError); ok {
+        return os_err.kind == OSErrorKind.AlreadyExists
+    }
+    return false
+}
+
+// IsPermission returns a boolean indicating whether the error is known to report that permission is denied
+func IsPermission(err: error) -> bool {
+    if os_err, ok := err.(OSError); ok {
+        return os_err.kind == OSErrorKind.PermissionDenied
+    }
+    return false
+}
+
+// IsTimeout returns a boolean indicating whether the error is known to report that a timeout occurred
+func IsTimeout(err: error) -> bool {
+    if os_err, ok := err.(OSError); ok {
+        return os_err.kind == OSErrorKind.Timeout
+    }
+    return false
+}
+
+// SameFile reports whether fi1 and fi2 describe the same file
+func SameFile(fi1: FileInfo, fi2: FileInfo) -> bool {
+    return _sys_same_file(fi1, fi2)
+}
+
+// Exit causes the current program to exit with the given status code
+func Exit(code: int) {
+    _sys_exit(code)
+}
+
+// Helper function for environment variable expansion
+func expand(s: string, mapper: func(string) -> ?string) -> string {
+    // Simple implementation - a full implementation would handle $VAR and ${VAR} syntax
+    return s
+}
+
+// System call interfaces (these would be implemented in C or assembly)
+
+extern func _sys_open(name: string, flag: int, perm: uint32) -> (fd: int, err: !OSError)
+extern func _sys_read(fd: int, buf: []byte) -> (n: int, err: !OSError)
+extern func _sys_write(fd: int, buf: []byte) -> (n: int, err: !OSError)
+extern func _sys_seek(fd: int, offset: int64, whence: int) -> (new_offset: int64, err: !OSError)
+extern func _sys_close(fd: int) -> !OSError
+extern func _sys_sync(fd: int) -> !OSError
+extern func _sys_truncate(fd: int, size: int64) -> !OSError
+extern func _sys_fstat(fd: int) -> (FileInfo, !OSError)
+extern func _sys_stat(name: string) -> (FileInfo, !OSError)
+extern func _sys_lstat(name: string) -> (FileInfo, !OSError)
+extern func _sys_remove(name: string) -> !OSError
+extern func _sys_remove_all(path: string) -> !OSError
+extern func _sys_rename(oldpath: string, newpath: string) -> !OSError
+extern func _sys_link(oldname: string, newname: string) -> !OSError
+extern func _sys_symlink(oldname: string, newname: string) -> !OSError
+extern func _sys_readlink(name: string) -> (string, !OSError)
+extern func _sys_chmod(name: string, mode: uint32) -> !OSError
+extern func _sys_chown(name: string, uid: int, gid: int) -> !OSError
+extern func _sys_mkdir(name: string, perm: uint32) -> !OSError
+extern func _sys_mkdir_all(path: string, perm: uint32) -> !OSError
+extern func _sys_readdir(name: string) -> ([]FileInfo, !OSError)
+extern func _sys_getwd() -> (string, !OSError)
+extern func _sys_chdir(dir: string) -> !OSError
+extern func _sys_getpid() -> int
+extern func _sys_getppid() -> int
+extern func _sys_start_process(name: string, argv: []string, attr: *ProcAttr) -> (pid: int, err: !OSError)
+extern func _sys_process_exists(pid: int) -> !OSError
+extern func _sys_wait(pid: int) -> (ProcessState, !OSError)
+extern func _sys_kill(pid: int, sig: Signal) -> !OSError
+extern func _sys_getenv(key: string) -> (?string, !OSError)
+extern func _sys_setenv(key: string, value: string) -> !OSError
+extern func _sys_unsetenv(key: string) -> !OSError
+extern func _sys_clearenv()
+extern func _sys_environ() -> []string
+extern func _sys_getuid() -> int
+extern func _sys_geteuid() -> int
+extern func _sys_getgid() -> int
+extern func _sys_getegid() -> int
+extern func _sys_getgroups() -> ([]int, !OSError)
+extern func _sys_hostname() -> (string, !OSError)
+extern func _sys_same_file(fi1: FileInfo, fi2: FileInfo) -> bool
+extern func _sys_exit(code: int)

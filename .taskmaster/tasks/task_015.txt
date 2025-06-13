@@ -1,6 +1,6 @@
 # Task ID: 15
 # Title: Implement WebAssembly Support
-# Status: pending
+# Status: done
 # Dependencies: 4
 # Priority: medium
 # Description: Add WebAssembly as a compilation target through the LLVM backend, enabling Goo programs to run in browsers and other WASM environments with full interoperability.

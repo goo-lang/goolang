@@ -1,0 +1,359 @@
+// Pattern Matching Test
+// Demonstrates all pattern matching features in Goo
+
+package main
+
+// Test basic literal patterns
+func test_literal_patterns() {
+    var value int = 42
+    
+    match value {
+        case 0:
+            println("Zero")
+        case 42:
+            println("The answer to everything")
+        case 100:
+            println("Century")
+        default:
+            println("Something else")
+    }
+}
+
+// Test variable binding patterns
+func test_variable_binding() {
+    var value int = 123
+    
+    match value {
+        case 0:
+            println("Zero")
+        case n if n < 0:
+            println("Negative:", n)
+        case n if n > 0 && n < 10:
+            println("Small positive:", n)
+        case n:
+            println("Large positive:", n)
+    }
+}
+
+// Test wildcard patterns
+func test_wildcard_patterns() {
+    var value int = 999
+    
+    match value {
+        case 0:
+            println("Zero")
+        case 1:
+            println("One")
+        case _:
+            println("Anything else")
+    }
+}
+
+// Test error union pattern matching
+func readFile(path string) ![]byte {
+    // Mock implementation
+    if path == "nonexistent" {
+        return error("File not found")
+    }
+    return []byte("file content")
+}
+
+func test_error_union_patterns() {
+    result := readFile("test.txt")
+    
+    match result {
+        case err: Error:
+            println("Error occurred:", err)
+        case data: []byte:
+            println("File content:", string(data))
+    }
+}
+
+// Test nullable type patterns
+func getName(id int) ?string {
+    if id == 1 {
+        return "Alice"
+    }
+    return nil
+}
+
+func test_nullable_patterns() {
+    name := getName(1)
+    
+    match name {
+        case nil:
+            println("No name found")
+        case n: string:
+            println("Name is:", n)
+    }
+}
+
+// Test guard conditions
+func test_guard_conditions() {
+    var age int = 25
+    
+    match age {
+        case n if n < 13:
+            println("Child")
+        case n if n >= 13 && n < 20:
+            println("Teenager")
+        case n if n >= 20 && n < 60:
+            println("Adult")
+        case n if n >= 60:
+            println("Senior")
+        default:
+            println("Unknown age category")
+    }
+}
+
+// Test destructuring patterns (conceptual - would need struct support)
+/*
+type Person struct {
+    Name string
+    Age  int
+}
+
+func test_destructuring_patterns() {
+    var person Person = Person{Name: "Bob", Age: 30}
+    
+    match person {
+        case Person{Name: name, Age: age} if age >= 18:
+            println(name, "is an adult, age", age)
+        case Person{Name: name, Age: age}:
+            println(name, "is a minor, age", age)
+        case _:
+            println("Not a person")
+    }
+}
+*/
+
+// Test nested match expressions
+func test_nested_matches() {
+    var x int = 5
+    var y int = 10
+    
+    match x {
+        case 0:
+            println("X is zero")
+        case n if n > 0:
+            match y {
+                case 0:
+                    println("X positive, Y zero")
+                case m if m > 0:
+                    println("Both positive:", n, m)
+                case _:
+                    println("X positive, Y negative")
+            }
+        case _:
+            println("X is negative")
+    }
+}
+
+// Test match with different types
+func test_type_patterns() {
+    var value interface{} = "hello"
+    
+    match value {
+        case s: string:
+            println("String:", s)
+        case i: int:
+            println("Integer:", i)
+        case b: bool:
+            println("Boolean:", b)
+        case _:
+            println("Unknown type")
+    }
+}
+
+// Test match as expression (returning values)
+func classify_number(n int) string {
+    return match n {
+        case 0:
+            "zero"
+        case x if x > 0:
+            "positive"
+        case x if x < 0:
+            "negative"
+        default:
+            "unknown"
+    }
+}
+
+// Test exhaustiveness - all cases must be covered
+func test_exhaustiveness() {
+    var flag bool = true
+    
+    // This should cover all possible boolean values
+    match flag {
+        case true:
+            println("True")
+        case false:
+            println("False")
+        // No default needed for boolean - exhaustive
+    }
+}
+
+// Test complex guard conditions
+func test_complex_guards() {
+    var numbers []int = []int{1, 2, 3, 4, 5}
+    
+    for i := 0; i < len(numbers); i++ {
+        num := numbers[i]
+        match num {
+            case n if n % 2 == 0 && n > 2:
+                println(n, "is even and greater than 2")
+            case n if n % 2 == 0:
+                println(n, "is even")
+            case n if n % 3 == 0:
+                println(n, "is divisible by 3")
+            case n if isPrime(n):
+                println(n, "is prime")
+            case _:
+                println(n, "is just a number")
+        }
+    }
+}
+
+// Helper function for testing
+func isPrime(n int) bool {
+    if n < 2 {
+        return false
+    }
+    for i := 2; i * i <= n; i++ {
+        if n % i == 0 {
+            return false
+        }
+    }
+    return true
+}
+
+// Test pattern matching with channels
+func test_channel_patterns() {
+    ch := make(chan int, 5)
+    ch <- 42
+    ch <- 100
+    close(ch)
+    
+    for {
+        select {
+            case value, ok := <-ch:
+                if !ok {
+                    println("Channel closed")
+                    break
+                }
+                match value {
+                    case 42:
+                        println("Got the answer")
+                    case n if n > 50:
+                        println("Big number:", n)
+                    case n:
+                        println("Small number:", n)
+                }
+            default:
+                println("No value available")
+                break
+        }
+    }
+}
+
+// Main function demonstrating all pattern matching features
+func main() {
+    println("=== Goo Pattern Matching Tests ===")
+    
+    println("\n1. Testing literal patterns:")
+    test_literal_patterns()
+    
+    println("\n2. Testing variable binding:")
+    test_variable_binding()
+    
+    println("\n3. Testing wildcard patterns:")
+    test_wildcard_patterns()
+    
+    println("\n4. Testing error union patterns:")
+    test_error_union_patterns()
+    
+    println("\n5. Testing nullable patterns:")
+    test_nullable_patterns()
+    
+    println("\n6. Testing guard conditions:")
+    test_guard_conditions()
+    
+    println("\n7. Testing nested matches:")
+    test_nested_matches()
+    
+    println("\n8. Testing type patterns:")
+    test_type_patterns()
+    
+    println("\n9. Testing match as expression:")
+    result := classify_number(-5)
+    println("Classification:", result)
+    
+    println("\n10. Testing exhaustiveness:")
+    test_exhaustiveness()
+    
+    println("\n11. Testing complex guards:")
+    test_complex_guards()
+    
+    println("\n12. Testing channel patterns:")
+    test_channel_patterns()
+    
+    println("\nPattern matching tests completed!")
+}
+
+// Additional examples of advanced pattern matching
+
+// Pattern matching with ranges (conceptual)
+func test_range_patterns() {
+    var score int = 85
+    
+    match score {
+        case n if n >= 90:
+            println("A grade")
+        case n if n >= 80:
+            println("B grade")
+        case n if n >= 70:
+            println("C grade")
+        case n if n >= 60:
+            println("D grade")
+        case _:
+            println("F grade")
+    }
+}
+
+// Pattern matching with arrays/slices
+func test_array_patterns() {
+    var numbers []int = []int{1, 2, 3}
+    
+    match len(numbers) {
+        case 0:
+            println("Empty array")
+        case 1:
+            println("Single element:", numbers[0])
+        case 2:
+            println("Two elements:", numbers[0], numbers[1])
+        case n if n > 2:
+            println("Multiple elements, count:", n)
+            println("First:", numbers[0], "Last:", numbers[n-1])
+    }
+}
+
+// Pattern matching with function results
+func divide(a, b int) !int {
+    if b == 0 {
+        return error("Division by zero")
+    }
+    return a / b
+}
+
+func test_function_result_patterns() {
+    result := divide(10, 2)
+    
+    match result {
+        case err: Error:
+            println("Error in division:", err)
+        case value: int if value > 5:
+            println("Large result:", value)
+        case value: int:
+            println("Small result:", value)
+    }
+}

@@ -1,6 +1,6 @@
 # Task ID: 12
 # Title: Implement Pattern Matching
-# Status: pending
+# Status: done
 # Dependencies: 3
 # Priority: medium
 # Description: Add match expressions with exhaustiveness checking, pattern compilation, and guard conditions for safe and ergonomic control flow.

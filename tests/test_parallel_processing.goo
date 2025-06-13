@@ -1,0 +1,261 @@
+// Data Parallel Processing Test
+// Demonstrates OpenMP-like parallel programming features in Goo
+
+package main
+
+import "atomic"
+
+// Global shared data for parallel processing
+var globalSum atomic.Int
+threadLocal var localCounter int
+
+// Test parallel for loops with different scheduling
+func test_parallel_for() {
+    const N = 1000000
+    var array [N]int
+    
+    // Initialize array sequentially
+    for i := 0; i < N; i++ {
+        array[i] = i
+    }
+    
+    // Parallel for loop with default dynamic scheduling
+    parallel for i := 0; i < N; i++ {
+        array[i] = array[i] * 2
+        localCounter++
+    }
+    
+    // Verify results
+    var sum int = 0
+    for i := 0; i < N; i++ {
+        sum += array[i]
+    }
+    
+    println("Parallel sum result:", sum)
+}
+
+// Test parallel reduction operations
+func test_parallel_reduction() {
+    var data = []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    
+    // Parallel sum reduction
+    sum := parallel reduce(data, 0, func(a, b int) int {
+        return a + b
+    })
+    
+    // Parallel min reduction
+    min := parallel reduce(data, data[0], func(a, b int) int {
+        if a < b {
+            return a
+        }
+        return b
+    })
+    
+    // Parallel max reduction
+    max := parallel reduce(data, data[0], func(a, b int) int {
+        if a > b {
+            return a
+        }
+        return b
+    })
+    
+    println("Sum:", sum, "Min:", min, "Max:", max)
+}
+
+// Test atomic operations for thread-safe shared memory
+func test_atomic_operations() {
+    var counter atomic.Int
+    var mutex atomic.Mutex
+    
+    // Parallel increment with atomic operations
+    parallel for i := 0; i < 1000; i++ {
+        // Atomic increment
+        counter.Add(1)
+        
+        // Atomic compare and swap
+        for {
+            old := counter.Load()
+            if counter.CompareAndSwap(old, old+1) {
+                break
+            }
+        }
+    }
+    
+    println("Final counter value:", counter.Load())
+}
+
+// Test barrier synchronization
+func test_barrier_synchronization() {
+    const NUM_WORKERS = 4
+    var phase1Done atomic.Int
+    var phase2Done atomic.Int
+    
+    parallel for worker := 0; worker < NUM_WORKERS; worker++ {
+        // Phase 1: Each worker does some work
+        println("Worker", worker, "starting phase 1")
+        // Simulate work
+        for i := 0; i < 1000; i++ {
+            localCounter++
+        }
+        
+        phase1Done.Add(1)
+        
+        // Barrier: Wait for all workers to complete phase 1
+        barrier("phase1_complete")
+        
+        // Phase 2: Work that depends on phase 1 completion
+        println("Worker", worker, "starting phase 2")
+        for i := 0; i < 1000; i++ {
+            localCounter--
+        }
+        
+        phase2Done.Add(1)
+        
+        // Final barrier
+        barrier()
+    }
+    
+    println("All workers completed both phases")
+}
+
+// Test thread-local storage
+func test_thread_local_storage() {
+    threadLocal var threadSum int
+    threadLocal var threadId int = getCurrentThreadId()
+    
+    parallel for i := 0; i < 100; i++ {
+        // Each thread maintains its own copy of threadSum
+        threadSum += i
+        
+        // Access thread-local threadId
+        if threadSum % 10 == 0 {
+            println("Thread", threadId, "sum:", threadSum)
+        }
+    }
+    
+    // Collect thread-local sums into global sum
+    barrier("collect_phase")
+    globalSum.Add(threadSum)
+}
+
+// Complex parallel algorithm: Matrix multiplication
+func parallel_matrix_multiply(A, B [][]int, size int) [][]int {
+    C := make([][]int, size)
+    for i := range C {
+        C[i] = make([]int, size)
+    }
+    
+    // Parallel matrix multiplication
+    parallel for i := 0; i < size; i++ {
+        for j := 0; j < size; j++ {
+            sum := 0
+            for k := 0; k < size; k++ {
+                sum += A[i][k] * B[k][j]
+            }
+            C[i][j] = sum
+        }
+    }
+    
+    return C
+}
+
+// Test work distribution with different chunk sizes
+func test_work_distribution() {
+    const WORK_SIZE = 10000
+    var results [WORK_SIZE]int
+    
+    // Test different scheduling strategies (conceptual)
+    // In practice, these would be attributes or parameters
+    
+    // Static scheduling (equal chunks)
+    parallel for i := 0; i < WORK_SIZE; i++ {
+        // Simulate varying work loads
+        workAmount := (i % 100) + 1
+        for j := 0; j < workAmount; j++ {
+            results[i] += j
+        }
+    }
+    
+    // Verify all work was done
+    var totalWork int = 0
+    for i := 0; i < WORK_SIZE; i++ {
+        totalWork += results[i]
+    }
+    
+    println("Total work completed:", totalWork)
+}
+
+// Example of nested parallelism
+func test_nested_parallelism() {
+    const OUTER_SIZE = 100
+    const INNER_SIZE = 100
+    var matrix [OUTER_SIZE][INNER_SIZE]int
+    
+    // Outer parallel loop
+    parallel for i := 0; i < OUTER_SIZE; i++ {
+        // Inner parallel loop (nested parallelism)
+        parallel for j := 0; j < INNER_SIZE; j++ {
+            matrix[i][j] = i * j
+            
+            // Some computation
+            var sum int = 0
+            for k := 0; k < 10; k++ {
+                sum += matrix[i][j] + k
+            }
+            matrix[i][j] = sum
+        }
+        
+        // Barrier within outer loop iteration
+        barrier("inner_complete")
+    }
+    
+    println("Nested parallel computation complete")
+}
+
+// Main function demonstrating all parallel features
+func main() {
+    println("Starting Goo Parallel Processing Tests")
+    
+    // Test basic parallel for loops
+    test_parallel_for()
+    
+    // Test reduction operations
+    test_parallel_reduction()
+    
+    // Test atomic operations
+    test_atomic_operations()
+    
+    // Test barrier synchronization
+    test_barrier_synchronization()
+    
+    // Test thread-local storage
+    test_thread_local_storage()
+    
+    // Test work distribution
+    test_work_distribution()
+    
+    // Test nested parallelism
+    test_nested_parallelism()
+    
+    // Example matrix multiplication
+    A := [][]int{{1, 2}, {3, 4}}
+    B := [][]int{{5, 6}, {7, 8}}
+    C := parallel_matrix_multiply(A, B, 2)
+    
+    println("Matrix multiplication result:")
+    for i := 0; i < 2; i++ {
+        for j := 0; j < 2; j++ {
+            print(C[i][j], " ")
+        }
+        println()
+    }
+    
+    println("All parallel processing tests completed")
+    println("Global sum:", globalSum.Load())
+}
+
+// Utility function (would be provided by runtime)
+func getCurrentThreadId() int {
+    // Implementation would return current thread/goroutine ID
+    return 0
+}

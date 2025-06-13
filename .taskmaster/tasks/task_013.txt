@@ -1,6 +1,6 @@
 # Task ID: 13
 # Title: Implement Unsafe Blocks & Hardware Control
-# Status: pending
+# Status: done
 # Dependencies: 4
 # Priority: high
 # Description: Add unsafe syntax and semantics to the language, including raw pointer operations, inline assembly support, FFI capabilities, and hardware control primitives for LughOS integration.

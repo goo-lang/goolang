@@ -1,0 +1,39 @@
+# Goo Formatter Configuration File
+# Place this file as .goo-fmt.toml in your project root or ~/.config/goo/fmt.toml
+
+# Indentation settings
+indent_size = 4
+tab_width = 4
+use_tabs = false
+
+# Line length
+max_line_length = 100
+
+# Spacing rules
+space_after_comma = true
+space_around_operators = true
+space_before_paren = false
+space_inside_paren = false
+space_before_brace = true
+space_inside_brace = false
+
+# Brace placement
+newline_before_brace = false
+
+# Alignment
+align_struct_fields = true
+align_function_params = true
+
+# Import management
+sort_imports = true
+
+# Whitespace cleanup
+remove_trailing_whitespace = true
+ensure_newline_at_eof = true
+
+# Blank lines
+blank_lines_around_functions = true
+blank_lines_around_types = true
+
+# Compactness
+compact_short_blocks = true

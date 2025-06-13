@@ -135,6 +135,10 @@ Token* lexer_next_token(Lexer* lexer) {
             token = token_new(TOKEN_QUESTION, "?", 1, current_pos);
             lexer_read_char(lexer);
             break;
+        case '@':
+            token = token_new(TOKEN_DEREF, "@", 1, current_pos);
+            lexer_read_char(lexer);
+            break;
             
         // Multi-character operators
         case '+':

@@ -1,0 +1,74 @@
+package main
+
+// Test comprehensive unsafe features for LughOS kernel development
+
+func main() {
+    // Test basic unsafe block
+    unsafe {
+        // Raw pointer operations
+        ptr := unsafe.Pointer
+        
+        // Explicit dereference and address-of operations
+        var x int = 42
+        var addr unsafe.Pointer = &x
+        var value int = @addr
+        
+        // Pointer arithmetic (conceptual - would need parsing support)
+        // next_ptr := ptr + 8
+    }
+    
+    // Test inline assembly for hardware control
+    unsafe {
+        // Simple assembly instruction
+        asm {"nop"}
+        
+        // More complex assembly (x86 port I/O example)
+        asm {"cli"}  // Disable interrupts
+        asm {"mov $0x64, %dx; mov $0xFE, %al; outb %al, %dx"}  // Keyboard reset
+        asm {"sti"}  // Enable interrupts
+    }
+    
+    // Test memory-mapped I/O (conceptual syntax)
+    unsafe {
+        // Memory-mapped register access
+        var mmio_reg *volatile uint32 = (*volatile uint32)(unsafe.Pointer(uintptr(0xFFFF0000)))
+        *mmio_reg = 0x1  // Write to hardware register
+        var status uint32 = *mmio_reg  // Read from hardware register
+    }
+    
+    // Test unsafe function declaration
+    func kernel_panic(message string) {
+        unsafe {
+            // Halt the CPU
+            asm {"cli; hlt"}
+        }
+    }
+}
+
+// Example of unsafe pointer type usage
+func memory_copy(dst unsafe.Pointer, src unsafe.Pointer, size int) {
+    unsafe {
+        // Low-level memory copy implementation
+        for i := 0; i < size; i++ {
+            // Conceptual pointer arithmetic and dereference
+            // @(dst + i) = @(src + i)
+        }
+    }
+}
+
+// Example of hardware abstraction
+func write_port_byte(port uint16, value uint8) {
+    unsafe {
+        // x86 port I/O
+        asm {"mov %0, %%dx; mov %1, %%al; outb %%al, %%dx" : : "r"(port), "r"(value) : "dx", "al"}
+    }
+}
+
+func read_port_byte(port uint16) uint8 {
+    var result uint8
+    unsafe {
+        // x86 port I/O  
+        asm {"mov %1, %%dx; inb %%dx, %%al; mov %%al, %0" : "=r"(result) : "r"(port) : "dx", "al"}
+    }
+    return result
+}

@@ -1,0 +1,17 @@
+package main
+
+func main() {
+    // Test unsafe block syntax
+    unsafe {
+        ptr := unsafe.Pointer
+        // Raw pointer operations would go here
+    }
+    
+    // Test inline assembly
+    unsafe {
+        asm {"mov $42, %eax"}
+    }
+    
+    // Test unsafe pointer type
+    var rawPtr unsafe.Pointer
+}

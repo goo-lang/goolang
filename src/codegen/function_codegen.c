@@ -360,6 +360,10 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_defer_stmt(codegen, checker, stmt);
         case AST_SELECT_STMT:
             return codegen_generate_select_stmt(codegen, checker, stmt);
+        case AST_UNSAFE_STMT:
+            return codegen_generate_unsafe_stmt(codegen, checker, stmt);
+        case AST_ASM_STMT:
+            return codegen_generate_asm_stmt(codegen, checker, stmt);
         case AST_BREAK_STMT:
         case AST_CONTINUE_STMT:
             // TODO: Implement break/continue
@@ -952,5 +956,51 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
     LLVMBuildStore(codegen->builder, is_send_val, is_send_field_ptr);
     
     return 1;
+}
+
+// Unsafe statement generation
+int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_UNSAFE_STMT) return 0;
+    
+    UnsafeStmtNode* unsafe_stmt = (UnsafeStmtNode*)stmt;
+    
+    // For now, unsafe blocks are just transparent - they contain the actual unsafe operations
+    // In the future, we might want to add runtime checks or metadata here
+    
+    // Generate the body of the unsafe block
+    return codegen_generate_statement(codegen, checker, unsafe_stmt->body);
+#endif
+}
+
+// Inline assembly statement generation
+int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_ASM_STMT) return 0;
+    
+    AsmStmtNode* asm_stmt = (AsmStmtNode*)stmt;
+    
+    // Create inline assembly function type (void -> void for now)
+    LLVMTypeRef func_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
+    
+    // Create inline assembly with the provided assembly code
+    const char* constraints = "~{dirflag},~{fpsr},~{flags}"; // Basic x86 clobbers
+    
+    LLVMValueRef inline_asm = LLVMGetInlineAsm(func_type, 
+                                               asm_stmt->assembly_code, strlen(asm_stmt->assembly_code),
+                                               (char*)constraints, strlen(constraints),
+                                               1, 1, LLVMInlineAsmDialectIntel, 0);
+    
+    // Call the inline assembly
+    LLVMBuildCall2(codegen->builder, func_type, inline_asm, NULL, 0, "inline_asm");
+    
+    return 1;
+#endif
 }
 #endif

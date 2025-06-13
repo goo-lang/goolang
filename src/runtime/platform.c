@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "platform.h"
 #include "runtime.h"
 #include <stdlib.h>
@@ -6,6 +7,8 @@
 #ifdef GOO_PLATFORM_UNIX
     #include <sys/time.h>
     #include <errno.h>
+    #include <unistd.h>
+    #include <sys/mman.h>
 #endif
 
 // Platform-specific memory allocation

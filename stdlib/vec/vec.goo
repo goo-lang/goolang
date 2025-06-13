@@ -1,0 +1,652 @@
+// Package vec provides a dynamic array implementation with ownership semantics
+package vec
+
+import "io"
+
+// Vec is a dynamically-sized array that respects Goo's ownership semantics
+type Vec[T any] struct {
+    data: []T      // underlying slice
+    len: int       // current length
+    cap: int       // current capacity
+    owned: bool    // whether this Vec owns its data
+}
+
+// VecError represents errors that can occur with Vec operations
+type VecError struct {
+    message: string
+    kind: VecErrorKind
+}
+
+type VecErrorKind enum {
+    IndexOutOfBounds,
+    EmptyVec,
+    CapacityExceeded,
+    OwnershipViolation,
+    InvalidOperation
+}
+
+// Standard error values
+var (
+    ErrIndexOutOfBounds = VecError{message: "index out of bounds", kind: VecErrorKind.IndexOutOfBounds}
+    ErrEmptyVec = VecError{message: "operation on empty vector", kind: VecErrorKind.EmptyVec}
+    ErrCapacityExceeded = VecError{message: "capacity exceeded", kind: VecErrorKind.CapacityExceeded}
+    ErrOwnershipViolation = VecError{message: "ownership violation", kind: VecErrorKind.OwnershipViolation}
+)
+
+func (e: VecError) Error() -> string {
+    return e.message
+}
+
+// New creates a new empty Vec with default capacity
+func New[T any]() -> Vec[T] {
+    return NewWithCapacity[T](8)
+}
+
+// NewWithCapacity creates a new empty Vec with the specified capacity
+func NewWithCapacity[T any](capacity: int) -> Vec[T] {
+    if capacity < 0 {
+        capacity = 0
+    }
+    return Vec[T]{
+        data: make([]T, 0, capacity),
+        len: 0,
+        cap: capacity,
+        owned: true
+    }
+}
+
+// FromSlice creates a new Vec from an existing slice (takes ownership)
+func FromSlice[T any](slice: []T) -> Vec[T] {
+    return Vec[T]{
+        data: slice,
+        len: len(slice),
+        cap: cap(slice),
+        owned: true
+    }
+}
+
+// FromSliceBorrowed creates a new Vec that borrows from an existing slice
+func FromSliceBorrowed[T any](slice: &[]T) -> Vec[T] {
+    return Vec[T]{
+        data: *slice,
+        len: len(*slice),
+        cap: cap(*slice),
+        owned: false
+    }
+}
+
+// WithValues creates a new Vec with the given initial values
+func WithValues[T any](values: ...T) -> Vec[T] {
+    vec := NewWithCapacity[T](len(values))
+    for _, value := range values {
+        vec.Push(value)
+    }
+    return vec
+}
+
+// Capacity returns the current capacity of the Vec
+func (v: *Vec[T]) Capacity() -> int {
+    return v.cap
+}
+
+// Len returns the current length of the Vec
+func (v: *Vec[T]) Len() -> int {
+    return v.len
+}
+
+// IsEmpty returns true if the Vec contains no elements
+func (v: *Vec[T]) IsEmpty() -> bool {
+    return v.len == 0
+}
+
+// IsOwned returns true if this Vec owns its underlying data
+func (v: *Vec[T]) IsOwned() -> bool {
+    return v.owned
+}
+
+// Get returns a borrowed reference to the element at the given index
+func (v: *Vec[T]) Get(index: int) -> (?&T, !VecError) {
+    if index < 0 || index >= v.len {
+        return nil, ErrIndexOutOfBounds
+    }
+    return &v.data[index], nil
+}
+
+// GetMut returns a mutable borrowed reference to the element at the given index
+func (v: *Vec[T]) GetMut(index: int) -> (?&mut T, !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if index < 0 || index >= v.len {
+        return nil, ErrIndexOutOfBounds
+    }
+    return &mut v.data[index], nil
+}
+
+// Set sets the element at the given index (requires ownership)
+func (v: *Vec[T]) Set(index: int, value: T) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    if index < 0 || index >= v.len {
+        return ErrIndexOutOfBounds
+    }
+    v.data[index] = value
+    return nil
+}
+
+// Push appends an element to the end of the Vec
+func (v: *Vec[T]) Push(value: T) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    if v.len >= v.cap {
+        try v.grow()
+    }
+    
+    v.data[v.len] = value
+    v.len++
+    return nil
+}
+
+// Pop removes and returns the last element
+func (v: *Vec[T]) Pop() -> (?T, !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if v.len == 0 {
+        return nil, ErrEmptyVec
+    }
+    
+    v.len--
+    value := v.data[v.len]
+    // Zero out the removed element to help GC
+    v.data[v.len] = T{}
+    return value, nil
+}
+
+// Insert inserts an element at the given index, shifting subsequent elements to the right
+func (v: *Vec[T]) Insert(index: int, value: T) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    if index < 0 || index > v.len {
+        return ErrIndexOutOfBounds
+    }
+    
+    if v.len >= v.cap {
+        try v.grow()
+    }
+    
+    // Shift elements to the right
+    for i := v.len; i > index; i-- {
+        v.data[i] = v.data[i - 1]
+    }
+    
+    v.data[index] = value
+    v.len++
+    return nil
+}
+
+// Remove removes the element at the given index, shifting subsequent elements to the left
+func (v: *Vec[T]) Remove(index: int) -> (?T, !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if index < 0 || index >= v.len {
+        return nil, ErrIndexOutOfBounds
+    }
+    
+    value := v.data[index]
+    
+    // Shift elements to the left
+    for i := index; i < v.len - 1; i++ {
+        v.data[i] = v.data[i + 1]
+    }
+    
+    v.len--
+    // Zero out the last element
+    v.data[v.len] = T{}
+    return value, nil
+}
+
+// SwapRemove removes the element at the given index by swapping it with the last element
+// This is more efficient than Remove but doesn't preserve order
+func (v: *Vec[T]) SwapRemove(index: int) -> (?T, !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if index < 0 || index >= v.len {
+        return nil, ErrIndexOutOfBounds
+    }
+    
+    value := v.data[index]
+    v.len--
+    
+    if index != v.len {
+        // Swap with last element if not already the last
+        v.data[index] = v.data[v.len]
+    }
+    
+    // Zero out the last element
+    v.data[v.len] = T{}
+    return value, nil
+}
+
+// Clear removes all elements from the Vec
+func (v: *Vec[T]) Clear() -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    // Zero out all elements to help GC
+    for i := 0; i < v.len; i++ {
+        v.data[i] = T{}
+    }
+    v.len = 0
+    return nil
+}
+
+// Truncate shortens the Vec to the specified length
+func (v: *Vec[T]) Truncate(new_len: int) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    if new_len < 0 {
+        new_len = 0
+    }
+    if new_len >= v.len {
+        return nil
+    }
+    
+    // Zero out elements beyond new length
+    for i := new_len; i < v.len; i++ {
+        v.data[i] = T{}
+    }
+    v.len = new_len
+    return nil
+}
+
+// Reserve ensures that the Vec has capacity for at least additional more elements
+func (v: *Vec[T]) Reserve(additional: int) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    needed_cap := v.len + additional
+    if needed_cap <= v.cap {
+        return nil
+    }
+    
+    return v.growToCapacity(needed_cap)
+}
+
+// Shrink shrinks the capacity of the Vec as much as possible
+func (v: *Vec[T]) Shrink() -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    if v.len == v.cap {
+        return nil
+    }
+    
+    new_data := make([]T, v.len, v.len)
+    copy(new_data, v.data[:v.len])
+    v.data = new_data
+    v.cap = v.len
+    return nil
+}
+
+// Extend appends all elements from another Vec
+func (v: *Vec[T]) Extend(other: &Vec[T]) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    needed_cap := v.len + other.len
+    if needed_cap > v.cap {
+        try v.growToCapacity(needed_cap)
+    }
+    
+    copy(v.data[v.len:], other.data[:other.len])
+    v.len += other.len
+    return nil
+}
+
+// ExtendFromSlice appends all elements from a slice
+func (v: *Vec[T]) ExtendFromSlice(slice: []T) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    needed_cap := v.len + len(slice)
+    if needed_cap > v.cap {
+        try v.growToCapacity(needed_cap)
+    }
+    
+    copy(v.data[v.len:], slice)
+    v.len += len(slice)
+    return nil
+}
+
+// AsSlice returns a slice view of the Vec's data
+func (v: *Vec[T]) AsSlice() -> []T {
+    return v.data[:v.len]
+}
+
+// AsMutSlice returns a mutable slice view of the Vec's data
+func (v: *Vec[T]) AsMutSlice() -> (?[]T, !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    return v.data[:v.len], nil
+}
+
+// ToSlice returns a copy of the Vec's data as a new slice
+func (v: *Vec[T]) ToSlice() -> []T {
+    slice := make([]T, v.len)
+    copy(slice, v.data[:v.len])
+    return slice
+}
+
+// Clone creates a deep copy of the Vec
+func (v: *Vec[T]) Clone() -> Vec[T] {
+    new_vec := NewWithCapacity[T](v.cap)
+    copy(new_vec.data, v.data[:v.len])
+    new_vec.len = v.len
+    return new_vec
+}
+
+// Split splits the Vec at the given index, returning the second part as a new Vec
+func (v: *Vec[T]) Split(at: int) -> (?Vec[T], !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if at < 0 || at > v.len {
+        return nil, ErrIndexOutOfBounds
+    }
+    
+    // Create new Vec with the second part
+    second_part := NewWithCapacity[T](v.len - at)
+    copy(second_part.data, v.data[at:v.len])
+    second_part.len = v.len - at
+    
+    // Truncate original Vec to first part
+    for i := at; i < v.len; i++ {
+        v.data[i] = T{}
+    }
+    v.len = at
+    
+    return second_part, nil
+}
+
+// Append appends a single element (alias for Push for compatibility)
+func (v: *Vec[T]) Append(value: T) -> !VecError {
+    return v.Push(value)
+}
+
+// Prepend inserts an element at the beginning
+func (v: *Vec[T]) Prepend(value: T) -> !VecError {
+    return v.Insert(0, value)
+}
+
+// First returns a reference to the first element
+func (v: *Vec[T]) First() -> (?&T, !VecError) {
+    if v.len == 0 {
+        return nil, ErrEmptyVec
+    }
+    return &v.data[0], nil
+}
+
+// FirstMut returns a mutable reference to the first element
+func (v: *Vec[T]) FirstMut() -> (?&mut T, !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if v.len == 0 {
+        return nil, ErrEmptyVec
+    }
+    return &mut v.data[0], nil
+}
+
+// Last returns a reference to the last element
+func (v: *Vec[T]) Last() -> (?&T, !VecError) {
+    if v.len == 0 {
+        return nil, ErrEmptyVec
+    }
+    return &v.data[v.len - 1], nil
+}
+
+// LastMut returns a mutable reference to the last element
+func (v: *Vec[T]) LastMut() -> (?&mut T, !VecError) {
+    if !v.owned {
+        return nil, ErrOwnershipViolation
+    }
+    if v.len == 0 {
+        return nil, ErrEmptyVec
+    }
+    return &mut v.data[v.len - 1], nil
+}
+
+// Swap swaps two elements in the Vec
+func (v: *Vec[T]) Swap(i: int, j: int) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    if i < 0 || i >= v.len || j < 0 || j >= v.len {
+        return ErrIndexOutOfBounds
+    }
+    
+    if i != j {
+        temp := v.data[i]
+        v.data[i] = v.data[j]
+        v.data[j] = temp
+    }
+    return nil
+}
+
+// Reverse reverses the order of elements in the Vec
+func (v: *Vec[T]) Reverse() -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    for i := 0; i < v.len / 2; i++ {
+        j := v.len - 1 - i
+        temp := v.data[i]
+        v.data[i] = v.data[j]
+        v.data[j] = temp
+    }
+    return nil
+}
+
+// Contains checks if the Vec contains the given value
+func (v: *Vec[T]) Contains(value: T) -> bool {
+    for i := 0; i < v.len; i++ {
+        if v.data[i] == value {
+            return true
+        }
+    }
+    return false
+}
+
+// IndexOf returns the index of the first occurrence of the value
+func (v: *Vec[T]) IndexOf(value: T) -> ?int {
+    for i := 0; i < v.len; i++ {
+        if v.data[i] == value {
+            return i
+        }
+    }
+    return nil
+}
+
+// LastIndexOf returns the index of the last occurrence of the value
+func (v: *Vec[T]) LastIndexOf(value: T) -> ?int {
+    for i := v.len - 1; i >= 0; i-- {
+        if v.data[i] == value {
+            return i
+        }
+    }
+    return nil
+}
+
+// Retain keeps only the elements that satisfy the predicate
+func (v: *Vec[T]) Retain(predicate: func(T) -> bool) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    
+    write_index := 0
+    for read_index := 0; read_index < v.len; read_index++ {
+        if predicate(v.data[read_index]) {
+            if write_index != read_index {
+                v.data[write_index] = v.data[read_index]
+            }
+            write_index++
+        }
+    }
+    
+    // Zero out the remaining elements
+    for i := write_index; i < v.len; i++ {
+        v.data[i] = T{}
+    }
+    v.len = write_index
+    return nil
+}
+
+// ForEach applies a function to each element
+func (v: *Vec[T]) ForEach(f: func(&T)) {
+    for i := 0; i < v.len; i++ {
+        f(&v.data[i])
+    }
+}
+
+// ForEachMut applies a function to each element (mutable version)
+func (v: *Vec[T]) ForEachMut(f: func(&mut T)) -> !VecError {
+    if !v.owned {
+        return ErrOwnershipViolation
+    }
+    for i := 0; i < v.len; i++ {
+        f(&mut v.data[i])
+    }
+    return nil
+}
+
+// Iterator support
+
+// Iterator represents an iterator over Vec elements
+type Iterator[T any] struct {
+    vec: &Vec[T]
+    index: int
+}
+
+// Iter returns an iterator over the Vec's elements
+func (v: *Vec[T]) Iter() -> Iterator[T] {
+    return Iterator[T]{vec: v, index: 0}
+}
+
+// Next returns the next element in the iteration
+func (it: *Iterator[T]) Next() -> ?&T {
+    if it.index >= it.vec.len {
+        return nil
+    }
+    element := &it.vec.data[it.index]
+    it.index++
+    return element
+}
+
+// HasNext returns true if there are more elements to iterate
+func (it: *Iterator[T]) HasNext() -> bool {
+    return it.index < it.vec.len
+}
+
+// Reset resets the iterator to the beginning
+func (it: *Iterator[T]) Reset() {
+    it.index = 0
+}
+
+// Collect creates a new Vec from an iterator of values
+func Collect[T any](values: Iterator[T]) -> Vec[T] {
+    vec := New[T]()
+    for value := values.Next(); value != nil; value = values.Next() {
+        vec.Push(*value)
+    }
+    return vec
+}
+
+// Private helper methods
+
+// grow increases the capacity of the Vec
+func (v: *Vec[T]) grow() -> !VecError {
+    new_cap := v.cap * 2
+    if new_cap < 4 {
+        new_cap = 4
+    }
+    return v.growToCapacity(new_cap)
+}
+
+// growToCapacity increases the capacity to at least the specified value
+func (v: *Vec[T]) growToCapacity(new_cap: int) -> !VecError {
+    if new_cap <= v.cap {
+        return nil
+    }
+    
+    new_data := make([]T, v.len, new_cap)
+    copy(new_data, v.data[:v.len])
+    v.data = new_data
+    v.cap = new_cap
+    return nil
+}
+
+// I/O support for Vec
+
+// Write implements io.Writer interface for byte vectors
+func (v: *Vec[byte]) Write(data: []byte) -> (n: int, err: !io.IOError) {
+    if !v.owned {
+        return 0, io.IOError{
+            message: "cannot write to borrowed vector",
+            kind: io.IOErrorKind.PermissionDenied
+        }
+    }
+    
+    for _, b := range data {
+        if push_err := v.Push(b); push_err != nil {
+            return n, io.IOError{
+                message: push_err.message,
+                kind: io.IOErrorKind.Other
+            }
+        }
+        n++
+    }
+    return n, nil
+}
+
+// WriteByte implements io.ByteWriter interface for byte vectors
+func (v: *Vec[byte]) WriteByte(b: byte) -> !io.IOError {
+    if !v.owned {
+        return io.IOError{
+            message: "cannot write to borrowed vector",
+            kind: io.IOErrorKind.PermissionDenied
+        }
+    }
+    
+    if push_err := v.Push(b); push_err != nil {
+        return io.IOError{
+            message: push_err.message,
+            kind: io.IOErrorKind.Other
+        }
+    }
+    return nil
+}
+
+// WriteString writes a string to a byte vector
+func (v: *Vec[byte]) WriteString(s: string) -> (n: int, err: !io.IOError) {
+    return v.Write([]byte(s))
+}
+
+// String returns the Vec as a string (for byte vectors)
+func (v: *Vec[byte]) String() -> string {
+    return string(v.AsSlice())
+}
