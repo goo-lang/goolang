@@ -618,3 +618,29 @@ $(TRANSPARENT_ASYNC_TEST): tests/concurrency/transparent_async_test.c $(TRANSPAR
 	@mkdir -p $(BINDIR)
 	@mkdir -p src/async
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Enhanced Structured Concurrency Test
+STRUCTURED_CONCURRENCY_ENHANCED_TEST = $(BINDIR)/structured_concurrency_enhanced_test
+STRUCTURED_CONCURRENCY_ENHANCED_SOURCES = src/concurrency/structured_concurrency_enhanced.c src/concurrency/structured_concurrency.c src/async/transparent_async.c src/async/transparent_execution.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-structured-concurrency-enhanced: $(STRUCTURED_CONCURRENCY_ENHANCED_TEST)
+	@echo "Running enhanced structured concurrency tests..."
+	./$(STRUCTURED_CONCURRENCY_ENHANCED_TEST)
+
+$(STRUCTURED_CONCURRENCY_ENHANCED_TEST): tests/concurrency/structured_concurrency_enhanced_test.c $(STRUCTURED_CONCURRENCY_ENHANCED_SOURCES)
+	@mkdir -p $(BINDIR)
+	@mkdir -p src/concurrency
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Enhanced Structured Concurrency Demo
+STRUCTURED_CONCURRENCY_DEMO = $(BINDIR)/structured_concurrency_demo
+STRUCTURED_CONCURRENCY_DEMO_SOURCES = src/concurrency/structured_concurrency_enhanced.c src/concurrency/structured_concurrency.c src/async/transparent_async.c src/async/transparent_execution.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+demo-structured-concurrency: $(STRUCTURED_CONCURRENCY_DEMO)
+	@echo "Running enhanced structured concurrency demo..."
+	./$(STRUCTURED_CONCURRENCY_DEMO)
+
+$(STRUCTURED_CONCURRENCY_DEMO): tests/examples/structured_concurrency_demo.c $(STRUCTURED_CONCURRENCY_DEMO_SOURCES)
+	@mkdir -p $(BINDIR)
+	@mkdir -p src/concurrency
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm

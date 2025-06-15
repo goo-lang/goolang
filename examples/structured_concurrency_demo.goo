@@ -1,0 +1,217 @@
+// Enhanced Structured Concurrency Demo for Goo Language
+// This demonstrates the high-level syntax that the enhanced structured concurrency system supports
+
+// Example 1: Basic concurrent block
+func process_multiple_files() ![]Result {
+    return concurrent {
+        process_file("file1.txt"),
+        process_file("file2.txt"), 
+        process_file("file3.txt"),
+    } // Automatic cancellation on first error if fail_fast is enabled
+}
+
+// Example 2: Structured concurrency with timeout and retry
+@timeout(30s)
+@retry(3)
+func fetch_external_data(url: string) !Data {
+    response := try http.get(url)
+    return try response.json<Data>()
+} // Automatically runs async when beneficial
+
+// Example 3: I/O bound concurrent processing
+func process_user_requests(requests: []Request) ![]Response {
+    @config(io_intensive, max_concurrent: 50)
+    return concurrent {
+        for req in requests {
+            process_request(req)
+        }
+    }
+}
+
+// Example 4: CPU-intensive parallel processing
+func parallel_computation(data: []int) ![]int {
+    @config(cpu_intensive, max_concurrent: 16)
+    return concurrent {
+        for chunk in data.chunks(1000) {
+            compute_intensive(chunk)
+        }
+    }
+}
+
+// Example 5: Resource management with defer
+func process_with_database() !Result {
+    @async_resource
+    func with_connection<T>(f: Connection -> !T) !T {
+        conn := try connect_to_database()
+        defer conn.close() // Works correctly with async
+        return try f(conn)
+    }
+    
+    return try with_connection(|conn| {
+        data := try conn.query("SELECT * FROM users")
+        return process_data(data)
+    })
+}
+
+// Example 6: Reactive event processing
+@reactive
+actor EventProcessor {
+    handle InputEvent(e: InputEvent) {
+        concurrent {
+            validate_event(e),
+            log_event(e),
+            notify_subscribers(e)
+        }
+        
+        processed := transform(e)
+        emit ProcessedEvent(processed)
+    }
+    
+    handle ErrorEvent(e: ErrorEvent) {
+        @timeout(5s)
+        handle_error(e)
+    }
+}
+
+// Example 7: Pipeline processing
+func data_processing_pipeline(input_stream: Stream<RawData>) !Stream<ProcessedData> {
+    return input_stream
+        .map_concurrent(parse_data, max_workers: 8)
+        .filter_concurrent(validate_data, max_workers: 4) 
+        .map_concurrent(transform_data, max_workers: 8)
+        .batch(100)
+        .map_concurrent(aggregate_batch, max_workers: 2)
+}
+
+// Example 8: Fail-fast error handling
+func validate_all_inputs(inputs: []Input) ![]ValidationResult {
+    @config(fail_fast: true)
+    return concurrent {
+        for input in inputs {
+            validate_input(input)
+        }
+    } // Stops on first validation error
+}
+
+// Example 9: Background task scheduling
+func schedule_background_tasks() {
+    concurrent {
+        @timeout(1h)
+        cleanup_temp_files(),
+        
+        @retry(5)
+        @timeout(30m)
+        backup_database(),
+        
+        @timeout(10m)
+        send_status_report()
+    }
+}
+
+// Example 10: Async iterators with backpressure
+func process_large_dataset(dataset: AsyncIterator<DataChunk>) !Statistics {
+    var stats = Statistics{}
+    
+    for await chunk in dataset.parallel(worker_count: 8) {
+        result := try process_chunk(chunk)
+        stats.merge(result)
+        
+        // Automatic backpressure handling
+        if stats.memory_usage > memory_limit {
+            yield // Allow other tasks to run
+        }
+    }
+    
+    return stats
+}
+
+// Example 11: Dependency management
+func complex_workflow() !WorkflowResult {
+    return concurrent {
+        // These run in parallel
+        step1_result := step1(),
+        step2_result := step2(),
+        
+        // This waits for step1 and step2
+        step3_result := step3(step1_result, step2_result),
+        
+        // This waits for step3
+        final_result := finalize(step3_result)
+    }
+}
+
+// Example 12: Error recovery
+func resilient_processing(items: []Item) ![]Result {
+    return concurrent {
+        for item in items {
+            @retry(3, backoff: exponential)
+            @timeout(1m)
+            process_item(item) catch |err| {
+                log.warn("Failed to process item", item.id, err)
+                return default_result(item)
+            }
+        }
+    }
+}
+
+// Example 13: Dynamic task spawning
+func adaptive_processing(workload: Workload) !Result {
+    optimal_workers := calculate_optimal_workers(workload)
+    
+    @config(max_concurrent: optimal_workers)
+    return concurrent {
+        for task in workload.tasks {
+            @priority(task.priority)
+            process_task(task)
+        }
+    }
+}
+
+// Supporting function implementations (would be in separate files)
+
+func process_file(filename: string) !FileResult {
+    data := try read_file(filename)
+    return process_data(data)
+}
+
+func process_request(req: Request) !Response {
+    // Simulate request processing
+    return Response{status: 200, data: req.process()}
+}
+
+func compute_intensive(chunk: []int) ![]int {
+    // CPU-intensive computation
+    return chunk.map(|x| x * x + fibonacci(x % 20))
+}
+
+func validate_input(input: Input) !ValidationResult {
+    if input.is_valid() {
+        return ValidationResult{valid: true}
+    } else {
+        return error("Invalid input: " + input.description)
+    }
+}
+
+func cleanup_temp_files() !void {
+    // Background cleanup
+    temp_dir := "/tmp/app_temp"
+    files := try list_files(temp_dir)
+    for file in files {
+        if file.age > 24h {
+            try delete_file(file.path)
+        }
+    }
+}
+
+func backup_database() !void {
+    // Database backup operation
+    timestamp := now().format("2006-01-02-15-04-05")
+    backup_path := "/backups/db_" + timestamp + ".sql"
+    try create_database_dump(backup_path)
+}
+
+func send_status_report() !void {
+    // Send status report
+    report := generate_status_report()
+    try send_email("admin@company.com", "Status Report", report)
+}

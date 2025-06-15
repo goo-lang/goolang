@@ -640,7 +640,7 @@
             "description": "Implement structured concurrency constructs including the 'concurrent' block, timeout handling, and retry mechanisms.",
             "dependencies": [],
             "details": "Implement: 1) The 'concurrent' block that runs multiple operations in parallel and collects results, 2) Automatic cancellation propagation when errors occur, 3) @timeout annotation for setting execution time limits, 4) @retry annotation with configurable retry strategies, 5) Proper resource cleanup when concurrent operations are cancelled or time out.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Test concurrent execution with various combinations of successful and failing tasks. Verify timeout behavior with deliberately slow operations. Test retry logic with intermittently failing operations."
           },
           {
@@ -955,7 +955,7 @@
     ],
     "metadata": {
       "created": "2025-06-15T10:58:25.573Z",
-      "updated": "2025-06-15T21:37:10.363Z",
+      "updated": "2025-06-15T21:56:49.659Z",
       "description": "Tasks for master context"
     }
   }
