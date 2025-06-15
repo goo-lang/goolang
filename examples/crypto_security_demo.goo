@@ -1,0 +1,382 @@
+// Goo Security: Cryptographic Security Demonstration
+// This example shows the Goo language's cryptographic security defaults
+// with automatic key management, secure algorithms, and policy enforcement
+
+use std::crypto
+use std::security::capability
+use std::security::audit
+use std::io
+
+// Function demonstrating secure-by-default encryption
+func secureEncrypt(plaintext: string, recipient: string) -> Result<CryptoResult, CryptoError>
+    @requires_capability(crypto_encrypt)
+    @audit_log(crypto_operation) {
+    
+    // Automatically uses AES-256-GCM with secure defaults
+    return crypto::encrypt(plaintext.bytes(), recipient)
+}
+
+// Function demonstrating automatic key derivation
+func deriveUserKey(userId: string, purpose: string) -> Result<CryptoKey, CryptoError>
+    @requires_capability(crypto_key_derive)
+    @audit_log(key_derivation) {
+    
+    // Derive key from master key with user-specific salt
+    let masterKey = crypto::getMasterKey("application_encryption")
+    let salt = crypto::hash(userId + purpose).bytes()
+    
+    return crypto::deriveKey(masterKey, purpose, salt, iterations: 100000)
+}
+
+// Function with time-bounded cryptographic operations
+func signWithExpiration(message: string, validityPeriod: Duration) -> Result<SignatureBundle, CryptoError>
+    @requires_capability(crypto_sign)
+    @key_expiration(validityPeriod) {
+    
+    // Generate ephemeral signing key with automatic expiration
+    let signingKey = crypto::generateEphemeralKey(
+        algorithm: CRYPTO_ED25519_SIGNATURE,
+        validity: validityPeriod,
+        purpose: "message_signing"
+    )
+    
+    // Sign message with timestamp and expiration
+    let signedData = SignedMessage {
+        message: message,
+        timestamp: Time::now(),
+        expiresAt: Time::now() + validityPeriod,
+        signature: crypto::sign(signingKey, message.bytes())
+    }
+    
+    return Ok(SignatureBundle {
+        data: signedData,
+        publicKey: signingKey.publicKey(),
+        algorithm: CRYPTO_ED25519_SIGNATURE
+    })
+}
+
+// Function demonstrating forward-secure encryption
+func forwardSecureChat(participants: []string) -> Result<SecureChatSession, CryptoError>
+    @requires_capability(crypto_session)
+    @forward_secrecy(required) {
+    
+    // Create session with automatic key ratcheting
+    let session = crypto::createSession(
+        name: "secure_chat",
+        participants: participants,
+        ratchetInterval: 5.minutes,
+        keyExchange: CRYPTO_CURVE25519_X25519
+    )
+    
+    // Establish shared secrets with all participants
+    for participant in participants {
+        session.addParticipant(participant)
+        session.performKeyExchange(participant)
+    }
+    
+    return Ok(SecureChatSession {
+        sessionId: session.id(),
+        encryptionKey: session.currentKey(),
+        ratchetCounter: 0,
+        forwardSecrecy: true
+    })
+}
+
+// Function with policy enforcement
+func corporateEncryption(data: []byte, classification: DataClassification) -> Result<[]byte, PolicyError>
+    @enforce_policy(corporate_crypto_policy)
+    @compliance_required(FIPS_140_2) {
+    
+    // Policy automatically selects appropriate algorithm based on classification
+    let policy = crypto::getCorporatePolicy()
+    let algorithm = match classification {
+        DataClassification::Public => policy.publicDataAlgorithm,
+        DataClassification::Internal => policy.internalDataAlgorithm,
+        DataClassification::Confidential => policy.confidentialDataAlgorithm,
+        DataClassification::Secret => policy.secretDataAlgorithm
+    }
+    
+    // Verify algorithm meets policy requirements
+    if !policy.validateAlgorithm(algorithm, classification) {
+        return Err(PolicyError::InsufficientSecurity(algorithm))
+    }
+    
+    // Use hardware-backed keys for secret data
+    let keySource = if classification >= DataClassification::Secret {
+        KeySource::Hardware
+    } else {
+        KeySource::Software
+    }
+    
+    let encryptionKey = crypto::getKey(
+        classification: classification,
+        algorithm: algorithm,
+        source: keySource
+    )
+    
+    return crypto::encrypt(encryptionKey, data)
+}
+
+// Function demonstrating automatic certificate management
+func secureTLS(hostname: string) -> Result<TLSSession, CertificateError>
+    @requires_capability(network_tls)
+    @certificate_validation(strict) {
+    
+    // Automatically manage certificate lifecycle
+    let certManager = crypto::getCertificateManager()
+    
+    // Check if certificate needs renewal
+    if certManager.needsRenewal(hostname) {
+        certManager.renewCertificate(hostname, algorithm: CRYPTO_RSA_4096_PSS_SHA256)
+    }
+    
+    // Establish TLS with strong cipher suites only
+    let tlsConfig = TLSConfig {
+        cipherSuites: [
+            "TLS_AES_256_GCM_SHA384",
+            "TLS_CHACHA20_POLY1305_SHA256"
+        ],
+        minVersion: TLS_1_3,
+        certificateVerification: StrictVerification,
+        hostnameVerification: true,
+        ocspStapling: true
+    }
+    
+    return crypto::establishTLS(hostname, tlsConfig)
+}
+
+// Function with post-quantum cryptography preparation
+func futureProofEncryption(data: []byte) -> Result<HybridCiphertext, CryptoError>
+    @post_quantum_ready
+    @algorithm_agility(enabled) {
+    
+    // Use hybrid classical + post-quantum encryption
+    let classicalKey = crypto::generateKey(CRYPTO_CURVE25519_X25519)
+    let postQuantumKey = crypto::generateKey(CRYPTO_KYBER_1024) // Future PQ algorithm
+    
+    // Encrypt with both algorithms
+    let classicalCiphertext = crypto::encrypt(classicalKey, data)
+    let pqCiphertext = crypto::encrypt(postQuantumKey, data)
+    
+    return Ok(HybridCiphertext {
+        classical: classicalCiphertext,
+        postQuantum: pqCiphertext,
+        algorithm: "HYBRID_CURVE25519_KYBER1024",
+        securityLevel: CRYPTO_SECURITY_LEVEL_256
+    })
+}
+
+// Function demonstrating secure key backup and recovery
+func secureKeyBackup(keyId: string, custodians: []string) -> Result<KeyBackup, BackupError>
+    @requires_capability(crypto_backup)
+    @key_escrow(required) {
+    
+    // Use Shamir's Secret Sharing for key backup
+    let key = crypto::getKey(keyId)
+    let threshold = (custodians.length / 2) + 1 // Majority required for recovery
+    
+    let shares = crypto::splitSecret(
+        secret: key.material(),
+        totalShares: custodians.length,
+        threshold: threshold,
+        algorithm: "SHAMIR_SECRET_SHARING"
+    )
+    
+    // Encrypt each share for its custodian
+    let encryptedShares = []KeyShare{}
+    for (index, custodian) in custodians.enumerate() {
+        let custodianKey = crypto::getCustodianKey(custodian)
+        let encryptedShare = crypto::encrypt(custodianKey, shares[index])
+        
+        encryptedShares.append(KeyShare {
+            shareNumber: index + 1,
+            custodian: custodian,
+            encryptedData: encryptedShare
+        })
+    }
+    
+    return Ok(KeyBackup {
+        keyId: keyId,
+        threshold: threshold,
+        shares: encryptedShares,
+        createdAt: Time::now(),
+        algorithm: key.algorithm()
+    })
+}
+
+// Function with automatic security monitoring
+func monitoredCryptoOperation(operation: string, data: []byte) -> Result<[]byte, SecurityError>
+    @audit_required
+    @anomaly_detection(enabled) {
+    
+    let startTime = Time::now()
+    
+    // Check for unusual patterns
+    let monitor = crypto::getSecurityMonitor()
+    if monitor.detectAnomaly(operation, data.length) {
+        audit::logSecurityEvent("Anomalous crypto operation detected", severity: WARNING)
+        
+        // Require additional authentication for suspicious operations
+        if !auth::requireStepUp("crypto_operation_verification") {
+            return Err(SecurityError::StepUpAuthenticationRequired)
+        }
+    }
+    
+    // Perform the operation with monitoring
+    let result = match operation {
+        "encrypt" => crypto::encrypt(data),
+        "decrypt" => crypto::decrypt(data),
+        "sign" => crypto::sign(data),
+        "verify" => crypto::verify(data),
+        _ => return Err(SecurityError::UnsupportedOperation(operation))
+    }
+    
+    // Log operation metrics
+    let duration = Time::now() - startTime
+    audit::logMetrics(CryptoMetrics {
+        operation: operation,
+        dataSize: data.length,
+        duration: duration,
+        success: result.isOk()
+    })
+    
+    return result
+}
+
+// Function demonstrating secure data destruction
+func secureDelete(keyId: string, overwritePasses: uint = 3) -> Result<void, DeletionError>
+    @requires_capability(crypto_destroy)
+    @secure_deletion(required) {
+    
+    let key = crypto::getKey(keyId)
+    
+    // Audit the deletion request
+    audit::logSecurityEvent("Secure key deletion initiated", keyId: keyId)
+    
+    // Overwrite key material multiple times
+    for pass in 0..overwritePasses {
+        crypto::overwriteKeyMaterial(key, pattern: crypto::randomBytes(key.length()))
+    }
+    
+    // Final overwrite with zeros
+    crypto::overwriteKeyMaterial(key, pattern: [0u8; key.length()])
+    
+    // Remove from key store
+    crypto::removeFromKeyStore(keyId)
+    
+    // Update audit trail
+    audit::logSecurityEvent("Key securely deleted", keyId: keyId, passes: overwritePasses)
+    
+    return Ok(())
+}
+
+// Main function demonstrating comprehensive crypto security
+func main() {
+    println("=== Goo Cryptographic Security Demo ===")
+    
+    // Initialize cryptographic subsystem with high-security policy
+    crypto::initialize(CryptoPolicy::HighSecurity)
+    crypto::enableHardwareBacking(true)
+    crypto::enablePostQuantumReadiness(true)
+    
+    println("1. Secure-by-default encryption...")
+    match secureEncrypt("Sensitive data", "user@example.com") {
+        Ok(result) => println("✓ Data encrypted with {}", result.algorithm),
+        Err(error) => println("✗ Encryption failed: {}", error)
+    }
+    
+    println("2. Automatic key derivation...")
+    match deriveUserKey("user123", "file_encryption") {
+        Ok(key) => println("✓ User key derived (ID: {})", key.id()),
+        Err(error) => println("✗ Key derivation failed: {}", error)
+    }
+    
+    println("3. Time-bounded digital signatures...")
+    match signWithExpiration("Important message", 24.hours) {
+        Ok(bundle) => println("✓ Message signed with expiration: {}", bundle.data.expiresAt),
+        Err(error) => println("✗ Signing failed: {}", error)
+    }
+    
+    println("4. Forward-secure communications...")
+    match forwardSecureChat(["alice", "bob", "charlie"]) {
+        Ok(session) => println("✓ Secure chat session established (ID: {})", session.sessionId),
+        Err(error) => println("✗ Session creation failed: {}", error)
+    }
+    
+    println("5. Policy-enforced encryption...")
+    let confidentialData = "Top secret information".bytes()
+    match corporateEncryption(confidentialData, DataClassification::Secret) {
+        Ok(encrypted) => println("✓ Corporate data encrypted ({} bytes)", encrypted.length),
+        Err(error) => println("✗ Policy enforcement failed: {}", error)
+    }
+    
+    println("6. Automatic certificate management...")
+    match secureTLS("secure.example.com") {
+        Ok(session) => println("✓ TLS session established with {}", session.peerCertificate.subject),
+        Err(error) => println("✗ TLS establishment failed: {}", error)
+    }
+    
+    println("7. Post-quantum ready encryption...")
+    let futureData = "Data for the quantum age".bytes()
+    match futureProofEncryption(futureData) {
+        Ok(hybrid) => println("✓ Hybrid encryption complete: {}", hybrid.algorithm),
+        Err(error) => println("✗ Future-proof encryption failed: {}", error)
+    }
+    
+    println("8. Secure key backup and recovery...")
+    let custodians = ["backup1@corp.com", "backup2@corp.com", "backup3@corp.com"]
+    match secureKeyBackup("master_key_001", custodians) {
+        Ok(backup) => println("✓ Key backup created with {}/{} threshold", backup.threshold, backup.shares.length),
+        Err(error) => println("✗ Key backup failed: {}", error)
+    }
+    
+    println("9. Monitored crypto operations...")
+    let testData = "Test data for monitoring".bytes()
+    match monitoredCryptoOperation("encrypt", testData) {
+        Ok(result) => println("✓ Monitored operation completed ({} bytes)", result.length),
+        Err(error) => println("✗ Monitored operation failed: {}", error)
+    }
+    
+    println("10. Secure data destruction...")
+    match secureDelete("temp_key_001", overwritePasses: 5) {
+        Ok(_) => println("✓ Key securely deleted with 5-pass overwrite"),
+        Err(error) => println("✗ Secure deletion failed: {}", error)
+    }
+    
+    // Generate comprehensive security report
+    let cryptoReport = crypto::generateSecurityReport()
+    println("\n=== Cryptographic Security Summary ===")
+    println("Active keys: {}", cryptoReport.activeKeys)
+    println("Key rotations: {}", cryptoReport.keyRotations)
+    println("Crypto operations: {}", cryptoReport.totalOperations)
+    println("Policy violations: {}", cryptoReport.policyViolations)
+    println("Hardware-backed keys: {}", cryptoReport.hardwareKeys)
+    println("Post-quantum ready: {}%", cryptoReport.postQuantumReadiness)
+    println("Average operation time: {}ms", cryptoReport.avgOperationTime)
+    println("Security level compliance: {}%", cryptoReport.complianceScore)
+    
+    // Export detailed crypto audit log
+    crypto::exportAuditLog("/var/log/crypto_operations.json")
+    
+    println("\n=== Cryptographic Security Features Demonstrated ===")
+    println("✓ Secure-by-default algorithms and parameters")
+    println("✓ Automatic key lifecycle management")
+    println("✓ Policy-driven cryptographic operations")
+    println("✓ Forward secrecy and perfect forward secrecy")
+    println("✓ Post-quantum cryptography readiness")
+    println("✓ Hardware security module integration")
+    println("✓ Comprehensive audit and monitoring")
+    println("✓ Secure key backup and recovery")
+    println("✓ Automatic certificate management")
+    println("✓ Memory-safe cryptographic operations")
+    
+    println("=== Demo completed successfully! ===")
+}
+
+// Compile-time cryptographic configuration
+@crypto_policy(high_security)
+@hardware_backing(preferred)
+@post_quantum_ready(true)
+@algorithm_agility(enabled)
+@forward_secrecy(required)
+module crypto_demo

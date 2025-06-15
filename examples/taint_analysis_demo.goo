@@ -1,0 +1,189 @@
+// Goo Security: Taint Analysis Demonstration
+// This example shows how the Goo language's taint analysis system
+// automatically tracks untrusted data and prevents security vulnerabilities
+
+use std::io
+use std::security::taint
+use std::security::sanitize
+
+// Function that reads user input - automatically tainted
+func getUserInput() -> string @tainted(user_input) {
+    return io::readLine("Enter command: ")
+}
+
+// Function that gets network data - automatically tainted  
+func getNetworkData(url: string) -> string @tainted(network) {
+    return http::get(url).body
+}
+
+// Function that reads file data - automatically tainted
+func readConfigFile(filename: string) -> string @tainted(file_system) {
+    return io::readFile(filename)
+}
+
+// Sanitization functions - marked as sanitizers
+func sanitizeForShell(input: string) -> string @sanitized_by(shell_escape) {
+    return shell::escape(input)
+}
+
+func sanitizeForSQL(input: string) -> string @sanitized_by(sql_escape) {
+    return sql::escape(input)
+}
+
+func sanitizeForHTML(input: string) -> string @sanitized_by(html_escape) {
+    return html::escape(input)
+}
+
+// Dangerous sink functions - automatically detected
+func executeCommand(cmd: string) @capability(process_spawn) {
+    // This is a taint sink - requires sanitized input
+    system(cmd)  // SECURITY WARNING: Potential command injection
+}
+
+func executeSQL(query: string) @capability(database_write) {
+    // This is a taint sink - requires sanitized input
+    database::execute(query)  // SECURITY WARNING: Potential SQL injection
+}
+
+func renderHTML(content: string) {
+    // This is a taint sink - requires sanitized input
+    printf("<div>%s</div>", content)  // SECURITY WARNING: Potential XSS
+}
+
+// Safe usage examples
+func safeExamples() {
+    // Safe: Direct string literal (not tainted)
+    executeCommand("ls -la")
+    
+    // Safe: Sanitized user input
+    let userCmd = getUserInput()
+    let safeCmd = sanitizeForShell(userCmd)
+    executeCommand(safeCmd)
+    
+    // Safe: Sanitized SQL query
+    let userId = getUserInput()
+    let safeQuery = "SELECT * FROM users WHERE id = " + sanitizeForSQL(userId)
+    executeSQL(safeQuery)
+    
+    // Safe: Sanitized HTML output
+    let userContent = getNetworkData("https://api.example.com/data")
+    let safeHTML = sanitizeForHTML(userContent)
+    renderHTML(safeHTML)
+}
+
+// Unsafe usage examples (would be caught by taint analysis)
+func unsafeExamples() {
+    // UNSAFE: Direct use of tainted data in command execution
+    let userInput = getUserInput()
+    executeCommand(userInput)  // COMPILE ERROR: Taint violation - unsanitized user input
+    
+    // UNSAFE: Direct use of tainted data in SQL
+    let searchTerm = getUserInput()
+    let query = "SELECT * FROM products WHERE name LIKE '%" + searchTerm + "%'"
+    executeSQL(query)  // COMPILE ERROR: Taint violation - SQL injection risk
+    
+    // UNSAFE: Direct use of tainted data in HTML
+    let networkData = getNetworkData("https://untrusted.example.com/content")
+    renderHTML(networkData)  // COMPILE ERROR: Taint violation - XSS risk
+    
+    // UNSAFE: Mixing tainted and untrusted data
+    let configData = readConfigFile("/etc/app.conf")
+    let command = "process " + configData  // Taint propagates
+    executeCommand(command)  // COMPILE ERROR: Taint violation - command injection risk
+}
+
+// Advanced taint tracking with conditional sanitization
+func conditionalSanitization(input: string @tainted(user_input)) {
+    if isValidFormat(input) {
+        // Input validation acts as a form of sanitization
+        let validatedInput = validateInput(input) @validated_by(format_check)
+        
+        if validatedInput.isValid {
+            // Safe to use after validation
+            executeCommand(validatedInput.value)
+        }
+    } else {
+        // Fallback to explicit sanitization
+        let sanitized = sanitizeForShell(input)
+        executeCommand(sanitized)
+    }
+}
+
+// Function that requires multiple capabilities
+func privilegedOperation(userCmd: string, dbQuery: string) 
+    @capability(process_spawn, database_write) 
+    @requires_sanitization(userCmd, dbQuery) {
+    
+    // Both parameters must be sanitized before use
+    let safeCmd = sanitizeForShell(userCmd)
+    let safeQuery = sanitizeForSQL(dbQuery)
+    
+    executeCommand(safeCmd)
+    executeSQL(safeQuery)
+}
+
+// Taint analysis with custom sanitization
+func customSanitization() {
+    let data = getUserInput()
+    
+    // Custom sanitization function
+    let customSanitized = data.filter(|char| char.isAlphaNumeric()) @sanitized_by(custom)
+    
+    // Safe to use after custom sanitization
+    executeCommand("echo " + customSanitized)
+}
+
+// Demonstrating taint propagation through data structures
+func dataStructureTaint() {
+    let userInputs = [getUserInput(), getUserInput(), getUserInput()]
+    // Array is now tainted because it contains tainted elements
+    
+    let combined = userInputs.join(" ")
+    // Combined string inherits taint from all elements
+    
+    // Must sanitize before use
+    let safeCombined = sanitizeForShell(combined)
+    executeCommand("process " + safeCombined)
+}
+
+// Main function demonstrating the security framework
+func main() {
+    println("=== Goo Security Framework: Taint Analysis Demo ===")
+    
+    // Enable security context with strict policy
+    security::enableStrictMode()
+    
+    // Run safe examples
+    println("Running safe examples...")
+    safeExamples()
+    
+    // Note: Unsafe examples would not compile due to taint violations
+    // unsafeExamples()  // Uncomment to see compile-time errors
+    
+    // Demonstrate advanced features
+    println("Running advanced taint tracking...")
+    let userInput = getUserInput()
+    conditionalSanitization(userInput)
+    
+    println("Running custom sanitization...")
+    customSanitization()
+    
+    println("Running data structure taint demo...")
+    dataStructureTaint()
+    
+    // Security audit report
+    let auditReport = security::generateAuditReport()
+    println("Security Audit Summary:")
+    println("  - Taint sources detected: " + auditReport.taintSources)
+    println("  - Taint sinks protected: " + auditReport.protectedSinks) 
+    println("  - Sanitization operations: " + auditReport.sanitizations)
+    println("  - Security violations prevented: " + auditReport.violationsPrevented)
+    
+    println("=== Demo completed successfully ===")
+}
+
+// Compile-time security attributes
+@security_policy(strict)
+@enable_taint_analysis
+@generate_security_audit
+module taint_demo

@@ -1,0 +1,268 @@
+// Goo Security: Capability-Based Security Demonstration
+// This example shows how the Goo language's capability-based security model
+// provides fine-grained access control with compile-time verification
+
+use std::io
+use std::network
+use std::security::capability
+use std::security::audit
+
+// Function that requires file read capability
+func readConfigFile(filename: string) -> string 
+    @requires_capability(read_file) 
+    @audit_log(file_access) {
+    return io::readFile(filename)
+}
+
+// Function that requires both file and network capabilities
+func downloadAndSave(url: string, filename: string) -> Result<void, string>
+    @requires_capability(network_connect, write_file)
+    @audit_log(data_transfer) {
+    
+    // Network access requires CAP_NETWORK_CONNECT
+    let content = network::httpGet(url)?
+    
+    // File write requires CAP_WRITE_FILE  
+    io::writeFile(filename, content)?
+    
+    return Ok(())
+}
+
+// Function that grants capabilities to other functions
+func privilegedSetup() -> Result<void, string>
+    @requires_capability(user_admin)
+    @grants_capability(read_file, write_file) {
+    
+    // Grant file capabilities to specific functions
+    capability::grant("readConfigFile", [CAP_READ_FILE], validity: 1.hour)
+    capability::grant("downloadAndSave", [CAP_NETWORK_CONNECT, CAP_WRITE_FILE], validity: 30.minutes)
+    
+    return Ok(())
+}
+
+// Function that demonstrates dynamic capability acquisition
+func secureOperation() @capability(memory_alloc) {
+    // Start with only memory allocation capability
+    
+    // Dynamically acquire additional capabilities as needed
+    with_capability(CAP_READ_FILE, validity: 5.minutes) {
+        let config = readConfigFile("/etc/app.conf")
+        
+        // Capability automatically released at end of block
+    }
+    
+    // This would fail - no longer have file read capability
+    // let data = readConfigFile("/tmp/test")  // COMPILE ERROR
+}
+
+// Function with capability delegation
+func delegateToWorker(workerName: string) 
+    @requires_capability(process_spawn)
+    @can_delegate(read_file, network_connect) {
+    
+    // Delegate specific capabilities to worker process
+    capability::delegate(
+        to: workerName,
+        capabilities: [CAP_READ_FILE, CAP_NETWORK_CONNECT],
+        maxDepth: 2,
+        validity: 15.minutes
+    )
+    
+    // Spawn worker process with delegated capabilities
+    process::spawn(workerName, capabilities: delegated)
+}
+
+// Function demonstrating contextual capabilities
+func contextualAccess(user: User) {
+    match user.role {
+        Role::Admin => {
+            // Admins get full capabilities
+            with_capabilities([CAP_READ_FILE, CAP_WRITE_FILE, CAP_USER_ADMIN]) {
+                privilegedSetup()
+                downloadAndSave("https://updates.example.com/data", "/var/app/updates")
+            }
+        }
+        
+        Role::User => {
+            // Regular users get limited capabilities
+            with_capability(CAP_READ_FILE, scope: user.homeDir) {
+                let userConfig = readConfigFile(user.homeDir + "/.config")
+                // Capability scoped to user's home directory only
+            }
+        }
+        
+        Role::Guest => {
+            // Guests get no file system access
+            println("Welcome, guest! Limited access granted.")
+            // Any file operations would fail at compile time
+        }
+    }
+}
+
+// Function with time-bounded capabilities
+func scheduledMaintenance() @requires_capability(system_config) {
+    let maintenanceWindow = capability::createTimeWindow(
+        start: Time::parse("02:00:00"),
+        end: Time::parse("04:00:00"),
+        timezone: "UTC"
+    )
+    
+    // Capabilities only valid during maintenance window
+    with_time_bounded_capability(CAP_SYSTEM_CONFIG, window: maintenanceWindow) {
+        systemMaintenance()
+        databaseOptimization()
+        logCleanup()
+    }
+}
+
+// Function demonstrating capability inheritance
+func parentFunction() @capability(network_connect, database_read) {
+    // Child functions inherit parent capabilities by default
+    childFunction()  // Inherits network_connect and database_read
+    
+    // Can explicitly limit inherited capabilities
+    restrictedChildFunction() @inherit_only(database_read)
+}
+
+func childFunction() {
+    // Can use inherited capabilities
+    let data = network::httpGet("https://api.example.com/data")
+    database::store(data)
+}
+
+func restrictedChildFunction() {
+    // Only has database_read capability
+    let records = database::query("SELECT * FROM logs")
+    // network::httpGet() would fail - no network capability inherited
+}
+
+// Function with custom capability validation
+func customValidation() {
+    // Define custom capability with validation logic
+    capability::defineCustom("secure_crypto", validator: |context| {
+        return context.environment == "production" && 
+               context.hasValidCertificate() &&
+               context.encryptionLevel >= 256
+    })
+    
+    with_custom_capability("secure_crypto") {
+        // Only executes if custom validation passes
+        performCryptographicOperation()
+    }
+}
+
+// Function demonstrating capability monitoring
+func monitoredOperation() @capability(file_write) @audit_required {
+    // All capability usage is automatically audited
+    
+    audit::logSecurityEvent("Starting monitored operation")
+    
+    // File write operations are tracked
+    io::writeFile("/var/log/operation.log", "Operation started")
+    
+    // Generate security metrics
+    let metrics = capability::getUsageMetrics()
+    audit::logMetrics(metrics)
+}
+
+// Function showing capability-based error handling  
+func robustOperation() -> Result<string, SecurityError> {
+    // Check capabilities before attempting operations
+    if !capability::hasCapability(CAP_READ_FILE) {
+        return Err(SecurityError::InsufficientCapabilities([CAP_READ_FILE]))
+    }
+    
+    // Attempt operation with automatic capability checking
+    let result = try_with_capability(CAP_READ_FILE) {
+        readConfigFile("/etc/sensitive.conf")
+    }
+    
+    match result {
+        Ok(content) => Ok(content),
+        Err(CapabilityError::Denied) => {
+            audit::logSecurityViolation("Unauthorized file access attempt")
+            Err(SecurityError::AccessDenied)
+        },
+        Err(CapabilityError::Expired) => {
+            // Request capability renewal
+            capability::requestRenewal(CAP_READ_FILE, justification: "Operation in progress")
+            Err(SecurityError::CapabilityExpired)
+        }
+    }
+}
+
+// Main function demonstrating the complete capability system
+func main() {
+    println("=== Goo Capability-Based Security Demo ===")
+    
+    // Initialize security context with strict policy
+    security::setPolicy(SecurityPolicy::Strict)
+    capability::enableAuditing(true)
+    
+    // Set up initial capabilities for the application
+    let appCapabilities = [
+        CAP_MEMORY_ALLOC,
+        CAP_READ_FILE,
+        CAP_NETWORK_CONNECT
+    ]
+    
+    capability::initializeSystem(appCapabilities)
+    
+    // Demonstrate different capability patterns
+    println("1. Basic capability usage...")
+    let config = readConfigFile("/etc/app.conf")
+    
+    println("2. Multi-capability operations...")
+    downloadAndSave("https://example.com/data.json", "/tmp/data.json")
+    
+    println("3. Dynamic capability acquisition...")
+    secureOperation()
+    
+    println("4. Capability delegation...")
+    delegateToWorker("background_processor")
+    
+    println("5. Contextual access control...")
+    let currentUser = auth::getCurrentUser()
+    contextualAccess(currentUser)
+    
+    println("6. Time-bounded capabilities...")
+    if Time::now().hour() in 2..4 {
+        scheduledMaintenance()
+    }
+    
+    println("7. Capability inheritance...")
+    parentFunction()
+    
+    println("8. Custom capability validation...")
+    customValidation()
+    
+    println("9. Monitored operations...")
+    monitoredOperation()
+    
+    println("10. Robust error handling...")
+    match robustOperation() {
+        Ok(data) => println("Operation successful: {}", data),
+        Err(error) => println("Operation failed: {}", error)
+    }
+    
+    // Generate comprehensive security audit report
+    let auditReport = audit::generateReport()
+    println("\n=== Security Audit Summary ===")
+    println("Capability grants: {}", auditReport.totalGrants)
+    println("Capability denials: {}", auditReport.totalDenials)
+    println("Active tokens: {}", auditReport.activeTokens)
+    println("Security violations: {}", auditReport.violations)
+    println("Policy compliance: {:.1}%", auditReport.compliancePercentage)
+    
+    // Export detailed audit log
+    audit::exportLog("/var/log/security_audit.json")
+    
+    println("=== Demo completed successfully ===")
+}
+
+// Compile-time security configuration
+@security_policy(strict)
+@capability_checking(enabled)
+@audit_required(all_operations)
+@capability_inheritance(explicit)
+module capability_demo
