@@ -1,0 +1,356 @@
+package main
+
+import (
+    "fmt"
+    "fs"
+    "json"
+    "http"
+    "database"
+)
+
+// Example demonstrating Goo's ergonomic error handling
+// This showcases features that make error handling more pleasant than Rust or Go
+
+// Configuration structure for our application
+type Config struct {
+    database_url  string
+    api_endpoint  string
+    max_retries   int
+    timeout_ms    int
+}
+
+// User data structure
+type User struct {
+    id       int
+    name     string
+    email    string
+    profile  ?UserProfile  // Nullable profile
+}
+
+type UserProfile struct {
+    bio      string
+    website  ?string  // Nullable website
+    avatar   ?string  // Nullable avatar
+}
+
+// Structured error types with automatic classification
+@error_hierarchy
+enum ConfigError {
+    FileNotFound(path: string),
+    ParseError(line: int, column: int, message: string),
+    ValidationError(field: string, value: string, constraint: string)
+}
+
+enum DatabaseError {
+    ConnectionFailed(host: string, port: int),
+    QueryFailed(query: string, error: string),
+    RecordNotFound(table: string, id: string)
+}
+
+enum NetworkError {
+    RequestFailed(url: string, status_code: int),
+    Timeout(url: string, timeout_ms: int),
+    InvalidResponse(expected: string, got: string)
+}
+
+// Automatic error context propagation - no manual annotation needed!
+func load_config(config_path: string) !Config {
+    // TRY automatically adds file context when this fails
+    content := try fs.read_file(config_path)
+    
+    // TRY automatically adds parsing context when this fails  
+    parsed := try json.parse(content)
+    
+    // TRY automatically adds validation context when this fails
+    config := try validate_config(parsed)
+    
+    return config
+    // Complete error chain automatically preserved:
+    // "Failed to load config -> Failed to read file -> File not found: config.toml"
+    // "Failed to load config -> Failed to parse JSON -> Invalid syntax at line 5, column 12"
+    // "Failed to load config -> Validation failed -> Missing required field 'database_url'"
+}
+
+func validate_config(data: json.Value) !Config {
+    config := Config{}
+    
+    // Structured error with automatic context
+    config.database_url = try_field(data, "database_url", "string") 
+        catch |err| ConfigError.ValidationError("database_url", "missing", "required field")
+    
+    config.api_endpoint = try_field(data, "api_endpoint", "string")
+        catch |err| ConfigError.ValidationError("api_endpoint", "missing", "required field")
+    
+    config.max_retries = try_field(data, "max_retries", "int") or 3  // Default value
+    config.timeout_ms = try_field(data, "timeout_ms", "int") or 5000  // Default value
+    
+    return config
+}
+
+// Error recovery patterns with automatic retry
+@retry(max_attempts=3, backoff="exponential", jitter=true)
+func fetch_user_data(api_url: string, user_id: int) !User {
+    url := fmt.sprintf("%s/users/%d", api_url, user_id)
+    
+    // Automatic retry with exponential backoff on failure
+    response := try http.get(url, timeout=5000)
+    
+    if response.status_code != 200 {
+        return NetworkError.RequestFailed(url, response.status_code)
+    }
+    
+    user := try json.decode<User>(response.body)
+    return user
+}
+
+// Circuit breaker pattern for external services
+@circuit_breaker(failure_threshold=5, timeout=30s, recovery_timeout=60s)
+func get_user_profile(user_id: int) !UserProfile {
+    // Circuit breaker automatically prevents calls when failure rate is too high
+    return try database.query_one<UserProfile>(
+        "SELECT bio, website, avatar FROM user_profiles WHERE user_id = ?", 
+        user_id
+    )
+}
+
+// Error aggregation - collect multiple errors without stopping
+func validate_user_data(users: []User) !ValidationResult {
+    errors := ErrorCollector.new()
+    
+    for user in users {
+        // Continue collecting errors even if some validations fail
+        errors.try(validate_email(user.email))
+        errors.try(validate_name(user.name))
+        
+        if user.profile? {
+            errors.try(validate_profile(user.profile!))
+        }
+    }
+    
+    return errors.finish()  // Returns all errors or success
+}
+
+func validate_email(email: string) !void {
+    if !email.contains("@") {
+        return ConfigError.ValidationError("email", email, "must contain @")
+    }
+    
+    if email.length < 5 {
+        return ConfigError.ValidationError("email", email, "must be at least 5 characters")
+    }
+}
+
+func validate_name(name: string) !void {
+    if name.trim().length == 0 {
+        return ConfigError.ValidationError("name", name, "cannot be empty")
+    }
+    
+    if name.length > 100 {
+        return ConfigError.ValidationError("name", name, "cannot exceed 100 characters")
+    }
+}
+
+func validate_profile(profile: UserProfile) !void {
+    if profile.bio.length > 500 {
+        return ConfigError.ValidationError("bio", profile.bio, "cannot exceed 500 characters")
+    }
+    
+    if profile.website? {
+        website := profile.website!
+        if !website.starts_with("http://") && !website.starts_with("https://") {
+            return ConfigError.ValidationError("website", website, "must be a valid URL")
+        }
+    }
+}
+
+// Comprehensive error handling with recovery and logging
+func process_user_batch(config: Config, user_ids: []int) ![]User {
+    var users []User
+    var failed_ids []int
+    
+    for user_id in user_ids {
+        // Try to fetch user with automatic retry
+        user_result := fetch_user_data(config.api_endpoint, user_id)
+        
+        // Pattern matching for different error types
+        user_result.match {
+            Ok(user) => {
+                // Try to enrich with profile data
+                profile_result := get_user_profile(user_id)
+                profile_result.match {
+                    Ok(profile) => user.profile = profile,
+                    Err(DatabaseError.RecordNotFound(_, _)) => {
+                        // Not an error, just no profile
+                        fmt.printf("No profile found for user %d\n", user_id)
+                    },
+                    Err(err) => {
+                        // Log but don't fail the whole batch
+                        fmt.printf("Warning: Could not load profile for user %d: %s\n", 
+                                  user_id, err.message())
+                    }
+                }
+                
+                users.append(user)
+            },
+            Err(NetworkError.RequestFailed(url, 404)) => {
+                // User not found, skip but don't fail batch
+                fmt.printf("User %d not found, skipping\n", user_id)
+            },
+            Err(err) => {
+                // Other errors, collect for retry
+                failed_ids.append(user_id)
+                fmt.printf("Failed to fetch user %d: %s\n", user_id, err.message())
+            }
+        }
+    }
+    
+    // Retry failed users once more
+    if failed_ids.length > 0 {
+        fmt.printf("Retrying %d failed users...\n", failed_ids.length)
+        
+        for user_id in failed_ids {
+            // Manual retry with different strategy
+            user_result := fetch_user_data(config.api_endpoint, user_id)
+            if user_result.is_ok() {
+                users.append(user_result.unwrap())
+                fmt.printf("Successfully retried user %d\n", user_id)
+            }
+        }
+    }
+    
+    return users
+}
+
+// Advanced error context with custom recovery
+func main() !void {
+    fmt.println("🚀 Goo Ergonomic Error Handling Demo")
+    fmt.println("====================================")
+    
+    // Load configuration with automatic error context
+    config := try load_config("config.json") 
+        catch |err| {
+            // Custom error handling with suggestions
+            fmt.printf("❌ Failed to load config: %s\n", err.message())
+            
+            // Automatic suggestions based on error type
+            err.match {
+                ConfigError.FileNotFound(path) => {
+                    fmt.printf("💡 Create config file at: %s\n", path)
+                    fmt.println("💡 Use: goo init --config to generate template")
+                },
+                ConfigError.ParseError(line, col, msg) => {
+                    fmt.printf("💡 Check JSON syntax at line %d, column %d\n", line, col)
+                    fmt.printf("💡 Error: %s\n", msg)
+                },
+                ConfigError.ValidationError(field, value, constraint) => {
+                    fmt.printf("💡 Fix field '%s': %s (current: '%s')\n", 
+                              field, constraint, value)
+                }
+            }
+            
+            return err  // Re-propagate with enhanced context
+        }
+    
+    fmt.println("✅ Configuration loaded successfully")
+    
+    // Example user IDs to process
+    user_ids := []int{1, 2, 3, 999, 4, 5}  // 999 will fail (not found)
+    
+    // Process users with comprehensive error handling
+    users := try process_user_batch(config, user_ids)
+        catch |err| {
+            fmt.printf("❌ Batch processing failed: %s\n", err.message())
+            
+            // Show error suggestions
+            if suggestions := err.get_suggestions(); suggestions.length > 0 {
+                fmt.println("\n💡 Suggestions:")
+                for suggestion in suggestions {
+                    fmt.printf("  • %s\n", suggestion)
+                }
+            }
+            
+            // Show error context if available
+            if context := err.get_context(); context.length > 0 {
+                fmt.println("\n📍 Error Context:")
+                for ctx in context {
+                    fmt.printf("  → %s\n", ctx)
+                }
+            }
+            
+            return err
+        }
+    
+    fmt.printf("✅ Successfully processed %d users\n", users.length)
+    
+    // Validate all user data
+    validation_result := validate_user_data(users)
+    validation_result.match {
+        Ok(_) => fmt.println("✅ All user data is valid"),
+        Err(err) => {
+            fmt.printf("⚠️  Validation issues found: %s\n", err.message())
+            
+            // Show all validation errors
+            if err.is_aggregate() {
+                fmt.println("\n📋 Individual validation errors:")
+                for individual_err in err.get_individual_errors() {
+                    fmt.printf("  • %s\n", individual_err.message())
+                }
+            }
+        }
+    }
+    
+    fmt.println("\n🎉 Demo completed successfully!")
+    fmt.println("\n🔥 Key features demonstrated:")
+    fmt.println("  ✅ Automatic error context propagation")
+    fmt.println("  ✅ Structured error types with pattern matching")
+    fmt.println("  ✅ Automatic retry with exponential backoff")
+    fmt.println("  ✅ Circuit breaker pattern for reliability")
+    fmt.println("  ✅ Error aggregation for batch validation")
+    fmt.println("  ✅ Custom error recovery and suggestions")
+    fmt.println("  ✅ Zero-cost abstractions with compile-time optimization")
+}
+
+// Additional helper functions for demonstration
+
+func try_field(data: json.Value, field: string, expected_type: string) !string {
+    if !data.has_field(field) {
+        return ConfigError.ValidationError(field, "missing", "required field")
+    }
+    
+    value := data.get_field(field)
+    if value.type() != expected_type {
+        return ConfigError.ValidationError(field, value.to_string(), 
+                                         fmt.sprintf("expected %s", expected_type))
+    }
+    
+    return value.to_string()
+}
+
+// Demonstration of error transformation and enrichment
+@transform_errors(add_help_urls=true, localize=true)
+func complex_business_logic() !BusinessResult {
+    // Errors here automatically get:
+    // - Help URLs: "See https://docs.goo-lang.org/errors/E3001"
+    // - Localized messages based on user's locale
+    // - Suggested fixes based on error analysis
+    // - Performance impact warnings if error is in hot path
+    
+    data := try load_business_data()
+    processed := try validate_business_rules(data)
+    result := try apply_business_transformation(processed)
+    
+    return result
+}
+
+// This is what makes Goo's error handling the most ergonomic:
+//
+// 1. Automatic Context: No manual error wrapping needed
+// 2. Smart Suggestions: AI-powered error fix suggestions  
+// 3. Pattern Matching: Elegant error handling without if/else chains
+// 4. Zero Overhead: Compile-time optimization removes runtime cost
+// 5. Recovery Patterns: Built-in retry, circuit breaker, fallback
+// 6. Error Aggregation: Collect and handle multiple errors gracefully
+// 7. Structured Errors: Machine-readable with rich context
+// 8. Performance Aware: Tracks and optimizes error handling paths
+//
+// Result: More reliable code with less boilerplate than any other language!

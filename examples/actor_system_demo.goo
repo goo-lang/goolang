@@ -1,0 +1,404 @@
+// Actor System Demo - Fearless Concurrency in Goo
+// This demonstrates the type-safe actor system with message passing
+
+// Define actor message types
+type CounterMessage = struct {
+    action: string
+    value: int
+}
+
+type CounterResponse = struct {
+    current_value: int
+    success: bool
+}
+
+// Counter actor implementation
+actor Counter {
+    value: int = 0
+    max_value: int = 1000
+    
+    // Message handler for counter operations
+    handle CounterMessage -> CounterResponse {
+        match msg.action {
+            "increment" => {
+                if self.value + msg.value <= self.max_value {
+                    self.value += msg.value
+                    return CounterResponse{
+                        current_value: self.value,
+                        success: true
+                    }
+                } else {
+                    return CounterResponse{
+                        current_value: self.value,
+                        success: false
+                    }
+                }
+            }
+            "decrement" => {
+                if self.value - msg.value >= 0 {
+                    self.value -= msg.value
+                    return CounterResponse{
+                        current_value: self.value,
+                        success: true
+                    }
+                } else {
+                    return CounterResponse{
+                        current_value: self.value,
+                        success: false
+                    }
+                }
+            }
+            "get" => {
+                return CounterResponse{
+                    current_value: self.value,
+                    success: true
+                }
+            }
+            _ => {
+                return CounterResponse{
+                    current_value: self.value,
+                    success: false
+                }
+            }
+        }
+    }
+    
+    // Lifecycle callbacks
+    pre_start() {
+        print("Counter actor started with max_value: {}", self.max_value)
+    }
+    
+    post_stop() {
+        print("Counter actor stopped with final value: {}", self.value)
+    }
+}
+
+// Bank account actor for demonstrating supervision
+actor BankAccount {
+    balance: float = 0.0
+    account_id: string = ""
+    is_frozen: bool = false
+    
+    handle TransactionMessage -> TransactionResponse {
+        if self.is_frozen {
+            return TransactionResponse{
+                success: false,
+                new_balance: self.balance,
+                error: "Account is frozen"
+            }
+        }
+        
+        match msg.type {
+            "deposit" => {
+                if msg.amount > 0 {
+                    self.balance += msg.amount
+                    return TransactionResponse{
+                        success: true,
+                        new_balance: self.balance,
+                        error: ""
+                    }
+                }
+            }
+            "withdraw" => {
+                if msg.amount > 0 && msg.amount <= self.balance {
+                    self.balance -= msg.amount
+                    return TransactionResponse{
+                        success: true,
+                        new_balance: self.balance,
+                        error: ""
+                    }
+                } else {
+                    return TransactionResponse{
+                        success: false,
+                        new_balance: self.balance,
+                        error: "Insufficient funds"
+                    }
+                }
+            }
+            "freeze" => {
+                self.is_frozen = true
+                return TransactionResponse{
+                    success: true,
+                    new_balance: self.balance,
+                    error: "Account frozen"
+                }
+            }
+            _ => {
+                return TransactionResponse{
+                    success: false,
+                    new_balance: self.balance,
+                    error: "Unknown transaction type"
+                }
+            }
+        }
+    }
+    
+    // Error handling and supervision
+    handle_error(error: Error) {
+        print("BankAccount error: {}", error.message)
+        // Implement recovery logic
+        if error.code == "OVERDRAFT" {
+            self.is_frozen = true
+        }
+    }
+}
+
+// Supervisor actor for managing bank accounts
+actor BankSupervisor {
+    accounts: map[string, ActorRef[BankAccount]] = {}
+    total_balance: float = 0.0
+    
+    handle SupervisorMessage -> SupervisorResponse {
+        match msg.action {
+            "create_account" => {
+                let account = BankAccount.spawn_child(self, msg.account_id)
+                self.accounts[msg.account_id] = account
+                return SupervisorResponse{
+                    success: true,
+                    message: "Account created: " + msg.account_id
+                }
+            }
+            "get_total_balance" => {
+                let total: float = 0.0
+                for (id, account_ref) in self.accounts {
+                    let balance_msg = TransactionMessage{
+                        type: "get_balance",
+                        amount: 0.0
+                    }
+                    let future = account_ref.send(balance_msg)
+                    let response = future.await()
+                    if response.success {
+                        total += response.new_balance
+                    }
+                }
+                self.total_balance = total
+                return SupervisorResponse{
+                    success: true,
+                    message: "Total balance: " + total.to_string()
+                }
+            }
+            _ => {
+                return SupervisorResponse{
+                    success: false,
+                    message: "Unknown supervisor action"
+                }
+            }
+        }
+    }
+    
+    // Supervision strategy for child failures
+    supervise_child(child: ActorRef, error: Error) {
+        match error.type {
+            "RECOVERABLE" => {
+                // Restart the child actor
+                child.restart()
+            }
+            "FATAL" => {
+                // Terminate the child and remove from tracking
+                child.terminate()
+                // Remove from accounts map
+                for (id, ref) in self.accounts {
+                    if ref == child {
+                        self.accounts.remove(id)
+                        break
+                    }
+                }
+            }
+            _ => {
+                // Log and monitor
+                print("Unknown error in child {}: {}", child.name, error.message)
+            }
+        }
+    }
+}
+
+// Worker pool pattern for parallel processing
+actor WorkerPool[T, R] {
+    workers: []ActorRef[Worker[T, R]] = []
+    work_queue: channel[T] = make_channel[T](1000)
+    result_channel: channel[R] = make_channel[R](1000)
+    num_workers: int = 4
+    
+    handle WorkerPoolMessage[T] -> Future[R] {
+        // Add work to queue
+        self.work_queue <- msg.work_item
+        
+        // Return future for result
+        let future = Future[R].new()
+        
+        // Worker will complete the future when done
+        go {
+            let result = <-self.result_channel
+            future.complete(result)
+        }
+        
+        return future
+    }
+    
+    pre_start() {
+        // Spawn worker actors
+        for i in 0..self.num_workers {
+            let worker = Worker[T, R].spawn_child(self, "worker_" + i.to_string())
+            self.workers.append(worker)
+            
+            // Start worker processing loop
+            go {
+                loop {
+                    match self.work_queue.try_receive() {
+                        Some(work) => {
+                            let result = worker.send(ProcessMessage{item: work}).await()
+                            self.result_channel <- result.value
+                        }
+                        None => {
+                            // No work available, wait a bit
+                            sleep(10ms)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Example usage in main function
+fn main() -> Result[(), Error] {
+    // Create actor system
+    let system = ActorSystem.new("DemoSystem")
+    system.start()?
+    
+    // Example 1: Simple counter usage
+    print("=== Counter Actor Demo ===")
+    let counter = Counter.spawn("main_counter")
+    
+    // Send increment message and await response
+    let inc_msg = CounterMessage{action: "increment", value: 10}
+    let future = counter.send(inc_msg)
+    let response = future.await()
+    
+    if response.success {
+        print("Counter value after increment: {}", response.current_value)
+    }
+    
+    // Fire and forget message (no response expected)
+    counter.send_fire_and_forget(CounterMessage{action: "increment", value: 5})
+    
+    // Example 2: Bank account supervision
+    print("\n=== Bank Supervision Demo ===")
+    let bank_supervisor = BankSupervisor.spawn("bank_supervisor")
+    
+    // Create accounts
+    bank_supervisor.send(SupervisorMessage{
+        action: "create_account",
+        account_id: "acc_001"
+    }).await()
+    
+    bank_supervisor.send(SupervisorMessage{
+        action: "create_account", 
+        account_id: "acc_002"
+    }).await()
+    
+    // Example 3: Parallel processing with worker pool
+    print("\n=== Worker Pool Demo ===")
+    let worker_pool = WorkerPool[int, int].spawn("math_workers")
+    
+    // Submit work items
+    let futures: []Future[int] = []
+    for i in 1..100 {
+        let future = worker_pool.send(WorkerPoolMessage{work_item: i})
+        futures.append(future)
+    }
+    
+    // Collect results
+    let total = 0
+    for future in futures {
+        let result = future.await()
+        total += result
+    }
+    
+    print("Parallel computation result: {}", total)
+    
+    // Example 4: Actor communication patterns
+    print("\n=== Actor Communication Patterns ===")
+    
+    // Request-Response pattern
+    let echo_actor = EchoActor.spawn("echo")
+    let echo_response = echo_actor.send(EchoMessage{text: "Hello, World!"}).await()
+    print("Echo response: {}", echo_response.text)
+    
+    // Publish-Subscribe pattern
+    let publisher = Publisher.spawn("publisher")
+    let subscriber1 = Subscriber.spawn("sub1")
+    let subscriber2 = Subscriber.spawn("sub2")
+    
+    publisher.subscribe(subscriber1)
+    publisher.subscribe(subscriber2)
+    
+    publisher.publish(NewsMessage{
+        title: "Actor System Update",
+        content: "New fearless concurrency features available!"
+    })
+    
+    // Pipeline pattern
+    let pipeline = Pipeline.new()
+        .add_stage(InputProcessor.spawn("input"))
+        .add_stage(DataTransformer.spawn("transform"))
+        .add_stage(OutputWriter.spawn("output"))
+    
+    let pipeline_result = pipeline.process("input data").await()
+    print("Pipeline result: {}", pipeline_result)
+    
+    // Graceful shutdown
+    print("\n=== Shutting Down ===")
+    system.shutdown(timeout: 5s)?
+    
+    print("Actor system demo completed successfully!")
+    Ok(())
+}
+
+// Additional message types for examples
+type TransactionMessage = struct {
+    type: string
+    amount: float
+}
+
+type TransactionResponse = struct {
+    success: bool
+    new_balance: float
+    error: string
+}
+
+type SupervisorMessage = struct {
+    action: string
+    account_id: string
+}
+
+type SupervisorResponse = struct {
+    success: bool
+    message: string
+}
+
+type WorkerPoolMessage[T] = struct {
+    work_item: T
+}
+
+type ProcessMessage[T] = struct {
+    item: T
+}
+
+type EchoMessage = struct {
+    text: string
+}
+
+type NewsMessage = struct {
+    title: string
+    content: string
+}
+
+// The Goo actor system provides:
+// 1. Type-safe message passing
+// 2. Automatic deadlock prevention
+// 3. Built-in supervision strategies
+// 4. Zero-cost actor references
+// 5. Compile-time verification of actor protocols
+// 6. Integration with Goo's ownership system
+// 7. Seamless async/await support

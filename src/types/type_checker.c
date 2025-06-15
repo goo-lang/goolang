@@ -1,4 +1,5 @@
 #include "types.h"
+#include "taint_analysis.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

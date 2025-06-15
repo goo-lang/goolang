@@ -64,6 +64,9 @@ typedef enum {
     // Runtime errors (5000-5999)
     ERROR_OUT_OF_MEMORY = 5000,
     ERROR_STACK_OVERFLOW,
+    ERROR_OPERATION_CANCELLED,
+    ERROR_OPERATION_FAILED,
+    ERROR_BUFFER_OVERFLOW,
     
     // Internal errors (9000-9999)
     ERROR_INTERNAL = 9000,
@@ -180,5 +183,6 @@ void error_builder_emit(ErrorBuilder* builder);
             return NULL; \
         } \
     } while (0)
+
 
 #endif // GOO_ERROR_H
