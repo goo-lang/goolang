@@ -42,7 +42,7 @@ AST_SRCS = $(SRCDIR)/ast/ast.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/runtime_optimization.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c
-ERROR_SRCS = $(SRCDIR)/errors/error.c
+ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
@@ -154,6 +154,109 @@ repl-enhanced: $(REPL_ENHANCED)
 $(REPL_ENHANCED): $(SRCDIR)/ide/repl_enhanced_simple.c $(SRCDIR)/ide/repl_syntax.c
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+
+# Development Workflow Tools
+PROJECT_WIZARD = $(BINDIR)/goo-wizard
+TEST_RUNNER_TOOL = $(BINDIR)/goo-test
+PROFILER_TOOL = $(BINDIR)/goo-profiler
+DOC_GENERATOR = $(BINDIR)/goo-docs
+HEALTH_DASHBOARD = $(BINDIR)/goo-health
+
+# Complete development workflow toolchain
+dev-tools: wizard test-tool profiler doc-generator health-dashboard
+
+# Project template wizard
+wizard: $(PROJECT_WIZARD)
+
+$(PROJECT_WIZARD): tools/project_wizard/main.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Enhanced test runner with visualization
+test-tool: $(TEST_RUNNER_TOOL)
+
+$(TEST_RUNNER_TOOL): tools/test_runner/main.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $< -lpthread
+
+# Integrated profiler
+profiler: $(PROFILER_TOOL)
+
+$(PROFILER_TOOL): tools/profiler/main.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $< -lpthread
+
+# Documentation generator
+doc-generator: $(DOC_GENERATOR)
+
+$(DOC_GENERATOR): tools/doc_generator/main.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Project health dashboard
+health-dashboard: $(HEALTH_DASHBOARD)
+
+$(HEALTH_DASHBOARD): tools/health_dashboard/main.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $< -lpthread
+
+# Taint Analysis System Test
+TAINT_ANALYSIS_TEST = $(BINDIR)/taint_analysis_test
+TAINT_ANALYSIS_SOURCES = src/types/taint_analysis.c src/security/security_framework.c src/errors/error.c
+
+test-taint-analysis: $(TAINT_ANALYSIS_TEST)
+	@echo "Running taint analysis system tests..."
+	./$(TAINT_ANALYSIS_TEST)
+
+$(TAINT_ANALYSIS_TEST): taint_analysis_test.c $(TAINT_ANALYSIS_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Capability Security System Test
+CAPABILITY_SECURITY_TEST = $(BINDIR)/capability_security_test
+CAPABILITY_SECURITY_SOURCES = src/security/capability_security.c src/security/security_framework.c src/errors/error.c
+
+test-capability-security: $(CAPABILITY_SECURITY_TEST)
+	@echo "Running capability security system tests..."
+	./$(CAPABILITY_SECURITY_TEST)
+
+$(CAPABILITY_SECURITY_TEST): capability_security_test.c $(CAPABILITY_SECURITY_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Security Auditing System Test
+SECURITY_AUDITING_TEST = $(BINDIR)/security_auditing_test
+SECURITY_AUDITING_SOURCES = src/security/security_auditing.c src/security/security_patterns.c src/security/security_framework.c src/security/capability_security.c src/types/taint_analysis.c src/errors/error.c
+
+test-security-auditing: $(SECURITY_AUDITING_TEST)
+	@echo "Running security auditing system tests..."
+	./$(SECURITY_AUDITING_TEST)
+
+$(SECURITY_AUDITING_TEST): security_auditing_test.c $(SECURITY_AUDITING_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Cryptographic Security System Test
+CRYPTO_SECURITY_TEST = $(BINDIR)/crypto_security_test
+CRYPTO_SECURITY_SOURCES = src/security/crypto_security.c src/security/security_framework.c src/errors/error.c
+
+test-crypto-security: $(CRYPTO_SECURITY_TEST)
+	@echo "Running cryptographic security system tests..."
+	./$(CRYPTO_SECURITY_TEST)
+
+$(CRYPTO_SECURITY_TEST): crypto_security_simple_test.c $(CRYPTO_SECURITY_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Ergonomic error handling tests
+ERGONOMIC_ERROR_TEST = $(BINDIR)/test_ergonomic_errors
+
+test-ergonomic-errors: $(ERGONOMIC_ERROR_TEST)
+	./$(ERGONOMIC_ERROR_TEST)
+
+$(ERGONOMIC_ERROR_TEST): $(TEST_UNIT_DIR)/error/ergonomic_errors_test.c $(ERROR_SRCS)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # LSP Server targets
 lsp: $(LSP_SERVER)
@@ -297,6 +400,26 @@ contracts_test: $(TEST_UNIT_DIR)/contract/contracts_test.c $(SRCDIR)/types/contr
 contract_proof_integration_test: $(TEST_UNIT_DIR)/contract/contract_proof_integration_test.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/dependent_types.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+# Actor System Test
+ACTOR_SYSTEM_TEST = $(BINDIR)/actor_system_test
+ACTOR_SYSTEM_SOURCES = src/runtime/actor_system.c src/errors/error.c
+
+test-actor-system: $(ACTOR_SYSTEM_TEST)
+	@echo "Running actor system tests..."
+	./$(ACTOR_SYSTEM_TEST)
+
+$(ACTOR_SYSTEM_TEST): actor_system_test.c $(ACTOR_SYSTEM_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Shared Variables Test (Task 21.2)
+shared_variables_test: shared_variables_test.c $(SRCDIR)/concurrency/shared_variables.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/errors/error.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Structured Concurrency Test (Task 21.3)
+structured_concurrency_test: structured_concurrency_test.c $(SRCDIR)/concurrency/structured_concurrency.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/errors/error.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 # All optimization system tests
 .PHONY: test-optimization test-optimization-simple test-all-optimization clean-tests
 test-optimization: runtime_optimization_test
@@ -318,3 +441,180 @@ test-all-optimization: runtime_optimization_test runtime_optimization_demo contr
 
 clean-tests:
 	rm -f runtime_optimization_test runtime_optimization_demo contracts_test contract_proof_integration_test proof_generation_test
+# Work-Stealing Test
+WORK_STEALING_TEST = $(BINDIR)/work_stealing_test
+WORK_STEALING_SOURCES = src/concurrency/work_stealing.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-work-stealing: $(WORK_STEALING_TEST)
+	@echo "Running work-stealing tests..."
+	./$(WORK_STEALING_TEST)
+
+$(WORK_STEALING_TEST): work_stealing_test.c $(WORK_STEALING_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Work-Stealing Demo
+WORK_STEALING_DEMO = $(BINDIR)/work_stealing_demo
+
+demo-work-stealing: $(WORK_STEALING_DEMO)
+	@echo "Running work-stealing demonstration..."
+	./$(WORK_STEALING_DEMO)
+
+$(WORK_STEALING_DEMO): work_stealing_demo.c $(WORK_STEALING_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Dynamic Chunking Test
+DYNAMIC_CHUNKING_TEST = $(BINDIR)/dynamic_chunking_test
+DYNAMIC_CHUNKING_SOURCES = src/concurrency/dynamic_chunking.c src/concurrency/work_stealing.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-dynamic-chunking: $(DYNAMIC_CHUNKING_TEST)
+	@echo "Running dynamic chunking tests..."
+	./$(DYNAMIC_CHUNKING_TEST)
+
+$(DYNAMIC_CHUNKING_TEST): dynamic_chunking_test.c $(DYNAMIC_CHUNKING_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Memory Safety Test
+MEMORY_SAFETY_TEST = $(BINDIR)/memory_safety_test
+MEMORY_SAFETY_SOURCES = src/concurrency/parallel_memory_safety.c src/concurrency/work_stealing.c src/concurrency/dynamic_chunking.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-memory-safety: $(MEMORY_SAFETY_TEST)
+	@echo "Running memory safety tests..."
+	./$(MEMORY_SAFETY_TEST)
+
+$(MEMORY_SAFETY_TEST): memory_safety_test.c $(MEMORY_SAFETY_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Performance Monitoring Test
+PERFORMANCE_MONITORING_TEST = $(BINDIR)/performance_monitoring_test
+PERFORMANCE_MONITORING_SOURCES = src/concurrency/performance_monitoring.c src/concurrency/parallel_memory_safety.c src/concurrency/work_stealing.c src/concurrency/dynamic_chunking.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-performance-monitoring: $(PERFORMANCE_MONITORING_TEST)
+	@echo "Running performance monitoring tests..."
+	./$(PERFORMANCE_MONITORING_TEST)
+
+$(PERFORMANCE_MONITORING_TEST): performance_monitoring_test.c $(PERFORMANCE_MONITORING_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Simple Performance Monitoring Test
+SIMPLE_PERFORMANCE_TEST = $(BINDIR)/simple_performance_test
+SIMPLE_PERFORMANCE_SOURCES = src/concurrency/performance_monitoring.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-simple-performance: $(SIMPLE_PERFORMANCE_TEST)
+	@echo "Running simple performance monitoring tests..."
+	./$(SIMPLE_PERFORMANCE_TEST)
+
+$(SIMPLE_PERFORMANCE_TEST): simple_performance_test.c $(SIMPLE_PERFORMANCE_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Parallel Capability Security Test
+PARALLEL_CAPABILITY_TEST = $(BINDIR)/parallel_capability_test
+PARALLEL_CAPABILITY_SOURCES = src/concurrency/parallel_capability_security.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-parallel-capability: $(PARALLEL_CAPABILITY_TEST)
+	@echo "Running parallel capability security tests..."
+	./$(PARALLEL_CAPABILITY_TEST)
+
+$(PARALLEL_CAPABILITY_TEST): parallel_capability_test.c $(PARALLEL_CAPABILITY_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Simple Capability Security Test
+SIMPLE_CAPABILITY_TEST = $(BINDIR)/simple_capability_test
+SIMPLE_CAPABILITY_SOURCES = src/concurrency/parallel_capability_security.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-simple-capability: $(SIMPLE_CAPABILITY_TEST)
+	@echo "Running simple capability security tests..."
+	./$(SIMPLE_CAPABILITY_TEST)
+
+$(SIMPLE_CAPABILITY_TEST): simple_capability_test.c $(SIMPLE_CAPABILITY_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Minimal Capability Security Test
+MINIMAL_CAPABILITY_TEST = $(BINDIR)/minimal_capability_test
+MINIMAL_CAPABILITY_SOURCES = src/concurrency/parallel_capability_security.c src/errors/error.c
+
+test-minimal-capability: $(MINIMAL_CAPABILITY_TEST)
+	@echo "Running minimal capability security tests..."
+	./$(MINIMAL_CAPABILITY_TEST)
+
+$(MINIMAL_CAPABILITY_TEST): minimal_capability_test.c $(MINIMAL_CAPABILITY_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Capability-Only Test (no dependencies)
+CAPABILITY_ONLY_TEST = $(BINDIR)/capability_only_test
+
+test-capability-only: $(CAPABILITY_ONLY_TEST)
+	@echo "Running capability-only security tests..."
+	./$(CAPABILITY_ONLY_TEST)
+
+$(CAPABILITY_ONLY_TEST): capability_only_test.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# NUMA Scheduling Test
+NUMA_SCHEDULING_TEST = $(BINDIR)/numa_scheduling_test
+NUMA_SCHEDULING_SOURCES = src/concurrency/numa_scheduling.c src/concurrency/performance_monitoring.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+
+test-numa-scheduling: $(NUMA_SCHEDULING_TEST)
+	@echo "Running NUMA scheduling tests..."
+	./$(NUMA_SCHEDULING_TEST)
+
+$(NUMA_SCHEDULING_TEST): numa_scheduling_test.c $(NUMA_SCHEDULING_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Task 21.4 Advanced Channels Demo
+TASK_21_4_DEMO = $(BINDIR)/task_21_4_advanced_channels_demo
+
+test-task-21-4: $(TASK_21_4_DEMO)
+	@echo "Running Task 21.4 Advanced Channel Patterns demo..."
+	./$(TASK_21_4_DEMO)
+
+$(TASK_21_4_DEMO): task_21_4_advanced_channels_demo.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Task 21.5 Deadlock Prevention Demo
+TASK_21_5_DEMO = $(BINDIR)/task_21_5_deadlock_prevention_demo
+
+test-task-21-5: $(TASK_21_5_DEMO)
+	@echo "Running Task 21.5 Deadlock Prevention and Performance Optimization demo..."
+	./$(TASK_21_5_DEMO)
+
+$(TASK_21_5_DEMO): task_21_5_deadlock_prevention_demo.c
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Task 25.1 Async Runtime Demo
+TASK_25_1_DEMO = $(BINDIR)/task_25_1_async_runtime_demo
+ASYNC_RUNTIME_SOURCES = src/async/transparent_async.c src/errors/error.c
+
+test-task-25-1: $(TASK_25_1_DEMO)
+	@echo "Running Task 25.1 Core Async Runtime demo..."
+	./$(TASK_25_1_DEMO)
+
+$(TASK_25_1_DEMO): task_25_1_async_runtime_demo.c $(ASYNC_RUNTIME_SOURCES)
+	@mkdir -p $(BINDIR)
+	@mkdir -p src/async
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Transparent Async Test
+TRANSPARENT_ASYNC_TEST = $(BINDIR)/transparent_async_test
+TRANSPARENT_ASYNC_SOURCES = src/async/transparent_async.c src/async/transparent_execution.c src/errors/error.c src/errors/ergonomic_errors.c
+
+test-transparent-async: $(TRANSPARENT_ASYNC_TEST)
+	@echo "Running transparent async system tests..."
+	./$(TRANSPARENT_ASYNC_TEST)
+
+$(TRANSPARENT_ASYNC_TEST): transparent_async_test.c $(TRANSPARENT_ASYNC_SOURCES)
+	@mkdir -p $(BINDIR)
+	@mkdir -p src/async
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm

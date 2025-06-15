@@ -1,0 +1,271 @@
+// Transparent Async System Demo
+// =============================
+// This example demonstrates the transparent async system that eliminates
+// function coloring while providing structured concurrency.
+
+package main
+
+import (
+    "fmt"
+    "time"
+    "http"
+    "json"
+)
+
+// Example 1: Transparent async execution without coloring
+// No need to mark functions as async - the runtime decides
+func fetch_user_data(user_id: int) !User {
+    // This function automatically runs async when beneficial
+    url := fmt.sprintf("https://api.example.com/users/%d", user_id)
+    
+    // HTTP operations are automatically async
+    response := try http.get(url)
+    defer response.close()
+    
+    // JSON parsing may run sync or async based on size
+    user := try response.json<User>()
+    return user
+}
+
+// Example 2: Structured concurrency without explicit async
+func fetch_multiple_users(user_ids: []int) ![]User {
+    // Concurrent execution is transparent
+    return concurrent {
+        for id in user_ids {
+            fetch_user_data(id)
+        }
+    }
+}
+
+// Example 3: Automatic optimization based on workload
+func process_data(data: []byte) !ProcessedData {
+    // Small data: runs synchronously inline
+    // Large data: automatically async with work stealing
+    
+    if len(data) < 1024 {
+        // Fast path - no async overhead
+        return quick_process(data)
+    }
+    
+    // Automatically switches to async for large data
+    chunks := split_into_chunks(data, 4096)
+    
+    // Transparent parallel processing
+    results := concurrent {
+        for chunk in chunks {
+            heavy_process(chunk)
+        }
+    }
+    
+    return merge_results(results)
+}
+
+// Example 4: I/O operations with automatic async
+func read_and_process_file(filename: string) !Result {
+    // File I/O automatically async
+    content := try file.read(filename)
+    
+    // Processing may be sync or async based on content size
+    processed := try process_data(content)
+    
+    // Write is also transparently async
+    try file.write(filename + ".out", processed.to_bytes())
+    
+    return processed.result
+}
+
+// Example 5: Network operations with timeouts and retries
+@timeout(30s)
+@retry(max_attempts: 3, backoff: exponential)
+func reliable_api_call(endpoint: string, payload: any) !Response {
+    // Automatic retry logic with exponential backoff
+    // Runs async but appears synchronous to caller
+    
+    response := try http.post(endpoint, json.marshal(payload))
+    
+    if response.status_code >= 500 {
+        // Automatic retry for server errors
+        return error("Server error: ${response.status_code}")
+    }
+    
+    return response
+}
+
+// Example 6: Event-driven programming without callbacks
+@reactive
+actor OrderProcessor {
+    var orders: Queue<Order>
+    var metrics: ProcessingMetrics
+    
+    // Automatically async event handling
+    handle NewOrder(order: Order) {
+        // Validate order
+        validation := try validate_order(order)
+        if !validation.is_valid {
+            emit OrderRejected(order.id, validation.reason)
+            return
+        }
+        
+        // Process payment (automatically async)
+        payment := try process_payment(order.payment_info)
+        
+        // Update inventory (may be sync or async)
+        try update_inventory(order.items)
+        
+        // Emit completion event
+        emit OrderCompleted(order.id, payment.transaction_id)
+        
+        // Update metrics
+        metrics.processed_count++
+    }
+    
+    // Periodic tasks run transparently async
+    @schedule(every: 1m)
+    func report_metrics() {
+        emit MetricsUpdate(metrics.snapshot())
+        metrics.reset_period()
+    }
+}
+
+// Example 7: Resource management with automatic async cleanup
+@async_resource
+func with_database<T>(operation: Database -> !T) !T {
+    // Connection is established asynchronously if needed
+    db := try connect_to_database()
+    defer db.close() // Cleanup works correctly even in async context
+    
+    // Enable transaction
+    tx := try db.begin_transaction()
+    defer tx.rollback_if_not_committed()
+    
+    // Execute operation
+    result := try operation(db)
+    
+    // Commit transaction
+    try tx.commit()
+    
+    return result
+}
+
+// Example 8: Async iterators and streams
+func process_log_stream(log_source: string) ! {
+    // Stream processing with automatic backpressure
+    stream := log_source.stream_lines()
+        .filter(|line| line.contains("ERROR"))
+        .map(parse_log_entry)
+        .batch(100)
+        .parallel_process(workers: 8)
+    
+    // Async iteration appears synchronous
+    for await batch in stream {
+        // Process errors in batches
+        errors := analyze_errors(batch)
+        
+        if errors.critical_count > 0 {
+            // Alert is sent asynchronously
+            try send_alert(errors.critical)
+        }
+        
+        // Store for analysis (async write)
+        try store_errors(errors)
+    }
+}
+
+// Example 9: Cancellation and timeout handling
+func long_running_operation(ctx: Context) !Result {
+    var accumulated = 0
+    
+    // Check for cancellation at yield points
+    for i in 0..1000000 {
+        // Automatic yield point for long loops
+        if i % 1000 == 0 {
+            // Context cancellation is checked automatically
+            // No explicit check needed
+        }
+        
+        accumulated += expensive_calculation(i)
+    }
+    
+    return Result{value: accumulated}
+}
+
+// Example 10: Zero-cost abstractions for sync code
+func quick_calculation(x: int, y: int) int {
+    // This function is too fast for async
+    // Runtime automatically executes it inline
+    return x * y + (x - y)
+}
+
+func main() ! {
+    // Initialize transparent async runtime
+    // No explicit runtime management needed
+    
+    println("=== Transparent Async Demo ===")
+    
+    // Example usage
+    user_ids := [1, 2, 3, 4, 5]
+    
+    // Fetch users concurrently (appears synchronous)
+    users := try fetch_multiple_users(user_ids)
+    println("Fetched ${len(users)} users")
+    
+    // Process a file (I/O is transparent)
+    result := try read_and_process_file("data.txt")
+    println("Processing complete: ${result}")
+    
+    // Start order processor (event-driven but no callbacks)
+    processor := OrderProcessor.spawn()
+    
+    // Submit some orders
+    for i in 0..10 {
+        order := create_test_order(i)
+        processor <- NewOrder(order)
+    }
+    
+    // Long running operation with timeout
+    ctx := Context.with_timeout(5s)
+    match long_running_operation(ctx) {
+        Ok(result) => println("Operation completed: ${result.value}"),
+        Err(e) => println("Operation failed: ${e}")
+    }
+    
+    // Quick calculations run inline (zero overhead)
+    sum := 0
+    for i in 0..1000 {
+        sum += quick_calculation(i, i+1)
+    }
+    println("Quick calculation sum: ${sum}")
+    
+    // Stream processing (async but appears sync)
+    try process_log_stream("/var/log/app.log")
+    
+    println("Demo complete!")
+}
+
+// Helper types
+struct User {
+    id: int
+    name: string
+    email: string
+}
+
+struct Order {
+    id: string
+    items: []OrderItem
+    payment_info: PaymentInfo
+}
+
+struct ProcessedData {
+    result: Result
+    fn to_bytes() []byte
+}
+
+// Benefits of transparent async:
+// 1. No function coloring - async is an implementation detail
+// 2. Automatic optimization - runtime chooses best execution model  
+// 3. Zero-cost for synchronous code paths
+// 4. Structured concurrency without explicit async/await
+// 5. Natural error handling with error unions
+// 6. Automatic resource management
+// 7. Built-in cancellation and timeouts
+// 8. Seamless integration with existing code
