@@ -1,0 +1,92 @@
+package main
+
+import (
+    "fmt"
+    "http"
+    "json"
+    "log"
+)
+
+type User struct {
+    ID    int    `json:"id"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+type Response<T> struct {
+    Success bool   `json:"success"`
+    Data    ?T     `json:"data,omitempty"`
+    Error   ?string `json:"error,omitempty"`
+}
+
+// Error handling with error unions
+func getUser(id int) (!User, !Error) {
+    // Simulate database lookup
+    if id <= 0 {
+        return nil, Error("Invalid user ID")
+    }
+    
+    user := User{
+        ID:    id,
+        Name:  fmt.Sprintf("User %d", id),
+        Email: fmt.Sprintf("user%d@example.com", id),
+    }
+    
+    return user, nil
+}
+
+// HTTP handlers with safe error handling
+func userHandler(w http.ResponseWriter, r *http.Request) {
+    userID, parseErr := http.ParseInt(r.URL.Query().Get("id"))
+    if parseErr! {
+        response := Response<User>{
+            Success: false,
+            Error:   "Invalid user ID parameter",
+        }
+        http.WriteJSON(w, response, 400)
+        return
+    }
+    
+    user, err := getUser(userID)
+    if err! {
+        response := Response<User>{
+            Success: false,
+            Error:   err!.String(),
+        }
+        http.WriteJSON(w, response, 404)
+        return
+    }
+    
+    response := Response<User>{
+        Success: true,
+        Data:    user!,
+    }
+    http.WriteJSON(w, response, 200)
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    response := Response<string>{
+        Success: true,
+        Data:    "OK",
+    }
+    http.WriteJSON(w, response, 200)
+}
+
+func main() {
+    server := http.NewServer(":8080")
+    
+    // Route registration with middleware
+    server.Handle("/api/user", userHandler)
+    server.Handle("/health", healthHandler)
+    
+    // Graceful error handling
+    err := server.Start()
+    if err! {
+        log.Fatal("Server failed to start: %s", err!)
+    }
+    
+    fmt.Println("🚀 Web API server started on http://localhost:8080")
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET /api/user?id=1 - Get user by ID")
+    fmt.Println("  GET /health - Health check")
+}

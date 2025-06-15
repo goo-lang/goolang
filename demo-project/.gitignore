@@ -1,0 +1,17 @@
+# Goo build artifacts
+*.o
+*.a
+*.so
+/bin/
+/build/
+/dist/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

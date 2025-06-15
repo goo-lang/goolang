@@ -1,0 +1,292 @@
+package main
+
+import (
+    "fmt"
+    "http"
+    "json"
+    "log"
+    "time"
+    "context"
+    "database/sql"
+    "metrics"
+    "tracing"
+)
+
+type Service struct {
+    db      *sql.DB
+    metrics *metrics.Client
+    tracer  *tracing.Tracer
+}
+
+type HealthStatus struct {
+    Status    string            `json:"status"`
+    Timestamp time.Time         `json:"timestamp"`
+    Services  map[string]bool   `json:"services"`
+    Uptime    time.Duration     `json:"uptime_seconds"`
+}
+
+type APIResponse<T> struct {
+    Success   bool      `json:"success"`
+    Data      ?T        `json:"data,omitempty"`
+    Error     ?string   `json:"error,omitempty"`
+    RequestID string    `json:"request_id"`
+    Timestamp time.Time `json:"timestamp"`
+}
+
+// Service initialization with dependency injection
+func NewService() (!*Service, !Error) {
+    // Database connection with error handling
+    db, dbErr := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+    if dbErr! {
+        return nil, Error(fmt.Sprintf("Database connection failed: %s", dbErr!))
+    }
+    
+    // Test database connection
+    pingErr := db.Ping()
+    if pingErr! {
+        return nil, Error(fmt.Sprintf("Database ping failed: %s", pingErr!))
+    }
+    
+    // Initialize metrics client
+    metricsClient, metricsErr := metrics.NewClient(os.Getenv("METRICS_URL"))
+    if metricsErr! {
+        return nil, Error(fmt.Sprintf("Metrics client failed: %s", metricsErr!))
+    }
+    
+    // Initialize distributed tracing
+    tracer, tracerErr := tracing.NewTracer("microservice", os.Getenv("JAEGER_URL"))
+    if tracerErr! {
+        return nil, Error(fmt.Sprintf("Tracer initialization failed: %s", tracerErr!))
+    }
+    
+    return &Service{
+        db:      db,
+        metrics: metricsClient,
+        tracer:  tracer,
+    }, nil
+}
+
+// Health check with dependency verification
+func (s *Service) healthCheck(ctx context.Context) (!HealthStatus, !Error) {
+    startTime := time.Now()
+    defer s.metrics.Timer("health_check_duration").Stop()
+    
+    span := s.tracer.StartSpan("health_check")
+    defer span.Finish()
+    
+    services := make(map[string]bool)
+    
+    // Check database health
+    dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+    
+    dbErr := s.db.PingContext(dbCtx)
+    services["database"] = dbErr == nil
+    
+    if dbErr! {
+        span.SetTag("db_error", dbErr!.String())
+        s.metrics.Counter("health_check_db_failure").Inc()
+    }
+    
+    // Check external services
+    // Add more dependency checks here
+    
+    overallStatus := "healthy"
+    for service, healthy := range services {
+        if !healthy {
+            overallStatus = "unhealthy"
+            s.metrics.Counter(fmt.Sprintf("health_check_%s_failure", service)).Inc()
+        }
+    }
+    
+    return HealthStatus{
+        Status:    overallStatus,
+        Timestamp: time.Now(),
+        Services:  services,
+        Uptime:    time.Since(startTime),
+    }, nil
+}
+
+// Middleware for request tracking and metrics
+func (s *Service) requestMiddleware(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        startTime := time.Now()
+        requestID := generateRequestID()
+        
+        // Add request ID to context
+        ctx := context.WithValue(r.Context(), "request_id", requestID)
+        r = r.WithContext(ctx)
+        
+        // Start distributed tracing span
+        span := s.tracer.StartSpan(r.URL.Path)
+        span.SetTag("http.method", r.Method)
+        span.SetTag("http.url", r.URL.String())
+        span.SetTag("request.id", requestID)
+        defer span.Finish()
+        
+        // Add span to context
+        ctx = context.WithValue(ctx, "span", span)
+        r = r.WithContext(ctx)
+        
+        // Call next handler
+        next(w, r)
+        
+        // Record metrics
+        duration := time.Since(startTime)
+        s.metrics.Timer("request_duration").Record(duration)
+        s.metrics.Counter("requests_total").Inc()
+        
+        span.SetTag("http.status_code", w.Header().Get("Status"))
+        
+        log.Printf("Request completed: %s %s - %s - %v", 
+            r.Method, r.URL.Path, requestID, duration)
+    }
+}
+
+// Health endpoint handler
+func (s *Service) healthHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    requestID := ctx.Value("request_id").(string)
+    
+    health, err := s.healthCheck(ctx)
+    
+    if err! {
+        response := APIResponse<HealthStatus>{
+            Success:   false,
+            Error:     err!.String(),
+            RequestID: requestID,
+            Timestamp: time.Now(),
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusServiceUnavailable)
+        json.NewEncoder(w).Encode(response)
+        return
+    }
+    
+    statusCode := http.StatusOK
+    if health!.Status != "healthy" {
+        statusCode = http.StatusServiceUnavailable
+    }
+    
+    response := APIResponse<HealthStatus>{
+        Success:   true,
+        Data:      health!,
+        RequestID: requestID,
+        Timestamp: time.Now(),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(statusCode)
+    json.NewEncoder(w).Encode(response)
+}
+
+// Metrics endpoint for Prometheus scraping
+func (s *Service) metricsHandler(w http.ResponseWriter, r *http.Request) {
+    metrics, err := s.metrics.Export()
+    if err! {
+        http.Error(w, "Metrics unavailable", http.StatusInternalServerError)
+        return
+    }
+    
+    w.Header().Set("Content-Type", "text/plain")
+    w.Write([]byte(metrics))
+}
+
+// Graceful shutdown handler
+func (s *Service) shutdown(ctx context.Context) error {
+    log.Println("🛑 Shutting down service...")
+    
+    // Close database connections
+    if s.db != nil {
+        s.db.Close()
+    }
+    
+    // Close metrics client
+    if s.metrics != nil {
+        s.metrics.Close()
+    }
+    
+    // Close tracer
+    if s.tracer != nil {
+        s.tracer.Close()
+    }
+    
+    log.Println("✅ Service shutdown complete")
+    return nil
+}
+
+func generateRequestID() string {
+    // Generate UUID or similar unique identifier
+    return fmt.Sprintf("req_%d", time.Now().UnixNano())
+}
+
+func main() {
+    // Initialize service with dependency injection
+    service, initErr := NewService()
+    if initErr! {
+        log.Fatalf("❌ Service initialization failed: %s", initErr!)
+    }
+    
+    // Create HTTP server with middleware
+    mux := http.NewServeMux()
+    
+    // Register routes with middleware
+    mux.HandleFunc("/health", service.requestMiddleware(service.healthHandler))
+    mux.HandleFunc("/metrics", service.requestMiddleware(service.metricsHandler))
+    
+    // Add CORS middleware
+    corsHandler := addCORS(mux)
+    
+    server := &http.Server{
+        Addr:    ":8080",
+        Handler: corsHandler,
+        ReadTimeout:  15 * time.Second,
+        WriteTimeout: 15 * time.Second,
+        IdleTimeout:  60 * time.Second,
+    }
+    
+    // Graceful shutdown
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+    
+    go func() {
+        sigChan := make(chan os.Signal, 1)
+        signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+        <-sigChan
+        
+        shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer shutdownCancel()
+        
+        service.shutdown(shutdownCtx)
+        server.Shutdown(shutdownCtx)
+        cancel()
+    }()
+    
+    log.Printf("🚀 Microservice starting on %s", server.Addr)
+    log.Println("Endpoints:")
+    log.Println("  GET /health  - Health check and dependencies")
+    log.Println("  GET /metrics - Prometheus metrics")
+    
+    if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+        log.Fatalf("❌ Server failed: %s", err)
+    }
+    
+    <-ctx.Done()
+    log.Println("👋 Service stopped")
+}
+
+func addCORS(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        
+        if r.Method == "OPTIONS" {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+        
+        next.ServeHTTP(w, r)
+    })
+}

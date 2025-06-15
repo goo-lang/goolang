@@ -1,0 +1,163 @@
+package main
+
+import (
+    "fmt"
+    "os"
+    "flag"
+    "log"
+    "path"
+)
+
+type Config struct {
+    Verbose    bool
+    OutputFile ?string
+    InputFiles []string
+}
+
+type ProcessResult struct {
+    FilesProcessed int
+    Errors         []string
+    OutputPath     ?string
+}
+
+// Command line argument parsing with error unions
+func parseArgs() (!Config, !Error) {
+    var config Config
+    
+    flag.BoolVar(&config.Verbose, "verbose", false, "Enable verbose output")
+    flag.StringVar(&outputFile, "output", "", "Output file path (optional)")
+    flag.Parse()
+    
+    config.InputFiles = flag.Args()
+    
+    if len(config.InputFiles) == 0 {
+        return nil, Error("No input files specified")
+    }
+    
+    // Safe nullable assignment
+    if outputFile != "" {
+        config.OutputFile = outputFile
+    }
+    
+    return config, nil
+}
+
+// File processing with comprehensive error handling
+func processFile(filepath string, verbose bool) (!string, !Error) {
+    // Check if file exists
+    if !path.Exists(filepath) {
+        return nil, Error(fmt.Sprintf("File not found: %s", filepath))
+    }
+    
+    // Read file content
+    content, readErr := os.ReadFile(filepath)
+    if readErr! {
+        return nil, Error(fmt.Sprintf("Failed to read %s: %s", filepath, readErr!))
+    }
+    
+    if verbose {
+        fmt.Printf("📄 Processing: %s (%d bytes)\n", filepath, len(content))
+    }
+    
+    // Process content (example: count lines)
+    lines := strings.Split(string(content), "\n")
+    result := fmt.Sprintf("File: %s, Lines: %d", filepath, len(lines))
+    
+    return result, nil
+}
+
+// Batch processing with error collection
+func processFiles(config Config) ProcessResult {
+    var result ProcessResult
+    var processedData []string
+    
+    for _, filepath := range config.InputFiles {
+        processedContent, err := processFile(filepath, config.Verbose)
+        
+        if err! {
+            result.Errors = append(result.Errors, err!.String())
+            if config.Verbose {
+                fmt.Printf("❌ Error processing %s: %s\n", filepath, err!)
+            }
+            continue
+        }
+        
+        processedData = append(processedData, processedContent!)
+        result.FilesProcessed++
+        
+        if config.Verbose {
+            fmt.Printf("✅ Processed: %s\n", filepath)
+        }
+    }
+    
+    // Handle output file if specified
+    if config.OutputFile? {
+        outputPath := config.OutputFile!
+        output := strings.Join(processedData, "\n")
+        
+        writeErr := os.WriteFile(outputPath, []byte(output), 0644)
+        if writeErr! {
+            result.Errors = append(result.Errors, 
+                fmt.Sprintf("Failed to write output: %s", writeErr!))
+        } else {
+            result.OutputPath = outputPath
+            if config.Verbose {
+                fmt.Printf("📝 Output written to: %s\n", outputPath)
+            }
+        }
+    }
+    
+    return result
+}
+
+func printUsage() {
+    fmt.Println("🛠️  Goo CLI Tool Template")
+    fmt.Println()
+    fmt.Println("Usage:")
+    fmt.Printf("  %s [options] <input-files...>\n", os.Args[0])
+    fmt.Println()
+    fmt.Println("Options:")
+    fmt.Println("  -verbose     Enable verbose output")
+    fmt.Println("  -output FILE Write results to file")
+    fmt.Println()
+    fmt.Println("Examples:")
+    fmt.Printf("  %s file1.txt file2.txt\n", os.Args[0])
+    fmt.Printf("  %s -verbose -output results.txt *.txt\n", os.Args[0])
+}
+
+func main() {
+    // Parse command line arguments
+    config, parseErr := parseArgs()
+    if parseErr! {
+        fmt.Printf("❌ Error: %s\n\n", parseErr!)
+        printUsage()
+        os.Exit(1)
+    }
+    
+    if config!.Verbose {
+        fmt.Printf("🚀 Starting processing of %d files\n", len(config!.InputFiles))
+    }
+    
+    // Process files
+    result := processFiles(config!)
+    
+    // Report results
+    fmt.Printf("\n📊 Processing Complete:\n")
+    fmt.Printf("  ✅ Files processed: %d\n", result.FilesProcessed)
+    
+    if len(result.Errors) > 0 {
+        fmt.Printf("  ❌ Errors: %d\n", len(result.Errors))
+        for _, err := range result.Errors {
+            fmt.Printf("    • %s\n", err)
+        }
+    }
+    
+    if result.OutputPath? {
+        fmt.Printf("  📝 Output saved to: %s\n", result.OutputPath!)
+    }
+    
+    // Exit with appropriate code
+    if len(result.Errors) > 0 {
+        os.Exit(1)
+    }
+}

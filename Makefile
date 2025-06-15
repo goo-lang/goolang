@@ -408,16 +408,16 @@ test-actor-system: $(ACTOR_SYSTEM_TEST)
 	@echo "Running actor system tests..."
 	./$(ACTOR_SYSTEM_TEST)
 
-$(ACTOR_SYSTEM_TEST): actor_system_test.c $(ACTOR_SYSTEM_SOURCES)
+$(ACTOR_SYSTEM_TEST): tests/concurrency/actor_system_test.c $(ACTOR_SYSTEM_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Shared Variables Test (Task 21.2)
-shared_variables_test: shared_variables_test.c $(SRCDIR)/concurrency/shared_variables.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/errors/error.c
+shared_variables_test: tests/concurrency/shared_variables_test.c $(SRCDIR)/concurrency/shared_variables.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/errors/error.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Structured Concurrency Test (Task 21.3)
-structured_concurrency_test: structured_concurrency_test.c $(SRCDIR)/concurrency/structured_concurrency.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/errors/error.c
+structured_concurrency_test: tests/concurrency/structured_concurrency_test.c $(SRCDIR)/concurrency/structured_concurrency.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/errors/error.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # All optimization system tests
@@ -460,7 +460,7 @@ demo-work-stealing: $(WORK_STEALING_DEMO)
 	@echo "Running work-stealing demonstration..."
 	./$(WORK_STEALING_DEMO)
 
-$(WORK_STEALING_DEMO): work_stealing_demo.c $(WORK_STEALING_SOURCES)
+$(WORK_STEALING_DEMO): tests/examples/work_stealing_demo.c $(WORK_STEALING_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -578,7 +578,7 @@ test-task-21-4: $(TASK_21_4_DEMO)
 	@echo "Running Task 21.4 Advanced Channel Patterns demo..."
 	./$(TASK_21_4_DEMO)
 
-$(TASK_21_4_DEMO): task_21_4_advanced_channels_demo.c
+$(TASK_21_4_DEMO): tests/examples/task_21_4_advanced_channels_demo.c
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -589,7 +589,7 @@ test-task-21-5: $(TASK_21_5_DEMO)
 	@echo "Running Task 21.5 Deadlock Prevention and Performance Optimization demo..."
 	./$(TASK_21_5_DEMO)
 
-$(TASK_21_5_DEMO): task_21_5_deadlock_prevention_demo.c
+$(TASK_21_5_DEMO): tests/examples/task_21_5_deadlock_prevention_demo.c
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -601,7 +601,7 @@ test-task-25-1: $(TASK_25_1_DEMO)
 	@echo "Running Task 25.1 Core Async Runtime demo..."
 	./$(TASK_25_1_DEMO)
 
-$(TASK_25_1_DEMO): task_25_1_async_runtime_demo.c $(ASYNC_RUNTIME_SOURCES)
+$(TASK_25_1_DEMO): tests/examples/task_25_1_async_runtime_demo.c $(ASYNC_RUNTIME_SOURCES)
 	@mkdir -p $(BINDIR)
 	@mkdir -p src/async
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
@@ -614,7 +614,7 @@ test-transparent-async: $(TRANSPARENT_ASYNC_TEST)
 	@echo "Running transparent async system tests..."
 	./$(TRANSPARENT_ASYNC_TEST)
 
-$(TRANSPARENT_ASYNC_TEST): transparent_async_test.c $(TRANSPARENT_ASYNC_SOURCES)
+$(TRANSPARENT_ASYNC_TEST): tests/concurrency/transparent_async_test.c $(TRANSPARENT_ASYNC_SOURCES)
 	@mkdir -p $(BINDIR)
 	@mkdir -p src/async
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
