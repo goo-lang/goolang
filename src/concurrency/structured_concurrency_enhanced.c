@@ -1,4 +1,5 @@
 #include "../../include/structured_concurrency_enhanced.h"
+#include "../../include/errors/error.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

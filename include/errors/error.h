@@ -67,6 +67,14 @@ typedef enum {
     ERROR_OPERATION_CANCELLED,
     ERROR_OPERATION_FAILED,
     ERROR_BUFFER_OVERFLOW,
+    ERROR_INVALID_STATE,
+    ERROR_ITERATOR_EXHAUSTED,
+    ERROR_BUFFER_CLOSED,
+    ERROR_OPERATION_TIMEOUT,
+    ERROR_BACKPRESSURE_DROP,
+    ERROR_BACKPRESSURE_ERROR,
+    ERROR_THREAD_CREATION,
+    ERROR_RATE_LIMITED,
     
     // Internal errors (9000-9999)
     ERROR_INTERNAL = 9000,
@@ -140,6 +148,9 @@ char* format_error(const Error* error); // Caller must free
 const char* error_code_to_string(ErrorCode code);
 const char* error_severity_to_string(ErrorSeverity severity);
 const char* error_category_to_string(ErrorCategory category);
+
+// Simple error creation function for runtime use
+Error* error_create(ErrorCode code, const char* message);
 
 // Source location utilities
 SourceLocation make_source_location(const char* filename, size_t line, 

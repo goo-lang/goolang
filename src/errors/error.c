@@ -458,3 +458,27 @@ void error_builder_emit(ErrorBuilder* builder) {
     
     error_builder_free(builder);
 }
+
+// Simple error creation function for runtime use
+Error* error_create(ErrorCode code, const char* message) {
+    Error* error = (Error*)calloc(1, sizeof(Error));
+    if (!error) return NULL;
+    
+    error->code = code;
+    error->severity = ERROR_SEVERITY_ERROR;
+    error->category = ERROR_CATEGORY_RUNTIME;
+    
+    if (message) {
+        size_t len = strlen(message);
+        char* msg_copy = (char*)malloc(len + 1);
+        if (msg_copy) {
+            strcpy(msg_copy, message);
+            error->message = msg_copy;
+        }
+    }
+    
+    error->location = empty_source_location();
+    error->next = NULL;
+    
+    return error;
+}

@@ -297,6 +297,18 @@ $(PERFORMANCE_DASHBOARD_SERVER): $(SRCDIR)/ide/dashboard_main.c $(SRCDIR)/ide/pe
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
+# Async Streams Test
+ASYNC_STREAMS_TEST = $(BINDIR)/async_streams_test
+ASYNC_STREAMS_SOURCES = src/async/async_streams.c src/errors/error.c
+
+test-async-streams: $(ASYNC_STREAMS_TEST)
+	@echo "Running async streams system tests..."
+	./$(ASYNC_STREAMS_TEST)
+
+$(ASYNC_STREAMS_TEST): tests/concurrency/async_streams_test.c $(ASYNC_STREAMS_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 test-repl: $(TEST_REPL)
 	./$(TEST_REPL)
 
