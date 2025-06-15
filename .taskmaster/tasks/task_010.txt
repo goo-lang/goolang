@@ -47,6 +47,8 @@ Implementation Details:
 5. Integrate with the type system for compile-time type checking
 6. Implement @emit and other compile-time intrinsics
 
+Note: Ensure proper memory management in the type_function implementation, as this issue has been fixed in the core system.
+
 # Test Strategy:
 1. Test basic comptime constant evaluation
 2. Test comptime function execution
@@ -55,3 +57,4 @@ Implementation Details:
 5. Benchmark compile-time performance
 6. Test integration with the type system
 7. Verify error reporting for comptime errors
+8. Verify memory management in type_function implementation

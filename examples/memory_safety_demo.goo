@@ -1,0 +1,83 @@
+// Memory Safety Demo for Goo Programming Language
+// This example demonstrates the memory safety features integrated with the type system
+
+package main
+
+func main() {
+    // Nullable type safety
+    var maybe_name: ?string = get_optional_name()
+    
+    // Safe unwrapping with if-let
+    if let name = maybe_name {
+        println("Hello, " + name)
+    } else {
+        println("Hello, anonymous")
+    }
+    
+    // Error union handling
+    var result: !int = risky_operation()
+    
+    // Try operator for error propagation
+    var value = try result
+    println("Success:", value)
+    
+    // Resource management with automatic cleanup
+    {
+        var file = open("data.txt")  // Automatically tracked
+        defer close(file)            // Explicit cleanup ordering
+        
+        var buffer = malloc(1024)    // Memory allocation tracked
+        defer free(buffer)           // Cleanup guaranteed
+        
+        // Use resources safely...
+        process_file(file, buffer)
+    }  // Automatic cleanup happens here
+    
+    // Ownership tracking prevents use-after-move
+    var data = create_large_data()
+    transfer_ownership(data)  // 'data' is moved here
+    // println(data)  // ERROR: use after move would be caught
+    
+    // Borrowing allows safe shared access
+    var shared_data = create_shared_resource()
+    process_readonly(&shared_data)  // Borrow without moving
+    println("Still available:", shared_data)  // Still valid
+}
+
+func get_optional_name() ?string {
+    // Returns nullable string
+    return "Goo User"
+}
+
+func risky_operation() !int {
+    // Returns error union
+    return 42
+}
+
+func create_large_data() []byte {
+    return malloc(10000)
+}
+
+func transfer_ownership(data: []byte) {
+    // Takes ownership of data
+    // ... process data ...
+    free(data)  // Cleanup handled by new owner
+}
+
+func create_shared_resource() Resource {
+    return Resource{data: malloc(512)}
+}
+
+func process_readonly(res: &Resource) {
+    // Borrows resource without taking ownership
+    println("Processing:", res.data)
+}
+
+func process_file(file: File, buffer: []byte) {
+    // File and buffer are guaranteed to be valid here
+    // due to defer statements in calling scope
+}
+
+struct Resource {
+    data: []byte
+}

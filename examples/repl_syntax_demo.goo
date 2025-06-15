@@ -1,0 +1,173 @@
+// Enhanced REPL Syntax Highlighting Demo
+// This file showcases the syntax highlighting capabilities
+
+package main
+
+import (
+    "fmt"
+    "time"
+    "sync"
+)
+
+// Global constants
+const (
+    MAX_BUFFER_SIZE = 1024
+    DEFAULT_TIMEOUT = 30
+    API_VERSION     = "v1.2.3"
+)
+
+// Type definitions with Goo-specific features
+type Result!Error struct {
+    Value   int
+    Message string
+    Success bool
+}
+
+type OptionalUser?nil struct {
+    ID       uint64
+    Username string
+    Email    string
+}
+
+// Error union example
+type FileError enum {
+    NotFound
+    PermissionDenied
+    IOError
+}
+
+// Function with error unions and nullable types
+func processFile(filename string) !FileError {
+    if filename == "" {
+        return FileError.NotFound
+    }
+    
+    // Nullable type usage
+    var user ?OptionalUser = getUser()
+    if user? {
+        fmt.Printf("Processing file for user: %s\n", user!.Username)
+    }
+    
+    // Channel operations
+    resultChan := make(chan !Result, 10)
+    
+    // Goroutine with channel communication
+    go func() {
+        defer close(resultChan)
+        
+        for i := 0; i < 10; i++ {
+            result := Result{
+                Value:   i * 2,
+                Message: fmt.Sprintf("Processed item %d", i),
+                Success: true,
+            }
+            
+            // Send to channel with error handling
+            select {
+            case resultChan <- result:
+                // Success
+            case <-time.After(time.Second):
+                fmt.Println("Timeout sending result")
+                return
+            }
+        }
+    }()
+    
+    // Receive from channel
+    for result := range resultChan {
+        if result! {
+            fmt.Printf("Result: %v\n", result!.Value)
+        }
+    }
+    
+    return nil
+}
+
+// Function with multiple return types
+func divide(a, b int) (!int, !Error) {
+    if b == 0 {
+        return nil, Error("Division by zero")
+    }
+    return a / b, nil
+}
+
+// Main function demonstrating various language features
+func main() {
+    // Variable declarations
+    var x int = 42
+    var y float64 = 3.14159
+    var message string = "Hello, Goo!"
+    var isValid bool = true
+    
+    // Short variable declarations
+    result := processFile("example.txt")
+    quotient, err := divide(x, 2)
+    
+    // Error handling with error unions
+    if err! {
+        fmt.Printf("Error: %s\n", err!.Error())
+        return
+    }
+    
+    // Conditional with nullable types
+    if quotient? && quotient! > 0 {
+        fmt.Printf("Division result: %d\n", quotient!)
+    }
+    
+    // Loop constructs
+    for i := 0; i < 10; i++ {
+        if i%2 == 0 {
+            continue
+        }
+        fmt.Printf("Odd number: %d\n", i)
+    }
+    
+    // Range over slice
+    numbers := []int{1, 2, 3, 4, 5}
+    for index, value := range numbers {
+        fmt.Printf("Index: %d, Value: %d\n", index, value)
+    }
+    
+    // Map usage
+    userMap := map[string]int{
+        "alice": 25,
+        "bob":   30,
+        "carol": 35,
+    }
+    
+    // Range over map
+    for name, age := range userMap {
+        fmt.Printf("%s is %d years old\n", name, age)
+    }
+    
+    // Switch statement
+    switch result {
+    case nil:
+        fmt.Println("File processed successfully")
+    case FileError.NotFound:
+        fmt.Println("File not found")
+    case FileError.PermissionDenied:
+        fmt.Println("Permission denied")
+    default:
+        fmt.Println("Unknown error")
+    }
+    
+    // Defer statement
+    defer fmt.Println("Cleanup completed")
+    
+    // Anonymous function
+    calculate := func(a, b int) int {
+        return a + b
+    }
+    
+    sum := calculate(x, 10)
+    fmt.Printf("Sum: %d\n", sum)
+    
+    // Interface usage
+    var writer interface{} = &bytes.Buffer{}
+    if w, ok := writer.(io.Writer); ok {
+        w.Write([]byte("Hello, interface!"))
+    }
+    
+    fmt.Printf("Final message: %s\n", message)
+}

@@ -41,7 +41,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %token TRUE FALSE NIL
 
 // Goo Extension Keywords
-%token COMPTIME PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM
+%token COMPTIME CONCEPT PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM
 %token EXTERN FROM VOLATILE INLINE NO_STD
 %token PARALLEL REDUCE BARRIER ATOMIC THREAD_LOCAL
 %token OWNED BORROWED SHARED LET MATCH
@@ -76,7 +76,8 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> package_clause import_decl_list import_decl import_spec import_spec_list
 %type <node> opt_import_decl_list opt_top_level_decl_list
 %type <node> top_level_decl_list top_level_decl
-%type <node> declaration func_decl var_decl const_decl type_decl short_var_decl extern_decl
+%type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
+%type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
 %type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
@@ -212,6 +213,7 @@ top_level_decl_list:
 top_level_decl:
     declaration { $$ = $1; }
     | func_decl { $$ = $1; }
+    | concept_decl { $$ = $1; }
     | kernel_decl { $$ = $1; }
     | wasm_export { $$ = $1; }
     | wasm_import { $$ = $1; }
@@ -431,6 +433,98 @@ type_decl:
         
         ast_node_free($2);
         $$ = (ASTNode*)type_node;
+    }
+    ;
+
+// Concept declaration
+concept_decl:
+    CONCEPT identifier concept_body {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        ConceptDeclNode* concept = ast_concept_decl_new(ident->name, ident->base.pos);
+        concept->requirements = $3;
+        ast_node_free($2);
+        $$ = (ASTNode*)concept;
+    }
+    | CONCEPT identifier LBRACKET type_param_list RBRACKET concept_body {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        ConceptDeclNode* concept = ast_concept_decl_new(ident->name, ident->base.pos);
+        concept->type_params = $4;
+        concept->requirements = $6;
+        ast_node_free($2);
+        $$ = (ASTNode*)concept;
+    }
+    ;
+
+concept_body:
+    LBRACE concept_requirement_list RBRACE {
+        $$ = $2;
+    }
+    | LBRACE RBRACE {
+        $$ = NULL;
+    }
+    ;
+
+concept_requirement_list:
+    concept_requirement {
+        $$ = $1;
+    }
+    | concept_requirement_list concept_requirement {
+        // Link requirements together
+        ASTNode* current = $1;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = $2;
+        $$ = $1;
+    }
+    ;
+
+concept_requirement:
+    IDENTIFIER {
+        // Simple constraint requirement like "Addable"
+        IdentifierNode* req = ast_identifier_new($1, get_current_position());
+        free($1);
+        $$ = (ASTNode*)req;
+    }
+    | func_signature {
+        // Method requirement
+        $$ = $1;
+    }
+    ;
+
+type_param_list:
+    type_param {
+        $$ = $1;
+    }
+    | type_param_list COMMA type_param {
+        // Link type parameters together
+        ASTNode* current = $1;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = $3;
+        $$ = $1;
+    }
+    ;
+
+type_param:
+    identifier {
+        // Regular type parameter (e.g., T)
+        $$ = $1;
+    }
+    | identifier LBRACKET RBRACKET {
+        // Higher-kinded type parameter (e.g., F[_])
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        ident->base.type = AST_HKT_PARAM;  // Mark as HKT parameter
+        $$ = $1;
+    }
+    | identifier LBRACKET identifier RBRACKET {
+        // Higher-kinded type parameter with named parameter (e.g., F[T])
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        ident->base.type = AST_HKT_PARAM;  // Mark as HKT parameter
+        // TODO: Store the parameter name for future use
+        ast_node_free($3);
+        $$ = $1;
     }
     ;
 

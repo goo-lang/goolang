@@ -23,10 +23,13 @@ static char* str_dup(const char* str) {
 // =============================================================================
 
 HigherKindedType* higher_kinded_type_new(HigherKindedTypeKind kind, Type* type_constructor) {
+    if (!type_constructor) return NULL;
+    
     HigherKindedType* hkt = malloc(sizeof(HigherKindedType));
     if (!hkt) return NULL;
     
     hkt->kind = kind;
+    hkt->name = type_constructor->name ? str_dup(type_constructor->name) : NULL;
     hkt->type_constructor = type_constructor;
     hkt->type_arguments = NULL;
     hkt->arity = 0;
@@ -78,6 +81,8 @@ HigherKindedType* higher_kinded_type_new(HigherKindedTypeKind kind, Type* type_c
 
 void higher_kinded_type_free(HigherKindedType* hkt) {
     if (!hkt) return;
+    
+    free(hkt->name);
     
     if (hkt->type_constructor) {
         type_free(hkt->type_constructor);
@@ -245,6 +250,33 @@ HigherKindedTypeKind infer_type_kind(Type* type) {
         case TYPE_INTERFACE:
             return HKT_CONSTRAINT; // Interfaces represent constraints
             
+        case TYPE_PARAM:
+            return HKT_TYPE; // Regular type parameters have kind *
+            
+        case TYPE_PARAM_HKT:
+            // Higher-kinded type parameters have their arity-based kind
+            if (type->data.hkt_param.arity == 1) {
+                return HKT_TYPE_TO_TYPE;
+            } else if (type->data.hkt_param.arity == 2) {
+                return HKT_TYPE_TO_TYPE_TO_TYPE;
+            }
+            return HKT_TYPE_TO_TYPE; // Default for unknown arities
+            
+        case TYPE_CONSTRUCTOR:
+            // Type constructors have their arity-based kind
+            if (type->data.constructor.arity == 0) {
+                return HKT_TYPE;
+            } else if (type->data.constructor.arity == 1) {
+                return HKT_TYPE_TO_TYPE;
+            } else if (type->data.constructor.arity == 2) {
+                return HKT_TYPE_TO_TYPE_TO_TYPE;
+            }
+            return HKT_TYPE_TO_TYPE; // Default for unknown arities
+            
+        case TYPE_APPLICATION:
+            // Type applications are concrete types (kind *)
+            return HKT_TYPE;
+            
         default:
             return HKT_TYPE;
     }
@@ -260,6 +292,17 @@ HigherKindedType* type_to_higher_kinded(Type* type) {
     if (!type) return NULL;
     
     HigherKindedTypeKind kind = infer_type_kind(type);
+    
+    // For type constructors, use the actual type constructor
+    if (type->kind == TYPE_CONSTRUCTOR) {
+        return higher_kinded_type_new(kind, type_copy(type));
+    }
+    
+    // For type applications, extract the constructor
+    if (type->kind == TYPE_APPLICATION) {
+        return higher_kinded_type_new(kind, type_copy(type->data.application.constructor));
+    }
+    
     return higher_kinded_type_new(kind, type_copy(type));
 }
 

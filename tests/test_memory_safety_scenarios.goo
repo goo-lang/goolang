@@ -1,0 +1,108 @@
+// Test scenarios for memory safety features
+package test
+
+// Test 1: Null safety
+func test_null_safety() {
+    var nullable_value: ?int = get_maybe_int()
+    
+    // This should be caught by the type checker:
+    // var result = nullable_value + 5  // ERROR: nullable not checked
+    
+    // Safe usage:
+    if let value = nullable_value {
+        var result = value + 5
+        println("Result:", result)
+    }
+}
+
+// Test 2: Use-after-move prevention
+func test_ownership() {
+    var resource = create_resource()
+    consume_resource(resource)  // Moves ownership
+    
+    // This should be caught:
+    // println(resource)  // ERROR: use after move
+}
+
+// Test 3: Resource leak prevention
+func test_resource_management() {
+    var file = open("test.txt")
+    defer close(file)  // Ensures cleanup
+    
+    var memory = malloc(1024)
+    defer free(memory)  // Ensures cleanup
+    
+    // If function returns early, defers still execute
+    if some_condition() {
+        return  // Cleanup still happens
+    }
+    
+    // Normal cleanup also happens
+}
+
+// Test 4: Error union safety
+func test_error_unions() {
+    var result: !string = might_fail()
+    
+    // Try operator for propagation
+    var success_value = try result
+    
+    // Or explicit handling
+    var handled_result = result catch |err| {
+        println("Error occurred:", err)
+        return "default"
+    }
+}
+
+// Test 5: Borrowing rules
+func test_borrowing() {
+    var data = create_data()
+    
+    // Immutable borrow
+    var readonly_ref = &data
+    print_data(readonly_ref)
+    
+    // Mutable borrow
+    var mutable_ref = &mut data
+    modify_data(mutable_ref)
+    
+    // Data still available after borrows end
+    println("Final data:", data)
+}
+
+// Helper functions for tests
+func get_maybe_int() ?int {
+    return 42
+}
+
+func create_resource() Resource {
+    return Resource{}
+}
+
+func consume_resource(r: Resource) {
+    // Takes ownership
+}
+
+func might_fail() !string {
+    return "success"
+}
+
+func some_condition() bool {
+    return false
+}
+
+func create_data() []byte {
+    return malloc(100)
+}
+
+func print_data(data: &[]byte) {
+    println("Data length:", len(data))
+}
+
+func modify_data(data: &mut []byte) {
+    // Can modify through mutable reference
+}
+
+struct Resource {
+    id: int
+}

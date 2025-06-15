@@ -1,0 +1,87 @@
+// REPL Demo - Interactive Development with Type Information
+package main
+
+import "fmt"
+
+// Example functions that can be used in the REPL
+func add(a: int, b: int) int {
+    return a + b
+}
+
+func greet(name: string) string {
+    return "Hello, " + name + "!"
+}
+
+// Type with methods for REPL exploration
+type Counter struct {
+    value: int
+}
+
+func (c: *Counter) increment() {
+    c.value++
+}
+
+func (c: *Counter) get() int {
+    return c.value
+}
+
+// Example usage with REPL commands:
+/*
+REPL Session Example:
+
+goo> :help
+Goo REPL Commands:
+  :help           - Show this help message
+  :type <expr>    - Show type information for expression
+  :scope          - Show current scope information
+  :bindings       - Show current variable bindings
+
+goo> counter := Counter{value: 0}
+counter: Counter
+
+goo> :type counter
+Counter
+
+goo> counter.increment()
+void
+
+goo> counter.get()
+int: 1
+
+goo> :type add(2, 3)
+int
+
+goo> result := add(2, 3)
+result: int = 5
+
+goo> :type greet("World")
+string
+
+goo> message := greet("World")
+message: string = "Hello, World!"
+
+goo> :bindings
+Current variable bindings:
+  counter: Counter
+  result: int
+  message: string
+
+goo> :history 3
+[1] counter := Counter{value: 0}
+    => {value: 0}
+[2] result := add(2, 3)
+    => 5 (0.12ms)
+[3] message := greet("World")
+    => "Hello, World!" (0.08ms)
+
+goo> :mode debug
+Mode set to debug
+
+goo> :exit
+Goodbye!
+*/
+
+func main() {
+    fmt.Println("Run 'goo-repl' to start the interactive session!")
+    fmt.Println("Try the expressions shown in the comments above.")
+}

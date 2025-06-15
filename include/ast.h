@@ -18,6 +18,8 @@ typedef enum {
     AST_VAR_DECL,
     AST_CONST_DECL,
     AST_TYPE_DECL,
+    AST_CONCEPT_DECL,       // concept definition
+    AST_HKT_PARAM,          // higher-kinded type parameter
     
     // Statements
     AST_BLOCK_STMT,
@@ -94,6 +96,15 @@ typedef enum {
     AST_GPU_MEMORY_COPY,   // GPU memory copy operation
     AST_GPU_SYNC,          // GPU synchronization
     AST_GPU_INTRINSIC,     // GPU-specific intrinsic function
+    
+    // Contract Programming Support
+    AST_CONTRACT_CLAUSE,   // generic contract clause
+    AST_REQUIRES_CLAUSE,   // requires precondition
+    AST_ENSURES_CLAUSE,    // ensures postcondition
+    AST_INVARIANT_CLAUSE,  // loop invariant
+    AST_ASSERT_STMT,       // assertion statement
+    AST_ASSUME_STMT,       // assumption statement
+    AST_CONTRACT_BLOCK,    // block of contract clauses
     
     // WebAssembly Support
     AST_WASM_EXPORT,       // WebAssembly export declaration
@@ -259,6 +270,14 @@ typedef struct {
     char* name;
     struct ASTNode* type;
 } TypeDeclNode;
+
+// Concept declaration
+typedef struct {
+    ASTNode base;
+    char* name;                    // Concept name
+    struct ASTNode* type_params;   // Type parameters (linked list)
+    struct ASTNode* requirements;  // Requirements block (contains constraints)
+} ConceptDeclNode;
 
 // Block statement
 typedef struct {
@@ -801,16 +820,86 @@ typedef struct {
     int is_property;                // True for property access, false for method call
 } DOMAccessNode;
 
+// =============================================================================
+// Contract Programming AST Nodes
+// =============================================================================
+
+// Contract clause (generic base for all contract types)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* condition;      // Boolean expression
+    struct ASTNode* message;        // Optional error message
+    char* description;              // Human-readable description
+} ContractClauseNode;
+
+// Requires clause (precondition)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* condition;      // Boolean expression
+    struct ASTNode* message;        // Optional error message
+    char* description;              // Human-readable description
+} RequiresClauseNode;
+
+// Ensures clause (postcondition)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* condition;      // Boolean expression
+    struct ASTNode* return_var;     // Variable name for return value (optional)
+    struct ASTNode* message;        // Optional error message
+    char* description;              // Human-readable description
+} EnsuresClauseNode;
+
+// Invariant clause (loop invariant)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* condition;      // Boolean expression
+    struct ASTNode* message;        // Optional error message
+    char* description;              // Human-readable description
+} InvariantClauseNode;
+
+// Assert statement
+typedef struct {
+    ASTNode base;
+    struct ASTNode* condition;      // Boolean expression
+    struct ASTNode* message;        // Optional error message
+    int is_debug_only;              // Only checked in debug builds
+} AssertStmtNode;
+
+// Assume statement (for optimization)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* condition;      // Boolean expression
+    char* hint;                     // Optimization hint
+} AssumeStmtNode;
+
+// Contract block (group of contract clauses)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* clauses;        // List of contract clauses
+} ContractBlockNode;
+
+// =============================================================================
 // Function declarations for AST manipulation
+// =============================================================================
 ASTNode* ast_node_new(ASTNodeType type, Position pos);
 void ast_node_free(ASTNode* node);
 ASTNode* ast_node_copy(const ASTNode* node);
+
+// Contract constructors
+ContractClauseNode* ast_contract_clause_new(ASTNode* condition, const char* description, Position pos);
+RequiresClauseNode* ast_requires_clause_new(ASTNode* condition, const char* description, Position pos);
+EnsuresClauseNode* ast_ensures_clause_new(ASTNode* condition, const char* return_var, const char* description, Position pos);
+InvariantClauseNode* ast_invariant_clause_new(ASTNode* condition, const char* description, Position pos);
+AssertStmtNode* ast_assert_stmt_new(ASTNode* condition, ASTNode* message, int is_debug_only, Position pos);
+AssumeStmtNode* ast_assume_stmt_new(ASTNode* condition, const char* hint, Position pos);
+ContractBlockNode* ast_contract_block_new(ASTNode* clauses, Position pos);
 
 // Specific node constructors
 ProgramNode* ast_program_new(Position pos);
 PackageDeclNode* ast_package_decl_new(const char* name, Position pos);
 ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Position pos);
 FuncDeclNode* ast_func_decl_new(const char* name, Position pos);
+ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos);
 VarDeclNode* ast_var_decl_new(Position pos);
 IdentifierNode* ast_identifier_new(const char* name, Position pos);
 LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos);

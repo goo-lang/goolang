@@ -1,0 +1,16 @@
+package main
+
+// Basic concept without type parameters
+concept Addable {
+    // Define that types implementing this concept must be addable
+}
+
+// Concept with type parameters
+concept Container[T] {
+    // Define that Container types can hold elements of type T
+}
+
+// Test that the parser can handle concepts
+func main() {
+    println("Testing concept syntax")
+}

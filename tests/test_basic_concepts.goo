@@ -1,0 +1,17 @@
+package main
+
+// Basic concept definitions
+concept Addable {
+}
+
+concept Comparable {
+}
+
+concept Container[T] {
+}
+
+concept Iterator[T] {
+}
+
+func main() {
+}

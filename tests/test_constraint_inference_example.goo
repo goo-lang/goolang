@@ -1,0 +1,9 @@
+package main
+
+func main() {
+    // This would demonstrate constraint inference in practice
+}
+
+func add(a, b) {
+    return a + b;
+}

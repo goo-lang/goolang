@@ -1,0 +1,533 @@
+// =============================================================================
+// Advanced Protocol-Oriented Programming Patterns in Goo
+// =============================================================================
+
+// =============================================================================
+// Protocols with Where Clauses and Complex Constraints
+// =============================================================================
+
+// Define a protocol for types that can be serialized
+protocol Serializable {
+    fn serialize(self: &Self) -> Result<String, SerializationError>
+    fn deserialize(data: &str) -> Result<Self, SerializationError>
+}
+
+// Define a protocol for collections with additional constraints
+protocol SortableCollection<T>: Collection<Item = T> 
+where T: Comparable + Clone {
+    fn sort(self: &mut Self) {
+        // Default implementation using bubble sort
+        let len = self.len()
+        for i in 0..len {
+            for j in 0..len-1-i {
+                if self.get(j).unwrap().greater_than(self.get(j+1).unwrap()) {
+                    self.swap(j, j+1)
+                }
+            }
+        }
+    }
+    
+    fn binary_search(self: &Self, item: &T) -> Result<usize, usize>
+    where T: Equatable {
+        let mut low = 0
+        let mut high = self.len()
+        
+        while low < high {
+            let mid = (low + high) / 2
+            let mid_item = self.get(mid).unwrap()
+            
+            match item.compare(mid_item) {
+                Ordering::Less => high = mid,
+                Ordering::Greater => low = mid + 1,
+                Ordering::Equal => return Ok(mid)
+            }
+        }
+        
+        Err(low)
+    }
+    
+    fn get(self: &Self, index: usize) -> Option<&T>
+    fn swap(self: &mut Self, i: usize, j: usize)
+}
+
+// =============================================================================
+// Protocol Refinement and Specialization
+// =============================================================================
+
+// Base protocol for numeric types
+protocol Numeric: Equatable + Comparable + Displayable {
+    fn zero() -> Self
+    fn one() -> Self
+    fn add(self: Self, other: Self) -> Self
+    fn subtract(self: Self, other: Self) -> Self
+    fn multiply(self: Self, other: Self) -> Self
+    fn divide(self: Self, other: Self) -> Result<Self, DivisionError>
+}
+
+// Specialized protocol for integer types
+protocol Integer: Numeric {
+    fn modulo(self: Self, other: Self) -> Result<Self, DivisionError>
+    fn power(self: Self, exponent: Self) -> Self
+    fn gcd(self: Self, other: Self) -> Self
+    
+    fn is_even(self: &Self) -> bool {
+        self.modulo(Self::one().add(Self::one())).unwrap().equals(&Self::zero())
+    }
+    
+    fn is_odd(self: &Self) -> bool {
+        !self.is_even()
+    }
+}
+
+// Specialized protocol for floating-point types
+protocol FloatingPoint: Numeric {
+    fn sqrt(self: Self) -> Self
+    fn sin(self: Self) -> Self
+    fn cos(self: Self) -> Self
+    fn tan(self: Self) -> Self
+    fn abs(self: Self) -> Self
+    fn round(self: Self) -> Self
+    fn floor(self: Self) -> Self
+    fn ceil(self: Self) -> Self
+    
+    fn is_finite(self: &Self) -> bool
+    fn is_infinite(self: &Self) -> bool
+    fn is_nan(self: &Self) -> bool
+}
+
+// =============================================================================
+// Higher-Order Protocols and Functors
+// =============================================================================
+
+// Define a Functor protocol for types that can be mapped over
+protocol Functor<A> {
+    type F<T>  // Higher-kinded type
+    
+    fn map<B, F>(self: Self::F<A>, f: F) -> Self::F<B>
+    where F: Fn(A) -> B
+}
+
+// Define a Monad protocol that extends Functor
+protocol Monad<A>: Functor<A> {
+    fn pure(value: A) -> Self::F<A>
+    
+    fn bind<B, F>(self: Self::F<A>, f: F) -> Self::F<B>
+    where F: Fn(A) -> Self::F<B>
+    
+    // Default implementations
+    fn then<B>(self: Self::F<A>, other: Self::F<B>) -> Self::F<B> {
+        self.bind(|_| other)
+    }
+    
+    fn join<T>(nested: Self::F<Self::F<T>>) -> Self::F<T> {
+        nested.bind(|inner| inner)
+    }
+}
+
+// Implement Functor and Monad for Option
+impl<A> Functor<A> for Option<A> {
+    type F<T> = Option<T>
+    
+    fn map<B, F>(self: Option<A>, f: F) -> Option<B>
+    where F: Fn(A) -> B {
+        match self {
+            Some(value) => Some(f(value)),
+            None => None
+        }
+    }
+}
+
+impl<A> Monad<A> for Option<A> {
+    fn pure(value: A) -> Option<A> {
+        Some(value)
+    }
+    
+    fn bind<B, F>(self: Option<A>, f: F) -> Option<B>
+    where F: Fn(A) -> Option<B> {
+        match self {
+            Some(value) => f(value),
+            None => None
+        }
+    }
+}
+
+// Implement Functor and Monad for Result
+impl<A, E> Functor<A> for Result<A, E> {
+    type F<T> = Result<T, E>
+    
+    fn map<B, F>(self: Result<A, E>, f: F) -> Result<B, E>
+    where F: Fn(A) -> B {
+        match self {
+            Ok(value) => Ok(f(value)),
+            Err(error) => Err(error)
+        }
+    }
+}
+
+impl<A, E> Monad<A> for Result<A, E> {
+    fn pure(value: A) -> Result<A, E> {
+        Ok(value)
+    }
+    
+    fn bind<B, F>(self: Result<A, E>, f: F) -> Result<B, E>
+    where F: Fn(A) -> Result<B, E> {
+        match self {
+            Ok(value) => f(value),
+            Err(error) => Err(error)
+        }
+    }
+}
+
+// =============================================================================
+// Effect System Protocols
+// =============================================================================
+
+// Define an Effect protocol for computational effects
+protocol Effect<A> {
+    type Eff<T>
+    
+    fn pure(value: A) -> Self::Eff<A>
+    fn bind<B, F>(self: Self::Eff<A>, f: F) -> Self::Eff<B>
+    where F: Fn(A) -> Self::Eff<B>
+    
+    fn run(self: Self::Eff<A>) -> A
+}
+
+// Define specific effect protocols
+protocol IO<A>: Effect<A> {
+    fn read_line() -> Self::Eff<String>
+    fn write_line(text: String) -> Self::Eff<()>
+    fn read_file(path: String) -> Self::Eff<Result<String, IOError>>
+    fn write_file(path: String, content: String) -> Self::Eff<Result<(), IOError>>
+}
+
+protocol State<S, A>: Effect<A> {
+    fn get() -> Self::Eff<S>
+    fn put(state: S) -> Self::Eff<()>
+    fn modify<F>(f: F) -> Self::Eff<()>
+    where F: Fn(S) -> S {
+        Self::get().bind(|s| Self::put(f(s)))
+    }
+}
+
+protocol Error<E, A>: Effect<A> {
+    fn throw(error: E) -> Self::Eff<A>
+    fn catch<F>(self: Self::Eff<A>, handler: F) -> Self::Eff<A>
+    where F: Fn(E) -> Self::Eff<A>
+}
+
+// =============================================================================
+// Type-Safe Builder Pattern with Protocols
+// =============================================================================
+
+// Protocol for builder pattern with type-safe state transitions
+protocol Builder<T> {
+    type Built
+    
+    fn build(self) -> Self::Built
+}
+
+// Protocol for components that can be validated
+protocol Validatable {
+    type ValidationError
+    
+    fn validate(self: &Self) -> Result<(), Self::ValidationError>
+}
+
+// Example: HTTP Request Builder
+enum HttpMethod {
+    GET,
+    POST,
+    PUT,
+    DELETE
+}
+
+// Phantom types for builder states
+struct Uninitialized
+struct WithUrl
+struct WithMethod
+struct Complete
+
+struct HttpRequestBuilder<State> {
+    url: Option<String>,
+    method: Option<HttpMethod>,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    _state: PhantomData<State>
+}
+
+impl HttpRequestBuilder<Uninitialized> {
+    fn new() -> HttpRequestBuilder<Uninitialized> {
+        HttpRequestBuilder {
+            url: None,
+            method: None,
+            headers: Vec::new(),
+            body: None,
+            _state: PhantomData
+        }
+    }
+    
+    fn url(mut self, url: String) -> HttpRequestBuilder<WithUrl> {
+        self.url = Some(url)
+        HttpRequestBuilder {
+            url: self.url,
+            method: self.method,
+            headers: self.headers,
+            body: self.body,
+            _state: PhantomData
+        }
+    }
+}
+
+impl HttpRequestBuilder<WithUrl> {
+    fn method(mut self, method: HttpMethod) -> HttpRequestBuilder<Complete> {
+        self.method = Some(method)
+        HttpRequestBuilder {
+            url: self.url,
+            method: self.method,
+            headers: self.headers,
+            body: self.body,
+            _state: PhantomData
+        }
+    }
+}
+
+impl HttpRequestBuilder<Complete> {
+    fn header(mut self, name: String, value: String) -> Self {
+        self.headers.push((name, value))
+        self
+    }
+    
+    fn body(mut self, body: String) -> Self {
+        self.body = Some(body)
+        self
+    }
+}
+
+impl Builder<HttpRequest> for HttpRequestBuilder<Complete> {
+    type Built = HttpRequest
+    
+    fn build(self) -> HttpRequest {
+        HttpRequest {
+            url: self.url.unwrap(),
+            method: self.method.unwrap(),
+            headers: self.headers,
+            body: self.body
+        }
+    }
+}
+
+struct HttpRequest {
+    url: String,
+    method: HttpMethod,
+    headers: Vec<(String, String)>,
+    body: Option<String>
+}
+
+impl Validatable for HttpRequest {
+    type ValidationError = String
+    
+    fn validate(self: &Self) -> Result<(), String> {
+        if self.url.is_empty() {
+            return Err("URL cannot be empty".to_string())
+        }
+        
+        if !self.url.starts_with("http://") && !self.url.starts_with("https://") {
+            return Err("URL must start with http:// or https://".to_string())
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Async/Await Protocol Pattern
+// =============================================================================
+
+// Protocol for asynchronous computations
+protocol Future<T> {
+    fn poll(self: &mut Self) -> Poll<T>
+    
+    fn map<U, F>(self, f: F) -> Map<Self, F>
+    where F: Fn(T) -> U {
+        Map::new(self, f)
+    }
+    
+    fn then<U, F>(self, f: F) -> Then<Self, F>
+    where F: Fn(T) -> Future<U> {
+        Then::new(self, f)
+    }
+}
+
+enum Poll<T> {
+    Ready(T),
+    Pending
+}
+
+// Protocol for async I/O operations
+protocol AsyncRead {
+    fn read(self: &mut Self, buf: &mut [u8]) -> Future<Result<usize, IOError>>
+    fn read_exact(self: &mut Self, buf: &mut [u8]) -> Future<Result<(), IOError>>
+    fn read_to_end(self: &mut Self, buf: &mut Vec<u8>) -> Future<Result<usize, IOError>>
+}
+
+protocol AsyncWrite {
+    fn write(self: &mut Self, buf: &[u8]) -> Future<Result<usize, IOError>>
+    fn write_all(self: &mut Self, buf: &[u8]) -> Future<Result<(), IOError>>
+    fn flush(self: &mut Self) -> Future<Result<(), IOError>>
+}
+
+// =============================================================================
+// Protocol-Based Dependency Injection
+// =============================================================================
+
+// Protocol for logging
+protocol Logger {
+    fn log(self: &Self, level: LogLevel, message: String)
+    
+    fn info(self: &Self, message: String) {
+        self.log(LogLevel::Info, message)
+    }
+    
+    fn warn(self: &Self, message: String) {
+        self.log(LogLevel::Warn, message)
+    }
+    
+    fn error(self: &Self, message: String) {
+        self.log(LogLevel::Error, message)
+    }
+}
+
+enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error
+}
+
+// Protocol for database access
+protocol Database {
+    type Connection
+    type Query
+    type Result
+    
+    fn connect(self: &Self) -> Future<Result<Self::Connection, DatabaseError>>
+    fn execute(self: &Self, conn: &Self::Connection, query: Self::Query) -> Future<Self::Result>
+    fn close(self: &Self, conn: Self::Connection) -> Future<Result<(), DatabaseError>>
+}
+
+// Protocol for HTTP client
+protocol HttpClient {
+    fn get(self: &Self, url: String) -> Future<Result<HttpResponse, HttpError>>
+    fn post(self: &Self, url: String, body: String) -> Future<Result<HttpResponse, HttpError>>
+    fn put(self: &Self, url: String, body: String) -> Future<Result<HttpResponse, HttpError>>
+    fn delete(self: &Self, url: String) -> Future<Result<HttpResponse, HttpError>>
+}
+
+// Service that depends on protocols instead of concrete types
+struct UserService<L: Logger, D: Database, H: HttpClient> {
+    logger: L,
+    database: D,
+    http_client: H
+}
+
+impl<L: Logger, D: Database, H: HttpClient> UserService<L, D, H> {
+    fn new(logger: L, database: D, http_client: H) -> Self {
+        Self { logger, database, http_client }
+    }
+    
+    fn create_user(self: &Self, user_data: UserData) -> Future<Result<User, ServiceError>> {
+        async {
+            self.logger.info("Creating new user".to_string())
+            
+            // Validate user data
+            user_data.validate()?
+            
+            // Connect to database
+            let conn = self.database.connect().await?
+            
+            // Insert user
+            let query = D::Query::insert_user(user_data)
+            let result = self.database.execute(&conn, query).await
+            
+            // Close connection
+            self.database.close(conn).await?
+            
+            // Log success
+            self.logger.info("User created successfully".to_string())
+            
+            Ok(result.into_user())
+        }
+    }
+    
+    fn notify_external_service(self: &Self, user: &User) -> Future<Result<(), ServiceError>> {
+        async {
+            let notification_url = "https://api.example.com/notify".to_string()
+            let payload = user.serialize()?
+            
+            match self.http_client.post(notification_url, payload).await {
+                Ok(response) => {
+                    self.logger.info("External service notified".to_string())
+                    Ok(())
+                },
+                Err(error) => {
+                    self.logger.error(format!("Failed to notify external service: {:?}", error))
+                    Err(ServiceError::ExternalServiceError(error))
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Example Usage of Advanced Patterns
+// =============================================================================
+
+fn advanced_protocol_examples() {
+    println!("=== Advanced Protocol Patterns ===")
+    
+    // Monadic composition
+    let optional_value = Some(42)
+    let result = optional_value
+        .map(|x| x * 2)
+        .bind(|x| if x > 50 { Some(x) } else { None })
+        .map(|x| x.to_string())
+    
+    match result {
+        Some(value) => println!("Monadic result: {}", value),
+        None => println!("Monadic computation failed")
+    }
+    
+    // Builder pattern with type safety
+    let request = HttpRequestBuilder::new()
+        .url("https://api.example.com/users".to_string())
+        .method(HttpMethod::POST)
+        .header("Content-Type".to_string(), "application/json".to_string())
+        .body("{\"name\": \"John Doe\"}".to_string())
+        .build()
+    
+    match request.validate() {
+        Ok(()) => println!("HTTP request is valid"),
+        Err(error) => println!("HTTP request validation failed: {}", error)
+    }
+    
+    // Effect composition
+    let io_computation = async {
+        let line = IO::read_line().await
+        IO::write_line(format!("You entered: {}", line)).await
+        line
+    }
+    
+    // Protocol-based dependency injection
+    let logger = ConsoleLogger::new()
+    let database = PostgresDatabase::new("postgresql://localhost/mydb")
+    let http_client = ReqwestClient::new()
+    
+    let user_service = UserService::new(logger, database, http_client)
+    
+    println!("Advanced protocol patterns demonstrated successfully!")
+}
+
+fn main() {
+    advanced_protocol_examples()
+}

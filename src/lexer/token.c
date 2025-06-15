@@ -44,6 +44,7 @@ static const char* token_strings[] = {
     
     // Goo Extensions
     [TOKEN_COMPTIME] = "COMPTIME",
+    [TOKEN_CONCEPT] = "CONCEPT",
     [TOKEN_PUB] = "PUB",
     [TOKEN_SUB] = "SUB",
     [TOKEN_REQ] = "REQ",
@@ -194,6 +195,7 @@ static const KeywordEntry keywords[] = {
     
     // Goo extensions
     {"comptime", TOKEN_COMPTIME},
+    {"concept", TOKEN_CONCEPT},
     {"pub", TOKEN_PUB},
     {"sub", TOKEN_SUB},
     {"req", TOKEN_REQ},

@@ -1,0 +1,427 @@
+// =============================================================================
+// Basic Protocol-Oriented Programming in Goo
+// =============================================================================
+
+// Define a basic protocol for types that can be displayed
+protocol Displayable {
+    fn display(self: &Self) -> String
+}
+
+// Define a protocol for types that can be compared for equality
+protocol Equatable {
+    fn equals(self: &Self, other: &Self) -> bool
+    
+    // Default implementation using negation
+    fn not_equals(self: &Self, other: &Self) -> bool {
+        !self.equals(other)
+    }
+}
+
+// Define a protocol that extends Equatable with ordering
+protocol Comparable: Equatable {
+    fn compare(self: &Self, other: &Self) -> Ordering
+    
+    // Default implementations based on compare
+    fn less_than(self: &Self, other: &Self) -> bool {
+        self.compare(other) == Ordering::Less
+    }
+    
+    fn greater_than(self: &Self, other: &Self) -> bool {
+        self.compare(other) == Ordering::Greater
+    }
+    
+    fn less_equal(self: &Self, other: &Self) -> bool {
+        let cmp = self.compare(other)
+        cmp == Ordering::Less || cmp == Ordering::Equal
+    }
+    
+    fn greater_equal(self: &Self, other: &Self) -> bool {
+        let cmp = self.compare(other)
+        cmp == Ordering::Greater || cmp == Ordering::Equal
+    }
+}
+
+// Ordering enumeration
+enum Ordering {
+    Less,
+    Equal,
+    Greater
+}
+
+// =============================================================================
+// Implementing Protocols for Basic Types
+// =============================================================================
+
+// Implement Displayable for integers
+impl Displayable for int {
+    fn display(self: &int) -> String {
+        self.to_string()
+    }
+}
+
+// Implement Equatable for integers
+impl Equatable for int {
+    fn equals(self: &int, other: &int) -> bool {
+        *self == *other
+    }
+}
+
+// Implement Comparable for integers
+impl Comparable for int {
+    fn compare(self: &int, other: &int) -> Ordering {
+        if *self < *other {
+            Ordering::Less
+        } else if *self > *other {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }
+}
+
+// Implement protocols for strings
+impl Displayable for String {
+    fn display(self: &String) -> String {
+        self.clone()
+    }
+}
+
+impl Equatable for String {
+    fn equals(self: &String, other: &String) -> bool {
+        self == other
+    }
+}
+
+impl Comparable for String {
+    fn compare(self: &String, other: &String) -> Ordering {
+        if self < other {
+            Ordering::Less
+        } else if self > other {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }
+}
+
+// =============================================================================
+// Custom Types with Protocol Implementations
+// =============================================================================
+
+// Define a Point type
+struct Point {
+    x: float,
+    y: float
+}
+
+impl Point {
+    fn new(x: float, y: float) -> Point {
+        Point { x, y }
+    }
+    
+    fn distance_from_origin(self: &Point) -> float {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+
+// Implement protocols for Point
+impl Displayable for Point {
+    fn display(self: &Point) -> String {
+        format!("Point({}, {})", self.x, self.y)
+    }
+}
+
+impl Equatable for Point {
+    fn equals(self: &Point, other: &Point) -> bool {
+        (self.x - other.x).abs() < 0.0001 && (self.y - other.y).abs() < 0.0001
+    }
+}
+
+impl Comparable for Point {
+    fn compare(self: &Point, other: &Point) -> Ordering {
+        let self_dist = self.distance_from_origin()
+        let other_dist = other.distance_from_origin()
+        
+        if self_dist < other_dist {
+            Ordering::Less
+        } else if self_dist > other_dist {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }
+}
+
+// =============================================================================
+// Generic Functions Using Protocols
+// =============================================================================
+
+// Generic function that works with any Displayable type
+fn print_item<T: Displayable>(item: &T) {
+    println!("{}", item.display())
+}
+
+// Generic function that works with any Equatable type
+fn are_equal<T: Equatable>(a: &T, b: &T) -> bool {
+    a.equals(b)
+}
+
+// Generic function that finds the maximum of two Comparable items
+fn max<T: Comparable>(a: T, b: T) -> T {
+    if a.greater_than(&b) {
+        a
+    } else {
+        b
+    }
+}
+
+// Generic function that sorts a list of Comparable items
+fn sort<T: Comparable + Clone>(items: &mut [T]) {
+    // Simple bubble sort for demonstration
+    let n = items.len()
+    for i in 0..n {
+        for j in 0..n-1-i {
+            if items[j].greater_than(&items[j+1]) {
+                let temp = items[j].clone()
+                items[j] = items[j+1].clone()
+                items[j+1] = temp
+            }
+        }
+    }
+}
+
+// Generic function that works with multiple protocol constraints
+fn compare_and_display<T: Comparable + Displayable>(a: &T, b: &T) -> String {
+    let cmp_result = match a.compare(b) {
+        Ordering::Less => "less than",
+        Ordering::Equal => "equal to", 
+        Ordering::Greater => "greater than"
+    }
+    
+    format!("{} is {} {}", a.display(), cmp_result, b.display())
+}
+
+// =============================================================================
+// Protocol Composition
+// =============================================================================
+
+// Define a protocol that requires multiple behaviors
+protocol Drawable: Displayable + Equatable {
+    fn draw(self: &Self) -> String
+    fn area(self: &Self) -> float
+}
+
+// Define shapes that implement Drawable
+struct Circle {
+    radius: float
+}
+
+impl Circle {
+    fn new(radius: float) -> Circle {
+        Circle { radius }
+    }
+}
+
+impl Displayable for Circle {
+    fn display(self: &Circle) -> String {
+        format!("Circle(radius: {})", self.radius)
+    }
+}
+
+impl Equatable for Circle {
+    fn equals(self: &Circle, other: &Circle) -> bool {
+        (self.radius - other.radius).abs() < 0.0001
+    }
+}
+
+impl Drawable for Circle {
+    fn draw(self: &Circle) -> String {
+        format!("Drawing a circle with radius {}", self.radius)
+    }
+    
+    fn area(self: &Circle) -> float {
+        3.14159 * self.radius * self.radius
+    }
+}
+
+struct Rectangle {
+    width: float,
+    height: float
+}
+
+impl Rectangle {
+    fn new(width: float, height: float) -> Rectangle {
+        Rectangle { width, height }
+    }
+}
+
+impl Displayable for Rectangle {
+    fn display(self: &Rectangle) -> String {
+        format!("Rectangle({}x{})", self.width, self.height)
+    }
+}
+
+impl Equatable for Rectangle {
+    fn equals(self: &Rectangle, other: &Rectangle) -> bool {
+        (self.width - other.width).abs() < 0.0001 && 
+        (self.height - other.height).abs() < 0.0001
+    }
+}
+
+impl Drawable for Rectangle {
+    fn draw(self: &Rectangle) -> String {
+        format!("Drawing a rectangle {}x{}", self.width, self.height)
+    }
+    
+    fn area(self: &Rectangle) -> float {
+        self.width * self.height
+    }
+}
+
+// Generic function that works with Drawable types
+fn draw_and_describe<T: Drawable>(shape: &T) -> String {
+    format!("{}\n{}\nArea: {}", 
+            shape.display(), 
+            shape.draw(), 
+            shape.area())
+}
+
+// =============================================================================
+// Associated Types in Protocols
+// =============================================================================
+
+// Define an Iterator protocol with an associated type
+protocol Iterator {
+    type Item
+    
+    fn next(self: &mut Self) -> Option<Self::Item>
+    
+    // Default methods using the associated type
+    fn collect<C: FromIterator<Self::Item>>(self) -> C {
+        C::from_iter(self)
+    }
+    
+    fn map<B, F>(self, f: F) -> Map<Self, F> 
+    where F: Fn(Self::Item) -> B {
+        Map::new(self, f)
+    }
+    
+    fn filter<F>(self, predicate: F) -> Filter<Self, F>
+    where F: Fn(&Self::Item) -> bool {
+        Filter::new(self, predicate)
+    }
+}
+
+// Define a Collection protocol that extends Iterator
+protocol Collection: Iterator {
+    fn len(self: &Self) -> usize
+    fn is_empty(self: &Self) -> bool {
+        self.len() == 0
+    }
+}
+
+// Implement Iterator for a range
+struct Range {
+    current: int,
+    end: int
+}
+
+impl Range {
+    fn new(start: int, end: int) -> Range {
+        Range { current: start, end }
+    }
+}
+
+impl Iterator for Range {
+    type Item = int
+    
+    fn next(self: &mut Range) -> Option<int> {
+        if self.current < self.end {
+            let result = self.current
+            self.current += 1
+            Some(result)
+        } else {
+            None
+        }
+    }
+}
+
+// Implement Iterator and Collection for Vec
+impl<T> Iterator for Vec<T> {
+    type Item = T
+    
+    fn next(self: &mut Vec<T>) -> Option<T> {
+        self.pop()
+    }
+}
+
+impl<T> Collection for Vec<T> {
+    fn len(self: &Vec<T>) -> usize {
+        self.len()
+    }
+}
+
+// =============================================================================
+// Example Usage
+// =============================================================================
+
+fn protocol_examples() {
+    println!("=== Basic Protocol Usage ===")
+    
+    // Using protocols with basic types
+    let num1 = 42
+    let num2 = 24
+    
+    print_item(&num1)  // Uses Displayable
+    println!("Are {} and {} equal? {}", num1, num2, are_equal(&num1, &num2))
+    println!("Max of {} and {}: {}", num1, num2, max(num1, num2))
+    
+    // Using protocols with custom types
+    let point1 = Point::new(3.0, 4.0)
+    let point2 = Point::new(1.0, 2.0)
+    
+    print_item(&point1)
+    println!("{}", compare_and_display(&point1, &point2))
+    
+    println!("\n=== Protocol Composition ===")
+    
+    // Using composed protocols
+    let circle = Circle::new(5.0)
+    let rectangle = Rectangle::new(4.0, 6.0)
+    
+    println!("{}", draw_and_describe(&circle))
+    println!("{}", draw_and_describe(&rectangle))
+    
+    println!("\n=== Associated Types ===")
+    
+    // Using iterators with associated types
+    let mut range = Range::new(1, 5)
+    while let Some(value) = range.next() {
+        println!("Range value: {}", value)
+    }
+    
+    let mut vec = vec![1, 2, 3, 4, 5]
+    println!("Vec length: {}", vec.len())
+    
+    println!("\n=== Generic Collections ===")
+    
+    // Sorting different types
+    let mut numbers = [3, 1, 4, 1, 5, 9, 2, 6]
+    sort(&mut numbers)
+    println!("Sorted numbers: {:?}", numbers)
+    
+    let mut points = [
+        Point::new(3.0, 4.0),
+        Point::new(1.0, 2.0), 
+        Point::new(5.0, 0.0)
+    ]
+    sort(&mut points)
+    println!("Sorted points by distance from origin:")
+    for point in &points {
+        print_item(point)
+    }
+}
+
+fn main() {
+    protocol_examples()
+}

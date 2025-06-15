@@ -1,0 +1,384 @@
+// =============================================================================
+// Type-Level Arithmetic and Programming in Goo
+// =============================================================================
+
+// Define type-level natural numbers using Peano arithmetic
+type Nat {
+    case Zero
+    case Succ(prev: Nat)
+}
+
+// Type families for arithmetic operations
+type family Add<A: Nat, B: Nat>: Nat {
+    Add<Zero, B> = B
+    Add<Succ<A>, B> = Succ<Add<A, B>>
+}
+
+type family Mul<A: Nat, B: Nat>: Nat {
+    Mul<Zero, B> = Zero
+    Mul<Succ<A>, B> = Add<B, Mul<A, B>>
+}
+
+type family Max<A: Nat, B: Nat>: Nat {
+    Max<Zero, B> = B
+    Max<A, Zero> = A
+    Max<Succ<A>, Succ<B>> = Succ<Max<A, B>>
+}
+
+// Type-level comparison
+type family Equal<A: Nat, B: Nat>: bool {
+    Equal<Zero, Zero> = true
+    Equal<Succ<A>, Succ<B>> = Equal<A, B>
+    Equal<Zero, Succ<B>> = false
+    Equal<Succ<A>, Zero> = false
+}
+
+type family LessEqual<A: Nat, B: Nat>: bool {
+    LessEqual<Zero, B> = true
+    LessEqual<Succ<A>, Zero> = false
+    LessEqual<Succ<A>, Succ<B>> = LessEqual<A, B>
+}
+
+// =============================================================================
+// Compile-Time Sized Arrays with Type-Level Arithmetic
+// =============================================================================
+
+// Array with compile-time known size
+type Array<T, const N: Nat> {
+    data: [T; N.toUsize()]
+    
+    fn new() -> Array<T, N> 
+    where T: Default {
+        Array { data: [T::default(); N.toUsize()] }
+    }
+    
+    fn get(self: &Array<T, N>, index: usize) -> Option<&T> {
+        if index < N.toUsize() {
+            Some(&self.data[index])
+        } else {
+            None
+        }
+    }
+    
+    fn len(self: &Array<T, N>) -> usize {
+        N.toUsize()
+    }
+    
+    // Concatenate two arrays with size tracking
+    fn concat<const M: Nat>(self: Array<T, N>, other: Array<T, M>) -> Array<T, Add<N, M>> {
+        var result: Array<T, Add<N, M>> = Array::new()
+        
+        // Copy elements from first array
+        for i in 0..N.toUsize() {
+            result.data[i] = self.data[i]
+        }
+        
+        // Copy elements from second array
+        for i in 0..M.toUsize() {
+            result.data[N.toUsize() + i] = other.data[i]
+        }
+        
+        return result
+    }
+    
+    // Zip two arrays of the same size
+    fn zip<U, const M: Nat>(self: Array<T, N>, other: Array<U, M>) -> Array<(T, U), N>
+    where Equal<N, M> = true {
+        var result: Array<(T, U), N> = Array::new()
+        
+        for i in 0..N.toUsize() {
+            result.data[i] = (self.data[i], other.data[i])
+        }
+        
+        return result
+    }
+}
+
+// Type aliases for common sizes
+type Array1<T> = Array<T, Succ<Zero>>
+type Array2<T> = Array<T, Succ<Succ<Zero>>>
+type Array3<T> = Array<T, Succ<Succ<Succ<Zero>>>>
+
+// =============================================================================
+// Type-Level Matrix Operations
+// =============================================================================
+
+// Matrix with compile-time dimensions
+type Matrix<T, const Rows: Nat, const Cols: Nat> {
+    data: Array<T, Mul<Rows, Cols>>
+    
+    fn new() -> Matrix<T, Rows, Cols> 
+    where T: Default {
+        Matrix { data: Array::new() }
+    }
+    
+    fn get(self: &Matrix<T, Rows, Cols>, row: usize, col: usize) -> Option<&T> {
+        if row < Rows.toUsize() && col < Cols.toUsize() {
+            let index = row * Cols.toUsize() + col
+            self.data.get(index)
+        } else {
+            None
+        }
+    }
+    
+    fn set(self: &mut Matrix<T, Rows, Cols>, row: usize, col: usize, value: T) -> bool {
+        if row < Rows.toUsize() && col < Cols.toUsize() {
+            let index = row * Cols.toUsize() + col
+            self.data.data[index] = value
+            true
+        } else {
+            false
+        }
+    }
+    
+    // Matrix multiplication with compile-time dimension checking
+    fn multiply<const K: Nat>(
+        self: Matrix<T, Rows, Cols>, 
+        other: Matrix<T, Cols, K>
+    ) -> Matrix<T, Rows, K>
+    where T: Add + Mul + Copy + Default {
+        var result: Matrix<T, Rows, K> = Matrix::new()
+        
+        for i in 0..Rows.toUsize() {
+            for j in 0..K.toUsize() {
+                var sum = T::default()
+                for k in 0..Cols.toUsize() {
+                    sum = sum + self.get(i, k).unwrap() * other.get(k, j).unwrap()
+                }
+                result.set(i, j, sum)
+            }
+        }
+        
+        return result
+    }
+    
+    // Transpose with dimension swapping
+    fn transpose(self: Matrix<T, Rows, Cols>) -> Matrix<T, Cols, Rows>
+    where T: Copy {
+        var result: Matrix<T, Cols, Rows> = Matrix::new()
+        
+        for i in 0..Rows.toUsize() {
+            for j in 0..Cols.toUsize() {
+                result.set(j, i, *self.get(i, j).unwrap())
+            }
+        }
+        
+        return result
+    }
+}
+
+// Type aliases for common matrix types
+type Vector<T, const N: Nat> = Matrix<T, N, Succ<Zero>>
+type SquareMatrix<T, const N: Nat> = Matrix<T, N, N>
+
+// =============================================================================
+// Type-Level List Operations
+// =============================================================================
+
+// Type-level heterogeneous lists
+type HList {
+    case Nil
+    case Cons<Head, Tail: HList>(head: Head, tail: Tail)
+}
+
+// Type family for list length
+type family Length<L: HList>: Nat {
+    Length<Nil> = Zero
+    Length<Cons<H, T>> = Succ<Length<T>>
+}
+
+// Type family for list concatenation
+type family Append<L1: HList, L2: HList>: HList {
+    Append<Nil, L2> = L2
+    Append<Cons<H, T>, L2> = Cons<H, Append<T, L2>>
+}
+
+// Type family for list element access
+type family Get<L: HList, const N: Nat> {
+    Get<Cons<H, T>, Zero> = H
+    Get<Cons<H, T>, Succ<N>> = Get<T, N>
+}
+
+// Heterogeneous list implementation
+impl<Head, Tail: HList> Cons<Head, Tail> {
+    fn new(head: Head, tail: Tail) -> Cons<Head, Tail> {
+        Cons { head, tail }
+    }
+    
+    fn head(self: &Cons<Head, Tail>) -> &Head {
+        &self.head
+    }
+    
+    fn tail(self: &Cons<Head, Tail>) -> &Tail {
+        &self.tail
+    }
+    
+    fn len(self: &Cons<Head, Tail>) -> usize {
+        Length<Cons<Head, Tail>>.toUsize()
+    }
+}
+
+impl Nil {
+    fn new() -> Nil {
+        Nil
+    }
+    
+    fn len(self: &Nil) -> usize {
+        0
+    }
+}
+
+// =============================================================================
+// Type-Level Proof System
+// =============================================================================
+
+// Phantom types for compile-time proofs
+type Proof<P: bool> {
+    phantom: PhantomData<P>
+}
+
+// Proof that two types are equal
+type TypeEqual<A, B> = Proof<Equal<A, B>>
+
+// Proof constructors
+impl Proof<true> {
+    fn new() -> Proof<true> {
+        Proof { phantom: PhantomData }
+    }
+}
+
+// Proof that addition is commutative
+fn add_commutative<A: Nat, B: Nat>() -> TypeEqual<Add<A, B>, Add<B, A>> {
+    // This would be proven by the type system
+    Proof::new()
+}
+
+// Proof that addition is associative
+fn add_associative<A: Nat, B: Nat, C: Nat>() -> TypeEqual<Add<A, Add<B, C>>, Add<Add<A, B>, C>> {
+    Proof::new()
+}
+
+// Safe array access using proofs
+fn safe_get<T, const N: Nat>(
+    array: &Array<T, N>, 
+    index: usize,
+    proof: Proof<LessEqual<index.toNat(), N>>
+) -> &T {
+    // The proof guarantees this access is safe
+    &array.data[index]
+}
+
+// =============================================================================
+// Dependent Types for Safe Programming
+// =============================================================================
+
+// Vector with runtime length tracking
+type DVector<T> {
+    data: Vec<T>
+    length: usize
+    
+    fn new() -> DVector<T> {
+        DVector { data: vec![], length: 0 }
+    }
+    
+    fn push(self: &mut DVector<T>, item: T) {
+        self.data.push(item)
+        self.length += 1
+    }
+    
+    fn get(self: &DVector<T>, index: usize) -> Option<&T> {
+        if index < self.length {
+            Some(&self.data[index])
+        } else {
+            None
+        }
+    }
+    
+    // Convert to compile-time sized array if length is known
+    fn to_array<const N: Nat>(self: DVector<T>) -> Option<Array<T, N>>
+    where T: Clone {
+        if self.length == N.toUsize() {
+            var result: Array<T, N> = Array::new()
+            for i in 0..N.toUsize() {
+                result.data[i] = self.data[i].clone()
+            }
+            Some(result)
+        } else {
+            None
+        }
+    }
+}
+
+// Non-empty list with type-level guarantee
+type NonEmpty<T> {
+    head: T
+    tail: Vec<T>
+    
+    fn new(head: T) -> NonEmpty<T> {
+        NonEmpty { head, tail: vec![] }
+    }
+    
+    fn push(self: &mut NonEmpty<T>, item: T) {
+        self.tail.push(item)
+    }
+    
+    fn head(self: &NonEmpty<T>) -> &T {
+        &self.head
+    }
+    
+    fn len(self: &NonEmpty<T>) -> usize {
+        1 + self.tail.len()
+    }
+    
+    // Safe head access - no Option needed!
+    fn first(self: &NonEmpty<T>) -> &T {
+        &self.head
+    }
+}
+
+// =============================================================================
+// Example Usage and Tests
+// =============================================================================
+
+fn type_level_arithmetic_examples() {
+    // Compile-time array operations
+    var arr1: Array<int, Succ<Succ<Zero>>> = Array::new()  // Array of size 2
+    var arr2: Array<int, Succ<Zero>> = Array::new()         // Array of size 1
+    
+    // Concatenation with automatic size calculation
+    var arr3 = arr1.concat(arr2)  // Type: Array<int, Succ<Succ<Succ<Zero>>>>
+    
+    // Matrix operations with dimension checking
+    var mat1: Matrix<float, Succ<Succ<Zero>>, Succ<Succ<Succ<Zero>>>> = Matrix::new()  // 2x3 matrix
+    var mat2: Matrix<float, Succ<Succ<Succ<Zero>>>, Succ<Zero>> = Matrix::new()        // 3x1 matrix
+    
+    var result = mat1.multiply(mat2)  // Type: Matrix<float, 2, 1> - compile-time checked!
+    
+    // Heterogeneous lists
+    var hlist = Cons::new(42, Cons::new("hello", Cons::new(true, Nil::new())))
+    // Type: Cons<int, Cons<string, Cons<bool, Nil>>>
+    
+    var length = hlist.len()  // 3, computed at compile time
+    
+    // Type-level proofs
+    var proof = add_commutative::<Succ<Zero>, Succ<Succ<Zero>>>()
+    // Proves that 1 + 2 = 2 + 1 at the type level
+    
+    // Dependent typing
+    var dvec: DVector<int> = DVector::new()
+    dvec.push(1)
+    dvec.push(2)
+    
+    // Try to convert to fixed-size array
+    var maybe_array = dvec.to_array::<Succ<Succ<Zero>>>()  // Some(array) if length is 2
+    
+    // Non-empty collections
+    var non_empty = NonEmpty::new(42)
+    non_empty.push(24)
+    
+    var first = non_empty.first()  // Always safe - no Option needed!
+}
+
+fn main() {
+    type_level_arithmetic_examples()
+}

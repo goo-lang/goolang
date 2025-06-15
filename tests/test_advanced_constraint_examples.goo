@@ -1,0 +1,92 @@
+// Advanced Constraint Inference Test Cases for Task 22.6
+// Higher-order functions and complex generic patterns
+
+// Example 1: Higher-order function with callback
+func map<T, U>(slice []T, mapper func(T) U) []U {
+    var result []U
+    for item in slice {
+        result = append(result, mapper(item))
+    }
+    return result
+}
+
+// Example 2: Complex nested generics
+func process_nested<T>(data Vec<Option<T>>) Vec<Result<T, string>> {
+    var results Vec<Result<T, string>>
+    for item in data {
+        if item != nil {
+            results = append(results, Ok(item))
+        } else {
+            results = append(results, Err("No value"))
+        }
+    }
+    return results
+}
+
+// Example 3: Variadic generic functions
+func combine<...Args>(args ...Args) Tuple<Args> {
+    // The ...Args syntax would be inferred to require all Args to be compatible
+    return make_tuple(args...)
+}
+
+// Example 4: Constraint inference with error handling
+func safe_divide(a int32, b int32) !int32 {
+    if b == 0 {
+        return error("Division by zero")
+    }
+    return a / b
+}
+
+// Example 5: Constraint inference with nullable types
+func find_item<T>(slice []T, predicate func(T) bool) ?T {
+    for item in slice {
+        if predicate(item) {
+            return item
+        }
+    }
+    return nil
+}
+
+// Example 6: Constraint inference with channels and concurrency
+func pipeline<T, U>(input chan T, transform func(T) U) chan U {
+    output := make(chan U)
+    go {
+        for item := range input {
+            output <- transform(item)
+        }
+        close(output)
+    }
+    return output
+}
+
+// Example 7: Complex constraint inference with multiple bounds
+func advanced_sort<T>(slice []T) []T {
+    // T should automatically be inferred to require: PartialOrd + Clone
+    var sorted []T = clone(slice)
+    // Sorting algorithm would go here
+    return sorted
+}
+
+// Example 8: Ownership-aware constraint inference
+func process_owned<T>(owned: T) T {
+    // T should be inferred to require: Copy or Move semantics
+    var processed = transform(owned)
+    return processed
+}
+
+// Example 9: Async constraint inference
+async func fetch_and_process<T>(url string, processor func(string) T) !T {
+    var data = await fetch(url)? // Error propagation
+    return processor(data)
+}
+
+// Example 10: Generator/iterator constraint inference  
+func generate_numbers() Iterator<int32> {
+    return {
+        var current = 0
+        while true {
+            yield current
+            current += 1
+        }
+    }
+}

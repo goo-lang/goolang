@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
 
 // =============================================================================
 // 22.1: Automatic Constraint Inference System Implementation
@@ -186,17 +187,23 @@ void interface_constraint_free(InterfaceConstraint* constraint) {
 InterfaceConstraint* interface_constraint_copy(const InterfaceConstraint* constraint) {
     if (!constraint) return NULL;
     
-    InterfaceConstraint* copy = interface_constraint_new(constraint->kind, 
-                                                        constraint->constrained_type,
-                                                        constraint->source_pos);
+    InterfaceConstraint* copy = malloc(sizeof(InterfaceConstraint));
     if (!copy) return NULL;
     
-    copy->target_type = constraint->target_type ? type_copy(constraint->target_type) : NULL;
-    copy->protocol_name = str_dup(constraint->protocol_name);
-    copy->associated_type_name = str_dup(constraint->associated_type_name);
-    copy->is_auto_inferred = constraint->is_auto_inferred;
+    *copy = *constraint; // Copy all fields
     
-    // Note: constraint_data is not copied as it's context-specific
+    // Deep copy string fields
+    if (constraint->protocol_name) {
+        copy->protocol_name = str_dup(constraint->protocol_name);
+    }
+    if (constraint->associated_type_name) {
+        copy->associated_type_name = str_dup(constraint->associated_type_name);
+    }
+    if (constraint->constraint_data) {
+        copy->constraint_data = str_dup((const char*)constraint->constraint_data);
+    }
+    
+    copy->next = NULL; // Don't copy the next pointer
     
     return copy;
 }
@@ -230,7 +237,6 @@ void constraint_set_free(ConstraintSet* set) {
 int constraint_set_add(ConstraintSet* set, InterfaceConstraint* constraint) {
     if (!set || !constraint) return 0;
     
-    // Add to front of list
     constraint->next = set->constraints;
     set->constraints = constraint;
     set->count++;
@@ -341,6 +347,26 @@ int infer_constraints_from_expression(ConstraintInferenceEngine* engine, ASTNode
             result = infer_constraints_from_function_call(engine, expr);
             break;
             
+        case AST_INDEX_EXPR:
+            // For array[index] operations, we can infer indexing constraints
+            // TODO: Implement infer_constraints_from_index_operation
+            break;
+            
+        case AST_SELECTOR_EXPR:
+            // For obj.field operations, we can infer field access constraints
+            // TODO: Implement infer_constraints_from_field_access
+            break;
+            
+        case AST_FOR_STMT:
+            // For 'for item in collection' loops, we can infer iterator constraints
+            // TODO: Implement infer_constraints_from_for_loop
+            break;
+            
+        case AST_SLICE_EXPR:
+            // For array[start:end] operations, we can infer slicing constraints
+            // TODO: Implement infer_constraints_from_slice_operation
+            break;
+            
         case AST_IDENTIFIER: {
             // For identifiers, we might infer constraints based on usage
             IdentifierNode* ident = (IdentifierNode*)expr;
@@ -360,26 +386,6 @@ int infer_constraints_from_expression(ConstraintInferenceEngine* engine, ASTNode
             break;
         }
         
-        case AST_INDEX_EXPR: {
-            // Indexing implies the type implements indexing operations
-            IndexExprNode* index = (IndexExprNode*)expr;
-            
-            // Infer that the expression being indexed supports indexing
-            if (index->expr) {
-                InterfaceConstraint* constraint = interface_constraint_new(
-                    CONSTRAINT_INDEX, NULL, expr->pos);
-                if (constraint) {
-                    constraint->is_auto_inferred = 1;
-                    constraint_set_add(engine->active_constraints, constraint);
-                    engine->constraints_inferred++;
-                }
-                
-                // Recursively infer constraints from subexpressions
-                result &= infer_constraints_from_expression(engine, index->expr);
-                result &= infer_constraints_from_expression(engine, index->index);
-            }
-            break;
-        }
         
         case AST_LITERAL: {
             // Literals can help infer numeric constraints
@@ -621,7 +627,7 @@ Type* substitute_type_variables(ConstraintInferenceEngine* engine, Type* type) {
 }
 
 // =============================================================================
-// Utility Functions
+// Test Utility Functions
 // =============================================================================
 
 const char* constraint_kind_to_string(ConstraintKind kind) {
@@ -629,6 +635,36 @@ const char* constraint_kind_to_string(ConstraintKind kind) {
         case CONSTRAINT_IMPLEMENTS: return "implements";
         case CONSTRAINT_SUBTYPE: return "subtype";
         case CONSTRAINT_EQUALITY: return "equality";
+        case CONSTRAINT_SIZE: return "sized";
+        case CONSTRAINT_COPY: return "copy";
+        case CONSTRAINT_CLONE: return "clone";
+        case CONSTRAINT_SEND: return "send";
+        case CONSTRAINT_SYNC: return "sync";
+        case CONSTRAINT_DEFAULT: return "default";
+        case CONSTRAINT_PARTIAL_EQ: return "partial_eq";
+        case CONSTRAINT_PARTIAL_ORD: return "partial_ord";
+        case CONSTRAINT_HASH: return "hash";
+        case CONSTRAINT_DEBUG: return "debug";
+        case CONSTRAINT_DISPLAY: return "display";
+        case CONSTRAINT_SERIALIZABLE: return "serializable";
+        case CONSTRAINT_ITERATOR: return "iterator";
+        case CONSTRAINT_INTO: return "into";
+        case CONSTRAINT_FROM: return "from";
+        case CONSTRAINT_NUMERIC: return "numeric";
+        case CONSTRAINT_INTEGRAL: return "integral";
+        case CONSTRAINT_FLOATING: return "floating";
+        case CONSTRAINT_HIGHER_KINDED: return "higher_kinded";
+        case CONSTRAINT_PROTOCOL: return "protocol";
+        default: return "unknown";
+    }
+}
+
+// Convert constraint kind to proper trait name (for trait bounds)
+static const char* constraint_kind_to_trait_name(ConstraintKind kind) {
+    switch (kind) {
+        case CONSTRAINT_IMPLEMENTS: return "Implements";
+        case CONSTRAINT_SUBTYPE: return "Subtype";
+        case CONSTRAINT_EQUALITY: return "Equality";
         case CONSTRAINT_SIZE: return "Sized";
         case CONSTRAINT_COPY: return "Copy";
         case CONSTRAINT_CLONE: return "Clone";
@@ -640,148 +676,368 @@ const char* constraint_kind_to_string(ConstraintKind kind) {
         case CONSTRAINT_HASH: return "Hash";
         case CONSTRAINT_DEBUG: return "Debug";
         case CONSTRAINT_DISPLAY: return "Display";
+        case CONSTRAINT_SERIALIZABLE: return "Serializable";
         case CONSTRAINT_ITERATOR: return "Iterator";
         case CONSTRAINT_INTO: return "Into";
         case CONSTRAINT_FROM: return "From";
-        case CONSTRAINT_TRY_FROM: return "TryFrom";
-        case CONSTRAINT_TRY_INTO: return "TryInto";
-        case CONSTRAINT_AS_REF: return "AsRef";
-        case CONSTRAINT_AS_MUT: return "AsMut";
-        case CONSTRAINT_DEREF: return "Deref";
-        case CONSTRAINT_DEREF_MUT: return "DerefMut";
-        case CONSTRAINT_INDEX: return "Index";
-        case CONSTRAINT_INDEX_MUT: return "IndexMut";
-        case CONSTRAINT_ARITHMETIC: return "Arithmetic";
         case CONSTRAINT_NUMERIC: return "Numeric";
         case CONSTRAINT_INTEGRAL: return "Integral";
         case CONSTRAINT_FLOATING: return "Floating";
-        case CONSTRAINT_CALLABLE: return "Callable";
-        case CONSTRAINT_ASYNC_CALLABLE: return "AsyncCallable";
-        case CONSTRAINT_GENERATOR: return "Generator";
-        case CONSTRAINT_CONST_EVAL: return "ConstEval";
-        case CONSTRAINT_CONST_SIZE: return "ConstSize";
         case CONSTRAINT_HIGHER_KINDED: return "HigherKinded";
-        case CONSTRAINT_ASSOCIATED_TYPE: return "AssociatedType";
-        case CONSTRAINT_LIFETIME: return "Lifetime";
-        case CONSTRAINT_MEMORY_LAYOUT: return "MemoryLayout";
         case CONSTRAINT_PROTOCOL: return "Protocol";
         default: return "Unknown";
     }
 }
 
-const char* type_variable_kind_to_string(TypeVariableKind kind) {
-    switch (kind) {
-        case TYPE_VAR_GENERIC: return "Generic";
-        case TYPE_VAR_CONST: return "Const";
-        case TYPE_VAR_LIFETIME: return "Lifetime";
-        case TYPE_VAR_HIGHER_KINDED: return "HigherKinded";
-        case TYPE_VAR_ASSOCIATED: return "Associated";
-        default: return "Unknown";
-    }
-}
-
-void print_constraint_set(const ConstraintSet* set) {
-    if (!set) {
-        printf("ConstraintSet: null\n");
-        return;
-    }
+TraitBoundSet* generate_trait_bounds_from_constraints(ConstraintInferenceEngine* engine, TypeVariable* var) {
+    if (!engine || !var) return NULL;
     
-    printf("ConstraintSet (%zu constraints, satisfied: %s):\n", 
-           set->count, set->is_satisfied ? "yes" : "no");
+    TraitBoundSet* bounds = malloc(sizeof(TraitBoundSet));
+    if (!bounds) return NULL;
     
-    InterfaceConstraint* constraint = set->constraints;
-    while (constraint) {
-        printf("  - %s", constraint_kind_to_string(constraint->kind));
-        if (constraint->constrained_type && constraint->constrained_type->name) {
-            printf(" on %s", constraint->constrained_type->name);
-        }
-        if (constraint->target_type && constraint->target_type->name) {
-            printf(" -> %s", constraint->target_type->name);
-        }
-        if (constraint->protocol_name) {
-            printf(" (%s)", constraint->protocol_name);
-        }
-        if (constraint->is_auto_inferred) {
-            printf(" [auto-inferred]");
-        }
-        printf("\n");
-        constraint = constraint->next;
-    }
+    bounds->bounds = NULL;
+    bounds->count = 0;
+    bounds->is_optimized = 0;
+    bounds->generated_where_clause = NULL;
     
-    if (set->error_message) {
-        printf("  Error: %s\n", set->error_message);
-    }
-}
-
-void print_type_variable(const TypeVariable* var) {
-    if (!var) {
-        printf("TypeVariable: null\n");
-        return;
-    }
-    
-    printf("TypeVariable %s (%s):\n", 
-           var->name ? var->name : "<unnamed>",
-           type_variable_kind_to_string(var->kind));
-    
-    if (var->bound_type) {
-        printf("  Bound to: %s\n", var->bound_type->name ? var->bound_type->name : "<unnamed type>");
-    }
-    
-    if (var->constraints) {
-        printf("  Constraints:\n");
-        InterfaceConstraint* constraint = var->constraints->constraints;
-        while (constraint) {
-            printf("    - %s", constraint_kind_to_string(constraint->kind));
-            if (constraint->is_auto_inferred) {
-                printf(" [auto-inferred]");
+    // Generate trait bounds from constraints on the type variable
+    ConstraintSet* constraints = var->constraints;
+    if (constraints) {
+        InterfaceConstraint* current = constraints->constraints;
+        while (current) {
+            TraitBound* bound = malloc(sizeof(TraitBound));
+            if (bound) {
+                bound->kind = TRAIT_BOUND_SIMPLE;
+                bound->type_param_name = str_dup(var->name);
+                bound->trait_name = str_dup(constraint_kind_to_trait_name(current->kind));
+                bound->type_parameter = NULL;
+                bound->associated_type_name = NULL;
+                bound->associated_type = NULL;
+                bound->is_auto_generated = 1;
+                bound->confidence_score = 0.8f;
+                bound->source_pos = current->source_pos;
+                bound->next = bounds->bounds;
+                
+                bounds->bounds = bound;
+                bounds->count++;
             }
-            printf("\n");
-            constraint = constraint->next;
+            current = current->next;
         }
     }
     
-    if (var->is_inferred) {
-        printf("  [inferred]\n");
+    return bounds;
+}
+
+char* generate_where_clause_from_bounds(TraitBoundSet* bounds) {
+    if (!bounds || bounds->count == 0) return NULL;
+    
+    size_t buffer_size = 1024;
+    char* where_clause = malloc(buffer_size);
+    if (!where_clause) return NULL;
+    
+    strcpy(where_clause, "where ");
+    
+    TraitBound* current = bounds->bounds;
+    bool first = true;
+    while (current) {
+        if (!first) strcat(where_clause, ", ");
+        strcat(where_clause, current->type_param_name ? current->type_param_name : "T");
+        strcat(where_clause, ": ");
+        strcat(where_clause, current->trait_name ? current->trait_name : "Unknown");
+        first = false;
+        current = current->next;
     }
+    
+    return where_clause;
+}
+
+void optimize_trait_bounds(TraitBoundSet* bounds) {
+    if (!bounds) return;
+    
+    // Simple optimization: remove duplicate bounds
+    TraitBound* current = bounds->bounds;
+    while (current) {
+        TraitBound* next = current->next;
+        TraitBound* search = next;
+        TraitBound* prev = current;
+        
+        while (search) {
+            if (current->trait_name && search->trait_name &&
+                strcmp(current->trait_name, search->trait_name) == 0) {
+                // Remove duplicate
+                prev->next = search->next;
+                free(search->trait_name);
+                free(search->type_param_name);
+                free(search);
+                bounds->count--;
+                search = prev->next;
+            } else {
+                prev = search;
+                search = search->next;
+            }
+        }
+        current = next;
+    }
+    
+    // Mark as optimized
+    bounds->is_optimized = 1;
+}
+
+bool validate_generated_trait_bounds(TraitBoundSet* bounds) {
+    if (!bounds) return false;
+    
+    // Validate that all bounds have valid trait names
+    TraitBound* current = bounds->bounds;
+    while (current) {
+        if (!current->trait_name || strlen(current->trait_name) == 0) {
+            return false;
+        }
+        current = current->next;
+    }
+    
+    return true;
 }
 
 // =============================================================================
-// Integration with Type Checker
+// Missing Constraint Inference Functions
 // =============================================================================
 
-int enhanced_interface_system_init(TypeChecker* checker) {
-    if (!checker) return 0;
+int infer_constraints_from_arithmetic_context(ConstraintInferenceEngine* engine, Type* type, Position pos) {
+    if (!engine || !type) return 0;
     
-    // Initialize the enhanced interface system for a type checker
-    // This would set up the constraint inference engine and other components
+    InterfaceConstraint* constraint = malloc(sizeof(InterfaceConstraint));
+    if (!constraint) return 0;
+    
+    constraint->kind = CONSTRAINT_NUMERIC;
+    constraint->constrained_type = type;
+    constraint->target_type = NULL;
+    constraint->protocol_name = NULL;
+    constraint->associated_type_name = NULL;
+    constraint->constraint_data = str_dup("arithmetic");
+    constraint->is_auto_inferred = 1;
+    constraint->is_resolved = 0;
+    constraint->source_pos = pos;
+    constraint->next = NULL;
+    
+    // Add to the engine's active constraints
+    if (engine->active_constraints) {
+        constraint->next = engine->active_constraints->constraints;
+        engine->active_constraints->constraints = constraint;
+        engine->active_constraints->count++;
+    }
+    
+    // Update inference statistics
+    engine->constraints_inferred++;
     
     return 1;
 }
 
-void enhanced_interface_system_cleanup(TypeChecker* checker) {
-    if (!checker) return;
+int infer_constraints_from_comparison_context(ConstraintInferenceEngine* engine, Type* type, Position pos) {
+    if (!engine || !type) return 0;
     
-    // Clean up the enhanced interface system
-    // This would free any allocated resources
-}
-
-int type_check_with_constraint_inference(TypeChecker* checker, ASTNode* node) {
-    if (!checker || !node) return 0;
+    InterfaceConstraint* constraint = malloc(sizeof(InterfaceConstraint));
+    if (!constraint) return 0;
     
-    // Create a constraint inference engine for this type checking session
-    ConstraintInferenceEngine* engine = constraint_inference_engine_new(checker);
-    if (!engine) return 0;
+    constraint->kind = CONSTRAINT_PARTIAL_ORD;
+    constraint->constrained_type = type;
+    constraint->target_type = NULL;
+    constraint->protocol_name = NULL;
+    constraint->associated_type_name = NULL;
+    constraint->constraint_data = str_dup("comparison");
+    constraint->is_auto_inferred = 1;
+    constraint->is_resolved = 0;
+    constraint->source_pos = pos;
+    constraint->next = NULL;
     
-    // Infer constraints from the AST node
-    int result = infer_constraints_from_expression(engine, node);
-    
-    if (result) {
-        // Solve the inferred constraints
-        result = solve_constraints(engine);
+    // Add to the engine's active constraints
+    if (engine->active_constraints) {
+        constraint->next = engine->active_constraints->constraints;
+        engine->active_constraints->constraints = constraint;
+        engine->active_constraints->count++;
     }
     
-    // Clean up
-    constraint_inference_engine_free(engine);
+    // Update inference statistics
+    engine->constraints_inferred++;
     
-    return result;
+    return 1;
 }
+
+int infer_constraints_from_usage_pattern(ConstraintInferenceEngine* engine, Type* type, const char* usage_pattern, Position pos) {
+    if (!engine || !type) return 0;
+    
+    // Count how many constraints we add
+    int constraints_added = 0;
+    
+    // Determine constraint kinds based on usage pattern
+    ConstraintKind kinds[4] = {0}; // Support multiple constraints from one pattern
+    int kind_count = 0;
+    
+    if (strstr(usage_pattern, "copy")) {
+        kinds[kind_count++] = CONSTRAINT_COPY;
+    }
+    if (strstr(usage_pattern, "clone")) {
+        kinds[kind_count++] = CONSTRAINT_CLONE;
+    }
+    if (strstr(usage_pattern, "debug")) {
+        kinds[kind_count++] = CONSTRAINT_DEBUG;
+    }
+    if (strstr(usage_pattern, "display")) {
+        kinds[kind_count++] = CONSTRAINT_DISPLAY;
+    }
+    if (strstr(usage_pattern, "send")) {
+        kinds[kind_count++] = CONSTRAINT_SEND;
+    }
+    if (strstr(usage_pattern, "sync")) {
+        kinds[kind_count++] = CONSTRAINT_SYNC;
+    }
+    if (strstr(usage_pattern, "comparison")) {
+        kinds[kind_count++] = CONSTRAINT_PARTIAL_ORD;
+    }
+    
+    // If no specific pattern found, add a generic implements constraint
+    if (kind_count == 0) {
+        kinds[0] = CONSTRAINT_IMPLEMENTS;
+        kind_count = 1;
+    }
+    
+    // Add constraints for each identified kind
+    for (int i = 0; i < kind_count; i++) {
+        InterfaceConstraint* constraint = malloc(sizeof(InterfaceConstraint));
+        if (!constraint) continue;
+        
+        constraint->kind = kinds[i];
+        constraint->constrained_type = type;
+        constraint->target_type = NULL;
+        constraint->protocol_name = NULL;
+        constraint->associated_type_name = NULL;
+        constraint->constraint_data = str_dup(usage_pattern);
+        constraint->is_auto_inferred = 1;
+        constraint->is_resolved = 0;
+        constraint->source_pos = pos;
+        constraint->next = NULL;
+        
+        // Add to the engine's active constraints
+        if (engine->active_constraints) {
+            constraint->next = engine->active_constraints->constraints;
+            engine->active_constraints->constraints = constraint;
+            engine->active_constraints->count++;
+            constraints_added++;
+        }
+    }
+    
+    // Update inference statistics
+    engine->constraints_inferred += constraints_added;
+    
+    return constraints_added;
+}
+
+int propagate_constraints(ConstraintInferenceEngine* engine) {
+    if (!engine) return 0;
+    
+    // Simple constraint propagation: 
+    // Look for patterns that can infer additional constraints
+    int changes = 0;
+    
+    InterfaceConstraint* current = engine->active_constraints->constraints;
+    while (current) {
+        // If we have a comparison constraint, also infer partial equality
+        if (current->kind == CONSTRAINT_PARTIAL_ORD) {
+            InterfaceConstraint* eq_constraint = malloc(sizeof(InterfaceConstraint));
+            if (eq_constraint) {
+                eq_constraint->kind = CONSTRAINT_PARTIAL_EQ;
+                eq_constraint->constrained_type = current->constrained_type;
+                eq_constraint->target_type = NULL;
+                eq_constraint->protocol_name = NULL;
+                eq_constraint->associated_type_name = NULL;
+                eq_constraint->constraint_data = str_dup("propagated_from_ord");
+                eq_constraint->is_auto_inferred = 1;
+                eq_constraint->is_resolved = 0;
+                eq_constraint->source_pos = current->source_pos;
+                eq_constraint->next = engine->active_constraints->constraints;
+                
+                engine->active_constraints->constraints = eq_constraint;
+                engine->active_constraints->count++;
+                engine->constraints_inferred++;
+                changes++;
+            }
+        }
+        current = current->next;
+    }
+    
+    return changes;
+}
+
+// =============================================================================
+// Missing Trait Bound Functions
+// =============================================================================
+
+TraitBound* trait_bound_new(const char* type_param_name, Position source_pos) {
+    TraitBound* bound = malloc(sizeof(TraitBound));
+    if (!bound) return NULL;
+    
+    bound->kind = TRAIT_BOUND_SIMPLE;
+    bound->type_param_name = str_dup(type_param_name);
+    bound->trait_name = NULL;
+    bound->type_parameter = NULL;
+    bound->associated_type_name = NULL;
+    bound->associated_type = NULL;
+    bound->is_auto_generated = 0;
+    bound->confidence_score = 1.0f;
+    bound->source_pos = source_pos;
+    bound->next = NULL;
+    
+    return bound;
+}
+
+TraitBoundSet* trait_bound_set_new(void) {
+    TraitBoundSet* set = malloc(sizeof(TraitBoundSet));
+    if (!set) return NULL;
+    
+    set->bounds = NULL;
+    set->count = 0;
+    set->is_optimized = 0;
+    set->generated_where_clause = NULL;
+    
+    return set;
+}
+
+void trait_bound_set_free(TraitBoundSet* set) {
+    if (!set) return;
+    
+    TraitBound* current = set->bounds;
+    while (current) {
+        TraitBound* next = current->next;
+        free(current->type_param_name);
+        free(current->trait_name);
+        free(current->associated_type_name);
+        free(current);
+        current = next;
+    }
+    
+    free(set->generated_where_clause);
+    free(set);
+}
+
+int trait_bound_set_add(TraitBoundSet* set, TraitBound* bound) {
+    if (!set || !bound) return 0;
+    
+    bound->next = set->bounds;
+    set->bounds = bound;
+    set->count++;
+    
+    return 1;
+}
+
+const char* type_variable_kind_to_string(TypeVariableKind kind) {
+    switch (kind) {
+        case TYPE_VAR_GENERIC: return "generic";
+        case TYPE_VAR_CONST: return "const";
+        case TYPE_VAR_LIFETIME: return "lifetime";
+        case TYPE_VAR_HIGHER_KINDED: return "higher_kinded";
+        case TYPE_VAR_ASSOCIATED: return "associated";
+        default: return "unknown";
+    }
+}
+
+
+

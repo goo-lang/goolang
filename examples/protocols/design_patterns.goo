@@ -1,0 +1,634 @@
+// =============================================================================
+// Protocol-Oriented Design Patterns in Goo
+// =============================================================================
+
+// =============================================================================
+// Strategy Pattern with Protocols
+// =============================================================================
+
+// Protocol for sorting strategies
+protocol SortStrategy<T: Comparable> {
+    fn sort(self: &Self, data: &mut [T])
+}
+
+// Concrete sorting strategies
+struct BubbleSort;
+struct QuickSort;
+struct MergeSort;
+
+impl<T: Comparable + Clone> SortStrategy<T> for BubbleSort {
+    fn sort(self: &BubbleSort, data: &mut [T]) {
+        let n = data.len()
+        for i in 0..n {
+            for j in 0..n-1-i {
+                if data[j].greater_than(&data[j+1]) {
+                    data.swap(j, j+1)
+                }
+            }
+        }
+    }
+}
+
+impl<T: Comparable + Clone> SortStrategy<T> for QuickSort {
+    fn sort(self: &QuickSort, data: &mut [T]) {
+        if data.len() <= 1 { return }
+        
+        let pivot_index = partition(data)
+        self.sort(&mut data[..pivot_index])
+        self.sort(&mut data[pivot_index+1..])
+    }
+}
+
+// Context that uses sorting strategies
+struct Sorter<T: Comparable, S: SortStrategy<T>> {
+    strategy: S,
+    _phantom: PhantomData<T>
+}
+
+impl<T: Comparable, S: SortStrategy<T>> Sorter<T, S> {
+    fn new(strategy: S) -> Self {
+        Sorter { strategy, _phantom: PhantomData }
+    }
+    
+    fn sort_data(self: &Self, data: &mut [T]) {
+        self.strategy.sort(data)
+    }
+    
+    fn change_strategy<NewS: SortStrategy<T>>(self, new_strategy: NewS) -> Sorter<T, NewS> {
+        Sorter::new(new_strategy)
+    }
+}
+
+// =============================================================================
+// Observer Pattern with Protocols
+// =============================================================================
+
+// Protocol for observers
+protocol Observer<T> {
+    fn update(self: &mut Self, data: &T)
+}
+
+// Protocol for observable subjects
+protocol Observable<T> {
+    fn attach(self: &mut Self, observer: Box<dyn Observer<T>>)
+    fn detach(self: &mut Self, observer_id: usize) -> Option<Box<dyn Observer<T>>>
+    fn notify(self: &Self, data: &T)
+}
+
+// Concrete observable implementation
+struct EventPublisher<T> {
+    observers: Vec<Box<dyn Observer<T>>>,
+    data: T
+}
+
+impl<T: Clone> EventPublisher<T> {
+    fn new(initial_data: T) -> Self {
+        EventPublisher {
+            observers: Vec::new(),
+            data: initial_data
+        }
+    }
+    
+    fn set_data(self: &mut Self, new_data: T) {
+        self.data = new_data.clone()
+        self.notify(&new_data)
+    }
+}
+
+impl<T: Clone> Observable<T> for EventPublisher<T> {
+    fn attach(self: &mut Self, observer: Box<dyn Observer<T>>) {
+        self.observers.push(observer)
+    }
+    
+    fn detach(self: &mut Self, observer_id: usize) -> Option<Box<dyn Observer<T>>> {
+        if observer_id < self.observers.len() {
+            Some(self.observers.remove(observer_id))
+        } else {
+            None
+        }
+    }
+    
+    fn notify(self: &Self, data: &T) {
+        for observer in &mut self.observers {
+            observer.update(data)
+        }
+    }
+}
+
+// Concrete observers
+struct LoggingObserver {
+    name: String
+}
+
+impl LoggingObserver {
+    fn new(name: String) -> Self {
+        LoggingObserver { name }
+    }
+}
+
+impl<T: Displayable> Observer<T> for LoggingObserver {
+    fn update(self: &mut Self, data: &T) {
+        println!("[{}] Received update: {}", self.name, data.display())
+    }
+}
+
+struct MetricsObserver {
+    update_count: usize
+}
+
+impl MetricsObserver {
+    fn new() -> Self {
+        MetricsObserver { update_count: 0 }
+    }
+    
+    fn get_update_count(self: &Self) -> usize {
+        self.update_count
+    }
+}
+
+impl<T> Observer<T> for MetricsObserver {
+    fn update(self: &mut Self, _data: &T) {
+        self.update_count += 1
+        println!("Metrics: Total updates = {}", self.update_count)
+    }
+}
+
+// =============================================================================
+// Visitor Pattern with Protocols
+// =============================================================================
+
+// Protocol for visitable elements
+protocol Visitable {
+    fn accept<V: Visitor>(self: &Self, visitor: &mut V)
+}
+
+// Protocol for visitors
+protocol Visitor {
+    fn visit_number(self: &mut Self, value: f64)
+    fn visit_string(self: &mut Self, value: &str)
+    fn visit_boolean(self: &mut Self, value: bool)
+    fn visit_array<T: Visitable>(self: &mut Self, elements: &[T])
+}
+
+// AST nodes that implement Visitable
+enum ASTNode {
+    Number(f64),
+    String(String),
+    Boolean(bool),
+    Array(Vec<ASTNode>)
+}
+
+impl Visitable for ASTNode {
+    fn accept<V: Visitor>(self: &Self, visitor: &mut V) {
+        match self {
+            ASTNode::Number(value) => visitor.visit_number(*value),
+            ASTNode::String(value) => visitor.visit_string(value),
+            ASTNode::Boolean(value) => visitor.visit_boolean(*value),
+            ASTNode::Array(elements) => visitor.visit_array(elements)
+        }
+    }
+}
+
+// Concrete visitors
+struct PrintVisitor {
+    indent: usize
+}
+
+impl PrintVisitor {
+    fn new() -> Self {
+        PrintVisitor { indent: 0 }
+    }
+    
+    fn indent_string(self: &Self) -> String {
+        "  ".repeat(self.indent)
+    }
+}
+
+impl Visitor for PrintVisitor {
+    fn visit_number(self: &mut Self, value: f64) {
+        println!("{}Number: {}", self.indent_string(), value)
+    }
+    
+    fn visit_string(self: &mut Self, value: &str) {
+        println!("{}String: \"{}\"", self.indent_string(), value)
+    }
+    
+    fn visit_boolean(self: &mut Self, value: bool) {
+        println!("{}Boolean: {}", self.indent_string(), value)
+    }
+    
+    fn visit_array<T: Visitable>(self: &mut Self, elements: &[T]) {
+        println!("{}Array:", self.indent_string())
+        self.indent += 1
+        for element in elements {
+            element.accept(self)
+        }
+        self.indent -= 1
+    }
+}
+
+struct CountVisitor {
+    number_count: usize,
+    string_count: usize,
+    boolean_count: usize,
+    array_count: usize
+}
+
+impl CountVisitor {
+    fn new() -> Self {
+        CountVisitor {
+            number_count: 0,
+            string_count: 0,
+            boolean_count: 0,
+            array_count: 0
+        }
+    }
+    
+    fn print_summary(self: &Self) {
+        println!("Count Summary:")
+        println!("  Numbers: {}", self.number_count)
+        println!("  Strings: {}", self.string_count)
+        println!("  Booleans: {}", self.boolean_count)
+        println!("  Arrays: {}", self.array_count)
+    }
+}
+
+impl Visitor for CountVisitor {
+    fn visit_number(self: &mut Self, _value: f64) {
+        self.number_count += 1
+    }
+    
+    fn visit_string(self: &mut Self, _value: &str) {
+        self.string_count += 1
+    }
+    
+    fn visit_boolean(self: &mut Self, _value: bool) {
+        self.boolean_count += 1
+    }
+    
+    fn visit_array<T: Visitable>(self: &mut Self, elements: &[T]) {
+        self.array_count += 1
+        for element in elements {
+            element.accept(self)
+        }
+    }
+}
+
+// =============================================================================
+// Command Pattern with Protocols
+// =============================================================================
+
+// Protocol for commands
+protocol Command {
+    fn execute(self: &mut Self) -> Result<(), CommandError>
+    fn undo(self: &mut Self) -> Result<(), CommandError>
+    fn can_undo(self: &Self) -> bool { true }
+}
+
+// Protocol for command receivers
+protocol Receiver {
+    type State
+    
+    fn get_state(self: &Self) -> &Self::State
+    fn set_state(self: &mut Self, state: Self::State)
+}
+
+// Document receiver
+struct Document {
+    content: String,
+    history: Vec<String>
+}
+
+impl Document {
+    fn new() -> Self {
+        Document {
+            content: String::new(),
+            history: Vec::new()
+        }
+    }
+    
+    fn insert_text(self: &mut Self, text: &str, position: usize) {
+        self.history.push(self.content.clone())
+        self.content.insert_str(position, text)
+    }
+    
+    fn delete_text(self: &mut Self, start: usize, length: usize) {
+        self.history.push(self.content.clone())
+        self.content.drain(start..start+length)
+    }
+    
+    fn get_content(self: &Self) -> &str {
+        &self.content
+    }
+}
+
+impl Receiver for Document {
+    type State = String
+    
+    fn get_state(self: &Self) -> &String {
+        &self.content
+    }
+    
+    fn set_state(self: &mut Self, state: String) {
+        self.content = state
+    }
+}
+
+// Concrete commands
+struct InsertCommand {
+    document: *mut Document,  // Raw pointer for shared ownership
+    text: String,
+    position: usize,
+    executed: bool
+}
+
+impl InsertCommand {
+    fn new(document: *mut Document, text: String, position: usize) -> Self {
+        InsertCommand {
+            document,
+            text,
+            position,
+            executed: false
+        }
+    }
+}
+
+impl Command for InsertCommand {
+    fn execute(self: &mut Self) -> Result<(), CommandError> {
+        if self.executed {
+            return Err(CommandError::AlreadyExecuted)
+        }
+        
+        unsafe {
+            (*self.document).insert_text(&self.text, self.position)
+        }
+        self.executed = true
+        Ok(())
+    }
+    
+    fn undo(self: &mut Self) -> Result<(), CommandError> {
+        if !self.executed {
+            return Err(CommandError::NotExecuted)
+        }
+        
+        unsafe {
+            (*self.document).delete_text(self.position, self.text.len())
+        }
+        self.executed = false
+        Ok(())
+    }
+}
+
+// Command invoker
+struct Editor {
+    document: Document,
+    command_history: Vec<Box<dyn Command>>,
+    current_command: isize
+}
+
+impl Editor {
+    fn new() -> Self {
+        Editor {
+            document: Document::new(),
+            command_history: Vec::new(),
+            current_command: -1
+        }
+    }
+    
+    fn execute_command(self: &mut Self, mut command: Box<dyn Command>) -> Result<(), CommandError> {
+        command.execute()?
+        
+        // Remove any commands after current position (for redo functionality)
+        self.command_history.truncate((self.current_command + 1) as usize)
+        
+        self.command_history.push(command)
+        self.current_command += 1
+        
+        Ok(())
+    }
+    
+    fn undo(self: &mut Self) -> Result<(), CommandError> {
+        if self.current_command < 0 {
+            return Err(CommandError::NothingToUndo)
+        }
+        
+        let command = &mut self.command_history[self.current_command as usize]
+        command.undo()?
+        self.current_command -= 1
+        
+        Ok(())
+    }
+    
+    fn redo(self: &mut Self) -> Result<(), CommandError> {
+        if self.current_command + 1 >= self.command_history.len() as isize {
+            return Err(CommandError::NothingToRedo)
+        }
+        
+        self.current_command += 1
+        let command = &mut self.command_history[self.current_command as usize]
+        command.execute()
+    }
+}
+
+// =============================================================================
+// Factory Pattern with Protocols
+// =============================================================================
+
+// Protocol for creatable objects
+protocol Creatable {
+    type Product
+    
+    fn create(self: &Self) -> Self::Product
+}
+
+// Protocol for configurable factories
+protocol ConfigurableFactory<T>: Creatable<Product = T> {
+    type Config
+    
+    fn configure(self: &mut Self, config: Self::Config)
+    fn create_with_config(self: &Self, config: Self::Config) -> T {
+        let mut factory = self.clone()
+        factory.configure(config)
+        factory.create()
+    }
+}
+
+// Abstract product protocol
+protocol DatabaseConnection {
+    fn connect(self: &mut Self) -> Result<(), DatabaseError>
+    fn execute_query(self: &Self, query: &str) -> Result<QueryResult, DatabaseError>
+    fn close(self: &mut Self) -> Result<(), DatabaseError>
+}
+
+// Concrete products
+struct PostgresConnection {
+    host: String,
+    port: u16,
+    database: String,
+    connected: bool
+}
+
+struct MySqlConnection {
+    host: String,
+    port: u16,
+    database: String,
+    connected: bool
+}
+
+impl DatabaseConnection for PostgresConnection {
+    fn connect(self: &mut Self) -> Result<(), DatabaseError> {
+        println!("Connecting to PostgreSQL at {}:{}/{}", self.host, self.port, self.database)
+        self.connected = true
+        Ok(())
+    }
+    
+    fn execute_query(self: &Self, query: &str) -> Result<QueryResult, DatabaseError> {
+        if !self.connected {
+            return Err(DatabaseError::NotConnected)
+        }
+        println!("Executing PostgreSQL query: {}", query)
+        Ok(QueryResult::new())
+    }
+    
+    fn close(self: &mut Self) -> Result<(), DatabaseError> {
+        self.connected = false
+        println!("Closed PostgreSQL connection")
+        Ok(())
+    }
+}
+
+impl DatabaseConnection for MySqlConnection {
+    fn connect(self: &mut Self) -> Result<(), DatabaseError> {
+        println!("Connecting to MySQL at {}:{}/{}", self.host, self.port, self.database)
+        self.connected = true
+        Ok(())
+    }
+    
+    fn execute_query(self: &Self, query: &str) -> Result<QueryResult, DatabaseError> {
+        if !self.connected {
+            return Err(DatabaseError::NotConnected)
+        }
+        println!("Executing MySQL query: {}", query)
+        Ok(QueryResult::new())
+    }
+    
+    fn close(self: &mut Self) -> Result<(), DatabaseError> {
+        self.connected = false
+        println!("Closed MySQL connection")
+        Ok(())
+    }
+}
+
+// Factory implementations
+struct PostgresFactory {
+    default_host: String,
+    default_port: u16,
+    default_database: String
+}
+
+impl Creatable for PostgresFactory {
+    type Product = PostgresConnection
+    
+    fn create(self: &Self) -> PostgresConnection {
+        PostgresConnection {
+            host: self.default_host.clone(),
+            port: self.default_port,
+            database: self.default_database.clone(),
+            connected: false
+        }
+    }
+}
+
+struct DatabaseConfig {
+    host: String,
+    port: u16,
+    database: String
+}
+
+impl ConfigurableFactory<PostgresConnection> for PostgresFactory {
+    type Config = DatabaseConfig
+    
+    fn configure(self: &mut Self, config: DatabaseConfig) {
+        self.default_host = config.host
+        self.default_port = config.port
+        self.default_database = config.database
+    }
+}
+
+// =============================================================================
+// Example Usage of Design Patterns
+// =============================================================================
+
+fn design_pattern_examples() {
+    println!("=== Protocol-Oriented Design Patterns ===")
+    
+    // Strategy Pattern
+    println!("\n--- Strategy Pattern ---")
+    let mut data = [64, 34, 25, 12, 22, 11, 90]
+    
+    let bubble_sorter = Sorter::new(BubbleSort)
+    bubble_sorter.sort_data(&mut data.clone())
+    println!("Bubble sorted: {:?}", data)
+    
+    let quick_sorter = bubble_sorter.change_strategy(QuickSort)
+    quick_sorter.sort_data(&mut data)
+    println!("Quick sorted: {:?}", data)
+    
+    // Observer Pattern
+    println!("\n--- Observer Pattern ---")
+    let mut publisher = EventPublisher::new("Initial data")
+    
+    publisher.attach(Box::new(LoggingObserver::new("Logger1".to_string())))
+    publisher.attach(Box::new(MetricsObserver::new()))
+    
+    publisher.set_data("Updated data")
+    publisher.set_data("Final data")
+    
+    // Visitor Pattern
+    println!("\n--- Visitor Pattern ---")
+    let ast = ASTNode::Array(vec![
+        ASTNode::Number(42.0),
+        ASTNode::String("Hello".to_string()),
+        ASTNode::Boolean(true),
+        ASTNode::Array(vec![
+            ASTNode::Number(3.14),
+            ASTNode::Boolean(false)
+        ])
+    ])
+    
+    let mut print_visitor = PrintVisitor::new()
+    ast.accept(&mut print_visitor)
+    
+    let mut count_visitor = CountVisitor::new()
+    ast.accept(&mut count_visitor)
+    count_visitor.print_summary()
+    
+    // Factory Pattern
+    println!("\n--- Factory Pattern ---")
+    let postgres_factory = PostgresFactory {
+        default_host: "localhost".to_string(),
+        default_port: 5432,
+        default_database: "myapp".to_string()
+    }
+    
+    let mut postgres_conn = postgres_factory.create()
+    postgres_conn.connect().unwrap()
+    postgres_conn.execute_query("SELECT * FROM users").unwrap()
+    postgres_conn.close().unwrap()
+    
+    // Configurable factory
+    let config = DatabaseConfig {
+        host: "production.db.com".to_string(),
+        port: 5433,
+        database: "production_db".to_string()
+    }
+    
+    let mut prod_conn = postgres_factory.create_with_config(config)
+    prod_conn.connect().unwrap()
+    
+    println!("All design patterns demonstrated successfully!")
+}
+
+fn main() {
+    design_pattern_examples()
+}

@@ -12,6 +12,7 @@ static const char* ast_node_type_strings[] = {
     [AST_VAR_DECL] = "VarDecl",
     [AST_CONST_DECL] = "ConstDecl",
     [AST_TYPE_DECL] = "TypeDecl",
+    [AST_CONCEPT_DECL] = "ConceptDecl",
     
     [AST_BLOCK_STMT] = "BlockStmt",
     [AST_EXPR_STMT] = "ExprStmt",
@@ -151,6 +152,13 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(func->params);
             ast_node_free(func->return_type);
             ast_node_free(func->body);
+            break;
+        }
+        case AST_CONCEPT_DECL: {
+            ConceptDeclNode* concept = (ConceptDeclNode*)node;
+            free(concept->name);
+            ast_node_free(concept->type_params);
+            ast_node_free(concept->requirements);
             break;
         }
         case AST_VAR_DECL: {
@@ -578,6 +586,21 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     node->body = NULL;
     node->is_comptime = 0;
     node->is_unsafe = 0;
+    
+    return node;
+}
+
+ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos) {
+    ConceptDeclNode* node = (ConceptDeclNode*)malloc(sizeof(ConceptDeclNode));
+    if (!node) return NULL;
+    
+    node->base.type = AST_CONCEPT_DECL;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->name = str_dup(name);
+    node->type_params = NULL;
+    node->requirements = NULL;
     
     return node;
 }

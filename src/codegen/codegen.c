@@ -235,6 +235,9 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
             return codegen_generate_var_decl(codegen, checker, decl);
         case AST_CONST_DECL:
             return codegen_generate_const_decl(codegen, checker, decl);
+        case AST_CONCEPT_DECL:
+            // Concepts are compile-time only and don't generate runtime code
+            return 1;
         default:
             codegen_error(codegen, decl->pos, "Unknown declaration type for code generation");
             return 0;

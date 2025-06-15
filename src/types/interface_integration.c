@@ -16,7 +16,7 @@ void register_standard_protocols(TypeChecker* checker);
 ConceptRegistry* concept_registry_new(void);
 void concept_registry_free(ConceptRegistry* registry);
 ConceptDefinition* concept_registry_lookup(ConceptRegistry* registry, const char* name);
-int concept_registry_register(ConceptRegistry* registry, ConceptDefinition* concept);
+
 
 HKTRegistry* hkt_registry_new(void);
 void hkt_registry_free(HKTRegistry* registry);
@@ -279,23 +279,7 @@ ConceptDefinition* concept_registry_lookup(ConceptRegistry* registry, const char
     return NULL;
 }
 
-int concept_registry_register(ConceptRegistry* registry, ConceptDefinition* concept) {
-    if (!registry || !concept) return 0;
-    
-    // Check if we need to resize
-    if (registry->concept_count >= registry->capacity) {
-        size_t new_capacity = registry->capacity * 2;
-        ConceptDefinition** new_concepts = realloc(registry->concepts, 
-            sizeof(ConceptDefinition*) * new_capacity);
-        if (!new_concepts) return 0;
-        
-        registry->concepts = new_concepts;
-        registry->capacity = new_capacity;
-    }
-    
-    registry->concepts[registry->concept_count++] = concept;
-    return 1;
-}
+
 
 // HKT Registry Functions
 HKTRegistry* hkt_registry_new(void) {
@@ -352,46 +336,8 @@ int hkt_registry_register(HKTRegistry* registry, HigherKindedType* hkt) {
     return 1;
 }
 
-// Protocol Registry Functions
-ProtocolRegistry* protocol_registry_new(void) {
-    ProtocolRegistry* registry = malloc(sizeof(ProtocolRegistry));
-    if (!registry) return NULL;
-    
-    registry->protocols = malloc(sizeof(ProtocolDefinition*) * 16);
-    if (!registry->protocols) {
-        free(registry);
-        return NULL;
-    }
-    
-    registry->conformances = malloc(sizeof(ProtocolConformance*) * 16);
-    if (!registry->conformances) {
-        free(registry->protocols);
-        free(registry);
-        return NULL;
-    }
-    
-    registry->protocol_count = 0;
-    registry->conformance_count = 0;
-    registry->protocol_capacity = 16;
-    registry->conformance_capacity = 16;
-    return registry;
-}
-
-void protocol_registry_free(ProtocolRegistry* registry) {
-    if (!registry) return;
-    
-    for (size_t i = 0; i < registry->protocol_count; i++) {
-        protocol_definition_free(registry->protocols[i]);
-    }
-    
-    for (size_t i = 0; i < registry->conformance_count; i++) {
-        protocol_conformance_free(registry->conformances[i]);
-    }
-    
-    free(registry->protocols);
-    free(registry->conformances);
-    free(registry);
-}
+// Protocol Registry Functions - implemented in protocol_oriented_programming.c
+// Declaration only here
 
 ProtocolDefinition* protocol_registry_lookup(ProtocolRegistry* registry, const char* name) {
     if (!registry || !name) return NULL;
@@ -528,43 +474,10 @@ void register_standard_protocols(TypeChecker* checker) {
 }
 
 // =============================================================================
-// Stub implementations for missing protocol functions
+// Protocol function implementations are in protocol_oriented_programming.c
 // =============================================================================
 
-ProtocolDefinition* protocol_definition_new(const char* name, Position pos) {
-    if (!name) return NULL;
-    
-    ProtocolDefinition* protocol = malloc(sizeof(ProtocolDefinition));
-    if (!protocol) return NULL;
-    
-    protocol->name = strdup(name);
-    protocol->type_parameters = NULL;
-    protocol->required_methods = NULL;
-    protocol->default_methods = NULL;
-    protocol->associated_types = NULL;
-    protocol->associated_type_count = 0;
-    protocol->where_clause = NULL;
-    protocol->inherited_protocols = NULL;
-    protocol->inherited_count = 0;
-    protocol->allows_retroactive_conformance = 1;
-    protocol->is_auto_conformance = 0;
-    protocol->defined_pos = pos;
-    protocol->next = NULL;
-    
-    return protocol;
-}
+// All protocol-related functions are implemented in protocol_oriented_programming.c
+// to avoid duplicate symbols
 
-void protocol_definition_free(ProtocolDefinition* protocol) {
-    if (!protocol) return;
-    
-    free(protocol->name);
-    // Note: Other fields would need proper cleanup in full implementation
-    free(protocol);
-}
-
-void protocol_conformance_free(ProtocolConformance* conformance) {
-    if (!conformance) return;
-    
-    // Note: Fields would need proper cleanup in full implementation
-    free(conformance);
-}
+// Register standard concepts for the type checker

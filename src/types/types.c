@@ -225,7 +225,17 @@ Type* type_channel(Type* element_type, ChannelPattern pattern) {
 Type* type_function(Type** param_types, size_t param_count, Type* return_type) {
     Type* type = type_new(TYPE_FUNCTION);
     if (type) {
-        type->data.function.param_types = param_types;
+        // Allocate and copy the parameter types array to avoid double-free issues
+        if (param_count > 0 && param_types) {
+            type->data.function.param_types = malloc(param_count * sizeof(Type*));
+            if (!type->data.function.param_types) {
+                free(type);
+                return NULL;
+            }
+            memcpy(type->data.function.param_types, param_types, param_count * sizeof(Type*));
+        } else {
+            type->data.function.param_types = NULL;
+        }
         type->data.function.param_count = param_count;
         type->data.function.return_type = return_type;
         type->data.function.is_variadic = 0;
@@ -356,6 +366,122 @@ Type* type_qualified(Type* base_type, OwnershipKind ownership, MutabilityKind mu
     return type;
 }
 
+Type* type_concept(const char* name) {
+    if (!name) return NULL;
+    
+    Type* type = type_new(TYPE_CONCEPT);
+    if (type) {
+        type->data.concept.name = str_dup(name);
+        type->data.concept.type_params = NULL;
+        type->data.concept.requirements = NULL;
+        type->size = 0;  // Concepts are compile-time only
+        type->align = 0;
+        type->name = str_dup(name);
+    }
+    return type;
+}
+
+// Higher-kinded type creation functions
+
+Type* type_param(const char* name, int index, Type* constraint) {
+    if (!name) return NULL;
+    
+    Type* type = type_new(TYPE_PARAM);
+    if (type) {
+        type->data.type_param.name = str_dup(name);
+        type->data.type_param.index = index;
+        type->data.type_param.constraint = constraint;
+        type->size = 0;  // Type parameters are compile-time only
+        type->align = 0;
+        type->name = str_dup(name);
+    }
+    return type;
+}
+
+Type* type_param_hkt(const char* name, int index, size_t arity, const char* kind_signature, Type* constraint) {
+    if (!name) return NULL;
+    
+    Type* type = type_new(TYPE_PARAM_HKT);
+    if (type) {
+        type->data.hkt_param.name = str_dup(name);
+        type->data.hkt_param.index = index;
+        type->data.hkt_param.arity = arity;
+        type->data.hkt_param.kind_signature = str_dup(kind_signature ? kind_signature : "* -> *");
+        type->data.hkt_param.constraint = constraint;
+        type->size = 0;  // Type parameters are compile-time only
+        type->align = 0;
+        
+        // Create name like "F<_>" for HKT parameters
+        char* display_name = malloc(strlen(name) + 10);
+        if (display_name) {
+            snprintf(display_name, strlen(name) + 10, "%s<_>", name);
+            type->name = display_name;
+        } else {
+            type->name = str_dup(name);
+        }
+    }
+    return type;
+}
+
+Type* type_constructor(const char* name, size_t arity, const char* kind_signature) {
+    if (!name) return NULL;
+    
+    Type* type = type_new(TYPE_CONSTRUCTOR);
+    if (type) {
+        type->data.constructor.name = str_dup(name);
+        type->data.constructor.arity = arity;
+        type->data.constructor.params = NULL;
+        type->data.constructor.param_count = 0;
+        type->data.constructor.kind_signature = str_dup(kind_signature ? kind_signature : "*");
+        type->size = 0;  // Type constructors are compile-time only
+        type->align = 0;
+        type->name = str_dup(name);
+    }
+    return type;
+}
+
+Type* type_application(Type* constructor, Type** arguments, size_t arg_count) {
+    if (!constructor || !arguments || arg_count == 0) return NULL;
+    
+    Type* type = type_new(TYPE_APPLICATION);
+    if (type) {
+        type->data.application.constructor = constructor;
+        type->data.application.arguments = malloc(sizeof(Type*) * arg_count);
+        if (type->data.application.arguments) {
+            memcpy(type->data.application.arguments, arguments, sizeof(Type*) * arg_count);
+            type->data.application.arg_count = arg_count;
+        }
+        
+        // Size and alignment depend on the fully applied type
+        // This will be resolved during type checking
+        type->size = 0;
+        type->align = 0;
+        
+        // Create name like "Vec<int>"
+        if (constructor->name && arg_count > 0) {
+            size_t name_size = strlen(constructor->name) + 3;  // For "<>"
+            for (size_t i = 0; i < arg_count; i++) {
+                if (arguments[i]->name) {
+                    name_size += strlen(arguments[i]->name) + 2;  // For ", "
+                }
+            }
+            
+            char* name = malloc(name_size);
+            if (name) {
+                strcpy(name, constructor->name);
+                strcat(name, "<");
+                for (size_t i = 0; i < arg_count; i++) {
+                    if (i > 0) strcat(name, ", ");
+                    strcat(name, arguments[i]->name ? arguments[i]->name : "?");
+                }
+                strcat(name, ">");
+                type->name = name;
+            }
+        }
+    }
+    return type;
+}
+
 // Type operations
 
 void type_free(Type* type) {
@@ -366,7 +492,9 @@ void type_free(Type* type) {
     // Free type-specific data
     switch (type->kind) {
         case TYPE_FUNCTION:
-            free(type->data.function.param_types);
+            if (type->data.function.param_types) {
+                free(type->data.function.param_types);
+            }
             break;
         case TYPE_STRUCT:
             for (size_t i = 0; i < type->data.struct_type.field_count; i++) {
@@ -384,6 +512,33 @@ void type_free(Type* type) {
             break;
         case TYPE_CHANNEL:
             free(type->data.channel.endpoint);
+            break;
+        case TYPE_CONCEPT:
+            free(type->data.concept.name);
+            // Note: type_params and requirements are AST nodes,
+            // they should be freed by the AST cleanup, not here
+            break;
+        case TYPE_PARAM:
+            free(type->data.type_param.name);
+            // Note: constraint is a Type*, should be freed separately if owned
+            break;
+        case TYPE_PARAM_HKT:
+            free(type->data.hkt_param.name);
+            free(type->data.hkt_param.kind_signature);
+            // Note: constraint is a Type*, should be freed separately if owned
+            break;
+        case TYPE_CONSTRUCTOR:
+            free(type->data.constructor.name);
+            free(type->data.constructor.kind_signature);
+            if (type->data.constructor.params) {
+                free(type->data.constructor.params);
+            }
+            break;
+        case TYPE_APPLICATION:
+            // Note: constructor and arguments are Type*, should be freed separately if owned
+            if (type->data.application.arguments) {
+                free(type->data.application.arguments);
+            }
             break;
         default:
             break;
@@ -445,6 +600,30 @@ int type_equals(const Type* a, const Type* b) {
             return a->data.qualified.ownership == b->data.qualified.ownership &&
                    a->data.qualified.mutability == b->data.qualified.mutability &&
                    type_equals(a->data.qualified.base_type, b->data.qualified.base_type);
+        
+        case TYPE_PARAM:
+            return strcmp(a->data.type_param.name, b->data.type_param.name) == 0 &&
+                   a->data.type_param.index == b->data.type_param.index;
+        
+        case TYPE_PARAM_HKT:
+            return strcmp(a->data.hkt_param.name, b->data.hkt_param.name) == 0 &&
+                   a->data.hkt_param.index == b->data.hkt_param.index &&
+                   a->data.hkt_param.arity == b->data.hkt_param.arity;
+        
+        case TYPE_CONSTRUCTOR:
+            return strcmp(a->data.constructor.name, b->data.constructor.name) == 0 &&
+                   a->data.constructor.arity == b->data.constructor.arity;
+        
+        case TYPE_APPLICATION:
+            if (!type_equals(a->data.application.constructor, b->data.application.constructor))
+                return 0;
+            if (a->data.application.arg_count != b->data.application.arg_count)
+                return 0;
+            for (size_t i = 0; i < a->data.application.arg_count; i++) {
+                if (!type_equals(a->data.application.arguments[i], b->data.application.arguments[i]))
+                    return 0;
+            }
+            return 1;
         
         default:
             return 1;  // Basic types are equal if kinds match

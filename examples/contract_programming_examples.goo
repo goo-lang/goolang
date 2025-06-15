@@ -1,0 +1,146 @@
+// Contract Programming Framework Demonstration
+// This file shows the contract programming framework in action
+
+// Example 1: Array bounds checking with contracts
+@requires(index >= 0)
+@requires(index < len(array))
+@ensures(result == array[index])
+func safe_array_access(array: []int, index: usize) -> int {
+    return array[index];
+}
+
+// Example 2: Division with precondition
+@requires(divisor != 0)
+@ensures(result == dividend / divisor)
+func safe_divide(dividend: int, divisor: int) -> int {
+    return dividend / divisor;
+}
+
+// Example 3: Memory allocation with postcondition
+@requires(size > 0)
+@ensures(result != nil)
+@ensures(len(result) == size)
+func allocate_buffer(size: usize) -> []byte {
+    buffer := make([]byte, size);
+    return buffer;
+}
+
+// Example 4: Loop with invariant
+@requires(n >= 0)
+@ensures(result == n * (n + 1) / 2)
+func sum_to_n(n: int) -> int {
+    sum := 0;
+    i := 0;
+    
+    @invariant(sum == i * (i - 1) / 2)
+    @invariant(i <= n)
+    for i <= n {
+        sum += i;
+        i++;
+    }
+    
+    return sum;
+}
+
+// Example 5: Complex data structure with invariants
+type Stack struct {
+    data: []int
+    top: int
+    
+    @invariant(top >= 0)
+    @invariant(top <= len(data))
+    @invariant(top == 0 implies empty())
+}
+
+@requires(s != nil)
+@requires(s.top < len(s.data))
+@ensures(s.top == old(s.top) + 1)
+@ensures(s.data[old(s.top)] == value)
+func (s: *Stack) push(value: int) {
+    s.data[s.top] = value;
+    s.top++;
+}
+
+@requires(s != nil)
+@requires(!s.empty())
+@ensures(s.top == old(s.top) - 1)
+@ensures(result == old(s.data[s.top - 1]))
+func (s: *Stack) pop() -> int {
+    s.top--;
+    return s.data[s.top];
+}
+
+// Example 6: File operations with error handling
+@requires(filename != nil)
+@requires(len(filename) > 0)
+@ensures(result.is_ok() implies result.unwrap() != nil)
+func open_file(filename: string) -> !File {
+    // Implementation would open file
+    // Contract ensures either error or valid file handle
+}
+
+// Example 7: Concurrent operations with synchronization contracts
+@requires(mutex != nil)
+@ensures(locked(mutex))
+func acquire_lock(mutex: *Mutex) {
+    mutex.lock();
+}
+
+@requires(mutex != nil)
+@requires(locked(mutex))
+@ensures(!locked(mutex))
+func release_lock(mutex: *Mutex) {
+    mutex.unlock();
+}
+
+// Example 8: Mathematical operations with precise contracts
+@requires(x >= 0)
+@ensures(result * result <= x < (result + 1) * (result + 1))
+func integer_sqrt(x: uint) -> uint {
+    // Newton's method implementation
+    if x == 0 return 0;
+    
+    result := x;
+    @invariant(result > 0)
+    while true {
+        new_result := (result + x / result) / 2;
+        if new_result >= result break;
+        result = new_result;
+    }
+    
+    return result;
+}
+
+// Example 9: String operations with length preservation
+@requires(s != nil)
+@requires(old_char != new_char)
+@ensures(len(result) == len(s))
+@ensures(count(result, new_char) == count(s, old_char))
+@ensures(count(result, old_char) == 0)
+func replace_char(s: string, old_char: rune, new_char: rune) -> string {
+    // Implementation replaces all occurrences
+}
+
+// Example 10: Resource management with RAII contracts
+type Resource struct {
+    handle: *Handle
+    
+    @invariant(valid() implies handle != nil)
+}
+
+@ensures(result.valid())
+@ensures(result.handle != nil)
+func create_resource() -> Resource {
+    // Create and initialize resource
+}
+
+@requires(r.valid())
+@ensures(!r.valid())
+@ensures(r.handle == nil)
+func (r: *Resource) destroy() {
+    // Clean up resource
+    if r.handle != nil {
+        close_handle(r.handle);
+        r.handle = nil;
+    }
+}

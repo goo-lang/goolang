@@ -1,0 +1,261 @@
+// Test file demonstrating dependent and refinement types in Goo language
+// This shows how the dependent type system integrates with the language
+
+package main
+
+import "fmt"
+
+// =============================================================================
+// Dependent Types: BoundedVec<T, N>
+// =============================================================================
+
+// BoundedVec is a vector type with compile-time capacity guarantees
+// The capacity N is checked at compile time to prevent buffer overflows
+struct BoundedVec<T, const N: usize> {
+    data: [T; N],
+    length: usize where length <= N,  // Refinement: length never exceeds capacity
+}
+
+impl<T, const N: usize> BoundedVec<T, N> {
+    func new() -> BoundedVec<T, N> {
+        return BoundedVec<T, N>{
+            data: [T{}; N],
+            length: 0,
+        };
+    }
+    
+    func push(self: &mut Self, item: T) -> !CapacityError {
+        if self.length >= N {
+            return CapacityError{"BoundedVec capacity exceeded"};
+        }
+        self.data[self.length] = item;
+        self.length += 1;
+        return ok();
+    }
+    
+    func get(self: &Self, index: ValidIndex<Self>) -> &T {
+        // ValidIndex<Self> ensures index is valid at compile time
+        return &self.data[index];
+    }
+    
+    func len(self: &Self) -> usize {
+        return self.length;
+    }
+}
+
+// =============================================================================
+// Dependent Types: BoundedInt<Min, Max>
+// =============================================================================
+
+// BoundedInt represents integers constrained to a specific range
+type BoundedInt<const Min: i64, const Max: i64> = i64 where Min <= value <= Max;
+
+// Specialized types using BoundedInt
+type Percentage = BoundedInt<0, 100>;
+type Port = BoundedInt<1, 65535>;
+type Grade = BoundedInt<0, 100>;
+
+func create_grade(value: i64) -> !RangeError | Grade {
+    if value < 0 || value > 100 {
+        return RangeError{"Grade must be between 0 and 100"};
+    }
+    return Grade(value);
+}
+
+// =============================================================================
+// Refinement Types
+// =============================================================================
+
+// NonZeroInt: Integer that is guaranteed to be non-zero
+type NonZeroInt = i64 where value != 0;
+
+func safe_divide(a: i64, b: NonZeroInt) -> f64 {
+    // Division by zero is impossible at compile time
+    return a as f64 / b as f64;
+}
+
+// PositiveInt: Integer that is guaranteed to be positive
+type PositiveInt = i64 where value > 0;
+
+func factorial(n: PositiveInt) -> u64 {
+    // No need to check for negative numbers
+    if n == 1 {
+        return 1;
+    }
+    return n as u64 * factorial(PositiveInt(n - 1));
+}
+
+// ValidIndex<T>: Index that is guaranteed to be within bounds
+type ValidIndex<T> = usize where 0 <= value < len(T);
+
+func array_access<T, const N: usize>(arr: &[T; N], idx: ValidIndex<[T; N]>) -> &T {
+    // Bounds checking is eliminated at compile time
+    return &arr[idx];
+}
+
+// =============================================================================
+// Advanced Dependent Type Examples
+// =============================================================================
+
+// Matrix with compile-time dimensions
+struct Matrix<T, const Rows: usize, const Cols: usize> {
+    data: [T; Rows * Cols],
+}
+
+impl<T, const Rows: usize, const Cols: usize> Matrix<T, Rows, Cols> {
+    func new() -> Matrix<T, Rows, Cols> {
+        return Matrix<T, Rows, Cols>{
+            data: [T{}; Rows * Cols],
+        };
+    }
+    
+    func get(self: &Self, row: BoundedInt<0, Rows>, col: BoundedInt<0, Cols>) -> &T {
+        let index = row * Cols + col;
+        return &self.data[index];
+    }
+    
+    // Matrix multiplication with compile-time dimension checking
+    func multiply<const K: usize>(
+        self: &Self, 
+        other: &Matrix<T, Cols, K>
+    ) -> Matrix<T, Rows, K> where T: Add + Mul + Zero {
+        let mut result = Matrix<T, Rows, K>::new();
+        
+        for row in 0..Rows {
+            for col in 0..K {
+                let mut sum = T::zero();
+                for k in 0..Cols {
+                    sum = sum + (self.get(row, k) * other.get(k, col));
+                }
+                result.set(row, col, sum);
+            }
+        }
+        
+        return result;
+    }
+}
+
+// =============================================================================
+// Smart Pointers with Refinement Types
+// =============================================================================
+
+// NonNull pointer that cannot be null
+type NonNull<T> = *T where ptr != null;
+
+func dereference<T>(ptr: NonNull<T>) -> &T {
+    // No null check needed - guaranteed non-null
+    return *ptr;
+}
+
+// =============================================================================
+// Compile-Time Constraint Verification Examples
+// =============================================================================
+
+func main() {
+    // BoundedVec usage
+    let mut vec = BoundedVec<i32, 5>::new();
+    
+    // These operations are safe - capacity is checked at compile time
+    vec.push(1) catch |err| fmt.println("Error: ", err);
+    vec.push(2) catch |err| fmt.println("Error: ", err);
+    vec.push(3) catch |err| fmt.println("Error: ", err);
+    
+    // Safe array access with ValidIndex
+    let first = vec.get(ValidIndex<BoundedVec<i32, 5>>(0));
+    fmt.println("First element: ", *first);
+    
+    // BoundedInt usage
+    let grade = create_grade(85) catch |err| {
+        fmt.println("Invalid grade: ", err);
+        return;
+    };
+    fmt.println("Grade: ", grade);
+    
+    // NonZeroInt usage - prevents division by zero
+    let result = safe_divide(10, NonZeroInt(5));
+    fmt.println("Division result: ", result);
+    
+    // PositiveInt usage - guarantees positive input
+    let fact = factorial(PositiveInt(5));
+    fmt.println("Factorial of 5: ", fact);
+    
+    // Matrix operations with compile-time dimension checking
+    let mat1 = Matrix<f64, 2, 3>::new();
+    let mat2 = Matrix<f64, 3, 2>::new();
+    let result_mat = mat1.multiply(&mat2);  // Type: Matrix<f64, 2, 2>
+    
+    fmt.println("Matrix multiplication completed successfully");
+    
+    // Advanced constraint example: sorted array
+    let sorted_array = create_sorted_array([1, 2, 3, 4, 5]);
+    let found = binary_search(&sorted_array, 3);
+    fmt.println("Binary search result: ", found);
+}
+
+// =============================================================================
+// Advanced Constraint Examples
+// =============================================================================
+
+// Sorted array type with ordering constraint
+type SortedArray<T, const N: usize> = [T; N] where forall i in 0..N-1: array[i] <= array[i+1];
+
+func create_sorted_array<T: Ord, const N: usize>(arr: [T; N]) -> SortedArray<T, N> {
+    // Compiler verifies the array is sorted
+    return SortedArray<T, N>(arr);
+}
+
+func binary_search<T: Ord, const N: usize>(
+    arr: &SortedArray<T, N>, 
+    target: T
+) -> ?usize {
+    // Binary search is safe because array is guaranteed sorted
+    let mut left = 0;
+    let mut right = N;
+    
+    while left < right {
+        let mid = (left + right) / 2;
+        let mid_val = arr[mid];
+        
+        if mid_val == target {
+            return some(mid);
+        } else if mid_val < target {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    
+    return none();
+}
+
+// Power of two constraint
+type PowerOfTwo = u64 where exists k: value == 2^k;
+
+func efficient_mod(value: u64, modulus: PowerOfTwo) -> u64 {
+    // Can use bitwise AND for modulo with power of two
+    return value & (modulus - 1);
+}
+
+// Network packet with size constraints
+struct Packet<const MinSize: usize, const MaxSize: usize> {
+    data: BoundedVec<u8, MaxSize>,
+    size: BoundedInt<MinSize, MaxSize>,
+} where data.len() == size
+
+func create_packet<const MinSize: usize, const MaxSize: usize>(
+    data: &[u8]
+) -> !PacketError | Packet<MinSize, MaxSize> {
+    if data.len() < MinSize || data.len() > MaxSize {
+        return PacketError{"Invalid packet size"};
+    }
+    
+    let mut packet_data = BoundedVec<u8, MaxSize>::new();
+    for byte in data {
+        packet_data.push(*byte) catch |_| return PacketError{"Failed to create packet"};
+    }
+    
+    return Packet<MinSize, MaxSize>{
+        data: packet_data,
+        size: BoundedInt<MinSize, MaxSize>(data.len()),
+    };
+}

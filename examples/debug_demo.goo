@@ -1,0 +1,294 @@
+// Goo Language Debugging Demo
+// This file demonstrates various debugging scenarios for the Goo language
+
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Error union type for division operations
+type DivisionResult = !float64
+
+// Struct for demonstration
+struct Person {
+    name: owned string,
+    age: int,
+    email: ?string,
+}
+
+// Global variables for debugging
+var global_counter: int = 0
+const MAX_ITERATIONS: int = 10
+
+// Function with error handling
+fn divide(a: float64, b: float64) DivisionResult {
+    if (b == 0.0) {
+        return error.DivisionByZero
+    }
+    return a / b
+}
+
+// Function with nullable return type
+fn find_person(id: int) ?Person {
+    if (id == 1) {
+        return Person {
+            name: "Alice Johnson",
+            age: 28,
+            email: "alice@example.com"
+        }
+    } else if (id == 2) {
+        return Person {
+            name: "Bob Smith", 
+            age: 35,
+            email: null
+        }
+    }
+    return null
+}
+
+// Function demonstrating ownership
+fn process_data(owned data: []int) owned []int {
+    // Set breakpoint here to inspect ownership transfer
+    let mut processed: owned []int = []
+    
+    for item in data {
+        if (item > 0) {
+            processed.append(item * 2)
+        }
+    }
+    
+    return move processed
+}
+
+// Function with channel operations
+fn worker(ch: chan int, done: chan bool, worker_id: int) {
+    println("Worker", worker_id, "started")
+    
+    for {
+        select {
+            case value := <-ch: {
+                // Set breakpoint here to inspect channel operations
+                println("Worker", worker_id, "received:", value)
+                
+                // Simulate work
+                time.sleep(100 * time.Millisecond)
+                
+                // Demonstrate error union handling
+                let result = divide(value, 2.0)
+                match result {
+                    .Ok(val) => println("Division result:", val),
+                    .Err(error) => println("Division error:", error),
+                }
+                
+                global_counter++
+            }
+            case <-done: {
+                println("Worker", worker_id, "shutting down")
+                return
+            }
+        }
+    }
+}
+
+// Function demonstrating memory safety and bounds checking
+fn safe_array_access(arr: []int, index: int) !int {
+    if (index < 0 || index >= len(arr)) {
+        return error.IndexOutOfBounds
+    }
+    return arr[index]
+}
+
+// Function with nullable type handling and debugging
+fn demonstrate_nullable_types() {
+    let people_ids: []int = [1, 2, 3, 999]
+    
+    for id in people_ids {
+        // Set breakpoint here to inspect nullable type handling
+        if let person = find_person(id) {
+            println("Found person:", person.name, "age:", person.age)
+            
+            // Demonstrate nullable email field
+            if let email = person.email {
+                println("Email:", email)
+            } else {
+                println("No email provided")
+            }
+        } else {
+            println("Person with ID", id, "not found")
+        }
+    }
+}
+
+// Function demonstrating error propagation and debugging
+fn demonstrate_error_handling() {
+    let test_data: [][]float64 = [
+        [10.0, 2.0],   // Valid division
+        [15.0, 3.0],   // Valid division
+        [8.0, 0.0],    // Division by zero - will trigger error
+        [20.0, 4.0],   // Valid division
+    ]
+    
+    for pair in test_data {
+        let a = pair[0]
+        let b = pair[1]
+        
+        // Set breakpoint here to inspect error propagation
+        try {
+            let result = divide(a, b)
+            println("Division", a, "/", b, "=", result)
+        } catch |err| {
+            // Breakpoint here will catch error union propagation
+            println("Error dividing", a, "by", b, ":", err)
+        }
+    }
+}
+
+// Function demonstrating concurrent debugging
+fn demonstrate_concurrency() {
+    let ch: chan int = make(chan int, 5)
+    let done: chan bool = make(chan bool)
+    
+    // Start multiple workers
+    for i in 0..3 {
+        go worker(ch, done, i)
+    }
+    
+    // Send data to workers
+    for i in 1..=10 {
+        // Set breakpoint here to inspect channel state
+        ch <- i * i
+        println("Sent:", i * i, "to channel")
+    }
+    
+    // Wait a bit for processing
+    time.sleep(2 * time.Second)
+    
+    // Signal workers to stop
+    for i in 0..3 {
+        done <- true
+    }
+    
+    close(ch)
+    close(done)
+    
+    println("Final global counter:", global_counter)
+}
+
+// Function demonstrating ownership and borrowing
+fn demonstrate_ownership() {
+    let original_data: owned []int = [1, 2, 3, 4, 5, -1, 6, -2, 7]
+    
+    // Set breakpoint here to inspect ownership before transfer
+    println("Original data length:", len(original_data))
+    
+    // Transfer ownership to processing function
+    let processed_data = process_data(move original_data)
+    
+    // Set breakpoint here - original_data is no longer accessible
+    println("Processed data:", processed_data)
+    println("Processed data length:", len(processed_data))
+    
+    // Demonstrate borrowing
+    let borrowed_ref: borrowed []int = &processed_data
+    println("Borrowed reference length:", len(borrowed_ref))
+}
+
+// Main function with comprehensive debugging scenarios
+fn main() {
+    println("=== Goo Debugging Demo ===")
+    
+    // Set breakpoint here to start debugging session
+    println("Starting debugging demonstration...")
+    
+    // Demonstrate basic variable inspection
+    let mut counter: int = 0
+    let message: string = "Debug Demo"
+    let pi: float64 = 3.14159
+    let is_debugging: bool = true
+    
+    // Set breakpoint here to inspect local variables
+    println("Counter:", counter, "Message:", message)
+    
+    // Demonstrate nullable types
+    println("\n--- Nullable Types Demo ---")
+    demonstrate_nullable_types()
+    
+    // Demonstrate error handling
+    println("\n--- Error Handling Demo ---")
+    demonstrate_error_handling()
+    
+    // Demonstrate ownership
+    println("\n--- Ownership Demo ---")
+    demonstrate_ownership()
+    
+    // Demonstrate array bounds checking
+    println("\n--- Memory Safety Demo ---")
+    let test_array: []int = [10, 20, 30, 40, 50]
+    let indices_to_test: []int = [0, 2, 4, 5, -1, 10]
+    
+    for index in indices_to_test {
+        // Set breakpoint here to inspect bounds checking
+        try {
+            let value = safe_array_access(test_array, index)
+            println("Array[", index, "] =", value)
+        } catch |err| {
+            println("Cannot access array[", index, "]:", err)
+        }
+    }
+    
+    // Demonstrate concurrency and channels
+    println("\n--- Concurrency Demo ---")
+    demonstrate_concurrency()
+    
+    // Final state inspection
+    counter = 42
+    println("\n--- Final State ---")
+    println("Demo completed. Final counter:", counter)
+    println("Global counter:", global_counter)
+    
+    // Set final breakpoint here to inspect complete program state
+    println("=== End of Debugging Demo ===")
+}
+
+// Additional debugging scenarios
+
+// Function to demonstrate step-in debugging
+fn complex_calculation(x: int, y: int) int {
+    let step1 = x * 2      // Step into here
+    let step2 = y + 5      // Then here
+    let step3 = step1 + step2  // Finally here
+    return step3 * 3       // And return here
+}
+
+// Function to demonstrate variable watching
+fn variable_changes() {
+    let mut value: int = 1
+    
+    // Watch 'value' variable through these changes
+    for i in 0..5 {
+        value = value * 2 + i
+        println("Iteration", i, "value:", value)
+        // Set conditional breakpoint: i == 3
+    }
+}
+
+// Function to demonstrate exception breakpoints
+fn exception_scenarios() {
+    // Test panic breakpoint
+    if (false) {
+        panic("This is a test panic - breakpoint should trigger")
+    }
+    
+    // Test error union breakpoint
+    let result = divide(10.0, 0.0)
+    match result {
+        .Err(error) => {
+            // Exception breakpoint should trigger here for error unions
+            println("Caught error:", error)
+        }
+        .Ok(value) => println("Value:", value)
+    }
+}

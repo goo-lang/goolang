@@ -47,6 +47,7 @@ typedef enum {
     
     // Goo Extensions - Keywords
     TOKEN_COMPTIME,     // comptime
+    TOKEN_CONCEPT,      // concept (concept-based generics)
     TOKEN_PUB,          // pub (channel pattern)
     TOKEN_SUB,          // sub (channel pattern)
     TOKEN_REQ,          // req (channel pattern)

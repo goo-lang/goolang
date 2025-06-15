@@ -1,0 +1,163 @@
+// =============================================================================
+// Basic Higher-Kinded Types in Goo
+// =============================================================================
+
+// Define a higher-kinded type for containers
+type Container<F<_>>[T] {
+    // F is a type constructor with kind * -> *
+    // T is a regular type with kind *
+    data: F<T>
+}
+
+// Common type constructors in Goo
+type Vec<T> = []T           // Vec has kind * -> *
+type Option<T> = ?T         // Option has kind * -> *
+type Result<T, E> = !T      // Result has kind * -> * -> *
+type Map<K, V> = map[K]V    // Map has kind * -> * -> *
+
+// =============================================================================
+// Functor Concept with Higher-Kinded Types
+// =============================================================================
+
+concept Functor<F<_>> {
+    // F is a type constructor that can be mapped over
+    fn map<A, B>(self: F<A>, f: fn(A) -> B) -> F<B>
+}
+
+// Implement Functor for Vec
+impl Functor<Vec> {
+    fn map<A, B>(self: Vec<A>, f: fn(A) -> B) -> Vec<B> {
+        var result: Vec<B> = []
+        for item in self {
+            result.push(f(item))
+        }
+        return result
+    }
+}
+
+// Implement Functor for Option
+impl Functor<Option> {
+    fn map<A, B>(self: Option<A>, f: fn(A) -> B) -> Option<B> {
+        match self {
+            case Some(value) -> Some(f(value))
+            case None -> None
+        }
+    }
+}
+
+// =============================================================================
+// Generic Functions Using Higher-Kinded Types
+// =============================================================================
+
+// A generic function that works with any Functor
+fn double_container<F<_>>(container: F<int>) -> F<int>
+where F<_>: Functor {
+    return container.map(|x| x * 2)
+}
+
+// Function composition at the type level
+fn compose_functors<F<_>, G<_>, T>(
+    outer: F<G<T>>, 
+    f: fn(T) -> T
+) -> F<G<T>>
+where F<_>: Functor, G<_>: Functor {
+    return outer.map(|inner| inner.map(f))
+}
+
+// =============================================================================
+// Monad Concept with Higher-Kinded Types
+// =============================================================================
+
+concept Monad<M<_>>: Functor<M> {
+    // return/pure: wrap a value in the monad
+    fn pure<T>(value: T) -> M<T>
+    
+    // bind/flatMap: chain monadic operations
+    fn bind<A, B>(self: M<A>, f: fn(A) -> M<B>) -> M<B>
+}
+
+// Implement Monad for Option
+impl Monad<Option> {
+    fn pure<T>(value: T) -> Option<T> {
+        return Some(value)
+    }
+    
+    fn bind<A, B>(self: Option<A>, f: fn(A) -> Option<B>) -> Option<B> {
+        match self {
+            case Some(value) -> f(value)
+            case None -> None
+        }
+    }
+}
+
+// Implement Monad for Vec
+impl Monad<Vec> {
+    fn pure<T>(value: T) -> Vec<T> {
+        return [value]
+    }
+    
+    fn bind<A, B>(self: Vec<A>, f: fn(A) -> Vec<B>) -> Vec<B> {
+        var result: Vec<B> = []
+        for item in self {
+            result.extend(f(item))
+        }
+        return result
+    }
+}
+
+// =============================================================================
+// Advanced HKT Examples
+// =============================================================================
+
+// Define a higher-kinded type that takes two type constructors
+concept Bifunctor<F<_, _>> {
+    fn bimap<A, B, C, D>(
+        self: F<A, B>, 
+        f: fn(A) -> C, 
+        g: fn(B) -> D
+    ) -> F<C, D>
+}
+
+// Implement Bifunctor for Result
+impl Bifunctor<Result> {
+    fn bimap<A, B, C, D>(
+        self: Result<A, B>, 
+        f: fn(A) -> C, 
+        g: fn(B) -> D
+    ) -> Result<C, D> {
+        match self {
+            case Ok(value) -> Ok(f(value))
+            case Err(error) -> Err(g(error))
+        }
+    }
+}
+
+// =============================================================================
+// Example Usage
+// =============================================================================
+
+fn main() {
+    // Basic functor usage
+    var numbers: Vec<int> = [1, 2, 3, 4, 5]
+    var doubled = double_container(numbers)  // [2, 4, 6, 8, 10]
+    
+    // Option functor
+    var maybe_number: Option<int> = Some(42)
+    var maybe_doubled = double_container(maybe_number)  // Some(84)
+    
+    // Nested functors
+    var nested: Vec<Option<int>> = [Some(1), None, Some(3)]
+    var incremented = compose_functors(nested, |x| x + 1)  // [Some(2), None, Some(4)]
+    
+    // Monadic operations
+    var result: Option<int> = Some(5)
+        .bind(|x| if x > 0 { Some(x * 2) } else { None })
+        .bind(|x| Some(x + 1))  // Some(11)
+    
+    // Bifunctor usage
+    var outcome: Result<int, string> = Ok(42)
+    var transformed = outcome.bimap(
+        |x| x.toString(),
+        |err| "Error: " + err
+    )  // Ok("42")
+}

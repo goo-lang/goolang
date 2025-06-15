@@ -1,0 +1,290 @@
+{
+  "name": "goo-language-support",
+  "displayName": "Goo Language Support",
+  "description": "Language support for the Goo programming language",
+  "version": "1.0.0",
+  "publisher": "goo-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goo-lang/goo"
+  },
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Formatters"
+  ],
+  "keywords": [
+    "goo",
+    "language",
+    "compiler",
+    "systems programming"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:goo"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "goo",
+        "aliases": [
+          "Goo",
+          "goo"
+        ],
+        "extensions": [
+          ".goo"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "goo",
+        "scopeName": "source.goo",
+        "path": "./syntaxes/goo.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Goo Language Server",
+      "properties": {
+        "goo.languageServer.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Goo language server"
+        },
+        "goo.languageServer.path": {
+          "type": "string",
+          "default": "goo-lsp-standalone",
+          "description": "Path to the Goo language server executable"
+        },
+        "goo.languageServer.args": {
+          "type": "array",
+          "default": [],
+          "description": "Arguments to pass to the language server"
+        },
+        "goo.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace communication between VS Code and the Goo language server"
+        },
+        "goo.debugAdapter.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Goo debug adapter"
+        },
+        "goo.debugAdapter.path": {
+          "type": "string",
+          "default": "goo-debug-adapter",
+          "description": "Path to the Goo debug adapter executable"
+        },
+        "goo.debugAdapter.args": {
+          "type": "array",
+          "default": [],
+          "description": "Arguments to pass to the debug adapter"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "goo.restartLanguageServer",
+        "title": "Restart Language Server",
+        "category": "Goo"
+      },
+      {
+        "command": "goo.startDebugging",
+        "title": "Start Debugging",
+        "category": "Goo",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "goo.runDebugging",
+        "title": "Run Program",
+        "category": "Goo",
+        "icon": "$(play)"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "goo.runDebugging",
+          "when": "resourceExtname == .goo",
+          "group": "navigation"
+        },
+        {
+          "command": "goo.startDebugging",
+          "when": "resourceExtname == .goo",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "goo.startDebugging",
+          "when": "resourceExtname == .goo"
+        },
+        {
+          "command": "goo.runDebugging",
+          "when": "resourceExtname == .goo"
+        }
+      ]
+    },
+    "debuggers": [
+      {
+        "type": "goo",
+        "label": "Goo Debugger",
+        "program": "./out/debugger.js",
+        "runtime": "node",
+        "languages": ["goo"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the Goo program to debug",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "description": "Command line arguments",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables",
+                "default": {}
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the beginning of the main function",
+                "default": false
+              },
+              "console": {
+                "type": "string",
+                "description": "Where to launch the debug target",
+                "enum": ["internalConsole", "integratedTerminal", "externalTerminal"],
+                "default": "internalConsole"
+              },
+              "breakpoints": {
+                "type": "object",
+                "description": "Breakpoint configuration",
+                "properties": {
+                  "errorUnions": {
+                    "type": "boolean",
+                    "description": "Break on error union propagation",
+                    "default": false
+                  },
+                  "panics": {
+                    "type": "boolean", 
+                    "description": "Break on panic calls",
+                    "default": true
+                  },
+                  "memoryErrors": {
+                    "type": "boolean",
+                    "description": "Break on memory safety violations",
+                    "default": true
+                  }
+                }
+              },
+              "trace": {
+                "type": "string",
+                "description": "Enable logging of debug adapter protocol",
+                "enum": ["off", "messages", "verbose"],
+                "default": "off"
+              }
+            }
+          },
+          "attach": {
+            "required": ["port"],
+            "properties": {
+              "port": {
+                "type": "number",
+                "description": "Port to attach to",
+                "default": 8080
+              },
+              "host": {
+                "type": "string",
+                "description": "Host to attach to",
+                "default": "localhost"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "goo",
+            "request": "launch",
+            "name": "Debug Goo Program",
+            "program": "${file}",
+            "stopOnEntry": false,
+            "console": "integratedTerminal"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Goo: Launch Program",
+            "description": "A new configuration for debugging a Goo program",
+            "body": {
+              "type": "goo",
+              "request": "launch",
+              "name": "Debug Goo Program",
+              "program": "${file}",
+              "stopOnEntry": false,
+              "console": "integratedTerminal"
+            }
+          },
+          {
+            "label": "Goo: Launch with Error Breakpoints",
+            "description": "A new configuration for debugging with Goo-specific error breakpoints",
+            "body": {
+              "type": "goo",
+              "request": "launch",
+              "name": "Debug with Error Breakpoints",
+              "program": "${file}",
+              "stopOnEntry": false,
+              "console": "integratedTerminal",
+              "breakpoints": {
+                "errorUnions": true,
+                "panics": true,
+                "memoryErrors": true
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "16.x",
+    "@types/vscode": "^1.60.0",
+    "@typescript-eslint/eslint-plugin": "^5.31.0",
+    "@typescript-eslint/parser": "^5.31.0",
+    "eslint": "^8.20.0",
+    "typescript": "^4.7.4"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.0.2"
+  }
+}

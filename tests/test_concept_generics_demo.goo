@@ -1,0 +1,70 @@
+// Test program demonstrating the complete concept-based generics implementation (Task 22.7)
+// This file showcases all the new features implemented for concept-based generics
+
+concept Printable {
+    toString() -> string
+}
+
+concept Numeric {
+    zero() -> Self
+    add(other: Self) -> Self
+}
+
+concept Container {
+    type Element
+    get(index: int) -> Element
+    size() -> int
+}
+
+// Generic function with concept constraints
+fn generic_print<T: Printable>(value: T) -> string {
+    return value.toString()
+}
+
+// Function with multiple concept constraints
+fn generic_add<T: Numeric>(a: T, b: T) -> T {
+    return a.add(b)
+}
+
+// Complex generic function with container constraints
+fn process_container<C: Container>(container: C) -> int {
+    return container.size()
+}
+
+// Concept composition example
+concept NumericPrintable : Numeric, Printable {
+    // Combines both concepts
+}
+
+// Auto-concept example (automatically inferred for types that satisfy requirements)
+concept AutoCopyable {
+    copy() -> Self
+}
+
+// Function demonstrating automatic concept inference
+fn use_copyable<T>(value: T) -> T {
+    // The compiler should automatically infer that T: AutoCopyable
+    // based on usage of copy()
+    let copied = value.copy()
+    return copied
+}
+
+// Main function demonstrating usage
+fn main() {
+    // Basic int should satisfy Numeric concept automatically
+    let a = 5
+    let b = 10
+    let sum = generic_add(a, b)
+    
+    // String should satisfy Printable concept
+    let message = "Hello, Concepts!"
+    let output = generic_print(message)
+    
+    // Array should satisfy Container concept
+    let numbers = [1, 2, 3, 4, 5]
+    let size = process_container(numbers)
+    
+    println("Sum: {}", sum)
+    println("Output: {}", output) 
+    println("Container size: {}", size)
+}

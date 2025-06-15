@@ -59,6 +59,7 @@ static int map_token_to_bison(TokenType type) {
         
         // Goo Extensions
         case TOKEN_COMPTIME: return COMPTIME;
+        case TOKEN_CONCEPT: return CONCEPT;
         case TOKEN_PUB: return PUB;
         case TOKEN_SUB: return SUB;
         case TOKEN_REQ: return REQ;

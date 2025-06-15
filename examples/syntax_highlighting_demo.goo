@@ -1,0 +1,201 @@
+// Goo Language Syntax Highlighting Demo
+// This file demonstrates various Goo language features for syntax highlighting
+
+// Package and imports
+package main
+
+import (
+    "fmt"
+    "os"
+    "sync"
+)
+
+// Basic types and constants
+const MAX_SIZE: int = 1024
+let global_counter: int = 0
+
+// Error union and nullable types demonstration
+type ParseResult = !int        // Error union type
+type OptionalString = ?string  // Nullable type
+
+// Struct with ownership qualifiers
+struct Person {
+    name: owned string,
+    age: int,
+    email: ?string,          // Optional field
+}
+
+// Interface demonstration
+interface Drawable {
+    fn draw(self: borrowed) void
+    fn area(self: borrowed) float64
+}
+
+// Enum with error handling
+enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Error(string),           // Enum with associated data
+}
+
+// Function with error union return type
+fn divide(a: int, b: int) !float64 {
+    if (b == 0) {
+        return error.DivisionByZero
+    }
+    return a / b
+}
+
+// Function with nullable return type
+fn find_user(id: int) ?Person {
+    if (id <= 0) {
+        return null
+    }
+    
+    return Person {
+        name: "John Doe",
+        age: 30,
+        email: "john@example.com"
+    }
+}
+
+// Channel operations and concurrency
+fn worker(ch: chan int, done: chan bool) {
+    for {
+        select {
+            case value := <-ch: {
+                println("Received:", value)
+                // Process value
+                let result = value * 2
+                
+                // Error handling with try-catch
+                try {
+                    let divided = divide(result, value)
+                    println("Division result:", divided)
+                } catch |err| {
+                    println("Error:", err)
+                }
+            }
+            case <-done: {
+                println("Worker shutting down")
+                return
+            }
+        }
+    }
+}
+
+// Pattern matching demonstration
+fn process_state(state: ConnectionState) string {
+    return match state {
+        .Disconnected => "Not connected",
+        .Connecting => "Establishing connection...",
+        .Connected => "Connected successfully",
+        .Error(msg) => "Connection error: " + msg,
+    }
+}
+
+// Main function with various language features
+fn main() {
+    // Variable declarations with different qualifiers
+    let mut counter: int = 0
+    var buffer: owned [1024]char
+    const PI: float64 = 3.14159
+    
+    // String literals and escapes
+    let message: string = "Hello, Goo!\nThis is a new line\t\twith tabs"
+    let raw_string: string = `Raw string with "quotes" and \backslashes`
+    
+    // Numeric literals
+    let decimal: int = 42
+    let hex: int = 0xFF
+    let binary: int = 0b1010
+    let octal: int = 0o755
+    let float_num: float64 = 3.14e-2
+    
+    // Boolean and special values
+    let is_active: bool = true
+    let is_disabled: bool = false
+    let empty_value: ?int = null
+    
+    // Channel creation and usage
+    let ch: chan int = make(chan int, 10)
+    let done: chan bool = make(chan bool)
+    
+    // Ownership and borrowing
+    let owned_data: owned []int = [1, 2, 3, 4, 5]
+    let borrowed_ref: borrowed []int = &owned_data
+    let shared_data: shared []int = share(owned_data)
+    
+    // Goroutine with channel operations
+    go worker(ch, done)
+    
+    // Send data to channel
+    for i in 0..10 {
+        ch <- i
+        counter++
+    }
+    
+    // Error handling with propagation
+    let result: !float64 = try divide(10, 2)
+    match result {
+        .Ok(value) => println("Success:", value),
+        .Err(error) => println("Failed:", error),
+    }
+    
+    // Nullable type handling
+    if let some_user = find_user(123) {
+        println("Found user:", some_user.name)
+    } else {
+        println("User not found")
+    }
+    
+    // Memory management with defer
+    defer {
+        close(ch)
+        close(done)
+        println("Cleanup completed")
+    }
+    
+    // Unsafe operations
+    unsafe {
+        let raw_ptr: *int = &counter
+        *raw_ptr = 999
+    }
+    
+    // State processing
+    let states: []ConnectionState = [
+        .Disconnected,
+        .Connecting,
+        .Connected,
+        .Error("Network timeout"),
+    ]
+    
+    for state in states {
+        let status = process_state(state)
+        println("State:", status)
+    }
+    
+    println("Program completed successfully!")
+}
+
+/* Multi-line comment
+   demonstrating block comments
+   with nested /* comments */ inside
+   and various symbols: !@#$%^&*()
+*/
+
+// Single line comment with special characters: !?<>|&*
+// Error union usage: !Result, nullable: ?Value, channels: <-ch
+
+// Type aliases and generics
+type IntList = []int
+type StringMap = map[string]string
+type GenericResult<T> = !T
+
+// Advanced pattern with ownership
+fn transfer_ownership(data: owned []int) owned []int {
+    // Move semantics
+    let moved_data = move data
+    return moved_data
+}

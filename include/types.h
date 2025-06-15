@@ -42,6 +42,13 @@ typedef enum {
     TYPE_ERROR_UNION,
     TYPE_NULLABLE,
     TYPE_QUALIFIED,  // Type with ownership/mutability qualifiers
+    TYPE_CONCEPT,    // Concept type
+    
+    // Higher-kinded types
+    TYPE_PARAM,      // Type parameter (e.g., T in Vec<T>)
+    TYPE_PARAM_HKT,  // Higher-kinded type parameter (e.g., F in F<_>)
+    TYPE_CONSTRUCTOR,// Type constructor (e.g., Vec, Option)
+    TYPE_APPLICATION,// Type application (e.g., Vec<int>)
     
     TYPE_UNKNOWN,
     TYPE_COUNT
@@ -97,6 +104,9 @@ struct Type {
             size_t param_count;
             Type* return_type;
             int is_variadic;
+            // Concept constraints for generic functions
+            struct ConceptDefinition** concept_constraints;
+            size_t concept_constraint_count;
         } function;
         
         // Pointer type
@@ -122,6 +132,9 @@ struct Type {
             struct InterfaceMethod* methods;
             size_t method_count;
             char* name;
+            // Metadata for synthesized interfaces
+            int is_synthesized;
+            struct ConceptDefinition* source_concept;
         } interface;
         
         // Error union type (!T)
@@ -141,6 +154,45 @@ struct Type {
             OwnershipKind ownership;
             MutabilityKind mutability;
         } qualified;
+        
+        // Concept type
+        struct {
+            char* name;
+            ASTNode* type_params;    // Type parameters
+            ASTNode* requirements;   // Requirements/constraints
+        } concept;
+        
+        // Type parameter (e.g., T in Vec<T>)
+        struct {
+            char* name;              // Parameter name
+            int index;               // Parameter index in the context
+            Type* constraint;        // Optional constraint/bound
+        } type_param;
+        
+        // Higher-kinded type parameter (e.g., F in F<_>)
+        struct {
+            char* name;              // Parameter name
+            int index;               // Parameter index
+            size_t arity;            // Number of type parameters expected
+            char* kind_signature;    // Kind signature (e.g., "* -> *")
+            Type* constraint;        // Optional constraint
+        } hkt_param;
+        
+        // Type constructor (e.g., Vec, Option)
+        struct {
+            char* name;              // Constructor name
+            size_t arity;            // Number of type parameters
+            Type** params;           // Type parameters (for generic constructors)
+            size_t param_count;      // Number of parameters
+            char* kind_signature;    // Kind signature
+        } constructor;
+        
+        // Type application (e.g., Vec<int>)
+        struct {
+            Type* constructor;       // The type constructor
+            Type** arguments;        // Applied type arguments
+            size_t arg_count;        // Number of arguments
+        } application;
     } data;
 };
 
@@ -157,6 +209,7 @@ typedef struct StructField {
 typedef struct InterfaceMethod {
     char* name;
     Type* type;  // Function type
+    struct InterfaceMethod* next;  // For linked lists
 } InterfaceMethod;
 
 // Variable information for type checking
@@ -231,6 +284,13 @@ Type* type_reference(Type* referenced_type, int is_mutable);
 Type* type_error_union(Type* value_type, Type* error_type);
 Type* type_nullable(Type* base_type);
 Type* type_qualified(Type* base_type, OwnershipKind ownership, MutabilityKind mutability);
+Type* type_concept(const char* name);
+
+// Higher-kinded type creation functions
+Type* type_param(const char* name, int index, Type* constraint);
+Type* type_param_hkt(const char* name, int index, size_t arity, const char* kind_signature, Type* constraint);
+Type* type_constructor(const char* name, size_t arity, const char* kind_signature);
+Type* type_application(Type* constructor, Type** arguments, size_t arg_count);
 
 // Type operations
 void type_free(Type* type);
@@ -278,6 +338,7 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl);
 int type_check_var_decl(TypeChecker* checker, ASTNode* decl);
 int type_check_const_decl(TypeChecker* checker, ASTNode* decl);
 int type_check_type_decl(TypeChecker* checker, ASTNode* decl);
+int type_check_concept_decl(TypeChecker* checker, ASTNode* decl);
 
 // Statement type checking functions
 int type_check_block_stmt(TypeChecker* checker, ASTNode* stmt);

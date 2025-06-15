@@ -1,0 +1,23 @@
+package main
+
+// Define a concept for types that can be added
+concept Addable {
+    // This concept defines that implementing types must support addition
+}
+
+// Define a concept with type parameters
+concept Container[T] {
+    // This concept defines container types that can hold elements of type T
+}
+
+// A generic function that uses concept constraints (this would normally use automatic inference)
+func add[T: Addable](a T, b T) T {
+    return a + b
+}
+
+func main() {
+    // This would work with the constraint inference system
+    var x int = 5
+    var y int = 10
+    // var result = add(x, y)  // Would be inferred as add[int](x, y)
+}

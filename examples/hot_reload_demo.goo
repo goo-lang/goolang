@@ -1,0 +1,163 @@
+// Hot Reload Demo - Showcases live code reloading capabilities
+package main
+
+import (
+    "fmt"
+    "time"
+    "math"
+)
+
+// Mark functions as hot-reloadable
+@hot_reload
+func renderUI(state: AppState) {
+    fmt.Printf("\n=== Application State ===\n")
+    fmt.Printf("Counter: %d\n", state.counter)
+    fmt.Printf("Message: %s\n", state.message)
+    fmt.Printf("Temperature: %.2f°C\n", state.temperature)
+    
+    // This function can be modified while running
+    // Try changing the display format!
+    drawProgressBar(state.progress)
+}
+
+@hot_reload
+func drawProgressBar(progress: float64) {
+    width := 30
+    filled := int(progress * float64(width))
+    
+    fmt.Printf("Progress: [")
+    for i := 0; i < width; i++ {
+        if i < filled {
+            fmt.Printf("█")
+        } else {
+            fmt.Printf("░")
+        }
+    }
+    fmt.Printf("] %.1f%%\n", progress * 100)
+}
+
+// Application state that persists across reloads
+type AppState struct {
+    counter     int
+    message     string
+    temperature float64
+    progress    float64
+    lastUpdate  time.Time
+}
+
+// State migration for when AppState structure changes
+@migrate(AppState)
+func migrateAppState(old: AppState, new: *AppState) bool {
+    // Copy over fields that still exist
+    new.counter = old.counter
+    new.message = old.message
+    new.temperature = old.temperature
+    new.progress = old.progress
+    new.lastUpdate = old.lastUpdate
+    
+    // Initialize any new fields with defaults
+    // (Add new field initialization here when structure changes)
+    
+    return true
+}
+
+// Business logic that can be hot-reloaded
+@hot_reload
+func updateState(state: *AppState) {
+    state.counter++
+    
+    // Temperature simulation with some noise
+    targetTemp := 22.0 + math.Sin(float64(state.counter) * 0.1) * 5
+    state.temperature += (targetTemp - state.temperature) * 0.1
+    
+    // Update progress
+    state.progress = math.Mod(float64(state.counter) / 100.0, 1.0)
+    
+    // Update message based on temperature
+    if state.temperature > 25 {
+        state.message = "It's getting warm! 🌡️"
+    } else if state.temperature < 19 {
+        state.message = "Bit chilly... 🧊"
+    } else {
+        state.message = "Perfect temperature! 😊"
+    }
+    
+    state.lastUpdate = time.Now()
+}
+
+// Hot-reloadable event handler
+@hot_reload
+func handleUserInput(state: *AppState, input: string) {
+    switch input {
+    case "r":
+        state.counter = 0
+        state.progress = 0
+        fmt.Println("State reset!")
+    case "t":
+        state.temperature = 22.0
+        fmt.Println("Temperature reset to 22°C")
+    case "+":
+        state.temperature += 1
+    case "-":
+        state.temperature -= 1
+    default:
+        fmt.Printf("Unknown command: %s\n", input)
+    }
+}
+
+// Main application loop
+func main() {
+    fmt.Println("🔥 Hot Reload Demo - Modify the code while running!")
+    fmt.Println("Commands: r=reset, t=reset temp, +=increase temp, -=decrease temp")
+    fmt.Println("Try editing renderUI() or drawProgressBar() functions!\n")
+    
+    // Initialize application state
+    state := AppState{
+        counter:     0,
+        message:     "Welcome!",
+        temperature: 22.0,
+        progress:    0.0,
+        lastUpdate:  time.Now(),
+    }
+    
+    // Enable hot reload for this module
+    hotReload.enable()
+    hotReload.watchFiles("examples/hot_reload_demo.goo")
+    
+    // Main loop
+    ticker := time.NewTicker(100 * time.Millisecond)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ticker.C:
+            // Update and render
+            updateState(&state)
+            renderUI(state)
+            
+            // Check for hot reload
+            if hotReload.hasChanges() {
+                fmt.Println("\n🔄 Reloading code...")
+                if err := hotReload.reload(); err != nil {
+                    fmt.Printf("Reload error: %v\n", err)
+                } else {
+                    fmt.Println("✅ Code reloaded successfully!")
+                }
+            }
+            
+        case input := <-getUserInput():
+            handleUserInput(&state, input)
+        }
+    }
+}
+
+// Simulate getting user input (in real app, this would read from stdin)
+func getUserInput() <-chan string {
+    ch := make(chan string)
+    go func() {
+        // Simulate occasional user input
+        time.Sleep(5 * time.Second)
+        ch <- "+"
+    }()
+    return ch
+}

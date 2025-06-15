@@ -192,6 +192,8 @@ int type_check_declaration(TypeChecker* checker, ASTNode* decl) {
             return type_check_const_decl(checker, decl);
         case AST_TYPE_DECL:
             return type_check_type_decl(checker, decl);
+        case AST_CONCEPT_DECL:
+            return type_check_concept_decl(checker, decl);
         default:
             type_error(checker, decl->pos, "Unknown declaration type");
             return 0;
@@ -386,6 +388,29 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_TYPE_DECL) return 0;
     
     // TODO: Implement type declarations
+    return 1;
+}
+
+int type_check_concept_decl(TypeChecker* checker, ASTNode* decl) {
+    if (!checker || !decl || decl->type != AST_CONCEPT_DECL) return 0;
+    
+    ConceptDeclNode* concept = (ConceptDeclNode*)decl;
+    
+    // For now, just register the concept in the global scope
+    // TODO: Implement full concept validation and constraint checking
+    
+    // Create a concept type to represent this concept definition
+    Type* concept_type = type_concept(concept->name);
+    Variable* concept_var = variable_new(concept->name, concept_type, concept->base.pos);
+    if (concept_var) {
+        concept_var->is_initialized = 1;
+        if (!scope_add_variable(checker->current_scope, concept_var)) {
+            type_error(checker, concept->base.pos, "Concept '%s' already declared", concept->name);
+            variable_free(concept_var);
+            return 0;
+        }
+    }
+    
     return 1;
 }
 

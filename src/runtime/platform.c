@@ -16,6 +16,13 @@ void* goo_platform_alloc(size_t size) {
 #ifdef GOO_PLATFORM_UNIX
     // Use mmap for large allocations for better control
     if (size >= 1024 * 1024) {  // 1MB threshold
+#ifndef MAP_ANONYMOUS
+#ifdef MAP_ANON
+#define MAP_ANONYMOUS MAP_ANON
+#else
+#define MAP_ANONYMOUS 0x20
+#endif
+#endif
         void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (ptr == MAP_FAILED) {
             return NULL;

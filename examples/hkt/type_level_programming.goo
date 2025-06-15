@@ -1,0 +1,254 @@
+// =============================================================================
+// Type-Level Programming with Higher-Kinded Types in Goo
+// =============================================================================
+
+// Define type families for compile-time computation
+type family CountElements<T>: int {
+    CountElements<()> = 0
+    CountElements<int> = 1
+    CountElements<(A, B)> = CountElements<A> + CountElements<B>
+    CountElements<Vec<T>> = -1  // Dynamic size
+    CountElements<[T; N]> = N   // Fixed-size array
+}
+
+// Type-level list operations
+type family Append<L1, L2> {
+    Append<(), L> = L
+    Append<(Head, Tail), L> = (Head, Append<Tail, L>)
+}
+
+// Type-level map operation
+type family Map<F, L> {
+    Map<F, ()> = ()
+    Map<F, (Head, Tail)> = (F<Head>, Map<F, Tail>)
+}
+
+// =============================================================================
+// Dependent Types with HKTs
+// =============================================================================
+
+// Vector with compile-time known size
+type Vec<T, const N: int> {
+    data: [T; N]
+    
+    fn new() -> Vec<T, N> {
+        Vec { data: [T::default(); N] }
+    }
+    
+    fn get(self: &Vec<T, N>, index: int) -> Option<&T> {
+        if index >= 0 && index < N {
+            Some(&self.data[index])
+        } else {
+            None
+        }
+    }
+    
+    // Type-safe concatenation with size tracking
+    fn concat<const M: int>(self: Vec<T, N>, other: Vec<T, M>) -> Vec<T, N + M> {
+        var result: Vec<T, N + M> = Vec::new()
+        // Implementation would copy elements
+        return result
+    }
+}
+
+// =============================================================================
+// Higher-Kinded Type Classes with Associated Types
+// =============================================================================
+
+concept Traversable<T<_>> {
+    type Out<F<_>, A>: *  // Associated type family
+    
+    fn traverse<F<_>, A, B>(
+        self: T<A>, 
+        f: fn(A) -> F<B>
+    ) -> F<T<B>>
+    where F<_>: Applicative
+}
+
+concept Applicative<F<_>>: Functor<F> {
+    fn pure<A>(value: A) -> F<A>
+    fn apply<A, B>(f: F<fn(A) -> B>, value: F<A>) -> F<B>
+}
+
+// Implement Traversable for Vec
+impl Traversable<Vec> {
+    type Out<F, A> = F<Vec<A>>
+    
+    fn traverse<F<_>, A, B>(
+        self: Vec<A>, 
+        f: fn(A) -> F<B>
+    ) -> F<Vec<B>>
+    where F<_>: Applicative {
+        self.fold_right(F::pure([]), |elem, acc| {
+            F::apply(F::apply(F::pure(|x| |xs| [x] + xs), f(elem)), acc)
+        })
+    }
+}
+
+// =============================================================================
+// GADTs (Generalized Algebraic Data Types) with HKTs
+// =============================================================================
+
+// Type-safe expression language
+type Expr<T> {
+    case Lit<T>(value: T)
+    case Add(left: Expr<int>, right: Expr<int>): Expr<int>
+    case Eq<T>(left: Expr<T>, right: Expr<T>): Expr<bool>
+    case If<T>(cond: Expr<bool>, then_branch: Expr<T>, else_branch: Expr<T>): Expr<T>
+}
+
+// Type-safe evaluator
+fn eval<T>(expr: Expr<T>) -> T {
+    match expr {
+        case Lit(value) -> value
+        case Add(left, right) -> eval(left) + eval(right)
+        case Eq(left, right) -> eval(left) == eval(right)
+        case If(cond, then_branch, else_branch) -> {
+            if eval(cond) {
+                eval(then_branch)
+            } else {
+                eval(else_branch)
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Effect Systems with Higher-Kinded Types
+// =============================================================================
+
+// Effect type for tracking side effects
+type Effect<E, T> {
+    // E represents the effect type
+    // T represents the return type
+    computation: fn() -> T
+    effects: Vec<E>
+}
+
+// Common effect types
+type IOEffect {
+    case Read(file: string)
+    case Write(file: string, data: string)
+    case Print(message: string)
+}
+
+type StateEffect<S> {
+    case Get(): S
+    case Put(state: S)
+}
+
+// Effect monad
+impl<E> Monad<Effect<E, _>> {
+    fn pure<T>(value: T) -> Effect<E, T> {
+        Effect {
+            computation: || value,
+            effects: []
+        }
+    }
+    
+    fn bind<A, B>(
+        self: Effect<E, A>, 
+        f: fn(A) -> Effect<E, B>
+    ) -> Effect<E, B> {
+        Effect {
+            computation: || {
+                let a = self.computation()
+                let next = f(a)
+                next.computation()
+            },
+            effects: self.effects + f(self.computation()).effects
+        }
+    }
+}
+
+// =============================================================================
+// Type-Level State Machines
+// =============================================================================
+
+// Phantom types for state machine states
+type State {
+    case Locked
+    case Unlocked
+    case Broken
+}
+
+// Door with compile-time state tracking
+type Door<S: State> {
+    internal_state: string  // Actual runtime state
+    phantom: PhantomData<S>
+}
+
+impl Door<Locked> {
+    fn new() -> Door<Locked> {
+        Door { internal_state: "locked", phantom: PhantomData }
+    }
+    
+    fn unlock(self: Door<Locked>, key: string) -> Result<Door<Unlocked>, Door<Broken>> {
+        if key == "correct_key" {
+            Ok(Door { internal_state: "unlocked", phantom: PhantomData })
+        } else {
+            Err(Door { internal_state: "broken", phantom: PhantomData })
+        }
+    }
+}
+
+impl Door<Unlocked> {
+    fn open(self: Door<Unlocked>) -> (Door<Unlocked>, bool) {
+        (self, true)  // Door remains unlocked after opening
+    }
+    
+    fn lock(self: Door<Unlocked>) -> Door<Locked> {
+        Door { internal_state: "locked", phantom: PhantomData }
+    }
+}
+
+impl Door<Broken> {
+    fn repair(self: Door<Broken>) -> Door<Locked> {
+        Door { internal_state: "locked", phantom: PhantomData }
+    }
+}
+
+// =============================================================================
+// Example Usage
+// =============================================================================
+
+fn type_level_examples() {
+    // Compile-time size tracking
+    var v1: Vec<int, 3> = Vec::new()
+    var v2: Vec<int, 2> = Vec::new()
+    var v3 = v1.concat(v2)  // Type: Vec<int, 5>
+    
+    // Type-safe expression evaluation
+    var expr = If(
+        Eq(Lit(5), Add(Lit(2), Lit(3))),
+        Lit(42),
+        Lit(0)
+    )
+    var result: int = eval(expr)  // 42
+    
+    // Effect tracking
+    var io_program: Effect<IOEffect, string> = Effect::pure("Hello")
+        .bind(|msg| {
+            Effect {
+                computation: || msg + " World!",
+                effects: [Print(msg)]
+            }
+        })
+    
+    // State machine with compile-time guarantees
+    var door = Door::new()  // Type: Door<Locked>
+    
+    match door.unlock("correct_key") {
+        case Ok(unlocked_door) -> {  // Type: Door<Unlocked>
+            var (door2, opened) = unlocked_door.open()
+            var locked_door = door2.lock()  // Type: Door<Locked>
+        }
+        case Err(broken_door) -> {  // Type: Door<Broken>
+            var repaired_door = broken_door.repair()  // Type: Door<Locked>
+        }
+    }
+}
+
+fn main() {
+    type_level_examples()
+}

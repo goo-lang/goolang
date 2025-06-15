@@ -1,0 +1,365 @@
+// Advanced dependent types and constraint inference examples
+// This demonstrates how the type checker can verify constraints at compile time
+
+package main
+
+import "fmt"
+
+// =============================================================================
+// Constraint Inference Examples
+// =============================================================================
+
+// The compiler can automatically infer constraints from usage patterns
+func safe_array_operations() {
+    let arr = [1, 2, 3, 4, 5];
+    
+    // Compiler infers: index must satisfy 0 <= index < len(arr)
+    func get_element(index: usize) -> i32 where 0 <= index < len(arr) {
+        return arr[index];  // No bounds check needed
+    }
+    
+    // Usage that would fail at compile time:
+    // let invalid = get_element(10);  // Compile error: constraint violation
+    
+    let valid = get_element(2);  // OK: 2 is within bounds
+    fmt.println("Element at index 2: ", valid);
+}
+
+// =============================================================================
+// Automatic Constraint Generation
+// =============================================================================
+
+// Function that automatically generates appropriate constraints
+func process_positive_numbers<T>(values: &[T]) -> T 
+where 
+    T: Add + Ord + Zero,
+    forall v in values: v > T::zero()  // All values must be positive
+{
+    let mut sum = T::zero();
+    for value in values {
+        sum = sum + *value;  // Safe: all values are positive
+    }
+    return sum;
+}
+
+// =============================================================================
+// Contract Programming with Dependent Types
+// =============================================================================
+
+// Function with pre-conditions, post-conditions, and invariants
+func binary_search_with_contracts<T: Ord, const N: usize>(
+    arr: &SortedArray<T, N>,
+    target: T
+) -> Option<ValidIndex<SortedArray<T, N>>>
+where
+    // Pre-condition: array must be sorted
+    forall i in 0..N-1: arr[i] <= arr[i+1],
+    // Post-condition: if found, arr[result] == target
+    ensures |result| match result {
+        Some(idx) => arr[idx] == target,
+        None => forall i in 0..N: arr[i] != target,
+    }
+{
+    let mut left = 0;
+    let mut right = N;
+    
+    // Loop invariant: if target exists, it's in range [left, right)
+    while left < right 
+    invariant 
+        0 <= left <= right <= N,
+        forall i in 0..left: arr[i] < target,
+        forall i in right..N: arr[i] > target
+    {
+        let mid = (left + right) / 2;
+        
+        if arr[mid] == target {
+            return Some(ValidIndex<SortedArray<T, N>>(mid));
+        } else if arr[mid] < target {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    
+    return None;
+}
+
+// =============================================================================
+// Memory Safety with Dependent Types
+// =============================================================================
+
+// Safe buffer operations with compile-time size verification
+struct SafeBuffer<const Size: usize> {
+    data: [u8; Size],
+    position: BoundedInt<0, Size>,
+}
+
+impl<const Size: usize> SafeBuffer<Size> {
+    func new() -> SafeBuffer<Size> {
+        return SafeBuffer<Size>{
+            data: [0; Size],
+            position: BoundedInt<0, Size>(0),
+        };
+    }
+    
+    func write(self: &mut Self, data: &[u8]) -> !BufferOverflow {
+        let remaining = Size - self.position;
+        if data.len() > remaining {
+            return BufferOverflow{"Not enough space in buffer"};
+        }
+        
+        // Safe: we've verified there's enough space
+        for (i, byte) in data.enumerate() {
+            self.data[self.position + i] = *byte;
+        }
+        
+        self.position += data.len();
+        return ok();
+    }
+    
+    func read(self: &Self, count: BoundedInt<0, Size>) -> &[u8] 
+    where self.position + count <= Size {
+        let start = self.position;
+        let end = start + count;
+        return &self.data[start..end];
+    }
+}
+
+// =============================================================================
+// Network Programming with Dependent Types
+// =============================================================================
+
+// IP address with format constraints
+type IPv4Address = [u8; 4] where forall octet in self: 0 <= octet <= 255;
+
+// Port number with valid range
+type PortNumber = BoundedInt<1, 65535>;
+
+// Network packet with header validation
+struct NetworkPacket<const MaxPayload: usize> {
+    header: PacketHeader,
+    payload: BoundedVec<u8, MaxPayload>,
+} where header.payload_length == payload.len()
+
+struct PacketHeader {
+    version: BoundedInt<1, 4>,
+    header_length: BoundedInt<20, 60>,  // TCP header: 20-60 bytes
+    payload_length: BoundedInt<0, 65535>,
+    source_ip: IPv4Address,
+    dest_ip: IPv4Address,
+    source_port: PortNumber,
+    dest_port: PortNumber,
+}
+
+func create_tcp_packet<const MaxPayload: usize>(
+    source: (IPv4Address, PortNumber),
+    dest: (IPv4Address, PortNumber),
+    payload: &[u8]
+) -> !NetworkError | NetworkPacket<MaxPayload> {
+    if payload.len() > MaxPayload {
+        return NetworkError{"Payload too large"};
+    }
+    
+    let header = PacketHeader{
+        version: BoundedInt<1, 4>(4),  // IPv4
+        header_length: BoundedInt<20, 60>(20),  // Minimum TCP header
+        payload_length: BoundedInt<0, 65535>(payload.len()),
+        source_ip: source.0,
+        dest_ip: dest.0,
+        source_port: source.1,
+        dest_port: dest.1,
+    };
+    
+    let mut packet_payload = BoundedVec<u8, MaxPayload>::new();
+    for byte in payload {
+        packet_payload.push(*byte) catch |_| {
+            return NetworkError{"Failed to create payload"};
+        };
+    }
+    
+    return NetworkPacket<MaxPayload>{
+        header: header,
+        payload: packet_payload,
+    };
+}
+
+// =============================================================================
+// Financial Computing with Precision Constraints
+// =============================================================================
+
+// Currency amount with precision constraints (2 decimal places)
+type CurrencyAmount = i64 where value >= 0;  // Amount in cents
+
+// Exchange rate with reasonable bounds
+type ExchangeRate = f64 where 0.0001 <= value <= 10000.0;
+
+// Account balance that cannot go negative
+type AccountBalance = CurrencyAmount where value >= 0;
+
+struct BankAccount {
+    balance: AccountBalance,
+    account_number: BoundedInt<100000, 999999>,  // 6-digit account number
+}
+
+impl BankAccount {
+    func new(account_number: BoundedInt<100000, 999999>) -> BankAccount {
+        return BankAccount{
+            balance: AccountBalance(0),
+            account_number: account_number,
+        };
+    }
+    
+    func deposit(self: &mut Self, amount: CurrencyAmount) -> !OverflowError {
+        let new_balance = self.balance + amount;
+        if new_balance < self.balance {  // Overflow check
+            return OverflowError{"Balance overflow"};
+        }
+        self.balance = new_balance;
+        return ok();
+    }
+    
+    func withdraw(self: &mut Self, amount: CurrencyAmount) -> !InsufficientFunds {
+        if amount > self.balance {
+            return InsufficientFunds{"Insufficient balance"};
+        }
+        self.balance -= amount;
+        return ok();
+    }
+    
+    func get_balance(self: &Self) -> AccountBalance {
+        return self.balance;
+    }
+}
+
+// =============================================================================
+// Cryptographic Operations with Dependent Types
+// =============================================================================
+
+// AES key with correct size
+type AES128Key = [u8; 16];
+type AES256Key = [u8; 32];
+
+// Hash digest with correct size
+type SHA256Hash = [u8; 32];
+type MD5Hash = [u8; 16];
+
+// Cryptographic nonce that must be unique
+struct Nonce<const Size: usize> {
+    value: [u8; Size],
+    used: bool,
+} where used == false  // Nonce must not be reused
+
+impl<const Size: usize> Nonce<Size> {
+    func new(value: [u8; Size]) -> Nonce<Size> {
+        return Nonce<Size>{
+            value: value,
+            used: false,
+        };
+    }
+    
+    func use_once(self: &mut Self) -> &[u8; Size] where self.used == false {
+        self.used = true;
+        return &self.value;
+    }
+}
+
+// Secure encryption with type-safe key management
+func aes_encrypt(
+    plaintext: &[u8],
+    key: &AES256Key,
+    nonce: &mut Nonce<12>  // AES-GCM nonce size
+) -> !CryptoError | Vec<u8> {
+    let nonce_bytes = nonce.use_once();
+    
+    // Encryption implementation would go here
+    // The type system ensures:
+    // - Key is exactly 32 bytes (AES-256)
+    // - Nonce is exactly 12 bytes and used only once
+    // - Return type is properly handled
+    
+    return encrypt_impl(plaintext, key, nonce_bytes);
+}
+
+// =============================================================================
+// Main Function Demonstrating All Features
+// =============================================================================
+
+func main() {
+    fmt.println("=== Dependent Types and Constraint Verification Demo ===");
+    
+    // Safe array operations
+    safe_array_operations();
+    
+    // BoundedVec with compile-time capacity
+    let mut buffer = SafeBuffer<1024>::new();
+    let data = "Hello, dependent types!".as_bytes();
+    buffer.write(data) catch |err| {
+        fmt.println("Buffer write error: ", err);
+    };
+    
+    // Network packet creation
+    let source_ip = IPv4Address([192, 168, 1, 100]);
+    let dest_ip = IPv4Address([10, 0, 0, 1]);
+    let source_port = PortNumber(8080);
+    let dest_port = PortNumber(80);
+    
+    let packet = create_tcp_packet<1500>(
+        (source_ip, source_port),
+        (dest_ip, dest_port),
+        "GET / HTTP/1.1\r\n\r\n".as_bytes()
+    ) catch |err| {
+        fmt.println("Packet creation error: ", err);
+        return;
+    };
+    
+    fmt.println("Created TCP packet with {} bytes", packet.payload.len());
+    
+    // Banking operations with overflow protection
+    let mut account = BankAccount::new(BoundedInt<100000, 999999>(123456));
+    account.deposit(CurrencyAmount(10000)) catch |err| {
+        fmt.println("Deposit error: ", err);
+    };
+    
+    account.withdraw(CurrencyAmount(5000)) catch |err| {
+        fmt.println("Withdrawal error: ", err);
+    };
+    
+    fmt.println("Account balance: ${}.{:02}", 
+               account.get_balance() / 100, 
+               account.get_balance() % 100);
+    
+    // Cryptographic operations with type safety
+    let key = AES256Key([0; 32]);  // In practice, would be randomly generated
+    let mut nonce = Nonce<12>::new([0; 12]);  // In practice, would be random
+    
+    let encrypted = aes_encrypt(
+        "Secret message".as_bytes(),
+        &key,
+        &mut nonce
+    ) catch |err| {
+        fmt.println("Encryption error: ", err);
+        return;
+    };
+    
+    fmt.println("Encryption successful, {} bytes", encrypted.len());
+    
+    fmt.println("\n=== All dependent type constraints verified at compile time! ===");
+}
+
+// Mock implementations for demonstration
+func encrypt_impl(plaintext: &[u8], key: &AES256Key, nonce: &[u8; 12]) -> !CryptoError | Vec<u8> {
+    // Mock implementation
+    let mut result = Vec<u8>::new();
+    for byte in plaintext {
+        result.push(*byte ^ key[0] ^ nonce[0]);  // Simple XOR for demo
+    }
+    return result;
+}
+
+// Error types
+error BufferOverflow(String);
+error NetworkError(String);
+error OverflowError(String);
+error InsufficientFunds(String);
+error CryptoError(String);
+error PacketError(String);

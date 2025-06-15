@@ -1,0 +1,169 @@
+// Performance Monitoring Demo - Real-time Development Insights
+package main
+
+import "fmt"
+
+// Example functions to demonstrate performance monitoring
+func fibonacci(n: int) int {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n-1) + fibonacci(n-2)
+}
+
+func matrixMultiply(a: [][]int, b: [][]int) [][]int {
+    rows := len(a)
+    cols := len(b[0])
+    result := make([][]int, rows)
+    
+    for i := 0; i < rows; i++ {
+        result[i] = make([]int, cols)
+        for j := 0; j < cols; j++ {
+            for k := 0; k < len(b); k++ {
+                result[i][j] += a[i][k] * b[k][j]
+            }
+        }
+    }
+    
+    return result
+}
+
+func heavyComputation() {
+    // Simulate CPU-intensive work
+    sum := 0
+    for i := 0; i < 1000000; i++ {
+        sum += i * i
+    }
+    fmt.Printf("Heavy computation result: %d\n", sum)
+}
+
+func memoryIntensiveOperation() []int {
+    // Simulate memory-intensive work
+    data := make([]int, 100000)
+    for i := 0; i < len(data); i++ {
+        data[i] = i * 2
+    }
+    return data
+}
+
+// Example usage with REPL performance monitoring:
+/*
+REPL Session Example:
+
+goo> :perf status
+Performance Monitor Status:
+  Enabled: Yes
+  Recording: Yes
+  Sample Interval: 100 ms
+  Current Memory: 32.5 MB
+  CPU Usage: 5.2%
+
+goo> :perf start
+Performance monitoring started.
+
+goo> result := fibonacci(30)
+result: int = 832040
+
+goo> :perf metrics
+Current Performance Metrics:
+  Memory Usage: 33.2 MB (min: 32.5, max: 33.2, avg: 32.8)
+  CPU Time: 1245.30 ms (min: 0.00, max: 1245.30, avg: 622.65)
+  Parse Time: 5.20 ms (min: 2.10, max: 5.20, avg: 3.65)
+  Type Check Time: 12.40 ms (min: 8.30, max: 12.40, avg: 10.35)
+
+goo> heavyComputation()
+Heavy computation result: 333332833333500000
+
+goo> :perf alerts
+Active Performance Alerts:
+  [High CPU] CPU usage (85.3%) exceeds threshold (80.0%)
+
+goo> data := memoryIntensiveOperation()
+data: []int = [0, 2, 4, 6, 8, ...]
+
+goo> :perf metrics
+Current Performance Metrics:
+  Memory Usage: 45.8 MB (min: 32.5, max: 45.8, avg: 37.1)
+  CPU Time: 2134.50 ms (min: 0.00, max: 2134.50, avg: 1067.25)
+  Allocation Count: 3.00 count (min: 0.00, max: 3.00, avg: 1.50)
+
+goo> // Create matrix data for multiplication test
+goo> matrixA := [][]int{{1, 2}, {3, 4}}
+matrixA: [][]int = [[1, 2], [3, 4]]
+
+goo> matrixB := [][]int{{5, 6}, {7, 8}}
+matrixB: [][]int = [[5, 6], [7, 8]]
+
+goo> result := matrixMultiply(matrixA, matrixB)
+result: [][]int = [[19, 22], [43, 50]]
+
+goo> :perf history 5
+[1] result := fibonacci(30)
+    => 832040 (1234.56ms)
+[2] heavyComputation()
+    => void (875.23ms)
+[3] data := memoryIntensiveOperation()
+    => [array] (45.67ms)
+[4] matrixA := [][]int{{1, 2}, {3, 4}}
+    => [[1, 2], [3, 4]] (2.34ms)
+[5] result := matrixMultiply(matrixA, matrixB)
+    => [[19, 22], [43, 50]] (12.45ms)
+
+goo> :perf export performance_session.json
+Performance data exported to performance_session.json
+
+goo> :reload
+Checking for changed modules...
+Hot reload completed successfully (took 156ms, memory impact: +1.2MB)
+
+goo> :perf metrics
+Hot Reload Metrics:
+  Reload Count: 1
+  Average Reload Time: 156ms
+  Memory Impact per Reload: +1.2MB
+  Files Watched: 12
+
+goo> // Test type-intensive operations
+goo> :type fibonacci
+func(int) int
+
+goo> :type matrixMultiply
+func([][]int, [][]int) [][]int
+
+goo> :perf reset
+Performance metrics reset.
+
+goo> :perf status
+Performance Monitor Status:
+  Enabled: Yes
+  Recording: Yes
+  Sample Interval: 100 ms
+  Current Memory: 47.1 MB
+  CPU Usage: 3.8%
+  Active Session: 2
+  Total Sessions: 1
+  Alerts Active: 0
+
+goo> :exit
+Performance summary:
+  Session Duration: 342.5 seconds
+  Total Operations: 8
+  Peak Memory: 47.1 MB
+  Average CPU: 15.2%
+  Alerts Triggered: 1
+Goodbye!
+*/
+
+func main() {
+    fmt.Println("Run 'goo-repl' to start interactive session with performance monitoring!")
+    fmt.Println("Try the expressions shown in the comments above.")
+    fmt.Println("Use ':perf' commands to monitor performance in real-time.")
+    
+    // Example of programmatic performance monitoring usage
+    fmt.Println("\nExample performance monitoring output:")
+    fmt.Println("- Memory usage tracked during allocations")
+    fmt.Println("- CPU usage monitored during computations")
+    fmt.Println("- Compilation time measured for each expression")
+    fmt.Println("- Alerts triggered for performance thresholds")
+    fmt.Println("- Historical data available for analysis")
+}
