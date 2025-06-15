@@ -43,7 +43,7 @@ TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/ty
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c
-IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/lsp_server.c $(SRCDIR)/ide/lsp_protocol.c $(SRCDIR)/ide/repl_syntax.c
+IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
 CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS)
@@ -53,6 +53,7 @@ OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
 
 # Main targets
 COMPILER = $(BINDIR)/goo
+ANALYZER = $(BINDIR)/goo-analyzer
 TEST_RUNNER = $(BINDIR)/test_runner
 REPL = $(BINDIR)/goo-repl
 REPL_ENHANCED = $(BINDIR)/goo-repl-enhanced
@@ -63,11 +64,17 @@ TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check
+.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check
 
 all: lexer
 
 lexer: $(COMPILER)
+
+# Minimal analyzer (lexer only)
+analyzer: $(ANALYZER)
+
+$(ANALYZER): $(LEXER_SRCS) $(SRCDIR)/main_minimal.c | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^
 
 # Create directories
 $(BUILDDIR) $(BINDIR):
@@ -88,8 +95,8 @@ $(BUILDDIR)/framework/%.o: $(TEST_FRAMEWORK_DIR)/%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
 # Main compiler
-$(COMPILER): $(OBJS) $(SRCDIR)/main.c | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+$(COMPILER): $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main_simple.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Test targets
 TEST_INTERFACE_SYSTEM = $(BINDIR)/test_interface_system

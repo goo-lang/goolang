@@ -1,0 +1,17 @@
+// hello_world.goo - A simple Hello World program in Goo
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Printf("Hello, Goo World! 🚀\n")
+    
+    // Basic variable declarations
+    var message string = "Welcome to the Goo programming language!"
+    var version float64 = 1.0
+    var isAwesome bool = true
+    
+    fmt.Printf("Message: %s\n", message)
+    fmt.Printf("Version: %.1f\n", version)
+    fmt.Printf("Is Awesome: %t\n", isAwesome)
+}

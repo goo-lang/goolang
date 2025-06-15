@@ -1,0 +1,62 @@
+// interactive_demo.goo - Simple examples for REPL testing
+package main
+
+import "fmt"
+
+// Simple function demonstrating error unions
+func divide(a, b int) (!int, !string) {
+    if b == 0 {
+        return nil, "cannot divide by zero"
+    }
+    return a / b, nil
+}
+
+// Function demonstrating nullable types
+func findUser(id int) ?string {
+    users := map[int]string{
+        1: "Alice",
+        2: "Bob", 
+        3: "Carol",
+    }
+    
+    if name, exists := users[id]; exists {
+        return name
+    }
+    return nil
+}
+
+func main() {
+    fmt.Println("🚀 Interactive Goo Demo")
+    
+    // Test error unions
+    result, err := divide(10, 2)
+    if err! {
+        fmt.Printf("Error: %s\n", err!)
+    } else {
+        fmt.Printf("10 ÷ 2 = %d\n", result!)
+    }
+    
+    // Test division by zero
+    result2, err2 := divide(10, 0)
+    if err2! {
+        fmt.Printf("Error: %s\n", err2!)
+    } else {
+        fmt.Printf("Result: %d\n", result2!)
+    }
+    
+    // Test nullable types
+    user := findUser(1)
+    if user? {
+        fmt.Printf("Found user: %s\n", user!)
+    } else {
+        fmt.Println("User not found")
+    }
+    
+    // Test user not found
+    user2 := findUser(99)
+    if user2? {
+        fmt.Printf("Found user: %s\n", user2!)
+    } else {
+        fmt.Println("User 99 not found")
+    }
+}

@@ -1,0 +1,96 @@
+// error_unions_demo.goo - Demonstrates Goo's error union features
+package main
+
+import "fmt"
+
+// Error types
+type MathError enum {
+    DivisionByZero
+    InvalidInput
+    Overflow
+}
+
+// Function that can return a value or an error
+func safeDivide(a, b int) (!int, !MathError) {
+    if b == 0 {
+        return nil, MathError.DivisionByZero
+    }
+    
+    if a > 1000000 || b > 1000000 {
+        return nil, MathError.Overflow
+    }
+    
+    return a / b, nil
+}
+
+// Function using error union types
+func calculateSeries(numbers []int) ![]int {
+    var results []!int
+    
+    for i, num := range numbers {
+        if i == 0 {
+            results = append(results, num)
+            continue
+        }
+        
+        // Use error union return value
+        result, err := safeDivide(numbers[i-1], num)
+        if err! {
+            // Error occurred - return early with error context
+            return nil, fmt.Errorf("calculation failed at position %d: %v", i, err!)
+        }
+        
+        // Success - use the value
+        results = append(results, result!)
+    }
+    
+    return results, nil
+}
+
+func main() {
+    fmt.Println("🔢 Goo Error Unions Demo")
+    fmt.Println("=" * 30)
+    
+    // Test cases
+    testCases := [][]int{
+        {100, 10, 2},      // Should succeed: [100, 10, 5]
+        {100, 0, 5},       // Should fail: division by zero
+        {2000000, 10, 2},  // Should fail: overflow
+        {50, 5, 2, 1},     // Should succeed: [50, 10, 2, 2]
+    }
+    
+    for i, testCase := range testCases {
+        fmt.Printf("\nTest %d: %v\n", i+1, testCase)
+        
+        // Call function that returns error union
+        results := calculateSeries(testCase)
+        
+        // Check if error occurred
+        if results! {
+            fmt.Printf("✅ Success: %v\n", results!)
+        } else {
+            fmt.Printf("❌ Error: %s\n", results.Error())
+        }
+    }
+    
+    // Direct error union usage
+    fmt.Println("\n📊 Direct Error Union Examples:")
+    
+    // Simple division examples
+    examples := []struct{a, b int}{
+        {10, 2},   // Success
+        {15, 0},   // Division by zero
+        {2000000, 1}, // Overflow
+    }
+    
+    for _, ex := range examples {
+        result, err := safeDivide(ex.a, ex.b)
+        fmt.Printf("%d ÷ %d = ", ex.a, ex.b)
+        
+        if err! {
+            fmt.Printf("Error: %v\n", err!)
+        } else {
+            fmt.Printf("%d ✅\n", result!)
+        }
+    }
+}

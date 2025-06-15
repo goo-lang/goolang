@@ -1,0 +1,270 @@
+// advanced_features_demo.goo - Demonstrates advanced Goo language features
+package main
+
+import (
+    "fmt"
+    "reflect"
+)
+
+// Generic interface demonstration
+interface Comparable<T> {
+    Compare(other T) int
+    Equal(other T) bool
+}
+
+// User-defined type implementing the interface
+type Score struct {
+    Value int
+    Name  string
+}
+
+func (s Score) Compare(other Score) int {
+    if s.Value < other.Value {
+        return -1
+    } else if s.Value > other.Value {
+        return 1
+    }
+    return 0
+}
+
+func (s Score) Equal(other Score) bool {
+    return s.Value == other.Value
+}
+
+// Generic function using the interface
+func findMax<T Comparable<T>>(items []T) ?T {
+    if len(items) == 0 {
+        return nil
+    }
+    
+    max := items[0]
+    for _, item := range items[1:] {
+        if item.Compare(max) > 0 {
+            max = item
+        }
+    }
+    return max
+}
+
+// Contract programming example
+contract SafeArray<T> {
+    require len(arr) > 0
+    require index >= 0 && index < len(arr)
+    
+    func Get(arr []T, index int) T {
+        ensure result == arr[index]
+        return arr[index]
+    }
+    
+    func Set(arr []T, index int, value T) []T {
+        ensure arr[index] == value
+        arr[index] = value
+        return arr
+    }
+}
+
+// Dependent types example
+type BoundedInt<Min: int, Max: int> struct {
+    value int where value >= Min && value <= Max
+}
+
+func NewBoundedInt<Min: int, Max: int>(value int) !BoundedInt<Min, Max> {
+    if value < Min || value > Max {
+        return nil, fmt.Errorf("value %d out of bounds [%d, %d]", value, Min, Max)
+    }
+    return BoundedInt<Min, Max>{value: value}, nil
+}
+
+func (b BoundedInt<Min, Max>) Value() int {
+    return b.value
+}
+
+// Higher-kinded types example
+type Functor<F<_>> interface {
+    Map<A, B>(fa F<A>, f func(A) B) F<B>
+}
+
+type Maybe<T> struct {
+    value   ?T
+    hasValue bool
+}
+
+func Some<T>(value T) Maybe<T> {
+    return Maybe<T>{value: value, hasValue: true}
+}
+
+func None<T>() Maybe<T> {
+    return Maybe<T>{hasValue: false}
+}
+
+func (m Maybe<T>) Map<U>(f func(T) U) Maybe<U> {
+    if m.hasValue && m.value? {
+        return Some(f(m.value!))
+    }
+    return None<U>()
+}
+
+func (m Maybe<T>) FlatMap<U>(f func(T) Maybe<U>) Maybe<U> {
+    if m.hasValue && m.value? {
+        return f(m.value!)
+    }
+    return None<U>()
+}
+
+// Pattern matching simulation
+type Result<T, E> enum {
+    Ok(T)
+    Err(E)
+}
+
+func (r Result<T, E>) Match<U>(onOk func(T) U, onErr func(E) U) U {
+    switch r {
+    case Ok(value):
+        return onOk(value)
+    case Err(error):
+        return onErr(error)
+    }
+}
+
+// Memory safety demonstration
+func demonstrateOwnership() {
+    fmt.Println("\n🔒 Memory Safety & Ownership Demo:")
+    
+    // Owned string
+    var owned String = "Hello, ownership!"
+    fmt.Printf("📦 Owned string: %s\n", owned)
+    
+    // Move ownership
+    var moved String = move(owned)
+    fmt.Printf("🚚 Moved string: %s\n", moved)
+    // owned is now invalid and cannot be used
+    
+    // Borrowed reference
+    func printString(s &String) {
+        fmt.Printf("📖 Borrowed string: %s\n", s)
+    }
+    
+    printString(&moved)
+    // moved is still valid after borrowing
+    fmt.Printf("✅ Original still valid: %s\n", moved)
+}
+
+// Type-level computation example
+type Nat enum {
+    Zero
+    Succ(Nat)
+}
+
+type Add<A: Nat, B: Nat> type = match (A, B) {
+    case (Zero, b) => b
+    case (Succ(a), b) => Succ(Add<a, B>)
+}
+
+// Compile-time assertions
+static_assert!(Add<Succ(Zero), Succ(Zero)> == Succ(Succ(Zero)))
+
+func main() {
+    fmt.Println("🌟 Advanced Goo Language Features Demo")
+    fmt.Println("=" * 45)
+    
+    // Generic interface usage
+    fmt.Println("\n🎯 Generic Interfaces:")
+    scores := []Score{
+        {Value: 85, Name: "Alice"},
+        {Value: 92, Name: "Bob"},
+        {Value: 78, Name: "Carol"},
+        {Value: 96, Name: "David"},
+    }
+    
+    maxScore := findMax(scores)
+    if maxScore? {
+        fmt.Printf("🏆 Highest score: %s with %d points\n", maxScore!.Name, maxScore!.Value)
+    }
+    
+    // Contract programming
+    fmt.Println("\n📋 Contract Programming:")
+    arr := []int{10, 20, 30, 40, 50}
+    
+    // Safe array access with contracts
+    safeValue := SafeArray.Get(arr, 2)
+    fmt.Printf("📦 Safe get arr[2]: %d\n", safeValue)
+    
+    SafeArray.Set(arr, 2, 35)
+    fmt.Printf("📝 After safe set arr[2] = 35: %v\n", arr)
+    
+    // Dependent types
+    fmt.Println("\n🔢 Dependent Types:")
+    
+    // Create bounded integers
+    percentage, err1 := NewBoundedInt<0, 100>(75)
+    if err1! {
+        fmt.Printf("❌ Error creating percentage: %s\n", err1!)
+    } else {
+        fmt.Printf("📊 Valid percentage: %d%%\n", percentage!.Value())
+    }
+    
+    invalidPercentage, err2 := NewBoundedInt<0, 100>(150)
+    if err2! {
+        fmt.Printf("❌ Expected error for invalid percentage: %s\n", err2!)
+    }
+    
+    // Higher-kinded types with Maybe
+    fmt.Println("\n🎭 Higher-Kinded Types (Maybe):")
+    
+    maybeNumber := Some(42)
+    doubled := maybeNumber.Map(func(x int) int { return x * 2 })
+    
+    if doubled.hasValue && doubled.value? {
+        fmt.Printf("🔢 Doubled value: %d\n", doubled.value!)
+    }
+    
+    // Chain operations
+    result := Some(10).
+        Map(func(x int) int { return x + 5 }).
+        FlatMap(func(x int) Maybe<string> {
+            return Some(fmt.Sprintf("Result: %d", x))
+        })
+    
+    if result.hasValue && result.value? {
+        fmt.Printf("🔗 Chained result: %s\n", result.value!)
+    }
+    
+    // Result type pattern matching
+    fmt.Println("\n🎪 Pattern Matching with Result:")
+    
+    divideResult := func(a, b int) Result<int, string> {
+        if b == 0 {
+            return Result.Err("division by zero")
+        }
+        return Result.Ok(a / b)
+    }
+    
+    results := []Result<int, string>{
+        divideResult(10, 2),
+        divideResult(15, 0),
+        divideResult(21, 3),
+    }
+    
+    for i, result := range results {
+        message := result.Match(
+            func(value int) string {
+                return fmt.Sprintf("✅ Success: %d", value)
+            },
+            func(error string) string {
+                return fmt.Sprintf("❌ Error: %s", error)
+            },
+        )
+        fmt.Printf("%d. %s\n", i+1, message)
+    }
+    
+    // Memory safety demonstration
+    demonstrateOwnership()
+    
+    // Type-level computation (compile-time)
+    fmt.Println("\n🧮 Type-Level Computation:")
+    fmt.Println("✅ Compile-time arithmetic verified")
+    fmt.Println("   Add<1, 1> == 2 (checked at compile time)")
+    
+    fmt.Println("\n🎉 Advanced features demonstration complete!")
+    fmt.Println("💡 These features showcase Goo's powerful type system and safety guarantees")
+}

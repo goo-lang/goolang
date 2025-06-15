@@ -1,0 +1,186 @@
+// nullable_types_demo.goo - Demonstrates Goo's nullable type features
+package main
+
+import "fmt"
+
+// User struct with some nullable fields
+type User struct {
+    ID       int
+    Name     string
+    Email    ?string    // Optional email
+    Age      ?int       // Optional age
+    Profile  ?Profile   // Optional profile
+}
+
+type Profile struct {
+    Bio      string
+    Website  ?string
+    Location ?string
+}
+
+// Database simulation - returns nullable user
+func findUserByID(id int) ?User {
+    users := map[int]User{
+        1: {
+            ID: 1, 
+            Name: "Alice",
+            Email: "alice@example.com",
+            Age: 30,
+            Profile: Profile{
+                Bio: "Software Engineer",
+                Website: "https://alice.dev",
+                Location: "San Francisco",
+            },
+        },
+        2: {
+            ID: 2,
+            Name: "Bob", 
+            Email: nil,  // No email provided
+            Age: nil,    // Age not specified
+            Profile: nil, // No profile
+        },
+    }
+    
+    if user, exists := users[id]; exists {
+        return user
+    }
+    return nil  // User not found
+}
+
+// Function that processes nullable values
+func displayUserInfo(userID int) {
+    fmt.Printf("\n👤 Looking up user %d...\n", userID)
+    
+    // Get potentially null user
+    user := findUserByID(userID)
+    
+    // Check if user exists
+    if user? {
+        fmt.Printf("✅ Found user: %s (ID: %d)\n", user!.Name, user!.ID)
+        
+        // Handle nullable email
+        if user!.Email? {
+            fmt.Printf("📧 Email: %s\n", user!.Email!)
+        } else {
+            fmt.Println("📧 Email: Not provided")
+        }
+        
+        // Handle nullable age
+        if user!.Age? {
+            fmt.Printf("🎂 Age: %d years old\n", user!.Age!)
+        } else {
+            fmt.Println("🎂 Age: Not specified")
+        }
+        
+        // Handle nullable profile
+        if user!.Profile? {
+            profile := user!.Profile!
+            fmt.Printf("📝 Bio: %s\n", profile.Bio)
+            
+            // Nested nullable checking
+            if profile.Website? {
+                fmt.Printf("🌐 Website: %s\n", profile.Website!)
+            } else {
+                fmt.Println("🌐 Website: Not provided")
+            }
+            
+            if profile.Location? {
+                fmt.Printf("📍 Location: %s\n", profile.Location!)
+            } else {
+                fmt.Println("📍 Location: Not specified")
+            }
+        } else {
+            fmt.Println("📝 Profile: No profile available")
+        }
+    } else {
+        fmt.Printf("❌ User %d not found\n", userID)
+    }
+}
+
+// Function demonstrating nullable arithmetic
+func calculateAverageAge(userIDs []int) ?float64 {
+    var totalAge int
+    var count int
+    
+    for _, id := range userIDs {
+        user := findUserByID(id)
+        if user? && user!.Age? {
+            totalAge += user!.Age!
+            count++
+        }
+    }
+    
+    if count == 0 {
+        return nil  // No ages available
+    }
+    
+    return float64(totalAge) / float64(count)
+}
+
+// Function with multiple nullable parameters
+func createUserSummary(name string, email ?string, age ?int) string {
+    summary := fmt.Sprintf("User: %s", name)
+    
+    if email? {
+        summary += fmt.Sprintf(" <%s>", email!)
+    }
+    
+    if age? {
+        summary += fmt.Sprintf(" (age %d)", age!)
+    }
+    
+    return summary
+}
+
+func main() {
+    fmt.Println("🚫 Goo Nullable Types Demo")
+    fmt.Println("=" * 35)
+    
+    // Test user lookups
+    userIDs := []int{1, 2, 3}
+    
+    for _, id := range userIDs {
+        displayUserInfo(id)
+    }
+    
+    fmt.Println("\n📊 Statistics:")
+    
+    // Calculate average age (handling nulls)
+    avgAge := calculateAverageAge(userIDs)
+    if avgAge? {
+        fmt.Printf("📈 Average age: %.1f years\n", avgAge!)
+    } else {
+        fmt.Println("📈 Average age: Cannot calculate (no age data)")
+    }
+    
+    fmt.Println("\n✍️ User Summaries:")
+    
+    // Examples with nullable parameters
+    summaries := []string{
+        createUserSummary("Charlie", "charlie@example.com", 25),
+        createUserSummary("Diana", nil, 35),
+        createUserSummary("Eve", "eve@example.com", nil),
+        createUserSummary("Frank", nil, nil),
+    }
+    
+    for i, summary := range summaries {
+        fmt.Printf("%d. %s\n", i+1, summary)
+    }
+    
+    // Nullable chain operations
+    fmt.Println("\n🔗 Nullable Chain Operations:")
+    
+    user1 := findUserByID(1)
+    if user1? && user1!.Profile? && user1!.Profile!.Website? {
+        fmt.Printf("✅ User 1 has website: %s\n", user1!.Profile!.Website!)
+    } else {
+        fmt.Println("❌ User 1 website chain failed")
+    }
+    
+    user2 := findUserByID(2)
+    if user2? && user2!.Profile? && user2!.Profile!.Website? {
+        fmt.Printf("✅ User 2 has website: %s\n", user2!.Profile!.Website!)
+    } else {
+        fmt.Println("❌ User 2 website chain failed (expected)")
+    }
+}

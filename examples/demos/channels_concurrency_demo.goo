@@ -1,0 +1,243 @@
+// channels_concurrency_demo.goo - Demonstrates Goo's channel and concurrency features
+package main
+
+import (
+    "fmt"
+    "time"
+    "sync"
+)
+
+// Job represents work to be done
+type Job struct {
+    ID     int
+    Data   string
+    Result ?string  // Nullable result
+}
+
+// Worker function that processes jobs
+func worker(id int, jobs <-chan Job, results chan<- Job, wg *sync.WaitGroup) {
+    defer wg.Done()
+    
+    fmt.Printf("🔧 Worker %d started\n", id)
+    
+    for job := range jobs {
+        fmt.Printf("🔨 Worker %d processing job %d: %s\n", id, job.ID, job.Data)
+        
+        // Simulate work
+        time.Sleep(time.Millisecond * 100)
+        
+        // Process the job
+        job.Result = fmt.Sprintf("Processed by worker %d: %s", id, job.Data)
+        
+        // Send result back
+        results <- job
+    }
+    
+    fmt.Printf("✅ Worker %d finished\n", id)
+}
+
+// Producer function that generates jobs
+func producer(jobCount int) <-chan Job {
+    jobs := make(chan Job, jobCount)
+    
+    go func() {
+        defer close(jobs)
+        
+        for i := 1; i <= jobCount; i++ {
+            job := Job{
+                ID:   i,
+                Data: fmt.Sprintf("task-%d", i),
+            }
+            
+            fmt.Printf("📤 Producing job %d\n", job.ID)
+            jobs <- job
+            
+            // Simulate variable job creation time
+            time.Sleep(time.Millisecond * 50)
+        }
+        
+        fmt.Println("🏁 Producer finished")
+    }()
+    
+    return jobs
+}
+
+// Consumer function that collects results
+func consumer(results <-chan Job, expectedCount int) []Job {
+    var allResults []Job
+    
+    fmt.Println("📥 Consumer started, waiting for results...")
+    
+    for i := 0; i < expectedCount; i++ {
+        result := <-results
+        allResults = append(allResults, result)
+        fmt.Printf("📨 Received result for job %d: %s\n", result.ID, result.Result!)
+    }
+    
+    fmt.Println("🎯 Consumer finished collecting all results")
+    return allResults
+}
+
+// Ping-pong example with channels
+func pingPong() {
+    fmt.Println("\n🏓 Ping-Pong Channel Demo:")
+    
+    ping := make(chan string)
+    pong := make(chan string)
+    
+    // Ping goroutine
+    go func() {
+        for i := 1; i <= 3; i++ {
+            fmt.Printf("🏓 Sending ping %d\n", i)
+            ping <- fmt.Sprintf("ping-%d", i)
+            
+            response := <-pong
+            fmt.Printf("🏓 Received: %s\n", response)
+        }
+        close(ping)
+    }()
+    
+    // Pong goroutine
+    go func() {
+        for msg := range ping {
+            fmt.Printf("🏓 Received: %s\n", msg)
+            pong <- fmt.Sprintf("pong-response-to-%s", msg)
+        }
+        close(pong)
+    }()
+    
+    // Wait for completion
+    time.Sleep(time.Second)
+}
+
+// Select statement demonstration
+func selectDemo() {
+    fmt.Println("\n🎯 Select Statement Demo:")
+    
+    ch1 := make(chan string)
+    ch2 := make(chan string)
+    done := make(chan bool)
+    
+    // Goroutine 1
+    go func() {
+        time.Sleep(time.Millisecond * 100)
+        ch1 <- "message from channel 1"
+    }()
+    
+    // Goroutine 2
+    go func() {
+        time.Sleep(time.Millisecond * 200)
+        ch2 <- "message from channel 2"
+    }()
+    
+    // Timeout goroutine
+    go func() {
+        time.Sleep(time.Millisecond * 300)
+        done <- true
+    }()
+    
+    // Select statement
+    for {
+        select {
+        case msg1 := <-ch1:
+            fmt.Printf("📥 Received from ch1: %s\n", msg1)
+        case msg2 := <-ch2:
+            fmt.Printf("📥 Received from ch2: %s\n", msg2)
+        case <-done:
+            fmt.Println("⏰ Timeout reached, ending select demo")
+            return
+        default:
+            fmt.Println("⏳ Waiting for messages...")
+            time.Sleep(time.Millisecond * 50)
+        }
+    }
+}
+
+// Error handling with channels
+func errorChannelDemo() {
+    fmt.Println("\n❌ Error Channel Demo:")
+    
+    type Result struct {
+        Value !int
+        Error !error
+    }
+    
+    results := make(chan Result, 3)
+    
+    // Worker that might fail
+    go func() {
+        defer close(results)
+        
+        operations := []struct{a, b int}{
+            {10, 2},  // Success
+            {15, 0},  // Division by zero
+            {20, 4},  // Success
+        }
+        
+        for i, op := range operations {
+            if op.b == 0 {
+                results <- Result{
+                    Value: nil,
+                    Error: fmt.Errorf("division by zero in operation %d", i+1),
+                }
+            } else {
+                results <- Result{
+                    Value: op.a / op.b,
+                    Error: nil,
+                }
+            }
+        }
+    }()
+    
+    // Process results
+    for result := range results {
+        if result.Error! {
+            fmt.Printf("❌ Error: %s\n", result.Error!)
+        } else {
+            fmt.Printf("✅ Success: %d\n", result.Value!)
+        }
+    }
+}
+
+func main() {
+    fmt.Println("🚀 Goo Channels & Concurrency Demo")
+    fmt.Println("=" * 40)
+    
+    // Worker pool pattern
+    fmt.Println("\n👥 Worker Pool Pattern:")
+    
+    const numWorkers = 3
+    const numJobs = 8
+    
+    // Create channels
+    jobs := producer(numJobs)
+    results := make(chan Job, numJobs)
+    
+    // Start workers
+    var wg sync.WaitGroup
+    for i := 1; i <= numWorkers; i++ {
+        wg.Add(1)
+        go worker(i, jobs, results, &wg)
+    }
+    
+    // Collect results in a separate goroutine
+    go func() {
+        wg.Wait()
+        close(results)
+    }()
+    
+    // Consume all results
+    allResults := consumer(results, numJobs)
+    
+    fmt.Printf("\n📊 Summary: Processed %d jobs\n", len(allResults))
+    for _, result := range allResults {
+        fmt.Printf("  • Job %d: %s\n", result.ID, result.Result!)
+    }
+    
+    // Run other demos
+    pingPong()
+    selectDemo()
+    errorChannelDemo()
+    
+    fmt.Println("\n🎉 All channel demos completed!")
+}
