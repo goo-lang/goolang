@@ -85,8 +85,8 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
         case TOKEN_INT: {
             // Parse integer value from string
             long long value = atoll(literal->value);
-            llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), value, 1);
-            goo_type = type_checker_get_builtin(checker, TYPE_INT64);
+            llvm_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), value, 1);
+            goo_type = type_checker_get_builtin(checker, TYPE_INT32);
             break;
         }
         
@@ -486,6 +486,12 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         IdentifierNode* func_name = (IdentifierNode*)call->function;
         if (strcmp(func_name->name, "make_chan") == 0) {
             return codegen_generate_make_chan_call(codegen, checker, expr);
+        }
+        if (strcmp(func_name->name, "println") == 0) {
+            return codegen_generate_println_call(codegen, checker, expr);
+        }
+        if (strcmp(func_name->name, "print") == 0) {
+            return codegen_generate_print_call(codegen, checker, expr);
         }
     }
     
@@ -1233,5 +1239,108 @@ ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* che
     value_info_free(addr_val);
     
     return result_info;
+#endif
+}
+
+// Built-in function implementations
+ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    
+    CallExprNode* call = (CallExprNode*)expr;
+    
+    // Get the goo_println function from the module
+    LLVMValueRef println_func = LLVMGetNamedFunction(codegen->module, "goo_println");
+    if (!println_func) {
+        codegen_error(codegen, expr->pos, "goo_println function not found in module");
+        return NULL;
+    }
+    
+    // For now, handle simple string arguments
+    if (!call->args) {
+        // println() with no arguments - just print a newline
+        LLVMValueRef empty_str = LLVMConstString("", 0, 0);
+        LLVMValueRef args[] = { empty_str };
+        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(println_func)), 
+                      println_func, args, 1, "");
+    } else {
+        // Handle first argument (simplified for now)
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
+        if (!arg_val) {
+            codegen_error(codegen, expr->pos, "Failed to generate argument for println");
+            return NULL;
+        }
+        
+        // For string literals, use the LLVM value directly
+        LLVMValueRef args[] = { arg_val->llvm_value };
+        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(println_func)), 
+                      println_func, args, 1, "");
+        
+        value_info_free(arg_val);
+    }
+    
+    // Return void value
+    ValueInfo* result = malloc(sizeof(ValueInfo));
+    result->name = NULL;
+    result->llvm_value = NULL;
+    result->goo_type = type_checker_get_builtin(checker, TYPE_VOID);
+    result->is_lvalue = 0;
+    result->is_moved = 0;
+    result->is_initialized = 1;
+    
+    return result;
+#endif
+}
+
+ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    
+    CallExprNode* call = (CallExprNode*)expr;
+    
+    // Get the goo_print function from the module
+    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
+    if (!print_func) {
+        codegen_error(codegen, expr->pos, "goo_print function not found in module");
+        return NULL;
+    }
+    
+    // Handle arguments similar to println
+    if (!call->args) {
+        // print() with no arguments - do nothing
+        LLVMValueRef empty_str = LLVMConstString("", 0, 0);
+        LLVMValueRef args[] = { empty_str };
+        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(print_func)), 
+                      print_func, args, 1, "");
+    } else {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
+        if (!arg_val) {
+            codegen_error(codegen, expr->pos, "Failed to generate argument for print");
+            return NULL;
+        }
+        
+        LLVMValueRef args[] = { arg_val->llvm_value };
+        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(print_func)), 
+                      print_func, args, 1, "");
+        
+        value_info_free(arg_val);
+    }
+    
+    // Return void value
+    ValueInfo* result = malloc(sizeof(ValueInfo));
+    result->name = NULL;
+    result->llvm_value = NULL;
+    result->goo_type = type_checker_get_builtin(checker, TYPE_VOID);
+    result->is_lvalue = 0;
+    result->is_moved = 0;
+    result->is_initialized = 1;
+    
+    return result;
 #endif
 }

@@ -449,14 +449,199 @@ int codegen_emit_llvm_ir(CodeGenerator* codegen __attribute__((unused)), const c
 #endif
 }
 
-int codegen_emit_object_file(CodeGenerator* codegen __attribute__((unused)), const char* filename __attribute__((unused))) {
-    // TODO: Implement object file emission
+int codegen_emit_object_file(CodeGenerator* codegen, const char* filename) {
+#if LLVM_AVAILABLE
+    if (!codegen || !filename) return 0;
+    
+    // Verify module first
+    if (!codegen_verify_module(codegen)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Module verification failed");
+        return 0;
+    }
+    
+    // Initialize target if not already done
+    if (!codegen->target_machine) {
+        char* error_message = NULL;
+        
+        // Get target triple
+        char* target_triple = codegen->target_triple;
+        if (!target_triple) {
+            target_triple = LLVMGetDefaultTargetTriple();
+        }
+        
+        // Get target from triple
+        LLVMTargetRef target;
+        if (LLVMGetTargetFromTriple(target_triple, &target, &error_message)) {
+            codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to get target: %s", error_message);
+            LLVMDisposeMessage(error_message);
+            if (!codegen->target_triple) LLVMDisposeMessage(target_triple);
+            return 0;
+        }
+        
+        // Create target machine
+        const char* cpu = codegen->target_cpu ? codegen->target_cpu : "generic";
+        const char* features = codegen->target_features ? codegen->target_features : "";
+        
+        codegen->target_machine = LLVMCreateTargetMachine(
+            target, target_triple, cpu, features,
+            LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault
+        );
+        
+        if (!codegen->target_machine) {
+            codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to create target machine");
+            if (!codegen->target_triple) LLVMDisposeMessage(target_triple);
+            return 0;
+        }
+        
+        // Set target data layout
+        LLVMTargetDataRef target_data = LLVMCreateTargetDataLayout(codegen->target_machine);
+        char* data_layout = LLVMCopyStringRepOfTargetData(target_data);
+        LLVMSetDataLayout(codegen->module, data_layout);
+        LLVMDisposeMessage(data_layout);
+        LLVMDisposeTargetData(target_data);
+        
+        if (!codegen->target_triple) {
+            LLVMDisposeMessage(target_triple);
+        }
+    }
+    
+    // Emit object file
+    char* error_message = NULL;
+    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module, 
+                                   (char*)filename, LLVMObjectFile, &error_message)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to emit object file: %s", error_message);
+        LLVMDisposeMessage(error_message);
+        return 0;
+    }
+    
+    return 1;
+#else
     return 0;
+#endif
 }
 
-int codegen_emit_executable(CodeGenerator* codegen __attribute__((unused)), const char* filename __attribute__((unused))) {
-    // TODO: Implement executable emission  
+int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
+#if LLVM_AVAILABLE
+    if (!codegen || !filename) return 0;
+    
+    // Verify module first
+    if (!codegen_verify_module(codegen)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Module verification failed");
+        return 0;
+    }
+    
+    // Initialize target if not already done
+    if (!codegen->target_machine) {
+        char* error_message = NULL;
+        
+        // Get target triple
+        char* target_triple = codegen->target_triple;
+        if (!target_triple) {
+            target_triple = LLVMGetDefaultTargetTriple();
+        }
+        
+        // Get target from triple
+        LLVMTargetRef target;
+        if (LLVMGetTargetFromTriple(target_triple, &target, &error_message)) {
+            codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to get target: %s", error_message);
+            LLVMDisposeMessage(error_message);
+            if (!codegen->target_triple) LLVMDisposeMessage(target_triple);
+            return 0;
+        }
+        
+        // Create target machine
+        const char* cpu = codegen->target_cpu ? codegen->target_cpu : "generic";
+        const char* features = codegen->target_features ? codegen->target_features : "";
+        
+        codegen->target_machine = LLVMCreateTargetMachine(
+            target, target_triple, cpu, features,
+            LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault
+        );
+        
+        if (!codegen->target_machine) {
+            codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to create target machine");
+            if (!codegen->target_triple) LLVMDisposeMessage(target_triple);
+            return 0;
+        }
+        
+        // Set target data layout
+        LLVMTargetDataRef target_data = LLVMCreateTargetDataLayout(codegen->target_machine);
+        char* data_layout = LLVMCopyStringRepOfTargetData(target_data);
+        LLVMSetDataLayout(codegen->module, data_layout);
+        LLVMDisposeMessage(data_layout);
+        LLVMDisposeTargetData(target_data);
+        
+        if (!codegen->target_triple) {
+            LLVMDisposeMessage(target_triple);
+        }
+    }
+    
+    // Generate object file first
+    char* object_filename = malloc(strlen(filename) + 3); // +2 for ".o", +1 for null terminator
+    if (!object_filename) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Memory allocation failed");
+        return 0;
+    }
+    sprintf(object_filename, "%s.o", filename);
+    
+    char* error_message = NULL;
+    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module, 
+                                   object_filename, LLVMObjectFile, &error_message)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to emit object file: %s", error_message);
+        LLVMDisposeMessage(error_message);
+        free(object_filename);
+        return 0;
+    }
+    
+    // Link object file to create executable
+    // Use system linker (ld on Unix, link.exe on Windows)
+    char link_command[2048];
+    
+#ifdef __APPLE__
+    // macOS linking with runtime library using clang
+    char* target_triple = codegen->target_triple;
+    if (!target_triple) {
+        target_triple = LLVMGetDefaultTargetTriple();
+    }
+    snprintf(link_command, sizeof(link_command), 
+             "clang -target %s -o %s %s lib/libgoo_runtime.a",
+             target_triple, filename, object_filename);
+    if (!codegen->target_triple) {
+        LLVMDisposeMessage(target_triple);
+    }
+#elif defined(__linux__)
+    // Linux linking with runtime library using gcc
+    snprintf(link_command, sizeof(link_command),
+             "gcc -o %s %s lib/libgoo_runtime.a",
+             filename, object_filename);
+#elif defined(_WIN32)
+    // Windows linking with runtime library
+    snprintf(link_command, sizeof(link_command),
+             "link.exe /OUT:%s %s lib\\libgoo_runtime.a /ENTRY:main /SUBSYSTEM:CONSOLE",
+             filename, object_filename);
+#else
+    // Generic Unix linking with runtime library using gcc
+    snprintf(link_command, sizeof(link_command),
+             "gcc -o %s %s lib/libgoo_runtime.a",
+             filename, object_filename);
+#endif
+    
+    int link_result = system(link_command);
+    if (link_result != 0) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, 
+                     "Linking failed with command: %s", link_command);
+        free(object_filename);
+        return 0;
+    }
+    
+    // Clean up object file
+    remove(object_filename);
+    free(object_filename);
+    
+    return 1;
+#else
     return 0;
+#endif
 }
 
 int codegen_optimize(CodeGenerator* codegen __attribute__((unused)), int level __attribute__((unused))) {

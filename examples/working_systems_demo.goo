@@ -1,0 +1,18 @@
+package main
+
+// Working systems programming demonstration  
+// Using currently implemented Goo features
+
+func main() {
+    // Basic memory management and type safety
+    var counter int = 42
+    var buffer_size int = 1024
+    var checksum int = 0
+    
+    // Arithmetic operations
+    checksum = counter + buffer_size
+    
+    // Type-safe variable assignments
+    var result int = checksum * 2
+    var final_value int = result
+}

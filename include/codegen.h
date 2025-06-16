@@ -253,6 +253,10 @@ LLVMValueRef codegen_generate_channel_send_call(CodeGenerator* codegen, LLVMValu
 LLVMValueRef codegen_generate_channel_recv_call(CodeGenerator* codegen, LLVMValueRef channel);
 ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
+// Built-in function helpers
+ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+
 // Error return helper - works with LLVM types
 LLVMValueRef codegen_generate_error_return(CodeGenerator* codegen, LLVMValueRef return_value, 
                                          Type* return_type, Type* function_return_type);

@@ -1,0 +1,51 @@
+package main
+
+// Comprehensive systems programming demonstration
+// This program showcases Goo's readiness for systems applications
+
+func main() {
+    // Memory management with type safety
+    var buffer [1024]int
+    var counter int = 0
+    
+    // Safe array access with bounds checking
+    for i := 0; i < 100; i++ {
+        buffer[i] = i * 2
+        counter = counter + 1
+    }
+    
+    // Nullable types for safe pointer handling
+    var ptr ?*int = &counter
+    if ptr != nil {
+        // Safe dereference
+        var value int = *ptr
+        buffer[0] = value
+    }
+    
+    // Error handling with error unions
+    var result !int = calculate_checksum(&buffer, counter)
+    
+    // Ownership and move semantics
+    var data [10]int
+    var moved_data [10]int = move data
+    
+    // Program completes successfully
+}
+
+// Function demonstrating error unions for robust error handling
+func calculate_checksum(data *[1024]int, length int) !int {
+    if data == nil {
+        return error("null pointer")
+    }
+    
+    if length < 0 || length > 1024 {
+        return error("invalid length")
+    }
+    
+    var sum int = 0
+    for i := 0; i < length; i++ {
+        sum = sum + data[i]
+    }
+    
+    return sum
+}

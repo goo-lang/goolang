@@ -28,6 +28,8 @@ INCDIR = include
 TESTDIR = tests
 BUILDDIR = build
 BINDIR = bin
+LIBDIR = lib
+COMPILERDIR = $(SRCDIR)/compiler
 
 # Test subdirectories
 TEST_UNIT_DIR = $(TESTDIR)/unit
@@ -46,11 +48,16 @@ ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
-COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
+COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
 CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS)
+COMPILER_SRCS = $(COMPILERDIR)/goo.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
 OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
+
+# Runtime library
+RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o
 
 # Main targets
 COMPILER = $(BINDIR)/goo
@@ -65,7 +72,7 @@ TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check
+.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units
 
 all: lexer
 
@@ -78,7 +85,7 @@ $(ANALYZER): $(LEXER_SRCS) $(SRCDIR)/main_minimal.c | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # Create directories
-$(BUILDDIR) $(BINDIR):
+$(BUILDDIR) $(BINDIR) $(LIBDIR):
 	mkdir -p $@
 
 # Bison rules
@@ -90,14 +97,53 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
+$(BUILDDIR)/compiler/%.o: $(COMPILERDIR)/%.c | $(BUILDDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+
 # Test framework object compilation
 $(BUILDDIR)/framework/%.o: $(TEST_FRAMEWORK_DIR)/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
-# Main compiler
-$(COMPILER): $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main_simple.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+# Parser generation
+$(SRCDIR)/parser/parser.tab.c: $(SRCDIR)/parser/parser.y
+	bison -d -o $@ $<
+
+# Main compiler executable
+goo: $(COMPILER)
+
+$(COMPILER): $(OBJS) $(COMPILER_SRCS) | $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+
+# Runtime library
+runtime-lib: $(RUNTIME_LIB)
+
+$(RUNTIME_LIB): $(RUNTIME_OBJS) | $(LIBDIR)
+	ar rcs $@ $^
+
+# Pipeline integration tests
+test-pipeline: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p tests
+	$(CC) $(CFLAGS) tests/test_runner.c -o tests/test_runner
+	./tests/test_runner
+
+# Unit tests
+test-lexer: $(OBJS)
+	@mkdir -p tests/unit/lexer
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/lexer/test_lexer_basic.c $(OBJS) -o tests/test_lexer $(LDFLAGS) $(LLVM_LDFLAGS)
+	./tests/test_lexer
+
+test-codegen: $(OBJS)
+	@mkdir -p tests/unit/codegen
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/codegen/test_target_detection.c $(OBJS) -o tests/test_codegen $(LDFLAGS) $(LLVM_LDFLAGS)
+	./tests/test_codegen
+
+test-units: test-lexer test-codegen
+
+# Test main (for running tests)
+test-main: $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main_simple.c $(OBJS) -o $(BINDIR)/test-main $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Test targets
 TEST_INTERFACE_SYSTEM = $(BINDIR)/test_interface_system

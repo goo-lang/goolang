@@ -138,20 +138,20 @@ ComptimeTypeResult* comptime_type_evaluate(TypeChecker* checker, ASTNode* expr) 
     
     // Evaluate the expression at compile time
     ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
-    ComptimeResult* result = comptime_evaluate_expression(ctx, expr);
+    ComptimeResult* result = comptime_eval_expression(ctx, expr);
     
-    if (!result || result->type != COMPTIME_RESULT_VALUE) {
+    if (!result || !result->value) {
         ComptimeTypeResult* type_result = comptime_type_result_new(NULL, NULL);
-        if (type_result && result && result->type == COMPTIME_RESULT_ERROR) {
-            type_result->error_message = strdup(result->data.error.message);
+        if (type_result && result && result->error) {
+            type_result->error_message = strdup(result->error->message);
         }
         comptime_result_free(result);
         return type_result;
     }
     
     // Convert the compile-time value to a type
-    Type* computed_type = comptime_type_from_value(&result->data.value);
-    ComptimeTypeResult* type_result = comptime_type_result_new(computed_type, &result->data.value);
+    Type* computed_type = comptime_type_from_value(result->value);
+    ComptimeTypeResult* type_result = comptime_type_result_new(computed_type, result->value);
     
     // Don't free the result yet as we're sharing the value
     return type_result;
@@ -273,17 +273,17 @@ int type_check_comptime_block(TypeChecker* checker, ASTNode* block) {
         return type_check_statement(checker, block);
     }
     
-    ComptimeBlockNode* comptime_block = &block->data.comptime_block;
+    ComptimeBlockNode* comptime_block = (ComptimeBlockNode*)block;
     
     // Evaluate the comptime block
     if (checker->comptime_type_ctx) {
         ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
-        ComptimeResult* result = comptime_evaluate_statement(ctx, comptime_block->statement);
+        ComptimeResult* result = comptime_eval_statement(ctx, comptime_block->body);
         
-        if (result && result->type == COMPTIME_RESULT_ERROR) {
+        if (result && result->error) {
             // Report compile-time error
-            type_error(checker, block->position, "Compile-time error: %s", 
-                      result->data.error.message);
+            type_error(checker, block->pos, "Compile-time error: %s", 
+                      result->error->message);
             comptime_result_free(result);
             return 0;
         }

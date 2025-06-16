@@ -1,0 +1,35 @@
+// Simple Hello World program in Goo
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello from Goo! 🚀")
+    
+    // Test basic features
+    var x int = 42
+    var y int = 8
+    var result int = x + y
+    
+    fmt.Printf("The answer is: %d\n", result)
+    
+    // Test error union
+    value := divide(10, 2)
+    if value != nil {
+        fmt.Printf("10 / 2 = %d\n", value)
+    }
+    
+    // Test nullable types
+    var name ?string = "Goo"
+    if let actualName = name {
+        fmt.Printf("Language: %s\n", actualName)
+    }
+}
+
+// Test error unions
+func divide(a int, b int) !int {
+    if b == 0 {
+        return error("division by zero")
+    }
+    return a / b
+}
