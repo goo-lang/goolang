@@ -1,0 +1,298 @@
+// Hardware-Aware Compilation Demo
+// Demonstrates advanced compile-time optimization with hardware detection
+
+package main
+
+import "fmt"
+import "math"
+import "os"
+
+// Hardware-aware matrix multiplication
+@optimize_for("throughput")
+func matrix_multiply(a: [][]float64, b: [][]float64) [][]float64 {
+    comptime {
+        // Automatically detect optimal implementation
+        if @target_has("avx512") {
+            @use_implementation("avx512_matrix_multiply")
+            @vectorize(512)
+        } else if @target_has("avx2") {
+            @use_implementation("avx2_matrix_multiply")
+            @vectorize(256)
+        } else if @target_has("neon") {
+            @use_implementation("neon_matrix_multiply")
+            @vectorize(128)
+        } else {
+            @use_implementation("scalar_matrix_multiply")
+        }
+        
+        // GPU offloading decision
+        if @target_has("gpu") && @data_size() > 1_000_000 {
+            @offload_to_gpu()
+        }
+        
+        // Parallelization strategy
+        cores := @get_core_count()
+        if cores > 4 {
+            @enable_parallel_loops()
+            @max_threads(cores)
+        }
+    }
+    
+    rows_a := len(a)
+    cols_a := len(a[0])
+    cols_b := len(b[0])
+    
+    result := make([][]float64, rows_a)
+    for i := 0; i < rows_a; i++ {
+        result[i] = make([]float64, cols_b)
+    }
+    
+    // This loop will be automatically optimized based on hardware
+    @vectorize_hint
+    parallel for i := 0; i < rows_a; i++ {
+        parallel for j := 0; j < cols_b; j++ {
+            sum := 0.0
+            @unroll_hint(8)  // Hint for loop unrolling
+            for k := 0; k < cols_a; k++ {
+                sum += a[i][k] * b[k][j]
+            }
+            result[i][j] = sum
+        }
+    }
+    
+    return result
+}
+
+// Hardware-aware sorting with algorithm selection
+@optimize_for("latency")
+func smart_sort(data: []int) []int {
+    comptime {
+        size := @data_size()
+        
+        // Algorithm selection based on data size and hardware
+        if size < 100 {
+            @use_algorithm("insertion_sort")
+        } else if @target_has("avx512") && size > 10000 {
+            @use_algorithm("radix_sort_avx512")
+        } else if @target_has("avx2") && size > 1000 {
+            @use_algorithm("quicksort_avx2")
+        } else if @get_core_count() > 8 && size > 10000 {
+            @use_algorithm("parallel_merge_sort")
+        } else {
+            @use_algorithm("quicksort")
+        }
+        
+        // Memory layout optimization
+        if @get_cache_line_size() == 64 {
+            @align_data(64)
+        }
+    }
+    
+    // The actual sorting implementation will be selected at compile time
+    result := make([]int, len(data))
+    copy(result, data)
+    
+    // Hardware-optimized sorting logic goes here
+    // The compiler will substitute the optimal algorithm
+    @hardware_optimized_sort(result)
+    
+    return result
+}
+
+// Cryptographic hashing with hardware acceleration
+@optimize_for("security")
+func secure_hash(data: []byte) []byte {
+    comptime {
+        // Use hardware crypto if available
+        if @target_has("aes_ni") {
+            @use_crypto_backend("aes_ni")
+        } else if @target_has("sha_ext") {
+            @use_crypto_backend("sha_hardware")
+        } else {
+            @use_crypto_backend("software")
+        }
+        
+        // Security-focused optimizations
+        @enable_constant_time_operations()
+        @disable_branch_prediction()  // Prevent timing attacks
+    }
+    
+    // Hardware-accelerated hashing
+    return @hardware_hash(data, "sha256")
+}
+
+// Adaptive algorithm based on runtime profiling
+@profile_guided
+func adaptive_search(haystack: []string, needle: string) int {
+    comptime {
+        // The compiler will use profiling data to optimize this
+        // based on typical haystack sizes and search patterns
+        
+        typical_size := @profile_data("haystack_size_p95")
+        search_hit_rate := @profile_data("search_hit_rate")
+        
+        if typical_size > 10000 && search_hit_rate > 0.8 {
+            // Most searches succeed, optimize for hits
+            @use_algorithm("boyer_moore_optimistic")
+        } else if typical_size < 100 {
+            // Small data, use simple algorithm
+            @use_algorithm("linear_search")
+        } else {
+            // General case
+            @use_algorithm("binary_search")
+            @sort_haystack_once()  // Pre-sort for binary search
+        }
+    }
+    
+    // Search implementation selected at compile time
+    return @optimized_search(haystack, needle)
+}
+
+// Memory-intensive workload with cache optimization
+@optimize_for("memory")
+func process_large_dataset(data: [][]float64) []float64 {
+    comptime {
+        cache_size := @get_l3_cache_size()
+        cache_line_size := @get_cache_line_size()
+        
+        // Tile size based on cache characteristics
+        tile_size := cache_size / (8 * sizeof(float64))  // Use 1/8 of L3 cache
+        
+        @set_tile_size(tile_size)
+        @align_data(cache_line_size)
+        
+        // Prefetching strategy
+        if @target_has("prefetch") {
+            @enable_prefetching()
+            @set_prefetch_distance(cache_line_size * 8)
+        }
+        
+        // NUMA-aware optimization
+        if @target_has("numa") {
+            @enable_numa_awareness()
+            @bind_threads_to_nodes()
+        }
+    }
+    
+    result := make([]float64, len(data))
+    
+    // Cache-friendly processing with automatic tiling
+    @cache_optimized
+    for i, row := range data {
+        sum := 0.0
+        
+        // This will be tiled automatically based on cache size
+        @prefetch_hint(data[i+1])  // Prefetch next row
+        for _, val := range row {
+            sum += val * val
+        }
+        
+        result[i] = math.Sqrt(sum)
+    }
+    
+    return result
+}
+
+// Energy-efficient computation for mobile/embedded
+@optimize_for("energy")
+func energy_efficient_compute(data: []int) int {
+    comptime {
+        // Energy-conscious optimizations
+        max_freq := @get_max_frequency()
+        power_budget := @get_power_budget()
+        
+        if power_budget < 15 {  // Low power device (mobile/embedded)
+            @limit_frequency(max_freq * 0.8)  // 80% of max frequency
+            @use_fewer_cores(@get_core_count() / 2)
+            @disable_turbo_boost()
+            @enable_power_gating()
+        }
+        
+        // Prefer scalar over vector for energy efficiency
+        @prefer_scalar_operations()
+        @minimize_memory_accesses()
+    }
+    
+    // Simple, energy-efficient algorithm
+    sum := 0
+    for _, val := range data {
+        sum += val
+    }
+    
+    return sum
+}
+
+// Benchmark different implementations at compile time
+func benchmark_driven_optimization() {
+    comptime {
+        // Automatically benchmark different sort implementations
+        // and select the best one for this specific hardware
+        
+        sample_data := @generate_test_data(1000, "random_int")
+        
+        best_sort := @benchmark_and_select([
+            "quicksort",
+            "mergesort", 
+            "heapsort",
+            "radix_sort"
+        ], sample_data)
+        
+        @use_implementation(best_sort)
+        
+        // Store results for future compilations
+        @cache_benchmark_result(best_sort, @get_hardware_signature())
+    }
+}
+
+func main() {
+    fmt.Println("Hardware-Aware Compilation Demo")
+    fmt.Println("================================")
+    
+    // Display detected hardware capabilities
+    comptime {
+        fmt.Printf("Target Architecture: %s\n", @get_target_arch())
+        fmt.Printf("CPU Cores: %d\n", @get_core_count())
+        fmt.Printf("Vector Width: %d bits\n", @get_optimal_vector_width("fp64_math"))
+        fmt.Printf("Cache Line Size: %d bytes\n", @get_cache_line_size())
+        
+        if @target_has("avx512") {
+            fmt.Println("✓ AVX-512 support detected")
+        } else if @target_has("avx2") {
+            fmt.Println("✓ AVX2 support detected")
+        }
+        
+        if @target_has("aes_ni") {
+            fmt.Println("✓ AES-NI hardware acceleration available")
+        }
+        
+        if @target_has("gpu") {
+            fmt.Println("✓ GPU acceleration available")
+        }
+    }
+    
+    // Demo matrix multiplication
+    fmt.Println("\nTesting hardware-optimized matrix multiplication...")
+    a := [][]float64{{1, 2}, {3, 4}}
+    b := [][]float64{{5, 6}, {7, 8}}
+    result := matrix_multiply(a, b)
+    fmt.Printf("Result: %v\n", result)
+    
+    // Demo smart sorting
+    fmt.Println("\nTesting hardware-aware sorting...")
+    data := []int{64, 34, 25, 12, 22, 11, 90}
+    sorted := smart_sort(data)
+    fmt.Printf("Sorted: %v\n", sorted)
+    
+    // Demo secure hashing
+    fmt.Println("\nTesting hardware-accelerated hashing...")
+    hash := secure_hash([]byte("Hello, World!"))
+    fmt.Printf("Hash: %x\n", hash)
+    
+    // Demo adaptive search
+    fmt.Println("\nTesting profile-guided search...")
+    haystack := []string{"apple", "banana", "cherry", "date"}
+    index := adaptive_search(haystack, "cherry")
+    fmt.Printf("Found at index: %d\n", index)
+    
+    fmt.Println("\nAll hardware optimizations applied successfully!")
+}

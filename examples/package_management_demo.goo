@@ -1,0 +1,334 @@
+// Goo Package Management Demo
+// Demonstrates the revolutionary IPFS-powered package management system
+
+import "fmt"
+import "os"
+import "time"
+
+// Example of using packages from different sources
+import "ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG" as ipfs_pkg
+import "ipns://k51qzi5uqu5djvDemoProject123abc" as mutable_pkg
+import "p2p://json-parser@^2.0.0" as json
+import "hybrid://github.com/goo/http@^1.0.0" as http
+
+// Package metadata structure
+type Package struct {
+    name: string
+    version: string
+    cid: ?string         // IPFS CID
+    ipns: ?string        // IPNS name
+    signatures: []string // Cryptographic signatures
+}
+
+// Download statistics
+type DownloadStats struct {
+    source: string
+    speed_mbps: float64
+    latency_ms: float64
+    success: bool
+}
+
+// Demonstrate package resolution from multiple sources
+func resolvePackage(name: string, version: string) -> !Package {
+    fmt.println("Resolving package: {} @ {}", name, version)
+    
+    // Try different resolution strategies
+    strategies := []string{
+        "ipfs-first",
+        "p2p-discovery", 
+        "traditional-registry",
+        "local-cache"
+    }
+    
+    for strategy in strategies {
+        fmt.println("  Trying strategy: {}", strategy)
+        
+        match strategy {
+            "ipfs-first" => {
+                // Try IPFS content-addressed storage
+                if cid := tryIPFSResolution(name, version) {
+                    return Package{
+                        name: name,
+                        version: version,
+                        cid: cid,
+                        ipns: nil,
+                        signatures: []
+                    }
+                }
+            }
+            "p2p-discovery" => {
+                // Try P2P network discovery
+                if pkg := tryP2PDiscovery(name, version) {
+                    return pkg
+                }
+            }
+            "traditional-registry" => {
+                // Fallback to traditional registry
+                if pkg := tryTraditionalRegistry(name, version) {
+                    return pkg
+                }
+            }
+            "local-cache" => {
+                // Check local cache
+                if pkg := checkLocalCache(name, version) {
+                    return pkg
+                }
+            }
+        }
+    }
+    
+    return ResolutionError("Package not found: {} @ {}", name, version)
+}
+
+// Demonstrate hybrid download with intelligent source selection
+func downloadPackage(pkg: Package) -> !DownloadStats {
+    fmt.println("Downloading package: {} @ {}", pkg.name, pkg.version)
+    
+    // Collect available sources
+    sources := collectDownloadSources(pkg)
+    fmt.println("  Found {} download sources", len(sources))
+    
+    // Rank sources by performance and reliability
+    rankedSources := rankDownloadSources(sources)
+    
+    // Try sources in order
+    for source in rankedSources {
+        fmt.println("  Trying source: {} (expected speed: {} MB/s)", 
+                   source.type, source.expectedSpeed)
+        
+        startTime := time.now()
+        
+        match source.type {
+            "ipfs-gateway" => {
+                if stats := downloadFromIPFS(pkg.cid!, source.url) {
+                    stats.latency_ms = time.since(startTime).milliseconds()
+                    return stats
+                }
+            }
+            "p2p-peer" => {
+                if stats := downloadFromPeer(source.peerId, pkg.cid!) {
+                    stats.latency_ms = time.since(startTime).milliseconds()
+                    return stats
+                }
+            }
+            "http-cdn" => {
+                if stats := downloadFromCDN(source.url) {
+                    stats.latency_ms = time.since(startTime).milliseconds()
+                    return stats
+                }
+            }
+        }
+    }
+    
+    return DownloadError("Failed to download package from any source")
+}
+
+// Demonstrate package publishing to IPFS and traditional registry
+func publishPackage(path: string, metadata: PackageMetadata) -> !PublishResult {
+    fmt.println("Publishing package: {} @ {}", metadata.name, metadata.version)
+    
+    // 1. Add to IPFS
+    fmt.println("  Adding to IPFS...")
+    cid := ipfs.addFile(path)!
+    fmt.println("    CID: {}", cid)
+    
+    // 2. Sign the package
+    fmt.println("  Signing package...")
+    signature := crypto.signPackage(cid, privateKey)!
+    fmt.println("    Signature: {}", signature[:16] + "...")
+    
+    // 3. Update or create IPNS record
+    fmt.println("  Publishing to IPNS...")
+    ipnsName := ipns.publish(cid, metadata.name)!
+    fmt.println("    IPNS: {}", ipnsName)
+    
+    // 4. Announce via P2P
+    fmt.println("  Announcing via P2P...")
+    p2p.announcePackage(metadata.name, metadata.version, cid)!
+    
+    // 5. Update traditional registry
+    fmt.println("  Updating traditional registry...")
+    registry.publish(metadata, cid, ipnsName, signature)!
+    
+    // 6. Trigger replication to mirrors
+    fmt.println("  Replicating to mirrors...")
+    replicateToMirrors(cid, metadata)!
+    
+    return PublishResult{
+        cid: cid,
+        ipnsName: ipnsName,
+        signature: signature,
+        mirrors: getMirrorList()
+    }
+}
+
+// Demonstrate P2P package sharing
+func sharePackageP2P(pkg: Package) -> ! {
+    fmt.println("Sharing package via P2P: {} @ {}", pkg.name, pkg.version)
+    
+    // Join package swarm
+    swarm := p2p.joinSwarm("goo-packages")!
+    fmt.println("  Joined swarm with {} peers", swarm.peerCount)
+    
+    // Start seeding
+    p2p.startSeeding(pkg.cid!)!
+    fmt.println("  Seeding package to peers")
+    
+    // Monitor bandwidth sharing
+    go func() {
+        for {
+            stats := p2p.getSeedingStats(pkg.cid!)
+            fmt.println("  Upload: {} MB/s to {} peers", 
+                       stats.uploadSpeed, stats.connectedPeers)
+            time.sleep(5 * time.Second)
+        }
+    }()
+    
+    // Enable bandwidth donation
+    p2p.donateBandwidth(10.0) // 10 MB/s
+    fmt.println("  Donating bandwidth to network")
+}
+
+// Demonstrate security verification
+func verifyPackageSecurity(pkg: Package) -> !SecurityReport {
+    fmt.println("Verifying package security: {} @ {}", pkg.name, pkg.version)
+    
+    report := SecurityReport{
+        package: pkg,
+        checks: [],
+        vulnerabilities: [],
+        trust_score: 0.0
+    }
+    
+    // 1. Verify cryptographic signatures
+    fmt.println("  Checking signatures...")
+    for sig in pkg.signatures {
+        if verified := crypto.verifySignature(pkg.cid!, sig) {
+            report.checks.append("Signature valid: " + sig[:16] + "...")
+            report.trust_score += 0.2
+        }
+    }
+    
+    // 2. Check vulnerability database
+    fmt.println("  Checking vulnerabilities...")
+    vulns := security.checkVulnerabilities(pkg.name, pkg.version)!
+    report.vulnerabilities = vulns
+    
+    // 3. Verify build reproducibility
+    fmt.println("  Verifying build reproducibility...")
+    if reproducible := verifyReproducibleBuild(pkg) {
+        report.checks.append("Build is reproducible")
+        report.trust_score += 0.3
+    }
+    
+    // 4. Check blockchain attestation
+    fmt.println("  Checking blockchain attestation...")
+    if attestation := blockchain.getAttestation(pkg.cid!) {
+        report.checks.append("Blockchain verified: " + attestation.txHash)
+        report.trust_score += 0.3
+    }
+    
+    // 5. Verify P2P reputation
+    fmt.println("  Checking P2P reputation...")
+    reputation := p2p.getPackageReputation(pkg.cid!)
+    report.trust_score += reputation * 0.2
+    
+    fmt.println("  Final trust score: {:.2f}/1.0", report.trust_score)
+    return report
+}
+
+// Main demonstration
+func main() {
+    fmt.println("=== Goo Package Management Demo ===\n")
+    
+    // 1. Resolve a package using hybrid strategy
+    fmt.println("1. Package Resolution Demo")
+    pkg := resolvePackage("json-parser", "^2.0.0")!
+    fmt.println("   Resolved: {} @ {} (CID: {})\n", 
+               pkg.name, pkg.version, pkg.cid || "none")
+    
+    // 2. Download with intelligent source selection
+    fmt.println("2. Intelligent Download Demo")
+    stats := downloadPackage(pkg)!
+    fmt.println("   Downloaded from: {} at {:.2f} MB/s\n", 
+               stats.source, stats.speed_mbps)
+    
+    // 3. Verify package security
+    fmt.println("3. Security Verification Demo")
+    securityReport := verifyPackageSecurity(pkg)!
+    fmt.println("   Security checks: {}", len(securityReport.checks))
+    fmt.println("   Vulnerabilities: {}", len(securityReport.vulnerabilities))
+    fmt.println("   Trust score: {:.2f}/1.0\n", securityReport.trust_score)
+    
+    // 4. Share via P2P network
+    fmt.println("4. P2P Sharing Demo")
+    sharePackageP2P(pkg)!
+    
+    // 5. Publish a new package
+    fmt.println("\n5. Package Publishing Demo")
+    metadata := PackageMetadata{
+        name: "my-awesome-lib",
+        version: "1.0.0",
+        description: "An awesome library for Goo",
+        authors: ["developer@example.com"],
+        license: "MIT"
+    }
+    
+    result := publishPackage("./dist/my-awesome-lib.tar.gz", metadata)!
+    fmt.println("   Published successfully!")
+    fmt.println("   CID: {}", result.cid)
+    fmt.println("   IPNS: {}", result.ipnsName)
+    fmt.println("   Mirrors: {}\n", len(result.mirrors))
+    
+    // 6. Monitor network health
+    fmt.println("6. Network Health Monitor")
+    go monitorNetworkHealth()
+    
+    fmt.println("\n=== Demo Complete ===")
+}
+
+// Helper function to monitor network health
+func monitorNetworkHealth() {
+    for {
+        health := getNetworkHealth()
+        fmt.println("\n[Network Health]")
+        fmt.println("  Active peers: {}", health.activePeers)
+        fmt.println("  Total packages: {}", health.totalPackages)
+        fmt.println("  Network bandwidth: {:.2f} GB/s", health.totalBandwidth)
+        fmt.println("  Average latency: {:.2f} ms", health.avgLatency)
+        fmt.println("  Package availability: {:.2f}%", health.availability * 100)
+        
+        time.sleep(30 * time.Second)
+    }
+}
+
+// Example helper types and functions (would be implemented in the actual system)
+type PackageMetadata struct {
+    name: string
+    version: string
+    description: string
+    authors: []string
+    license: string
+}
+
+type PublishResult struct {
+    cid: string
+    ipnsName: string
+    signature: string
+    mirrors: []string
+}
+
+type SecurityReport struct {
+    package: Package
+    checks: []string
+    vulnerabilities: []string
+    trust_score: float64
+}
+
+type NetworkHealth struct {
+    activePeers: int
+    totalPackages: int
+    totalBandwidth: float64
+    avgLatency: float64
+    availability: float64
+}

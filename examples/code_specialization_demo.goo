@@ -1,0 +1,266 @@
+// Automatic Code Specialization Demo
+// Shows how Goo automatically generates specialized versions of functions
+
+package main
+
+import "fmt"
+import "math"
+
+// Generic sorting function that will be automatically specialized
+func quicksort[T](arr: []T, less: func(T, T) bool) {
+    if len(arr) <= 1 {
+        return
+    }
+    
+    pivot := arr[len(arr)/2]
+    left := []T{}
+    right := []T{}
+    
+    for i, v := range arr {
+        if i == len(arr)/2 {
+            continue
+        }
+        if less(v, pivot) {
+            left = append(left, v)
+        } else {
+            right = append(right, v)
+        }
+    }
+    
+    quicksort(left, less)
+    quicksort(right, less)
+    
+    // Reconstruct array
+    copy(arr, left)
+    arr[len(left)] = pivot
+    copy(arr[len(left)+1:], right)
+}
+
+// The compiler will automatically generate these specializations:
+// 1. quicksort_int_ascending - for []int with default < comparison
+// 2. quicksort_int_descending - for []int with > comparison  
+// 3. quicksort_small_array_int - for arrays with len < 8
+// 4. quicksort_avx2_int32 - vectorized version for compatible hardware
+
+// Matrix multiplication that specializes based on size
+func matrix_multiply[T](a: [][]T, b: [][]T) [][]T {
+    rows_a := len(a)
+    cols_a := len(a[0])
+    cols_b := len(b[0])
+    
+    result := make([][]T, rows_a)
+    for i := range result {
+        result[i] = make([]T, cols_b)
+    }
+    
+    for i := 0; i < rows_a; i++ {
+        for j := 0; j < cols_b; j++ {
+            sum := T(0)
+            for k := 0; k < cols_a; k++ {
+                sum += a[i][k] * b[k][j]
+            }
+            result[i][j] = sum
+        }
+    }
+    
+    return result
+}
+
+// The compiler will automatically generate:
+// 1. matrix_multiply_small_fixed[N, M, P] - for compile-time known sizes
+// 2. matrix_multiply_float64_avx2 - vectorized for float64
+// 3. matrix_multiply_tiled - cache-optimized for large matrices
+// 4. matrix_multiply_gpu - GPU-accelerated for very large matrices
+
+// Function with constant parameter that enables optimization
+func compute_polynomial(x: float64, degree: int) float64 {
+    // When degree is constant, this unrolls completely
+    result := 0.0
+    for i := 0; i <= degree; i++ {
+        result += float64(i+1) * math.Pow(x, float64(i))
+    }
+    return result
+}
+
+// Specialized versions generated:
+// 1. compute_polynomial_degree_2 - fully unrolled quadratic
+// 2. compute_polynomial_degree_3 - fully unrolled cubic
+// etc.
+
+// Range-constrained function enables bounds check elimination
+func safe_array_sum(arr: []int, start: int, end: int) int {
+    // When start/end are compile-time constants or have known ranges,
+    // bounds checks are eliminated
+    sum := 0
+    for i := start; i < end && i < len(arr); i++ {
+        sum += arr[i]
+    }
+    return sum
+}
+
+// Pattern-based string formatting specialization
+func format_log_message(level: string, format: string, args: ...interface{}) string {
+    // When format is a compile-time constant, specialized formatters are generated
+    timestamp := time.Now().Format("2006-01-02 15:04:05")
+    prefix := fmt.Sprintf("[%s] [%s] ", timestamp, level)
+    return prefix + fmt.Sprintf(format, args...)
+}
+
+// Type-specific collection operations
+func find_max[T comparable](slice: []T) ?T {
+    if len(slice) == 0 {
+        return nil
+    }
+    
+    max := slice[0]
+    for _, v := range slice[1:] {
+        if v > max {
+            max = v
+        }
+    }
+    return max
+}
+
+// Generates optimized versions for:
+// 1. find_max_int - uses CPU instructions for integer comparison
+// 2. find_max_float64 - handles NaN correctly, uses SIMD
+// 3. find_max_string - optimized string comparison
+
+// Hot path optimization with profiling
+@profile_guided
+func process_request(req: Request) Response {
+    // The compiler profiles this function and specializes
+    // based on common request patterns
+    
+    if req.method == "GET" {  // 90% of requests
+        // This branch gets inlined and optimized
+        return handle_get(req)
+    } else if req.method == "POST" {  // 8% of requests
+        return handle_post(req)
+    } else {  // 2% of requests
+        // Rare path is not optimized
+        return handle_other(req)
+    }
+}
+
+// Compile-time specialization directives
+@specialize_for(size = 16)
+func fixed_size_fft(data: []complex128) {
+    // Generates a specialized FFT for size 16
+    // with fully unrolled loops and precomputed constants
+}
+
+@no_specialize
+func rarely_called_function(x: interface{}) {
+    // This function is not specialized to save code size
+}
+
+// Demonstration of inline caching for dynamic dispatch
+interface Shape {
+    area() float64
+}
+
+type Circle struct {
+    radius float64
+}
+
+func (c Circle) area() float64 {
+    return math.Pi * c.radius * c.radius
+}
+
+type Rectangle struct {
+    width, height float64
+}
+
+func (r Rectangle) area() float64 {
+    return r.width * r.height
+}
+
+func total_area(shapes: []Shape) float64 {
+    // The compiler generates inline caches for area() calls
+    // Monomorphic call sites (all same type) are devirtualized
+    sum := 0.0
+    for _, shape := range shapes {
+        sum += shape.area()  // Inline cached
+    }
+    return sum
+}
+
+// Loop idiom recognition
+func array_copy(dst: []byte, src: []byte) {
+    // Recognized as memcpy pattern
+    for i := 0; i < len(src) && i < len(dst); i++ {
+        dst[i] = src[i]
+    }
+    // Automatically replaced with optimized memcpy
+}
+
+func array_fill(arr: []int, value: int) {
+    // Recognized as memset pattern
+    for i := range arr {
+        arr[i] = value
+    }
+    // Automatically replaced with optimized memset
+}
+
+// Demonstration
+func main() {
+    fmt.Println("=== Automatic Code Specialization Demo ===")
+    
+    // Integer sorting - uses specialized version
+    ints := []int{5, 2, 8, 1, 9, 3}
+    quicksort(ints, func(a, b int) bool { return a < b })
+    fmt.Printf("Sorted ints: %v\n", ints)
+    
+    // Small array optimization
+    small := []int{3, 1, 4, 1, 5}
+    quicksort(small, func(a, b int) bool { return a < b })
+    fmt.Printf("Sorted small array: %v\n", small)
+    
+    // Matrix multiplication - type specialized
+    a := [][]float64{{1, 2}, {3, 4}}
+    b := [][]float64{{5, 6}, {7, 8}}
+    result := matrix_multiply(a, b)
+    fmt.Printf("Matrix result: %v\n", result)
+    
+    // Constant polynomial - fully unrolled
+    quad := compute_polynomial(2.5, 2)  // Quadratic
+    fmt.Printf("Polynomial result: %.2f\n", quad)
+    
+    // Range-based optimization
+    arr := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    sum := safe_array_sum(arr, 2, 8)  // Bounds checks eliminated
+    fmt.Printf("Array sum [2:8]: %d\n", sum)
+    
+    // Type-specific max
+    max_int := find_max([]int{3, 7, 2, 9, 1})
+    fmt.Printf("Max int: %v\n", max_int!)
+    
+    // Pattern-based string formatting
+    msg := format_log_message("INFO", "User %s logged in", "alice")
+    fmt.Println(msg)
+    
+    // Inline caching demonstration
+    shapes := []Shape{
+        Circle{radius: 5},
+        Circle{radius: 3},      // Monomorphic site - devirtualized
+        Circle{radius: 4},
+    }
+    area := total_area(shapes)
+    fmt.Printf("Total area: %.2f\n", area)
+    
+    // Loop idiom recognition
+    src := []byte("Hello, World!")
+    dst := make([]byte, len(src))
+    array_copy(dst, src)  // Replaced with memcpy
+    fmt.Printf("Copied: %s\n", string(dst))
+    
+    fmt.Println("\n=== Specialization Statistics ===")
+    comptime {
+        stats := @get_specialization_stats()
+        fmt.Printf("Functions specialized: %d\n", stats.total_specializations)
+        fmt.Printf("Average speedup: %.2fx\n", stats.avg_speedup)
+        fmt.Printf("Code size increase: %d KB\n", stats.code_size_increase / 1024)
+        fmt.Printf("Compilation time: %.2f seconds\n", stats.compilation_time)
+    }
+}

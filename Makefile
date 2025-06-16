@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c23 -g -Iinclude
-LDFLAGS = -lm -pthread
+CFLAGS = -Wall -Wextra -std=c23 -g -Iinclude -I/opt/homebrew/include
+LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Coverage flags
 COVERAGE_FLAGS = -fprofile-arcs -ftest-coverage
@@ -46,10 +46,11 @@ CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SR
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
+PACKAGE_SRCS = $(SRCDIR)/package/module.c $(SRCDIR)/package/goo_mod_parser.c $(SRCDIR)/package/ipfs_client.c $(SRCDIR)/package/gmod_ipfs_cli.c $(SRCDIR)/package/gateway_intelligence.c $(SRCDIR)/package/ipns_manager.c $(SRCDIR)/package/crypto_verifier.c $(SRCDIR)/package/p2p_discovery.c $(SRCDIR)/package/hybrid_registry.c $(SRCDIR)/package/ai_cache.c $(SRCDIR)/package/reputation_system.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
-COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
-CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS)
+COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/hardware_aware.c $(SRCDIR)/comptime/code_specialization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
+CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(PACKAGE_SRCS) $(COMPTIME_SRCS)
 COMPILER_SRCS = $(COMPILERDIR)/goo.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
@@ -68,11 +69,12 @@ REPL_ENHANCED = $(BINDIR)/goo-repl-enhanced
 LSP_SERVER = $(BINDIR)/goo-lsp
 LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 LSP_STANDALONE_SERVER = $(BINDIR)/goo-lsp-standalone
+GMOD_CLI = $(BINDIR)/gmod
 TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units
+.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp gmod coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units
 
 all: lexer
 
@@ -149,6 +151,7 @@ test-main: $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
 TEST_INTERFACE_SYSTEM = $(BINDIR)/test_interface_system
 TEST_FLOW_ANALYSIS = $(BINDIR)/test_flow_analysis
 TEST_REFERENCE_MANAGER = $(BINDIR)/test_reference_manager
+TEST_HARDWARE_AWARE = $(BINDIR)/test_hardware_aware
 
 # Tests
 test: $(TEST_RUNNER)
@@ -185,6 +188,13 @@ test-flow: $(TEST_FLOW_ANALYSIS)
 	./$(TEST_FLOW_ANALYSIS)
 
 $(TEST_FLOW_ANALYSIS): $(TEST_UNIT_DIR)/flow/flow_analysis_test.c $(OBJS)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
+
+test-hardware-aware: $(TEST_HARDWARE_AWARE)
+	./$(TEST_HARDWARE_AWARE)
+
+$(TEST_HARDWARE_AWARE): $(TESTDIR)/test_hardware_aware.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
@@ -325,6 +335,13 @@ lsp-standalone: $(LSP_STANDALONE_SERVER)
 $(LSP_STANDALONE_SERVER): $(SRCDIR)/ide/lsp_standalone.c
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $<
+
+# Package Manager CLI (gmod)
+gmod: $(GMOD_CLI)
+
+$(GMOD_CLI): $(SRCDIR)/package/gmod_cli.c $(PACKAGE_SRCS)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lcurl -ljson-c
 
 # Debug Adapter Protocol (DAP) Server
 DEBUG_ADAPTER_SERVER = $(BINDIR)/goo-debug-adapter
