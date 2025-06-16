@@ -114,3 +114,7 @@ This project uses a Makefile for building:
 - `.taskmaster/config.json` - AI model configuration file (managed by models cmd)
 - `.env` - API keys for AI providers (ANTHROPIC_API_KEY, etc.)
 - `.cursor/mcp.json` - API keys for Cursor integration
+
+## Language Standard
+
+- We're using C23 in this project

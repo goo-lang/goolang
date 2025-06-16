@@ -239,6 +239,7 @@ typedef struct {
     struct ASTNode* params;     // Parameter list
     struct ASTNode* return_type; // Return type (can be error union)
     struct ASTNode* body;       // Function body
+    struct ASTNode* annotations; // List of annotations/attributes
     int is_comptime;           // Goo extension: comptime function
     int is_unsafe;             // Goo extension: unsafe function
 } FuncDeclNode;

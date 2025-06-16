@@ -94,7 +94,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 // Goo Extensions
 %type <node> error_union_type nullable_type try_expr catch_expr
 %type <node> comptime_block ownership_qualifier if_let_stmt
-%type <node> attribute volatile_expr
+%type <node> attribute attribute_list volatile_expr
 %type <node> match_expr match_case_list match_case pattern guard_condition
 %type <node> kernel_decl kernel_launch gpu_memory_alloc gpu_memory_copy gpu_sync gpu_intrinsic
 %type <node> wasm_export wasm_import wasm_memory wasm_table wasm_global wasm_start
@@ -241,6 +241,15 @@ func_decl:
         ast_node_free($2);
         $$ = (ASTNode*)func;
     }
+    | attribute_list FUNC identifier func_signature block {
+        IdentifierNode* ident = (IdentifierNode*)$3;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $5;
+        func->params = $4;  // Assign the function signature (parameters)
+        func->annotations = $1;  // Assign annotations
+        ast_node_free($3);
+        $$ = (ASTNode*)func;
+    }
     | COMPTIME FUNC identifier func_signature block {
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
@@ -250,6 +259,16 @@ func_decl:
         ast_node_free($3);
         $$ = (ASTNode*)func;
     }
+    | attribute_list COMPTIME FUNC identifier func_signature block {
+        IdentifierNode* ident = (IdentifierNode*)$4;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $6;
+        func->params = $5;  // Assign the function signature (parameters)
+        func->annotations = $1;  // Assign annotations
+        func->is_comptime = 1;
+        ast_node_free($4);
+        $$ = (ASTNode*)func;
+    }
     | UNSAFE FUNC identifier func_signature block {
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
@@ -257,6 +276,16 @@ func_decl:
         func->params = $4;  // Assign the function signature (parameters)
         func->is_unsafe = 1;
         ast_node_free($3);
+        $$ = (ASTNode*)func;
+    }
+    | attribute_list UNSAFE FUNC identifier func_signature block {
+        IdentifierNode* ident = (IdentifierNode*)$4;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $6;
+        func->params = $5;  // Assign the function signature (parameters)
+        func->annotations = $1;  // Assign annotations
+        func->is_unsafe = 1;
+        ast_node_free($4);
         $$ = (ASTNode*)func;
     }
     ;
@@ -1172,6 +1201,16 @@ attribute:
         AttributeNode* attr = ast_attribute_new(ident->name, $4, get_current_position());
         ast_node_free($2);
         $$ = (ASTNode*)attr;
+    }
+    ;
+
+attribute_list:
+    attribute {
+        $$ = $1;
+    }
+    | attribute_list attribute {
+        ast_add_child($1, $2);
+        $$ = $1;
     }
     ;
 

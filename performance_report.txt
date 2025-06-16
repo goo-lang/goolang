@@ -1,0 +1,31 @@
+Goo Automatic Parallelization Performance Report
+=============================================
+
+Hardware Configuration:
+  CPU Cores: 4
+  Hardware Threads: 4
+  SIMD Width: 16 bytes
+  Cache Line Size: 64 bytes
+  L1 Cache: 32 KB
+  L2 Cache: 256 KB
+  L3 Cache: 8 MB
+
+Parallelization Statistics:
+  Loops Analyzed: 15
+  Loops Parallelized: 12
+  Functions Parallelized: 8
+  Success Rate: 80.0%
+
+Configuration Settings:
+  Aggressiveness Level: 0.90
+  Benefit Threshold: 1.10
+  Min Problem Size: 100
+  Max Threads: 16
+  Warnings Enabled: No
+  Monitoring Enabled: Yes
+
+Performance Metrics Summary:
+  Measurements Recorded: 2
+  Average Predicted Speedup: 3.10x
+  Average Actual Speedup: 2.95x
+  Average Prediction Accuracy: 0.98

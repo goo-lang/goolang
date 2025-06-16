@@ -152,6 +152,7 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(func->params);
             ast_node_free(func->return_type);
             ast_node_free(func->body);
+            ast_node_free(func->annotations);
             break;
         }
         case AST_CONCEPT_DECL: {
@@ -584,6 +585,7 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     node->params = NULL;
     node->return_type = NULL;
     node->body = NULL;
+    node->annotations = NULL;
     node->is_comptime = 0;
     node->is_unsafe = 0;
     
@@ -1547,4 +1549,46 @@ void ast_print(const ASTNode* node, int indent) {
     if (node->next) {
         ast_print(node->next, indent);
     }
+}
+
+// Deep copy an AST node
+ASTNode* ast_node_copy(const ASTNode* node) {
+    if (!node) return NULL;
+    
+    // Create new node of same type
+    ASTNode* copy = ast_node_new(node->type, ((ASTNode*)node)->pos);
+    if (!copy) return NULL;
+    
+    // Copy common fields
+    copy->next = ast_node_copy(node->next);
+    
+    // Copy type-specific data (simplified for now)
+    switch (node->type) {
+        case AST_IDENTIFIER:
+            ((IdentifierNode*)copy)->name = str_dup(((IdentifierNode*)node)->name);
+            break;
+            
+        case AST_LITERAL:
+            ((LiteralNode*)copy)->literal_type = ((LiteralNode*)node)->literal_type;
+            ((LiteralNode*)copy)->value = str_dup(((LiteralNode*)node)->value);
+            break;
+            
+        case AST_BINARY_EXPR:
+            ((BinaryExprNode*)copy)->left = ast_node_copy(((BinaryExprNode*)node)->left);
+            ((BinaryExprNode*)copy)->operator = ((BinaryExprNode*)node)->operator;
+            ((BinaryExprNode*)copy)->right = ast_node_copy(((BinaryExprNode*)node)->right);
+            break;
+            
+        case AST_UNARY_EXPR:
+            ((UnaryExprNode*)copy)->operator = ((UnaryExprNode*)node)->operator;
+            ((UnaryExprNode*)copy)->operand = ast_node_copy(((UnaryExprNode*)node)->operand);
+            break;
+            
+        // Add more cases as needed
+        default:
+            // For complex nodes, just copy the base structure
+            break;
+    }
+    
+    return copy;
 }

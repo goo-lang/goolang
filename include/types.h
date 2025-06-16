@@ -240,6 +240,38 @@ struct ConceptRegistry;
 struct HKTRegistry;
 struct ProtocolRegistry;
 
+// Forward declaration for compile-time integration
+struct ComptimeContext;
+struct ComptimeValue;
+
+// Compile-time type computation result
+typedef struct ComptimeTypeResult {
+    Type* type;                     // Computed type
+    struct ComptimeValue* value;    // Associated compile-time value (if any)
+    int is_valid;                   // Whether computation succeeded
+    char* error_message;            // Error message if computation failed
+} ComptimeTypeResult;
+
+// Type-level function for compile-time evaluation
+typedef struct TypeFunction {
+    char* name;                     // Function name
+    Type** param_types;             // Parameter types
+    size_t param_count;             // Number of parameters
+    Type* return_type;              // Return type (may be computed)
+    ASTNode* body;                  // Function body for compile-time evaluation
+    int is_comptime_only;           // Can only be called at compile time
+    struct TypeFunction* next;      // For linked lists
+} TypeFunction;
+
+// Compile-time type context for the type checker
+typedef struct ComptimeTypeContext {
+    struct ComptimeContext* comptime_ctx;  // Main comptime context
+    TypeFunction* type_functions;          // Available type-level functions
+    Type** computed_types;                 // Cache of computed types
+    size_t computed_type_count;
+    size_t computed_type_capacity;
+} ComptimeTypeContext;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -261,6 +293,9 @@ struct TypeChecker {
     struct ConceptRegistry* concept_registry;
     struct HKTRegistry* hkt_registry;
     struct ProtocolRegistry* protocol_registry;
+    
+    // Compile-time type computation support
+    ComptimeTypeContext* comptime_type_ctx;
 };
 
 // Type creation functions
@@ -384,5 +419,41 @@ Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind);
 
 // Channel helper functions
 const char* channel_pattern_string(ChannelPattern pattern);
+
+// Compile-time type integration functions
+ComptimeTypeContext* comptime_type_context_new(struct ComptimeContext* comptime_ctx);
+void comptime_type_context_free(ComptimeTypeContext* ctx);
+
+// Type-level function management
+TypeFunction* type_function_new(const char* name, Type** param_types, size_t param_count, 
+                               Type* return_type, ASTNode* body);
+void type_function_free(TypeFunction* func);
+int comptime_type_register_function(ComptimeTypeContext* ctx, TypeFunction* func);
+TypeFunction* comptime_type_lookup_function(ComptimeTypeContext* ctx, const char* name);
+
+// Compile-time type computation
+ComptimeTypeResult* comptime_type_evaluate(TypeChecker* checker, ASTNode* expr);
+Type* comptime_type_call_function(TypeChecker* checker, const char* func_name, 
+                                 struct ComptimeValue** args, size_t arg_count);
+Type* comptime_type_from_value(struct ComptimeValue* value);
+
+// Type checking with compile-time support
+Type* type_check_comptime_expr(TypeChecker* checker, ASTNode* expr);
+int type_check_comptime_block(TypeChecker* checker, ASTNode* block);
+
+// Dependent type support with comptime values
+Type* type_create_dependent(Type* base_type, struct ComptimeValue* constraint_value);
+int type_validate_dependent_constraint(Type* dependent_type, struct ComptimeValue* value);
+
+// Result management
+ComptimeTypeResult* comptime_type_result_new(Type* type, struct ComptimeValue* value);
+void comptime_type_result_free(ComptimeTypeResult* result);
+
+// Built-in type-level functions
+void comptime_type_register_builtins(ComptimeTypeContext* ctx);
+
+// TypeChecker integration functions
+int type_checker_init_comptime(TypeChecker* checker, struct ComptimeContext* comptime_ctx);
+void type_checker_cleanup_comptime(TypeChecker* checker);
 
 #endif // TYPES_H

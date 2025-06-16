@@ -46,7 +46,8 @@ ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
-CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS)
+COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
+CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS)
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
 OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
@@ -453,6 +454,8 @@ test-all-optimization: runtime_optimization_test runtime_optimization_demo contr
 
 clean-tests:
 	rm -f runtime_optimization_test runtime_optimization_demo contracts_test contract_proof_integration_test proof_generation_test
+	rm -f comptime_test comptime_types_test optimization_test pgo_test advanced_optimization_test advanced_macro_test derive_macro_test template_macro_test
+	rm -f shared_variables_test structured_concurrency_test
 # Work-Stealing Test
 WORK_STEALING_TEST = $(BINDIR)/work_stealing_test
 WORK_STEALING_SOURCES = src/concurrency/work_stealing.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
@@ -498,7 +501,7 @@ test-memory-safety: $(MEMORY_SAFETY_TEST)
 
 $(MEMORY_SAFETY_TEST): memory_safety_test.c $(MEMORY_SAFETY_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Performance Monitoring Test
 PERFORMANCE_MONITORING_TEST = $(BINDIR)/performance_monitoring_test
@@ -522,7 +525,7 @@ test-simple-performance: $(SIMPLE_PERFORMANCE_TEST)
 
 $(SIMPLE_PERFORMANCE_TEST): simple_performance_test.c $(SIMPLE_PERFORMANCE_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Parallel Capability Security Test
 PARALLEL_CAPABILITY_TEST = $(BINDIR)/parallel_capability_test
@@ -558,7 +561,7 @@ test-minimal-capability: $(MINIMAL_CAPABILITY_TEST)
 
 $(MINIMAL_CAPABILITY_TEST): minimal_capability_test.c $(MINIMAL_CAPABILITY_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Capability-Only Test (no dependencies)
 CAPABILITY_ONLY_TEST = $(BINDIR)/capability_only_test
@@ -581,7 +584,7 @@ test-numa-scheduling: $(NUMA_SCHEDULING_TEST)
 
 $(NUMA_SCHEDULING_TEST): numa_scheduling_test.c $(NUMA_SCHEDULING_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Task 21.4 Advanced Channels Demo
 TASK_21_4_DEMO = $(BINDIR)/task_21_4_advanced_channels_demo
@@ -703,4 +706,33 @@ demo-reactive-programming: $(REACTIVE_PROGRAMMING_DEMO)
 
 $(REACTIVE_PROGRAMMING_DEMO): examples/reactive_programming_demo.c $(REACTIVE_PROGRAMMING_SOURCES) $(ASYNC_RESOURCE_SOURCES)
 	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Compile-time execution test
+comptime_test: tests/test_comptime.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Compile-time types integration test
+comptime_types_test: tests/test_comptime_types.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Optimization directives framework test
+optimization_test: tests/test_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Profile-Guided Optimization test
+pgo_test: tests/test_pgo.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Advanced Optimization Strategies test
+advanced_optimization_test: tests/test_advanced_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+advanced_macro_test: tests/test_advanced_macro.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+derive_macro_test: tests/test_derive_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+template_macro_test: tests/test_template_macros.c $(SRCDIR)/template_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
