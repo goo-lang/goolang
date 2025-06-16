@@ -1,0 +1,517 @@
+// Package math provides basic constants and mathematical functions
+package math
+
+// Mathematical constants
+const (
+    E                      = 2.71828182845904523536028747135266249775724709369995957496697
+    Pi                     = 3.14159265358979323846264338327950288419716939937510582097494
+    Phi                    = 1.61803398874989484820458683436563811772030917980576286213545
+    Sqrt2                  = 1.41421356237309504880168872420969807856967187537694807317668
+    SqrtE                  = 1.64872127070012814684865078781416357165377610071014801157507
+    SqrtPi                 = 1.77245385090551602729816748334114518279754945612238167076819
+    SqrtPhi                = 1.27201964951406896425242246173749149171560804184009624861664
+    Ln2                    = 0.693147180559945309417232121458176568075500134360255254120680
+    Log2E                  = 1.44269504088896338700465094007086671046542659580312098395901
+    Ln10                   = 2.30258509299404568401799145468436420760110148862877297603333
+    Log10E                 = 0.434294481903251827651128918916605082294397005803666566114454
+    
+    // Floating-point limit values
+    MaxFloat32             = 3.40282346638528859811704183484516925440e+38
+    SmallestNonzeroFloat32 = 1.401298464324817070923729583289916131280e-45
+    MaxFloat64             = 1.797693134862315708145274237317043567981e+308
+    SmallestNonzeroFloat64 = 4.940656458412465441765687928682213723651e-324
+    
+    // Integer limit values  
+    MaxInt8   = 127
+    MinInt8   = -128
+    MaxInt16  = 32767
+    MinInt16  = -32768
+    MaxInt32  = 2147483647
+    MinInt32  = -2147483648
+    MaxInt64  = 9223372036854775807
+    MinInt64  = -9223372036854775808
+    MaxUint8  = 255
+    MaxUint16 = 65535
+    MaxUint32 = 4294967295
+    MaxUint64 = 18446744073709551615
+)
+
+// Basic arithmetic functions
+
+// Abs returns the absolute value of x
+func Abs(x: float64) -> float64 {
+    if x < 0 {
+        return -x
+    }
+    return x
+}
+
+// AbsInt returns the absolute value of x for integers
+func AbsInt(x: int) -> int {
+    if x < 0 {
+        return -x
+    }
+    return x
+}
+
+// Min returns the smaller of x or y
+func Min(x: float64, y: float64) -> float64 {
+    if x < y {
+        return x
+    }
+    return y
+}
+
+// Max returns the larger of x or y
+func Max(x: float64, y: float64) -> float64 {
+    if x > y {
+        return x
+    }
+    return y
+}
+
+// MinInt returns the smaller of x or y for integers
+func MinInt(x: int, y: int) -> int {
+    if x < y {
+        return x
+    }
+    return y
+}
+
+// MaxInt returns the larger of x or y for integers
+func MaxInt(x: int, y: int) -> int {
+    if x > y {
+        return x
+    }
+    return y
+}
+
+// Mod returns the floating-point remainder of x/y
+func Mod(x: float64, y: float64) -> float64 {
+    return floatMod(x, y)
+}
+
+// Remainder returns the IEEE 754 floating-point remainder of x/y
+func Remainder(x: float64, y: float64) -> float64 {
+    return floatRemainder(x, y)
+}
+
+// Power and root functions
+
+// Pow returns x**y, the base-x exponential of y
+func Pow(x: float64, y: float64) -> float64 {
+    return floatPow(x, y)
+}
+
+// Pow10 returns 10**n, the base-10 exponential of n
+func Pow10(n: int) -> float64 {
+    return Pow(10, float64(n))
+}
+
+// Sqrt returns the square root of x
+func Sqrt(x: float64) -> float64 {
+    if x < 0 {
+        return NaN()
+    }
+    return floatSqrt(x)
+}
+
+// Cbrt returns the cube root of x
+func Cbrt(x: float64) -> float64 {
+    return floatCbrt(x)
+}
+
+// Exp returns e**x, the base-e exponential of x
+func Exp(x: float64) -> float64 {
+    return floatExp(x)
+}
+
+// Exp2 returns 2**x, the base-2 exponential of x
+func Exp2(x: float64) -> float64 {
+    return Pow(2, x)
+}
+
+// Expm1 returns e**x - 1, the base-e exponential of x minus 1
+func Expm1(x: float64) -> float64 {
+    return floatExpm1(x)
+}
+
+// Logarithmic functions
+
+// Log returns the natural logarithm of x
+func Log(x: float64) -> float64 {
+    if x < 0 {
+        return NaN()
+    }
+    if x == 0 {
+        return NegInf()
+    }
+    return floatLog(x)
+}
+
+// Log10 returns the decimal logarithm of x
+func Log10(x: float64) -> float64 {
+    return Log(x) / Ln10
+}
+
+// Log2 returns the binary logarithm of x
+func Log2(x: float64) -> float64 {
+    return Log(x) / Ln2
+}
+
+// Log1p returns the natural logarithm of 1 plus its argument x
+func Log1p(x: float64) -> float64 {
+    return floatLog1p(x)
+}
+
+// Logb returns the binary exponent of x
+func Logb(x: float64) -> float64 {
+    return floatLogb(x)
+}
+
+// Ilogb returns the binary exponent of x as an integer
+func Ilogb(x: float64) -> int {
+    return int(Logb(x))
+}
+
+// Trigonometric functions
+
+// Sin returns the sine of the radian argument x
+func Sin(x: float64) -> float64 {
+    return floatSin(x)
+}
+
+// Cos returns the cosine of the radian argument x
+func Cos(x: float64) -> float64 {
+    return floatCos(x)
+}
+
+// Tan returns the tangent of the radian argument x
+func Tan(x: float64) -> float64 {
+    return floatTan(x)
+}
+
+// Asin returns the arcsine, in radians, of x
+func Asin(x: float64) -> float64 {
+    if x < -1 || x > 1 {
+        return NaN()
+    }
+    return floatAsin(x)
+}
+
+// Acos returns the arccosine, in radians, of x
+func Acos(x: float64) -> float64 {
+    if x < -1 || x > 1 {
+        return NaN()
+    }
+    return floatAcos(x)
+}
+
+// Atan returns the arctangent, in radians, of x
+func Atan(x: float64) -> float64 {
+    return floatAtan(x)
+}
+
+// Atan2 returns the arc tangent of y/x, using the signs of the two to determine the quadrant
+func Atan2(y: float64, x: float64) -> float64 {
+    return floatAtan2(y, x)
+}
+
+// Hyperbolic functions
+
+// Sinh returns the hyperbolic sine of x
+func Sinh(x: float64) -> float64 {
+    return floatSinh(x)
+}
+
+// Cosh returns the hyperbolic cosine of x
+func Cosh(x: float64) -> float64 {
+    return floatCosh(x)
+}
+
+// Tanh returns the hyperbolic tangent of x
+func Tanh(x: float64) -> float64 {
+    return floatTanh(x)
+}
+
+// Asinh returns the inverse hyperbolic sine of x
+func Asinh(x: float64) -> float64 {
+    return floatAsinh(x)
+}
+
+// Acosh returns the inverse hyperbolic cosine of x
+func Acosh(x: float64) -> float64 {
+    if x < 1 {
+        return NaN()
+    }
+    return floatAcosh(x)
+}
+
+// Atanh returns the inverse hyperbolic tangent of x
+func Atanh(x: float64) -> float64 {
+    if x < -1 || x > 1 {
+        return NaN()
+    }
+    return floatAtanh(x)
+}
+
+// Special functions
+
+// Gamma returns the Gamma function of x
+func Gamma(x: float64) -> float64 {
+    return floatGamma(x)
+}
+
+// Lgamma returns the natural logarithm and sign (-1 or +1) of Gamma(x)
+func Lgamma(x: float64) -> (lgamma: float64, sign: int) {
+    return floatLgamma(x)
+}
+
+// J0 returns the order-zero Bessel function of the first kind
+func J0(x: float64) -> float64 {
+    return floatJ0(x)
+}
+
+// J1 returns the order-one Bessel function of the first kind
+func J1(x: float64) -> float64 {
+    return floatJ1(x)
+}
+
+// Jn returns the order-n Bessel function of the first kind
+func Jn(n: int, x: float64) -> float64 {
+    return floatJn(n, x)
+}
+
+// Y0 returns the order-zero Bessel function of the second kind
+func Y0(x: float64) -> float64 {
+    return floatY0(x)
+}
+
+// Y1 returns the order-one Bessel function of the second kind
+func Y1(x: float64) -> float64 {
+    return floatY1(x)
+}
+
+// Yn returns the order-n Bessel function of the second kind
+func Yn(n: int, x: float64) -> float64 {
+    return floatYn(n, x)
+}
+
+// Erf returns the error function of x
+func Erf(x: float64) -> float64 {
+    return floatErf(x)
+}
+
+// Erfc returns the complementary error function of x
+func Erfc(x: float64) -> float64 {
+    return floatErfc(x)
+}
+
+// Erfinv returns the inverse error function of x
+func Erfinv(x: float64) -> float64 {
+    if x < -1 || x > 1 {
+        return NaN()
+    }
+    return floatErfinv(x)
+}
+
+// Erfcinv returns the inverse of Erfc(x)
+func Erfcinv(x: float64) -> float64 {
+    if x < 0 || x > 2 {
+        return NaN()
+    }
+    return floatErfcinv(x)
+}
+
+// Rounding and manipulation functions
+
+// Ceil returns the least integer value greater than or equal to x
+func Ceil(x: float64) -> float64 {
+    return floatCeil(x)
+}
+
+// Floor returns the greatest integer value less than or equal to x
+func Floor(x: float64) -> float64 {
+    return floatFloor(x)
+}
+
+// Round returns the nearest integer, rounding half away from zero
+func Round(x: float64) -> float64 {
+    return floatRound(x)
+}
+
+// RoundToEven returns the nearest integer, rounding ties to even
+func RoundToEven(x: float64) -> float64 {
+    return floatRoundToEven(x)
+}
+
+// Trunc returns the integer value of x
+func Trunc(x: float64) -> float64 {
+    return floatTrunc(x)
+}
+
+// Modf returns integer and fractional floating-point numbers that sum to f
+func Modf(f: float64) -> (int: float64, frac: float64) {
+    return floatModf(f)
+}
+
+// Frexp breaks f into a normalized fraction and an integral power of two
+func Frexp(f: float64) -> (frac: float64, exp: int) {
+    return floatFrexp(f)
+}
+
+// Ldexp is the inverse of Frexp: it returns frac × 2**exp
+func Ldexp(frac: float64, exp: int) -> float64 {
+    return floatLdexp(frac, exp)
+}
+
+// Classification functions
+
+// IsNaN reports whether f is an IEEE 754 "not-a-number" value
+func IsNaN(f: float64) -> bool {
+    return f != f
+}
+
+// IsInf reports whether f is an infinity, according to sign
+func IsInf(f: float64, sign: int) -> bool {
+    return floatIsInf(f, sign)
+}
+
+// Inf returns positive infinity if sign >= 0, negative infinity if sign < 0
+func Inf(sign: int) -> float64 {
+    if sign >= 0 {
+        return PosInf()
+    }
+    return NegInf()
+}
+
+// NaN returns an IEEE 754 "not-a-number" value
+func NaN() -> float64 {
+    return floatNaN()
+}
+
+// PosInf returns positive infinity
+func PosInf() -> float64 {
+    return floatPosInf()
+}
+
+// NegInf returns negative infinity
+func NegInf() -> float64 {
+    return floatNegInf()
+}
+
+// Signbit reports whether x is negative or negative zero
+func Signbit(x: float64) -> bool {
+    return floatSignbit(x)
+}
+
+// Copysign returns a value with the magnitude of x and the sign of y
+func Copysign(x: float64, y: float64) -> float64 {
+    return floatCopysign(x, y)
+}
+
+// Dim returns the maximum of x-y or 0
+func Dim(x: float64, y: float64) -> float64 {
+    return Max(x-y, 0)
+}
+
+// Utility functions
+
+// Nextafter returns the next representable float64 value after x towards y
+func Nextafter(x: float64, y: float64) -> float64 {
+    return floatNextafter(x, y)
+}
+
+// Nextafter32 returns the next representable float32 value after x towards y
+func Nextafter32(x: float32, y: float32) -> float32 {
+    return floatNextafter32(x, y)
+}
+
+// Float64bits returns the IEEE 754 binary representation of f
+func Float64bits(f: float64) -> uint64 {
+    return floatFloat64bits(f)
+}
+
+// Float64frombits returns the floating-point number corresponding to the IEEE 754 binary representation b
+func Float64frombits(b: uint64) -> float64 {
+    return floatFloat64frombits(b)
+}
+
+// Float32bits returns the IEEE 754 binary representation of f
+func Float32bits(f: float32) -> uint32 {
+    return floatFloat32bits(f)
+}
+
+// Float32frombits returns the floating-point number corresponding to the IEEE 754 binary representation b
+func Float32frombits(b: uint32) -> float32 {
+    return floatFloat32frombits(b)
+}
+
+// Hypot returns Sqrt(p*p + q*q), taking care to avoid unnecessary overflow and underflow
+func Hypot(p: float64, q: float64) -> float64 {
+    return floatHypot(p, q)
+}
+
+// FMA returns x * y + z, computed with only one rounding
+func FMA(x: float64, y: float64, z: float64) -> float64 {
+    return floatFMA(x, y, z)
+}
+
+// External functions implemented in runtime/C library
+extern func floatMod(x: float64, y: float64) -> float64
+extern func floatRemainder(x: float64, y: float64) -> float64
+extern func floatPow(x: float64, y: float64) -> float64
+extern func floatSqrt(x: float64) -> float64
+extern func floatCbrt(x: float64) -> float64
+extern func floatExp(x: float64) -> float64
+extern func floatExpm1(x: float64) -> float64
+extern func floatLog(x: float64) -> float64
+extern func floatLog1p(x: float64) -> float64
+extern func floatLogb(x: float64) -> float64
+extern func floatSin(x: float64) -> float64
+extern func floatCos(x: float64) -> float64
+extern func floatTan(x: float64) -> float64
+extern func floatAsin(x: float64) -> float64
+extern func floatAcos(x: float64) -> float64
+extern func floatAtan(x: float64) -> float64
+extern func floatAtan2(y: float64, x: float64) -> float64
+extern func floatSinh(x: float64) -> float64
+extern func floatCosh(x: float64) -> float64
+extern func floatTanh(x: float64) -> float64
+extern func floatAsinh(x: float64) -> float64
+extern func floatAcosh(x: float64) -> float64
+extern func floatAtanh(x: float64) -> float64
+extern func floatGamma(x: float64) -> float64
+extern func floatLgamma(x: float64) -> (lgamma: float64, sign: int)
+extern func floatJ0(x: float64) -> float64
+extern func floatJ1(x: float64) -> float64
+extern func floatJn(n: int, x: float64) -> float64
+extern func floatY0(x: float64) -> float64
+extern func floatY1(x: float64) -> float64
+extern func floatYn(n: int, x: float64) -> float64
+extern func floatErf(x: float64) -> float64
+extern func floatErfc(x: float64) -> float64
+extern func floatErfinv(x: float64) -> float64
+extern func floatErfcinv(x: float64) -> float64
+extern func floatCeil(x: float64) -> float64
+extern func floatFloor(x: float64) -> float64
+extern func floatRound(x: float64) -> float64
+extern func floatRoundToEven(x: float64) -> float64
+extern func floatTrunc(x: float64) -> float64
+extern func floatModf(f: float64) -> (int: float64, frac: float64)
+extern func floatFrexp(f: float64) -> (frac: float64, exp: int)
+extern func floatLdexp(frac: float64, exp: int) -> float64
+extern func floatIsInf(f: float64, sign: int) -> bool
+extern func floatNaN() -> float64
+extern func floatPosInf() -> float64
+extern func floatNegInf() -> float64
+extern func floatSignbit(x: float64) -> bool
+extern func floatCopysign(x: float64, y: float64) -> float64
+extern func floatNextafter(x: float64, y: float64) -> float64
+extern func floatNextafter32(x: float32, y: float32) -> float32
+extern func floatFloat64bits(f: float64) -> uint64
+extern func floatFloat64frombits(b: uint64) -> float64
+extern func floatFloat32bits(f: float32) -> uint32
+extern func floatFloat32frombits(b: uint32) -> float32
+extern func floatHypot(p: float64, q: float64) -> float64
+extern func floatFMA(x: float64, y: float64, z: float64) -> float64

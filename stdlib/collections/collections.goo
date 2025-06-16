@@ -1,0 +1,620 @@
+// Package collections provides generic data structures and algorithms
+package collections
+
+import "fmt"
+
+// Error types for collections operations
+type CollectionError struct {
+    message: string
+    kind: CollectionErrorKind
+}
+
+type CollectionErrorKind enum {
+    IndexOutOfBounds,
+    KeyNotFound,
+    EmptyCollection,
+    InvalidOperation,
+    CapacityExceeded
+}
+
+var (
+    ErrIndexOutOfBounds = CollectionError{message: "index out of bounds", kind: CollectionErrorKind.IndexOutOfBounds}
+    ErrKeyNotFound = CollectionError{message: "key not found", kind: CollectionErrorKind.KeyNotFound}
+    ErrEmptyCollection = CollectionError{message: "collection is empty", kind: CollectionErrorKind.EmptyCollection}
+    ErrInvalidOperation = CollectionError{message: "invalid operation", kind: CollectionErrorKind.InvalidOperation}
+    ErrCapacityExceeded = CollectionError{message: "capacity exceeded", kind: CollectionErrorKind.CapacityExceeded}
+)
+
+func (e: CollectionError) Error() -> string {
+    return e.message
+}
+
+// Dynamic Array (Vector)
+type Vector[T] struct {
+    data: []T
+    len: int
+    cap: int
+}
+
+// NewVector creates a new vector with initial capacity
+func NewVector[T]() -> *Vector[T] {
+    return &Vector[T]{
+        data: make([]T, 0, 8),
+        len: 0,
+        cap: 8
+    }
+}
+
+// NewVectorWithCapacity creates a new vector with specified initial capacity
+func NewVectorWithCapacity[T](capacity: int) -> *Vector[T] {
+    return &Vector[T]{
+        data: make([]T, 0, capacity),
+        len: 0,
+        cap: capacity
+    }
+}
+
+// Len returns the number of elements in the vector
+func (v: *Vector[T]) Len() -> int {
+    return v.len
+}
+
+// Cap returns the capacity of the vector
+func (v: *Vector[T]) Cap() -> int {
+    return v.cap
+}
+
+// IsEmpty returns true if the vector is empty
+func (v: *Vector[T]) IsEmpty() -> bool {
+    return v.len == 0
+}
+
+// Get returns the element at the specified index
+func (v: *Vector[T]) Get(index: int) -> (T, !CollectionError) {
+    if index < 0 || index >= v.len {
+        var zero: T
+        return zero, ErrIndexOutOfBounds
+    }
+    return v.data[index], nil
+}
+
+// Set sets the element at the specified index
+func (v: *Vector[T]) Set(index: int, value: T) -> !CollectionError {
+    if index < 0 || index >= v.len {
+        return ErrIndexOutOfBounds
+    }
+    v.data[index] = value
+    return nil
+}
+
+// Push adds an element to the end of the vector
+func (v: *Vector[T]) Push(value: T) {
+    if v.len >= v.cap {
+        v.grow()
+    }
+    v.data[v.len] = value
+    v.len++
+}
+
+// Pop removes and returns the last element
+func (v: *Vector[T]) Pop() -> (T, !CollectionError) {
+    if v.len == 0 {
+        var zero: T
+        return zero, ErrEmptyCollection
+    }
+    v.len--
+    value := v.data[v.len]
+    var zero: T
+    v.data[v.len] = zero // Clear reference
+    return value, nil
+}
+
+// Insert inserts an element at the specified index
+func (v: *Vector[T]) Insert(index: int, value: T) -> !CollectionError {
+    if index < 0 || index > v.len {
+        return ErrIndexOutOfBounds
+    }
+    
+    if v.len >= v.cap {
+        v.grow()
+    }
+    
+    // Shift elements right
+    for i := v.len; i > index; i-- {
+        v.data[i] = v.data[i-1]
+    }
+    
+    v.data[index] = value
+    v.len++
+    return nil
+}
+
+// Remove removes the element at the specified index
+func (v: *Vector[T]) Remove(index: int) -> (T, !CollectionError) {
+    if index < 0 || index >= v.len {
+        var zero: T
+        return zero, ErrIndexOutOfBounds
+    }
+    
+    value := v.data[index]
+    
+    // Shift elements left
+    for i := index; i < v.len-1; i++ {
+        v.data[i] = v.data[i+1]
+    }
+    
+    v.len--
+    var zero: T
+    v.data[v.len] = zero // Clear reference
+    return value, nil
+}
+
+// Clear removes all elements from the vector
+func (v: *Vector[T]) Clear() {
+    for i := 0; i < v.len; i++ {
+        var zero: T
+        v.data[i] = zero
+    }
+    v.len = 0
+}
+
+// ToSlice returns a slice containing all elements
+func (v: *Vector[T]) ToSlice() -> []T {
+    result := make([]T, v.len)
+    for i := 0; i < v.len; i++ {
+        result[i] = v.data[i]
+    }
+    return result
+}
+
+// Internal method to grow the vector capacity
+func (v: *Vector[T]) grow() {
+    new_cap := v.cap * 2
+    if new_cap < 8 {
+        new_cap = 8
+    }
+    
+    new_data := make([]T, v.len, new_cap)
+    for i := 0; i < v.len; i++ {
+        new_data[i] = v.data[i]
+    }
+    
+    v.data = new_data
+    v.cap = new_cap
+}
+
+// HashMap implementation
+type HashMap[K, V] struct {
+    buckets: [][]KeyValuePair[K, V]
+    size: int
+    capacity: int
+    load_factor: float64
+}
+
+type KeyValuePair[K, V] struct {
+    key: K
+    value: V
+    hash: uint64
+}
+
+// NewHashMap creates a new hash map
+func NewHashMap[K, V]() -> *HashMap[K, V] {
+    capacity := 16
+    return &HashMap[K, V]{
+        buckets: make([][]KeyValuePair[K, V], capacity),
+        size: 0,
+        capacity: capacity,
+        load_factor: 0.75,
+    }
+}
+
+// Size returns the number of key-value pairs in the map
+func (m: *HashMap[K, V]) Size() -> int {
+    return m.size
+}
+
+// IsEmpty returns true if the map is empty
+func (m: *HashMap[K, V]) IsEmpty() -> bool {
+    return m.size == 0
+}
+
+// Put inserts or updates a key-value pair
+func (m: *HashMap[K, V]) Put(key: K, value: V) {
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.capacity))
+    
+    // Check if key already exists
+    for i, pair := range m.buckets[bucket_index] {
+        if pair.hash == hash && keysEqual(pair.key, key) {
+            m.buckets[bucket_index][i].value = value
+            return
+        }
+    }
+    
+    // Add new key-value pair
+    m.buckets[bucket_index] = append(m.buckets[bucket_index], KeyValuePair[K, V]{
+        key: key,
+        value: value,
+        hash: hash,
+    })
+    m.size++
+    
+    // Check if resize is needed
+    if float64(m.size) / float64(m.capacity) > m.load_factor {
+        m.resize()
+    }
+}
+
+// Get retrieves the value for a given key
+func (m: *HashMap[K, V]) Get(key: K) -> (V, !CollectionError) {
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.capacity))
+    
+    for _, pair := range m.buckets[bucket_index] {
+        if pair.hash == hash && keysEqual(pair.key, key) {
+            return pair.value, nil
+        }
+    }
+    
+    var zero: V
+    return zero, ErrKeyNotFound
+}
+
+// ContainsKey checks if a key exists in the map
+func (m: *HashMap[K, V]) ContainsKey(key: K) -> bool {
+    _, err := m.Get(key)
+    return err == nil
+}
+
+// Remove removes a key-value pair from the map
+func (m: *HashMap[K, V]) Remove(key: K) -> (V, !CollectionError) {
+    hash := hashKey(key)
+    bucket_index := int(hash % uint64(m.capacity))
+    
+    for i, pair := range m.buckets[bucket_index] {
+        if pair.hash == hash && keysEqual(pair.key, key) {
+            value := pair.value
+            // Remove from slice
+            m.buckets[bucket_index] = append(
+                m.buckets[bucket_index][:i],
+                m.buckets[bucket_index][i+1:]...
+            )
+            m.size--
+            return value, nil
+        }
+    }
+    
+    var zero: V
+    return zero, ErrKeyNotFound
+}
+
+// Keys returns all keys in the map
+func (m: *HashMap[K, V]) Keys() -> []K {
+    keys := make([]K, 0, m.size)
+    for _, bucket := range m.buckets {
+        for _, pair := range bucket {
+            keys = append(keys, pair.key)
+        }
+    }
+    return keys
+}
+
+// Values returns all values in the map
+func (m: *HashMap[K, V]) Values() -> []V {
+    values := make([]V, 0, m.size)
+    for _, bucket := range m.buckets {
+        for _, pair := range bucket {
+            values = append(values, pair.value)
+        }
+    }
+    return values
+}
+
+// Clear removes all key-value pairs from the map
+func (m: *HashMap[K, V]) Clear() {
+    for i := range m.buckets {
+        m.buckets[i] = nil
+    }
+    m.size = 0
+}
+
+// Internal method to resize the map
+func (m: *HashMap[K, V]) resize() {
+    old_buckets := m.buckets
+    m.capacity *= 2
+    m.buckets = make([][]KeyValuePair[K, V], m.capacity)
+    old_size := m.size
+    m.size = 0
+    
+    // Rehash all elements
+    for _, bucket := range old_buckets {
+        for _, pair := range bucket {
+            m.Put(pair.key, pair.value)
+        }
+    }
+    m.size = old_size
+}
+
+// HashSet implementation
+type HashSet[T] struct {
+    map: *HashMap[T, bool]
+}
+
+// NewHashSet creates a new hash set
+func NewHashSet[T]() -> *HashSet[T] {
+    return &HashSet[T]{
+        map: NewHashMap[T, bool](),
+    }
+}
+
+// Size returns the number of elements in the set
+func (s: *HashSet[T]) Size() -> int {
+    return s.map.Size()
+}
+
+// IsEmpty returns true if the set is empty
+func (s: *HashSet[T]) IsEmpty() -> bool {
+    return s.map.IsEmpty()
+}
+
+// Add adds an element to the set
+func (s: *HashSet[T]) Add(item: T) {
+    s.map.Put(item, true)
+}
+
+// Contains checks if an element exists in the set
+func (s: *HashSet[T]) Contains(item: T) -> bool {
+    return s.map.ContainsKey(item)
+}
+
+// Remove removes an element from the set
+func (s: *HashSet[T]) Remove(item: T) -> bool {
+    _, err := s.map.Remove(item)
+    return err == nil
+}
+
+// ToSlice returns all elements as a slice
+func (s: *HashSet[T]) ToSlice() -> []T {
+    return s.map.Keys()
+}
+
+// Clear removes all elements from the set
+func (s: *HashSet[T]) Clear() {
+    s.map.Clear()
+}
+
+// Union returns a new set containing elements from both sets
+func (s: *HashSet[T]) Union(other: *HashSet[T]) -> *HashSet[T] {
+    result := NewHashSet[T]()
+    
+    for _, item := range s.ToSlice() {
+        result.Add(item)
+    }
+    
+    for _, item := range other.ToSlice() {
+        result.Add(item)
+    }
+    
+    return result
+}
+
+// Intersection returns a new set containing elements common to both sets
+func (s: *HashSet[T]) Intersection(other: *HashSet[T]) -> *HashSet[T] {
+    result := NewHashSet[T]()
+    
+    for _, item := range s.ToSlice() {
+        if other.Contains(item) {
+            result.Add(item)
+        }
+    }
+    
+    return result
+}
+
+// Difference returns a new set containing elements in this set but not in other
+func (s: *HashSet[T]) Difference(other: *HashSet[T]) -> *HashSet[T] {
+    result := NewHashSet[T]()
+    
+    for _, item := range s.ToSlice() {
+        if !other.Contains(item) {
+            result.Add(item)
+        }
+    }
+    
+    return result
+}
+
+// Queue implementation (FIFO)
+type Queue[T] struct {
+    data: []T
+    front: int
+    back: int
+    size: int
+    capacity: int
+}
+
+// NewQueue creates a new queue
+func NewQueue[T]() -> *Queue[T] {
+    capacity := 8
+    return &Queue[T]{
+        data: make([]T, capacity),
+        front: 0,
+        back: 0,
+        size: 0,
+        capacity: capacity,
+    }
+}
+
+// Size returns the number of elements in the queue
+func (q: *Queue[T]) Size() -> int {
+    return q.size
+}
+
+// IsEmpty returns true if the queue is empty
+func (q: *Queue[T]) IsEmpty() -> bool {
+    return q.size == 0
+}
+
+// Enqueue adds an element to the back of the queue
+func (q: *Queue[T]) Enqueue(item: T) {
+    if q.size >= q.capacity {
+        q.grow()
+    }
+    
+    q.data[q.back] = item
+    q.back = (q.back + 1) % q.capacity
+    q.size++
+}
+
+// Dequeue removes and returns the front element
+func (q: *Queue[T]) Dequeue() -> (T, !CollectionError) {
+    if q.size == 0 {
+        var zero: T
+        return zero, ErrEmptyCollection
+    }
+    
+    item := q.data[q.front]
+    var zero: T
+    q.data[q.front] = zero // Clear reference
+    q.front = (q.front + 1) % q.capacity
+    q.size--
+    
+    return item, nil
+}
+
+// Peek returns the front element without removing it
+func (q: *Queue[T]) Peek() -> (T, !CollectionError) {
+    if q.size == 0 {
+        var zero: T
+        return zero, ErrEmptyCollection
+    }
+    
+    return q.data[q.front], nil
+}
+
+// Clear removes all elements from the queue
+func (q: *Queue[T]) Clear() {
+    for i := 0; i < q.capacity; i++ {
+        var zero: T
+        q.data[i] = zero
+    }
+    q.front = 0
+    q.back = 0
+    q.size = 0
+}
+
+// Internal method to grow the queue capacity
+func (q: *Queue[T]) grow() {
+    new_capacity := q.capacity * 2
+    new_data := make([]T, new_capacity)
+    
+    for i := 0; i < q.size; i++ {
+        new_data[i] = q.data[(q.front + i) % q.capacity]
+    }
+    
+    q.data = new_data
+    q.front = 0
+    q.back = q.size
+    q.capacity = new_capacity
+}
+
+// Stack implementation (LIFO)
+type Stack[T] struct {
+    data: []T
+    top: int
+    capacity: int
+}
+
+// NewStack creates a new stack
+func NewStack[T]() -> *Stack[T] {
+    capacity := 8
+    return &Stack[T]{
+        data: make([]T, capacity),
+        top: -1,
+        capacity: capacity,
+    }
+}
+
+// Size returns the number of elements in the stack
+func (s: *Stack[T]) Size() -> int {
+    return s.top + 1
+}
+
+// IsEmpty returns true if the stack is empty
+func (s: *Stack[T]) IsEmpty() -> bool {
+    return s.top < 0
+}
+
+// Push adds an element to the top of the stack
+func (s: *Stack[T]) Push(item: T) {
+    if s.top + 1 >= s.capacity {
+        s.grow()
+    }
+    
+    s.top++
+    s.data[s.top] = item
+}
+
+// Pop removes and returns the top element
+func (s: *Stack[T]) Pop() -> (T, !CollectionError) {
+    if s.top < 0 {
+        var zero: T
+        return zero, ErrEmptyCollection
+    }
+    
+    item := s.data[s.top]
+    var zero: T
+    s.data[s.top] = zero // Clear reference
+    s.top--
+    
+    return item, nil
+}
+
+// Peek returns the top element without removing it
+func (s: *Stack[T]) Peek() -> (T, !CollectionError) {
+    if s.top < 0 {
+        var zero: T
+        return zero, ErrEmptyCollection
+    }
+    
+    return s.data[s.top], nil
+}
+
+// Clear removes all elements from the stack
+func (s: *Stack[T]) Clear() {
+    for i := 0; i <= s.top; i++ {
+        var zero: T
+        s.data[i] = zero
+    }
+    s.top = -1
+}
+
+// Internal method to grow the stack capacity
+func (s: *Stack[T]) grow() {
+    new_capacity := s.capacity * 2
+    new_data := make([]T, new_capacity)
+    
+    for i := 0; i <= s.top; i++ {
+        new_data[i] = s.data[i]
+    }
+    
+    s.data = new_data
+    s.capacity = new_capacity
+}
+
+// Utility functions for hashing and comparison
+// These would need to be implemented based on the type system
+
+func hashKey[K](key: K) -> uint64 {
+    // This would use reflection or type-specific hashing
+    return hashValue(key)
+}
+
+func keysEqual[K](a: K, b: K) -> bool {
+    // This would use reflection or type-specific comparison
+    return compareValues(a, b)
+}
+
+// External functions for hashing and comparison
+extern func hashValue(value: any) -> uint64
+extern func compareValues(a: any, b: any) -> bool

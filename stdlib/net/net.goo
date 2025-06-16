@@ -1,0 +1,977 @@
+// Package net provides a portable interface for network I/O, including TCP/IP, UDP, domain name resolution, and Unix domain sockets
+package net
+
+import "io"
+import "time"
+
+// Network types
+type Network string
+
+const (
+    TCP  Network = "tcp"
+    TCP4 Network = "tcp4"
+    TCP6 Network = "tcp6"
+    UDP  Network = "udp"
+    UDP4 Network = "udp4"
+    UDP6 Network = "udp6"
+    Unix Network = "unix"
+    UnixGram Network = "unixgram"
+    UnixPacket Network = "unixpacket"
+)
+
+// Error types
+type NetError struct {
+    message: string
+    kind: NetErrorKind
+    temporary: bool
+    timeout: bool
+}
+
+type NetErrorKind enum {
+    AddrError,
+    DNSError,
+    ParseError,
+    UnknownNetworkError,
+    InvalidArgumentError,
+    OpError,
+    TimeoutError,
+    RefusedError,
+    UnreachableError
+}
+
+var (
+    ErrWriteToConnected = NetError{message: "use of WriteTo with pre-connected connection", kind: NetErrorKind.OpError, temporary: false, timeout: false}
+    ErrNoSuchHost = NetError{message: "no such host", kind: NetErrorKind.DNSError, temporary: false, timeout: false}
+    ErrNoSuchMulticastInterface = NetError{message: "no such multicast network interface", kind: NetErrorKind.AddrError, temporary: false, timeout: false}
+)
+
+func (e: NetError) Error() -> string {
+    return e.message
+}
+
+func (e: NetError) Temporary() -> bool {
+    return e.temporary
+}
+
+func (e: NetError) Timeout() -> bool {
+    return e.timeout
+}
+
+// Address interfaces and types
+
+// Addr represents a network end point address
+type Addr interface {
+    Network() -> string // name of the network
+    String() -> string  // string form of address
+}
+
+// TCPAddr represents the address of a TCP end point
+type TCPAddr struct {
+    IP: IP
+    Port: int
+    Zone: string // IPv6 scoped addressing zone
+}
+
+func (a: *TCPAddr) Network() -> string {
+    return "tcp"
+}
+
+func (a: *TCPAddr) String() -> string {
+    if a == nil {
+        return "<nil>"
+    }
+    ip := ipEmptyString(a.IP, "0.0.0.0")
+    if a.Zone != "" {
+        return joinHostPort(ip + "%" + a.Zone, itoa(a.Port))
+    }
+    return joinHostPort(ip, itoa(a.Port))
+}
+
+// UDPAddr represents the address of a UDP end point
+type UDPAddr struct {
+    IP: IP
+    Port: int
+    Zone: string
+}
+
+func (a: *UDPAddr) Network() -> string {
+    return "udp"
+}
+
+func (a: *UDPAddr) String() -> string {
+    if a == nil {
+        return "<nil>"
+    }
+    ip := ipEmptyString(a.IP, "0.0.0.0")
+    if a.Zone != "" {
+        return joinHostPort(ip + "%" + a.Zone, itoa(a.Port))
+    }
+    return joinHostPort(ip, itoa(a.Port))
+}
+
+// UnixAddr represents the address of a Unix domain socket end point
+type UnixAddr struct {
+    Name: string
+    Net: string
+}
+
+func (a: *UnixAddr) Network() -> string {
+    return a.Net
+}
+
+func (a: *UnixAddr) String() -> string {
+    if a == nil {
+        return "<nil>"
+    }
+    return a.Name
+}
+
+// IP address types and functions
+
+// IP is an IP address
+type IP []byte
+
+// IPv4 returns the IP address (in 16-byte form) of the IPv4 address a.b.c.d
+func IPv4(a: byte, b: byte, c: byte, d: byte) -> IP {
+    p := make([]byte, 16)
+    copy(p[12:16], []byte{a, b, c, d})
+    return IP(p)
+}
+
+// ParseIP parses s as an IP address, returning the result
+func ParseIP(s: string) -> ?IP {
+    return parseIP(s)
+}
+
+// String returns the string form of the IP address ip
+func (ip: IP) String() -> string {
+    return ipString(ip)
+}
+
+// Equal reports whether ip and x are the same IP address
+func (ip: IP) Equal(x: IP) -> bool {
+    return ipEqual(ip, x)
+}
+
+// IsLoopback reports whether ip is a loopback address
+func (ip: IP) IsLoopback() -> bool {
+    return ipIsLoopback(ip)
+}
+
+// IsMulticast reports whether ip is a multicast address
+func (ip: IP) IsMulticast() -> bool {
+    return ipIsMulticast(ip)
+}
+
+// IsPrivate reports whether ip is a private address
+func (ip: IP) IsPrivate() -> bool {
+    return ipIsPrivate(ip)
+}
+
+// IsUnspecified reports whether ip is an unspecified address
+func (ip: IP) IsUnspecified() -> bool {
+    return ipIsUnspecified(ip)
+}
+
+// To4 converts the IPv4 address ip to a 4-byte representation
+func (ip: IP) To4() -> ?IP {
+    return ipTo4(ip)
+}
+
+// To16 converts the IP address ip to a 16-byte representation
+func (ip: IP) To16() -> IP {
+    return ipTo16(ip)
+}
+
+// Connection interfaces
+
+// Conn is a generic stream-oriented network connection
+type Conn interface {
+    // Read reads data from the connection
+    Read(b: []byte) -> (n: int, err: !io.IOError)
+    
+    // Write writes data to the connection
+    Write(b: []byte) -> (n: int, err: !io.IOError)
+    
+    // Close closes the connection
+    Close() -> !NetError
+    
+    // LocalAddr returns the local network address
+    LocalAddr() -> Addr
+    
+    // RemoteAddr returns the remote network address
+    RemoteAddr() -> Addr
+    
+    // SetDeadline sets the read and write deadlines
+    SetDeadline(t: time.Time) -> !NetError
+    
+    // SetReadDeadline sets the deadline for future Read calls
+    SetReadDeadline(t: time.Time) -> !NetError
+    
+    // SetWriteDeadline sets the deadline for future Write calls
+    SetWriteDeadline(t: time.Time) -> !NetError
+}
+
+// PacketConn is a generic packet-oriented network connection
+type PacketConn interface {
+    // ReadFrom reads a packet from the connection
+    ReadFrom(b: []byte) -> (n: int, addr: Addr, err: !NetError)
+    
+    // WriteTo writes a packet with payload b to addr
+    WriteTo(b: []byte, addr: Addr) -> (n: int, err: !NetError)
+    
+    // Close closes the connection
+    Close() -> !NetError
+    
+    // LocalAddr returns the local network address
+    LocalAddr() -> Addr
+    
+    // SetDeadline sets the read and write deadlines
+    SetDeadline(t: time.Time) -> !NetError
+    
+    // SetReadDeadline sets the deadline for future Read calls
+    SetReadDeadline(t: time.Time) -> !NetError
+    
+    // SetWriteDeadline sets the deadline for future Write calls
+    SetWriteDeadline(t: time.Time) -> !NetError
+}
+
+// Listener is a generic network listener for stream-oriented protocols
+type Listener interface {
+    // Accept waits for and returns the next connection to the listener
+    Accept() -> (Conn, !NetError)
+    
+    // Close closes the listener
+    Close() -> !NetError
+    
+    // Addr returns the listener's network address
+    Addr() -> Addr
+}
+
+// TCP connection types
+
+// TCPConn is an implementation of the Conn interface for TCP network connections
+type TCPConn struct {
+    conn: *netConn
+}
+
+func (c: *TCPConn) Read(b: []byte) -> (int, !io.IOError) {
+    return tcpConnRead(c, b)
+}
+
+func (c: *TCPConn) Write(b: []byte) -> (int, !io.IOError) {
+    return tcpConnWrite(c, b)
+}
+
+func (c: *TCPConn) Close() -> !NetError {
+    return tcpConnClose(c)
+}
+
+func (c: *TCPConn) LocalAddr() -> Addr {
+    return tcpConnLocalAddr(c)
+}
+
+func (c: *TCPConn) RemoteAddr() -> Addr {
+    return tcpConnRemoteAddr(c)
+}
+
+func (c: *TCPConn) SetDeadline(t: time.Time) -> !NetError {
+    return tcpConnSetDeadline(c, t)
+}
+
+func (c: *TCPConn) SetReadDeadline(t: time.Time) -> !NetError {
+    return tcpConnSetReadDeadline(c, t)
+}
+
+func (c: *TCPConn) SetWriteDeadline(t: time.Time) -> !NetError {
+    return tcpConnSetWriteDeadline(c, t)
+}
+
+// CloseRead shuts down the reading side of the TCP connection
+func (c: *TCPConn) CloseRead() -> !NetError {
+    return tcpConnCloseRead(c)
+}
+
+// CloseWrite shuts down the writing side of the TCP connection
+func (c: *TCPConn) CloseWrite() -> !NetError {
+    return tcpConnCloseWrite(c)
+}
+
+// SetKeepAlive sets whether the operating system should send keep-alive messages
+func (c: *TCPConn) SetKeepAlive(keepalive: bool) -> !NetError {
+    return tcpConnSetKeepAlive(c, keepalive)
+}
+
+// SetKeepAlivePeriod sets period between keep-alives
+func (c: *TCPConn) SetKeepAlivePeriod(d: time.Duration) -> !NetError {
+    return tcpConnSetKeepAlivePeriod(c, d)
+}
+
+// SetNoDelay controls whether the operating system should delay packet transmission
+func (c: *TCPConn) SetNoDelay(noDelay: bool) -> !NetError {
+    return tcpConnSetNoDelay(c, noDelay)
+}
+
+// TCPListener is a TCP network listener
+type TCPListener struct {
+    fd: *netFD
+    lc: ListenConfig
+}
+
+func (l: *TCPListener) Accept() -> (Conn, !NetError) {
+    return tcpListenerAccept(l)
+}
+
+func (l: *TCPListener) Close() -> !NetError {
+    return tcpListenerClose(l)
+}
+
+func (l: *TCPListener) Addr() -> Addr {
+    return tcpListenerAddr(l)
+}
+
+// AcceptTCP accepts the next incoming call and returns the new connection
+func (l: *TCPListener) AcceptTCP() -> (*TCPConn, !NetError) {
+    return tcpListenerAcceptTCP(l)
+}
+
+// UDP connection types
+
+// UDPConn is the implementation of the Conn and PacketConn interfaces for UDP network connections
+type UDPConn struct {
+    conn: *netConn
+}
+
+func (c: *UDPConn) Read(b: []byte) -> (int, !io.IOError) {
+    return udpConnRead(c, b)
+}
+
+func (c: *UDPConn) Write(b: []byte) -> (int, !io.IOError) {
+    return udpConnWrite(c, b)
+}
+
+func (c: *UDPConn) Close() -> !NetError {
+    return udpConnClose(c)
+}
+
+func (c: *UDPConn) LocalAddr() -> Addr {
+    return udpConnLocalAddr(c)
+}
+
+func (c: *UDPConn) RemoteAddr() -> Addr {
+    return udpConnRemoteAddr(c)
+}
+
+func (c: *UDPConn) SetDeadline(t: time.Time) -> !NetError {
+    return udpConnSetDeadline(c, t)
+}
+
+func (c: *UDPConn) SetReadDeadline(t: time.Time) -> !NetError {
+    return udpConnSetReadDeadline(c, t)
+}
+
+func (c: *UDPConn) SetWriteDeadline(t: time.Time) -> !NetError {
+    return udpConnSetWriteDeadline(c, t)
+}
+
+func (c: *UDPConn) ReadFrom(b: []byte) -> (n: int, addr: Addr, err: !NetError) {
+    return udpConnReadFrom(c, b)
+}
+
+func (c: *UDPConn) WriteTo(b: []byte, addr: Addr) -> (n: int, err: !NetError) {
+    return udpConnWriteTo(c, b, addr)
+}
+
+// ReadFromUDP acts like ReadFrom but returns a UDPAddr
+func (c: *UDPConn) ReadFromUDP(b: []byte) -> (n: int, addr: *UDPAddr, err: !NetError) {
+    return udpConnReadFromUDP(c, b)
+}
+
+// WriteToUDP acts like WriteTo but takes a UDPAddr
+func (c: *UDPConn) WriteToUDP(b: []byte, addr: *UDPAddr) -> (n: int, err: !NetError) {
+    return udpConnWriteToUDP(c, b, addr)
+}
+
+// Unix domain socket types
+
+// UnixConn is an implementation of the Conn interface for connections to Unix domain sockets
+type UnixConn struct {
+    conn: *netConn
+}
+
+func (c: *UnixConn) Read(b: []byte) -> (int, !io.IOError) {
+    return unixConnRead(c, b)
+}
+
+func (c: *UnixConn) Write(b: []byte) -> (int, !io.IOError) {
+    return unixConnWrite(c, b)
+}
+
+func (c: *UnixConn) Close() -> !NetError {
+    return unixConnClose(c)
+}
+
+func (c: *UnixConn) LocalAddr() -> Addr {
+    return unixConnLocalAddr(c)
+}
+
+func (c: *UnixConn) RemoteAddr() -> Addr {
+    return unixConnRemoteAddr(c)
+}
+
+func (c: *UnixConn) SetDeadline(t: time.Time) -> !NetError {
+    return unixConnSetDeadline(c, t)
+}
+
+func (c: *UnixConn) SetReadDeadline(t: time.Time) -> !NetError {
+    return unixConnSetReadDeadline(c, t)
+}
+
+func (c: *UnixConn) SetWriteDeadline(t: time.Time) -> !NetError {
+    return unixConnSetWriteDeadline(c, t)
+}
+
+// CloseRead shuts down the reading side of the Unix domain connection
+func (c: *UnixConn) CloseRead() -> !NetError {
+    return unixConnCloseRead(c)
+}
+
+// CloseWrite shuts down the writing side of the Unix domain connection
+func (c: *UnixConn) CloseWrite() -> !NetError {
+    return unixConnCloseWrite(c)
+}
+
+// UnixListener is a Unix domain socket listener
+type UnixListener struct {
+    fd: *netFD
+    path: string
+    unlink: bool
+}
+
+func (l: *UnixListener) Accept() -> (Conn, !NetError) {
+    return unixListenerAccept(l)
+}
+
+func (l: *UnixListener) Close() -> !NetError {
+    return unixListenerClose(l)
+}
+
+func (l: *UnixListener) Addr() -> Addr {
+    return unixListenerAddr(l)
+}
+
+// AcceptUnix accepts the next incoming call and returns the new connection
+func (l: *UnixListener) AcceptUnix() -> (*UnixConn, !NetError) {
+    return unixListenerAcceptUnix(l)
+}
+
+// Dialer and Listener configuration
+
+// Dialer contains options for connecting to an address
+type Dialer struct {
+    // Timeout is the maximum amount of time a dial will wait for a connect to complete
+    Timeout: time.Duration
+    
+    // Deadline is the absolute point in time after which dials will fail
+    Deadline: time.Time
+    
+    // LocalAddr is the local address to use when dialing an address
+    LocalAddr: Addr
+    
+    // DualStack previously enabled RFC 6555-compliant "Happy Eyeballs" dialing
+    DualStack: bool
+    
+    // FallbackDelay specifies the length of time to wait before spawning a RFC 6555 Fast Fallback connection
+    FallbackDelay: time.Duration
+    
+    // KeepAlive specifies the interval between keep-alive probes for an active network connection
+    KeepAlive: time.Duration
+    
+    // Resolver optionally specifies an alternate resolver to use
+    Resolver: *Resolver
+    
+    // Cancel is an optional channel whose closure indicates that the dial should be canceled
+    Cancel: chan struct{}
+    
+    // Control is an optional function that is called after creating the network connection
+    Control: ?func(network: string, address: string, c: syscall.RawConn) -> !NetError
+}
+
+// Dial connects to the address on the named network
+func (d: *Dialer) Dial(network: string, address: string) -> (Conn, !NetError) {
+    return dialerDial(d, network, address)
+}
+
+// DialContext connects to the address on the named network using the provided context
+func (d: *Dialer) DialContext(ctx: context.Context, network: string, address: string) -> (Conn, !NetError) {
+    return dialerDialContext(d, ctx, network, address)
+}
+
+// ListenConfig contains options for listening to an address
+type ListenConfig struct {
+    // Control is an optional function that is called after creating the network connection
+    Control: ?func(network: string, address: string, c: syscall.RawConn) -> !NetError
+    
+    // KeepAlive specifies the keep-alive period for network connections accepted by this listener
+    KeepAlive: time.Duration
+}
+
+// Listen announces on the local network address
+func (lc: *ListenConfig) Listen(ctx: context.Context, network: string, address: string) -> (Listener, !NetError) {
+    return listenConfigListen(lc, ctx, network, address)
+}
+
+// ListenPacket announces on the local network address
+func (lc: *ListenConfig) ListenPacket(ctx: context.Context, network: string, address: string) -> (PacketConn, !NetError) {
+    return listenConfigListenPacket(lc, ctx, network, address)
+}
+
+// High-level network functions
+
+// Dial connects to the address on the named network
+func Dial(network: string, address: string) -> (Conn, !NetError) {
+    d := &Dialer{}
+    return d.Dial(network, address)
+}
+
+// DialTimeout acts like Dial but takes a timeout
+func DialTimeout(network: string, address: string, timeout: time.Duration) -> (Conn, !NetError) {
+    d := &Dialer{Timeout: timeout}
+    return d.Dial(network, address)
+}
+
+// Listen announces on the local network address
+func Listen(network: string, address: string) -> (Listener, !NetError) {
+    lc := &ListenConfig{}
+    return lc.Listen(context.Background(), network, address)
+}
+
+// ListenPacket announces on the local network address
+func ListenPacket(network: string, address: string) -> (PacketConn, !NetError) {
+    lc := &ListenConfig{}
+    return lc.ListenPacket(context.Background(), network, address)
+}
+
+// TCP-specific functions
+
+// DialTCP acts like Dial for TCP networks
+func DialTCP(network: string, laddr: *TCPAddr, raddr: *TCPAddr) -> (*TCPConn, !NetError) {
+    return dialTCP(network, laddr, raddr)
+}
+
+// ListenTCP acts like Listen for TCP networks
+func ListenTCP(network: string, laddr: *TCPAddr) -> (*TCPListener, !NetError) {
+    return listenTCP(network, laddr)
+}
+
+// ResolveTCPAddr returns an address of TCP end point
+func ResolveTCPAddr(network: string, address: string) -> (*TCPAddr, !NetError) {
+    return resolveTCPAddr(network, address)
+}
+
+// UDP-specific functions
+
+// DialUDP acts like Dial for UDP networks
+func DialUDP(network: string, laddr: *UDPAddr, raddr: *UDPAddr) -> (*UDPConn, !NetError) {
+    return dialUDP(network, laddr, raddr)
+}
+
+// ListenUDP acts like ListenPacket for UDP networks
+func ListenUDP(network: string, laddr: *UDPAddr) -> (*UDPConn, !NetError) {
+    return listenUDP(network, laddr)
+}
+
+// ResolveUDPAddr returns an address of UDP end point
+func ResolveUDPAddr(network: string, address: string) -> (*UDPAddr, !NetError) {
+    return resolveUDPAddr(network, address)
+}
+
+// Unix domain socket functions
+
+// DialUnix acts like Dial for Unix networks
+func DialUnix(network: string, laddr: *UnixAddr, raddr: *UnixAddr) -> (*UnixConn, !NetError) {
+    return dialUnix(network, laddr, raddr)
+}
+
+// ListenUnix acts like Listen for Unix networks
+func ListenUnix(network: string, laddr: *UnixAddr) -> (*UnixListener, !NetError) {
+    return listenUnix(network, laddr)
+}
+
+// ListenUnixgram acts like ListenPacket for Unix networks
+func ListenUnixgram(network: string, laddr: *UnixAddr) -> (*UnixConn, !NetError) {
+    return listenUnixgram(network, laddr)
+}
+
+// ResolveUnixAddr returns an address of Unix domain socket end point
+func ResolveUnixAddr(network: string, address: string) -> (*UnixAddr, !NetError) {
+    return resolveUnixAddr(network, address)
+}
+
+// Name resolution
+
+// Resolver performs DNS lookups
+type Resolver struct {
+    // PreferGo controls whether Go's DNS resolver is preferred on platforms
+    PreferGo: bool
+    
+    // StrictErrors controls the behavior of temporary errors
+    StrictErrors: bool
+    
+    // Dial optionally specifies an alternate dialer for use by the resolver
+    Dial: ?func(ctx: context.Context, network: string, address: string) -> (Conn, !NetError)
+}
+
+// DefaultResolver is the resolver used by the package-level Lookup functions
+var DefaultResolver = &Resolver{}
+
+// LookupHost looks up the given host using the local resolver
+func LookupHost(host: string) -> (addrs: []string, err: !NetError) {
+    return DefaultResolver.LookupHost(context.Background(), host)
+}
+
+// LookupIPAddr looks up host using the local resolver
+func LookupIPAddr(host: string) -> ([]IPAddr, !NetError) {
+    return DefaultResolver.LookupIPAddr(context.Background(), host)
+}
+
+// LookupIP looks up host using the local resolver
+func LookupIP(host: string) -> ([]IP, !NetError) {
+    return DefaultResolver.LookupIP(context.Background(), "ip", host)
+}
+
+// LookupPort looks up the port for the given network and service
+func LookupPort(network: string, service: string) -> (port: int, err: !NetError) {
+    return DefaultResolver.LookupPort(context.Background(), network, service)
+}
+
+// LookupCNAME returns the canonical name for the given host
+func LookupCNAME(host: string) -> (cname: string, err: !NetError) {
+    return DefaultResolver.LookupCNAME(context.Background(), host)
+}
+
+// LookupSRV tries to resolve an SRV query of the given service, protocol, and domain name
+func LookupSRV(service: string, proto: string, name: string) -> (cname: string, addrs: []SRV, err: !NetError) {
+    return DefaultResolver.LookupSRV(context.Background(), service, proto, name)
+}
+
+// LookupMX returns the DNS MX records for the given domain name
+func LookupMX(name: string) -> ([]MX, !NetError) {
+    return DefaultResolver.LookupMX(context.Background(), name)
+}
+
+// LookupNS returns the DNS NS records for the given domain name
+func LookupNS(name: string) -> ([]NS, !NetError) {
+    return DefaultResolver.LookupNS(context.Background(), name)
+}
+
+// LookupTXT returns the DNS TXT records for the given domain name
+func LookupTXT(name: string) -> ([]string, !NetError) {
+    return DefaultResolver.LookupTXT(context.Background(), name)
+}
+
+// Resolver methods
+func (r: *Resolver) LookupHost(ctx: context.Context, host: string) -> ([]string, !NetError) {
+    return resolverLookupHost(r, ctx, host)
+}
+
+func (r: *Resolver) LookupIPAddr(ctx: context.Context, host: string) -> ([]IPAddr, !NetError) {
+    return resolverLookupIPAddr(r, ctx, host)
+}
+
+func (r: *Resolver) LookupIP(ctx: context.Context, network: string, host: string) -> ([]IP, !NetError) {
+    return resolverLookupIP(r, ctx, network, host)
+}
+
+func (r: *Resolver) LookupPort(ctx: context.Context, network: string, service: string) -> (int, !NetError) {
+    return resolverLookupPort(r, ctx, network, service)
+}
+
+func (r: *Resolver) LookupCNAME(ctx: context.Context, host: string) -> (string, !NetError) {
+    return resolverLookupCNAME(r, ctx, host)
+}
+
+func (r: *Resolver) LookupSRV(ctx: context.Context, service: string, proto: string, name: string) -> (string, []SRV, !NetError) {
+    return resolverLookupSRV(r, ctx, service, proto, name)
+}
+
+func (r: *Resolver) LookupMX(ctx: context.Context, name: string) -> ([]MX, !NetError) {
+    return resolverLookupMX(r, ctx, name)
+}
+
+func (r: *Resolver) LookupNS(ctx: context.Context, name: string) -> ([]NS, !NetError) {
+    return resolverLookupNS(r, ctx, name)
+}
+
+func (r: *Resolver) LookupTXT(ctx: context.Context, name: string) -> ([]string, !NetError) {
+    return resolverLookupTXT(r, ctx, name)
+}
+
+// DNS record types
+
+// IPAddr represents the address of an IP end point
+type IPAddr struct {
+    IP: IP
+    Zone: string
+}
+
+func (a: *IPAddr) Network() -> string {
+    return "ip"
+}
+
+func (a: *IPAddr) String() -> string {
+    if a == nil {
+        return "<nil>"
+    }
+    ip := ipEmptyString(a.IP, "0.0.0.0")
+    if a.Zone != "" {
+        return ip + "%" + a.Zone
+    }
+    return ip
+}
+
+// SRV represents a single DNS SRV record
+type SRV struct {
+    Target: string
+    Port: uint16
+    Priority: uint16
+    Weight: uint16
+}
+
+// MX represents a single DNS MX record
+type MX struct {
+    Host: string
+    Pref: uint16
+}
+
+// NS represents a single DNS NS record
+type NS struct {
+    Host: string
+}
+
+// Utility functions
+
+// JoinHostPort combines host and port into a network address of the form "host:port"
+func JoinHostPort(host: string, port: string) -> string {
+    return joinHostPort(host, port)
+}
+
+// SplitHostPort splits a network address of the form "host:port", "host%zone:port", "[host]:port" or "[host%zone]:port"
+func SplitHostPort(hostport: string) -> (host: string, port: string, err: !NetError) {
+    return splitHostPort(hostport)
+}
+
+// InterfaceAddrs returns a list of the system's unicast interface addresses
+func InterfaceAddrs() -> ([]Addr, !NetError) {
+    return interfaceAddrs()
+}
+
+// Interfaces returns a list of the system's network interfaces
+func Interfaces() -> ([]Interface, !NetError) {
+    return interfaces()
+}
+
+// Interface represents a mapping between network interface name and index
+type Interface struct {
+    Index: int          // positive integer that starts at one, zero is never used
+    MTU: int           // maximum transmission unit
+    Name: string       // e.g., "en0", "lo0", "eth0.100"
+    HardwareAddr: HardwareAddr // IEEE MAC-48, EUI-48 and EUI-64 form
+    Flags: Flags       // e.g., FlagUp, FlagLoopback, FlagMulticast
+}
+
+// Flags represents the interface flags
+type Flags uint
+
+const (
+    FlagUp           Flags = 1 << iota // interface is up
+    FlagBroadcast                      // interface supports broadcast access capability
+    FlagLoopback                       // interface is a loopback interface
+    FlagPointToPoint                   // interface belongs to a point-to-point link
+    FlagMulticast                      // interface supports multicast access capability
+)
+
+func (f: Flags) String() -> string {
+    return flagsString(f)
+}
+
+// HardwareAddr represents a physical hardware address
+type HardwareAddr []byte
+
+func (a: HardwareAddr) String() -> string {
+    return hardwareAddrString(a)
+}
+
+// ParseMAC parses s as an IEEE 802 MAC-48, EUI-48, EUI-64, or a 20-octet IP over InfiniBand link-layer address
+func ParseMAC(s: string) -> (hw: HardwareAddr, err: !NetError) {
+    return parseMAC(s)
+}
+
+// Interface methods
+
+// Addrs returns a list of unicast interface addresses for a specific interface
+func (ifi: *Interface) Addrs() -> ([]Addr, !NetError) {
+    return interfaceAddrs(ifi)
+}
+
+// MulticastAddrs returns a list of multicast interface addresses for a specific interface
+func (ifi: *Interface) MulticastAddrs() -> ([]Addr, !NetError) {
+    return interfaceMulticastAddrs(ifi)
+}
+
+// InterfaceByIndex returns the interface specified by index
+func InterfaceByIndex(index: int) -> (*Interface, !NetError) {
+    return interfaceByIndex(index)
+}
+
+// InterfaceByName returns the interface specified by name
+func InterfaceByName(name: string) -> (*Interface, !NetError) {
+    return interfaceByName(name)
+}
+
+// Internal types and runtime interfaces
+type netConn struct {
+    fd: *netFD
+}
+
+type netFD struct {
+    // File descriptor
+    sysfd: int
+    
+    // Address family
+    family: int
+    
+    // Socket type
+    sotype: int
+    
+    // Protocol
+    protocol: int
+    
+    // Local and remote addresses
+    laddr: Addr
+    raddr: Addr
+}
+
+// Context interface (simplified for this example)
+type context struct{}
+
+func (ctx: context) Background() -> context {
+    return context{}
+}
+
+// Syscall interface (simplified)
+type syscall struct{}
+
+type RawConn interface {
+    Control(f: func(fd: uintptr)) -> !NetError
+    Read(f: func(fd: uintptr) -> (done: bool)) -> !NetError
+    Write(f: func(fd: uintptr) -> (done: bool)) -> !NetError
+}
+
+// External functions implemented in runtime/OS
+extern func parseIP(s: string) -> ?IP
+extern func ipString(ip: IP) -> string
+extern func ipEqual(ip: IP, x: IP) -> bool
+extern func ipIsLoopback(ip: IP) -> bool
+extern func ipIsMulticast(ip: IP) -> bool
+extern func ipIsPrivate(ip: IP) -> bool
+extern func ipIsUnspecified(ip: IP) -> bool
+extern func ipTo4(ip: IP) -> ?IP
+extern func ipTo16(ip: IP) -> IP
+extern func ipEmptyString(ip: IP, empty: string) -> string
+extern func joinHostPort(host: string, port: string) -> string
+extern func splitHostPort(hostport: string) -> (host: string, port: string, err: !NetError)
+extern func itoa(i: int) -> string
+
+// TCP connection external functions
+extern func tcpConnRead(c: *TCPConn, b: []byte) -> (int, !io.IOError)
+extern func tcpConnWrite(c: *TCPConn, b: []byte) -> (int, !io.IOError)
+extern func tcpConnClose(c: *TCPConn) -> !NetError
+extern func tcpConnLocalAddr(c: *TCPConn) -> Addr
+extern func tcpConnRemoteAddr(c: *TCPConn) -> Addr
+extern func tcpConnSetDeadline(c: *TCPConn, t: time.Time) -> !NetError
+extern func tcpConnSetReadDeadline(c: *TCPConn, t: time.Time) -> !NetError
+extern func tcpConnSetWriteDeadline(c: *TCPConn, t: time.Time) -> !NetError
+extern func tcpConnCloseRead(c: *TCPConn) -> !NetError
+extern func tcpConnCloseWrite(c: *TCPConn) -> !NetError
+extern func tcpConnSetKeepAlive(c: *TCPConn, keepalive: bool) -> !NetError
+extern func tcpConnSetKeepAlivePeriod(c: *TCPConn, d: time.Duration) -> !NetError
+extern func tcpConnSetNoDelay(c: *TCPConn, noDelay: bool) -> !NetError
+
+// TCP listener external functions
+extern func tcpListenerAccept(l: *TCPListener) -> (Conn, !NetError)
+extern func tcpListenerClose(l: *TCPListener) -> !NetError
+extern func tcpListenerAddr(l: *TCPListener) -> Addr
+extern func tcpListenerAcceptTCP(l: *TCPListener) -> (*TCPConn, !NetError)
+
+// UDP connection external functions
+extern func udpConnRead(c: *UDPConn, b: []byte) -> (int, !io.IOError)
+extern func udpConnWrite(c: *UDPConn, b: []byte) -> (int, !io.IOError)
+extern func udpConnClose(c: *UDPConn) -> !NetError
+extern func udpConnLocalAddr(c: *UDPConn) -> Addr
+extern func udpConnRemoteAddr(c: *UDPConn) -> Addr
+extern func udpConnSetDeadline(c: *UDPConn, t: time.Time) -> !NetError
+extern func udpConnSetReadDeadline(c: *UDPConn, t: time.Time) -> !NetError
+extern func udpConnSetWriteDeadline(c: *UDPConn, t: time.Time) -> !NetError
+extern func udpConnReadFrom(c: *UDPConn, b: []byte) -> (n: int, addr: Addr, err: !NetError)
+extern func udpConnWriteTo(c: *UDPConn, b: []byte, addr: Addr) -> (n: int, err: !NetError)
+extern func udpConnReadFromUDP(c: *UDPConn, b: []byte) -> (n: int, addr: *UDPAddr, err: !NetError)
+extern func udpConnWriteToUDP(c: *UDPConn, b: []byte, addr: *UDPAddr) -> (n: int, err: !NetError)
+
+// Unix connection external functions
+extern func unixConnRead(c: *UnixConn, b: []byte) -> (int, !io.IOError)
+extern func unixConnWrite(c: *UnixConn, b: []byte) -> (int, !io.IOError)
+extern func unixConnClose(c: *UnixConn) -> !NetError
+extern func unixConnLocalAddr(c: *UnixConn) -> Addr
+extern func unixConnRemoteAddr(c: *UnixConn) -> Addr
+extern func unixConnSetDeadline(c: *UnixConn, t: time.Time) -> !NetError
+extern func unixConnSetReadDeadline(c: *UnixConn, t: time.Time) -> !NetError
+extern func unixConnSetWriteDeadline(c: *UnixConn, t: time.Time) -> !NetError
+extern func unixConnCloseRead(c: *UnixConn) -> !NetError
+extern func unixConnCloseWrite(c: *UnixConn) -> !NetError
+
+// Unix listener external functions
+extern func unixListenerAccept(l: *UnixListener) -> (Conn, !NetError)
+extern func unixListenerClose(l: *UnixListener) -> !NetError
+extern func unixListenerAddr(l: *UnixListener) -> Addr
+extern func unixListenerAcceptUnix(l: *UnixListener) -> (*UnixConn, !NetError)
+
+// High-level network external functions
+extern func dialerDial(d: *Dialer, network: string, address: string) -> (Conn, !NetError)
+extern func dialerDialContext(d: *Dialer, ctx: context.Context, network: string, address: string) -> (Conn, !NetError)
+extern func listenConfigListen(lc: *ListenConfig, ctx: context.Context, network: string, address: string) -> (Listener, !NetError)
+extern func listenConfigListenPacket(lc: *ListenConfig, ctx: context.Context, network: string, address: string) -> (PacketConn, !NetError)
+
+// Protocol-specific external functions
+extern func dialTCP(network: string, laddr: *TCPAddr, raddr: *TCPAddr) -> (*TCPConn, !NetError)
+extern func listenTCP(network: string, laddr: *TCPAddr) -> (*TCPListener, !NetError)
+extern func resolveTCPAddr(network: string, address: string) -> (*TCPAddr, !NetError)
+extern func dialUDP(network: string, laddr: *UDPAddr, raddr: *UDPAddr) -> (*UDPConn, !NetError)
+extern func listenUDP(network: string, laddr: *UDPAddr) -> (*UDPConn, !NetError)
+extern func resolveUDPAddr(network: string, address: string) -> (*UDPAddr, !NetError)
+extern func dialUnix(network: string, laddr: *UnixAddr, raddr: *UnixAddr) -> (*UnixConn, !NetError)
+extern func listenUnix(network: string, laddr: *UnixAddr) -> (*UnixListener, !NetError)
+extern func listenUnixgram(network: string, laddr: *UnixAddr) -> (*UnixConn, !NetError)
+extern func resolveUnixAddr(network: string, address: string) -> (*UnixAddr, !NetError)
+
+// Name resolution external functions
+extern func resolverLookupHost(r: *Resolver, ctx: context.Context, host: string) -> ([]string, !NetError)
+extern func resolverLookupIPAddr(r: *Resolver, ctx: context.Context, host: string) -> ([]IPAddr, !NetError)
+extern func resolverLookupIP(r: *Resolver, ctx: context.Context, network: string, host: string) -> ([]IP, !NetError)
+extern func resolverLookupPort(r: *Resolver, ctx: context.Context, network: string, service: string) -> (int, !NetError)
+extern func resolverLookupCNAME(r: *Resolver, ctx: context.Context, host: string) -> (string, !NetError)
+extern func resolverLookupSRV(r: *Resolver, ctx: context.Context, service: string, proto: string, name: string) -> (string, []SRV, !NetError)
+extern func resolverLookupMX(r: *Resolver, ctx: context.Context, name: string) -> ([]MX, !NetError)
+extern func resolverLookupNS(r: *Resolver, ctx: context.Context, name: string) -> ([]NS, !NetError)
+extern func resolverLookupTXT(r: *Resolver, ctx: context.Context, name: string) -> ([]string, !NetError)
+
+// Interface external functions
+extern func interfaceAddrs() -> ([]Addr, !NetError)
+extern func interfaces() -> ([]Interface, !NetError)
+extern func interfaceAddrs(ifi: *Interface) -> ([]Addr, !NetError)
+extern func interfaceMulticastAddrs(ifi: *Interface) -> ([]Addr, !NetError)
+extern func interfaceByIndex(index: int) -> (*Interface, !NetError)
+extern func interfaceByName(name: string) -> (*Interface, !NetError)
+extern func flagsString(f: Flags) -> string
+extern func hardwareAddrString(a: HardwareAddr) -> string
+extern func parseMAC(s: string) -> (HardwareAddr, !NetError)

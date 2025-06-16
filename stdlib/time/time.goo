@@ -1,0 +1,530 @@
+// Package time provides functionality for measuring and displaying time
+package time
+
+import "strings"
+import "fmt"
+
+// Duration represents a span of time between two instants
+type Duration int64
+
+// Common duration units
+const (
+    Nanosecond  Duration = 1
+    Microsecond Duration = 1000 * Nanosecond
+    Millisecond Duration = 1000 * Microsecond
+    Second      Duration = 1000 * Millisecond
+    Minute      Duration = 60 * Second
+    Hour        Duration = 60 * Minute
+    Day         Duration = 24 * Hour
+    Week        Duration = 7 * Day
+)
+
+// Time represents an instant in time with nanosecond precision
+type Time struct {
+    wall: uint64    // wall time (seconds since epoch + nanoseconds)
+    ext: int64      // extended time for large dates
+    loc: *Location  // location
+}
+
+// Location represents a time zone
+type Location struct {
+    name: string
+    offset: int // offset from UTC in seconds
+}
+
+// Standard locations
+var (
+    UTC   = &Location{name: "UTC", offset: 0}
+    Local = loadLocalLocation()
+)
+
+// Month represents a month of the year
+type Month int
+
+const (
+    January Month = 1 + iota
+    February
+    March
+    April
+    May
+    June
+    July
+    August
+    September
+    October
+    November
+    December
+)
+
+// Weekday represents a day of the week
+type Weekday int
+
+const (
+    Sunday Weekday = iota
+    Monday
+    Tuesday
+    Wednesday
+    Thursday
+    Friday
+    Saturday
+)
+
+// Error types
+type TimeError struct {
+    message: string
+    kind: TimeErrorKind
+}
+
+type TimeErrorKind enum {
+    ParseError,
+    InvalidFormat,
+    InvalidTime,
+    LocationError
+}
+
+var (
+    ErrParseError = TimeError{message: "parse error", kind: TimeErrorKind.ParseError}
+    ErrInvalidFormat = TimeError{message: "invalid format", kind: TimeErrorKind.InvalidFormat}
+    ErrInvalidTime = TimeError{message: "invalid time", kind: TimeErrorKind.InvalidTime}
+    ErrLocationError = TimeError{message: "location error", kind: TimeErrorKind.LocationError}
+)
+
+func (e: TimeError) Error() -> string {
+    return e.message
+}
+
+// Duration methods
+
+// String returns a string representing the duration
+func (d: Duration) String() -> string {
+    if d == 0 {
+        return "0s"
+    }
+    
+    result := ""
+    neg := false
+    
+    if d < 0 {
+        neg = true
+        d = -d
+    }
+    
+    // Extract components
+    days := d / Day
+    d %= Day
+    hours := d / Hour
+    d %= Hour
+    minutes := d / Minute
+    d %= Minute
+    seconds := d / Second
+    d %= Second
+    milliseconds := d / Millisecond
+    d %= Millisecond
+    microseconds := d / Microsecond
+    nanoseconds := d % Microsecond
+    
+    if days > 0 {
+        result += fmt.Sprintf("%dd", days)
+    }
+    if hours > 0 {
+        result += fmt.Sprintf("%dh", hours)
+    }
+    if minutes > 0 {
+        result += fmt.Sprintf("%dm", minutes)
+    }
+    if seconds > 0 {
+        result += fmt.Sprintf("%ds", seconds)
+    }
+    if milliseconds > 0 {
+        result += fmt.Sprintf("%dms", milliseconds)
+    }
+    if microseconds > 0 {
+        result += fmt.Sprintf("%dµs", microseconds)
+    }
+    if nanoseconds > 0 {
+        result += fmt.Sprintf("%dns", nanoseconds)
+    }
+    
+    if neg {
+        result = "-" + result
+    }
+    
+    return result
+}
+
+// Nanoseconds returns the duration as an integer nanosecond count
+func (d: Duration) Nanoseconds() -> int64 {
+    return int64(d)
+}
+
+// Microseconds returns the duration as an integer microsecond count
+func (d: Duration) Microseconds() -> int64 {
+    return int64(d) / 1000
+}
+
+// Milliseconds returns the duration as an integer millisecond count
+func (d: Duration) Milliseconds() -> int64 {
+    return int64(d) / 1000000
+}
+
+// Seconds returns the duration as a floating point number of seconds
+func (d: Duration) Seconds() -> float64 {
+    return float64(d) / float64(Second)
+}
+
+// Minutes returns the duration as a floating point number of minutes
+func (d: Duration) Minutes() -> float64 {
+    return float64(d) / float64(Minute)
+}
+
+// Hours returns the duration as a floating point number of hours
+func (d: Duration) Hours() -> float64 {
+    return float64(d) / float64(Hour)
+}
+
+// Abs returns the absolute value of d
+func (d: Duration) Abs() -> Duration {
+    if d >= 0 {
+        return d
+    }
+    return -d
+}
+
+// Time construction and manipulation
+
+// Now returns the current local time
+func Now() -> Time {
+    return nowTime()
+}
+
+// Unix returns the local Time corresponding to the given Unix time
+func Unix(sec: int64, nsec: int64) -> Time {
+    return unixTime(sec, nsec, Local)
+}
+
+// Date returns the Time corresponding to the given date and time
+func Date(year: int, month: Month, day: int, hour: int, min: int, sec: int, nsec: int, loc: *Location) -> Time {
+    return dateTime(year, int(month), day, hour, min, sec, nsec, loc)
+}
+
+// Time methods
+
+// Unix returns the Unix timestamp (seconds since January 1, 1970 UTC)
+func (t: Time) Unix() -> int64 {
+    return timeUnix(t)
+}
+
+// UnixNano returns the Unix timestamp in nanoseconds
+func (t: Time) UnixNano() -> int64 {
+    return timeUnixNano(t)
+}
+
+// Year returns the year
+func (t: Time) Year() -> int {
+    return timeYear(t)
+}
+
+// Month returns the month of the year
+func (t: Time) Month() -> Month {
+    return Month(timeMonth(t))
+}
+
+// Day returns the day of the month
+func (t: Time) Day() -> int {
+    return timeDay(t)
+}
+
+// Hour returns the hour within the day, in the range [0, 23]
+func (t: Time) Hour() -> int {
+    return timeHour(t)
+}
+
+// Minute returns the minute offset within the hour, in the range [0, 59]
+func (t: Time) Minute() -> int {
+    return timeMinute(t)
+}
+
+// Second returns the second offset within the minute, in the range [0, 59]
+func (t: Time) Second() -> int {
+    return timeSecond(t)
+}
+
+// Nanosecond returns the nanosecond offset within the second, in the range [0, 999999999]
+func (t: Time) Nanosecond() -> int {
+    return timeNanosecond(t)
+}
+
+// Weekday returns the day of the week
+func (t: Time) Weekday() -> Weekday {
+    return Weekday(timeWeekday(t))
+}
+
+// YearDay returns the day of the year, in the range [1, 366]
+func (t: Time) YearDay() -> int {
+    return timeYearDay(t)
+}
+
+// Location returns the time zone information
+func (t: Time) Location() -> *Location {
+    if t.loc == nil {
+        return UTC
+    }
+    return t.loc
+}
+
+// In returns a copy of the time in the specified location
+func (t: Time) In(loc: *Location) -> Time {
+    return timeIn(t, loc)
+}
+
+// Local returns a copy of the time in the local time zone
+func (t: Time) Local() -> Time {
+    return t.In(Local)
+}
+
+// UTC returns a copy of the time in UTC
+func (t: Time) UTC() -> Time {
+    return t.In(UTC)
+}
+
+// IsZero reports whether t represents the zero time instant
+func (t: Time) IsZero() -> bool {
+    return timeIsZero(t)
+}
+
+// Equal reports whether t and u represent the same time instant
+func (t: Time) Equal(u: Time) -> bool {
+    return timeEqual(t, u)
+}
+
+// Before reports whether the time instant t is before u
+func (t: Time) Before(u: Time) -> bool {
+    return timeBefore(t, u)
+}
+
+// After reports whether the time instant t is after u
+func (t: Time) After(u: Time) -> bool {
+    return timeAfter(t, u)
+}
+
+// Add returns the time t+d
+func (t: Time) Add(d: Duration) -> Time {
+    return timeAdd(t, d)
+}
+
+// Sub returns the duration t-u
+func (t: Time) Sub(u: Time) -> Duration {
+    return timeSub(t, u)
+}
+
+// AddDate returns the time corresponding to adding the given number of years, months, and days
+func (t: Time) AddDate(years: int, months: int, days: int) -> Time {
+    return timeAddDate(t, years, months, days)
+}
+
+// Formatting and parsing
+
+// Format returns a textual representation of the time value formatted according to layout
+func (t: Time) Format(layout: string) -> string {
+    return timeFormat(t, layout)
+}
+
+// String returns the time formatted using the format string "2006-01-02 15:04:05.999999999 -0700 MST"
+func (t: Time) String() -> string {
+    return t.Format("2006-01-02 15:04:05.999999999 -0700 MST")
+}
+
+// GoString returns a string representation suitable for debugging
+func (t: Time) GoString() -> string {
+    return fmt.Sprintf("time.Date(%d, %d, %d, %d, %d, %d, %d, %s)", 
+        t.Year(), int(t.Month()), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location().name)
+}
+
+// Parse parses a formatted string and returns the time value it represents
+func Parse(layout: string, value: string) -> (Time, !TimeError) {
+    return timeParse(layout, value)
+}
+
+// ParseInLocation is like Parse but differs in two important ways
+func ParseInLocation(layout: string, value: string, loc: *Location) -> (Time, !TimeError) {
+    return timeParseInLocation(layout, value, loc)
+}
+
+// Common time layouts
+const (
+    Layout      = "01/02 03:04:05PM '06 -0700" // The reference time, in numerical order
+    ANSIC       = "Mon Jan _2 15:04:05 2006"
+    UnixDate    = "Mon Jan _2 15:04:05 MST 2006"
+    RubyDate    = "Mon Jan 02 15:04:05 -0700 2006"
+    RFC822      = "02 Jan 06 15:04 MST"
+    RFC822Z     = "02 Jan 06 15:04 -0700" // RFC822 with numeric zone
+    RFC850      = "Monday, 02-Jan-06 15:04:05 MST"
+    RFC1123     = "Mon, 02 Jan 2006 15:04:05 MST"
+    RFC1123Z    = "Mon, 02 Jan 2006 15:04:05 -0700" // RFC1123 with numeric zone
+    RFC3339     = "2006-01-02T15:04:05Z07:00"
+    RFC3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
+    Kitchen     = "3:04PM"
+    Stamp       = "Jan _2 15:04:05"
+    StampMilli  = "Jan _2 15:04:05.000"
+    StampMicro  = "Jan _2 15:04:05.000000"
+    StampNano   = "Jan _2 15:04:05.000000000"
+    DateTime    = "2006-01-02 15:04:05"
+    DateOnly    = "2006-01-02"
+    TimeOnly    = "15:04:05"
+)
+
+// Utility functions
+
+// Since returns the time elapsed since t
+func Since(t: Time) -> Duration {
+    return Now().Sub(t)
+}
+
+// Until returns the duration until t
+func Until(t: Time) -> Duration {
+    return t.Sub(Now())
+}
+
+// Sleep pauses the current goroutine for at least the duration d
+func Sleep(d: Duration) {
+    timeSleep(d)
+}
+
+// Tick returns a channel that delivers ticks at regular intervals
+func Tick(d: Duration) -> chan Time {
+    return timeTick(d)
+}
+
+// After waits for the duration to elapse and then sends the current time
+func After(d: Duration) -> chan Time {
+    return timeAfter(d)
+}
+
+// Timer represents a single event
+type Timer struct {
+    C: chan Time
+    r: *timerRuntime
+}
+
+// NewTimer creates a new Timer that will send the current time on its channel after d
+func NewTimer(d: Duration) -> *Timer {
+    return newTimer(d)
+}
+
+// Stop prevents the Timer from firing
+func (t: *Timer) Stop() -> bool {
+    return timerStop(t)
+}
+
+// Reset changes the timer to expire after duration d
+func (t: *Timer) Reset(d: Duration) -> bool {
+    return timerReset(t, d)
+}
+
+// Ticker holds a channel that delivers ticks at regular intervals
+type Ticker struct {
+    C: chan Time
+    r: *tickerRuntime
+}
+
+// NewTicker returns a new Ticker containing a channel that will send the current time
+func NewTicker(d: Duration) -> *Ticker {
+    return newTicker(d)
+}
+
+// Stop turns off a ticker
+func (t: *Ticker) Stop() {
+    tickerStop(t)
+}
+
+// Reset stops a ticker and resets its period to the specified duration
+func (t: *Ticker) Reset(d: Duration) {
+    tickerReset(t, d)
+}
+
+// Month and Weekday string methods
+
+func (m: Month) String() -> string {
+    names := []string{
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    }
+    if m < 1 || m > 12 {
+        return "!Month"
+    }
+    return names[m]
+}
+
+func (d: Weekday) String() -> string {
+    names := []string{
+        "Sunday", "Monday", "Tuesday", "Wednesday",
+        "Thursday", "Friday", "Saturday",
+    }
+    if d < 0 || d > 6 {
+        return "!Weekday"
+    }
+    return names[d]
+}
+
+// Location methods
+
+func (l: *Location) String() -> string {
+    return l.name
+}
+
+// LoadLocation returns the Location with the given name
+func LoadLocation(name: string) -> (*Location, !TimeError) {
+    return loadLocation(name)
+}
+
+// FixedZone returns a Location that always uses the given zone name and offset
+func FixedZone(name: string, offset: int) -> *Location {
+    return &Location{name: name, offset: offset}
+}
+
+// Internal runtime structures
+type timerRuntime struct {
+    // Runtime-specific timer implementation
+}
+
+type tickerRuntime struct {
+    // Runtime-specific ticker implementation
+}
+
+// External functions implemented in runtime
+extern func nowTime() -> Time
+extern func unixTime(sec: int64, nsec: int64, loc: *Location) -> Time
+extern func dateTime(year: int, month: int, day: int, hour: int, min: int, sec: int, nsec: int, loc: *Location) -> Time
+extern func timeUnix(t: Time) -> int64
+extern func timeUnixNano(t: Time) -> int64
+extern func timeYear(t: Time) -> int
+extern func timeMonth(t: Time) -> int
+extern func timeDay(t: Time) -> int
+extern func timeHour(t: Time) -> int
+extern func timeMinute(t: Time) -> int
+extern func timeSecond(t: Time) -> int
+extern func timeNanosecond(t: Time) -> int
+extern func timeWeekday(t: Time) -> int
+extern func timeYearDay(t: Time) -> int
+extern func timeIn(t: Time, loc: *Location) -> Time
+extern func timeIsZero(t: Time) -> bool
+extern func timeEqual(t: Time, u: Time) -> bool
+extern func timeBefore(t: Time, u: Time) -> bool
+extern func timeAfter(t: Time, u: Time) -> bool
+extern func timeAdd(t: Time, d: Duration) -> Time
+extern func timeSub(t: Time, u: Time) -> Duration
+extern func timeAddDate(t: Time, years: int, months: int, days: int) -> Time
+extern func timeFormat(t: Time, layout: string) -> string
+extern func timeParse(layout: string, value: string) -> (Time, !TimeError)
+extern func timeParseInLocation(layout: string, value: string, loc: *Location) -> (Time, !TimeError)
+extern func timeSleep(d: Duration)
+extern func timeTick(d: Duration) -> chan Time
+extern func timeAfter(d: Duration) -> chan Time
+extern func newTimer(d: Duration) -> *Timer
+extern func timerStop(t: *Timer) -> bool
+extern func timerReset(t: *Timer, d: Duration) -> bool
+extern func newTicker(d: Duration) -> *Ticker
+extern func tickerStop(t: *Ticker)
+extern func tickerReset(t: *Ticker, d: Duration)
+extern func loadLocalLocation() -> *Location
+extern func loadLocation(name: string) -> (*Location, !TimeError)

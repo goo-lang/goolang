@@ -1,0 +1,576 @@
+// Package memory provides memory management for the kernel
+package memory
+
+import "kernel/runtime"
+
+// Page size constants
+const (
+    PAGE_SIZE_4K   = 4096
+    PAGE_SIZE_2M   = 2097152    // 2MB
+    PAGE_SIZE_1G   = 1073741824 // 1GB
+    
+    PAGE_SHIFT_4K  = 12
+    PAGE_SHIFT_2M  = 21
+    PAGE_SHIFT_1G  = 30
+)
+
+// Memory protection flags
+type MemoryFlags uint32
+
+const (
+    MEM_READ     MemoryFlags = 1 << 0
+    MEM_WRITE    MemoryFlags = 1 << 1
+    MEM_EXECUTE  MemoryFlags = 1 << 2
+    MEM_USER     MemoryFlags = 1 << 3
+    MEM_KERNEL   MemoryFlags = 1 << 4
+    MEM_CACHED   MemoryFlags = 1 << 5
+    MEM_UNCACHED MemoryFlags = 1 << 6
+    MEM_DEVICE   MemoryFlags = 1 << 7
+    MEM_SHARED   MemoryFlags = 1 << 8
+    MEM_COPY_ON_WRITE MemoryFlags = 1 << 9
+)
+
+// Page frame allocator
+type PageFrame struct {
+    phys_addr: runtime.PhysAddr
+    ref_count: uint32
+    flags: MemoryFlags
+    next: ?*PageFrame
+}
+
+type PageAllocator struct {
+    free_pages: ?*PageFrame
+    total_pages: usize
+    free_count: usize
+    lock: runtime.SpinLock
+}
+
+var page_allocator: PageAllocator
+
+// Initialize the page allocator
+func InitPageAllocator(start: runtime.PhysAddr, end: runtime.PhysAddr) -> !runtime.KernelError {
+    if start >= end || start % PAGE_SIZE_4K != 0 || end % PAGE_SIZE_4K != 0 {
+        return runtime.ErrInvalidAddress
+    }
+    
+    page_allocator.lock = runtime.NewSpinLock()
+    page_allocator.total_pages = (end - start) / PAGE_SIZE_4K
+    page_allocator.free_count = page_allocator.total_pages
+    
+    // Initialize free list
+    var prev: ?*PageFrame = nil
+    for addr := start; addr < end; addr += PAGE_SIZE_4K {
+        frame := (*PageFrame)(addr)
+        frame.phys_addr = addr
+        frame.ref_count = 0
+        frame.flags = 0
+        frame.next = prev
+        prev = frame
+    }
+    
+    page_allocator.free_pages = prev
+    return nil
+}
+
+// Allocate a single page frame
+func AllocPage() -> (?*PageFrame, !runtime.KernelError) {
+    page_allocator.lock.Lock()
+    defer page_allocator.lock.Unlock()
+    
+    if page_allocator.free_pages == nil {
+        return nil, runtime.ErrOutOfMemory
+    }
+    
+    frame := page_allocator.free_pages
+    page_allocator.free_pages = frame.next
+    page_allocator.free_count--
+    
+    frame.ref_count = 1
+    frame.next = nil
+    
+    return frame, nil
+}
+
+// Allocate multiple contiguous page frames
+func AllocPages(count: usize) -> (?*PageFrame, !runtime.KernelError) {
+    if count == 0 {
+        return nil, runtime.ErrInvalidArgument
+    }
+    
+    if count == 1 {
+        return AllocPage()
+    }
+    
+    page_allocator.lock.Lock()
+    defer page_allocator.lock.Unlock()
+    
+    if page_allocator.free_count < count {
+        return nil, runtime.ErrOutOfMemory
+    }
+    
+    // Find contiguous pages (simplified - real implementation would use buddy allocator)
+    var start_frame: ?*PageFrame = nil
+    var current := page_allocator.free_pages
+    var prev: ?*PageFrame = nil
+    
+    while current != nil {
+        // Check if we have enough contiguous pages starting here
+        if isContiguous(current, count) {
+            start_frame = current
+            
+            // Remove allocated frames from free list
+            for i := 0; i < count; i++ {
+                if prev != nil {
+                    prev.next = current.next
+                } else {
+                    page_allocator.free_pages = current.next
+                }
+                
+                current.ref_count = 1
+                next := current.next
+                current.next = nil
+                current = next
+                page_allocator.free_count--
+            }
+            break
+        }
+        
+        prev = current
+        current = current.next
+    }
+    
+    return start_frame, nil
+}
+
+// Free a page frame
+func FreePage(frame: *PageFrame) -> !runtime.KernelError {
+    if frame == nil {
+        return runtime.ErrInvalidArgument
+    }
+    
+    page_allocator.lock.Lock()
+    defer page_allocator.lock.Unlock()
+    
+    if frame.ref_count == 0 {
+        return runtime.ErrInvalidArgument
+    }
+    
+    frame.ref_count--
+    if frame.ref_count == 0 {
+        // Add back to free list
+        frame.next = page_allocator.free_pages
+        page_allocator.free_pages = frame
+        page_allocator.free_count++
+        frame.flags = 0
+    }
+    
+    return nil
+}
+
+// Get page frame statistics
+func GetPageStats() -> (total: usize, free: usize, used: usize) {
+    page_allocator.lock.Lock()
+    defer page_allocator.lock.Unlock()
+    
+    return page_allocator.total_pages, page_allocator.free_count, page_allocator.total_pages - page_allocator.free_count
+}
+
+// Virtual memory management
+type PageTable struct {
+    entries: [512]*PageTableEntry  // For 4-level paging
+    phys_addr: runtime.PhysAddr
+    level: uint8
+}
+
+type PageTableEntry struct {
+    value: uint64
+}
+
+// Page table entry flags (x86_64 style, would be different for ARM)
+const (
+    PTE_PRESENT     uint64 = 1 << 0
+    PTE_WRITABLE    uint64 = 1 << 1
+    PTE_USER        uint64 = 1 << 2
+    PTE_WRITE_THROUGH uint64 = 1 << 3
+    PTE_CACHE_DISABLE uint64 = 1 << 4
+    PTE_ACCESSED    uint64 = 1 << 5
+    PTE_DIRTY       uint64 = 1 << 6
+    PTE_HUGE        uint64 = 1 << 7
+    PTE_GLOBAL      uint64 = 1 << 8
+    PTE_NO_EXECUTE  uint64 = 1 << 63
+)
+
+// Address space management
+type AddressSpace struct {
+    page_table: *PageTable
+    lock: runtime.SpinLock
+    regions: []MemoryRegion
+}
+
+type MemoryRegion struct {
+    start: runtime.VirtAddr
+    end: runtime.VirtAddr
+    flags: MemoryFlags
+    backing: MemoryBacking
+}
+
+type MemoryBacking enum {
+    Anonymous,
+    File,
+    Device,
+    Shared
+}
+
+// Create a new address space
+func NewAddressSpace() -> (?*AddressSpace, !runtime.KernelError) {
+    // Allocate page table
+    frame, err := AllocPage()?
+    if err != nil {
+        return nil, err
+    }
+    
+    page_table := (*PageTable)(frame.phys_addr)
+    page_table.phys_addr = frame.phys_addr
+    page_table.level = 4
+    
+    // Clear page table
+    runtime.KMemset((*byte)(page_table), 0, PAGE_SIZE_4K)
+    
+    as := &AddressSpace{
+        page_table: page_table,
+        lock: runtime.NewSpinLock(),
+        regions: make([]MemoryRegion, 0),
+    }
+    
+    return as, nil
+}
+
+// Map a virtual address to a physical address
+func (as: *AddressSpace) MapPage(virt: runtime.VirtAddr, phys: runtime.PhysAddr, flags: MemoryFlags) -> !runtime.KernelError {
+    as.lock.Lock()
+    defer as.lock.Unlock()
+    
+    if virt % PAGE_SIZE_4K != 0 || phys % PAGE_SIZE_4K != 0 {
+        return runtime.ErrInvalidAddress
+    }
+    
+    // Walk page table and create entries as needed
+    pte := walkPageTable(as.page_table, virt, true)?
+    if pte == nil {
+        return runtime.ErrOutOfMemory
+    }
+    
+    // Set page table entry
+    pte_flags := memoryFlagsToPageTableFlags(flags)
+    pte.value = uint64(phys) | pte_flags | PTE_PRESENT
+    
+    // Flush TLB
+    runtime.FlushTlb()
+    
+    return nil
+}
+
+// Unmap a virtual address
+func (as: *AddressSpace) UnmapPage(virt: runtime.VirtAddr) -> !runtime.KernelError {
+    as.lock.Lock()
+    defer as.lock.Unlock()
+    
+    if virt % PAGE_SIZE_4K != 0 {
+        return runtime.ErrInvalidAddress
+    }
+    
+    pte := walkPageTable(as.page_table, virt, false)?
+    if pte == nil || (pte.value & PTE_PRESENT) == 0 {
+        return runtime.ErrInvalidAddress
+    }
+    
+    // Get physical address and free the page
+    phys := runtime.PhysAddr(pte.value & 0xFFFFFFFFFFFFF000)
+    frame := (*PageFrame)(phys)
+    FreePage(frame)?
+    
+    // Clear page table entry
+    pte.value = 0
+    
+    // Flush TLB
+    runtime.FlushTlb()
+    
+    return nil
+}
+
+// Map a memory region
+func (as: *AddressSpace) MapRegion(virt: runtime.VirtAddr, size: usize, flags: MemoryFlags) -> !runtime.KernelError {
+    if virt % PAGE_SIZE_4K != 0 || size % PAGE_SIZE_4K != 0 {
+        return runtime.ErrInvalidAddress
+    }
+    
+    pages := size / PAGE_SIZE_4K
+    
+    for i := 0; i < pages; i++ {
+        page_virt := virt + (i * PAGE_SIZE_4K)
+        
+        // Allocate physical page
+        frame, err := AllocPage()?
+        if err != nil {
+            // Cleanup already mapped pages
+            for j := 0; j < i; j++ {
+                as.UnmapPage(virt + (j * PAGE_SIZE_4K))
+            }
+            return err
+        }
+        
+        // Map the page
+        err = as.MapPage(page_virt, frame.phys_addr, flags)?
+        if err != nil {
+            FreePage(frame)
+            // Cleanup already mapped pages
+            for j := 0; j < i; j++ {
+                as.UnmapPage(virt + (j * PAGE_SIZE_4K))
+            }
+            return err
+        }
+        
+        // Zero-fill if it's anonymous memory
+        if flags & MEM_USER != 0 {
+            runtime.KMemset((*byte)(page_virt), 0, PAGE_SIZE_4K)
+        }
+    }
+    
+    // Add to regions list
+    region := MemoryRegion{
+        start: virt,
+        end: virt + size,
+        flags: flags,
+        backing: MemoryBacking.Anonymous,
+    }
+    as.regions = append(as.regions, region)
+    
+    return nil
+}
+
+// Unmap a memory region
+func (as: *AddressSpace) UnmapRegion(virt: runtime.VirtAddr, size: usize) -> !runtime.KernelError {
+    if virt % PAGE_SIZE_4K != 0 || size % PAGE_SIZE_4K != 0 {
+        return runtime.ErrInvalidAddress
+    }
+    
+    pages := size / PAGE_SIZE_4K
+    
+    for i := 0; i < pages; i++ {
+        as.UnmapPage(virt + (i * PAGE_SIZE_4K))?
+    }
+    
+    // Remove from regions list
+    for i, region := range as.regions {
+        if region.start == virt && region.end == virt + size {
+            as.regions = append(as.regions[:i], as.regions[i+1:]...)
+            break
+        }
+    }
+    
+    return nil
+}
+
+// Switch to this address space
+func (as: *AddressSpace) Activate() {
+    switchAddressSpace(as.page_table.phys_addr)
+}
+
+// Kernel heap allocator (simple slab allocator)
+type SlabAllocator struct {
+    size_classes: [16]SlabClass
+    lock: runtime.SpinLock
+}
+
+type SlabClass struct {
+    size: usize
+    free_list: ?*SlabObject
+    slabs: []Slab
+}
+
+type Slab struct {
+    start: uintptr
+    end: uintptr
+    free_count: uint32
+    total_count: uint32
+}
+
+type SlabObject struct {
+    next: ?*SlabObject
+}
+
+var kernel_heap: SlabAllocator
+
+// Initialize kernel heap
+func InitKernelHeap() -> !runtime.KernelError {
+    kernel_heap.lock = runtime.NewSpinLock()
+    
+    // Initialize size classes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, etc.
+    for i := 0; i < 16; i++ {
+        kernel_heap.size_classes[i].size = 16 << i
+        kernel_heap.size_classes[i].slabs = make([]Slab, 0)
+    }
+    
+    return nil
+}
+
+// Allocate from kernel heap
+func KernelAlloc(size: usize) -> (?*byte, !runtime.KernelError) {
+    if size == 0 {
+        return nil, runtime.ErrInvalidArgument
+    }
+    
+    kernel_heap.lock.Lock()
+    defer kernel_heap.lock.Unlock()
+    
+    // Find appropriate size class
+    class_index := -1
+    for i := 0; i < 16; i++ {
+        if kernel_heap.size_classes[i].size >= size {
+            class_index = i
+            break
+        }
+    }
+    
+    if class_index == -1 {
+        // Size too large, allocate whole pages
+        pages := (size + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K
+        frame, err := AllocPages(pages)?
+        if err != nil {
+            return nil, err
+        }
+        return (*byte)(frame.phys_addr), nil
+    }
+    
+    class := &kernel_heap.size_classes[class_index]
+    
+    // Check if we have a free object
+    if class.free_list != nil {
+        obj := class.free_list
+        class.free_list = obj.next
+        return (*byte)(obj), nil
+    }
+    
+    // Need to allocate a new slab
+    frame, err := AllocPage()?
+    if err != nil {
+        return nil, err
+    }
+    
+    slab := Slab{
+        start: frame.phys_addr,
+        end: frame.phys_addr + PAGE_SIZE_4K,
+        total_count: PAGE_SIZE_4K / class.size,
+        free_count: PAGE_SIZE_4K / class.size,
+    }
+    
+    // Initialize free list for this slab
+    for i := 0; i < slab.total_count; i++ {
+        obj_addr := slab.start + (i * class.size)
+        obj := (*SlabObject)(obj_addr)
+        obj.next = class.free_list
+        class.free_list = obj
+    }
+    
+    class.slabs = append(class.slabs, slab)
+    
+    // Allocate the first object
+    obj := class.free_list
+    class.free_list = obj.next
+    slab.free_count--
+    
+    return (*byte)(obj), nil
+}
+
+// Free kernel heap memory
+func KernelFree(ptr: *byte) -> !runtime.KernelError {
+    if ptr == nil {
+        return runtime.ErrInvalidArgument
+    }
+    
+    kernel_heap.lock.Lock()
+    defer kernel_heap.lock.Unlock()
+    
+    // Find which slab this belongs to
+    addr := uintptr(ptr)
+    
+    for class_idx := 0; class_idx < 16; class_idx++ {
+        class := &kernel_heap.size_classes[class_idx]
+        
+        for slab_idx, slab := range class.slabs {
+            if addr >= slab.start && addr < slab.end {
+                // Add back to free list
+                obj := (*SlabObject)(ptr)
+                obj.next = class.free_list
+                class.free_list = obj
+                
+                class.slabs[slab_idx].free_count++
+                
+                // If slab is completely free, we could free it
+                if class.slabs[slab_idx].free_count == class.slabs[slab_idx].total_count {
+                    // Free the page
+                    frame := (*PageFrame)(slab.start)
+                    FreePage(frame)
+                    
+                    // Remove from slabs list
+                    class.slabs = append(class.slabs[:slab_idx], class.slabs[slab_idx+1:]...)
+                }
+                
+                return nil
+            }
+        }
+    }
+    
+    // Not found in slabs, might be a large allocation - free as pages
+    // This is simplified - real implementation would track large allocations
+    frame := (*PageFrame)(addr & ^(PAGE_SIZE_4K - 1))
+    return FreePage(frame)
+}
+
+// Helper functions
+func isContiguous(start: *PageFrame, count: usize) -> bool {
+    current := start
+    for i := 0; i < count; i++ {
+        if current == nil {
+            return false
+        }
+        
+        if i > 0 {
+            expected_addr := start.phys_addr + (i * PAGE_SIZE_4K)
+            if current.phys_addr != expected_addr {
+                return false
+            }
+        }
+        
+        current = current.next
+    }
+    return true
+}
+
+func walkPageTable(pt: *PageTable, virt: runtime.VirtAddr, create: bool) -> (?*PageTableEntry, !runtime.KernelError) {
+    // This is a simplified version - real implementation would handle all 4 levels
+    index := (virt >> PAGE_SHIFT_4K) & 0x1FF
+    return &pt.entries[index], nil
+}
+
+func memoryFlagsToPageTableFlags(flags: MemoryFlags) -> uint64 {
+    var pte_flags: uint64 = 0
+    
+    if flags & MEM_WRITE != 0 {
+        pte_flags |= PTE_WRITABLE
+    }
+    if flags & MEM_USER != 0 {
+        pte_flags |= PTE_USER
+    }
+    if flags & MEM_EXECUTE == 0 {
+        pte_flags |= PTE_NO_EXECUTE
+    }
+    if flags & MEM_UNCACHED != 0 {
+        pte_flags |= PTE_CACHE_DISABLE
+    }
+    
+    return pte_flags
+}
+
+// External functions
+extern func switchAddressSpace(page_table: runtime.PhysAddr)

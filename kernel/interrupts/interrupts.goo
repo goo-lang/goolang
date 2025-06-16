@@ -1,0 +1,521 @@
+// Package interrupts provides interrupt handling and system call interface
+package interrupts
+
+import "kernel/runtime"
+import "kernel/memory"
+
+// Interrupt vector numbers
+const (
+    // x86_64 exceptions
+    IRQ_DIVIDE_ERROR         = 0
+    IRQ_DEBUG                = 1
+    IRQ_NMI                  = 2
+    IRQ_BREAKPOINT           = 3
+    IRQ_OVERFLOW             = 4
+    IRQ_BOUND_RANGE          = 5
+    IRQ_INVALID_OPCODE       = 6
+    IRQ_DEVICE_NOT_AVAILABLE = 7
+    IRQ_DOUBLE_FAULT         = 8
+    IRQ_INVALID_TSS          = 10
+    IRQ_SEGMENT_NOT_PRESENT  = 11
+    IRQ_STACK_FAULT          = 12
+    IRQ_GENERAL_PROTECTION   = 13
+    IRQ_PAGE_FAULT           = 14
+    IRQ_FLOATING_POINT       = 16
+    IRQ_ALIGNMENT_CHECK      = 17
+    IRQ_MACHINE_CHECK        = 18
+    IRQ_SIMD_EXCEPTION       = 19
+    
+    // Hardware interrupts
+    IRQ_TIMER                = 32
+    IRQ_KEYBOARD             = 33
+    IRQ_CASCADE              = 34
+    IRQ_SERIAL_2             = 35
+    IRQ_SERIAL_1             = 36
+    IRQ_PARALLEL             = 37
+    IRQ_FLOPPY               = 38
+    IRQ_PARALLEL_2           = 39
+    IRQ_RTC                  = 40
+    IRQ_ACPI                 = 41
+    IRQ_NETWORK_1            = 42
+    IRQ_NETWORK_2            = 43
+    IRQ_MOUSE                = 44
+    IRQ_FPU                  = 45
+    IRQ_ATA_PRIMARY          = 46
+    IRQ_ATA_SECONDARY        = 47
+    
+    // System call interrupt
+    IRQ_SYSCALL              = 128
+    
+    MAX_INTERRUPTS           = 256
+)
+
+// Interrupt handler function type
+type InterruptHandler = func(frame: *InterruptFrame) -> !runtime.KernelError
+
+// Interrupt frame structure (varies by architecture)
+type InterruptFrame struct {
+    // Saved registers (platform-specific)
+    rax: uint64
+    rbx: uint64
+    rcx: uint64
+    rdx: uint64
+    rsi: uint64
+    rdi: uint64
+    rbp: uint64
+    r8: uint64
+    r9: uint64
+    r10: uint64
+    r11: uint64
+    r12: uint64
+    r13: uint64
+    r14: uint64
+    r15: uint64
+    
+    // Interrupt information
+    error_code: uint64
+    rip: uint64
+    cs: uint64
+    rflags: uint64
+    rsp: uint64
+    ss: uint64
+}
+
+// Interrupt descriptor
+type InterruptDescriptor struct {
+    handler: ?InterruptHandler
+    name: string
+    count: uint64
+    enabled: bool
+}
+
+// Global interrupt table
+var interrupt_table: [MAX_INTERRUPTS]InterruptDescriptor
+var interrupts_initialized: bool = false
+
+// Initialize interrupt system
+func InitInterrupts() -> !runtime.KernelError {
+    if interrupts_initialized {
+        return runtime.ErrInvalidArgument
+    }
+    
+    // Initialize all descriptors
+    for i := 0; i < MAX_INTERRUPTS; i++ {
+        interrupt_table[i] = InterruptDescriptor{
+            handler: nil,
+            name: "",
+            count: 0,
+            enabled: false,
+        }
+    }
+    
+    // Install default exception handlers
+    RegisterInterrupt(IRQ_DIVIDE_ERROR, divideErrorHandler, "Divide Error")?
+    RegisterInterrupt(IRQ_DEBUG, debugHandler, "Debug Exception")?
+    RegisterInterrupt(IRQ_NMI, nmiHandler, "Non-Maskable Interrupt")?
+    RegisterInterrupt(IRQ_BREAKPOINT, breakpointHandler, "Breakpoint")?
+    RegisterInterrupt(IRQ_OVERFLOW, overflowHandler, "Overflow")?
+    RegisterInterrupt(IRQ_BOUND_RANGE, boundRangeHandler, "Bound Range Exceeded")?
+    RegisterInterrupt(IRQ_INVALID_OPCODE, invalidOpcodeHandler, "Invalid Opcode")?
+    RegisterInterrupt(IRQ_DEVICE_NOT_AVAILABLE, deviceNotAvailableHandler, "Device Not Available")?
+    RegisterInterrupt(IRQ_DOUBLE_FAULT, doubleFaultHandler, "Double Fault")?
+    RegisterInterrupt(IRQ_INVALID_TSS, invalidTssHandler, "Invalid TSS")?
+    RegisterInterrupt(IRQ_SEGMENT_NOT_PRESENT, segmentNotPresentHandler, "Segment Not Present")?
+    RegisterInterrupt(IRQ_STACK_FAULT, stackFaultHandler, "Stack Fault")?
+    RegisterInterrupt(IRQ_GENERAL_PROTECTION, generalProtectionHandler, "General Protection")?
+    RegisterInterrupt(IRQ_PAGE_FAULT, pageFaultHandler, "Page Fault")?
+    RegisterInterrupt(IRQ_FLOATING_POINT, floatingPointHandler, "Floating Point Exception")?
+    RegisterInterrupt(IRQ_ALIGNMENT_CHECK, alignmentCheckHandler, "Alignment Check")?
+    RegisterInterrupt(IRQ_MACHINE_CHECK, machineCheckHandler, "Machine Check")?
+    RegisterInterrupt(IRQ_SIMD_EXCEPTION, simdExceptionHandler, "SIMD Exception")?
+    
+    // Install system call handler
+    RegisterInterrupt(IRQ_SYSCALL, syscallHandler, "System Call")?
+    
+    // Initialize platform-specific interrupt controller
+    init_pic()?
+    
+    // Load interrupt descriptor table
+    load_idt()?
+    
+    interrupts_initialized = true
+    return nil
+}
+
+// Register an interrupt handler
+func RegisterInterrupt(irq: int, handler: InterruptHandler, name: string) -> !runtime.KernelError {
+    if irq < 0 || irq >= MAX_INTERRUPTS {
+        return runtime.ErrInvalidArgument
+    }
+    
+    if interrupt_table[irq].handler != nil {
+        return runtime.ErrResourceBusy
+    }
+    
+    interrupt_table[irq] = InterruptDescriptor{
+        handler: handler,
+        name: name,
+        count: 0,
+        enabled: true,
+    }
+    
+    return nil
+}
+
+// Unregister an interrupt handler
+func UnregisterInterrupt(irq: int) -> !runtime.KernelError {
+    if irq < 0 || irq >= MAX_INTERRUPTS {
+        return runtime.ErrInvalidArgument
+    }
+    
+    interrupt_table[irq] = InterruptDescriptor{
+        handler: nil,
+        name: "",
+        count: 0,
+        enabled: false,
+    }
+    
+    return nil
+}
+
+// Enable an interrupt
+func EnableInterrupt(irq: int) -> !runtime.KernelError {
+    if irq < 0 || irq >= MAX_INTERRUPTS {
+        return runtime.ErrInvalidArgument
+    }
+    
+    interrupt_table[irq].enabled = true
+    enable_irq(irq)
+    return nil
+}
+
+// Disable an interrupt
+func DisableInterrupt(irq: int) -> !runtime.KernelError {
+    if irq < 0 || irq >= MAX_INTERRUPTS {
+        return runtime.ErrInvalidArgument
+    }
+    
+    interrupt_table[irq].enabled = false
+    disable_irq(irq)
+    return nil
+}
+
+// Main interrupt dispatcher (called from assembly)
+func InterruptDispatcher(irq: int, frame: *InterruptFrame) {
+    if irq < 0 || irq >= MAX_INTERRUPTS {
+        runtime.KPanic("Invalid interrupt number")
+    }
+    
+    descriptor := &interrupt_table[irq]
+    descriptor.count++
+    
+    if !descriptor.enabled {
+        // Interrupt is disabled, send EOI and return
+        send_eoi(irq)
+        return
+    }
+    
+    if descriptor.handler == nil {
+        runtime.KPrintf("Unhandled interrupt %d (%s)\n", irq, descriptor.name)
+        send_eoi(irq)
+        return
+    }
+    
+    // Call the handler
+    err := descriptor.handler(frame)
+    if err != nil {
+        runtime.KPrintf("Interrupt handler error for IRQ %d: %s\n", irq, err.Error())
+    }
+    
+    // Send end-of-interrupt signal
+    send_eoi(irq)
+}
+
+// Default exception handlers
+
+func divideErrorHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Divide by zero at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("Divide by zero exception")
+}
+
+func debugHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Debug exception at RIP: 0x%016x\n", frame.rip)
+    return nil
+}
+
+func nmiHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Non-maskable interrupt\n")
+    return nil
+}
+
+func breakpointHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Breakpoint at RIP: 0x%016x\n", frame.rip)
+    return nil
+}
+
+func overflowHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Overflow exception at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("Overflow exception")
+}
+
+func boundRangeHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Bound range exceeded at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("Bound range exceeded")
+}
+
+func invalidOpcodeHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Invalid opcode at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("Invalid opcode")
+}
+
+func deviceNotAvailableHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Device not available at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("Device not available")
+}
+
+func doubleFaultHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Double fault at RIP: 0x%016x, Error: 0x%016x\n", frame.rip, frame.error_code)
+    runtime.KPanic("Double fault")
+}
+
+func invalidTssHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Invalid TSS at RIP: 0x%016x, Error: 0x%016x\n", frame.rip, frame.error_code)
+    runtime.KPanic("Invalid TSS")
+}
+
+func segmentNotPresentHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Segment not present at RIP: 0x%016x, Error: 0x%016x\n", frame.rip, frame.error_code)
+    runtime.KPanic("Segment not present")
+}
+
+func stackFaultHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Stack fault at RIP: 0x%016x, Error: 0x%016x\n", frame.rip, frame.error_code)
+    runtime.KPanic("Stack fault")
+}
+
+func generalProtectionHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("General protection fault at RIP: 0x%016x, Error: 0x%016x\n", frame.rip, frame.error_code)
+    runtime.KPanic("General protection fault")
+}
+
+func pageFaultHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    // Get the faulting address from CR2
+    fault_addr := get_cr2()
+    
+    // Decode error code
+    present := (frame.error_code & 1) != 0
+    write := (frame.error_code & 2) != 0
+    user := (frame.error_code & 4) != 0
+    instruction := (frame.error_code & 16) != 0
+    
+    runtime.KPrintf("Page fault at 0x%016x (RIP: 0x%016x)\n", fault_addr, frame.rip)
+    runtime.KPrintf("  Present: %v, Write: %v, User: %v, Instruction: %v\n", present, write, user, instruction)
+    
+    // For now, panic on page faults - real OS would handle demand paging
+    runtime.KPanic("Page fault")
+}
+
+func floatingPointHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Floating point exception at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("Floating point exception")
+}
+
+func alignmentCheckHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Alignment check at RIP: 0x%016x, Error: 0x%016x\n", frame.rip, frame.error_code)
+    runtime.KPanic("Alignment check")
+}
+
+func machineCheckHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("Machine check exception at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("Machine check exception")
+}
+
+func simdExceptionHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    runtime.KPrintf("SIMD exception at RIP: 0x%016x\n", frame.rip)
+    runtime.KPanic("SIMD exception")
+}
+
+// System call handling
+type SyscallHandler = func(frame: *InterruptFrame) -> (uint64, !runtime.KernelError)
+
+const MAX_SYSCALLS = 512
+var syscall_table: [MAX_SYSCALLS]?SyscallHandler
+
+func syscallHandler(frame: *InterruptFrame) -> !runtime.KernelError {
+    // System call number is in RAX
+    syscall_num := frame.rax
+    
+    if syscall_num >= MAX_SYSCALLS {
+        frame.rax = ^uint64(0)  // -1 (error)
+        return runtime.ErrInvalidArgument
+    }
+    
+    handler := syscall_table[syscall_num]
+    if handler == nil {
+        runtime.KPrintf("Unimplemented system call: %d\n", syscall_num)
+        frame.rax = ^uint64(0)  // -1 (error)
+        return runtime.ErrNotSupported
+    }
+    
+    // Call the system call handler
+    result, err := handler(frame)?
+    if err != nil {
+        frame.rax = ^uint64(0)  // -1 (error)
+        return err
+    }
+    
+    frame.rax = result
+    return nil
+}
+
+// Register a system call
+func RegisterSyscall(num: uint64, handler: SyscallHandler) -> !runtime.KernelError {
+    if num >= MAX_SYSCALLS {
+        return runtime.ErrInvalidArgument
+    }
+    
+    if syscall_table[num] != nil {
+        return runtime.ErrResourceBusy
+    }
+    
+    syscall_table[num] = handler
+    return nil
+}
+
+// Basic system calls
+func initSyscalls() -> !runtime.KernelError {
+    RegisterSyscall(0, sysRead)?      // read
+    RegisterSyscall(1, sysWrite)?     // write
+    RegisterSyscall(2, sysOpen)?      // open
+    RegisterSyscall(3, sysClose)?     // close
+    RegisterSyscall(9, sysMmap)?      // mmap
+    RegisterSyscall(11, sysMunmap)?   // munmap
+    RegisterSyscall(39, sysGetpid)?   // getpid
+    RegisterSyscall(57, sysFork)?     // fork
+    RegisterSyscall(60, sysExit)?     // exit
+    RegisterSyscall(61, sysWait)?     // wait
+    
+    return nil
+}
+
+// Example system call implementations (stubs)
+func sysRead(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    fd := frame.rdi
+    buf := (*byte)(frame.rsi)
+    count := frame.rdx
+    
+    // TODO: Implement file descriptor table and read operation
+    runtime.KPrintf("sys_read(fd=%d, buf=0x%016x, count=%d)\n", fd, uintptr(buf), count)
+    return 0, nil
+}
+
+func sysWrite(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    fd := frame.rdi
+    buf := (*byte)(frame.rsi)
+    count := frame.rdx
+    
+    // TODO: Implement file descriptor table and write operation
+    runtime.KPrintf("sys_write(fd=%d, buf=0x%016x, count=%d)\n", fd, uintptr(buf), count)
+    return count, nil
+}
+
+func sysOpen(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    pathname := (*byte)(frame.rdi)
+    flags := frame.rsi
+    mode := frame.rdx
+    
+    // TODO: Implement file system and open operation
+    runtime.KPrintf("sys_open(pathname=0x%016x, flags=%d, mode=%d)\n", uintptr(pathname), flags, mode)
+    return 3, nil  // Return a dummy file descriptor
+}
+
+func sysClose(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    fd := frame.rdi
+    
+    // TODO: Implement file descriptor table and close operation
+    runtime.KPrintf("sys_close(fd=%d)\n", fd)
+    return 0, nil
+}
+
+func sysMmap(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    addr := frame.rdi
+    length := frame.rsi
+    prot := frame.rdx
+    flags := frame.r10
+    fd := frame.r8
+    offset := frame.r9
+    
+    // TODO: Implement memory mapping
+    runtime.KPrintf("sys_mmap(addr=0x%016x, length=%d, prot=%d, flags=%d, fd=%d, offset=%d)\n", 
+                   addr, length, prot, flags, fd, offset)
+    return addr, nil
+}
+
+func sysMunmap(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    addr := frame.rdi
+    length := frame.rsi
+    
+    // TODO: Implement memory unmapping
+    runtime.KPrintf("sys_munmap(addr=0x%016x, length=%d)\n", addr, length)
+    return 0, nil
+}
+
+func sysGetpid(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    // TODO: Implement process management
+    runtime.KPrintf("sys_getpid()\n")
+    return 1, nil  // Return dummy PID
+}
+
+func sysFork(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    // TODO: Implement process forking
+    runtime.KPrintf("sys_fork()\n")
+    return ^uint64(0), runtime.ErrNotSupported  // Not implemented yet
+}
+
+func sysExit(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    exit_code := frame.rdi
+    
+    // TODO: Implement process termination
+    runtime.KPrintf("sys_exit(code=%d)\n", exit_code)
+    runtime.KPanic("Process exit not implemented")
+}
+
+func sysWait(frame: *InterruptFrame) -> (uint64, !runtime.KernelError) {
+    // TODO: Implement process waiting
+    runtime.KPrintf("sys_wait()\n")
+    return ^uint64(0), runtime.ErrNotSupported  // Not implemented yet
+}
+
+// Interrupt statistics
+func GetInterruptStats() -> []InterruptStat {
+    stats := make([]InterruptStat, 0, MAX_INTERRUPTS)
+    
+    for i := 0; i < MAX_INTERRUPTS; i++ {
+        desc := &interrupt_table[i]
+        if desc.handler != nil || desc.count > 0 {
+            stats = append(stats, InterruptStat{
+                irq: i,
+                name: desc.name,
+                count: desc.count,
+                enabled: desc.enabled,
+            })
+        }
+    }
+    
+    return stats
+}
+
+type InterruptStat struct {
+    irq: int
+    name: string
+    count: uint64
+    enabled: bool
+}
+
+// External functions implemented in assembly
+extern func init_pic() -> !runtime.KernelError
+extern func load_idt() -> !runtime.KernelError
+extern func enable_irq(irq: int)
+extern func disable_irq(irq: int)
+extern func send_eoi(irq: int)
+extern func get_cr2() -> uint64

@@ -1,0 +1,549 @@
+// Package platform provides platform abstraction layer for different architectures
+package platform
+
+import "kernel/runtime"
+
+// Platform types
+type Architecture enum {
+    X86_64,
+    AArch64,
+    RISC_V
+}
+
+type Platform struct {
+    arch: Architecture
+    name: string
+    features: PlatformFeatures
+    memory_layout: MemoryLayout
+}
+
+type PlatformFeatures struct {
+    has_mmu: bool
+    has_cache: bool
+    has_fpu: bool
+    has_simd: bool
+    has_atomic: bool
+    has_timer: bool
+    max_cpus: uint32
+    page_sizes: []usize
+}
+
+type MemoryLayout struct {
+    kernel_base: uintptr
+    user_base: uintptr
+    mmio_base: uintptr
+    heap_base: uintptr
+    stack_base: uintptr
+    total_memory: usize
+}
+
+// Current platform
+var current_platform: Platform
+
+// Initialize platform-specific features
+func InitPlatform() -> !runtime.KernelError {
+    arch := detectArchitecture()
+    
+    match arch {
+        case Architecture.X86_64:
+            return initX86_64()
+        case Architecture.AArch64:
+            return initAArch64()
+        case Architecture.RISC_V:
+            return initRISCV()
+        default:
+            return runtime.ErrNotSupported
+    }
+}
+
+// Get current platform information
+func GetPlatform() -> Platform {
+    return current_platform
+}
+
+// x86_64 specific implementation
+func initX86_64() -> !runtime.KernelError {
+    current_platform = Platform{
+        arch: Architecture.X86_64,
+        name: "x86_64",
+        features: PlatformFeatures{
+            has_mmu: true,
+            has_cache: true,
+            has_fpu: true,
+            has_simd: true,
+            has_atomic: true,
+            has_timer: true,
+            max_cpus: 256,
+            page_sizes: []usize{4096, 2097152, 1073741824}, // 4K, 2M, 1G
+        },
+        memory_layout: MemoryLayout{
+            kernel_base: 0xFFFFFFFF80000000,  // -2GB
+            user_base: 0x0000000000400000,    // 4MB
+            mmio_base: 0xFFFFFFFFC0000000,    // -1GB
+            heap_base: 0xFFFFFFFF90000000,    // Kernel heap
+            stack_base: 0xFFFFFFFFF0000000,   // Kernel stack
+            total_memory: 0,                  // Detected at runtime
+        },
+    }
+    
+    // Initialize x86_64 specific features
+    initX86CpuFeatures()?
+    initX86Memory()?
+    initX86Interrupts()?
+    initX86Timer()?
+    
+    return nil
+}
+
+// ARM64 specific implementation
+func initAArch64() -> !runtime.KernelError {
+    current_platform = Platform{
+        arch: Architecture.AArch64,
+        name: "aarch64",
+        features: PlatformFeatures{
+            has_mmu: true,
+            has_cache: true,
+            has_fpu: true,
+            has_simd: true,
+            has_atomic: true,
+            has_timer: true,
+            max_cpus: 64,
+            page_sizes: []usize{4096, 65536, 2097152}, // 4K, 64K, 2M
+        },
+        memory_layout: MemoryLayout{
+            kernel_base: 0xFFFF000000000000,  // Upper half
+            user_base: 0x0000000000400000,    // 4MB
+            mmio_base: 0xFFFF800000000000,    // Device memory
+            heap_base: 0xFFFF200000000000,    // Kernel heap
+            stack_base: 0xFFFF400000000000,   // Kernel stack
+            total_memory: 0,                  // Detected at runtime
+        },
+    }
+    
+    // Initialize ARM64 specific features
+    initArmCpuFeatures()?
+    initArmMemory()?
+    initArmInterrupts()?
+    initArmTimer()?
+    
+    return nil
+}
+
+// RISC-V specific implementation (placeholder)
+func initRISCV() -> !runtime.KernelError {
+    current_platform = Platform{
+        arch: Architecture.RISC_V,
+        name: "riscv64",
+        features: PlatformFeatures{
+            has_mmu: true,
+            has_cache: true,
+            has_fpu: true,
+            has_simd: false,
+            has_atomic: true,
+            has_timer: true,
+            max_cpus: 32,
+            page_sizes: []usize{4096, 2097152, 1073741824}, // 4K, 2M, 1G
+        },
+        memory_layout: MemoryLayout{
+            kernel_base: 0xFFFFFFFF80000000,
+            user_base: 0x0000000010000000,
+            mmio_base: 0xFFFFFFFFC0000000,
+            heap_base: 0xFFFFFFFF90000000,
+            stack_base: 0xFFFFFFFFF0000000,
+            total_memory: 0,
+        },
+    }
+    
+    return runtime.ErrNotSupported // Not implemented yet
+}
+
+// CPU feature detection and initialization
+
+// x86_64 CPU features
+func initX86CpuFeatures() -> !runtime.KernelError {
+    // Check for required features
+    if !hasX86Feature("fpu") {
+        return runtime.ErrNotSupported
+    }
+    
+    if !hasX86Feature("pae") {
+        return runtime.ErrNotSupported
+    }
+    
+    if !hasX86Feature("msr") {
+        return runtime.ErrNotSupported
+    }
+    
+    // Enable features
+    enableX86Sse()?
+    enableX86Avx()?
+    setupX86Mtrr()?
+    
+    return nil
+}
+
+// ARM64 CPU features
+func initArmCpuFeatures() -> !runtime.KernelError {
+    // Read ID registers to check features
+    id_aa64pfr0 := getArmIdReg("ID_AA64PFR0_EL1")
+    id_aa64mmfr0 := getArmIdReg("ID_AA64MMFR0_EL1")
+    
+    // Check for required features
+    if (id_aa64pfr0 & 0xF) == 0 {  // EL0 support
+        return runtime.ErrNotSupported
+    }
+    
+    // Setup CPU features
+    setupArmVfp()?
+    setupArmNeon()?
+    setupArmCache()?
+    
+    return nil
+}
+
+// Memory management initialization
+
+func initX86Memory() -> !runtime.KernelError {
+    // Detect physical memory
+    memory_size := detectX86Memory()
+    current_platform.memory_layout.total_memory = memory_size
+    
+    // Setup page tables
+    setupX86Paging()?
+    
+    // Setup UEFI/BIOS memory map
+    setupX86MemoryMap()?
+    
+    return nil
+}
+
+func initArmMemory() -> !runtime.KernelError {
+    // Parse device tree or ACPI for memory layout
+    memory_size := detectArmMemory()
+    current_platform.memory_layout.total_memory = memory_size
+    
+    // Setup MMU
+    setupArmMmu()?
+    
+    // Setup memory attributes
+    setupArmMair()?
+    
+    return nil
+}
+
+// Interrupt controller initialization
+
+func initX86Interrupts() -> !runtime.KernelError {
+    // Setup APIC or 8259 PIC
+    if hasX86Apic() {
+        setupX86Apic()?
+    } else {
+        setupX86Pic()?
+    }
+    
+    // Setup IDT
+    setupX86Idt()?
+    
+    return nil
+}
+
+func initArmInterrupts() -> !runtime.KernelError {
+    // Setup GIC (Generic Interrupt Controller)
+    if hasArmGicV3() {
+        setupArmGicV3()?
+    } else if hasArmGicV2() {
+        setupArmGicV2()?
+    } else {
+        return runtime.ErrNotSupported
+    }
+    
+    // Setup exception vectors
+    setupArmVectors()?
+    
+    return nil
+}
+
+// Timer initialization
+
+func initX86Timer() -> !runtime.KernelError {
+    // Setup HPET, TSC, or PIT
+    if hasX86Hpet() {
+        setupX86Hpet()?
+    } else if hasX86Tsc() {
+        setupX86Tsc()?
+    } else {
+        setupX86Pit()?
+    }
+    
+    return nil
+}
+
+func initArmTimer() -> !runtime.KernelError {
+    // Setup Generic Timer
+    setupArmGenericTimer()?
+    
+    return nil
+}
+
+// Platform-specific I/O functions
+
+// x86_64 I/O port access
+func IoPortRead8(port: uint16) -> uint8 {
+    if current_platform.arch != Architecture.X86_64 {
+        runtime.KPanic("IoPortRead8 not supported on this platform")
+    }
+    return x86IoRead8(port)
+}
+
+func IoPortWrite8(port: uint16, value: uint8) {
+    if current_platform.arch != Architecture.X86_64 {
+        runtime.KPanic("IoPortWrite8 not supported on this platform")
+    }
+    x86IoWrite8(port, value)
+}
+
+func IoPortRead16(port: uint16) -> uint16 {
+    if current_platform.arch != Architecture.X86_64 {
+        runtime.KPanic("IoPortRead16 not supported on this platform")
+    }
+    return x86IoRead16(port)
+}
+
+func IoPortWrite16(port: uint16, value: uint16) {
+    if current_platform.arch != Architecture.X86_64 {
+        runtime.KPanic("IoPortWrite16 not supported on this platform")
+    }
+    x86IoWrite16(port, value)
+}
+
+func IoPortRead32(port: uint16) -> uint32 {
+    if current_platform.arch != Architecture.X86_64 {
+        runtime.KPanic("IoPortRead32 not supported on this platform")
+    }
+    return x86IoRead32(port)
+}
+
+func IoPortWrite32(port: uint16, value: uint32) {
+    if current_platform.arch != Architecture.X86_64 {
+        runtime.KPanic("IoPortWrite32 not supported on this platform")
+    }
+    x86IoWrite32(port, value)
+}
+
+// Memory-mapped I/O (available on all platforms)
+func MmioRead8(addr: uintptr) -> uint8 {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            return x86MmioRead8(addr)
+        case Architecture.AArch64:
+            return armMmioRead8(addr)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+func MmioWrite8(addr: uintptr, value: uint8) {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86MmioWrite8(addr, value)
+        case Architecture.AArch64:
+            armMmioWrite8(addr, value)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+func MmioRead16(addr: uintptr) -> uint16 {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            return x86MmioRead16(addr)
+        case Architecture.AArch64:
+            return armMmioRead16(addr)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+func MmioWrite16(addr: uintptr, value: uint16) {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86MmioWrite16(addr, value)
+        case Architecture.AArch64:
+            armMmioWrite16(addr, value)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+func MmioRead32(addr: uintptr) -> uint32 {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            return x86MmioRead32(addr)
+        case Architecture.AArch64:
+            return armMmioRead32(addr)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+func MmioWrite32(addr: uintptr, value: uint32) {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86MmioWrite32(addr, value)
+        case Architecture.AArch64:
+            armMmioWrite32(addr, value)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+func MmioRead64(addr: uintptr) -> uint64 {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            return x86MmioRead64(addr)
+        case Architecture.AArch64:
+            return armMmioRead64(addr)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+func MmioWrite64(addr: uintptr, value: uint64) {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86MmioWrite64(addr, value)
+        case Architecture.AArch64:
+            armMmioWrite64(addr, value)
+        default:
+            runtime.KPanic("MMIO not supported on this platform")
+    }
+}
+
+// Cache management
+func FlushCache() {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86FlushCache()
+        case Architecture.AArch64:
+            armFlushCache()
+        default:
+            runtime.KPanic("Cache flush not supported on this platform")
+    }
+}
+
+func InvalidateCache() {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86InvalidateCache()
+        case Architecture.AArch64:
+            armInvalidateCache()
+        default:
+            runtime.KPanic("Cache invalidate not supported on this platform")
+    }
+}
+
+func FlushTlb() {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86FlushTlb()
+        case Architecture.AArch64:
+            armFlushTlb()
+        default:
+            runtime.KPanic("TLB flush not supported on this platform")
+    }
+}
+
+// Power management
+func CpuIdle() {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86CpuIdle()
+        case Architecture.AArch64:
+            armCpuIdle()
+        default:
+            runtime.KPanic("CPU idle not supported on this platform")
+    }
+}
+
+func CpuHalt() -> ! {
+    match current_platform.arch {
+        case Architecture.X86_64:
+            x86CpuHalt()
+        case Architecture.AArch64:
+            armCpuHalt()
+        default:
+            runtime.KPanic("CPU halt not supported on this platform")
+    }
+}
+
+// External platform-specific functions
+
+// Architecture detection
+extern func detectArchitecture() -> Architecture
+
+// x86_64 specific functions
+extern func hasX86Feature(feature: string) -> bool
+extern func enableX86Sse() -> !runtime.KernelError
+extern func enableX86Avx() -> !runtime.KernelError
+extern func setupX86Mtrr() -> !runtime.KernelError
+extern func detectX86Memory() -> usize
+extern func setupX86Paging() -> !runtime.KernelError
+extern func setupX86MemoryMap() -> !runtime.KernelError
+extern func hasX86Apic() -> bool
+extern func setupX86Apic() -> !runtime.KernelError
+extern func setupX86Pic() -> !runtime.KernelError
+extern func setupX86Idt() -> !runtime.KernelError
+extern func hasX86Hpet() -> bool
+extern func hasX86Tsc() -> bool
+extern func setupX86Hpet() -> !runtime.KernelError
+extern func setupX86Tsc() -> !runtime.KernelError
+extern func setupX86Pit() -> !runtime.KernelError
+
+extern func x86IoRead8(port: uint16) -> uint8
+extern func x86IoWrite8(port: uint16, value: uint8)
+extern func x86IoRead16(port: uint16) -> uint16
+extern func x86IoWrite16(port: uint16, value: uint16)
+extern func x86IoRead32(port: uint16) -> uint32
+extern func x86IoWrite32(port: uint16, value: uint32)
+extern func x86MmioRead8(addr: uintptr) -> uint8
+extern func x86MmioWrite8(addr: uintptr, value: uint8)
+extern func x86MmioRead16(addr: uintptr) -> uint16
+extern func x86MmioWrite16(addr: uintptr, value: uint16)
+extern func x86MmioRead32(addr: uintptr) -> uint32
+extern func x86MmioWrite32(addr: uintptr, value: uint32)
+extern func x86MmioRead64(addr: uintptr) -> uint64
+extern func x86MmioWrite64(addr: uintptr, value: uint64)
+extern func x86FlushCache()
+extern func x86InvalidateCache()
+extern func x86FlushTlb()
+extern func x86CpuIdle()
+extern func x86CpuHalt() -> !
+
+// ARM64 specific functions
+extern func getArmIdReg(reg: string) -> uint64
+extern func setupArmVfp() -> !runtime.KernelError
+extern func setupArmNeon() -> !runtime.KernelError
+extern func setupArmCache() -> !runtime.KernelError
+extern func detectArmMemory() -> usize
+extern func setupArmMmu() -> !runtime.KernelError
+extern func setupArmMair() -> !runtime.KernelError
+extern func hasArmGicV3() -> bool
+extern func hasArmGicV2() -> bool
+extern func setupArmGicV3() -> !runtime.KernelError
+extern func setupArmGicV2() -> !runtime.KernelError
+extern func setupArmVectors() -> !runtime.KernelError
+extern func setupArmGenericTimer() -> !runtime.KernelError
+
+extern func armMmioRead8(addr: uintptr) -> uint8
+extern func armMmioWrite8(addr: uintptr, value: uint8)
+extern func armMmioRead16(addr: uintptr) -> uint16
+extern func armMmioWrite16(addr: uintptr, value: uint16)
+extern func armMmioRead32(addr: uintptr) -> uint32
+extern func armMmioWrite32(addr: uintptr, value: uint32)
+extern func armMmioRead64(addr: uintptr) -> uint64
+extern func armMmioWrite64(addr: uintptr, value: uint64)
+extern func armFlushCache()
+extern func armInvalidateCache()
+extern func armFlushTlb()
+extern func armCpuIdle()
+extern func armCpuHalt() -> !

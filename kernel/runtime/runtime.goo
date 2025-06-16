@@ -1,0 +1,443 @@
+// Package runtime provides the kernel runtime for bare-metal execution
+package runtime
+
+// Kernel runtime configuration
+type KernelConfig struct {
+    heap_start: uintptr
+    heap_size: usize
+    stack_size: usize
+    max_processes: uint32
+    page_size: usize
+}
+
+// Memory layout for kernel
+type MemoryLayout struct {
+    kernel_start: uintptr
+    kernel_end: uintptr
+    heap_start: uintptr
+    heap_end: uintptr
+    stack_start: uintptr
+    stack_end: uintptr
+    mmio_start: uintptr
+    mmio_end: uintptr
+}
+
+// Platform-specific types
+type PhysAddr = uintptr
+type VirtAddr = uintptr
+type PageFrame = uintptr
+
+// Error types for kernel operations
+type KernelError struct {
+    message: string
+    kind: KernelErrorKind
+}
+
+type KernelErrorKind enum {
+    OutOfMemory,
+    InvalidAddress,
+    PermissionDenied,
+    ResourceBusy,
+    DeviceError,
+    InvalidArgument,
+    NotSupported
+}
+
+var (
+    ErrOutOfMemory = KernelError{message: "out of memory", kind: KernelErrorKind.OutOfMemory}
+    ErrInvalidAddress = KernelError{message: "invalid address", kind: KernelErrorKind.InvalidAddress}
+    ErrPermissionDenied = KernelError{message: "permission denied", kind: KernelErrorKind.PermissionDenied}
+    ErrResourceBusy = KernelError{message: "resource busy", kind: KernelErrorKind.ResourceBusy}
+    ErrDeviceError = KernelError{message: "device error", kind: KernelErrorKind.DeviceError}
+    ErrInvalidArgument = KernelError{message: "invalid argument", kind: KernelErrorKind.InvalidArgument}
+    ErrNotSupported = KernelError{message: "operation not supported", kind: KernelErrorKind.NotSupported}
+)
+
+func (e: KernelError) Error() -> string {
+    return e.message
+}
+
+// Kernel runtime state
+var kernel_config: KernelConfig
+var memory_layout: MemoryLayout
+var is_initialized: bool = false
+
+// Initialize the kernel runtime
+func KernelInit(config: KernelConfig, layout: MemoryLayout) -> !KernelError {
+    if is_initialized {
+        return ErrInvalidArgument
+    }
+    
+    kernel_config = config
+    memory_layout = layout
+    
+    // Initialize memory management
+    init_heap(layout.heap_start, layout.heap_end)?
+    
+    // Initialize interrupt handling
+    init_interrupts()?
+    
+    // Initialize platform-specific features
+    platform_init()?
+    
+    is_initialized = true
+    return nil
+}
+
+// Memory allocation for kernel
+func KAlloc(size: usize) -> (?*byte, !KernelError) {
+    if !is_initialized {
+        return nil, ErrInvalidArgument
+    }
+    
+    ptr := heap_alloc(size)
+    if ptr == null {
+        return nil, ErrOutOfMemory
+    }
+    
+    return ptr, nil
+}
+
+// Free kernel memory
+func KFree(ptr: *byte) -> !KernelError {
+    if !is_initialized {
+        return ErrInvalidArgument
+    }
+    
+    if ptr == null {
+        return ErrInvalidArgument
+    }
+    
+    heap_free(ptr)
+    return nil
+}
+
+// Allocate aligned memory
+func KAllocAligned(size: usize, align: usize) -> (?*byte, !KernelError) {
+    if !is_initialized {
+        return nil, ErrInvalidArgument
+    }
+    
+    ptr := heap_alloc_aligned(size, align)
+    if ptr == null {
+        return nil, ErrOutOfMemory
+    }
+    
+    return ptr, nil
+}
+
+// Zero-fill allocated memory
+func KAllocZero(size: usize) -> (?*byte, !KernelError) {
+    ptr, err := KAlloc(size)?
+    if err != nil {
+        return nil, err
+    }
+    
+    if ptr != nil {
+        memset(ptr, 0, size)
+    }
+    
+    return ptr, nil
+}
+
+// Copy memory
+func KMemcpy(dest: *byte, src: *byte, n: usize) {
+    memcpy(dest, src, n)
+}
+
+// Set memory
+func KMemset(s: *byte, c: int, n: usize) {
+    memset(s, c, n)
+}
+
+// Compare memory
+func KMemcmp(s1: *byte, s2: *byte, n: usize) -> int {
+    return memcmp(s1, s2, n)
+}
+
+// Get current kernel configuration
+func GetKernelConfig() -> KernelConfig {
+    return kernel_config
+}
+
+// Get memory layout
+func GetMemoryLayout() -> MemoryLayout {
+    return memory_layout
+}
+
+// Panic function for kernel
+func KPanic(message: string) -> ! {
+    // Disable interrupts
+    disable_interrupts()
+    
+    // Print panic message
+    kprintf("KERNEL PANIC: %s\n", message)
+    
+    // Print stack trace if available
+    print_stack_trace()
+    
+    // Halt the system
+    halt()
+}
+
+// Kernel printf for debugging
+func KPrintf(format: string, args: ...any) {
+    kprintf_impl(format, args...)
+}
+
+// Critical section management
+type SpinLock struct {
+    locked: bool
+    cpu_id: uint32
+}
+
+func NewSpinLock() -> SpinLock {
+    return SpinLock{locked: false, cpu_id: 0}
+}
+
+func (lock: *SpinLock) Lock() {
+    disable_interrupts()
+    while atomic_test_and_set(&lock.locked) {
+        cpu_relax()
+    }
+    lock.cpu_id = get_cpu_id()
+}
+
+func (lock: *SpinLock) Unlock() {
+    lock.cpu_id = 0
+    atomic_store(&lock.locked, false)
+    enable_interrupts()
+}
+
+func (lock: *SpinLock) IsLocked() -> bool {
+    return atomic_load(&lock.locked)
+}
+
+// Atomic operations
+func AtomicLoad32(ptr: *uint32) -> uint32 {
+    return atomic_load_32(ptr)
+}
+
+func AtomicStore32(ptr: *uint32, val: uint32) {
+    atomic_store_32(ptr, val)
+}
+
+func AtomicAdd32(ptr: *uint32, val: uint32) -> uint32 {
+    return atomic_add_32(ptr, val)
+}
+
+func AtomicSub32(ptr: *uint32, val: uint32) -> uint32 {
+    return atomic_sub_32(ptr, val)
+}
+
+func AtomicCompareAndSwap32(ptr: *uint32, old: uint32, new: uint32) -> bool {
+    return atomic_cas_32(ptr, old, new)
+}
+
+func AtomicLoad64(ptr: *uint64) -> uint64 {
+    return atomic_load_64(ptr)
+}
+
+func AtomicStore64(ptr: *uint64, val: uint64) {
+    atomic_store_64(ptr, val)
+}
+
+func AtomicAdd64(ptr: *uint64, val: uint64) -> uint64 {
+    return atomic_add_64(ptr, val)
+}
+
+func AtomicSub64(ptr: *uint64, val: uint64) -> uint64 {
+    return atomic_sub_64(ptr, val)
+}
+
+func AtomicCompareAndSwap64(ptr: *uint64, old: uint64, new: uint64) -> bool {
+    return atomic_cas_64(ptr, old, new)
+}
+
+// CPU management
+func GetCpuId() -> uint32 {
+    return get_cpu_id()
+}
+
+func GetCpuCount() -> uint32 {
+    return get_cpu_count()
+}
+
+func CpuRelax() {
+    cpu_relax()
+}
+
+// Interrupt management
+func DisableInterrupts() {
+    disable_interrupts()
+}
+
+func EnableInterrupts() {
+    enable_interrupts()
+}
+
+func InterruptsEnabled() -> bool {
+    return interrupts_enabled()
+}
+
+// Timer functions
+func GetSystemTime() -> uint64 {
+    return get_system_time()
+}
+
+func GetUptime() -> uint64 {
+    return get_uptime()
+}
+
+// Platform-specific functions
+func IoRead8(port: uint16) -> uint8 {
+    return io_read_8(port)
+}
+
+func IoWrite8(port: uint16, value: uint8) {
+    io_write_8(port, value)
+}
+
+func IoRead16(port: uint16) -> uint16 {
+    return io_read_16(port)
+}
+
+func IoWrite16(port: uint16, value: uint16) {
+    io_write_16(port, value)
+}
+
+func IoRead32(port: uint16) -> uint32 {
+    return io_read_32(port)
+}
+
+func IoWrite32(port: uint16, value: uint32) {
+    io_write_32(port, value)
+}
+
+// Memory mapped I/O
+func MmioRead8(addr: uintptr) -> uint8 {
+    return mmio_read_8(addr)
+}
+
+func MmioWrite8(addr: uintptr, value: uint8) {
+    mmio_write_8(addr, value)
+}
+
+func MmioRead16(addr: uintptr) -> uint16 {
+    return mmio_read_16(addr)
+}
+
+func MmioWrite16(addr: uintptr, value: uint16) {
+    mmio_write_16(addr, value)
+}
+
+func MmioRead32(addr: uintptr) -> uint32 {
+    return mmio_read_32(addr)
+}
+
+func MmioWrite32(addr: uintptr, value: uint32) {
+    mmio_write_32(addr, value)
+}
+
+func MmioRead64(addr: uintptr) -> uint64 {
+    return mmio_read_64(addr)
+}
+
+func MmioWrite64(addr: uintptr, value: uint64) {
+    mmio_write_64(addr, value)
+}
+
+// Cache management
+func FlushCache() {
+    flush_cache()
+}
+
+func InvalidateCache() {
+    invalidate_cache()
+}
+
+func FlushTlb() {
+    flush_tlb()
+}
+
+// Power management
+func CpuIdle() {
+    cpu_idle()
+}
+
+func CpuHalt() -> ! {
+    halt()
+}
+
+func Reboot() -> ! {
+    reboot()
+}
+
+func Shutdown() -> ! {
+    shutdown()
+}
+
+// External functions implemented in assembly/C
+extern func init_heap(start: uintptr, end: uintptr) -> !KernelError
+extern func heap_alloc(size: usize) -> ?*byte
+extern func heap_free(ptr: *byte)
+extern func heap_alloc_aligned(size: usize, align: usize) -> ?*byte
+extern func init_interrupts() -> !KernelError
+extern func platform_init() -> !KernelError
+
+extern func memcpy(dest: *byte, src: *byte, n: usize)
+extern func memset(s: *byte, c: int, n: usize)
+extern func memcmp(s1: *byte, s2: *byte, n: usize) -> int
+
+extern func disable_interrupts()
+extern func enable_interrupts()
+extern func interrupts_enabled() -> bool
+
+extern func atomic_test_and_set(ptr: *bool) -> bool
+extern func atomic_load(ptr: *bool) -> bool
+extern func atomic_store(ptr: *bool, val: bool)
+extern func atomic_load_32(ptr: *uint32) -> uint32
+extern func atomic_store_32(ptr: *uint32, val: uint32)
+extern func atomic_add_32(ptr: *uint32, val: uint32) -> uint32
+extern func atomic_sub_32(ptr: *uint32, val: uint32) -> uint32
+extern func atomic_cas_32(ptr: *uint32, old: uint32, new: uint32) -> bool
+extern func atomic_load_64(ptr: *uint64) -> uint64
+extern func atomic_store_64(ptr: *uint64, val: uint64)
+extern func atomic_add_64(ptr: *uint64, val: uint64) -> uint64
+extern func atomic_sub_64(ptr: *uint64, val: uint64) -> uint64
+extern func atomic_cas_64(ptr: *uint64, old: uint64, new: uint64) -> bool
+
+extern func get_cpu_id() -> uint32
+extern func get_cpu_count() -> uint32
+extern func cpu_relax()
+extern func cpu_idle()
+
+extern func get_system_time() -> uint64
+extern func get_uptime() -> uint64
+
+extern func io_read_8(port: uint16) -> uint8
+extern func io_write_8(port: uint16, value: uint8)
+extern func io_read_16(port: uint16) -> uint16
+extern func io_write_16(port: uint16, value: uint16)
+extern func io_read_32(port: uint16) -> uint32
+extern func io_write_32(port: uint16, value: uint32)
+
+extern func mmio_read_8(addr: uintptr) -> uint8
+extern func mmio_write_8(addr: uintptr, value: uint8)
+extern func mmio_read_16(addr: uintptr) -> uint16
+extern func mmio_write_16(addr: uintptr, value: uint16)
+extern func mmio_read_32(addr: uintptr) -> uint32
+extern func mmio_write_32(addr: uintptr, value: uint32)
+extern func mmio_read_64(addr: uintptr) -> uint64
+extern func mmio_write_64(addr: uintptr, value: uint64)
+
+extern func flush_cache()
+extern func invalidate_cache()
+extern func flush_tlb()
+
+extern func halt() -> !
+extern func reboot() -> !
+extern func shutdown() -> !
+extern func kprintf_impl(format: string, args: ...any)
+extern func kprintf(format: string, message: string)
+extern func print_stack_trace()
