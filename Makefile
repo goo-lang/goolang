@@ -680,3 +680,27 @@ demo-async-resource: $(ASYNC_RESOURCE_DEMO)
 $(ASYNC_RESOURCE_DEMO): examples/async_resource_demo.c $(ASYNC_RESOURCE_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Reactive Programming Test
+REACTIVE_PROGRAMMING_TEST = $(BINDIR)/reactive_programming_test
+REACTIVE_PROGRAMMING_SOURCES = src/async/reactive_programming_simple.c src/errors/error.c
+
+test-reactive-programming: $(REACTIVE_PROGRAMMING_TEST)
+	@echo "Running reactive programming tests..."
+	./$(REACTIVE_PROGRAMMING_TEST)
+
+$(REACTIVE_PROGRAMMING_TEST): tests/async/reactive_programming_minimal_test.c $(REACTIVE_PROGRAMMING_SOURCES)
+	@mkdir -p $(BINDIR)
+	@mkdir -p tests/async
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Reactive Programming Demo
+REACTIVE_PROGRAMMING_DEMO = $(BINDIR)/reactive_programming_demo
+
+demo-reactive-programming: $(REACTIVE_PROGRAMMING_DEMO)
+	@echo "Running reactive programming demo..."
+	./$(REACTIVE_PROGRAMMING_DEMO)
+
+$(REACTIVE_PROGRAMMING_DEMO): examples/reactive_programming_demo.c $(REACTIVE_PROGRAMMING_SOURCES) $(ASYNC_RESOURCE_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
