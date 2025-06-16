@@ -123,7 +123,7 @@
         "id": 10,
         "title": "Implement Compile-Time Execution",
         "description": "Implement Zig-style compile-time code execution",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           3,
           4
@@ -131,7 +131,63 @@
         "priority": "low",
         "details": "Implement compile-time code execution similar to Zig's comptime. This includes:\n\n1. Parse comptime blocks in the code\n2. Create a compile-time interpreter for Goo code\n3. Execute comptime blocks during compilation\n4. Generate code based on comptime results\n\nLanguage Syntax:\n```go\n// Compile-time constant\ncomptime {\n    const MAX_THREADS = 8\n}\n\n// Compile-time function execution\nfunc fibonacci(n: int) int {\n    if n <= 1 {\n        return n\n    }\n    return fibonacci(n-1) + fibonacci(n-2)\n}\n\ncomptime {\n    const FIB_10 = fibonacci(10)\n}\n\n// Compile-time code generation\ncomptime {\n    for i := 0; i < 5; i++ {\n        @emit(fmt.Sprintf(\"func process%d() { /* implementation */ }\", i))\n    }\n}\n```\n\nImplementation Details:\n1. Modify the parser to recognize comptime blocks\n2. Create a compile-time interpreter for Goo code\n3. Implement constant folding and evaluation\n4. Support code generation from comptime results\n5. Integrate with the type system for compile-time type checking\n6. Implement @emit and other compile-time intrinsics\n\nNote: Ensure proper memory management in the type_function implementation, as this issue has been fixed in the core system.",
         "testStrategy": "1. Test basic comptime constant evaluation\n2. Test comptime function execution\n3. Verify code generation from comptime blocks\n4. Test complex comptime scenarios\n5. Benchmark compile-time performance\n6. Test integration with the type system\n7. Verify error reporting for comptime errors\n8. Verify memory management in type_function implementation",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Modify Parser to Recognize Comptime Blocks",
+            "description": "Extend the parser to recognize and parse comptime blocks in the code, creating appropriate AST nodes for them.",
+            "dependencies": [],
+            "details": "1. Add a new AST node type for comptime blocks\n2. Update the parser to recognize the 'comptime' keyword followed by a block\n3. Parse the statements inside the comptime block as regular statements\n4. Ensure the parser correctly handles nested comptime blocks\n5. Add appropriate position information for error reporting",
+            "status": "done",
+            "testStrategy": "Write unit tests with various comptime block patterns, including nested blocks, empty blocks, and blocks with different statement types."
+          },
+          {
+            "id": 2,
+            "title": "Implement Compile-Time Interpreter Core",
+            "description": "Create a basic interpreter that can execute Goo code at compile time, focusing on core language features.",
+            "dependencies": [
+              1
+            ],
+            "details": "1. Create an interpreter structure that can maintain compile-time state\n2. Implement evaluation of basic expressions (literals, arithmetic, variables)\n3. Implement execution of basic statements (assignment, if/else, loops)\n4. Add support for compile-time variables and constants\n5. Implement a scope system for compile-time execution\n6. Ensure proper error reporting for compile-time errors",
+            "status": "done",
+            "testStrategy": "Test the interpreter with simple expressions and statements, verifying that it produces the expected results and handles errors appropriately."
+          },
+          {
+            "id": 3,
+            "title": "Implement Function Execution and Constant Folding",
+            "description": "Extend the compile-time interpreter to support function calls and constant folding.",
+            "dependencies": [
+              2
+            ],
+            "details": "1. Add support for function declarations and calls in the interpreter\n2. Implement recursive function execution\n3. Add constant folding for expressions with known values at compile time\n4. Implement compile-time evaluation of built-in functions\n5. Ensure proper handling of compile-time vs. runtime function calls\n6. Add caching for expensive compile-time computations",
+            "status": "done",
+            "testStrategy": "Test with recursive functions like fibonacci, constant expressions, and mixed compile-time/runtime code."
+          },
+          {
+            "id": 4,
+            "title": "Implement Code Generation and @emit Intrinsic",
+            "description": "Add support for generating code from comptime blocks and implement the @emit intrinsic.",
+            "dependencies": [
+              3
+            ],
+            "details": "1. Create a mechanism to collect generated code from comptime blocks\n2. Implement the @emit intrinsic function to add code to the output\n3. Ensure generated code is properly integrated into the compilation pipeline\n4. Add validation for generated code to ensure it's syntactically correct\n5. Implement proper error handling for code generation issues\n6. Add support for other compile-time intrinsics as needed",
+            "status": "done",
+            "testStrategy": "Test code generation with various patterns, including loops that generate multiple functions, conditional code generation, and error cases."
+          },
+          {
+            "id": 5,
+            "title": "Integrate Compile-Time Execution with Type System",
+            "description": "Integrate the compile-time execution system with the type system and ensure proper memory management.",
+            "dependencies": [
+              2,
+              3,
+              4
+            ],
+            "details": "1. Ensure compile-time evaluated expressions are properly typed\n2. Implement compile-time type checking for generated code\n3. Add support for compile-time type operations and reflection\n4. Ensure proper memory management during compile-time execution\n5. Implement cleanup of compile-time resources after compilation\n6. Add comprehensive error reporting for type-related issues in compile-time code",
+            "status": "done",
+            "testStrategy": "Test with complex type operations at compile time, memory-intensive compile-time operations, and edge cases involving type checking of generated code."
+          }
+        ]
       },
       {
         "id": 11,
@@ -533,7 +589,63 @@
         "priority": "high",
         "details": "Extend the existing compile-time system with advanced optimization and code generation capabilities:\n\n1. Automatic Optimization:\n   ```goo\n   @optimize_for(\"throughput\") // or \"latency\", \"memory\", \"energy\"\n   func process_data() []Result {\n       comptime {\n           // Compiler automatically chooses optimal algorithms\n           // based on target hardware and optimization goals\n           ensure_vectorizable(@typeinfo(Result))\n           select_algorithm(\"simd\", \"parallel\", \"cache_friendly\")\n       }\n       \n       return parallel for i in 0..1000 {\n           expensive_computation(i) // Auto-vectorized, auto-parallelized\n       }\n   }\n   ```\n\n2. Profile-Guided Optimization:\n   ```goo\n   @profile_guided\n   func hot_path(data: []Data) {\n       // Compiler uses runtime profiling data to optimize\n       // Automatic branch prediction hints\n       // Cache-aware memory layout\n       // Speculative execution optimization\n   }\n   ```\n\n3. Adaptive Algorithms:\n   ```goo\n   comptime {\n       // Algorithm selection based on data characteristics\n       if @target_has(\"avx512\") {\n           @use_algorithm(\"vectorized_sort\")\n       } else if @data_size() > 10000 {\n           @use_algorithm(\"parallel_sort\")\n       } else {\n           @use_algorithm(\"insertion_sort\")\n       }\n   }\n   ```\n\n4. Compile-Time Benchmarking:\n   ```goo\n   comptime {\n       // Automatically benchmark different implementations\n       best_impl := @benchmark_and_select([\n           sort_algorithm_quicksort,\n           sort_algorithm_mergesort,\n           sort_algorithm_radixsort\n       ], sample_data)\n       @use_implementation(best_impl)\n   }\n   ```\n\n5. Hardware-Aware Compilation:\n   ```goo\n   comptime {\n       if @target_has(\"gpu\") {\n           @offload_to_gpu(compute_intensive_loop)\n       }\n       \n       if @target_has(\"dedicated_crypto\") {\n           @use_hardware_crypto()\n       }\n   }\n   ```\n\n6. Automatic Code Specialization:\n   - Runtime type specialization\n   - Constant propagation across function boundaries\n   - Loop unrolling and vectorization\n   - Inline assembly generation for hot paths\n\nNote: Leverage the fixed memory management in type_function to ensure compile-time features work correctly without memory leaks or corruption.",
         "testStrategy": "1. Optimization Verification:\n   - Verify generated code optimizations\n   - Performance regression testing\n   - Cross-platform optimization consistency\n   - Hardware-specific optimization testing\n   - Test memory management in compile-time execution\n\n2. Compile-Time Performance:\n   - Compilation time benchmarking\n   - Memory usage during compilation\n   - Incremental compilation efficiency\n   - Build system integration\n\n3. Runtime Performance:\n   - Benchmark optimized code against manual implementations\n   - Adaptive algorithm selection verification\n   - Profile-guided optimization effectiveness\n   - Real-world application performance\n\n4. Correctness Testing:\n   - Optimization correctness verification\n   - Algorithm selection validation\n   - Hardware feature detection accuracy\n   - Cross-compilation testing",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Optimization Directives Framework",
+            "description": "Create the core infrastructure for optimization directives like @optimize_for that will guide the compiler's optimization strategy based on specified goals.",
+            "dependencies": [],
+            "details": "1. Define the optimization directive syntax and parser integration\n2. Implement the @optimize_for directive with support for 'throughput', 'latency', 'memory', and 'energy' targets\n3. Create internal representation of optimization goals that can be referenced during code generation\n4. Implement the comptime block parsing for optimization context\n5. Add helper functions like ensure_vectorizable() and select_algorithm() that interact with the type system",
+            "status": "done",
+            "testStrategy": "Create unit tests with different optimization targets and verify the internal representation correctly captures the optimization goals. Test with simple functions to ensure directives are properly parsed."
+          },
+          {
+            "id": 2,
+            "title": "Develop Profile-Guided and Adaptive Optimization",
+            "description": "Implement profile-guided optimization capabilities and adaptive algorithm selection based on target hardware and data characteristics.",
+            "dependencies": [
+              1
+            ],
+            "details": "1. Create the @profile_guided directive and infrastructure for collecting/using runtime profiling data\n2. Implement target detection functions like @target_has() for hardware feature detection\n3. Add data characteristic analysis functions like @data_size()\n4. Create the @use_algorithm directive for algorithm selection based on conditions\n5. Implement the algorithm selection logic that integrates with the optimization framework",
+            "status": "done",
+            "testStrategy": "Test with mock hardware targets to verify correct algorithm selection. Create test cases with different data sizes and verify appropriate algorithm selection. Test the profile data collection and application mechanism."
+          },
+          {
+            "id": 3,
+            "title": "Build Compile-Time Benchmarking System",
+            "description": "Create a system for compile-time benchmarking of alternative implementations to automatically select the most efficient one based on sample data.",
+            "dependencies": [
+              2
+            ],
+            "details": "1. Implement the @benchmark_and_select function that can evaluate multiple implementation options\n2. Create a benchmarking infrastructure that can run at compile time\n3. Develop a mechanism to provide sample data for benchmarking\n4. Implement the @use_implementation directive to select the best implementation\n5. Ensure benchmark results are cached to avoid redundant evaluations during compilation",
+            "status": "done",
+            "testStrategy": "Create test cases with multiple algorithm implementations and verify the benchmarking system correctly identifies the fastest one. Test with different sample data sets to ensure consistency."
+          },
+          {
+            "id": 4,
+            "title": "Implement Hardware-Aware Compilation",
+            "description": "Develop capabilities for hardware-specific optimizations including GPU offloading and specialized hardware acceleration.",
+            "dependencies": [
+              2
+            ],
+            "details": "1. Enhance the target detection system to identify specialized hardware (GPU, crypto accelerators, etc.)\n2. Implement the @offload_to_gpu directive and supporting infrastructure\n3. Create the @use_hardware_crypto directive and other hardware-specific optimizations\n4. Develop a code transformation system that can generate hardware-specific code\n5. Implement fallback mechanisms when targeted hardware is unavailable",
+            "status": "pending",
+            "testStrategy": "Test with mock hardware configurations to verify correct code generation. Create test cases that verify fallback behavior when hardware is unavailable. Benchmark resulting code on systems with and without specialized hardware."
+          },
+          {
+            "id": 5,
+            "title": "Develop Automatic Code Specialization",
+            "description": "Implement advanced code specialization techniques including runtime type specialization, constant propagation, loop optimization, and assembly generation.",
+            "dependencies": [
+              1,
+              3,
+              4
+            ],
+            "details": "1. Implement runtime type specialization that generates optimized code paths for different types\n2. Create constant propagation system that works across function boundaries\n3. Develop loop unrolling and vectorization optimizations that integrate with the optimization directives\n4. Implement inline assembly generation for performance-critical code paths\n5. Ensure all specializations work correctly with the memory management system",
+            "status": "pending",
+            "testStrategy": "Create comprehensive test cases for each specialization technique. Benchmark before and after optimization to verify performance improvements. Test edge cases including complex type hierarchies and nested function calls."
+          }
+        ]
       },
       {
         "id": 24,
@@ -676,7 +788,7 @@
         "id": 26,
         "title": "Implement Advanced Macro System",
         "description": "Create a powerful but simple macro system with derive macros and compile-time code generation that surpasses Rust's procedural macros.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           10,
           23
@@ -684,7 +796,53 @@
         "priority": "medium",
         "details": "Develop a macro system that combines the power of Rust's procedural macros with the simplicity of traditional macros:\n\n1. Derive Macros:\n   ```goo\n   @derive(Debug, Clone, Serialize, Hash, PartialEq)\n   struct User {\n       id: UserId,\n       name: string,\n       email: string,\n       created_at: time.Time\n   }\n   \n   // Automatically generates all implementations\n   ```\n\n2. Template-Based Code Generation:\n   ```goo\n   @template\n   macro generate_crud<T> {\n       func create_{{T.name | lowercase}}(data: {{T}}) !{{T}} {\n           return database.insert(data)\n       }\n       \n       func get_{{T.name | lowercase}}(id: {{T.id_type}}) !?{{T}} {\n           return database.find_by_id<{{T}}>(id)\n       }\n       \n       func update_{{T.name | lowercase}}(id: {{T.id_type}}, data: {{T}}) !{{T}} {\n           return database.update(id, data)\n       }\n       \n       func delete_{{T.name | lowercase}}(id: {{T.id_type}}) !void {\n           return database.delete<{{T}}>(id)\n       }\n   }\n   \n   // Usage\n   @generate_crud<User>\n   @generate_crud<Product>\n   ```\n\n3. Compile-Time API Generation:\n   ```goo\n   comptime generate_api_client(spec: OpenAPISpec) {\n       for endpoint in spec.endpoints {\n           @inject func {{endpoint.name}}({{endpoint.params}}) !{{endpoint.response}} {\n               return http.{{endpoint.method}}(\n                   \"{{endpoint.path}}\", \n                   params,\n                   headers={{endpoint.headers}}\n               )\n           }\n       }\n   }\n   ```\n\n4. DSL Support:\n   ```goo\n   // SQL DSL example\n   @sql_dsl\n   func find_active_users() ![]User {\n       return query! {\n           SELECT * FROM users \n           WHERE active = true \n           AND created_at > now() - interval '30 days'\n           ORDER BY created_at DESC\n       }\n   }\n   ```\n\n5. Macro Hygiene and Safety:\n   - Automatic variable capture prevention\n   - Type-safe macro expansion\n   - Compile-time error checking\n   - Debuggable macro expansion\n\n6. Performance Optimization:\n   - Zero-cost abstractions through macros\n   - Compile-time specialization\n   - Automatic inlining of generated code\n   - Dead code elimination\n\nNote: Leverage the fixed memory management in type_function to ensure macros don't introduce memory leaks or unsafe behavior.",
         "testStrategy": "1. Macro Correctness Testing:\n   - Hygiene verification\n   - Type safety of generated code\n   - Edge case handling\n   - Recursive macro expansion\n   - Memory management in macro expansion\n\n2. Performance Testing:\n   - Compilation time impact\n   - Generated code quality\n   - Runtime performance of expanded code\n   - Memory usage during expansion\n\n3. Usability Testing:\n   - Developer experience with complex macros\n   - Error message quality\n   - Debugging support\n   - IDE integration\n\n4. Integration Testing:\n   - Integration with existing language features\n   - Standard library macro usage\n   - Third-party macro ecosystem\n   - Build system integration",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Core Macro Parser and AST Transformation",
+            "description": "Create the foundational macro system infrastructure that can parse macro definitions and transform the AST at compile time.",
+            "dependencies": [],
+            "details": "Develop a macro parser that can identify and process macro annotations in the source code. Implement AST transformation capabilities that allow macros to modify or generate code. Create a macro registry to store and retrieve macro definitions. Ensure proper error reporting for macro-related issues. The parser should handle the @macro, @derive, @template, and other directive syntaxes.",
+            "status": "done",
+            "testStrategy": "Create unit tests with various macro definitions and verify the parser correctly identifies them. Test AST transformations with simple macros and verify the output matches expected code structure."
+          },
+          {
+            "id": 2,
+            "title": "Implement Derive Macro System",
+            "description": "Build the derive macro functionality that can automatically generate implementations for common traits like Debug, Clone, Serialize, etc.",
+            "dependencies": [],
+            "details": "Create a system for defining and registering derive macros. Implement the core derive macros (Debug, Clone, Serialize, Hash, PartialEq). Develop the mechanism to analyze struct definitions and generate appropriate implementations based on field types. Support customization options through attributes. Ensure generated code follows best practices and is optimized.",
+            "status": "done",
+            "testStrategy": "Test each derive macro individually with various struct definitions. Verify the generated implementations work correctly by using them in test code. Check edge cases like empty structs, generic structs, and structs with complex field types."
+          },
+          {
+            "id": 3,
+            "title": "Develop Template-Based Code Generation",
+            "description": "Create a template system for macros that supports variable substitution, filters, and conditional generation based on input types.",
+            "dependencies": [],
+            "details": "Implement a template engine that supports variable substitution with {{var}} syntax. Add support for filters like lowercase, uppercase, etc. Create mechanisms for iterating over struct fields and type properties. Implement conditional template sections. Develop the @template macro directive and the template instantiation syntax. Ensure proper type checking of generated code.",
+            "status": "done",
+            "testStrategy": "Create test cases with various templates and verify the generated code matches expectations. Test edge cases like complex nested templates, templates with multiple filters, and templates that generate multiple functions."
+          },
+          {
+            "id": 4,
+            "title": "Implement DSL Support and Compile-Time API Generation",
+            "description": "Build support for domain-specific languages within macros and compile-time API client generation from specifications.",
+            "dependencies": [],
+            "details": "Create a framework for defining DSL macros like @sql_dsl. Implement the query! syntax for SQL-like expressions. Develop the compile-time API generation system that can process OpenAPI specifications. Create the @inject directive for inserting generated functions into the codebase. Ensure type safety and proper error reporting for DSLs. Implement compile-time validation of DSL syntax.",
+            "status": "done",
+            "testStrategy": "Test SQL DSL with various queries and verify they compile correctly and generate appropriate code. Test API generation with sample OpenAPI specs and verify the generated clients work correctly. Test error reporting for invalid DSL usage."
+          },
+          {
+            "id": 5,
+            "title": "Implement Macro Hygiene, Safety, and Performance Optimization",
+            "description": "Ensure macros are hygienic, type-safe, and optimized for performance with zero-cost abstractions.",
+            "dependencies": [],
+            "details": "Implement variable capture prevention to avoid name collisions. Add type checking for macro-generated code. Create detailed error reporting for macro expansion issues. Implement debugging tools for macro expansion. Add performance optimizations like automatic inlining and dead code elimination. Ensure macros work with the memory management system without introducing leaks. Create documentation and examples for the macro system.",
+            "status": "in-progress",
+            "testStrategy": "Test hygiene with macros that could potentially cause name collisions. Verify type safety by testing macros with incorrect types. Benchmark macro-generated code against hand-written equivalents to verify performance. Test memory usage patterns of macro-generated code."
+          }
+        ]
       },
       {
         "id": 27,
@@ -698,7 +856,53 @@
         "priority": "medium",
         "details": "Enhance the existing package manager with AI-powered dependency resolution and automatic optimization:\n\n1. Automatic Dependency Resolution:\n   ```goo\n   import \"json\" // Automatically gets the best JSON library\n   import \"http/client\" // Gets optimized HTTP client for target\n   import \"crypto/hash\" // Automatically selects fastest implementation\n   ```\n\n2. Feature-Based Dependencies:\n   ```goo\n   comptime {\n       if @target_has(\"avx2\") {\n           import \"crypto/aes/avx2\"\n       } else if @target_has(\"aes_ni\") {\n           import \"crypto/aes/hardware\"\n       } else {\n           import \"crypto/aes/portable\"\n       }\n   }\n   ```\n\n3. Intelligent Version Resolution:\n   ```goo\n   # goo.toml\n   [dependencies]\n   # AI-powered compatibility analysis\n   web_framework = \"smart:latest_compatible\"\n   database = \"smart:performance_optimized\"\n   logging = \"smart:minimal_dependencies\"\n   ```\n\n4. Automatic Security Updates:\n   ```goo\n   @security_policy(\"auto_patch\", \"notify_major\")\n   [dependencies]\n   crypto = \"1.2.0\" // Automatically updated for security fixes\n   ```\n\n5. Performance-Guided Selection:\n   ```goo\n   comptime {\n       // Automatically benchmark and select fastest JSON library\n       @benchmark_and_select([\n           \"json/standard\",\n           \"json/simd\",\n           \"json/streaming\"\n       ], criteria=[\"speed\", \"memory\", \"compatibility\"])\n   }\n   ```\n\n6. Dependency Analysis:\n   - Automatic vulnerability scanning\n   - License compatibility checking\n   - Transitive dependency optimization\n   - Duplicate dependency elimination\n   - Bundle size optimization\n\nNote: Ensure proper memory management in package resolution code, leveraging the fixed memory management in type_function.",
         "testStrategy": "1. Resolution Testing:\n   - Complex dependency graph resolution\n   - Conflict resolution accuracy\n   - Performance optimization verification\n   - Security update propagation\n   - Memory management in package resolution\n\n2. Compatibility Testing:\n   - Cross-platform dependency resolution\n   - Version compatibility analysis\n   - Feature detection accuracy\n   - Benchmark-based selection validation\n\n3. Security Testing:\n   - Vulnerability detection accuracy\n   - Security update mechanisms\n   - License compliance checking\n   - Supply chain attack prevention\n\n4. Performance Testing:\n   - Resolution algorithm efficiency\n   - Download and caching performance\n   - Build time impact\n   - Runtime performance of selected dependencies",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Automatic Dependency Resolution System",
+            "description": "Create a system that can automatically resolve and select the most appropriate package based on import statements, without requiring explicit version specification.",
+            "dependencies": [],
+            "details": "Develop a resolver that parses import statements like `import \"json\"` and selects the optimal library based on predefined criteria. Implement a metadata system for packages that includes performance metrics, compatibility information, and feature sets. Create a scoring algorithm that ranks available packages based on target platform, performance needs, and compatibility with the project. Ensure the resolver can handle generic imports (e.g., 'json') and more specific imports (e.g., 'http/client').",
+            "status": "pending",
+            "testStrategy": "Create test cases with mock package repositories containing multiple versions of the same functionality. Verify that the correct package is selected based on different import scenarios and target platforms."
+          },
+          {
+            "id": 2,
+            "title": "Develop Feature-Based Dependency Selection",
+            "description": "Implement a system that can conditionally import different packages based on compile-time feature detection of the target platform.",
+            "dependencies": [],
+            "details": "Create a target feature detection system that can identify hardware capabilities (e.g., avx2, aes_ni) and platform features. Implement the `@target_has()` function that evaluates to a boolean at compile time. Develop a mechanism for conditional imports within comptime blocks. Ensure the package manager can resolve these conditional dependencies during the build process and only download/include what's actually needed for the target platform.",
+            "status": "pending",
+            "testStrategy": "Test on multiple platforms with different feature sets. Create mock environments that simulate specific hardware features and verify that the correct packages are selected."
+          },
+          {
+            "id": 3,
+            "title": "Create Intelligent Version Resolution System",
+            "description": "Implement smart dependency resolution in the package configuration that can automatically select package versions based on compatibility analysis and optimization goals.",
+            "dependencies": [],
+            "details": "Develop parsers for the 'smart:' prefix in dependency specifications. Implement algorithms for different smart modes: 'latest_compatible' (finds newest version that works with all other dependencies), 'performance_optimized' (selects version with best performance metrics), and 'minimal_dependencies' (chooses version with fewest transitive dependencies). Create a compatibility analysis system that can predict whether packages will work together based on their interfaces and historical compatibility data. Integrate with the package repository to fetch metadata needed for these decisions.",
+            "status": "pending",
+            "testStrategy": "Create test scenarios with complex dependency graphs and conflicting requirements. Verify that the resolver makes appropriate choices based on the specified smart mode."
+          },
+          {
+            "id": 4,
+            "title": "Implement Automatic Security Updates System",
+            "description": "Create a system for automatically updating dependencies when security patches are available, based on configurable security policies.",
+            "dependencies": [],
+            "details": "Implement the `@security_policy` annotation that can be applied to dependencies. Create a security database integration that tracks vulnerabilities in packages. Develop an update mechanism that can automatically patch dependencies when security issues are found, respecting the policy settings ('auto_patch', 'notify_major', etc.). Implement a notification system for security updates that require manual intervention. Ensure all automatic updates maintain compatibility with the existing codebase.",
+            "status": "pending",
+            "testStrategy": "Simulate security vulnerabilities in dependencies and verify that the system responds appropriately based on the security policy. Test that patches are applied correctly and that notifications are sent when required."
+          },
+          {
+            "id": 5,
+            "title": "Develop Performance-Guided Selection and Dependency Analysis",
+            "description": "Implement benchmarking-based package selection and comprehensive dependency analysis tools for optimization and security.",
+            "dependencies": [],
+            "details": "Create the `@benchmark_and_select` function that can evaluate multiple packages at compile time based on specified criteria. Implement benchmarking infrastructure that can measure performance metrics like speed and memory usage. Develop dependency analysis tools for: vulnerability scanning, license compatibility checking, transitive dependency optimization, duplicate elimination, and bundle size optimization. Create a visualization system for dependency graphs to help developers understand their package relationships. Ensure all tools respect the fixed memory management requirements from type_function.",
+            "status": "pending",
+            "testStrategy": "Create benchmark test suites for different types of packages. Verify that the selection system chooses the optimal package based on the specified criteria. Test the dependency analysis tools with complex dependency graphs containing known issues to ensure they're properly identified."
+          }
+        ]
       },
       {
         "id": 28,
@@ -727,13 +931,68 @@
         "priority": "high",
         "details": "Implement an automatic parallelization system that analyzes code and applies parallelization techniques when performance benefits are expected:\n\n1. Annotation System:\n   ```goo\n   @auto_parallel\n   func processData(data []float64) []float64 {\n       result := make([]float64, len(data))\n       for i := 0; i < len(data); i++ {\n           result[i] = complexComputation(data[i])\n       }\n       return result\n   }\n   ```\n\n2. Data Dependency Analysis:\n   - Implement static analysis to detect data dependencies between loop iterations\n   - Build dependency graphs to identify parallelizable regions\n   - Analyze array access patterns to detect opportunities for vectorization\n   - Implement alias analysis to determine when memory regions may overlap\n\n3. Loop Parallelization:\n   - Implement loop splitting for partially parallelizable loops\n   - Support loop tiling for cache optimization\n   - Implement loop unrolling for vectorization preparation\n   - Add automatic reduction detection (sum, product, min/max)\n\n4. Function-Level Parallelization:\n   - Detect independent function calls that can run concurrently\n   - Implement task-based parallelism with work-stealing scheduler\n   - Add automatic task granularity control\n\n5. SIMD Vectorization:\n   - Generate SIMD instructions for supported operations\n   - Support multiple instruction sets (AVX-512, NEON, SSE, etc.)\n   - Implement automatic fallback for unsupported hardware\n   - Add vector lane predication for handling edge cases\n\n6. Hardware-Specific Optimization:\n   - Detect available hardware capabilities at compile time\n   - Generate specialized code paths for different hardware\n   - Optimize memory access patterns for specific architectures\n   - Add cache-aware optimizations\n\n7. Performance Guarantees:\n   - Implement cost models to predict parallelization benefits\n   - Add runtime fallback when predictions are uncertain\n   - Provide compile-time warnings for potentially inefficient parallelization\n   - Support user-defined thresholds for automatic parallelization\n\n8. Integration with Existing Systems:\n   - Connect with the LLVM IR generator for low-level optimization\n   - Leverage compile-time execution for static analysis\n   - Use type information to guide parallelization decisions\n\nThe system should be conservative by default, only parallelizing when clear performance benefits are expected, with options for more aggressive parallelization when requested by the developer.\n\nNote: Leverage the fixed memory management in type_function to ensure proper memory handling in parallelized code.",
         "testStrategy": "1. Unit Testing:\n   - Create unit tests for each component of the parallelization system\n   - Test dependency analysis with known patterns (independent, reduction, etc.)\n   - Verify correct SIMD code generation for different instruction sets\n   - Test the annotation parser and semantic analyzer\n   - Verify memory management in parallelized code\n\n2. Benchmark Suite:\n   - Develop a comprehensive benchmark suite with various parallelization patterns\n   - Include compute-bound and memory-bound workloads\n   - Test with different data sizes to evaluate scaling behavior\n   - Compare performance against manually optimized code\n\n3. Correctness Verification:\n   - Run parallelized code against sequential versions to verify identical results\n   - Test edge cases (empty arrays, single elements, large datasets)\n   - Verify correct handling of reductions and other special patterns\n   - Test with deliberately challenging cases (e.g., complex dependencies)\n\n4. Performance Testing:\n   - Measure speedup across different core counts\n   - Test on various hardware configurations\n   - Verify that the cost model correctly predicts when parallelization is beneficial\n   - Ensure no performance regressions on single-threaded code\n\n5. Integration Testing:\n   - Verify correct interaction with the LLVM IR generator\n   - Test integration with the compile-time execution system\n   - Ensure proper error reporting for non-parallelizable code\n   - Test with real-world applications and libraries\n\n6. Hardware-Specific Testing:\n   - Test on different CPU architectures (x86, ARM, etc.)\n   - Verify correct detection and utilization of SIMD capabilities\n   - Test fallback mechanisms when hardware features are unavailable\n\n7. Regression Testing:\n   - Create a test suite that can be run automatically for each change\n   - Include previously discovered edge cases and bugs\n   - Measure performance impact of changes over time",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Annotation System and AST Analysis",
+            "description": "Create the annotation system for marking functions for automatic parallelization and implement the AST analysis to identify parallelizable regions.",
+            "dependencies": [],
+            "details": "1. Define the `@auto_parallel` annotation syntax and parser integration\n2. Implement AST traversal to identify annotated functions\n3. Create data structures to represent parallelization opportunities\n4. Build the initial dependency graph representation\n5. Implement basic control flow analysis\n6. Add configuration options for parallelization thresholds",
+            "status": "pending",
+            "testStrategy": "Create unit tests with simple annotated functions and verify the AST analysis correctly identifies loops and function calls that can be parallelized."
+          },
+          {
+            "id": 2,
+            "title": "Implement Data Dependency Analysis",
+            "description": "Build a comprehensive data dependency analysis system to detect dependencies between loop iterations and identify parallelizable regions.",
+            "dependencies": [],
+            "details": "1. Implement static analysis for array access patterns\n2. Create alias analysis to determine memory region overlaps\n3. Build dependency graphs for loop iterations\n4. Implement read/write set analysis for variables\n5. Add detection for reduction patterns (sum, product, min/max)\n6. Create visualization tools for dependency graphs to aid debugging",
+            "status": "pending",
+            "testStrategy": "Test with various loop patterns including independent iterations, partial dependencies, and reduction patterns. Verify the dependency graphs correctly represent the relationships."
+          },
+          {
+            "id": 3,
+            "title": "Implement Loop Transformation and Parallelization",
+            "description": "Create the loop transformation system that converts sequential loops into parallelized versions with appropriate optimizations.",
+            "dependencies": [],
+            "details": "1. Implement loop splitting for partially parallelizable loops\n2. Add loop tiling for cache optimization\n3. Create loop unrolling transformations\n4. Implement parallel loop execution using the runtime library\n5. Add automatic chunking strategies for load balancing\n6. Implement reduction handling for parallel loops",
+            "status": "pending",
+            "testStrategy": "Create benchmark tests comparing sequential vs. parallelized loop performance across different data sizes and loop complexities."
+          },
+          {
+            "id": 4,
+            "title": "Implement SIMD Vectorization",
+            "description": "Build the SIMD vectorization system that transforms scalar operations into vector operations using appropriate instruction sets.",
+            "dependencies": [],
+            "details": "1. Implement detection of vectorizable operations\n2. Create code generation for multiple instruction sets (AVX-512, NEON, SSE)\n3. Add runtime detection of hardware capabilities\n4. Implement automatic fallback paths for unsupported hardware\n5. Add vector lane predication for handling edge cases\n6. Create specialized vectorization for common mathematical operations",
+            "status": "pending",
+            "testStrategy": "Test vectorization on different hardware platforms and verify correct results and performance improvements for various numerical algorithms."
+          },
+          {
+            "id": 5,
+            "title": "Implement Task-Based Parallelism and Work Scheduler",
+            "description": "Create a task-based parallelism system with work-stealing scheduler for function-level parallelization.",
+            "dependencies": [],
+            "details": "1. Implement task creation and management infrastructure\n2. Create work-stealing scheduler for load balancing\n3. Add automatic task granularity control\n4. Implement detection of independent function calls\n5. Create synchronization primitives for task dependencies\n6. Add compile-time task graph optimization",
+            "status": "pending",
+            "testStrategy": "Test with workloads having different granularities and dependency patterns. Measure scheduler overhead and verify load balancing effectiveness."
+          },
+          {
+            "id": 6,
+            "title": "Implement Performance Models and Integration",
+            "description": "Create performance prediction models and integrate the parallelization system with the compiler pipeline.",
+            "dependencies": [],
+            "details": "1. Implement cost models to predict parallelization benefits\n2. Create runtime monitoring for verification of predictions\n3. Add compile-time warnings for inefficient parallelization\n4. Implement integration with LLVM IR generator\n5. Create user-configurable thresholds for parallelization aggressiveness\n6. Add comprehensive logging and profiling capabilities",
+            "status": "pending",
+            "testStrategy": "Create end-to-end tests with real-world algorithms and verify the system correctly decides when to parallelize and when to use sequential execution based on cost models."
+          }
+        ]
       },
       {
         "id": 30,
         "title": "Implement Security by Design Framework",
         "description": "Create a comprehensive security framework with taint analysis, capability-based security, and secure defaults for the Goo language.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           3,
           4
@@ -955,7 +1214,7 @@
     ],
     "metadata": {
       "created": "2025-06-15T10:58:25.573Z",
-      "updated": "2025-06-16T00:41:15.069Z",
+      "updated": "2025-06-16T05:17:10.624Z",
       "description": "Tasks for master context"
     }
   }
