@@ -658,7 +658,7 @@
             "description": "Create mechanisms for proper resource acquisition and cleanup in async contexts, including the @async_resource annotation.",
             "dependencies": [],
             "details": "Implement: 1) @async_resource annotation for functions that manage resources, 2) Defer mechanism that works correctly across async boundaries, 3) Integration with the fixed memory management system from type_function, 4) Automatic resource tracking and cleanup when async operations are cancelled, 5) Support for nested resource usage patterns.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Test resource cleanup in various scenarios including normal completion, errors, timeouts, and cancellations. Verify no resource leaks occur when async operations are interrupted."
           },
           {
@@ -955,7 +955,7 @@
     ],
     "metadata": {
       "created": "2025-06-15T10:58:25.573Z",
-      "updated": "2025-06-15T22:14:33.883Z",
+      "updated": "2025-06-16T00:16:24.129Z",
       "description": "Tasks for master context"
     }
   }

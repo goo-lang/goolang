@@ -656,3 +656,27 @@ $(STRUCTURED_CONCURRENCY_DEMO): tests/examples/structured_concurrency_demo.c $(S
 	@mkdir -p $(BINDIR)
 	@mkdir -p src/concurrency
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+
+# Async Resource Management Test
+ASYNC_RESOURCE_TEST = $(BINDIR)/async_resource_test
+ASYNC_RESOURCE_SOURCES = src/async/async_resource.c src/errors/error.c
+
+test-async-resource: $(ASYNC_RESOURCE_TEST)
+	@echo "Running async resource management tests..."
+	./$(ASYNC_RESOURCE_TEST)
+
+$(ASYNC_RESOURCE_TEST): tests/async/async_resource_test.c $(ASYNC_RESOURCE_SOURCES)
+	@mkdir -p $(BINDIR)
+	@mkdir -p tests/async
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Async Resource Management Demo
+ASYNC_RESOURCE_DEMO = $(BINDIR)/async_resource_demo
+
+demo-async-resource: $(ASYNC_RESOURCE_DEMO)
+	@echo "Running async resource management demo..."
+	./$(ASYNC_RESOURCE_DEMO)
+
+$(ASYNC_RESOURCE_DEMO): examples/async_resource_demo.c $(ASYNC_RESOURCE_SOURCES)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
