@@ -53,17 +53,43 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         func_type_info = func_var->type;
     }
     
-    // Handle function parameters
+    // Handle function parameters (including receiver for methods)
     LLVMTypeRef* param_types = NULL;
     int param_count = 0;
-    
+    int llvm_param_count = 0;
+
+    // Check if this is a method (has receiver)
+    int has_receiver = (func_decl->receiver_name && func_decl->receiver_type);
+    Type* receiver_type = NULL;
+    if (has_receiver) {
+        receiver_type = type_from_ast(checker, func_decl->receiver_type);
+        llvm_param_count = 1; // Receiver is first parameter
+    }
+
     if (func_type_info && func_type_info->data.function.param_count > 0) {
         param_count = func_type_info->data.function.param_count;
-        param_types = malloc(sizeof(LLVMTypeRef) * param_count);
-        
+        llvm_param_count += param_count;
+    }
+
+    // Allocate LLVM parameter types array (receiver + regular params)
+    if (llvm_param_count > 0) {
+        param_types = malloc(sizeof(LLVMTypeRef) * llvm_param_count);
+        int idx = 0;
+
+        // Add receiver type first if this is a method
+        if (has_receiver && receiver_type) {
+            param_types[idx++] = codegen_type_to_llvm(codegen, receiver_type);
+            if (!param_types[0]) {
+                codegen_error(codegen, decl->pos, "Failed to generate LLVM type for receiver");
+                free(param_types);
+                return 0;
+            }
+        }
+
+        // Add regular parameters
         for (int i = 0; i < param_count; i++) {
-            param_types[i] = codegen_type_to_llvm(codegen, func_type_info->data.function.param_types[i]);
-            if (!param_types[i]) {
+            param_types[idx++] = codegen_type_to_llvm(codegen, func_type_info->data.function.param_types[i]);
+            if (!param_types[idx - 1]) {
                 codegen_error(codegen, decl->pos, "Failed to generate LLVM type for parameter %d", i);
                 free(param_types);
                 return 0;
@@ -82,12 +108,35 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         LLVMTypeRef char_ptr_type = LLVMPointerTypeInContext(codegen->context, 0);
         LLVMTypeRef char_ptr_ptr_type = LLVMPointerTypeInContext(codegen->context, 0);
         LLVMTypeRef main_param_types[2] = {int_type, char_ptr_ptr_type};
-        
+
         function_type = LLVMFunctionType(int_type, main_param_types, 2, 0);
         function = LLVMAddFunction(codegen->module, "main", function_type);
     } else {
-        function_type = LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
-        function = LLVMAddFunction(codegen->module, func_decl->name, function_type);
+        // Use mangled name for methods
+        const char* func_name = func_decl->name;
+        char* mangled_name = NULL;
+        if (has_receiver && receiver_type) {
+            const char* type_name = NULL;
+            if (receiver_type->kind == TYPE_STRUCT) {
+                type_name = receiver_type->data.struct_type.name;
+            } else if (receiver_type->kind == TYPE_POINTER &&
+                       receiver_type->data.pointer.pointee_type &&
+                       receiver_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+                type_name = receiver_type->data.pointer.pointee_type->data.struct_type.name;
+            }
+
+            if (type_name) {
+                size_t len = strlen(type_name) + strlen(func_decl->name) + 2;
+                mangled_name = malloc(len);
+                snprintf(mangled_name, len, "%s_%s", type_name, func_decl->name);
+                func_name = mangled_name;
+            }
+        }
+
+        function_type = LLVMFunctionType(llvm_return_type, param_types, llvm_param_count, 0);
+        function = LLVMAddFunction(codegen->module, func_name, function_type);
+
+        if (mangled_name) free(mangled_name);
     }
     
     // Handle WebAssembly exports/imports based on function attributes
@@ -129,7 +178,27 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // Enter function scope
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
-    
+
+    // Handle receiver for methods (receiver is the first implicit parameter)
+    int llvm_param_index = 0;
+    if (func_decl->receiver_name && func_decl->receiver_type) {
+        Type* receiver_type = type_from_ast(checker, func_decl->receiver_type);
+        if (receiver_type) {
+            LLVMValueRef receiver_param = LLVMGetParam(function, llvm_param_index++);
+            LLVMTypeRef receiver_llvm_type = codegen_type_to_llvm(codegen, receiver_type);
+
+            // Create alloca for receiver
+            LLVMValueRef receiver_alloca = codegen_create_entry_alloca(codegen, receiver_llvm_type, func_decl->receiver_name);
+            LLVMBuildStore(codegen->builder, receiver_param, receiver_alloca);
+
+            // Add to value table
+            ValueInfo* receiver_info = value_info_new(func_decl->receiver_name, receiver_alloca, receiver_type);
+            receiver_info->is_lvalue = 1;
+            receiver_info->is_initialized = 1;
+            codegen_add_value(codegen, receiver_info);
+        }
+    }
+
     // Generate function parameters as local variables
     if (func_decl->params && param_count > 0) {
         ASTNode* param = func_decl->params;
@@ -143,7 +212,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
                 // Handle each name in the parameter declaration
                 for (size_t i = 0; i < param_decl->name_count && param_index < param_count; i++) {
                     const char* param_name = param_decl->names[i];
-                    LLVMValueRef param_value = LLVMGetParam(function, param_index);
+                    LLVMValueRef param_value = LLVMGetParam(function, llvm_param_index++);
 
                     // Create alloca for parameter
                     LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_name);
@@ -161,7 +230,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             } else if (param->type == AST_IDENTIFIER) {
                 // Fallback for old-style identifier parameters (if any)
                 IdentifierNode* param_ident = (IdentifierNode*)param;
-                LLVMValueRef param_value = LLVMGetParam(function, param_index);
+                LLVMValueRef param_value = LLVMGetParam(function, llvm_param_index++);
 
                 // Create alloca for parameter
                 LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_ident->name);
