@@ -262,6 +262,13 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         }
     }
     
+    // Standard library functions
+    // void goo_printf(const char* format, ...)
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_printf", void_type, params, 1);
+    }
+    
     return NULL;
 }
 

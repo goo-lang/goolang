@@ -543,6 +543,58 @@ int integrate_escape_analysis_with_type_checker(TypeChecker* type_checker, Escap
 int apply_escape_analysis_to_codegen(EscapeAnalyzer* analyzer, ASTNode* program);
 
 // =============================================================================
+// Arena Allocation Integration Functions
+// =============================================================================
+
+// Forward declarations for arena integration
+typedef struct ArenaIntegration ArenaIntegration;
+typedef struct ArenaScope ArenaScope;
+
+// Arena integration management
+ArenaIntegration* arena_integration_new(TypeChecker* type_checker, EscapeAnalyzer* escape_analyzer);
+void arena_integration_free(ArenaIntegration* integration);
+
+// Main integration functions
+int integrate_arena_allocation(TypeChecker* type_checker, EscapeAnalyzer* escape_analyzer, ASTNode* program);
+int apply_arena_allocations_to_codegen(ArenaIntegration* integration, ASTNode* program);
+
+// Configuration
+void arena_integration_configure(ArenaIntegration* integration,
+                                int enable_optimization,
+                                size_t min_size,
+                                size_t max_size,
+                                int aggressive);
+
+// Statistics and debugging
+void arena_integration_print_statistics(const ArenaIntegration* integration);
+
+// =============================================================================
+// Channel Runtime Integration Functions
+// =============================================================================
+
+// Forward declarations for channel integration
+typedef struct ChannelAnalysis ChannelAnalysis;
+typedef struct ChannelInfo ChannelInfo;
+typedef struct GoStatement GoStatement;
+
+// Channel integration management
+ChannelAnalysis* channel_analysis_new(TypeChecker* type_checker);
+void channel_analysis_free(ChannelAnalysis* analysis);
+
+// Main integration functions
+int integrate_channel_runtime(TypeChecker* type_checker, ASTNode* program);
+int apply_channel_runtime_to_codegen(TypeChecker* type_checker, ASTNode* program);
+
+// Configuration
+void configure_channel_integration(ChannelAnalysis* analysis,
+                                  int enable_optimization,
+                                  int enable_deadlock_detection,
+                                  int enable_patterns);
+
+// Statistics and debugging
+void print_channel_analysis_statistics(const ChannelAnalysis* analysis);
+
+// =============================================================================
 // Memory Safety Integration with Type System Functions (Task 19.5)
 // =============================================================================
 

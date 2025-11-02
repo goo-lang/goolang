@@ -1,0 +1,178 @@
+{
+  "name": "Microservice",
+  "description": "A production-ready microservice with gRPC, HTTP APIs, observability, and cloud deployment",
+  "category": "microservice",
+  "language": "goo",
+  "version": "1.0.0",
+  "author": "Goo Language Team",
+  "tags": ["microservice", "grpc", "api", "observability", "cloud"],
+  "requirements": {
+    "goo": ">=1.0.0"
+  },
+  "structure": {
+    "cmd/": {
+      "server/": {
+        "main.goo": "server entry point"
+      },
+      "client/": {
+        "main.goo": "example client"
+      }
+    },
+    "internal/": {
+      "api/": {
+        "grpc/": {
+          "server.goo": "gRPC server implementation",
+          "handlers.goo": "gRPC handlers"
+        },
+        "http/": {
+          "server.goo": "HTTP server implementation", 
+          "handlers.goo": "HTTP handlers",
+          "middleware.goo": "HTTP middleware"
+        }
+      },
+      "service/": {
+        "business.goo": "business logic",
+        "validation.goo": "input validation"
+      },
+      "repository/": {
+        "database.goo": "database operations",
+        "cache.goo": "caching layer"
+      },
+      "config/": {
+        "config.goo": "configuration management"
+      },
+      "observability/": {
+        "metrics.goo": "application metrics",
+        "tracing.goo": "distributed tracing",
+        "logging.goo": "structured logging"
+      }
+    },
+    "proto/": {
+      "service.proto": "gRPC service definition"
+    },
+    "deployments/": {
+      "kubernetes/": {
+        "deployment.yaml": "Kubernetes deployment",
+        "service.yaml": "Kubernetes service",
+        "configmap.yaml": "configuration"
+      },
+      "docker/": {
+        "Dockerfile": "container definition",
+        "docker-compose.yml": "local development"
+      }
+    },
+    "scripts/": {
+      "build.sh": "build script",
+      "test.sh": "test script",
+      "deploy.sh": "deployment script"
+    },
+    "tests/": {
+      "unit/": {
+        "service_test.goo": "unit tests"
+      },
+      "integration/": {
+        "api_test.goo": "integration tests"
+      },
+      "e2e/": {
+        "flow_test.goo": "end-to-end tests"
+      }
+    },
+    "docs/": {
+      "README.md": "project documentation",
+      "API.md": "API documentation",
+      "DEPLOYMENT.md": "deployment guide"
+    },
+    "config.yaml": "application configuration",
+    "go.mod": "dependency management"
+  },
+  "variables": [
+    {
+      "name": "SERVICE_NAME",
+      "description": "Name of the microservice",
+      "type": "string",
+      "required": true,
+      "default": "my-service"
+    },
+    {
+      "name": "AUTHOR_NAME",
+      "description": "Author name",
+      "type": "string",
+      "required": true,
+      "default": "Developer"
+    },
+    {
+      "name": "SERVICE_DESCRIPTION",
+      "description": "Service description",
+      "type": "string",
+      "required": false,
+      "default": "A Goo microservice"
+    },
+    {
+      "name": "GRPC_PORT",
+      "description": "gRPC server port",
+      "type": "integer",
+      "required": false,
+      "default": 9000
+    },
+    {
+      "name": "HTTP_PORT",
+      "description": "HTTP server port",
+      "type": "integer",
+      "required": false,
+      "default": 8080
+    },
+    {
+      "name": "ENABLE_DATABASE",
+      "description": "Enable database integration",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "ENABLE_CACHING",
+      "description": "Enable caching layer",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "ENABLE_OBSERVABILITY",
+      "description": "Enable metrics, tracing, and logging",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    }
+  ],
+  "hooks": {
+    "pre_generate": [
+      "echo 'Generating microservice template...'",
+      "mkdir -p {{SERVICE_NAME}}"
+    ],
+    "post_generate": [
+      "cd {{SERVICE_NAME}} && goo mod init {{SERVICE_NAME}}",
+      "cd {{SERVICE_NAME}} && chmod +x scripts/*.sh",
+      "echo 'Microservice template generated successfully!'",
+      "echo 'Next steps:'",
+      "echo '1. cd {{SERVICE_NAME}}'",
+      "echo '2. ./scripts/build.sh'",
+      "echo '3. ./scripts/test.sh'",
+      "echo '4. goo run cmd/server/main.goo'"
+    ]
+  },
+  "features": [
+    "gRPC and HTTP APIs",
+    "Structured configuration management",
+    "Database integration with connection pooling",
+    "Redis caching layer (optional)",
+    "Comprehensive observability (metrics, tracing, logging)",
+    "Kubernetes deployment manifests",
+    "Docker containerization",
+    "Unit, integration, and E2E testing",
+    "CI/CD scripts",
+    "Health checks and readiness probes",
+    "Graceful shutdown handling",
+    "Error handling with unions",
+    "Input validation and sanitization",
+    "API documentation generation"
+  ]
+}

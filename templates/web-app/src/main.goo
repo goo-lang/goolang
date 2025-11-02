@@ -1,0 +1,163 @@
+// {{APP_DESCRIPTION}}
+// Author: {{AUTHOR_NAME}}
+// Generated from Goo web application template
+
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "os"
+    "strconv"
+    "./handlers"
+    "./middleware"
+    "./config"
+    {{if ENABLE_DATABASE}}"./db"{{endif}}
+)
+
+// Server configuration
+struct ServerConfig {
+    port: int,
+    host: string,
+    debug: bool,
+    static_dir: string
+}
+
+// Application errors
+enum AppError {
+    ConfigurationError,
+    DatabaseError,
+    ServerError,
+    BindError
+}
+
+// Initialize server configuration
+fn init_config() -> ServerConfig!AppError {
+    let port_str = os.getenv("PORT") || "{{PORT}}";
+    let port = try strconv.atoi(port_str) catch |err| {
+        fmt.eprintln("Invalid port number: {}", port_str);
+        return AppError.ConfigurationError;
+    };
+    
+    return ServerConfig{
+        port: port,
+        host: os.getenv("HOST") || "localhost",
+        debug: os.getenv("DEBUG") == "true",
+        static_dir: os.getenv("STATIC_DIR") || "./static"
+    };
+}
+
+// Setup middleware chain
+fn setup_middleware(mux: own http.ServeMux) -> http.ServeMux {
+    var handler = move mux;
+    
+    // Add CORS middleware
+    handler = middleware.cors(move handler);
+    
+    // Add logging middleware
+    handler = middleware.logging(move handler);
+    
+    {{if ENABLE_AUTH}}
+    // Add authentication middleware (for protected routes)
+    handler = middleware.auth_optional(move handler);
+    {{endif}}
+    
+    return handler;
+}
+
+// Setup HTTP routes
+fn setup_routes() -> http.ServeMux!AppError {
+    let mux = http.new_serve_mux();
+    
+    // Static files
+    mux.handle("/static/", http.file_server(http.dir("./static/")));
+    
+    // API routes
+    mux.handle_func("/api/health", handlers.health_check);
+    mux.handle_func("/api/version", handlers.version);
+    
+    {{if ENABLE_AUTH}}
+    // Authentication routes
+    mux.handle_func("/api/auth/login", handlers.login);
+    mux.handle_func("/api/auth/logout", handlers.logout);
+    mux.handle_func("/api/auth/register", handlers.register);
+    {{endif}}
+    
+    // Application routes
+    mux.handle_func("/api/users", handlers.users);
+    mux.handle_func("/api/users/{id}", handlers.user_by_id);
+    
+    // Serve main page
+    mux.handle_func("/", handlers.index);
+    
+    return mux;
+}
+
+// Start HTTP server
+fn start_server(config: ServerConfig, handler: http.Handler) -> void!AppError {
+    let addr = fmt.sprintf("{}:{}", config.host, config.port);
+    
+    fmt.println("🚀 Starting {{PROJECT_NAME}} server...");
+    fmt.println("📍 Server running at http://{}", addr);
+    
+    if config.debug {
+        fmt.println("🐛 Debug mode enabled");
+    }
+    
+    let server = http.Server{
+        addr: addr,
+        handler: handler,
+        read_timeout: 10 * time.Second,
+        write_timeout: 10 * time.Second,
+        idle_timeout: 60 * time.Second
+    };
+    
+    try server.listen_and_serve() catch |err| {
+        fmt.eprintln("❌ Server failed to start: {}", err);
+        return AppError.ServerError;
+    }
+    
+    return void;
+}
+
+fn main() -> void!AppError {
+    fmt.println("🎯 Initializing {{PROJECT_NAME}}...");
+    
+    // Load configuration
+    let config = try init_config() catch |err| {
+        fmt.eprintln("❌ Configuration error: {}", err);
+        return err;
+    };
+    
+    {{if ENABLE_DATABASE}}
+    // Initialize database connection
+    let db_conn = try db.connect() catch |err| {
+        fmt.eprintln("❌ Database connection failed: {}", err);
+        return AppError.DatabaseError;
+    };
+    defer db_conn.close();
+    
+    // Run migrations
+    try db.migrate(db_conn) catch |err| {
+        fmt.eprintln("❌ Database migration failed: {}", err);
+        return AppError.DatabaseError;
+    };
+    
+    fmt.println("✅ Database initialized");
+    {{endif}}
+    
+    // Setup HTTP routes
+    let mux = try setup_routes() catch |err| {
+        fmt.eprintln("❌ Route setup failed: {}", err);
+        return err;
+    };
+    
+    // Apply middleware
+    let handler = setup_middleware(own mux);
+    
+    // Start server
+    try start_server(config, handler) catch |err| {
+        fmt.eprintln("❌ Server startup failed: {}", err);
+        os.exit(1);
+    }
+}

@@ -1,0 +1,412 @@
+// Advanced Channel Patterns Test Suite
+// Tests the comprehensive advanced channel system including:
+// - Basic channel operations with priority queues
+// - Channel selectors for multiplexing
+// - Message lifecycle management
+// - Performance statistics
+// - Error handling and timeouts
+
+package main
+
+import (
+    "testing"
+    "time"
+    "concurrent"
+    "sync"
+)
+
+// Test basic channel creation and operations
+test TestBasicChannelOperations() {
+    println("=== Testing Basic Channel Operations ===")
+    
+    // Create a basic FIFO channel
+    channel := advanced_channel_create("test_basic", CHANNEL_TYPE_BASIC)
+    assert(channel != null, "Channel creation should succeed")
+    
+    // Test channel properties
+    assert(advanced_channel_capacity(channel) == 1000, "Default capacity should be 1000")
+    assert(advanced_channel_size(channel) == 0, "Initial size should be 0")
+    assert(!advanced_channel_is_closed(channel), "Channel should not be closed initially")
+    
+    // Create test messages
+    message1 := channel_message_create("Hello", 5, "string")
+    message2 := channel_message_create("World", 5, "string")
+    
+    assert(message1 != null, "Message 1 creation should succeed")
+    assert(message2 != null, "Message 2 creation should succeed")
+    
+    // Test sending messages
+    assert(advanced_channel_send(channel, message1), "Send message 1 should succeed")
+    assert(advanced_channel_send(channel, message2), "Send message 2 should succeed")
+    assert(advanced_channel_size(channel) == 2, "Channel size should be 2 after sends")
+    
+    // Test receiving messages
+    received1 := advanced_channel_receive(channel)
+    assert(received1 != null, "Receive should succeed")
+    assert(received1.data != null, "Received data should not be null")
+    assert(memcmp(received1.data, "Hello", 5) == 0, "First message should be 'Hello'")
+    
+    received2 := advanced_channel_receive(channel)
+    assert(received2 != null, "Second receive should succeed")
+    assert(memcmp(received2.data, "World", 5) == 0, "Second message should be 'World'")
+    
+    assert(advanced_channel_size(channel) == 0, "Channel should be empty after receives")
+    
+    // Clean up
+    channel_message_release(received1)
+    channel_message_release(received2)
+    advanced_channel_destroy(channel)
+    
+    println("✓ Basic channel operations test passed")
+}
+
+// Test priority channel operations
+test TestPriorityChannelOperations() {
+    println("=== Testing Priority Channel Operations ===")
+    
+    // Create a priority channel
+    config := ChannelConfig{
+        name: "test_priority",
+        type: CHANNEL_TYPE_PRIORITY,
+        capacity: 100,
+        ordering: ORDER_PRIORITY,
+        enable_metrics: true
+    }
+    
+    channel := advanced_channel_create_with_config(&config)
+    assert(channel != null, "Priority channel creation should succeed")
+    
+    // Create messages with different priorities
+    low_msg := channel_message_create_with_priority("Low", 3, "string", MSG_PRIORITY_LOW)
+    high_msg := channel_message_create_with_priority("High", 4, "string", MSG_PRIORITY_HIGH)
+    critical_msg := channel_message_create_with_priority("Critical", 8, "string", MSG_PRIORITY_CRITICAL)
+    normal_msg := channel_message_create_with_priority("Normal", 6, "string", MSG_PRIORITY_NORMAL)
+    
+    // Send messages in non-priority order
+    assert(advanced_channel_send(channel, low_msg), "Send low priority message")
+    assert(advanced_channel_send(channel, normal_msg), "Send normal priority message")
+    assert(advanced_channel_send(channel, high_msg), "Send high priority message")
+    assert(advanced_channel_send(channel, critical_msg), "Send critical priority message")
+    
+    // Receive messages - should come out in priority order
+    msg1 := advanced_channel_receive(channel)
+    msg2 := advanced_channel_receive(channel)
+    msg3 := advanced_channel_receive(channel)
+    msg4 := advanced_channel_receive(channel)
+    
+    // Check priority ordering (critical first, then high, normal, low)
+    assert(memcmp(msg1.data, "Critical", 8) == 0, "First should be critical priority")
+    assert(memcmp(msg2.data, "High", 4) == 0, "Second should be high priority")
+    assert(memcmp(msg3.data, "Normal", 6) == 0, "Third should be normal priority")
+    assert(memcmp(msg4.data, "Low", 3) == 0, "Fourth should be low priority")
+    
+    // Clean up
+    channel_message_release(msg1)
+    channel_message_release(msg2)
+    channel_message_release(msg3)
+    channel_message_release(msg4)
+    advanced_channel_destroy(channel)
+    
+    println("✓ Priority channel operations test passed")
+}
+
+// Test channel selectors for multiplexing
+test TestChannelSelectors() {
+    println("=== Testing Channel Selectors ===")
+    
+    // Create multiple channels
+    send_channel := advanced_channel_create("sender", CHANNEL_TYPE_BASIC)
+    recv_channel := advanced_channel_create("receiver", CHANNEL_TYPE_BASIC)
+    
+    // Pre-populate recv_channel with a message
+    test_msg := channel_message_create("Ready", 5, "string")
+    advanced_channel_send(recv_channel, test_msg)
+    
+    // Create selector
+    selector := channel_selector_create()
+    assert(selector != null, "Selector creation should succeed")
+    
+    // Add receive case (should be ready immediately)
+    result := null
+    assert(channel_selector_add_receive_case(selector, recv_channel, &result), 
+           "Add receive case should succeed")
+    
+    // Add send case (may not be ready)
+    send_msg := channel_message_create("Send", 4, "string")
+    assert(channel_selector_add_send_case(selector, send_channel, send_msg), 
+           "Add send case should succeed")
+    
+    // Set timeout
+    channel_selector_set_timeout(selector, 1000) // 1 second
+    
+    // Perform selection
+    selected_case := -1
+    success := channel_selector_select_timeout(selector, 100, &selected_case)
+    
+    assert(success, "Selection should succeed")
+    assert(selected_case == 0, "Should select the receive case (index 0)")
+    assert(result != null, "Result should be populated")
+    
+    received_msg := (ChannelMessage*)result
+    assert(memcmp(received_msg.data, "Ready", 5) == 0, "Should receive 'Ready' message")
+    
+    // Clean up
+    channel_message_release(received_msg)
+    channel_message_release(send_msg)
+    channel_selector_destroy(selector)
+    advanced_channel_destroy(send_channel)
+    advanced_channel_destroy(recv_channel)
+    
+    println("✓ Channel selectors test passed")
+}
+
+// Test message lifecycle and reference counting
+test TestMessageLifecycle() {
+    println("=== Testing Message Lifecycle ===")
+    
+    // Create message
+    message := channel_message_create("Lifecycle", 9, "string")
+    assert(message != null, "Message creation should succeed")
+    assert(atomic_load(&message.ref_count) == 1, "Initial ref count should be 1")
+    
+    // Retain message
+    channel_message_retain(message)
+    assert(atomic_load(&message.ref_count) == 2, "Ref count should be 2 after retain")
+    
+    // Release once
+    channel_message_release(message)
+    assert(atomic_load(&message.ref_count) == 1, "Ref count should be 1 after first release")
+    
+    // Test message metadata
+    assert(message.metadata.timestamp_ns > 0, "Timestamp should be set")
+    assert(message.metadata.sequence_number == message.message_id, 
+           "Sequence number should match message ID")
+    
+    // Test routing information
+    message.route.source_node_id = 123
+    message.route.target_node_id = 456
+    assert(message.route.source_node_id == 123, "Source node ID should be set")
+    assert(message.route.target_node_id == 456, "Target node ID should be set")
+    
+    // Final release (should destroy message)
+    channel_message_release(message)
+    
+    println("✓ Message lifecycle test passed")
+}
+
+// Test timeout operations
+test TestTimeoutOperations() {
+    println("=== Testing Timeout Operations ===")
+    
+    // Create channel with timeout configuration
+    config := ChannelConfig{
+        name: "timeout_test",
+        type: CHANNEL_TYPE_BASIC,
+        capacity: 1, // Small capacity for testing
+        send_timeout_ms: 100,
+        receive_timeout_ms: 100,
+        message_ttl_ms: 500
+    }
+    
+    channel := advanced_channel_create_with_config(&config)
+    assert(channel != null, "Timeout channel creation should succeed")
+    
+    // Fill channel to capacity
+    message1 := channel_message_create("Fill", 4, "string")
+    assert(advanced_channel_send(channel, message1), "First send should succeed")
+    
+    // Try to send another message with timeout (should fail)
+    message2 := channel_message_create("Overflow", 8, "string")
+    start_time := get_current_time_ms()
+    result := advanced_channel_send_timeout(channel, message2, 100)
+    end_time := get_current_time_ms()
+    
+    assert(!result, "Send should timeout and fail")
+    assert((end_time - start_time) >= 90, "Should wait approximately timeout duration")
+    
+    // Test receive timeout on empty channel
+    received := advanced_channel_receive(channel) // Clear the channel
+    channel_message_release(received)
+    
+    start_time = get_current_time_ms()
+    timeout_msg := advanced_channel_receive_timeout(channel, 100)
+    end_time = get_current_time_ms()
+    
+    assert(timeout_msg == null, "Receive should timeout and return null")
+    assert((end_time - start_time) >= 90, "Should wait approximately timeout duration")
+    
+    // Clean up
+    channel_message_release(message2)
+    advanced_channel_destroy(channel)
+    
+    println("✓ Timeout operations test passed")
+}
+
+// Test statistics collection
+test TestChannelStatistics() {
+    println("=== Testing Channel Statistics ===")
+    
+    // Create channel with metrics enabled
+    config := ChannelConfig{
+        name: "stats_test",
+        type: CHANNEL_TYPE_BASIC,
+        capacity: 100,
+        enable_metrics: true
+    }
+    
+    channel := advanced_channel_create_with_config(&config)
+    assert(channel != null, "Stats channel creation should succeed")
+    
+    // Reset stats to start clean
+    advanced_channel_reset_stats(channel)
+    
+    // Perform operations to generate statistics
+    for i := 0; i < 10; i++ {
+        msg := channel_message_create("Test", 4, "string")
+        advanced_channel_send(channel, msg)
+    }
+    
+    for i := 0; i < 10; i++ {
+        msg := advanced_channel_receive(channel)
+        channel_message_release(msg)
+    }
+    
+    // Check statistics
+    stats := advanced_channel_get_stats(channel)
+    assert(stats.messages_sent == 10, "Should have sent 10 messages")
+    assert(stats.messages_received == 10, "Should have received 10 messages")
+    assert(stats.current_queue_size == 0, "Queue should be empty")
+    
+    // Check global performance report
+    report := get_channel_performance_report()
+    assert(report.total_channels > 0, "Should track channels globally")
+    assert(report.total_messages_sent > 0, "Should track global message sending")
+    
+    // Clean up
+    advanced_channel_destroy(channel)
+    
+    println("✓ Channel statistics test passed")
+}
+
+// Test error handling and edge cases
+test TestErrorHandling() {
+    println("=== Testing Error Handling ===")
+    
+    // Test null parameter handling
+    assert(advanced_channel_create(null, CHANNEL_TYPE_BASIC) != null, 
+           "Should handle null name gracefully")
+    assert(channel_message_create(null, 0, "empty") != null, 
+           "Should handle null data with zero size")
+    
+    // Test invalid operations
+    channel := advanced_channel_create("error_test", CHANNEL_TYPE_BASIC)
+    
+    // Close channel and test operations on closed channel
+    advanced_channel_close(channel)
+    assert(advanced_channel_is_closed(channel), "Channel should be closed")
+    
+    message := channel_message_create("Closed", 6, "string")
+    assert(!advanced_channel_send(channel, message), 
+           "Send to closed channel should fail")
+    
+    timeout_msg := advanced_channel_receive_timeout(channel, 10)
+    assert(timeout_msg == null, "Receive from closed channel should return null")
+    
+    // Test capacity limits
+    advanced_channel_destroy(channel)
+    
+    // Create small capacity channel
+    small_config := ChannelConfig{
+        name: "small",
+        type: CHANNEL_TYPE_BASIC,
+        capacity: 2,
+        drop_on_overflow: true
+    }
+    
+    small_ch := advanced_channel_create_with_config(&small_config)
+    
+    // Fill to capacity
+    msg1 := channel_message_create("1", 1, "string")
+    msg2 := channel_message_create("2", 1, "string")
+    msg3 := channel_message_create("3", 1, "string")
+    
+    assert(advanced_channel_send(small_ch, msg1), "First send should succeed")
+    assert(advanced_channel_send(small_ch, msg2), "Second send should succeed")
+    assert(!advanced_channel_send(small_ch, msg3), "Third send should fail (drop on overflow)")
+    
+    // Clean up
+    channel_message_release(message)
+    channel_message_release(msg3)
+    advanced_channel_destroy(small_ch)
+    
+    println("✓ Error handling test passed")
+}
+
+// Test utility functions
+test TestUtilityFunctions() {
+    println("=== Testing Utility Functions ===")
+    
+    // Test hash functions
+    hash1 := channel_hash_string("test")
+    hash2 := channel_hash_string("test")
+    hash3 := channel_hash_string("different")
+    
+    assert(hash1 == hash2, "Same strings should have same hash")
+    assert(hash1 != hash3, "Different strings should have different hashes")
+    
+    // Test data hashing
+    data := "binary_data"
+    data_hash1 := channel_hash_data(data, 11)
+    data_hash2 := channel_hash_data(data, 11)
+    
+    assert(data_hash1 == data_hash2, "Same data should have same hash")
+    
+    // Test topic matching
+    assert(channel_match_topic_filter("user.login", "user.*"), 
+           "Should match wildcard pattern")
+    assert(!channel_match_topic_filter("admin.delete", "user.*"), 
+           "Should not match different pattern")
+    assert(channel_match_topic_filter("exact.match", "exact.match"), 
+           "Should match exact pattern")
+    
+    println("✓ Utility functions test passed")
+}
+
+// Main test runner
+func main() {
+    println("Starting Advanced Channel Patterns Test Suite...")
+    println("=" * 60)
+    
+    // Run all tests
+    TestBasicChannelOperations()
+    TestPriorityChannelOperations()
+    TestChannelSelectors()
+    TestMessageLifecycle()
+    TestTimeoutOperations()
+    TestChannelStatistics()
+    TestErrorHandling()
+    TestUtilityFunctions()
+    
+    println("=" * 60)
+    println("✅ All Advanced Channel Pattern tests passed!")
+    
+    // Print final performance report
+    println("\n=== Final Performance Report ===")
+    report := get_channel_performance_report()
+    print_channel_performance_report(&report)
+    
+    return 0
+}
+
+// Helper functions for testing
+func assert(condition bool, message string) {
+    if !condition {
+        println("❌ ASSERTION FAILED:", message)
+        exit(1)
+    }
+}
+
+func get_current_time_ms() uint64 {
+    // This would use system time in real implementation
+    return time.Now().UnixMilli()
+}

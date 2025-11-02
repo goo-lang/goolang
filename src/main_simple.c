@@ -1,11 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include "lexer.h"
 #include "token.h"
 #include "parser.h"
 #include "ast.h"
 #include "types.h"
+#include "codegen.h"
+#include "runtime.h"
 
 void print_token(const Token* token) {
     printf("Token: %-15s | Literal: %-10s | Pos: %d:%d\n",
@@ -67,8 +70,7 @@ int compile_goo_file(const char* filename) {
     fclose(file);
     
     printf("🚀 Compiling Goo file: %s\n", filename);
-    printf("=" * 40);
-    printf("\n");
+    printf("========================================\n");
     
     // Lexical analysis
     printf("📝 Lexical Analysis:\n");
@@ -104,18 +106,19 @@ int compile_goo_file(const char* filename) {
     
     // Parsing
     printf("🔍 Parsing:\n");
-    Parser* parser = parser_new(lexer);
-    if (!parser) {
-        printf("❌ Failed to create parser\n");
-        lexer_free(lexer);
+    lexer_free(lexer);  // Free the lexer used for token counting
+    
+    int parse_result = parse_input(source, filename);
+    if (parse_result != 0) {
+        printf("❌ Parsing failed\n");
         free(source);
         return 1;
     }
     
-    ASTNode* ast = parser_parse_program(parser);
-    if (!ast) {
-        printf("❌ Parsing failed\n");
-        parser_free(parser);
+    // Get the AST from the global parser result
+    extern ASTNode* ast_root;
+    if (!ast_root) {
+        printf("❌ No AST generated\n");
         free(source);
         return 1;
     }
@@ -124,37 +127,136 @@ int compile_goo_file(const char* filename) {
     
     // Type checking
     printf("🔬 Type Checking:\n");
-    TypeContext* type_ctx = type_context_new();
-    if (!type_ctx) {
-        printf("❌ Failed to create type context\n");
-        ast_node_free(ast);
-        parser_free(parser);
+    TypeChecker* type_checker = type_checker_new();
+    if (!type_checker) {
+        printf("❌ Failed to create type checker\n");
+        ast_node_free(ast_root);
         free(source);
         return 1;
     }
     
-    bool type_check_result = type_check_program(type_ctx, ast);
+    int type_check_result = type_check_program(type_checker, ast_root);
     if (!type_check_result) {
         printf("❌ Type checking failed\n");
-        type_context_free(type_ctx);
-        ast_node_free(ast);
-        parser_free(parser);
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
         free(source);
         return 1;
     }
     
     printf("✅ Type checking complete\n\n");
     
-    printf("🎉 Compilation successful!\n");
-    printf("📄 File: %s\n", filename);
+    // Code generation
+    printf("🎯 Code Generation:\n");
+    CodeGenerator* codegen = codegen_new("main_module");
+    if (!codegen) {
+        printf("❌ Failed to create code generator\n");
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
+        free(source);
+        return 1;
+    }
+    
+    // Set target for native compilation
+    if (!codegen_set_target(codegen, NULL, NULL, NULL)) {
+        printf("⚠️ Warning: Could not set target (LLVM may not be available)\n");
+    }
+    
+    // Generate LLVM IR
+    if (!codegen_generate_program(codegen, type_checker, ast_root)) {
+        printf("❌ Code generation failed\n");
+        codegen_free(codegen);
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
+        free(source);
+        return 1;
+    }
+    
+    printf("✅ LLVM IR generation complete\n");
+    
+    // Verify the generated module
+    if (!codegen_verify_module(codegen)) {
+        printf("❌ LLVM module verification failed\n");
+        codegen_free(codegen);
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
+        free(source);
+        return 1;
+    }
+    
+    printf("✅ LLVM module verification passed\n");
+    
+    // Generate output files
+    char ir_filename[256];
+    char obj_filename[256];
+    char exe_filename[256];
+    
+    // Create base filename without extension
+    const char* base_name = filename;
+    const char* dot = strrchr(filename, '.');
+    size_t base_len = dot ? (size_t)(dot - filename) : strlen(filename);
+    
+    snprintf(ir_filename, sizeof(ir_filename), "%.*s.ll", (int)base_len, base_name);
+    snprintf(obj_filename, sizeof(obj_filename), "%.*s.o", (int)base_len, base_name);
+    snprintf(exe_filename, sizeof(exe_filename), "%.*s", (int)base_len, base_name);
+    
+    // Emit LLVM IR
+    if (codegen_emit_llvm_ir(codegen, ir_filename)) {
+        printf("✅ LLVM IR written to: %s\n", ir_filename);
+    } else {
+        printf("⚠️ Warning: Could not write LLVM IR file\n");
+        codegen_free(codegen);
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
+        free(source);
+        return 1;
+    }
+    
+    // Generate object file using llc
+    printf("\n🔧 Object File Generation:\n");
+    char llc_command[512];
+    snprintf(llc_command, sizeof(llc_command), "llc -filetype=obj %s -o %s", ir_filename, obj_filename);
+    
+    int llc_result = system(llc_command);
+    if (llc_result != 0) {
+        printf("❌ Failed to generate object file using llc\n");
+        codegen_free(codegen);
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
+        free(source);
+        return 1;
+    }
+    printf("✅ Object file generated: %s\n", obj_filename);
+    
+    // Link to create executable using clang with runtime library
+    printf("\n🔗 Executable Linking:\n");
+    char link_command[512];
+    snprintf(link_command, sizeof(link_command), "clang %s build/runtime/*.o -o %s -lm -lpthread", obj_filename, exe_filename);
+    
+    int link_result = system(link_command);
+    if (link_result != 0) {
+        printf("❌ Failed to link executable\n");
+        codegen_free(codegen);
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
+        free(source);
+        return 1;
+    }
+    printf("✅ Executable generated: %s\n", exe_filename);
+    
+    printf("\n🎉 Full compilation successful!\n");
+    printf("📄 Source: %s\n", filename);
     printf("📊 Tokens: %d\n", token_count);
     printf("🌳 AST: Generated\n");
     printf("✅ Types: Verified\n");
+    printf("🎯 LLVM IR: %s\n", ir_filename);
+    printf("🔧 Object File: %s\n", obj_filename);
+    printf("🚀 Executable: %s\n", exe_filename);
     
     // Cleanup
-    type_context_free(type_ctx);
-    ast_node_free(ast);
-    parser_free(parser);
+    codegen_free(codegen);
+    type_checker_free(type_checker);
+    ast_node_free(ast_root);
     free(source);
     
     return 0;

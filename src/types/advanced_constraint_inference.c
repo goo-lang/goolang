@@ -1,4 +1,5 @@
 #include "advanced_constraint_inference.h"
+#include "types/constraint_inference.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -120,7 +121,7 @@ int infer_higher_order_constraints(ConstraintInferenceEngine* engine, ASTNode* e
                             ho_constraint->return_type = type_copy(param_type->data.function.return_type);
                             
                             // Create a constraint that the argument must be callable
-                            InterfaceConstraint* callable_constraint = interface_constraint_new(
+                            Constraint* callable_constraint = constraint_new(
                                 CONSTRAINT_CALLABLE, type_check_expression(engine->type_checker, arg), expr->pos);
                             
                             if (callable_constraint) {
@@ -154,7 +155,7 @@ int infer_callback_constraints(ConstraintInferenceEngine* engine, ASTNode* callb
     
     if (callback_type && callback_type->kind == TYPE_FUNCTION) {
         // Create a callable constraint
-        InterfaceConstraint* constraint = interface_constraint_new(
+        Constraint* constraint = constraint_new(
             CONSTRAINT_CALLABLE, callback_type, callback_expr->pos);
         
         if (constraint) {
@@ -192,7 +193,7 @@ int infer_closure_constraints(ConstraintInferenceEngine* engine, ASTNode* closur
         closure_constraint->capture_mode = str_dup("by_value");
         
         // Create constraint that the closure must be callable
-        InterfaceConstraint* constraint = interface_constraint_new(
+        Constraint* constraint = constraint_new(
             CONSTRAINT_CALLABLE, NULL, closure_expr->pos);
         
         if (constraint) {
@@ -220,8 +221,8 @@ int infer_generator_constraints(ConstraintInferenceEngine* engine, ASTNode* gene
         generator_constraint->is_generator = 1;
         
         // Create iterator constraint
-        InterfaceConstraint* constraint = interface_constraint_new(
-            CONSTRAINT_ITERATOR, NULL, generator_expr->pos);
+        Constraint* constraint = constraint_new(
+            CONSTRAINT_ITERABLE, NULL, generator_expr->pos);
         
         if (constraint) {
             constraint->is_auto_inferred = 1;
@@ -279,7 +280,7 @@ int infer_variadic_constraints(ConstraintInferenceEngine* engine, VariadicTypePa
     // and what constraints apply to each
     
     // For now, create a basic variadic constraint
-    InterfaceConstraint* constraint = interface_constraint_new(
+    Constraint* constraint = constraint_new(
         CONSTRAINT_ARITHMETIC, NULL, usage->pos); // Placeholder constraint kind
     
     if (constraint) {
@@ -350,7 +351,7 @@ int infer_nested_generic_constraints(ConstraintInferenceEngine* engine, NestedGe
     
     for (size_t level = 0; level < pattern->nesting_depth; level++) {
         // Create constraints for each nesting level
-        InterfaceConstraint* constraint = interface_constraint_new(
+        Constraint* constraint = constraint_new(
             CONSTRAINT_IMPLEMENTS, NULL, usage->pos);
         
         if (constraint) {
@@ -405,7 +406,7 @@ void constraint_error_free(ConstraintError* error) {
     free(error->secondary_positions);
     
     if (error->failing_constraint) {
-        interface_constraint_free(error->failing_constraint);
+        constraint_free(error->failing_constraint);
     }
     
     if (error->expected_type) {
@@ -574,7 +575,7 @@ int apply_constraint_hint(ConstraintInferenceEngine* engine, ConstraintHint* hin
         case HINT_TYPE_ANNOTATION: {
             // Apply explicit type annotation
             if (hint->suggested_type) {
-                InterfaceConstraint* constraint = interface_constraint_new(
+                Constraint* constraint = constraint_new(
                     CONSTRAINT_EQUALITY, hint->suggested_type, hint->hint_pos);
                 
                 if (constraint) {
@@ -589,7 +590,7 @@ int apply_constraint_hint(ConstraintInferenceEngine* engine, ConstraintHint* hin
         case HINT_TRAIT_BOUND: {
             // Apply explicit trait bound
             if (hint->trait_name) {
-                InterfaceConstraint* constraint = interface_constraint_new(
+                Constraint* constraint = constraint_new(
                     CONSTRAINT_IMPLEMENTS, NULL, hint->hint_pos);
                 
                 if (constraint) {
@@ -739,7 +740,7 @@ int advanced_constraint_solver_solve_advanced(AdvancedConstraintSolver* solver) 
     return result;
 }
 
-int advanced_constraint_solver_solve_incrementally(AdvancedConstraintSolver* solver, InterfaceConstraint* new_constraint) {
+int advanced_constraint_solver_solve_incrementally(AdvancedConstraintSolver* solver, Constraint* new_constraint) {
     if (!solver || !new_constraint) return 0;
     
     // Add the new constraint and solve incrementally
@@ -772,7 +773,7 @@ int prune_redundant_constraints(AdvancedConstraintSolver* solver) {
     return 1;
 }
 
-int cache_constraint_solution(AdvancedConstraintSolver* solver, InterfaceConstraint* constraint, Type* solution) {
+int cache_constraint_solution(AdvancedConstraintSolver* solver, Constraint* constraint, Type* solution) {
     if (!solver || !constraint || !solution) return 0;
     
     // Cache the solution for future use
@@ -781,7 +782,7 @@ int cache_constraint_solution(AdvancedConstraintSolver* solver, InterfaceConstra
     return 1;
 }
 
-Type* lookup_cached_solution(AdvancedConstraintSolver* solver, InterfaceConstraint* constraint) {
+Type* lookup_cached_solution(AdvancedConstraintSolver* solver, Constraint* constraint) {
     if (!solver || !constraint) return NULL;
     
     // Look up cached solution
@@ -878,7 +879,7 @@ int integrate_with_error_handling(ConstraintInferenceEngine* engine, LanguageFea
     // Integration with error union types (!T)
     if (integration->primary_type && integration->primary_type->kind == TYPE_ERROR_UNION) {
         // Create constraints for error handling patterns
-        InterfaceConstraint* constraint = interface_constraint_new(
+        Constraint* constraint = constraint_new(
             CONSTRAINT_TRY_INTO, integration->primary_type, integration->integration_pos);
         
         if (constraint) {
@@ -897,7 +898,7 @@ int integrate_with_nullable_types(ConstraintInferenceEngine* engine, LanguageFea
     // Integration with nullable types (?T)
     if (integration->primary_type && integration->primary_type->kind == TYPE_NULLABLE) {
         // Create constraints for null safety
-        InterfaceConstraint* constraint = interface_constraint_new(
+        Constraint* constraint = constraint_new(
             CONSTRAINT_PARTIAL_EQ, integration->primary_type, integration->integration_pos);
         
         if (constraint) {
@@ -933,7 +934,7 @@ int integrate_with_ownership_system(ConstraintInferenceEngine* engine, LanguageF
                 break;
         }
         
-        InterfaceConstraint* constraint = interface_constraint_new(
+        Constraint* constraint = constraint_new(
             constraint_kind, integration->primary_type, integration->integration_pos);
         
         if (constraint) {
@@ -950,7 +951,7 @@ int integrate_with_async_system(ConstraintInferenceEngine* engine, LanguageFeatu
     if (!engine || !integration || integration->context != INTEGRATION_ASYNC_SYSTEM) return 0;
     
     // Integration with async/await
-    InterfaceConstraint* constraint = interface_constraint_new(
+    Constraint* constraint = constraint_new(
         CONSTRAINT_ASYNC_CALLABLE, integration->primary_type, integration->integration_pos);
     
     if (constraint) {
@@ -968,10 +969,10 @@ int integrate_with_concurrency(ConstraintInferenceEngine* engine, LanguageFeatur
     // Integration with channels and goroutines
     if (integration->primary_type && integration->primary_type->kind == TYPE_CHANNEL) {
         // Create Send/Sync constraints for channel types
-        InterfaceConstraint* send_constraint = interface_constraint_new(
+        Constraint* send_constraint = constraint_new(
             CONSTRAINT_SEND, integration->primary_type, integration->integration_pos);
         
-        InterfaceConstraint* sync_constraint = interface_constraint_new(
+        Constraint* sync_constraint = constraint_new(
             CONSTRAINT_SYNC, integration->primary_type, integration->integration_pos);
         
         if (send_constraint && sync_constraint) {
@@ -1005,7 +1006,7 @@ int infer_constraints_from_async_expr(ConstraintInferenceEngine* engine, ASTNode
     if (!engine || !async_expr) return 0;
     
     // Infer constraints from async expressions
-    InterfaceConstraint* constraint = interface_constraint_new(
+    Constraint* constraint = constraint_new(
         CONSTRAINT_ASYNC_CALLABLE, NULL, async_expr->pos);
     
     if (constraint) {
@@ -1021,7 +1022,7 @@ int infer_constraints_from_channel_operation(ConstraintInferenceEngine* engine, 
     if (!engine || !channel_expr) return 0;
     
     // Infer constraints from channel operations (send/receive)
-    InterfaceConstraint* constraint = interface_constraint_new(
+    Constraint* constraint = constraint_new(
         CONSTRAINT_SEND, NULL, channel_expr->pos);
     
     if (constraint) {
@@ -1037,7 +1038,7 @@ int infer_constraints_from_error_propagation(ConstraintInferenceEngine* engine, 
     if (!engine || !try_expr) return 0;
     
     // Infer constraints from error propagation (try expressions)
-    InterfaceConstraint* constraint = interface_constraint_new(
+    Constraint* constraint = constraint_new(
         CONSTRAINT_TRY_INTO, NULL, try_expr->pos);
     
     if (constraint) {
@@ -1053,7 +1054,7 @@ int infer_constraints_from_ownership_transfer(ConstraintInferenceEngine* engine,
     if (!engine || !move_expr) return 0;
     
     // Infer constraints from ownership transfer (move expressions)
-    InterfaceConstraint* constraint = interface_constraint_new(
+    Constraint* constraint = constraint_new(
         CONSTRAINT_COPY, NULL, move_expr->pos);
     
     if (constraint) {

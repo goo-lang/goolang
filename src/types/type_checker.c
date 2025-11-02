@@ -1,4 +1,4 @@
-#include "types.h"
+#include "types/constraint_inference.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -8,19 +8,20 @@
 TypeChecker* type_checker_new(void) {
     TypeChecker* checker = malloc(sizeof(TypeChecker));
     if (!checker) return NULL;
-    
+
     checker->current_scope = scope_new(NULL);
     checker->next_scope_id = 1;
     checker->builtin_types = NULL;
     checker->current_file = NULL;
     checker->error_count = 0;
     checker->warning_count = 0;
+    checker->current_function_return_type = NULL;
     checker->type_cache = NULL;
     checker->type_cache_size = 0;
     checker->type_cache_capacity = 0;
-    
+
     type_checker_init_builtins(checker);
-    
+
     return checker;
 }
 
@@ -118,6 +119,43 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         print_var->is_initialized = 1;
         scope_add_variable(checker->current_scope, print_var);
     }
+    
+    // goo_printf(format, args...) -> void
+    Type* goo_printf_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]); // variadic
+    Variable* goo_printf_var = variable_new("goo_printf", goo_printf_type, (Position){0, 0, 0, "builtin"});
+    if (goo_printf_var) {
+        goo_printf_var->is_builtin = 1;
+        goo_printf_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, goo_printf_var);
+    }
+
+    // error(message string) -> error
+    // Used in error union returns: return error("something went wrong")
+    // Create special "error" type that's compatible with any error union
+    Type* error_return_type = type_new(TYPE_UNKNOWN);
+    if (error_return_type) {
+        error_return_type->name = strdup("error");
+    }
+    Type* error_func_type = type_function(NULL, 0, error_return_type);
+    Variable* error_var = variable_new("error", error_func_type, (Position){0, 0, 0, "builtin"});
+    if (error_var) {
+        error_var->is_builtin = 1;
+        error_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, error_var);
+    }
+}
+
+void type_checker_add_fmt_functions(TypeChecker* checker) {
+    if (!checker || !checker->current_scope) return;
+    
+    // Add fmt as a module/package variable
+    Type* fmt_type = type_new(TYPE_INTERFACE); // Treat fmt as an interface for now
+    Variable* fmt_var = variable_new("fmt", fmt_type, (Position){0, 0, 0, "builtin"});
+    if (fmt_var) {
+        fmt_var->is_builtin = 1;
+        fmt_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, fmt_var);
+    }
 }
 
 // Scope management
@@ -161,7 +199,12 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     if (prog->imports) {
         ASTNode* import = prog->imports;
         while (import) {
-            // TODO: Handle imports
+            // Basic import handling - for now just add fmt package
+            if (import->type == AST_IMPORT_SPEC) {
+                // TODO: Get actual import path and handle different packages
+                // For now, assume fmt import and add fmt functions
+                type_checker_add_fmt_functions(checker);
+            }
             import = import->next;
         }
     }
@@ -177,6 +220,21 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
         }
     }
     
+    // Perform ownership and memory safety analysis with escape analysis
+    // TODO: Re-enable when flow analysis integration is fixed
+    // if (checker->error_count == 0) {
+    //     printf("🔍 Ownership tracking system initialized\n");
+    //     printf("✅ Memory management: ownership-based (no GC)\n");
+    //     printf("📊 Runtime supports: stack/heap/arena allocation, reference counting\n");
+    //
+    //     // Now enabled: full ownership analysis with escape analysis integration
+    //     if (perform_ownership_analysis(checker, program)) {
+    //         printf("✅ Complete ownership analysis with escape analysis: success\n");
+    //     } else {
+    //         printf("⚠️  Ownership analysis completed with warnings\n");
+    //     }
+    // }
+
     return checker->error_count == 0;
 }
 
@@ -202,31 +260,35 @@ int type_check_declaration(TypeChecker* checker, ASTNode* decl) {
 
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
-    
+
     FuncDeclNode* func = (FuncDeclNode*)decl;
-    
-    // Add function to global scope first (for recursive calls and forward references)
-    Type* func_type = type_function(NULL, 0, type_checker_get_builtin(checker, TYPE_VOID)); // TODO: proper signature
-    Variable* func_var = variable_new(func->name, func_type, func->base.pos);
-    if (func_var) {
-        func_var->is_initialized = 1;
-        if (!scope_add_variable(checker->current_scope, func_var)) {
-            type_error(checker, func->base.pos, "Function '%s' already declared", func->name);
-            variable_free(func_var);
-            return 0;
-        }
-    }
-    
-    // Create new scope for function
-    scope_push(checker);
-    
-    // Add function parameters to the function scope
+
+    // First, collect parameter types and return type
+    Type** param_types = NULL;
+    size_t param_count = 0;
+
+    // Count parameters first
     if (func->params) {
         ASTNode* param = func->params;
         while (param) {
             if (param->type == AST_VAR_DECL) {
                 VarDeclNode* param_decl = (VarDeclNode*)param;
-                
+                param_count += param_decl->name_count;
+            }
+            param = param->next;
+        }
+    }
+
+    // Allocate param types array
+    if (param_count > 0) {
+        param_types = malloc(sizeof(Type*) * param_count);
+        size_t idx = 0;
+
+        ASTNode* param = func->params;
+        while (param) {
+            if (param->type == AST_VAR_DECL) {
+                VarDeclNode* param_decl = (VarDeclNode*)param;
+
                 // Get parameter type
                 Type* param_type = NULL;
                 if (param_decl->type) {
@@ -234,7 +296,59 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
                 } else {
                     param_type = type_checker_get_builtin(checker, TYPE_INT32); // Default type
                 }
-                
+
+                // Add to param_types array
+                for (size_t i = 0; i < param_decl->name_count; i++) {
+                    param_types[idx++] = param_type;
+                }
+            }
+            param = param->next;
+        }
+    }
+
+    // Get function return type
+    Type* return_type = NULL;
+    if (func->return_type) {
+        return_type = type_from_ast(checker, func->return_type);
+        // If type_from_ast returns NULL, default to void
+        if (!return_type) {
+            return_type = type_checker_get_builtin(checker, TYPE_VOID);
+        }
+    } else {
+        return_type = type_checker_get_builtin(checker, TYPE_VOID);
+    }
+
+    // Create proper function type with actual signature
+    Type* func_type = type_function(param_types, param_count, return_type);
+    Variable* func_var = variable_new(func->name, func_type, func->base.pos);
+    if (func_var) {
+        func_var->is_initialized = 1;
+        if (!scope_add_variable(checker->current_scope, func_var)) {
+            type_error(checker, func->base.pos, "Function '%s' already declared", func->name);
+            variable_free(func_var);
+            free(param_types);
+            return 0;
+        }
+    }
+
+    // Create new scope for function
+    scope_push(checker);
+
+    // Add function parameters to the function scope
+    if (func->params) {
+        ASTNode* param = func->params;
+        while (param) {
+            if (param->type == AST_VAR_DECL) {
+                VarDeclNode* param_decl = (VarDeclNode*)param;
+
+                // Get parameter type
+                Type* param_type = NULL;
+                if (param_decl->type) {
+                    param_type = type_from_ast(checker, param_decl->type);
+                } else {
+                    param_type = type_checker_get_builtin(checker, TYPE_INT32); // Default type
+                }
+
                 if (param_type) {
                     for (size_t i = 0; i < param_decl->name_count; i++) {
                         Variable* param_var = variable_new(param_decl->names[i], param_type, param_decl->base.pos);
@@ -248,13 +362,20 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
             param = param->next;
         }
     }
-    
+
+    // Set current function return type for return statement validation
+    Type* saved_return_type = checker->current_function_return_type;
+    checker->current_function_return_type = return_type;
+
     // Type check function body
     int result = 1;
     if (func->body) {
         result = type_check_statement(checker, func->body);
     }
-    
+
+    // Restore previous function return type
+    checker->current_function_return_type = saved_return_type;
+
     scope_pop(checker);
     return result;
 }
@@ -548,17 +669,35 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_RETURN_STMT) return 0;
-    
+
     ReturnStmtNode* ret_stmt = (ReturnStmtNode*)stmt;
-    
+
     // Check return value if present
     if (ret_stmt->values) {
-        Type* return_type = type_check_expression(checker, ret_stmt->values);
-        if (!return_type) return 0;
-        
-        // TODO: Check against function return type
+        Type* actual_return_type = type_check_expression(checker, ret_stmt->values);
+        if (!actual_return_type) return 0;
+
+        // Validate against function's declared return type
+        if (checker->current_function_return_type) {
+            if (!type_compatible(actual_return_type, checker->current_function_return_type)) {
+                type_error(checker, stmt->pos,
+                    "Return type mismatch: expected %s, got %s",
+                    type_to_string(checker->current_function_return_type),
+                    type_to_string(actual_return_type));
+                return 0;
+            }
+        }
+    } else {
+        // No return value - check if function expects void
+        if (checker->current_function_return_type &&
+            checker->current_function_return_type->kind != TYPE_VOID) {
+            type_error(checker, stmt->pos,
+                "Function must return a value of type %s",
+                type_to_string(checker->current_function_return_type));
+            return 0;
+        }
     }
-    
+
     return 1;
 }
 
@@ -601,7 +740,7 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 // Helper function to convert AST type nodes to Type structures
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
     if (!checker || !type_node) return NULL;
-    
+
     switch (type_node->type) {
         case AST_IDENTIFIER: {
             // Handle type identifiers (for make_chan, etc.)
@@ -708,13 +847,13 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             ErrorUnionTypeNode* error_union = (ErrorUnionTypeNode*)type_node;
             Type* value_type = type_from_ast(checker, error_union->value_type);
             if (!value_type) return NULL;
-            
+
             Type* error_type = NULL;
             if (error_union->error_type) {
                 error_type = type_from_ast(checker, error_union->error_type);
                 if (!error_type) return NULL;
             }
-            
+
             return type_error_union(value_type, error_type);
         }
         

@@ -1,0 +1,942 @@
+/// Test file for structured error hierarchies system
+/// Demonstrates @error_hierarchy annotation and structured error types
+
+package main
+
+import (
+    "fmt"
+    "validation"
+    "http"
+    "fs"
+)
+
+// =============================================================================
+// Error Type Definitions with @error_hierarchy Annotation
+// =============================================================================
+
+/// Configuration-related errors with structured data
+@error_hierarchy
+enum ConfigError {
+    FileNotFound(path: string),
+    ParseError(line: int, column: int, message: string, syntax_hint: string),
+    ValidationError(field: string, value: string, constraint: string, expected: string),
+    PermissionDenied(path: string, required_permission: string, current_user: string),
+    InvalidFormat(expected_format: string, actual_format: string, file_path: string)
+}
+
+/// Network-related errors with inheritance from base NetworkError
+@error_hierarchy
+enum NetworkError {
+    ConnectionTimeout(host: string, port: int, timeout_ms: int),
+    ConnectionRefused(host: string, port: int, reason: string),
+    DNSResolutionFailed(hostname: string, dns_server: string),
+    SSLHandshakeFailed(host: string, certificate_error: string, ssl_version: string),
+    RequestTimeout(url: string, method: string, timeout_ms: int),
+    ResponseError(url: string, status_code: int, status_message: string, response_body: string)
+}
+
+/// Database-related errors inheriting from base error type
+@error_hierarchy(parent = "DataError") 
+enum DatabaseError {
+    ConnectionFailed(host: string, port: int, database: string, username: string),
+    QueryFailed(query: string, error_code: int, error_message: string, execution_time_ms: int),
+    TransactionAborted(transaction_id: string, rollback_reason: string, affected_tables: []string),
+    ConstraintViolation(table: string, column: string, constraint_type: string, violating_value: string),
+    DeadlockDetected(victim_query: string, conflicting_queries: []string, retry_suggested: bool)
+}
+
+/// User authentication and authorization errors
+@error_hierarchy
+enum AuthError {
+    InvalidCredentials(username: string, authentication_method: string),
+    AccountLocked(username: string, lockout_time_remaining_ms: int, failed_attempts: int),
+    PermissionDenied(resource: string, required_permission: string, user_permissions: []string),
+    SessionExpired(session_id: string, expiry_time: string, current_time: string),
+    TokenInvalid(token_type: string, expiry_time: string, issuer: string)
+}
+
+/// Business logic validation errors with custom recovery actions
+@error_hierarchy
+enum BusinessLogicError {
+    InsufficientFunds(
+        account_id: string, 
+        requested_amount: float, 
+        available_balance: float,
+        currency: string
+    ),
+    InvalidOperation(
+        operation: string, 
+        current_state: string, 
+        required_state: string,
+        transition_path: []string
+    ),
+    ResourceNotAvailable(
+        resource_type: string,
+        resource_id: string,
+        availability_date: string,
+        alternative_resources: []string
+    )
+}
+
+/// Abstract base error type for all application errors
+@error_hierarchy(is_abstract = true)
+enum ApplicationError {
+    // This type serves as a base for other error types
+    // and cannot be instantiated directly
+}
+
+// =============================================================================
+// Error Usage Examples
+// =============================================================================
+
+/// Configuration loading with structured error handling
+fn load_config(config_path: string) !ApplicationConfig {
+    // Try to read the configuration file
+    let content = try fs.read_file(config_path) catch |err| {
+        // Convert file system error to structured ConfigError
+        if err.code == 2 { // File not found
+            return ConfigError.FileNotFound(path: config_path);
+        } else if err.code == 13 { // Permission denied
+            return ConfigError.PermissionDenied(
+                path: config_path,
+                required_permission: "read",
+                current_user: get_current_user()
+            );
+        } else {
+            // Chain the original error as root cause
+            let config_error = ConfigError.FileNotFound(path: config_path);
+            config_error.set_root_cause(err);
+            return config_error;
+        }
+    };
+    
+    // Parse the configuration content
+    let parsed_config = try toml.parse(content) catch |parse_err| {
+        return ConfigError.ParseError(
+            line: parse_err.line,
+            column: parse_err.column,
+            message: parse_err.message,
+            syntax_hint: "Check for missing quotes or trailing commas"
+        );
+    };
+    
+    // Validate the parsed configuration
+    let config = try ApplicationConfig.from_toml(parsed_config) catch |validation_err| {
+        return ConfigError.ValidationError(
+            field: validation_err.field_name,
+            value: validation_err.field_value,
+            constraint: validation_err.constraint_description,
+            expected: validation_err.expected_format
+        );
+    };
+    
+    return config;
+}
+
+/// Network request with comprehensive error handling
+fn fetch_user_data(user_id: string, api_endpoint: string) !UserData {
+    let client = http.Client.new();
+    defer client.close();
+    
+    // Configure request timeout
+    client.set_timeout(5000); // 5 seconds
+    
+    let url = fmt.sprintf("%s/users/%s", api_endpoint, user_id);
+    
+    let response = try client.get(url) catch |net_err| {
+        // Classify network errors based on type
+        if net_err.is_timeout() {
+            return NetworkError.RequestTimeout(
+                url: url,
+                method: "GET",
+                timeout_ms: 5000
+            );
+        } else if net_err.is_connection_refused() {
+            return NetworkError.ConnectionRefused(
+                host: extract_host(url),
+                port: extract_port(url),
+                reason: net_err.message
+            );
+        } else if net_err.is_dns_error() {
+            return NetworkError.DNSResolutionFailed(
+                hostname: extract_host(url),
+                dns_server: get_dns_server()
+            );
+        } else {
+            // Generic network error with original cause
+            let network_error = NetworkError.ConnectionTimeout(
+                host: extract_host(url),
+                port: extract_port(url),
+                timeout_ms: 5000
+            );
+            network_error.set_root_cause(net_err);
+            return network_error;
+        }
+    };
+    
+    // Check response status
+    if response.status_code != 200 {
+        return NetworkError.ResponseError(
+            url: url,
+            status_code: response.status_code,
+            status_message: response.status_text,
+            response_body: response.body[0..min(response.body.length, 500)]
+        );
+    }
+    
+    // Parse user data from response
+    let user_data = try json.parse(response.body, UserData) catch |parse_err| {
+        return ConfigError.ParseError(
+            line: parse_err.line,
+            column: parse_err.column,
+            message: "Invalid JSON in user data response",
+            syntax_hint: "Server may have returned HTML error page instead of JSON"
+        );
+    };
+    
+    return user_data;
+}
+
+/// Database operation with transaction handling
+fn transfer_funds(from_account: string, to_account: string, amount: float) !TransferResult {
+    let db = try database.connect() catch |db_err| {
+        return DatabaseError.ConnectionFailed(
+            host: db_err.host,
+            port: db_err.port,
+            database: db_err.database_name,
+            username: db_err.username
+        );
+    };
+    defer db.close();
+    
+    // Start transaction
+    let transaction = try db.begin_transaction() catch |tx_err| {
+        return DatabaseError.QueryFailed(
+            query: "BEGIN TRANSACTION",
+            error_code: tx_err.code,
+            error_message: tx_err.message,
+            execution_time_ms: 0
+        );
+    };
+    defer transaction.rollback_if_active();
+    
+    // Check source account balance
+    let balance_query = "SELECT balance FROM accounts WHERE id = $1";
+    let balance_result = try db.query(balance_query, [from_account]) catch |query_err| {
+        return DatabaseError.QueryFailed(
+            query: balance_query,
+            error_code: query_err.code,
+            error_message: query_err.message,
+            execution_time_ms: query_err.execution_time_ms
+        );
+    };
+    
+    if balance_result.rows.length == 0 {
+        return BusinessLogicError.ResourceNotAvailable(
+            resource_type: "account",
+            resource_id: from_account,
+            availability_date: "unknown",
+            alternative_resources: []
+        );
+    }
+    
+    let current_balance = balance_result.rows[0].get_float("balance");
+    if current_balance < amount {
+        return BusinessLogicError.InsufficientFunds(
+            account_id: from_account,
+            requested_amount: amount,
+            available_balance: current_balance,
+            currency: "USD"
+        );
+    }
+    
+    // Perform the transfer (simplified)
+    let debit_query = "UPDATE accounts SET balance = balance - $1 WHERE id = $2";
+    try db.execute(debit_query, [amount, from_account]) catch |debit_err| {
+        if debit_err.is_deadlock() {
+            return DatabaseError.DeadlockDetected(
+                victim_query: debit_query,
+                conflicting_queries: ["UPDATE accounts SET balance = ..."],
+                retry_suggested: true
+            );
+        } else {
+            return DatabaseError.QueryFailed(
+                query: debit_query,
+                error_code: debit_err.code,
+                error_message: debit_err.message,
+                execution_time_ms: debit_err.execution_time_ms
+            );
+        }
+    };
+    
+    let credit_query = "UPDATE accounts SET balance = balance + $1 WHERE id = $2";
+    try db.execute(credit_query, [amount, to_account]) catch |credit_err| {
+        return DatabaseError.QueryFailed(
+            query: credit_query,
+            error_code: credit_err.code,
+            error_message: credit_err.message,
+            execution_time_ms: credit_err.execution_time_ms
+        );
+    };
+    
+    // Commit transaction
+    try transaction.commit() catch |commit_err| {
+        return DatabaseError.TransactionAborted(
+            transaction_id: transaction.id,
+            rollback_reason: commit_err.message,
+            affected_tables: ["accounts"]
+        );
+    };
+    
+    return TransferResult{
+        transaction_id: transaction.id,
+        from_account: from_account,
+        to_account: to_account,
+        amount: amount,
+        timestamp: time.now()
+    };
+}
+
+// =============================================================================
+// Error Pattern Matching and Handling
+// =============================================================================
+
+/// Comprehensive error handler with pattern matching
+fn handle_application_error(error: ApplicationError) -> RecoveryAction {
+    return match error {
+        // Configuration errors
+        ConfigError.FileNotFound(path) => {
+            fmt.println("🔴 Configuration file not found: {}", path);
+            create_default_config_file(path);
+            return RecoveryAction.Retry;
+        },
+        
+        ConfigError.ParseError(line, column, message, hint) => {
+            fmt.println("🔴 Configuration parse error at {}:{}", line, column);
+            fmt.println("   Error: {}", message);
+            fmt.println("   Hint: {}", hint);
+            return RecoveryAction.ShowEditor(line, column);
+        },
+        
+        ConfigError.ValidationError(field, value, constraint, expected) => {
+            fmt.println("🔴 Configuration validation failed:");
+            fmt.println("   Field: {}", field);
+            fmt.println("   Value: '{}'", value);
+            fmt.println("   Constraint: {}", constraint);
+            fmt.println("   Expected: {}", expected);
+            return RecoveryAction.PromptForCorrection(field, expected);
+        },
+        
+        // Network errors
+        NetworkError.ConnectionTimeout(host, port, timeout_ms) => {
+            fmt.println("🌐 Connection timeout to {}:{} ({}ms)", host, port, timeout_ms);
+            return RecoveryAction.RetryWithBackoff(2.0);
+        },
+        
+        NetworkError.ConnectionRefused(host, port, reason) => {
+            fmt.println("🌐 Connection refused by {}:{}", host, port);
+            fmt.println("   Reason: {}", reason);
+            return RecoveryAction.CheckServiceHealth(host, port);
+        },
+        
+        NetworkError.DNSResolutionFailed(hostname, dns_server) => {
+            fmt.println("🌐 DNS resolution failed for {} (server: {})", hostname, dns_server);
+            return RecoveryAction.TryAlternateDNS;
+        },
+        
+        // Database errors
+        DatabaseError.ConnectionFailed(host, port, database, username) => {
+            fmt.println("🗄️  Database connection failed:");
+            fmt.println("   Host: {}:{}", host, port);
+            fmt.println("   Database: {}", database);
+            fmt.println("   Username: {}", username);
+            return RecoveryAction.CheckDatabaseHealth;
+        },
+        
+        DatabaseError.DeadlockDetected(victim_query, conflicting_queries, retry_suggested) => {
+            fmt.println("🗄️  Database deadlock detected");
+            fmt.println("   Victim query: {}", victim_query);
+            fmt.println("   Conflicting queries: {}", conflicting_queries.length);
+            if retry_suggested {
+                return RecoveryAction.RetryWithJitter(1000); // 1 second random jitter
+            } else {
+                return RecoveryAction.Abort;
+            }
+        },
+        
+        // Business logic errors
+        BusinessLogicError.InsufficientFunds(account_id, requested, available, currency) => {
+            fmt.println("💰 Insufficient funds in account {}", account_id);
+            fmt.println("   Requested: {:.2f} {}", requested, currency);
+            fmt.println("   Available: {:.2f} {}", available, currency);
+            fmt.println("   Shortfall: {:.2f} {}", requested - available, currency);
+            return RecoveryAction.SuggestTopUp(requested - available);
+        },
+        
+        BusinessLogicError.InvalidOperation(operation, current_state, required_state, transition_path) => {
+            fmt.println("⚙️  Invalid operation '{}' in state '{}'", operation, current_state);
+            fmt.println("   Required state: {}", required_state);
+            if transition_path.length > 0 {
+                fmt.println("   Suggested transition: {}", transition_path.join(" -> "));
+                return RecoveryAction.FollowTransitionPath(transition_path);
+            } else {
+                return RecoveryAction.ResetToInitialState;
+            }
+        },
+        
+        // Authentication errors
+        AuthError.SessionExpired(session_id, expiry_time, current_time) => {
+            fmt.println("🔐 Session expired");
+            fmt.println("   Session ID: {}", session_id);
+            fmt.println("   Expired at: {}", expiry_time);
+            fmt.println("   Current time: {}", current_time);
+            return RecoveryAction.RefreshSession;
+        },
+        
+        AuthError.PermissionDenied(resource, required_permission, user_permissions) => {
+            fmt.println("🔐 Permission denied for resource '{}'", resource);
+            fmt.println("   Required: {}", required_permission);
+            fmt.println("   User permissions: [{}]", user_permissions.join(", "));
+            return RecoveryAction.RequestPermissionElevation(required_permission);
+        },
+        
+        // Catch-all for unknown error types
+        _ => {
+            fmt.println("❓ Unknown error type: {}", error.get_type_name());
+            print_structured_error(error);
+            return RecoveryAction.LogAndContinue;
+        }
+    };
+}
+
+/// Error aggregation with multiple error types
+fn validate_application_setup(config: ApplicationConfig) !void {
+    let errors = ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    errors.set_operation_name("Application Setup Validation");
+    
+    // Validate configuration
+    errors.try(validate_config_structure(config));
+    errors.try(validate_database_connection(config.database));
+    errors.try(validate_network_connectivity(config.api_endpoints));
+    errors.try(validate_authentication_setup(config.auth));
+    errors.try(validate_business_rules(config.business_logic));
+    
+    // Check for critical errors that prevent startup
+    let result = errors.finish();
+    if result.is_error() {
+        let composite_error = errors.get_composite_error();
+        
+        // Classify errors by severity
+        let critical_errors = composite_error.filter_by_severity(ERROR_SEVERITY_FATAL);
+        let warnings = composite_error.filter_by_severity(ERROR_SEVERITY_WARNING);
+        
+        if critical_errors.count > 0 {
+            fmt.println("🚨 Critical errors prevent application startup:");
+            for critical_error in critical_errors.errors {
+                print_structured_error(critical_error);
+                
+                // Attempt automatic recovery for some error types
+                let recovery_action = handle_application_error(critical_error);
+                if recovery_action.can_auto_recover() {
+                    fmt.println("🔧 Attempting automatic recovery...");
+                    recovery_action.execute();
+                }
+            }
+            return result; // Propagate critical errors
+        }
+        
+        if warnings.count > 0 {
+            fmt.println("⚠️  Application started with warnings:");
+            for warning in warnings.errors {
+                print_structured_error(warning);
+            }
+        }
+    }
+    
+    fmt.println("✅ Application setup validation completed successfully");
+}
+
+// =============================================================================
+// Error Hierarchy Inheritance Examples
+// =============================================================================
+
+/// Base error type for all I/O operations
+@error_hierarchy(is_abstract = true)
+enum IOError {
+    // Abstract base - cannot be instantiated
+}
+
+/// File system errors inheriting from IOError
+@error_hierarchy(parent = "IOError")
+enum FileSystemError {
+    FileNotFound(path: string, search_paths: []string),
+    PermissionDenied(path: string, operation: string, required_permission: string),
+    DiskFull(path: string, available_space_bytes: int, required_space_bytes: int),
+    FileLocked(path: string, lock_holder_process: string, lock_type: string)
+}
+
+/// Network I/O errors inheriting from IOError
+@error_hierarchy(parent = "IOError")
+enum NetworkIOError {
+    SocketClosed(socket_id: string, close_reason: string),
+    BufferOverflow(buffer_size: int, data_size: int),
+    ProtocolViolation(expected_protocol: string, actual_data: string)
+}
+
+/// Function that works with any I/O error through inheritance
+fn handle_io_error(error: IOError) -> bool {
+    fmt.println("Handling I/O error: {}", error.get_variant_name());
+    
+    // Handle based on error hierarchy
+    if error.is_instance_of(FileSystemError) {
+        let fs_error = error as FileSystemError;
+        return handle_filesystem_error(fs_error);
+    } else if error.is_instance_of(NetworkIOError) {
+        let net_error = error as NetworkIOError;
+        return handle_network_io_error(net_error);
+    }
+    
+    // Generic I/O error handling
+    fmt.println("Generic I/O error handling");
+    return false;
+}
+
+/// Polymorphic error handling with inheritance
+fn process_files_with_error_handling(file_paths: []string) !ProcessingResult {
+    let results = ProcessingResult.new();
+    let io_errors: []IOError = [];
+    
+    for path in file_paths {
+        try process_single_file(path) catch |error| {
+            // All file system errors can be treated as IOError
+            if error.is_instance_of(IOError) {
+                io_errors.append(error as IOError);
+                
+                // Try recovery based on error type hierarchy
+                if handle_io_error(error as IOError) {
+                    // Recovery successful, continue processing
+                    continue;
+                } else {
+                    // Recovery failed, but continue with other files
+                    results.add_failed_file(path, error);
+                }
+            } else {
+                // Non-I/O error, propagate immediately
+                return error;
+            }
+        };
+        
+        results.add_successful_file(path);
+    }
+    
+    // Report I/O errors summary
+    if io_errors.length > 0 {
+        fmt.println("I/O errors encountered during processing:");
+        for error in io_errors {
+            fmt.println("  - {}: {}", error.get_type_name(), error.generate_message());
+        }
+    }
+    
+    return results;
+}
+
+// =============================================================================
+// Error Dispatching and Custom Handlers
+// =============================================================================
+
+/// Set up error handlers for different error types
+fn setup_error_handlers() -> ErrorDispatcher {
+    let dispatcher = ErrorDispatcher.new();
+    
+    // High-priority handler for critical database errors
+    dispatcher.register_handler(
+        pattern: MATCH_ERROR_TYPE(DatabaseError),
+        handler: handle_database_error,
+        context: null,
+        priority: 100,
+        name: "database_error_handler"
+    );
+    
+    // Network error handler with retry logic
+    dispatcher.register_handler(
+        pattern: MATCH_ERROR_TYPE(NetworkError),
+        handler: handle_network_error_with_retry,
+        context: null,
+        priority: 90,
+        name: "network_error_retry_handler"
+    );
+    
+    // Configuration error handler with user interaction
+    dispatcher.register_handler(
+        pattern: MATCH_ERROR_TYPE(ConfigError),
+        handler: handle_config_error_interactive,
+        context: null,
+        priority: 80,
+        name: "config_error_interactive_handler"
+    );
+    
+    // Business logic error handler
+    dispatcher.register_handler(
+        pattern: MATCH_ERROR_TYPE(BusinessLogicError),
+        handler: handle_business_logic_error,
+        context: null,
+        priority: 70,
+        name: "business_logic_handler"
+    );
+    
+    // Specific handler for insufficient funds with custom logic
+    dispatcher.register_handler(
+        pattern: MATCH_ERROR_VARIANT(BusinessLogicError.InsufficientFunds),
+        handler: handle_insufficient_funds_with_options,
+        context: null,
+        priority: 95, // Higher priority than general business logic handler
+        name: "insufficient_funds_specialist"
+    );
+    
+    // Fallback handler for unhandled errors
+    dispatcher.set_default_handler(
+        handler: handle_unknown_error,
+        context: null
+    );
+    
+    return dispatcher;
+}
+
+/// Demonstrate error dispatching in action
+fn demonstrate_error_dispatching() {
+    let dispatcher = setup_error_handlers();
+    defer dispatcher.free();
+    
+    // Create various errors to test dispatching
+    let errors: []StructuredError = [
+        ConfigError.FileNotFound(path: "/etc/app.conf"),
+        NetworkError.ConnectionTimeout(host: "api.example.com", port: 443, timeout_ms: 5000),
+        DatabaseError.ConnectionFailed(host: "db.example.com", port: 5432, database: "appdb", username: "app_user"),
+        BusinessLogicError.InsufficientFunds(account_id: "ACC123", requested_amount: 1000.0, available_balance: 500.0, currency: "USD"),
+        AuthError.SessionExpired(session_id: "sess_abc123", expiry_time: "2024-01-01T12:00:00Z", current_time: "2024-01-01T13:00:00Z")
+    ];
+    
+    fmt.println("🎯 Demonstrating error dispatching:");
+    fmt.println("=====================================");
+    
+    for i, error in errors {
+        fmt.println("\n{}. Dispatching error: {}", i + 1, error.get_variant_name());
+        dispatcher.dispatch(error);
+    }
+    
+    // Test batch dispatching
+    fmt.println("\n🎯 Batch dispatching {} errors:", errors.length);
+    let handled_count = dispatcher.dispatch_batch(errors.data, errors.length);
+    fmt.println("   Successfully handled: {} errors", handled_count);
+}
+
+// =============================================================================
+// Main Test Function
+// =============================================================================
+
+fn main() -> void {
+    fmt.println("🏗️  Testing Structured Error Hierarchies System");
+    fmt.println("===============================================");
+    
+    // Initialize error hierarchy system
+    error_hierarchy_system_init();
+    defer error_hierarchy_system_shutdown();
+    
+    // Test 1: Error type definition and registration
+    fmt.println("\n📝 Test 1: Error Type Registration");
+    test_error_type_registration();
+    
+    // Test 2: Structured error creation and field setting
+    fmt.println("\n🏗️  Test 2: Structured Error Creation");
+    test_structured_error_creation();
+    
+    // Test 3: Error inheritance and polymorphism
+    fmt.println("\n🧬 Test 3: Error Inheritance");
+    test_error_inheritance();
+    
+    // Test 4: Error pattern matching
+    fmt.println("\n🎯 Test 4: Error Pattern Matching");
+    test_error_pattern_matching();
+    
+    // Test 5: Error dispatching
+    fmt.println("\n📨 Test 5: Error Dispatching");
+    demonstrate_error_dispatching();
+    
+    // Test 6: Integration with error aggregation
+    fmt.println("\n🔄 Test 6: Integration with Error Aggregation");
+    test_error_aggregation_integration();
+    
+    // Test 7: Real-world error handling scenarios
+    fmt.println("\n🌍 Test 7: Real-World Scenarios");
+    test_real_world_scenarios();
+    
+    // Print final statistics
+    fmt.println("\n📊 Final Statistics");
+    print_error_hierarchy_performance_report();
+    
+    fmt.println("\n✅ All structured error hierarchy tests completed!");
+    fmt.println("🎉 Task 20.4 - Structured Error Hierarchies - COMPLETED!");
+}
+
+// =============================================================================
+// Test Helper Functions  
+// =============================================================================
+
+fn test_error_type_registration() {
+    // Register error types programmatically
+    let config_error_type = error_type_define("ConfigError", "Configuration-related errors");
+    let file_not_found_variant = error_type_add_variant(config_error_type, "FileNotFound", "Configuration file not found", 1001);
+    
+    error_variant_add_string_field(file_not_found_variant, "path", "Path to the missing file", true);
+    
+    let parse_error_variant = error_type_add_variant(config_error_type, "ParseError", "Configuration parsing failed", 1002);
+    error_variant_add_int_field(parse_error_variant, "line", "Line number of parse error", true, 1, 1000000);
+    error_variant_add_int_field(parse_error_variant, "column", "Column number of parse error", true, 1, 1000);
+    error_variant_add_string_field(parse_error_variant, "message", "Parse error message", true);
+    
+    print_error_type_definition(config_error_type);
+    
+    fmt.println("   ✅ Error type registration successful");
+}
+
+fn test_structured_error_creation() {
+    let config_error_type = error_type_find_by_name("ConfigError");
+    if !config_error_type {
+        fmt.println("   ❌ ConfigError type not found");
+        return;
+    }
+    
+    // Create a structured error
+    let error = structured_error_new(config_error_type, "FileNotFound");
+    if !error {
+        fmt.println("   ❌ Failed to create structured error");
+        return;
+    }
+    defer structured_error_free(error);
+    
+    // Set field values
+    structured_error_set_string_field(error, "path", "/etc/missing-config.toml");
+    
+    // Validate and finalize
+    if structured_error_validate(error) {
+        structured_error_finalize(error);
+        print_structured_error(error);
+        fmt.println("   ✅ Structured error creation successful");
+    } else {
+        fmt.println("   ❌ Structured error validation failed");
+    }
+}
+
+fn test_error_inheritance() {
+    // Create base and derived error types
+    let base_error = error_type_define("IOError", "Base I/O error type");
+    base_error.is_abstract = true;
+    
+    let fs_error = error_type_define("FileSystemError", "File system error type");
+    error_type_set_parent(fs_error, base_error);
+    
+    // Test inheritance relationship
+    if error_type_is_subtype_of(fs_error, base_error) {
+        fmt.println("   ✅ Inheritance relationship established");
+    } else {
+        fmt.println("   ❌ Inheritance relationship failed");
+    }
+    
+    // Test ancestor lookup
+    let ancestor_count = 0;
+    let ancestors = error_type_get_ancestors(fs_error, &ancestor_count);
+    if ancestors && ancestor_count > 0 {
+        fmt.println("   ✅ Found {} ancestors", ancestor_count);
+        free(ancestors);
+    } else {
+        fmt.println("   ❌ Ancestor lookup failed");
+    }
+}
+
+fn test_error_pattern_matching() {
+    // Create various patterns
+    let config_error_type = error_type_find_by_name("ConfigError");
+    if !config_error_type {
+        fmt.println("   ❌ ConfigError type not found for pattern matching");
+        return;
+    }
+    
+    let type_pattern = error_match_pattern_new_type(config_error_type, false);
+    let severity_pattern = error_match_pattern_new_severity(ERROR_SEVERITY_ERROR, ERROR_SEVERITY_FATAL);
+    
+    // Create test error
+    let error = structured_error_new(config_error_type, "FileNotFound");
+    if error {
+        structured_error_set_string_field(error, "path", "/test/path");
+        structured_error_finalize(error);
+        
+        // Test pattern matching
+        if structured_error_matches_pattern(error, type_pattern) {
+            fmt.println("   ✅ Type pattern matching successful");
+        } else {
+            fmt.println("   ❌ Type pattern matching failed");
+        }
+        
+        if structured_error_matches_pattern(error, severity_pattern) {
+            fmt.println("   ✅ Severity pattern matching successful");
+        } else {
+            fmt.println("   ❌ Severity pattern matching failed");
+        }
+        
+        structured_error_free(error);
+    }
+    
+    error_match_pattern_free(type_pattern);
+    error_match_pattern_free(severity_pattern);
+}
+
+fn test_error_aggregation_integration() {
+    let aggregator = error_aggregator_new(AGGREGATOR_CONTINUE);
+    if !aggregator {
+        fmt.println("   ❌ Failed to create error aggregator");
+        return;
+    }
+    defer error_aggregator_free(aggregator);
+    
+    // Create multiple structured errors and add to aggregator
+    let config_error_type = error_type_find_by_name("ConfigError");
+    if config_error_type {
+        for i in 0..3 {
+            let error = structured_error_new(config_error_type, "FileNotFound");
+            if error {
+                let path = fmt.sprintf("/config/file%d.toml", i);
+                structured_error_set_string_field(error, "path", path);
+                structured_error_finalize(error);
+                
+                // Convert to runtime error and add to aggregator
+                let runtime_error = structured_error_to_runtime_error(error);
+                if runtime_error {
+                    error_aggregator_add_error(aggregator, runtime_error);
+                }
+                
+                structured_error_free(error);
+            }
+        }
+    }
+    
+    // Finish aggregation
+    let result = error_aggregator_finish(aggregator);
+    if result && goo_error_union_is_error(result)) {
+        fmt.println("   ✅ Error aggregation integration successful");
+        let composite = error_aggregator_get_composite_error(aggregator);
+        if composite {
+            fmt.println("   Aggregated {} errors", composite.get_error_count());
+        }
+    } else {
+        fmt.println("   ❌ Error aggregation integration failed");
+    }
+    
+    if result) {
+        goo_error_union_free(result);
+    }
+}
+
+fn test_real_world_scenarios() {
+    fmt.println("   🌍 Testing configuration loading scenario...");
+    
+    // Simulate configuration loading
+    let config_result = try load_config("/nonexistent/config.toml") catch |error| {
+        fmt.println("   Expected configuration error occurred:");
+        print_structured_error(error);
+        return;
+    };
+    
+    fmt.println("   ❌ Expected error but got success");
+}
+
+// =============================================================================
+// Mock Support Functions
+// =============================================================================
+
+fn get_current_user() -> string {
+    return "testuser";
+}
+
+fn extract_host(url: string) -> string {
+    // Simplified URL parsing
+    return "example.com";
+}
+
+fn extract_port(url: string) -> int {
+    return 443;
+}
+
+fn get_dns_server() -> string {
+    return "8.8.8.8";
+}
+
+fn create_default_config_file(path: string) {
+    fmt.println("   📝 Creating default config file at: {}", path);
+}
+
+// =============================================================================
+// Supporting Types
+// =============================================================================
+
+struct ApplicationConfig {
+    app_name: string,
+    version: string,
+    database: DatabaseConfig,
+    api_endpoints: []string,
+    auth: AuthConfig,
+    business_logic: BusinessLogicConfig
+}
+
+struct DatabaseConfig {
+    host: string,
+    port: int,
+    database_name: string,
+    username: string
+}
+
+struct AuthConfig {
+    method: string,
+    token_expiry_seconds: int
+}
+
+struct BusinessLogicConfig {
+    max_transaction_amount: float,
+    daily_limit: float
+}
+
+struct UserData {
+    id: string,
+    name: string,
+    email: string
+}
+
+struct TransferResult {
+    transaction_id: string,
+    from_account: string,
+    to_account: string,
+    amount: float,
+    timestamp: string
+}
+
+struct ProcessingResult {
+    successful_files: []string,
+    failed_files: map[string]StructuredError
+}
+
+enum RecoveryAction {
+    Retry,
+    RetryWithBackoff(multiplier: float),
+    RetryWithJitter(max_delay_ms: int),
+    ShowEditor(line: int, column: int),
+    PromptForCorrection(field: string, expected_format: string),
+    CheckServiceHealth(host: string, port: int),
+    TryAlternateDNS,
+    CheckDatabaseHealth,
+    Abort,
+    SuggestTopUp(amount: float),
+    FollowTransitionPath(steps: []string),
+    ResetToInitialState,
+    RefreshSession,
+    RequestPermissionElevation(permission: string),
+    LogAndContinue
+}

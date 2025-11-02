@@ -647,6 +647,10 @@ LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos) {
     node->literal_type = type;
     node->value = str_dup(value);
     
+    // Debug: print what we're creating
+    printf("DEBUG: Created literal node with type %d at %s:%d:%d, value='%s'\n", 
+           node->base.type, pos.filename ? pos.filename : "unknown", pos.line, pos.column, value ? value : "null");
+    
     return node;
 }
 
@@ -1456,6 +1460,37 @@ DOMAccessNode* ast_dom_access_new(const char* api_name, const char* method_name,
     node->args = args;
     node->is_property = is_property;
     
+    return node;
+}
+
+IfStmtNode* ast_if_stmt_new(ASTNode* condition, ASTNode* then_stmt, ASTNode* else_stmt, Position pos) {
+    IfStmtNode* node = (IfStmtNode*)malloc(sizeof(IfStmtNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_IF_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->condition = condition;
+    node->then_stmt = then_stmt;
+    node->else_stmt = else_stmt;
+
+    return node;
+}
+
+ForStmtNode* ast_for_stmt_new(ASTNode* init, ASTNode* condition, ASTNode* post, ASTNode* body, Position pos) {
+    ForStmtNode* node = (ForStmtNode*)malloc(sizeof(ForStmtNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_FOR_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->init = init;
+    node->condition = condition;
+    node->post = post;
+    node->body = body;
+
     return node;
 }
 

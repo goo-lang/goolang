@@ -16,10 +16,13 @@ output.ll
 # Debug files
 *.dSYM/
 
-# Test artifacts
-test_*
-!test_*.goo
-!test_*.c
+# Test artifacts (temporary test files only)
+test_*.c
+test_*.o
+test_hello_world
+test_memory_safety
+test_pipeline*
+mock_output.ll
 
 # Logs
 logs

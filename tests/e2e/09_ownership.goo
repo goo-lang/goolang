@@ -1,0 +1,29 @@
+// E2E Test 9: Ownership and Move Semantics
+// Tests: Ownership tracking, move semantics, borrowing
+
+package main
+
+import "fmt"
+
+func take_ownership(data []int) {
+    fmt.Printf("Received ownership of data: %v\n", data)
+}
+
+func borrow(data &[]int) {
+    fmt.Printf("Borrowed data: %v\n", *data)
+}
+
+func main() {
+    // Test ownership transfer
+    data1 := []int{1, 2, 3, 4, 5}
+    fmt.Printf("Original data: %v\n", data1)
+
+    // Test borrowing
+    borrow(&data1)
+    fmt.Printf("Data after borrow: %v\n", data1)
+
+    // Test move
+    data2 := data1
+    take_ownership(data2)
+    // data1 should no longer be valid after move
+}

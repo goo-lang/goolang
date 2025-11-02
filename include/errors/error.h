@@ -20,7 +20,19 @@ typedef enum {
     ERROR_CATEGORY_TYPE,
     ERROR_CATEGORY_CODEGEN,
     ERROR_CATEGORY_RUNTIME,
-    ERROR_CATEGORY_INTERNAL
+    ERROR_CATEGORY_INTERNAL,
+    // Auto-fix system categories
+    ERROR_CATEGORY_SYNTAX,         // Syntax errors, missing tokens
+    ERROR_CATEGORY_OWNERSHIP,      // Ownership violations, move/borrow errors
+    ERROR_CATEGORY_NULL_SAFETY,    // Null pointer access, nullable violations
+    ERROR_CATEGORY_MEMORY,         // Memory safety, buffer overflows
+    ERROR_CATEGORY_CONCURRENCY,    // Data races, deadlocks
+    ERROR_CATEGORY_ERROR_HANDLING, // Error union misuse, unhandled errors
+    ERROR_CATEGORY_IMPORT,         // Missing imports, wrong module paths
+    ERROR_CATEGORY_LIFETIME,       // Lifetime violations, dangling references
+    ERROR_CATEGORY_GENERIC,        // Generic type constraints, instantiation
+    ERROR_CATEGORY_INTERFACE,      // Interface implementation, method signatures
+    ERROR_CATEGORY_UNKNOWN
 } ErrorCategory;
 
 // Source location information

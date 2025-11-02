@@ -1,0 +1,127 @@
+{
+  "name": "Web Application",
+  "description": "A modern web application with HTTP server, routing, middleware, and database integration",
+  "category": "web",
+  "language": "goo",
+  "version": "1.0.0",
+  "author": "Goo Language Team",
+  "tags": ["web", "http", "server", "api", "database"],
+  "requirements": {
+    "goo": ">=1.0.0"
+  },
+  "structure": {
+    "src/": {
+      "main.goo": "main HTTP server",
+      "handlers/": {
+        "api.goo": "API route handlers",
+        "auth.goo": "authentication handlers",
+        "static.goo": "static file handlers"
+      },
+      "middleware/": {
+        "cors.goo": "CORS middleware",
+        "logging.goo": "request logging",
+        "auth.goo": "authentication middleware"
+      },
+      "models/": {
+        "user.goo": "user data model",
+        "response.goo": "API response models"
+      },
+      "db/": {
+        "connection.goo": "database connection",
+        "migrations.goo": "database migrations"
+      },
+      "config/": {
+        "config.goo": "application configuration"
+      }
+    },
+    "static/": {
+      "css/": {
+        "style.css": "application styles"
+      },
+      "js/": {
+        "app.js": "client-side JavaScript"
+      },
+      "index.html": "main HTML page"
+    },
+    "tests/": {
+      "handlers_test.goo": "handler tests",
+      "models_test.goo": "model tests",
+      "integration_test.goo": "integration tests"
+    },
+    "docs/": {
+      "README.md": "project documentation",
+      "API.md": "API documentation"
+    },
+    "config.yaml": "server configuration",
+    "docker-compose.yml": "Docker setup",
+    "Dockerfile": "container definition",
+    ".env.example": "environment variables example"
+  },
+  "variables": [
+    {
+      "name": "PROJECT_NAME",
+      "description": "Name of the web application",
+      "type": "string",
+      "required": true,
+      "default": "my-web-app"
+    },
+    {
+      "name": "AUTHOR_NAME",
+      "description": "Author name",
+      "type": "string", 
+      "required": true,
+      "default": "Developer"
+    },
+    {
+      "name": "APP_DESCRIPTION",
+      "description": "Application description",
+      "type": "string",
+      "required": false,
+      "default": "A Goo web application"
+    },
+    {
+      "name": "PORT",
+      "description": "Default server port",
+      "type": "integer",
+      "required": false,
+      "default": 8080
+    },
+    {
+      "name": "ENABLE_DATABASE",
+      "description": "Enable database integration",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "ENABLE_AUTH",
+      "description": "Enable authentication",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    }
+  ],
+  "hooks": {
+    "pre_generate": [
+      "echo 'Generating web application template...'",
+      "mkdir -p {{PROJECT_NAME}}"
+    ],
+    "post_generate": [
+      "cd {{PROJECT_NAME}} && goo mod init {{PROJECT_NAME}}",
+      "echo 'Web application template generated successfully!'",
+      "echo 'Run: cd {{PROJECT_NAME}} && goo run src/main.goo'"
+    ]
+  },
+  "features": [
+    "HTTP server with routing",
+    "Middleware system (CORS, logging, auth)",
+    "Database integration (optional)",
+    "Authentication system (optional)", 
+    "Static file serving",
+    "API endpoints",
+    "Error handling with unions",
+    "Configuration management",
+    "Docker containerization",
+    "Comprehensive testing"
+  ]
+}

@@ -1,0 +1,35 @@
+// E2E Test 8: Structs
+// Tests: Struct definitions, field access, methods
+
+package main
+
+import "fmt"
+
+type Point struct {
+    x int
+    y int
+}
+
+func (p Point) Distance() int {
+    return p.x*p.x + p.y*p.y
+}
+
+type Person struct {
+    name string
+    age  int
+}
+
+func (p Person) Greet() string {
+    return fmt.Sprintf("Hello, I'm %s and I'm %d years old", p.name, p.age)
+}
+
+func main() {
+    // Test Point
+    point := Point{x: 3, y: 4}
+    fmt.Printf("Point: (%d, %d)\n", point.x, point.y)
+    fmt.Printf("Distance squared: %d\n", point.Distance())
+
+    // Test Person
+    person := Person{name: "Alice", age: 30}
+    fmt.Printf("%s\n", person.Greet())
+}

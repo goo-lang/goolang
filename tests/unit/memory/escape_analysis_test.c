@@ -38,8 +38,6 @@ static void cleanup_mock_function(ASTNode* func) {
 
 // Test escape analyzer creation and cleanup
 int test_escape_analyzer_creation() {
-    printf("Testing escape analyzer creation...\n");
-    
     EscapeAnalyzer* analyzer = escape_analyzer_new(NULL);
     assert(analyzer != NULL);
     assert(analyzer->function_count == 0);
@@ -50,14 +48,11 @@ int test_escape_analyzer_creation() {
     
     escape_analyzer_free(analyzer);
     
-    printf("✓ Escape analyzer creation test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test function registration
 int test_function_registration() {
-    printf("Testing function registration...\n");
-    
     EscapeAnalyzer* analyzer = escape_analyzer_new(NULL);
     assert(analyzer != NULL);
     
@@ -89,14 +84,11 @@ int test_function_registration() {
     cleanup_mock_function(func2);
     escape_analyzer_free(analyzer);
     
-    printf("✓ Function registration test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test escape context creation
 int test_escape_context_creation() {
-    printf("Testing escape context creation...\n");
-    
     ASTNode* mock_site = create_mock_function("test_site");
     ASTNode* mock_target = create_mock_function("test_target");
     
@@ -113,14 +105,11 @@ int test_escape_context_creation() {
     cleanup_mock_function(mock_site);
     cleanup_mock_function(mock_target);
     
-    printf("✓ Escape context creation test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test allocation strategy determination
 int test_allocation_strategy_determination() {
-    printf("Testing allocation strategy determination...\n");
-    
     EscapeAnalyzer* analyzer = escape_analyzer_new(NULL);
     assert(analyzer != NULL);
     
@@ -145,14 +134,11 @@ int test_allocation_strategy_determination() {
     cleanup_mock_function(mock_site);
     escape_analyzer_free(analyzer);
     
-    printf("✓ Allocation strategy determination test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test object lifetime determination
 int test_object_lifetime_determination() {
-    printf("Testing object lifetime determination...\n");
-    
     EscapeAnalyzer* analyzer = escape_analyzer_new(NULL);
     assert(analyzer != NULL);
     
@@ -172,14 +158,11 @@ int test_object_lifetime_determination() {
     cleanup_mock_function(mock_site);
     escape_analyzer_free(analyzer);
     
-    printf("✓ Object lifetime determination test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test utility functions
 int test_utility_functions() {
-    printf("Testing utility functions...\n");
-    
     // Test string conversion functions
     const char* lifetime_str = object_lifetime_to_string(LIFETIME_LOCAL);
     const char* alloc_str = allocation_strategy_to_string(ALLOC_STRATEGY_STACK);
@@ -189,14 +172,11 @@ int test_utility_functions() {
     assert(strcmp(alloc_str, "stack") == 0);
     assert(strcmp(escape_str, "function") == 0);
     
-    printf("✓ Utility functions test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test statistics and reporting
 int test_statistics_reporting() {
-    printf("Testing statistics and reporting...\n");
-    
     EscapeAnalyzer* analyzer = escape_analyzer_new(NULL);
     assert(analyzer != NULL);
     
@@ -213,14 +193,11 @@ int test_statistics_reporting() {
     
     escape_analyzer_free(analyzer);
     
-    printf("✓ Statistics reporting test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test comprehensive escape analysis workflow
 int test_escape_analysis_workflow() {
-    printf("Testing escape analysis workflow...\n");
-    
     EscapeAnalyzer* analyzer = escape_analyzer_new(NULL);
     assert(analyzer != NULL);
     
@@ -250,41 +227,12 @@ int test_escape_analysis_workflow() {
     cleanup_mock_function(func2);
     escape_analyzer_free(analyzer);
     
-    printf("✓ Escape analysis workflow test passed\n");
-    return 1;
-}
-
-// Run all tests
-int TEST_MAIN() {
-    printf("=== Interprocedural Escape Analysis Tests ===\n\n");
-    
-    int tests_passed = 0;
-    int total_tests = 8;
-    
-    tests_passed += test_escape_analyzer_creation();
-    tests_passed += test_function_registration();
-    tests_passed += test_escape_context_creation();
-    tests_passed += test_allocation_strategy_determination();
-    tests_passed += test_object_lifetime_determination();
-    tests_passed += test_utility_functions();
-    tests_passed += test_statistics_reporting();
-    tests_passed += test_escape_analysis_workflow();
-    
-    printf("\n=== Test Results ===\n");
-    printf("Tests passed: %d/%d\n", tests_passed, total_tests);
-    
-    if (tests_passed == total_tests) {
-        printf("✓ All escape analysis tests passed!\n");
-        return 0;
-    } else {
-        printf("✗ Some tests failed!\n");
-        return 1;
-    }
+    return 0;
 }
 
 #ifndef STANDALONE_TEST
 // Register tests with the framework
-void register_escape_analysis_tests() {
+void register_escape_analysis_tests(void) {
     test_framework_register_test("escape_analyzer_creation", test_escape_analyzer_creation);
     test_framework_register_test("function_registration", test_function_registration);
     test_framework_register_test("escape_context_creation", test_escape_context_creation);

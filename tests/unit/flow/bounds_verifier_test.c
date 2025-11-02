@@ -364,7 +364,7 @@ int TEST_MAIN() {
 
 #ifndef STANDALONE_TEST
 // Register tests with the framework
-void register_bounds_verifier_tests() {
+void register_bounds_verifier_tests(void) {
     test_framework_register_test("bounds_verifier_creation", test_bounds_verifier_creation);
     test_framework_register_test("symbolic_expressions", test_symbolic_expressions);
     test_framework_register_test("bounds_constraints", test_bounds_constraints);

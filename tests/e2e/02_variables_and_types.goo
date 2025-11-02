@@ -1,0 +1,21 @@
+// E2E Test 2: Variables and Basic Types
+// Tests: Variable declarations, basic types, arithmetic operations
+
+package main
+
+import "fmt"
+
+func main() {
+    var x int = 42
+    var y int = 8
+    var sum int = x + y
+    var diff int = x - y
+    var prod int = x * y
+    var quot int = x / y
+
+    fmt.Printf("x = %d, y = %d\n", x, y)
+    fmt.Printf("sum = %d\n", sum)
+    fmt.Printf("diff = %d\n", diff)
+    fmt.Printf("prod = %d\n", prod)
+    fmt.Printf("quot = %d\n", quot)
+}

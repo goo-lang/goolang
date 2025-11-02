@@ -1,0 +1,370 @@
+/// Test file for automatic error context propagation
+/// Demonstrates the enhanced error handling capabilities
+
+package main
+
+import (
+    "fs"
+    "http"
+    "json"
+    "fmt"
+    "strconv"
+)
+
+// Example error types for testing
+enum FileError {
+    FileNotFound(path: string),
+    PermissionDenied(path: string),
+    DiskFull(available: i64)
+}
+
+enum NetworkError {
+    ConnectionRefused(host: string, port: i32),
+    Timeout(duration: i32),
+    InvalidResponse(status: i32)
+}
+
+enum ParseError {
+    InvalidSyntax(line: i32, column: i32),
+    UnexpectedToken(token: string),
+    MissingField(field: string)
+}
+
+// File I/O operations with automatic error context
+fn read_config_file(path: string) !string {
+    // The try expression will automatically capture FILE_IO context
+    // Error context will include: file path, operation type, bytes processed
+    let content = try fs.read_file(path); // Auto-adds file context
+    
+    // Validate content is not empty
+    if content.len() == 0 {
+        return FileError.FileNotFound(path);
+    }
+    
+    return content;
+}
+
+// Network operations with automatic error context
+fn fetch_remote_config(url: string) !string {
+    // The try expression will automatically capture NETWORK context
+    // Error context will include: host, port, protocol, bytes transferred
+    let response = try http.get(url); // Auto-adds network context
+    
+    if response.status_code != 200 {
+        return NetworkError.InvalidResponse(response.status_code);
+    }
+    
+    return response.body;
+}
+
+// Parsing operations with automatic error context
+fn parse_config(content: string) !Config {
+    // The try expression will automatically capture PARSING context
+    // Error context will include: input type, line/column, current token
+    let parsed = try json.parse(content); // Auto-adds parsing context
+    
+    // Validation with automatic context
+    let config = try Config.from_json(parsed); // Auto-adds validation context
+    
+    return config;
+}
+
+// Complex function with multiple error contexts
+fn load_and_validate_config(local_path: string, remote_url: string?) !Config {
+    // Automatic error context propagation across different operation types
+    
+    // Try local file first (FILE_IO context)
+    let content = try read_config_file(local_path) catch |err| {
+        match remote_url {
+            Some(url) => {
+                // Fallback to remote (NETWORK context)
+                try fetch_remote_config(url)
+            },
+            None => {
+                // Propagate the original file error with enhanced context
+                return err; // Error context automatically preserved
+            }
+        }
+    };
+    
+    // Parse the content (PARSING context)
+    let config = try parse_config(content);
+    
+    // Additional validation (VALIDATION context)
+    let validated_config = try validate_config(config);
+    
+    return validated_config;
+}
+
+// Validation function with detailed error context
+fn validate_config(config: Config) !Config {
+    // Custom validation context with field-level error reporting
+    
+    // Required field validation
+    if config.database_url == null {
+        return ValidationError(
+            field: "database_url",
+            expected: "non-empty string",
+            actual: "null",
+            constraint: "database URL is required for application startup"
+        );
+    }
+    
+    // Port validation
+    if config.port < 1 || config.port > 65535 {
+        return ValidationError(
+            field: "port",
+            expected: "1-65535",
+            actual: config.port.to_string(),
+            constraint: "port must be a valid TCP port number"
+        );
+    }
+    
+    // URL validation for database connection
+    let db_url = config.database_url.unwrap();
+    if !db_url.starts_with("postgresql://") && !db_url.starts_with("sqlite://") {
+        return ValidationError(
+            field: "database_url",
+            expected: "postgresql:// or sqlite:// URL",
+            actual: db_url,
+            constraint: "only PostgreSQL and SQLite databases are supported"
+        );
+    }
+    
+    return config;
+}
+
+// Configuration structure
+struct Config {
+    database_url: string?,
+    port: i32,
+    debug: bool,
+    timeout_seconds: i32,
+    max_connections: i32
+}
+
+impl Config {
+    fn from_json(json_value: JsonValue) !Config {
+        // Field extraction with automatic error context
+        let db_url = try json_value.get_string("database_url");
+        let port = try json_value.get_i32("port");
+        let debug = json_value.get_bool("debug") || false; // Optional with default
+        let timeout = json_value.get_i32("timeout_seconds") || 30; // Optional with default
+        let max_conn = json_value.get_i32("max_connections") || 100; // Optional with default
+        
+        return Config {
+            database_url: db_url,
+            port: port,
+            debug: debug,
+            timeout_seconds: timeout,
+            max_connections: max_conn
+        };
+    }
+}
+
+// Memory allocation with error context
+fn allocate_buffer(size: usize) ![]u8 {
+    // Memory allocation will automatically capture MEMORY context
+    let buffer = try alloc_array<u8>(size); // Auto-adds memory context
+    
+    // Initialize buffer to prevent undefined behavior
+    for i in 0..size {
+        buffer[i] = 0;
+    }
+    
+    return buffer;
+}
+
+// Concurrent operation with error context
+fn process_files_concurrently(file_paths: []string) ![]string {
+    let results = try allocate_array<string>(file_paths.len());
+    let handles = try allocate_array<ThreadHandle>(file_paths.len());
+    
+    // Start concurrent file processing (CONCURRENCY context)
+    for i, path in file_paths.enumerate() {
+        handles[i] = try spawn_thread(|| {
+            return read_config_file(path);
+        }); // Auto-adds concurrency context
+    }
+    
+    // Wait for all threads to complete
+    for i, handle in handles.enumerate() {
+        results[i] = try handle.join(); // Error context preserved across threads
+    }
+    
+    return results;
+}
+
+// Demonstration of error aggregation
+fn validate_multiple_configs(configs: []Config) !ValidationResult {
+    let errors = ErrorCollector.new(false); // Don't stop on first error
+    
+    for i, config in configs.enumerate() {
+        // Try validation, collect errors instead of stopping
+        errors.try(validate_config(config));
+    }
+    
+    return errors.finish(); // Returns all errors or success
+}
+
+// Error recovery patterns with exponential backoff
+@retry(max_attempts=3, backoff="exponential")
+fn fetch_with_retry(url: string) !string {
+    // Automatic retry with exponential backoff
+    // Error context preserved across retry attempts
+    return try http.get(url); // Automatically retried on failure
+}
+
+// Circuit breaker pattern
+@circuit_breaker(failure_threshold=5, timeout=30s)
+fn call_external_service(endpoint: string) !Response {
+    // Circuit breaker prevents cascading failures
+    // Error context includes circuit breaker state
+    return try http.post(endpoint);
+}
+
+// Main function demonstrating the complete error handling system
+fn main() !void {
+    // Initialize error context system
+    error_context_system_init();
+    
+    println("🚀 Testing Automatic Error Context Propagation");
+    println("===============================================");
+    
+    // Test 1: File I/O with automatic context
+    println("\n📁 Test 1: File I/O Error Context");
+    let config_result = try load_and_validate_config("config.json", Some("https://example.com/config.json")) catch |err| {
+        println("Configuration loading failed:");
+        print_enhanced_error(err); // Shows complete error context chain
+        return err;
+    };
+    
+    println("✅ Configuration loaded successfully");
+    
+    // Test 2: Network operations with context
+    println("\n🌐 Test 2: Network Error Context");
+    let remote_data = try fetch_with_retry("https://api.example.com/data") catch |err| {
+        println("Network operation failed:");
+        print_enhanced_error(err);
+        return err;
+    };
+    
+    println("✅ Network operation completed");
+    
+    // Test 3: Error aggregation
+    println("\n📊 Test 3: Error Aggregation");
+    let test_configs = [
+        Config { database_url: None, port: 8080, debug: true, timeout_seconds: 30, max_connections: 100 },
+        Config { database_url: Some("invalid://url"), port: -1, debug: false, timeout_seconds: 30, max_connections: 100 },
+        Config { database_url: Some("postgresql://localhost/db"), port: 80000, debug: false, timeout_seconds: 30, max_connections: 100 }
+    ];
+    
+    let validation_result = try validate_multiple_configs(test_configs) catch |err| {
+        println("Multiple validation errors found:");
+        print_enhanced_error(err);
+        return err;
+    };
+    
+    println("✅ Validation completed");
+    
+    // Test 4: Concurrent operations with context
+    println("\n🔄 Test 4: Concurrent Error Context");
+    let file_paths = ["config1.json", "config2.json", "config3.json"];
+    let file_contents = try process_files_concurrently(file_paths) catch |err| {
+        println("Concurrent file processing failed:");
+        print_enhanced_error(err);
+        return err;
+    };
+    
+    println("✅ Concurrent processing completed");
+    
+    // Print final statistics
+    println("\n📈 Error Context Statistics:");
+    print_error_context_statistics();
+    
+    // Cleanup
+    error_context_system_shutdown();
+    
+    println("\n🎉 All error context propagation tests completed successfully!");
+}
+
+// Custom error types for demonstration
+struct ValidationError {
+    field: string,
+    expected: string,
+    actual: string,
+    constraint: string
+}
+
+struct ValidationResult {
+    is_valid: bool,
+    errors: []ValidationError
+}
+
+struct Response {
+    status_code: i32,
+    body: string,
+    headers: map[string]string
+}
+
+struct JsonValue {
+    // Simplified JSON value representation
+    data: map[string]any
+}
+
+impl JsonValue {
+    fn get_string(self, key: string) !string {
+        match self.data.get(key) {
+            Some(value) => {
+                if let string_val = value as string {
+                    return string_val;
+                } else {
+                    return ParseError.UnexpectedToken("expected string");
+                }
+            },
+            None => {
+                return ParseError.MissingField(key);
+            }
+        }
+    }
+    
+    fn get_i32(self, key: string) !i32 {
+        match self.data.get(key) {
+            Some(value) => {
+                if let int_val = value as i32 {
+                    return int_val;
+                } else {
+                    return ParseError.UnexpectedToken("expected integer");
+                }
+            },
+            None => {
+                return ParseError.MissingField(key);
+            }
+        }
+    }
+    
+    fn get_bool(self, key: string) ?bool {
+        match self.data.get(key) {
+            Some(value) => {
+                if let bool_val = value as bool {
+                    return Some(bool_val);
+                }
+            },
+            None => {}
+        }
+        return None;
+    }
+}
+
+struct ThreadHandle {
+    // Thread handle placeholder
+    id: i32
+}
+
+impl ThreadHandle {
+    fn join(self) !string {
+        // Wait for thread completion
+        // This would be implemented by the runtime
+        return "thread result";
+    }
+}

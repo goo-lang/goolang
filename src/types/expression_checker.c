@@ -8,6 +8,11 @@
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr) return NULL;
     
+    // Debug: show what node type we received
+    printf("DEBUG: Type checking expression with type %d at %s:%d:%d\n", 
+           expr->type, expr->pos.filename ? expr->pos.filename : "unknown", 
+           expr->pos.line, expr->pos.column);
+    
     switch (expr->type) {
         case AST_IDENTIFIER:
             return type_check_identifier(checker, expr);
@@ -17,18 +22,34 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_binary_expr(checker, expr);
         case AST_UNARY_EXPR:
             return type_check_unary_expr(checker, expr);
+        case AST_POSTFIX_EXPR:
+            // For now, treat postfix expressions as unary expressions
+            return type_check_unary_expr(checker, expr);
         case AST_CALL_EXPR:
             return type_check_call_expr(checker, expr);
         case AST_INDEX_EXPR:
             return type_check_index_expr(checker, expr);
         case AST_SELECTOR_EXPR:
             return type_check_selector_expr(checker, expr);
+        case AST_SLICE_EXPR:
+            // TODO: Implement proper slice expression type checking
+            type_error(checker, expr->pos, "Slice expressions not yet implemented");
+            return NULL;
+        case AST_TYPE_ASSERT_EXPR:
+            // TODO: Implement proper type assertion checking
+            type_error(checker, expr->pos, "Type assertions not yet implemented");
+            return NULL;
+        case AST_PAREN_EXPR:
+            // TODO: Implement parenthesized expressions
+            type_error(checker, expr->pos, "Parenthesized expressions not yet implemented");
+            return NULL;
         case AST_TRY_EXPR:
             return type_check_try_expr(checker, expr);
         case AST_CATCH_EXPR:
             return type_check_catch_expr(checker, expr);
         default:
-            type_error(checker, expr->pos, "Unknown expression type");
+            type_error(checker, expr->pos, "Unknown expression type %d (at %s:%d:%d)", 
+                      expr->type, expr->pos.filename, expr->pos.line, expr->pos.column);
             return NULL;
     }
 }

@@ -1,0 +1,31 @@
+// E2E Test 4: Error Unions
+// Tests: Error union types (!T), error handling, try/catch
+
+package main
+
+import "fmt"
+
+func divide(a int, b int) !int {
+    if b == 0 {
+        return error("division by zero")
+    }
+    return a / b
+}
+
+func safeDivide(a int, b int) int {
+    result := divide(a, b) catch |err| {
+        fmt.Printf("Error: %s\n", err)
+        return 0
+    }
+    return result
+}
+
+func main() {
+    // Test successful division
+    result1 := safeDivide(10, 2)
+    fmt.Printf("10 / 2 = %d\n", result1)
+
+    // Test division by zero
+    result2 := safeDivide(10, 0)
+    fmt.Printf("10 / 0 = %d\n", result2)
+}

@@ -1,0 +1,749 @@
+/// Test file for error aggregation system
+/// Demonstrates ErrorAggregator functionality for batch validation
+
+package main
+
+import (
+    "fmt"
+    "validation"
+    "config"
+    "http"
+)
+
+// =============================================================================
+// Test Data Structures
+// =============================================================================
+
+struct User {
+    id: i32,
+    username: string,
+    email: string,
+    age: i32,
+    bio: ?string
+}
+
+struct DatabaseConfig {
+    host: string,
+    port: i32,
+    database: string,
+    username: string,
+    password: string,
+    connection_timeout: i32,
+    max_connections: i32
+}
+
+struct ServerConfig {
+    listen_address: string,
+    port: i32,
+    tls_enabled: bool,
+    cert_file: ?string,
+    key_file: ?string,
+    request_timeout: i32
+}
+
+struct ApplicationConfig {
+    app_name: string,
+    version: string,
+    debug: bool,
+    log_level: string,
+    database: DatabaseConfig,
+    server: ServerConfig
+}
+
+// =============================================================================
+// Validation Functions
+// =============================================================================
+
+/// Validate a single user record
+fn validate_user(user: User) !void {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    
+    // Validate required fields
+    errors.try(validate_required_field("username", user.username));
+    errors.try(validate_required_field("email", user.email));
+    
+    // Validate username constraints
+    errors.try(validate_string_length("username", user.username, 3, 30));
+    
+    // Validate email format
+    errors.try(validate_email_format("email", user.email));
+    
+    // Validate age range
+    errors.try(validate_numeric_range("age", user.age as f64, 13.0, 120.0));
+    
+    // Optional bio validation
+    if user.bio != null {
+        errors.try(validate_string_length("bio", user.bio!, 0, 500));
+    }
+    
+    return errors.finish();
+}
+
+/// Validate database configuration
+fn validate_database_config(config: DatabaseConfig) !void {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    
+    // Validate required connection parameters
+    errors.try(validate_required_field("host", config.host));
+    errors.try(validate_required_field("database", config.database));
+    errors.try(validate_required_field("username", config.username));
+    errors.try(validate_required_field("password", config.password));
+    
+    // Validate string lengths
+    errors.try(validate_string_length("host", config.host, 1, 255));
+    errors.try(validate_string_length("database", config.database, 1, 64));
+    errors.try(validate_string_length("username", config.username, 1, 64));
+    errors.try(validate_string_length("password", config.password, 8, 128));
+    
+    // Validate numeric ranges
+    errors.try(validate_numeric_range("port", config.port as f64, 1.0, 65535.0));
+    errors.try(validate_numeric_range("connection_timeout", config.connection_timeout as f64, 1.0, 300.0));
+    errors.try(validate_numeric_range("max_connections", config.max_connections as f64, 1.0, 1000.0));
+    
+    return errors.finish();
+}
+
+/// Validate server configuration
+fn validate_server_config(config: ServerConfig) !void {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    
+    // Validate basic server parameters
+    errors.try(validate_required_field("listen_address", config.listen_address));
+    errors.try(validate_string_length("listen_address", config.listen_address, 1, 255));
+    errors.try(validate_numeric_range("port", config.port as f64, 1.0, 65535.0));
+    errors.try(validate_numeric_range("request_timeout", config.request_timeout as f64, 1.0, 300.0));
+    
+    // Validate TLS configuration
+    if config.tls_enabled {
+        errors.try(validate_required_field("cert_file", config.cert_file));
+        errors.try(validate_required_field("key_file", config.key_file));
+        
+        if config.cert_file != null {
+            errors.try(validate_string_length("cert_file", config.cert_file!, 1, 500));
+        }
+        
+        if config.key_file != null {
+            errors.try(validate_string_length("key_file", config.key_file!, 1, 500));
+        }
+    }
+    
+    return errors.finish();
+}
+
+/// Comprehensive application configuration validation
+fn validate_config(config: ApplicationConfig) !ValidationResult {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    
+    // Set operation name for better error context
+    errors.set_operation_name("Application Configuration Validation");
+    
+    // Validate application metadata
+    errors.try(validate_required_field("app_name", config.app_name));
+    errors.try(validate_required_field("version", config.version));
+    errors.try(validate_required_field("log_level", config.log_level));
+    
+    errors.try(validate_string_length("app_name", config.app_name, 1, 100));
+    errors.try(validate_string_length("version", config.version, 1, 20));
+    
+    // Validate log level is one of the expected values
+    let valid_log_levels = ["debug", "info", "warn", "error"];
+    let log_level_valid = false;
+    for level in valid_log_levels {
+        if config.log_level == level {
+            log_level_valid = true;
+            break;
+        }
+    }
+    
+    if !log_level_valid {
+        errors.add_error_with_context(
+            ValidationError("Invalid log level", config.log_level),
+            "log_level"
+        );
+    }
+    
+    // Validate nested configurations
+    errors.try(validate_database_config(config.database));
+    errors.try(validate_server_config(config.server));
+    
+    return errors.finish();
+}
+
+// =============================================================================
+// Batch Validation Examples
+// =============================================================================
+
+/// Validate multiple users in batch
+fn validate_user_batch(users: []User) !BatchValidationResult {
+    let errors := ErrorAggregator.new_with_config(AGGREGATOR_CONTINUE, 50, true);
+    
+    errors.set_operation_name("User Batch Validation");
+    errors.set_collect_warnings(true);
+    
+    let successful_validations = 0;
+    
+    for i, user in users {
+        let validation_name = fmt.sprintf("user[%d]", i);
+        
+        let result = try validate_user(user) catch |err| {
+            errors.add_error_with_context(err, validation_name);
+            continue;
+        };
+        
+        successful_validations++;
+    }
+    
+    let final_result = errors.finish();
+    
+    return BatchValidationResult{
+        total_items: users.length,
+        successful_items: successful_validations,
+        failed_items: users.length - successful_validations,
+        validation_result: final_result
+    };
+}
+
+/// Parallel validation of configuration files
+fn validate_config_files_parallel(config_files: []string) !BatchValidationResult {
+    let parallel_collector := ParallelErrorAggregator.new(4); // 4 threads
+    defer parallel_collector.free();
+    
+    // Set up work items (file paths)
+    parallel_collector.set_work_items(config_files.data, config_files.length);
+    
+    // Define the parallel operation
+    fn validate_config_file_worker(file_path: *void, thread_id: i32, context: *void) !ApplicationConfig {
+        let path = file_path as *string;
+        
+        // Load and parse config file
+        let content = try fs.read_file(path) catch |err| {
+            return ConfigError.FileReadError(path, err.message);
+        };
+        
+        let config = try config.parse_toml(content) catch |err| {
+            return ConfigError.ParseError(path, err.message);
+        };
+        
+        // Validate the parsed config
+        try validate_config(config) catch |err| {
+            return ConfigError.ValidationError(path, err.message);
+        };
+        
+        return config;
+    }
+    
+    // Execute parallel validation
+    let result = parallel_collector.execute(validate_config_file_worker, null);
+    
+    return BatchValidationResult{
+        total_items: config_files.length,
+        successful_items: parallel_collector.get_successful_count(),
+        failed_items: parallel_collector.get_failed_count(),
+        validation_result: result
+    };
+}
+
+// =============================================================================
+// Error Recovery Integration Tests
+// =============================================================================
+
+/// Validate with retry on transient failures
+fn validate_with_retry(data: ValidationData) !void {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    
+    // Configure retry for transient network errors
+    let retry_config := @retry(
+        max_attempts=3,
+        backoff="exponential",
+        initial_delay_ms=100,
+        retryable_errors=[5001, 5002, 5003] // Network timeout, connection refused, etc.
+    );
+    
+    errors.set_retry(retry_config);
+    
+    // Validate external dependencies with retry
+    errors.try_with_name(
+        validate_external_service_connectivity(data.service_url),
+        "external_service_connectivity"
+    );
+    
+    errors.try_with_name(
+        validate_database_connectivity(data.db_config),
+        "database_connectivity"
+    );
+    
+    errors.try_with_name(
+        validate_api_key_validity(data.api_key),
+        "api_key_validity"
+    );
+    
+    return errors.finish();
+}
+
+/// Validate with circuit breaker protection
+fn validate_with_circuit_breaker(batch_data: []ValidationItem) !BatchValidationResult {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    
+    // Configure circuit breaker for external validations
+    let circuit_breaker := @circuit_breaker(
+        failure_threshold=5,
+        open_timeout_ms=30000,
+        failure_rate_threshold=0.5
+    );
+    
+    errors.set_circuit_breaker(circuit_breaker);
+    
+    let operations: []CollectableOperation = [];
+    let args: []ValidationItem = [];
+    
+    // Set up batch operations
+    for item in batch_data {
+        operations.append(validate_external_item);
+        args.append(item);
+    }
+    
+    // Execute batch with circuit breaker protection
+    let successful_count = errors.execute_batch_with_recovery(
+        operations.data,
+        args.data,
+        batch_data.length,
+        null, // No retry
+        circuit_breaker
+    );
+    
+    let result = errors.finish();
+    
+    return BatchValidationResult{
+        total_items: batch_data.length,
+        successful_items: successful_count,
+        failed_items: batch_data.length - successful_count,
+        validation_result: result
+    };
+}
+
+// =============================================================================
+// Advanced Error Collection Patterns
+// =============================================================================
+
+/// Hierarchical validation with nested error collectors
+fn validate_hierarchical_config(config: HierarchicalConfig) !ValidationResult {
+    let root_errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    root_errors.set_operation_name("Hierarchical Configuration Validation");
+    
+    // Validate top-level configuration
+    root_errors.try(validate_basic_config_structure(config));
+    
+    // Validate each module with its own collector
+    for module_name, module_config in config.modules {
+        let module_errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+        module_errors.set_operation_name(fmt.sprintf("Module '%s' Validation", module_name));
+        
+        // Validate module-specific configuration
+        module_errors.try(validate_module_config(module_config));
+        
+        // Validate module dependencies
+        for dependency in module_config.dependencies {
+            module_errors.try_with_name(
+                validate_module_dependency(dependency),
+                fmt.sprintf("dependency:%s", dependency.name)
+            );
+        }
+        
+        // Merge module errors into root collector
+        let module_result = module_errors.finish();
+        if module_result.is_error() {
+            let composite_error = module_errors.get_composite_error();
+            root_errors.get_composite_error().merge(composite_error);
+        }
+    }
+    
+    return root_errors.finish();
+}
+
+/// Custom validation with hooks and monitoring
+fn validate_with_monitoring(data: []DataItem) !ValidationResult {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    
+    // Set up monitoring hooks
+    errors.set_error_hook(on_validation_error, null);
+    errors.set_limit_hook(on_error_limit_reached, null);
+    errors.set_completion_hook(on_validation_completed, null);
+    
+    // Configure collection behavior
+    errors.set_max_errors(20); // Stop after 20 errors
+    errors.set_collect_warnings(true);
+    errors.set_collect_context(true);
+    
+    let validation_start_time = time.now();
+    
+    // Perform batch validation
+    for i, item in data {
+        if errors.is_stopped() {
+            break;
+        }
+        
+        let item_name = fmt.sprintf("item[%d]", i);
+        
+        // Validate with detailed context
+        errors.try_with_name(
+            validate_data_item_comprehensive(item),
+            item_name
+        );
+        
+        // Add progress reporting
+        if i % 100 == 0 {
+            let progress = (i as f64 / data.length as f64) * 100.0;
+            fmt.println("Validation progress: {:.1f}%", progress);
+        }
+    }
+    
+    let validation_end_time = time.now();
+    let duration = validation_end_time.duration_since(validation_start_time);
+    
+    fmt.println("Validation completed in {} ms", duration.milliseconds());
+    fmt.println("Success rate: {:.2f}%", errors.get_success_rate() * 100.0);
+    
+    return errors.finish();
+}
+
+// =============================================================================
+// Hook Functions
+// =============================================================================
+
+fn on_validation_error(collector: *ErrorAggregator, error: *Error, context: *void) {
+    fmt.println("🔴 Validation error collected: {}", error.message);
+    
+    // Log error details to monitoring system
+    monitoring.log_validation_error(
+        collector.get_operation_name(),
+        error.code,
+        error.message
+    );
+}
+
+fn on_error_limit_reached(collector: *ErrorAggregator, limit: i32, context: *void) {
+    fmt.println("⚠️  Error limit reached: {} errors", limit);
+    
+    // Send alert to monitoring system
+    monitoring.send_alert(
+        "validation_error_limit_reached",
+        fmt.sprintf("Validation stopped after %d errors", limit)
+    );
+}
+
+fn on_validation_completed(collector: *ErrorAggregator, success: bool, context: *void) {
+    let stats = collector.get_composite_error();
+    
+    if success {
+        fmt.println("✅ Validation completed successfully");
+        fmt.println("   Total operations: {}", collector.get_success_count());
+    } else {
+        fmt.println("❌ Validation completed with errors");
+        fmt.println("   Total errors: {}", stats.get_error_count());
+        fmt.println("   Fatal errors: {}", stats.error_counts.fatal_errors);
+        fmt.println("   Validation errors: {}", stats.error_counts.validation_errors);
+        fmt.println("   Network errors: {}", stats.error_counts.network_errors);
+    }
+    
+    // Report final statistics
+    monitoring.report_validation_completion(
+        collector.get_operation_name(),
+        success,
+        collector.get_success_rate(),
+        collector.get_error_count()
+    );
+}
+
+// =============================================================================
+// Main Test Function
+// =============================================================================
+
+fn main() -> void {
+    fmt.println("🔄 Testing Error Aggregation System");
+    fmt.println("===================================");
+    
+    // Initialize error aggregation system
+    error_aggregation_system_init();
+    
+    // Test 1: Basic error collection
+    fmt.println("\n📝 Test 1: Basic Error Collection");
+    test_basic_error_collection();
+    
+    // Test 2: Batch validation
+    fmt.println("\n👥 Test 2: Batch User Validation");
+    test_batch_user_validation();
+    
+    // Test 3: Configuration validation
+    fmt.println("\n⚙️  Test 3: Configuration Validation");
+    test_configuration_validation();
+    
+    // Test 4: Parallel validation
+    fmt.println("\n⚡ Test 4: Parallel Validation");
+    test_parallel_validation();
+    
+    // Test 5: Error recovery integration
+    fmt.println("\n🔄 Test 5: Error Recovery Integration");
+    test_error_recovery_integration();
+    
+    // Test 6: Advanced patterns
+    fmt.println("\n🚀 Test 6: Advanced Error Collection Patterns");
+    test_advanced_patterns();
+    
+    // Print final statistics
+    fmt.println("\n📊 Final Statistics");
+    print_error_aggregation_stats();
+    
+    // Cleanup
+    error_aggregation_system_shutdown();
+    
+    fmt.println("\n✅ All error aggregation tests completed!");
+    fmt.println("🎉 Task 20.3 - Error Aggregation System - COMPLETED!");
+}
+
+// =============================================================================
+// Test Helper Functions
+// =============================================================================
+
+fn test_basic_error_collection() {
+    let errors := ErrorAggregator.new(AGGREGATOR_CONTINUE);
+    errors.set_operation_name("Basic Error Collection Test");
+    
+    // Simulate some operations with errors
+    errors.try(simulate_operation_with_error("network_timeout", 5001));
+    errors.try(simulate_operation_with_error("validation_failed", 3001));
+    errors.try(simulate_successful_operation("data_processed"));
+    errors.try(simulate_operation_with_error("permission_denied", 4001));
+    
+    let result = errors.finish();
+    
+    if result.is_error() {
+        let composite = errors.get_composite_error();
+        fmt.println("   Collected {} errors:", composite.get_error_count());
+        
+        let summary = composite.to_string();
+        fmt.println("{}", summary);
+        summary.free();
+    } else {
+        fmt.println("   All operations succeeded");
+    }
+    
+    fmt.println("   Success rate: {:.1f}%", errors.get_success_rate() * 100.0);
+}
+
+fn test_batch_user_validation() {
+    // Create test users with various validation issues
+    let test_users = [
+        User{ id: 1, username: "alice", email: "alice@example.com", age: 25, bio: "Software developer" },
+        User{ id: 2, username: "b", email: "invalid-email", age: 15, bio: null }, // Multiple issues
+        User{ id: 3, username: "charlie", email: "charlie@test.com", age: 30, bio: "Product manager" },
+        User{ id: 4, username: "", email: "dave@example.com", age: 200, bio: "Very long bio that exceeds the maximum allowed length for user bios in our system..." }, // Multiple issues
+        User{ id: 5, username: "eve", email: "eve@company.org", age: 28, bio: "UX designer" }
+    ];
+    
+    let result = try validate_user_batch(test_users) catch |err| {
+        fmt.println("   Batch validation failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("   Batch validation results:");
+    fmt.println("     Total users: {}", result.total_items);
+    fmt.println("     Valid users: {}", result.successful_items);
+    fmt.println("     Invalid users: {}", result.failed_items);
+    
+    if result.validation_result.is_error() {
+        let composite = result.validation_result.get_error();
+        let detailed = composite.to_detailed_string();
+        fmt.println("   Validation errors:\n{}", detailed);
+        detailed.free();
+    }
+}
+
+fn test_configuration_validation() {
+    // Create test configuration with various issues
+    let test_config = ApplicationConfig{
+        app_name: "TestApp",
+        version: "1.0.0",
+        debug: true,
+        log_level: "invalid_level", // Issue
+        database: DatabaseConfig{
+            host: "localhost",
+            port: 5432,
+            database: "testdb",
+            username: "user",
+            password: "short", // Issue: too short
+            connection_timeout: 30,
+            max_connections: 10
+        },
+        server: ServerConfig{
+            listen_address: "0.0.0.0",
+            port: 8080,
+            tls_enabled: true,
+            cert_file: null, // Issue: required for TLS
+            key_file: null,  // Issue: required for TLS
+            request_timeout: 30
+        }
+    };
+    
+    let result = try validate_config(test_config) catch |err| {
+        fmt.println("   Configuration validation failed: {}", err.message);
+        return;
+    };
+    
+    if result.is_error() {
+        let composite = result.get_error();
+        fmt.println("   Configuration validation found {} errors:", composite.get_error_count());
+        
+        let summary = composite.to_string();
+        fmt.println("{}", summary);
+        summary.free();
+    } else {
+        fmt.println("   Configuration is valid");
+    }
+}
+
+fn test_parallel_validation() {
+    let config_files = [
+        "config/app.toml",
+        "config/database.toml", 
+        "config/server.toml",
+        "config/logging.toml",
+        "config/monitoring.toml"
+    ];
+    
+    let result = try validate_config_files_parallel(config_files) catch |err| {
+        fmt.println("   Parallel validation failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("   Parallel validation results:");
+    fmt.println("     Total files: {}", result.total_items);
+    fmt.println("     Valid files: {}", result.successful_items);
+    fmt.println("     Invalid files: {}", result.failed_items);
+}
+
+fn test_error_recovery_integration() {
+    fmt.println("   Testing error collection with retry and circuit breaker...");
+    
+    // Create test data that will trigger various error conditions
+    let validation_data = ValidationData{
+        service_url: "https://api.example.com/validate",
+        db_config: DatabaseConfig{ /* ... */ },
+        api_key: "test_api_key_that_may_be_invalid"
+    };
+    
+    let result = try validate_with_retry(validation_data) catch |err| {
+        fmt.println("   Validation with retry failed: {}", err.message);
+        return;
+    };
+    
+    if result.is_error() {
+        fmt.println("   Some validations failed even with retry");
+    } else {
+        fmt.println("   All validations succeeded with retry");
+    }
+}
+
+fn test_advanced_patterns() {
+    fmt.println("   Testing advanced error collection patterns...");
+    
+    // Test hierarchical validation
+    let hierarchical_config = HierarchicalConfig{
+        /* ... complex nested configuration ... */
+    };
+    
+    let result = try validate_hierarchical_config(hierarchical_config) catch |err| {
+        fmt.println("   Hierarchical validation failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("   Hierarchical validation completed");
+    
+    // Test validation with monitoring
+    let test_data = generate_test_data(1000); // Generate 1000 test items
+    
+    let monitored_result = try validate_with_monitoring(test_data) catch |err| {
+        fmt.println("   Monitored validation failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("   Monitored validation completed");
+}
+
+// =============================================================================
+// Mock Helper Functions
+// =============================================================================
+
+fn simulate_operation_with_error(operation_name: string, error_code: i32) !string {
+    return Error{ code: error_code, message: fmt.sprintf("{} failed", operation_name) };
+}
+
+fn simulate_successful_operation(operation_name: string) !string {
+    return fmt.sprintf("{} succeeded", operation_name);
+}
+
+fn generate_test_data(count: i32) []DataItem {
+    let data: []DataItem = [];
+    
+    for i in 0..count {
+        data.append(DataItem{
+            id: i,
+            name: fmt.sprintf("item_{}", i),
+            value: random_int(0, 1000),
+            is_valid: i % 7 != 0 // Make some items invalid
+        });
+    }
+    
+    return data;
+}
+
+// =============================================================================
+// Supporting Types
+// =============================================================================
+
+struct ValidationResult {
+    success: bool,
+    error_count: i32,
+    composite_error: ?CompositeError
+}
+
+struct BatchValidationResult {
+    total_items: i32,
+    successful_items: i32,
+    failed_items: i32,
+    validation_result: ValidationResult
+}
+
+struct ValidationData {
+    service_url: string,
+    db_config: DatabaseConfig,
+    api_key: string
+}
+
+struct ValidationItem {
+    id: i32,
+    data: string,
+    validation_type: string
+}
+
+struct DataItem {
+    id: i32,
+    name: string,
+    value: i32,
+    is_valid: bool
+}
+
+struct HierarchicalConfig {
+    modules: map[string]ModuleConfig
+}
+
+struct ModuleConfig {
+    name: string,
+    enabled: bool,
+    dependencies: []ModuleDependency
+}
+
+struct ModuleDependency {
+    name: string,
+    version: string,
+    required: bool
+}

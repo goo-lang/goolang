@@ -9,6 +9,7 @@
 int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* checker, 
                                          FuncDeclNode* func_decl, Type* return_type);
 
+
 int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, decl->pos, "LLVM support not available");
@@ -68,10 +69,24 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
     
-    LLVMTypeRef function_type = LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
+    // Special handling for main function to create proper C-style entry point
+    int is_main_function = (strcmp(func_decl->name, "main") == 0);
+    LLVMTypeRef function_type;
+    LLVMValueRef function;
     
-    // Create the function
-    LLVMValueRef function = LLVMAddFunction(codegen->module, func_decl->name, function_type);
+    if (is_main_function) {
+        // Create C-style main: int main(int argc, char** argv)
+        LLVMTypeRef int_type = LLVMInt32TypeInContext(codegen->context);
+        LLVMTypeRef char_ptr_type = LLVMPointerTypeInContext(codegen->context, 0);
+        LLVMTypeRef char_ptr_ptr_type = LLVMPointerTypeInContext(codegen->context, 0);
+        LLVMTypeRef main_param_types[2] = {int_type, char_ptr_ptr_type};
+        
+        function_type = LLVMFunctionType(int_type, main_param_types, 2, 0);
+        function = LLVMAddFunction(codegen->module, "main", function_type);
+    } else {
+        function_type = LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
+        function = LLVMAddFunction(codegen->module, func_decl->name, function_type);
+    }
     
     // Handle WebAssembly exports/imports based on function attributes
     if (codegen_is_wasm_target(codegen)) {
@@ -117,23 +132,46 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     if (func_decl->params && param_count > 0) {
         ASTNode* param = func_decl->params;
         int param_index = 0;
-        
+
         while (param && param_index < param_count) {
-            if (param->type == AST_IDENTIFIER) {
+            // Parameters are AST_VAR_DECL nodes created by the parser
+            if (param->type == AST_VAR_DECL) {
+                VarDeclNode* param_decl = (VarDeclNode*)param;
+
+                // Handle each name in the parameter declaration
+                for (size_t i = 0; i < param_decl->name_count && param_index < param_count; i++) {
+                    const char* param_name = param_decl->names[i];
+                    LLVMValueRef param_value = LLVMGetParam(function, param_index);
+
+                    // Create alloca for parameter
+                    LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_name);
+                    LLVMBuildStore(codegen->builder, param_value, param_alloca);
+
+                    // Add to value table
+                    ValueInfo* param_info = value_info_new(param_name, param_alloca,
+                                                          func_type_info->data.function.param_types[param_index]);
+                    param_info->is_lvalue = 1;
+                    param_info->is_initialized = 1;
+                    codegen_add_value(codegen, param_info);
+
+                    param_index++;
+                }
+            } else if (param->type == AST_IDENTIFIER) {
+                // Fallback for old-style identifier parameters (if any)
                 IdentifierNode* param_ident = (IdentifierNode*)param;
                 LLVMValueRef param_value = LLVMGetParam(function, param_index);
-                
+
                 // Create alloca for parameter
                 LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_ident->name);
                 LLVMBuildStore(codegen->builder, param_value, param_alloca);
-                
+
                 // Add to value table
-                ValueInfo* param_info = value_info_new(param_ident->name, param_alloca, 
+                ValueInfo* param_info = value_info_new(param_ident->name, param_alloca,
                                                       func_type_info->data.function.param_types[param_index]);
                 param_info->is_lvalue = 1;
                 param_info->is_initialized = 1;
                 codegen_add_value(codegen, param_info);
-                
+
                 param_index++;
             }
             param = param->next;
@@ -142,20 +180,60 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     
     if (param_types) free(param_types);
     
-    // Generate function body
+    // Generate function body with special handling for main
     int result = 1;
-    if (func_decl->body) {
-        result = codegen_generate_statement(codegen, checker, func_decl->body);
-    }
     
-    // Add return if missing
-    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
-        if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
-            LLVMBuildRetVoid(codegen->builder);
-        } else {
-            // Return zero/null for non-void functions without explicit return
-            LLVMValueRef zero_val = LLVMConstNull(llvm_return_type);
-            LLVMBuildRet(codegen->builder, zero_val);
+    if (is_main_function) {
+        // For main function, add runtime initialization calls
+        
+        // Get argc and argv parameters
+        LLVMValueRef argc = LLVMGetParam(function, 0);
+        LLVMValueRef argv = LLVMGetParam(function, 1);
+        
+        // Call goo_init(argc, argv)
+        LLVMValueRef goo_init = LLVMGetNamedFunction(codegen->module, "goo_init");
+        if (goo_init) {
+            LLVMValueRef init_args[2] = {argc, argv};
+            // Create function type for goo_init: void(int, char**)
+            LLVMTypeRef init_param_types[2] = {LLVMInt32TypeInContext(codegen->context), LLVMPointerTypeInContext(codegen->context, 0)};
+            LLVMTypeRef init_func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), init_param_types, 2, 0);
+            LLVMBuildCall2(codegen->builder, init_func_type, goo_init, init_args, 2, "");
+        }
+        
+        // Generate the original Goo main function body
+        if (func_decl->body) {
+            result = codegen_generate_statement(codegen, checker, func_decl->body);
+        }
+        
+        // Call goo_exit(0) and return 0
+        LLVMValueRef goo_exit = LLVMGetNamedFunction(codegen->module, "goo_exit");
+        if (goo_exit) {
+            LLVMValueRef exit_code = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+            LLVMValueRef exit_args[1] = {exit_code};
+            // Create function type for goo_exit: void(int)
+            LLVMTypeRef exit_param_types[1] = {LLVMInt32TypeInContext(codegen->context)};
+            LLVMTypeRef exit_func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), exit_param_types, 1, 0);
+            LLVMBuildCall2(codegen->builder, exit_func_type, goo_exit, exit_args, 1, "");
+        }
+        
+        // Return 0 from main
+        LLVMValueRef return_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+        LLVMBuildRet(codegen->builder, return_value);
+    } else {
+        // Regular function body generation
+        if (func_decl->body) {
+            result = codegen_generate_statement(codegen, checker, func_decl->body);
+        }
+        
+        // Add return if missing for non-main functions
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
+                LLVMBuildRetVoid(codegen->builder);
+            } else {
+                // Return zero/null for non-void functions without explicit return
+                LLVMValueRef zero_val = LLVMConstNull(llvm_return_type);
+                LLVMBuildRet(codegen->builder, zero_val);
+            }
         }
     }
     
@@ -1003,4 +1081,6 @@ int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
     return 1;
 #endif
 }
+
+
 #endif

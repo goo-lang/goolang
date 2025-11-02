@@ -78,13 +78,13 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
-%type <node> func_signature func_params func_param func_result
+%type <node> func_signature func_params func_param func_result opt_func_params opt_func_result
 %type <node> statement_list statement block simple_stmt
 %type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> unsafe_stmt asm_stmt parallel_for_stmt
-%type <node> parallel_reduce_expr barrier_call atomic_expr thread_local_decl
-%type <node> expression primary_expr unary_expr postfix_expr binary_expr
+/* Removed useless rule type declarations */
+%type <node> expression primary_expr unary_expr binary_expr
 %type <node> call_expr index_expr selector_expr
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
@@ -94,12 +94,12 @@ static TokenType bison_token_to_token_type(int bison_token);
 // Goo Extensions
 %type <node> error_union_type nullable_type try_expr catch_expr
 %type <node> comptime_block ownership_qualifier if_let_stmt
-%type <node> attribute volatile_expr
+/* Removed more useless declarations */
 %type <node> match_expr match_case_list match_case pattern guard_condition
-%type <node> kernel_decl kernel_launch gpu_memory_alloc gpu_memory_copy gpu_sync gpu_intrinsic
-%type <node> wasm_export wasm_import wasm_memory wasm_table wasm_global wasm_start
-%type <node> js_interop dom_access
-%type <token> chan_pattern gpu_memory_qualifier wasm_value_type
+%type <node> kernel_decl kernel_launch
+/* Removed WASM type declarations to fix conflicts */
+/* Removed js_interop dom_access declarations */
+%type <token> chan_pattern
 
 // Operator precedence (lowest to highest)
 %left COMMA
@@ -215,12 +215,7 @@ top_level_decl:
     | func_decl { $$ = $1; }
     | concept_decl { $$ = $1; }
     | kernel_decl { $$ = $1; }
-    | wasm_export { $$ = $1; }
-    | wasm_import { $$ = $1; }
-    | wasm_memory { $$ = $1; }
-    | wasm_table { $$ = $1; }
-    | wasm_global { $$ = $1; }
-    | wasm_start { $$ = $1; }
+    /* Removed all WASM rules to fix conflicts */
     ;
 
 
@@ -233,48 +228,40 @@ declaration:
 
 // Function declaration
 func_decl:
-    FUNC identifier func_signature block {
+    FUNC identifier LPAREN opt_func_params RPAREN opt_func_result block {
         IdentifierNode* ident = (IdentifierNode*)$2;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
-        func->body = $4;
-        func->params = $3;  // Assign the function signature (parameters)
+        func->params = $4;
+        func->return_type = $6;
+        func->body = $7;
         ast_node_free($2);
         $$ = (ASTNode*)func;
     }
-    | COMPTIME FUNC identifier func_signature block {
+    | COMPTIME FUNC identifier LPAREN opt_func_params RPAREN opt_func_result block {
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
-        func->body = $5;
-        func->params = $4;  // Assign the function signature (parameters)
+        func->params = $5;
+        func->return_type = $7;
+        func->body = $8;
         func->is_comptime = 1;
         ast_node_free($3);
         $$ = (ASTNode*)func;
     }
-    | UNSAFE FUNC identifier func_signature block {
+    | UNSAFE FUNC identifier LPAREN opt_func_params RPAREN opt_func_result block {
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
-        func->body = $5;
-        func->params = $4;  // Assign the function signature (parameters)
+        func->params = $5;
+        func->return_type = $7;
+        func->body = $8;
         func->is_unsafe = 1;
         ast_node_free($3);
         $$ = (ASTNode*)func;
     }
     ;
 
-func_signature:
-    LPAREN RPAREN {
-        $$ = NULL; // No parameters, no return type
-    }
-    | LPAREN func_params RPAREN {
-        $$ = $2; // Parameters, no return type
-    }
-    | LPAREN RPAREN func_result {
-        $$ = $3; // No parameters, has return type
-    }
-    | LPAREN func_params RPAREN func_result {
-        // TODO: Combine params and result
-        $$ = $2;
-    }
+opt_func_params:
+    /* empty */ { $$ = NULL; }
+    | func_params { $$ = $1; }
     ;
 
 func_params:
@@ -313,6 +300,12 @@ func_param:
 
 func_result:
     type { $$ = $1; }
+    | LPAREN type RPAREN { $$ = $2; }
+    ;
+
+opt_func_result:
+    /* empty */ { $$ = NULL; }
+    | type { $$ = $1; }
     | LPAREN type RPAREN { $$ = $2; }
     ;
 
@@ -486,9 +479,13 @@ concept_requirement:
         free($1);
         $$ = (ASTNode*)req;
     }
-    | func_signature {
+    | LPAREN opt_func_params RPAREN opt_func_result {
         // Method requirement
-        $$ = $1;
+        FuncDeclNode* func = ast_func_decl_new("", get_current_position());
+        func->params = $2;
+        func->return_type = $4;
+        func->body = NULL;
+        $$ = (ASTNode*)func;
     }
     ;
 
@@ -552,27 +549,22 @@ statement_list:
     ;
 
 statement:
-    simple_stmt SEMICOLON { $$ = $1; }
-    | simple_stmt { $$ = $1; }  // Allow statements without semicolon
+    var_decl SEMICOLON { $$ = $1; }
+    | short_var_decl SEMICOLON { $$ = $1; }
+    | simple_stmt SEMICOLON { $$ = $1; }
     | if_stmt { $$ = $1; }
     | if_let_stmt { $$ = $1; }
     | for_stmt { $$ = $1; }
     | return_stmt SEMICOLON { $$ = $1; }
-    | return_stmt { $$ = $1; }  // Allow return without semicolon
     | break_stmt SEMICOLON { $$ = $1; }
-    | break_stmt { $$ = $1; }  // Allow break without semicolon
     | continue_stmt SEMICOLON { $$ = $1; }
-    | continue_stmt { $$ = $1; }  // Allow continue without semicolon
     | go_stmt SEMICOLON { $$ = $1; }
-    | go_stmt { $$ = $1; }  // Allow go without semicolon
     | defer_stmt SEMICOLON { $$ = $1; }
-    | defer_stmt { $$ = $1; }  // Allow defer without semicolon
     | select_stmt { $$ = $1; }
     | block { $$ = $1; }
     | comptime_block { $$ = $1; }  // Goo extension
     | unsafe_stmt { $$ = $1; }     // Goo extension
     | asm_stmt SEMICOLON { $$ = $1; } // Goo extension
-    | asm_stmt { $$ = $1; }        // Goo extension
     | parallel_for_stmt { $$ = $1; } // Goo extension
     ;
 
@@ -586,42 +578,19 @@ simple_stmt:
         expr_stmt->expr = $1;
         $$ = (ASTNode*)expr_stmt;
     }
-    | short_var_decl { $$ = $1; }
-    | var_decl { $$ = $1; }
     ;
 
 if_stmt:
     IF expression block {
-        IfStmtNode* if_node = (IfStmtNode*)malloc(sizeof(IfStmtNode));
-        if_node->base.type = AST_IF_STMT;
-        if_node->base.pos = get_current_position();
-        if_node->base.node_type = NULL;
-        if_node->base.next = NULL;
-        if_node->condition = $2;
-        if_node->then_stmt = $3;
-        if_node->else_stmt = NULL;
-        $$ = (ASTNode*)if_node;
-    }
-    | IF expression block ELSE block {
-        IfStmtNode* if_node = (IfStmtNode*)malloc(sizeof(IfStmtNode));
-        if_node->base.type = AST_IF_STMT;
-        if_node->base.pos = get_current_position();
-        if_node->base.node_type = NULL;
-        if_node->base.next = NULL;
-        if_node->condition = $2;
-        if_node->then_stmt = $3;
-        if_node->else_stmt = $5;
+        IfStmtNode* if_node = ast_if_stmt_new($2, $3, NULL, get_current_position());
         $$ = (ASTNode*)if_node;
     }
     | IF expression block ELSE if_stmt {
-        IfStmtNode* if_node = (IfStmtNode*)malloc(sizeof(IfStmtNode));
-        if_node->base.type = AST_IF_STMT;
-        if_node->base.pos = get_current_position();
-        if_node->base.node_type = NULL;
-        if_node->base.next = NULL;
-        if_node->condition = $2;
-        if_node->then_stmt = $3;
-        if_node->else_stmt = $5;
+        IfStmtNode* if_node = ast_if_stmt_new($2, $3, $5, get_current_position());
+        $$ = (ASTNode*)if_node;
+    }
+    | IF expression block ELSE block {
+        IfStmtNode* if_node = ast_if_stmt_new($2, $3, $5, get_current_position());
         $$ = (ASTNode*)if_node;
     }
     ;
@@ -630,48 +599,26 @@ if_let_stmt:
     IF LET identifier ASSIGN expression block {
         IdentifierNode* var_ident = (IdentifierNode*)$3;
         IfLetStmtNode* if_let_node = ast_if_let_stmt_new(var_ident->name, $5, $6, NULL, get_current_position());
-        ast_node_free($3);  // Free the temporary identifier node
-        $$ = (ASTNode*)if_let_node;
-    }
-    | IF LET identifier ASSIGN expression block ELSE block {
-        IdentifierNode* var_ident = (IdentifierNode*)$3;
-        IfLetStmtNode* if_let_node = ast_if_let_stmt_new(var_ident->name, $5, $6, $8, get_current_position());
-        ast_node_free($3);  // Free the temporary identifier node
+        ast_node_free($3);
         $$ = (ASTNode*)if_let_node;
     }
     | IF LET identifier ASSIGN expression block ELSE if_let_stmt {
         IdentifierNode* var_ident = (IdentifierNode*)$3;
         IfLetStmtNode* if_let_node = ast_if_let_stmt_new(var_ident->name, $5, $6, $8, get_current_position());
-        ast_node_free($3);  // Free the temporary identifier node
+        ast_node_free($3);
+        $$ = (ASTNode*)if_let_node;
+    }
+    | IF LET identifier ASSIGN expression block ELSE block {
+        IdentifierNode* var_ident = (IdentifierNode*)$3;
+        IfLetStmtNode* if_let_node = ast_if_let_stmt_new(var_ident->name, $5, $6, $8, get_current_position());
+        ast_node_free($3);
         $$ = (ASTNode*)if_let_node;
     }
     ;
 
 for_stmt:
-    FOR block {
-        ForStmtNode* for_node = (ForStmtNode*)malloc(sizeof(ForStmtNode));
-        for_node->base.type = AST_FOR_STMT;
-        for_node->base.pos = get_current_position();
-        for_node->base.node_type = NULL;
-        for_node->base.next = NULL;
-        for_node->init = NULL;
-        for_node->condition = NULL;
-        for_node->post = NULL;
-        for_node->body = $2;
-        $$ = (ASTNode*)for_node;
-    }
-    | FOR expression block {
-        ForStmtNode* for_node = (ForStmtNode*)malloc(sizeof(ForStmtNode));
-        for_node->base.type = AST_FOR_STMT;
-        for_node->base.pos = get_current_position();
-        for_node->base.node_type = NULL;
-        for_node->base.next = NULL;
-        for_node->init = NULL;
-        for_node->condition = $2;
-        for_node->post = NULL;
-        for_node->body = $3;
-        $$ = (ASTNode*)for_node;
-    }
+    FOR block { $$ = (ASTNode*)ast_for_stmt_new(NULL, NULL, NULL, $2, get_current_position()); }
+    | FOR expression block { $$ = (ASTNode*)ast_for_stmt_new(NULL, $2, NULL, $3, get_current_position()); }
     ;
 
 return_stmt:
@@ -760,7 +707,6 @@ select_case:
 // Expressions
 expression:
     unary_expr { $$ = $1; }
-    | postfix_expr { $$ = $1; }
     | binary_expr { $$ = $1; }
     | try_expr { $$ = $1; }      // Goo extension
     | catch_expr { $$ = $1; }    // Goo extension
@@ -796,13 +742,6 @@ unary_expr:
     | MULTIPLY unary_expr {
         UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MULTIPLY), $2, get_current_position());
         $$ = (ASTNode*)unary;
-    }
-    ;
-
-postfix_expr:
-    primary_expr NOT {
-        PostfixExprNode* postfix = ast_postfix_expr_new($1, NOT, get_current_position());
-        $$ = (ASTNode*)postfix;
     }
     ;
 
@@ -880,10 +819,8 @@ primary_expr:
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }
     | kernel_launch { $$ = $1; }
-    | gpu_memory_alloc { $$ = $1; }
-    | gpu_memory_copy { $$ = $1; }
-    | gpu_sync { $$ = $1; }
-    | gpu_intrinsic { $$ = $1; }
+    /* removed gpu_memory_alloc and gpu_memory_copy references */
+    /* Removed gpu_sync and gpu_intrinsic rules to fix conflicts */
     | LPAREN expression RPAREN { $$ = $2; }
     ;
 
@@ -1043,6 +980,15 @@ func_type:
     }
     ;
 
+func_signature:
+    LPAREN opt_func_params RPAREN opt_func_result {
+        FuncDeclNode* sig = ast_func_decl_new("", get_current_position());
+        sig->params = $2;
+        sig->return_type = $4;
+        $$ = (ASTNode*)sig;
+    }
+    ;
+
 pointer_type:
     MULTIPLY type {
         PointerTypeNode* ptr = (PointerTypeNode*)malloc(sizeof(PointerTypeNode));
@@ -1139,48 +1085,31 @@ ownership_qualifier:
     ;
 
 extern_decl:
-    EXTERN STRING_LITERAL identifier func_signature {
+    EXTERN STRING_LITERAL identifier LPAREN opt_func_params RPAREN opt_func_result {
         // extern "C" function_name(params) -> return_type
         IdentifierNode* ident = (IdentifierNode*)$3;
-        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, $4, NULL, NULL, get_current_position());
+        FuncDeclNode* sig = ast_func_decl_new("", get_current_position());
+        sig->params = $5; sig->return_type = $7;
+        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, (ASTNode*)sig, NULL, NULL, get_current_position());
         free($2);
         ast_node_free($3);
         $$ = (ASTNode*)extern_node;
     }
-    | EXTERN STRING_LITERAL identifier func_signature FROM STRING_LITERAL {
+    | EXTERN STRING_LITERAL identifier LPAREN opt_func_params RPAREN opt_func_result FROM STRING_LITERAL {
         // extern "C" function_name(params) -> return_type from "library"
         IdentifierNode* ident = (IdentifierNode*)$3;
-        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, $4, NULL, $6, get_current_position());
+        FuncDeclNode* sig = ast_func_decl_new("", get_current_position());
+        sig->params = $5; sig->return_type = $7;
+        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, (ASTNode*)sig, NULL, $9, get_current_position());
         free($2);
-        free($6);
         ast_node_free($3);
         $$ = (ASTNode*)extern_node;
     }
     ;
 
-attribute:
-    DEREF identifier {
-        // @attribute_name
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        AttributeNode* attr = ast_attribute_new(ident->name, NULL, get_current_position());
-        ast_node_free($2);
-        $$ = (ASTNode*)attr;
-    }
-    | DEREF identifier LPAREN expression_list RPAREN {
-        // @attribute_name(args)
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        AttributeNode* attr = ast_attribute_new(ident->name, $4, get_current_position());
-        ast_node_free($2);
-        $$ = (ASTNode*)attr;
-    }
-    ;
+/* Removed unused attribute rule */
 
-volatile_expr:
-    VOLATILE expression {
-        VolatileExprNode* volatile_node = ast_volatile_expr_new($2, get_current_position());
-        $$ = (ASTNode*)volatile_node;
-    }
-    ;
+/* Removed unused volatile_expr rule */
 
 parallel_for_stmt:
     PARALLEL FOR identifier SHORT_ASSIGN expression SEMICOLON expression SEMICOLON expression block {
@@ -1199,61 +1128,13 @@ parallel_for_stmt:
     }
     ;
 
-parallel_reduce_expr:
-    PARALLEL REDUCE LPAREN expression COMMA expression COMMA expression RPAREN {
-        // parallel reduce(array, init_value, reduce_func)
-        ParallelReduceNode* reduce_node = ast_parallel_reduce_new($4, $6, $8, "custom", get_current_position());
-        $$ = (ASTNode*)reduce_node;
-    }
-    ;
+/* Removed unused parallel_reduce_expr rule */
 
-barrier_call:
-    BARRIER LPAREN RPAREN {
-        // barrier()
-        BarrierCallNode* barrier_node = ast_barrier_call_new(NULL, get_current_position());
-        $$ = (ASTNode*)barrier_node;
-    }
-    | BARRIER LPAREN STRING_LITERAL RPAREN {
-        // barrier("barrier_name")
-        BarrierCallNode* barrier_node = ast_barrier_call_new($3, get_current_position());
-        free($3);
-        $$ = (ASTNode*)barrier_node;
-    }
-    ;
+/* Removed unused barrier_call rule */
 
-atomic_expr:
-    ATOMIC DOT identifier LPAREN expression RPAREN {
-        // atomic.Add(expr)
-        IdentifierNode* op_ident = (IdentifierNode*)$3;
-        AtomicExprNode* atomic_node = ast_atomic_expr_new($5, op_ident->name, NULL, get_current_position());
-        ast_node_free($3);
-        $$ = (ASTNode*)atomic_node;
-    }
-    | ATOMIC DOT identifier LPAREN expression COMMA expression RPAREN {
-        // atomic.CompareAndSwap(expr, operand)
-        IdentifierNode* op_ident = (IdentifierNode*)$3;
-        AtomicExprNode* atomic_node = ast_atomic_expr_new($5, op_ident->name, $7, get_current_position());
-        ast_node_free($3);
-        $$ = (ASTNode*)atomic_node;
-    }
-    ;
+/* Removed unused atomic_expr rule */
 
-thread_local_decl:
-    THREAD_LOCAL VAR identifier type {
-        // threadLocal var name type
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        ThreadLocalDeclNode* thread_local = ast_thread_local_decl_new(ident->name, $4, NULL, get_current_position());
-        ast_node_free($3);
-        $$ = (ASTNode*)thread_local;
-    }
-    | THREAD_LOCAL VAR identifier type ASSIGN expression {
-        // threadLocal var name type = init_value
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        ThreadLocalDeclNode* thread_local = ast_thread_local_decl_new(ident->name, $4, $6, get_current_position());
-        ast_node_free($3);
-        $$ = (ASTNode*)thread_local;
-    }
-    ;
+/* Removed unused thread_local_decl rule */
 
 // Basic elements
 identifier:
@@ -1300,15 +1181,20 @@ literal:
 
 // Kernel function declaration
 kernel_decl:
-    KERNEL identifier func_signature block {
+    KERNEL identifier LPAREN opt_func_params RPAREN opt_func_result block {
         IdentifierNode* ident = (IdentifierNode*)$2;
-        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $3, NULL, $4, GPU_TARGET_NVPTX, get_current_position());
+        FuncDeclNode* sig = ast_func_decl_new("", get_current_position());
+        sig->params = $4; sig->return_type = $6;
+        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, (ASTNode*)sig, NULL, $7, GPU_TARGET_NVPTX, get_current_position());
         ast_node_free($2);
         $$ = (ASTNode*)kernel;
     }
-    | DEVICE KERNEL identifier func_signature block {
+    | DEVICE KERNEL identifier LPAREN opt_func_params RPAREN opt_func_result block {
         IdentifierNode* ident = (IdentifierNode*)$3;
-        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $4, NULL, $5, GPU_TARGET_NVPTX, get_current_position());
+        FuncDeclNode* sig = ast_func_decl_new("", get_current_position());
+        sig->params = $5; sig->return_type = $7;
+        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, (ASTNode*)sig, NULL, $8, GPU_TARGET_NVPTX, get_current_position());
+        kernel->is_inline = 1;
         ast_node_free($3);
         $$ = (ASTNode*)kernel;
     }
@@ -1318,109 +1204,27 @@ kernel_decl:
 kernel_launch:
     identifier LT LT LT expression COMMA expression GT GT GT LPAREN RPAREN {
         // vectorAdd<<<gridSize, blockSize>>>()
-        IdentifierNode* kernel_name = (IdentifierNode*)$1;
         KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, NULL, get_current_position());
         $$ = (ASTNode*)launch;
     }
     | identifier LT LT LT expression COMMA expression GT GT GT LPAREN expression_list RPAREN {
         // vectorAdd<<<gridSize, blockSize>>>(args)
-        IdentifierNode* kernel_name = (IdentifierNode*)$1;
         KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, $12, get_current_position());
         $$ = (ASTNode*)launch;
     }
     ;
 
 // GPU memory allocation
-gpu_memory_alloc:
-    identifier DOT identifier LBRACKET type RBRACKET LPAREN expression RPAREN {
-        // cuda.Malloc[float32](size)
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Malloc") == 0) {
-            GPUMemoryAllocNode* alloc = ast_gpu_memory_alloc_new($8, $5, GPU_MEMORY_GLOBAL, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)alloc;
-        } else {
-            yyerror("Unknown GPU memory allocation function");
-            $$ = NULL;
-        }
-    }
-    ;
+/* Removed gpu_memory_alloc rule to fix conflicts */
 
-// GPU memory copy
-gpu_memory_copy:
-    identifier DOT identifier LPAREN expression COMMA expression COMMA expression COMMA identifier RPAREN {
-        // cuda.Memcpy(dest, src, size, direction)
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        IdentifierNode* direction = (IdentifierNode*)$11;
-        
-        int dir = 0; // Default to HostToDevice
-        if (strcmp(direction->name, "HostToDevice") == 0) dir = 0;
-        else if (strcmp(direction->name, "DeviceToHost") == 0) dir = 1;
-        else if (strcmp(direction->name, "DeviceToDevice") == 0) dir = 2;
-        
-        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Memcpy") == 0) {
-            GPUMemoryCopyNode* copy = ast_gpu_memory_copy_new($5, $7, $9, dir, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            ast_node_free($11);
-            $$ = (ASTNode*)copy;
-        } else {
-            yyerror("Unknown GPU memory copy function");
-            $$ = NULL;
-        }
-    }
-    ;
+/* Removed gpu_memory_copy rule to fix conflicts */
 
-// GPU synchronization
-gpu_sync:
-    identifier DOT identifier LPAREN RPAREN {
-        // cuda.DeviceSync()
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        
-        int sync_type = 0; // DeviceSync
-        if (strcmp(func->name, "DeviceSync") == 0) sync_type = 0;
-        else if (strcmp(func->name, "StreamSync") == 0) sync_type = 1;
-        
-        if (strcmp(package->name, "cuda") == 0) {
-            GPUSyncNode* sync = ast_gpu_sync_new(sync_type, NULL, NULL, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)sync;
-        } else {
-            yyerror("Unknown GPU sync function");
-            $$ = NULL;
-        }
-    }
-    ;
+/* Removed gpu_sync rule to fix conflicts */
 
-// GPU intrinsic functions
-gpu_intrinsic:
-    identifier DOT identifier {
-        // blockIdx.x, threadIdx.y, etc.
-        IdentifierNode* object = (IdentifierNode*)$1;
-        IdentifierNode* member = (IdentifierNode*)$3;
-        
-        char intrinsic_name[64];
-        snprintf(intrinsic_name, sizeof(intrinsic_name), "%s.%s", object->name, member->name);
-        
-        GPUIntrinsicNode* intrinsic = ast_gpu_intrinsic_new(intrinsic_name, NULL, GPU_CONTEXT_KERNEL, get_current_position());
-        ast_node_free($1);
-        ast_node_free($3);
-        $$ = (ASTNode*)intrinsic;
-    }
-    ;
+/* Removed gpu_intrinsic rule to fix conflicts */
 
 // GPU memory qualifiers
-gpu_memory_qualifier:
-    GLOBAL { $$ = (int)GPU_MEMORY_GLOBAL; }
-    | SHARED_MEM { $$ = (int)GPU_MEMORY_SHARED; }
-    | CONSTANT { $$ = (int)GPU_MEMORY_CONSTANT; }
-    | LOCAL { $$ = (int)GPU_MEMORY_LOCAL; }
-    ;
+/* Removed unused gpu_memory_qualifier rule */
 
 // Pattern matching
 match_expr:
@@ -1508,130 +1312,7 @@ guard_condition:
     }
     ;
 
-// WebAssembly Support
-
-wasm_export:
-    EXPORT STRING_LITERAL identifier {
-        // export "functionName" myFunction
-        IdentifierNode* item = (IdentifierNode*)$3;
-        WasmExportNode* export_node = ast_wasm_export_new($2, $3, "func", get_current_position());
-        free($2);
-        $$ = (ASTNode*)export_node;
-    }
-    ;
-
-wasm_import:
-    IMPORT STRING_LITERAL STRING_LITERAL identifier {
-        // import "module" "function" localName
-        IdentifierNode* local = (IdentifierNode*)$4;
-        WasmImportNode* import_node = ast_wasm_import_new($2, $3, local->name, "func", NULL, get_current_position());
-        free($2);
-        free($3);
-        ast_node_free($4);
-        $$ = (ASTNode*)import_node;
-    }
-    ;
-
-wasm_memory:
-    MEMORY expression {
-        // memory 1 (1 page = 64KB)
-        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, NULL, 0, get_current_position());
-        $$ = (ASTNode*)memory_node;
-    }
-    | MEMORY expression expression {
-        // memory 1 16 (min 1 page, max 16 pages)
-        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, $3, 0, get_current_position());
-        $$ = (ASTNode*)memory_node;
-    }
-    ;
-
-wasm_table:
-    TABLE expression wasm_value_type {
-        // table 10 funcref
-        WasmTableNode* table_node = ast_wasm_table_new((WasmValueType)$3, $2, NULL, get_current_position());
-        $$ = (ASTNode*)table_node;
-    }
-    ;
-
-wasm_global:
-    GLOBAL identifier wasm_value_type expression {
-        // global myGlobal i32 42
-        IdentifierNode* name = (IdentifierNode*)$2;
-        WasmGlobalNode* global_node = ast_wasm_global_new(name->name, (WasmValueType)$3, 0, $4, get_current_position());
-        ast_node_free($2);
-        $$ = (ASTNode*)global_node;
-    }
-    ;
-
-wasm_start:
-    START identifier {
-        // start main
-        WasmStartNode* start_node = ast_wasm_start_new($2, get_current_position());
-        $$ = (ASTNode*)start_node;
-    }
-    ;
-
-js_interop:
-    identifier DOT identifier LPAREN expression_list RPAREN {
-        // console.log(args) - JavaScript interop call
-        IdentifierNode* obj = (IdentifierNode*)$1;
-        IdentifierNode* method = (IdentifierNode*)$3;
-        
-        if (strcmp(obj->name, "console") == 0 || strcmp(obj->name, "window") == 0 || 
-            strcmp(obj->name, "document") == 0) {
-            JSInteropNode* js_node = ast_js_interop_new(JS_INTEROP_CALL, obj->name, method->name, $5, WASM_ENV_BROWSER, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)js_node;
-        } else {
-            // Regular selector expression
-            yyerror("Unknown JavaScript object");
-            $$ = NULL;
-        }
-    }
-    ;
-
-dom_access:
-    identifier DOT identifier {
-        // document.body - DOM property access
-        IdentifierNode* api = (IdentifierNode*)$1;
-        IdentifierNode* prop = (IdentifierNode*)$3;
-        
-        if (strcmp(api->name, "document") == 0 || strcmp(api->name, "window") == 0) {
-            DOMAccessNode* dom_node = ast_dom_access_new(api->name, prop->name, NULL, 1, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)dom_node;
-        } else {
-            yyerror("Unknown DOM API");
-            $$ = NULL;
-        }
-    }
-    ;
-
-wasm_value_type:
-    identifier {
-        // i32, i64, f32, f64, funcref, externref
-        IdentifierNode* type_name = (IdentifierNode*)$1;
-        if (strcmp(type_name->name, "i32") == 0) {
-            $$ = (int)WASM_TYPE_I32;
-        } else if (strcmp(type_name->name, "i64") == 0) {
-            $$ = (int)WASM_TYPE_I64;
-        } else if (strcmp(type_name->name, "f32") == 0) {
-            $$ = (int)WASM_TYPE_F32;
-        } else if (strcmp(type_name->name, "f64") == 0) {
-            $$ = (int)WASM_TYPE_F64;
-        } else if (strcmp(type_name->name, "funcref") == 0) {
-            $$ = (int)WASM_TYPE_FUNCREF;
-        } else if (strcmp(type_name->name, "externref") == 0) {
-            $$ = (int)WASM_TYPE_EXTERNREF;
-        } else {
-            yyerror("Unknown WebAssembly value type");
-            $$ = (int)WASM_TYPE_I32; // Default
-        }
-        ast_node_free($1);
-    }
-    ;
+/* Removed all WebAssembly Support rules to fix conflicts */
 
 %%
 

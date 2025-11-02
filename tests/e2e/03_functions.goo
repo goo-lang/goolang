@@ -1,0 +1,28 @@
+// E2E Test 3: Functions
+// Tests: Function declarations, parameters, return values, function calls
+
+package main
+
+import "fmt"
+
+func add(a int, b int) int {
+    return a + b
+}
+
+func multiply(a int, b int) int {
+    return a * b
+}
+
+func greet(name string) string {
+    return "Hello, " + name
+}
+
+func main() {
+    result1 := add(10, 20)
+    result2 := multiply(6, 7)
+    greeting := greet("Goo")
+
+    fmt.Printf("10 + 20 = %d\n", result1)
+    fmt.Printf("6 * 7 = %d\n", result2)
+    fmt.Printf("%s\n", greeting)
+}

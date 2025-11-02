@@ -1,4 +1,6 @@
 #include "repl.h"
+#include "repl_type_info.h"
+#include "auto_fix.h"
 #include "parser.h"
 #include "lexer.h"
 #include "panic_free.h"
@@ -484,6 +486,7 @@ REPLCommandType repl_parse_command(const char* input) {
     if (strncmp(input, "reset", 5) == 0) return REPL_CMD_RESET;
     if (strncmp(input, "history", 7) == 0) return REPL_CMD_HISTORY;
     if (strncmp(input, "type", 4) == 0) return REPL_CMD_TYPE;
+    if (strncmp(input, "inspect", 7) == 0) return REPL_CMD_INSPECT;
     if (strncmp(input, "clear", 5) == 0) return REPL_CMD_CLEAR;
     if (strncmp(input, "mode", 4) == 0) return REPL_CMD_MODE;
     if (strncmp(input, "reload", 6) == 0) return REPL_CMD_RELOAD;
@@ -492,6 +495,7 @@ REPLCommandType repl_parse_command(const char* input) {
     if (strncmp(input, "perf", 4) == 0) return REPL_CMD_PERF;
     if (strncmp(input, "errors", 6) == 0) return REPL_CMD_ERRORS;
     if (strncmp(input, "debug", 5) == 0) return REPL_CMD_DEBUG;
+    if (strncmp(input, "autofix", 7) == 0) return REPL_CMD_AUTOFIX;
     
     return REPL_CMD_UNKNOWN;
 }
@@ -510,6 +514,8 @@ int repl_execute_command(REPLContext* ctx, REPLCommandType cmd, const char* args
             return repl_cmd_history(ctx, args);
         case REPL_CMD_TYPE:
             return repl_cmd_type(ctx, args);
+        case REPL_CMD_INSPECT:
+            return repl_cmd_inspect(ctx, args);
         case REPL_CMD_CLEAR:
             return repl_cmd_clear(ctx, args);
         case REPL_CMD_MODE:
@@ -526,6 +532,8 @@ int repl_execute_command(REPLContext* ctx, REPLCommandType cmd, const char* args
             return repl_cmd_errors(ctx, args);
         case REPL_CMD_DEBUG:
             return repl_cmd_debug(ctx, args);
+        case REPL_CMD_AUTOFIX:
+            return auto_fix_repl_command(ctx, args);
         case REPL_CMD_UNKNOWN:
         default:
             repl_error_printf(ctx, "Unknown command. Type :help for available commands.\n");
@@ -542,6 +550,7 @@ int repl_cmd_help(REPLContext* ctx, const char* args) {
     repl_printf(ctx, "  :reset          - Reset the REPL state\n");
     repl_printf(ctx, "  :history [n]    - Show last n history entries (default: 10)\n");
     repl_printf(ctx, "  :type <expr>    - Show type information for expression\n");
+    repl_printf(ctx, "  :inspect <expr> - Show detailed type analysis with examples\n");
     repl_printf(ctx, "  :clear          - Clear the screen\n");
     repl_printf(ctx, "  :mode [mode]    - Set or show current mode (normal, multiline, debug, type-only)\n");
     repl_printf(ctx, "  :reload         - Reload changed modules\n");
@@ -550,6 +559,7 @@ int repl_cmd_help(REPLContext* ctx, const char* args) {
     repl_printf(ctx, "  :perf [cmd]     - Performance monitoring (status, start, stop, metrics, alerts)\n");
     repl_printf(ctx, "  :errors [cmd]   - Error reporting (show, clear, summary, help)\n");
     repl_printf(ctx, "  :debug [cmd]    - Time-travel debugging (enable, disable, step, timeline, state)\n");
+    repl_printf(ctx, "  :autofix [cmd]  - Automatic error correction (help, analyze, demo, patterns, stats, config)\n");
     repl_printf(ctx, "\n%sExpression Evaluation:%s\n", ctx->color_output ? ANSI_BOLD : "", ctx->color_output ? ANSI_RESET : "");
     repl_printf(ctx, "  Enter any valid Goo expression to evaluate it\n");
     repl_printf(ctx, "  Multi-line expressions are supported\n");
@@ -634,6 +644,11 @@ int repl_cmd_type(REPLContext* ctx, const char* args) {
     }
     
     return 0;
+}
+
+int repl_cmd_inspect(REPLContext* ctx, const char* args) {
+    // Use the enhanced type inspection from repl_type_info.c
+    return repl_cmd_inspect_type(ctx, args);
 }
 
 int repl_cmd_clear(REPLContext* ctx, const char* args) {
@@ -786,6 +801,12 @@ int repl_cmd_debug(REPLContext* ctx, const char* args) {
         repl_error_printf(ctx, "  :debug stack         - Show call stack\n");
         repl_error_printf(ctx, "  :debug find <query>  - Find events in timeline\n");
         repl_error_printf(ctx, "  :debug snapshot [desc] - Create manual snapshot\n");
+        repl_error_printf(ctx, "  :debug compare <step1> <step2> - Compare two snapshots\n");
+        repl_error_printf(ctx, "  :debug export <file> - Export debug session\n");
+        repl_error_printf(ctx, "  :debug import <file> - Import debug session\n");
+        repl_error_printf(ctx, "  :debug visual        - Show visual timeline\n");
+        repl_error_printf(ctx, "  :debug live          - Start live debugging dashboard\n");
+        repl_error_printf(ctx, "  :debug replay        - Replay execution with control\n");
         return 0;
     }
     
@@ -823,6 +844,18 @@ int repl_cmd_debug(REPLContext* ctx, const char* args) {
         return repl_cmd_debug_find(ctx, cmd + 4);
     } else if (strncmp(cmd, "snapshot", 8) == 0) {
         return repl_cmd_debug_snapshot(ctx, cmd + 8);
+    } else if (strncmp(cmd, "compare", 7) == 0) {
+        return repl_cmd_debug_compare(ctx, cmd + 7);
+    } else if (strncmp(cmd, "export", 6) == 0) {
+        return repl_cmd_debug_export(ctx, cmd + 6);
+    } else if (strncmp(cmd, "import", 6) == 0) {
+        return repl_cmd_debug_import(ctx, cmd + 6);
+    } else if (strncmp(cmd, "visual", 6) == 0) {
+        return repl_cmd_debug_visual(ctx, cmd + 6);
+    } else if (strncmp(cmd, "live", 4) == 0) {
+        return repl_cmd_debug_live(ctx, cmd + 4);
+    } else if (strncmp(cmd, "replay", 6) == 0) {
+        return repl_cmd_debug_replay(ctx, cmd + 6);
     } else {
         repl_error_printf(ctx, "Unknown debug command: %s\n", cmd);
         repl_error_printf(ctx, "Type ':debug' for available commands.\n");

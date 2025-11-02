@@ -1,0 +1,98 @@
+/// Simple test for automatic error context propagation
+/// Tests the basic error union and context system
+
+package main
+
+import (
+    "fmt"
+)
+
+// Simple error types
+enum FileError {
+    FileNotFound,
+    PermissionDenied,
+    DiskFull
+}
+
+enum ParseError {
+    InvalidSyntax,
+    UnexpectedToken
+}
+
+// Test function with error union return type
+fn read_file(path: string) !string {
+    // Simulate file reading operation
+    if path == "missing.txt" {
+        return FileError.FileNotFound;
+    }
+    if path == "protected.txt" {
+        return FileError.PermissionDenied;
+    }
+    return "file content";
+}
+
+// Test function with parsing
+fn parse_content(content: string) !i32 {
+    // Simulate parsing operation
+    if content == "invalid" {
+        return ParseError.InvalidSyntax;
+    }
+    if content == "unexpected" {
+        return ParseError.UnexpectedToken;
+    }
+    return 42;
+}
+
+// Function that chains multiple error-prone operations
+fn process_file(path: string) !i32 {
+    // This demonstrates automatic error context propagation
+    let content = try read_file(path); // FILE_IO context
+    let result = try parse_content(content); // PARSING context
+    return result;
+}
+
+// Function that demonstrates error handling with context
+fn safe_process_file(path: string) i32 {
+    let result = try process_file(path) catch |err| {
+        match err {
+            FileError.FileNotFound => {
+                fmt.println("File not found: {}", path);
+                return -1;
+            },
+            FileError.PermissionDenied => {
+                fmt.println("Permission denied: {}", path);
+                return -2;
+            },
+            ParseError.InvalidSyntax => {
+                fmt.println("Invalid syntax in file: {}", path);
+                return -3;
+            },
+            _ => {
+                fmt.println("Unknown error processing file: {}", path);
+                return -4;
+            }
+        }
+    };
+    
+    fmt.println("Successfully processed file: {} -> {}", path, result);
+    return result;
+}
+
+fn main() -> void {
+    fmt.println("Testing Error Context Propagation");
+    fmt.println("=================================");
+    
+    // Test successful case
+    let result1 = safe_process_file("valid.txt");
+    fmt.println("Result 1: {}", result1);
+    
+    // Test file not found
+    let result2 = safe_process_file("missing.txt");
+    fmt.println("Result 2: {}", result2);
+    
+    // Test permission denied
+    let result3 = safe_process_file("protected.txt");
+    fmt.println("Result 3: {}", result3);
+    
+    fmt.println("Test completed");
+}

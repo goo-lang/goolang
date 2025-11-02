@@ -219,6 +219,24 @@ int parse_file(const char* filename) {
     
     int result = parse_input(content, filename);
     free(content);
-    
+
     return result;
+}
+
+// External AST root (defined in parser.y)
+extern ASTNode* ast_root;
+
+// Initialize parser (stub for now)
+void parser_init(void) {
+    current_lexer = NULL;
+    ast_root = NULL;
+}
+
+// Cleanup parser (stub for now)
+void parser_cleanup(void) {
+    if (current_lexer) {
+        lexer_free(current_lexer);
+        current_lexer = NULL;
+    }
+    ast_root = NULL;
 }

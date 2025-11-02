@@ -914,6 +914,8 @@ SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos);
 DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos);
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
+IfStmtNode* ast_if_stmt_new(ASTNode* condition, ASTNode* then_stmt, ASTNode* else_stmt, Position pos);
+ForStmtNode* ast_for_stmt_new(ASTNode* init, ASTNode* condition, ASTNode* post, ASTNode* body, Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);

@@ -1,0 +1,114 @@
+// Command-line argument parsing for {{PROJECT_NAME}}
+
+package cli
+
+import (
+    "fmt"
+    "strings"
+)
+
+// Command line arguments structure
+struct Args {
+    verbose: bool,
+    output_file: string?,
+    {{if ENABLE_LOGGING}}log_level: string?,{{endif}}
+    help: bool,
+    input_files: []string
+}
+
+// Argument parsing errors
+enum ArgError {
+    UnknownFlag,
+    MissingValue,
+    InvalidFormat
+}
+
+// Parse command line arguments
+pub fn parse_args(args: []string) -> Args!ArgError {
+    var result = Args{
+        verbose: false,
+        output_file: null,
+        {{if ENABLE_LOGGING}}log_level: null,{{endif}}
+        help: false,
+        input_files: []string{}
+    };
+    
+    var i = 1; // Skip program name
+    while i < args.len {
+        let arg = args[i];
+        
+        match arg {
+            "-v" | "--verbose" => {
+                result.verbose = true;
+            },
+            "-h" | "--help" => {
+                result.help = true;
+            },
+            "-o" | "--output" => {
+                i++;
+                if i >= args.len {
+                    return ArgError.MissingValue;
+                }
+                result.output_file = args[i];
+            },
+            {{if ENABLE_LOGGING}}
+            "--log-level" => {
+                i++;
+                if i >= args.len {
+                    return ArgError.MissingValue;
+                }
+                let level = args[i];
+                if !is_valid_log_level(level) {
+                    return ArgError.InvalidFormat;
+                }
+                result.log_level = level;
+            },
+            {{endif}}
+            default => {
+                if strings.starts_with(arg, "-") {
+                    return ArgError.UnknownFlag;
+                }
+                // Add to input files
+                result.input_files.append(arg);
+            }
+        }
+        i++;
+    }
+    
+    return result;
+}
+
+{{if ENABLE_LOGGING}}
+// Validate log level
+fn is_valid_log_level(level: string) -> bool {
+    match level {
+        "trace" | "debug" | "info" | "warn" | "error" => true,
+        default => false
+    }
+}
+{{endif}}
+
+// Print usage information
+pub fn print_usage() {
+    fmt.println("Usage: {{PROJECT_NAME}} [OPTIONS] [FILES...]");
+    fmt.println("");
+    fmt.println("A {{PROJECT_DESCRIPTION}}");
+    fmt.println("");
+    fmt.println("OPTIONS:");
+    fmt.println("  -v, --verbose      Enable verbose output");
+    fmt.println("  -h, --help         Show this help message");
+    fmt.println("  -o, --output FILE  Write output to FILE");
+    {{if ENABLE_LOGGING}}
+    fmt.println("  --log-level LEVEL  Set log level (trace, debug, info, warn, error)");
+    {{endif}}
+    fmt.println("");
+    fmt.println("EXAMPLES:");
+    fmt.println("  {{PROJECT_NAME}} --verbose input.txt");
+    fmt.println("  {{PROJECT_NAME}} -o output.txt input1.txt input2.txt");
+}
+
+// Print version information
+pub fn print_version() {
+    fmt.println("{{PROJECT_NAME}} version 1.0.0");
+    fmt.println("Built with Goo language");
+}

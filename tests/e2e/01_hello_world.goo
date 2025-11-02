@@ -1,0 +1,10 @@
+// E2E Test 1: Hello World
+// Tests: Basic compilation pipeline, main function, string literals, function calls
+
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Printf("Hello, World!\n")
+}

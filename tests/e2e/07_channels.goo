@@ -1,0 +1,23 @@
+// E2E Test 7: Channels and Goroutines
+// Tests: Channel creation, send/receive, goroutines, concurrency
+
+package main
+
+import "fmt"
+
+func producer(ch chan int) {
+    for i := 1; i <= 5; i++ {
+        ch <- i
+    }
+    close(ch)
+}
+
+func main() {
+    ch := make(chan int, 5)
+
+    go producer(ch)
+
+    for value := range ch {
+        fmt.Printf("Received: %d\n", value)
+    }
+}

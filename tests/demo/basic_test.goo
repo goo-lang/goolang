@@ -1,0 +1,41 @@
+// Demo test file for visual test runner
+
+package test
+
+import "testing"
+
+fn test_basic_functionality() {
+    // This test always passes
+    let result = 2 + 2;
+    assert(result == 4, "Basic arithmetic should work");
+}
+
+fn test_string_operations() {
+    let str = "Hello, Goo!";
+    assert(str.len == 11, "String length should be correct");
+}
+
+fn test_error_handling() {
+    // Test error union handling
+    let result: int!string = try_divide(10, 2);
+    match result {
+        Ok(value) => assert(value == 5, "Division should work"),
+        Err(_) => fail("Division should not error")
+    }
+}
+
+fn test_nullable_types() {
+    let maybe_value: int? = 42;
+    assert(maybe_value != null, "Value should not be null");
+    
+    let null_value: int? = null;
+    assert(null_value == null, "Null value should be null");
+}
+
+// Helper function for testing
+fn try_divide(a: int, b: int) -> int!string {
+    if b == 0 {
+        return Err("Division by zero");
+    }
+    return Ok(a / b);
+}

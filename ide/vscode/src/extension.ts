@@ -21,9 +21,9 @@ export function activate(context: vscode.ExtensionContext) {
         return;
     }
 
-    // Language server executable (prefer enhanced version)
-    const serverPath = config.get<string>('languageServer.path', 'goo-lsp-standalone');
-    const serverArgs = config.get<string[]>('languageServer.args', []);
+    // Language server executable (prefer Goo-enhanced version)
+    const serverPath = config.get<string>('languageServer.path', 'goo-lsp-goo-enhanced');
+    const serverArgs = config.get<string[]>('languageServer.args', ['--debug']);
 
     // Server options
     const serverOptions: ServerOptions = {
@@ -62,10 +62,54 @@ export function activate(context: vscode.ExtensionContext) {
     const restartCommand = vscode.commands.registerCommand('goo.restartLanguageServer', () => {
         if (client) {
             client.restart();
+            vscode.window.showInformationMessage('Goo Language Server restarted');
+        }
+    });
+
+    // Enhanced Goo-specific commands
+    const showOwnershipInfo = vscode.commands.registerCommand('goo.showOwnershipInfo', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && editor.document.languageId === 'goo') {
+            vscode.window.showInformationMessage('Ownership tracking information will be displayed in hover tooltips and diagnostics');
+        }
+    });
+
+    const checkErrorUnions = vscode.commands.registerCommand('goo.checkErrorUnions', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && editor.document.languageId === 'goo') {
+            vscode.languages.getDiagnostics(editor.document.uri).then(diagnostics => {
+                const errorUnionDiagnostics = diagnostics.filter(d => 
+                    d.message.includes('error union') || d.message.includes('unhandled')
+                );
+                if (errorUnionDiagnostics.length > 0) {
+                    vscode.window.showWarningMessage(`Found ${errorUnionDiagnostics.length} potential error union issues`);
+                } else {
+                    vscode.window.showInformationMessage('No error union issues found');
+                }
+            });
+        }
+    });
+
+    const showNullableInfo = vscode.commands.registerCommand('goo.showNullableInfo', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && editor.document.languageId === 'goo') {
+            vscode.languages.getDiagnostics(editor.document.uri).then(diagnostics => {
+                const nullableDiagnostics = diagnostics.filter(d => 
+                    d.message.includes('null') || d.message.includes('nullable')
+                );
+                if (nullableDiagnostics.length > 0) {
+                    vscode.window.showWarningMessage(`Found ${nullableDiagnostics.length} potential null safety issues`);
+                } else {
+                    vscode.window.showInformationMessage('No null safety issues found');
+                }
+            });
         }
     });
 
     context.subscriptions.push(restartCommand);
+    context.subscriptions.push(showOwnershipInfo);
+    context.subscriptions.push(checkErrorUnions);
+    context.subscriptions.push(showNullableInfo);
 
     // Start the client
     client.start().then(() => {

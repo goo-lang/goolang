@@ -1,0 +1,52 @@
+// E2E Test 6: Control Flow
+// Tests: if/else, for loops, while loops, break, continue
+
+package main
+
+import "fmt"
+
+func main() {
+    // Test if/else
+    x := 10
+    if x > 5 {
+        fmt.Printf("x is greater than 5\n")
+    } else {
+        fmt.Printf("x is less than or equal to 5\n")
+    }
+
+    // Test for loop
+    fmt.Printf("Counting to 5:\n")
+    for i := 1; i <= 5; i++ {
+        fmt.Printf("%d ", i)
+    }
+    fmt.Printf("\n")
+
+    // Test while loop
+    fmt.Printf("Counting down from 5:\n")
+    j := 5
+    for j > 0 {
+        fmt.Printf("%d ", j)
+        j--
+    }
+    fmt.Printf("\n")
+
+    // Test break
+    fmt.Printf("Break at 3:\n")
+    for i := 1; i <= 5; i++ {
+        if i == 3 {
+            break
+        }
+        fmt.Printf("%d ", i)
+    }
+    fmt.Printf("\n")
+
+    // Test continue
+    fmt.Printf("Skip 3:\n")
+    for i := 1; i <= 5; i++ {
+        if i == 3 {
+            continue
+        }
+        fmt.Printf("%d ", i)
+    }
+    fmt.Printf("\n")
+}

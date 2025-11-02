@@ -44,6 +44,7 @@ typedef enum {
     REPL_CMD_RESET,
     REPL_CMD_HISTORY,
     REPL_CMD_TYPE,
+    REPL_CMD_INSPECT,
     REPL_CMD_CLEAR,
     REPL_CMD_MODE,
     REPL_CMD_RELOAD,
@@ -52,6 +53,7 @@ typedef enum {
     REPL_CMD_PERF,
     REPL_CMD_ERRORS,
     REPL_CMD_DEBUG,
+    REPL_CMD_AUTOFIX,
     REPL_CMD_UNKNOWN
 } REPLCommandType;
 
@@ -178,6 +180,7 @@ int repl_cmd_exit(REPLContext* ctx, const char* args);
 int repl_cmd_reset(REPLContext* ctx, const char* args);
 int repl_cmd_history(REPLContext* ctx, const char* args);
 int repl_cmd_type(REPLContext* ctx, const char* args);
+int repl_cmd_inspect(REPLContext* ctx, const char* args);
 int repl_cmd_clear(REPLContext* ctx, const char* args);
 int repl_cmd_mode(REPLContext* ctx, const char* args);
 int repl_cmd_reload(REPLContext* ctx, const char* args);

@@ -1,4 +1,5 @@
 #include "types.h"
+#include "memory_safety.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -317,14 +318,139 @@ int check_variable_lifetime(TypeChecker* checker, const char* name, Position pos
     return 1;
 }
 
-// Simplified borrow checker - checks basic ownership violations
-int check_borrow_rules(TypeChecker* checker, ASTNode* expr, Position pos) {
+// Enhanced ownership analysis integration
+int perform_ownership_analysis(TypeChecker* checker, ASTNode* program) {
+    if (!checker || !program) return 0;
+    
+    // Create flow-sensitive analyzer
+    FlowSensitiveAnalyzer* flow_analyzer = flow_analyzer_new(checker);
+    if (!flow_analyzer) {
+        return 0;
+    }
+    
+    // Create reference manager
+    ReferenceManager* ref_manager = reference_manager_new(flow_analyzer);
+    if (!ref_manager) {
+        flow_analyzer_free(flow_analyzer);
+        return 0;
+    }
+    
+    // Create escape analyzer
+    EscapeAnalyzer* escape_analyzer = escape_analyzer_new(ref_manager);
+    if (!escape_analyzer) {
+        reference_manager_free(ref_manager);
+        flow_analyzer_free(flow_analyzer);
+        return 0;
+    }
+    
+    int result = 1;
+    
+    // Perform interprocedural escape analysis
+    if (!escape_analyzer_analyze_program(escape_analyzer, program)) {
+        type_error(checker, (Position){0}, "Escape analysis failed");
+        result = 0;
+    }
+    
+    // Integrate results with type checker
+    if (result && !integrate_flow_analysis(checker, program)) {
+        type_error(checker, (Position){0}, "Flow analysis integration failed");
+        result = 0;
+    }
+    
+    // Apply ownership decisions to types
+    if (result) {
+        apply_ownership_decisions(checker, flow_analyzer);
+    }
+    
+    // Integrate arena allocation based on escape analysis
+    if (result) {
+        printf("🏟️  Integrating arena allocation system...\n");
+        if (integrate_arena_allocation(checker, escape_analyzer, program)) {
+            printf("✅ Arena allocation integration complete\n");
+        } else {
+            printf("⚠️  Arena allocation integration completed with warnings\n");
+        }
+    }
+    
+    // Integrate channel runtime and goroutine analysis
+    if (result) {
+        printf("📡 Integrating channel runtime system...\n");
+        if (integrate_channel_runtime(checker, program)) {
+            printf("✅ Channel runtime integration complete\n");
+        } else {
+            printf("⚠️  Channel runtime integration completed with warnings\n");
+        }
+    }
+    
+    // Print statistics if successful
+    if (result) {
+        printf("=== Ownership Analysis Results ===\n");
+        escape_analyzer_print_statistics(escape_analyzer);
+        flow_analyzer_print_statistics(flow_analyzer);
+        reference_manager_print_statistics(ref_manager);
+    }
+    
+    // Cleanup
+    escape_analyzer_free(escape_analyzer);
+    reference_manager_free(ref_manager);
+    flow_analyzer_free(flow_analyzer);
+    
+    return result;
+}
+
+// Determine transfer operation based on ownership analysis
+TransferKind determine_transfer_operation(TypeChecker* checker, ASTNode* expr, Variable* var) {
+    if (!checker || !expr || !var) return TRANSFER_KIND_COPY;
+    
+    // Check if variable escapes
+    if (var->ownership == OWNERSHIP_OWNED) {
+        // Check if this is the last use
+        // TODO: Implement more sophisticated last-use analysis
+        
+        // For now, use simple heuristics
+        if (expr->type == AST_RETURN_STMT) {
+            return TRANSFER_KIND_MOVE;  // Move when returning
+        }
+        
+        if (expr->type == AST_CALL_EXPR) {
+            return TRANSFER_KIND_MOVE;  // Move when passing to function
+        }
+        
+        return TRANSFER_KIND_BORROW_IMMUTABLE;  // Default to borrow
+    }
+    
+    return TRANSFER_KIND_COPY;
+}
+
+// Check memory safety with ownership rules
+int check_memory_safety(TypeChecker* checker, ASTNode* expr, Position pos) {
     if (!checker || !expr) return 0;
     
     switch (expr->type) {
         case AST_IDENTIFIER: {
             IdentifierNode* ident = (IdentifierNode*)expr;
-            return check_variable_lifetime(checker, ident->name, pos);
+            Variable* var = type_checker_lookup_variable(checker, ident->name);
+            
+            if (!var) {
+                type_error(checker, pos, "Undefined variable '%s'", ident->name);
+                return 0;
+            }
+            
+            // Check if variable was moved
+            if (var->is_moved) {
+                type_error(checker, pos,
+                          "Use of moved variable '%s' (ownership was transferred)",
+                          ident->name);
+                return 0;
+            }
+            
+            // Check if variable is initialized
+            if (!var->is_initialized) {
+                type_error(checker, pos, "Use of uninitialized variable '%s'", ident->name);
+                return 0;
+            }
+            
+            return 1;
         }
         
         case AST_BINARY_EXPR: {
@@ -332,24 +458,91 @@ int check_borrow_rules(TypeChecker* checker, ASTNode* expr, Position pos) {
             
             // Special handling for assignment
             if (binary->operator == TOKEN_ASSIGN) {
-                return check_ownership_assignment(checker, binary->left, binary->right, pos);
+                if (!check_memory_safety(checker, binary->right, pos)) {
+                    return 0;
+                }
+                
+                // Check if we're moving the value
+                if (binary->right->type == AST_IDENTIFIER) {
+                    IdentifierNode* ident = (IdentifierNode*)binary->right;
+                    Variable* var = type_checker_lookup_variable(checker, ident->name);
+                    
+                    if (var && var->ownership == OWNERSHIP_OWNED) {
+                        TransferKind transfer = determine_transfer_operation(checker, expr, var);
+                        
+                        if (transfer == TRANSFER_KIND_MOVE) {
+                            // Mark variable as moved
+                            mark_variable_moved(checker, ident->name, pos);
+                        }
+                    }
+                }
+                
+                return 1;
             }
             
-            return check_borrow_rules(checker, binary->left, pos) &&
-                   check_borrow_rules(checker, binary->right, pos);
-        }
-        
-        case AST_UNARY_EXPR: {
-            UnaryExprNode* unary = (UnaryExprNode*)expr;
-            return check_borrow_rules(checker, unary->operand, pos);
+            return check_memory_safety(checker, binary->left, pos) &&
+                   check_memory_safety(checker, binary->right, pos);
         }
         
         case AST_CALL_EXPR: {
             CallExprNode* call = (CallExprNode*)expr;
+            
+            // Check arguments
+            ASTNode* arg = call->args;
+            while (arg) {
+                if (!check_memory_safety(checker, arg, pos)) {
+                    return 0;
+                }
+                arg = arg->next;
+            }
+            
             return check_function_call_ownership(checker, call, pos);
         }
         
+        case AST_INDEX_EXPR: {
+            IndexExprNode* index = (IndexExprNode*)expr;
+            
+            if (!check_memory_safety(checker, index->expr, pos) ||
+                !check_memory_safety(checker, index->index, pos)) {
+                return 0;
+            }
+            
+            // Check for null pointer dereference
+            Type* expr_type = type_check_expression(checker, index->expr);
+            if (expr_type && type_is_nullable(expr_type)) {
+                type_error(checker, pos,
+                          "Cannot index nullable type without null check");
+                return 0;
+            }
+            
+            return 1;
+        }
+        
+        case AST_SELECTOR_EXPR: {
+            SelectorExprNode* selector = (SelectorExprNode*)expr;
+            
+            if (!check_memory_safety(checker, selector->expr, pos)) {
+                return 0;
+            }
+            
+            // Check for null pointer dereference
+            Type* expr_type = type_check_expression(checker, selector->expr);
+            if (expr_type && type_is_nullable(expr_type)) {
+                type_error(checker, pos,
+                          "Cannot access field of nullable type without null check");
+                return 0;
+            }
+            
+            return 1;
+        }
+        
         default:
-            return 1;  // Other expressions are assumed safe for now
+            return 1;  // Other expressions assumed safe
     }
+}
+
+// Simplified borrow checker - checks basic ownership violations
+int check_borrow_rules(TypeChecker* checker, ASTNode* expr, Position pos) {
+    // Delegate to the enhanced memory safety checker
+    return check_memory_safety(checker, expr, pos);
 }

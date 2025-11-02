@@ -103,7 +103,11 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             LLVMValueRef str_const = LLVMBuildGlobalStringPtr(codegen->builder, literal->value, "str");
             
             // Create string struct { ptr, len }
-            LLVMTypeRef string_type = codegen_get_basic_type(codegen, TYPE_STRING);
+            LLVMTypeRef string_type = LLVMStructTypeInContext(codegen->context, 
+                (LLVMTypeRef[]){
+                    LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                    LLVMInt64TypeInContext(codegen->context)
+                }, 2, 0);
             LLVMValueRef string_val = LLVMGetUndef(string_type);
             
             // Set pointer
@@ -486,6 +490,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         IdentifierNode* func_name = (IdentifierNode*)call->function;
         if (strcmp(func_name->name, "make_chan") == 0) {
             return codegen_generate_make_chan_call(codegen, checker, expr);
+        }
+        if (strcmp(func_name->name, "goo_printf") == 0) {
+            return codegen_generate_printf_call(codegen, checker, expr);
         }
     }
     
@@ -1232,6 +1239,76 @@ ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* che
     
     value_info_free(addr_val);
     
+    return result_info;
+#endif
+}
+
+// Special handling for goo_printf calls to convert Goo strings to C strings
+ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    
+    CallExprNode* call = (CallExprNode*)expr;
+    
+    // Get the goo_printf function
+    LLVMValueRef printf_func = LLVMGetNamedFunction(codegen->module, "goo_printf");
+    if (!printf_func) {
+        codegen_error(codegen, expr->pos, "goo_printf function not found");
+        return NULL;
+    }
+    
+    // Count arguments
+    size_t arg_count = 0;
+    ASTNode* arg = call->args;
+    while (arg) {
+        arg_count++;
+        arg = arg->next;
+    }
+    
+    if (arg_count == 0) {
+        codegen_error(codegen, expr->pos, "goo_printf requires at least one argument");
+        return NULL;
+    }
+    
+    // Generate arguments and convert string structs to C strings
+    LLVMValueRef* args = malloc(sizeof(LLVMValueRef) * arg_count);
+    if (!args) return NULL;
+    
+    arg = call->args;
+    for (size_t i = 0; i < arg_count; i++) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, arg);
+        if (!arg_val) {
+            for (size_t j = 0; j < i; j++) {
+                // Cleanup previous args if needed
+            }
+            free(args);
+            return NULL;
+        }
+        
+        // Convert Goo string structs to C char* for printf
+        if (arg_val->goo_type && arg_val->goo_type->kind == TYPE_STRING) {
+            // Extract the char* from the string struct { ptr, len }
+            args[i] = LLVMBuildExtractValue(codegen->builder, arg_val->llvm_value, 0, "string_ptr");
+        } else {
+            args[i] = arg_val->llvm_value;
+        }
+        
+        value_info_free(arg_val);
+        arg = arg->next;
+    }
+    
+    // Call goo_printf
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder, 
+                                        LLVMGlobalGetValueType(printf_func),
+                                        printf_func, args, arg_count, "");
+    
+    free(args);
+    
+    // Return void value info
+    ValueInfo* result_info = value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_VOID));
     return result_info;
 #endif
 }

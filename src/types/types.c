@@ -289,7 +289,18 @@ Type* type_reference(Type* referenced_type, int is_mutable) {
     return type;
 }
 
-// Goo extension types
+Type* type_new_placeholder() {
+    Type* type = type_new(TYPE_PLACEHOLDER);
+    // Initialize any placeholder-specific fields if necessary
+    return type;
+}
+
+Type* type_new_variable() {
+    Type* type = type_new(TYPE_VAR);
+    // Initialize any type variable-specific fields if necessary
+    return type;
+}
+
 
 Type* type_error_union(Type* value_type, Type* error_type) {
     if (!value_type) return NULL;
@@ -638,17 +649,40 @@ int type_compatible(const Type* from, const Type* to) {
         // Allow numeric conversions (with potential warnings)
         return 1;
     }
-    
+
     // Handle nullable types
     if (to->kind == TYPE_NULLABLE) {
+        // Special case: nil literal can be assigned to any nullable type
+        if (from->kind == TYPE_UNKNOWN) {
+            if (from->name && strcmp(from->name, "nil") == 0) {
+                return 1;
+            }
+        }
+
+        // T is compatible with ?T (auto-wrap non-null value)
         return type_compatible(from, to->data.nullable.base_type);
     }
-    
+
+    // Handle error union types
+    if (to->kind == TYPE_ERROR_UNION) {
+        // Special case: error() result is compatible with any error union
+        if (from->kind == TYPE_UNKNOWN && from->name && strcmp(from->name, "error") == 0) {
+            return 1;
+        }
+
+        // T is compatible with !T (auto-wrap success value)
+        if (type_compatible(from, to->data.error_union.value_type)) {
+            return 1;
+        }
+
+        return 0;
+    }
+
     // Handle ownership qualifiers
     if (from->kind == TYPE_QUALIFIED && to->kind == TYPE_QUALIFIED) {
         return type_compatible(from->data.qualified.base_type, to->data.qualified.base_type);
     }
-    
+
     return 0;
 }
 

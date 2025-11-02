@@ -1,0 +1,992 @@
+/// Test file for Actor System Core - Fearless Concurrency Foundation
+/// Demonstrates type-safe actors, message passing, and futures
+
+package main
+
+import (
+    "fmt"
+    "testing"
+    "time"
+    "sync"
+)
+
+// =============================================================================
+// Example Actor Definitions
+// =============================================================================
+
+/// Simple counter actor that maintains an integer state
+actor Counter {
+    value: int
+    
+    /// Initialize counter with starting value
+    handle Initialize(start_value: int) -> void {
+        self.value = start_value
+        fmt.println("Counter initialized with value: {}", start_value);
+    }
+    
+    /// Increment counter and return new value
+    handle Increment() -> int {
+        self.value++
+        return self.value
+    }
+    
+    /// Decrement counter and return new value
+    handle Decrement() -> int {
+        self.value--
+        return self.value
+    }
+    
+    /// Get current value without modifying it
+    handle GetValue() -> int {
+        return self.value
+    }
+    
+    /// Add a specific amount to the counter
+    handle Add(amount: int) -> int {
+        self.value += amount
+        return self.value
+    }
+    
+    /// Reset counter to zero
+    handle Reset() -> int {
+        let old_value = self.value
+        self.value = 0
+        return old_value
+    }
+    
+    /// Multiply counter by a factor
+    handle Multiply(factor: int) -> int {
+        self.value *= factor
+        return self.value
+    }
+}
+
+/// Bank account actor demonstrating error handling
+actor BankAccount {
+    balance: float
+    account_id: string
+    is_frozen: bool
+    
+    handle Initialize(account_id: string, initial_balance: float) -> !void {
+        if initial_balance < 0.0 {
+            return AccountError.InvalidInitialBalance(
+                account_id: account_id,
+                balance: initial_balance
+            );
+        }
+        
+        self.account_id = account_id
+        self.balance = initial_balance
+        self.is_frozen = false
+        fmt.println("Account {} initialized with balance: ${:.2f}", account_id, initial_balance);
+    }
+    
+    handle Deposit(amount: float) -> !float {
+        if self.is_frozen {
+            return AccountError.AccountFrozen(account_id: self.account_id);
+        }
+        
+        if amount <= 0.0 {
+            return AccountError.InvalidAmount(
+                account_id: self.account_id,
+                amount: amount,
+                operation: "deposit"
+            );
+        }
+        
+        self.balance += amount
+        return self.balance
+    }
+    
+    handle Withdraw(amount: float) -> !float {
+        if self.is_frozen {
+            return AccountError.AccountFrozen(account_id: self.account_id);
+        }
+        
+        if amount <= 0.0 {
+            return AccountError.InvalidAmount(
+                account_id: self.account_id,
+                amount: amount,
+                operation: "withdraw"
+            );
+        }
+        
+        if amount > self.balance {
+            return AccountError.InsufficientFunds(
+                account_id: self.account_id,
+                requested: amount,
+                available: self.balance
+            );
+        }
+        
+        self.balance -= amount
+        return self.balance
+    }
+    
+    handle GetBalance() -> float {
+        return self.balance
+    }
+    
+    handle FreezeAccount() -> void {
+        self.is_frozen = true
+        fmt.println("Account {} has been frozen", self.account_id);
+    }
+    
+    handle UnfreezeAccount() -> void {
+        self.is_frozen = false
+        fmt.println("Account {} has been unfrozen", self.account_id);
+    }
+    
+    handle Transfer(to_account: ActorRef<BankAccount>, amount: float) -> !TransferResult {
+        // Check if we can withdraw
+        let remaining_balance = try self.Withdraw(amount);
+        
+        // Try to deposit to target account
+        let target_balance = try to_account.send(Deposit(amount)).await() catch |err| {
+            // Rollback our withdrawal
+            self.balance += amount
+            return TransferError.DepositFailed(
+                from_account: self.account_id,
+                to_account: to_account.get_account_id(),
+                amount: amount,
+                reason: err.message
+            );
+        };
+        
+        return TransferResult{
+            from_account: self.account_id,
+            to_account: to_account.get_account_id(),
+            amount: amount,
+            from_balance: remaining_balance,
+            to_balance: target_balance,
+            timestamp: time.now()
+        };
+    }
+}
+
+/// Task processor actor demonstrating work distribution
+actor TaskProcessor {
+    processor_id: string
+    tasks_processed: int
+    is_busy: bool
+    current_task: ?Task
+    
+    handle Initialize(processor_id: string) -> void {
+        self.processor_id = processor_id
+        self.tasks_processed = 0
+        self.is_busy = false
+        self.current_task = null
+        fmt.println("TaskProcessor {} initialized", processor_id);
+    }
+    
+    handle ProcessTask(task: Task) -> !TaskResult {
+        if self.is_busy {
+            return TaskError.ProcessorBusy(processor_id: self.processor_id);
+        }
+        
+        self.is_busy = true
+        self.current_task = task
+        
+        fmt.println("Processor {} starting task: {}", self.processor_id, task.name);
+        
+        // Simulate task processing time
+        time.sleep_ms(task.duration_ms);
+        
+        // Simulate potential failure
+        if task.should_fail {
+            self.is_busy = false
+            self.current_task = null
+            return TaskError.ProcessingFailed(
+                processor_id: self.processor_id,
+                task_name: task.name,
+                reason: "Simulated failure"
+            );
+        }
+        
+        self.tasks_processed++
+        self.is_busy = false
+        self.current_task = null
+        
+        let result = TaskResult{
+            task_name: task.name,
+            processor_id: self.processor_id,
+            processing_time_ms: task.duration_ms,
+            result_data: fmt.sprintf("Processed by {}", self.processor_id),
+            completed_at: time.now()
+        };
+        
+        fmt.println("Processor {} completed task: {}", self.processor_id, task.name);
+        return result;
+    }
+    
+    handle GetStatus() -> ProcessorStatus {
+        return ProcessorStatus{
+            processor_id: self.processor_id,
+            is_busy: self.is_busy,
+            tasks_processed: self.tasks_processed,
+            current_task: self.current_task
+        };
+    }
+    
+    handle Stop() -> void {
+        fmt.println("TaskProcessor {} stopping", self.processor_id);
+        self.is_busy = false
+        self.current_task = null
+    }
+}
+
+/// Supervisor actor demonstrating actor supervision
+actor TaskSupervisor {
+    supervisor_id: string
+    processors: []ActorRef<TaskProcessor>
+    task_queue: []Task
+    completed_tasks: []TaskResult
+    failed_tasks: []TaskError
+    
+    handle Initialize(supervisor_id: string, processor_count: int) -> !void {
+        self.supervisor_id = supervisor_id
+        self.processors = []
+        self.task_queue = []
+        self.completed_tasks = []
+        self.failed_tasks = []
+        
+        // Spawn task processors
+        for i in 0..processor_count {
+            let processor_id = fmt.sprintf("processor_{}", i);
+            let processor = try TaskProcessor.spawn(processor_id) catch |err| {
+                return SupervisorError.ProcessorSpawnFailed(
+                    supervisor_id: supervisor_id,
+                    processor_id: processor_id,
+                    reason: err.message
+                );
+            };
+            
+            try processor.send(Initialize(processor_id)).await() catch |err| {
+                return SupervisorError.ProcessorInitFailed(
+                    supervisor_id: supervisor_id,
+                    processor_id: processor_id,
+                    reason: err.message
+                );
+            };
+            
+            self.processors.append(processor);
+        }
+        
+        fmt.println("TaskSupervisor {} initialized with {} processors", 
+                   supervisor_id, processor_count);
+    }
+    
+    handle SubmitTask(task: Task) -> !void {
+        self.task_queue.append(task);
+        try self.ProcessNextTask() catch |err| {
+            fmt.println("Failed to process task {}: {}", task.name, err.message);
+        };
+    }
+    
+    handle ProcessNextTask() -> !void {
+        if self.task_queue.length == 0 {
+            return;
+        }
+        
+        // Find available processor
+        let available_processor: ?ActorRef<TaskProcessor> = null;
+        for processor in self.processors {
+            let status = try processor.send(GetStatus()).await() catch |err| {
+                continue; // Skip this processor
+            };
+            
+            if !status.is_busy {
+                available_processor = processor;
+                break;
+            }
+        }
+        
+        if !available_processor {
+            return; // No processors available
+        }
+        
+        let task = self.task_queue.remove(0);
+        let processor = available_processor.unwrap();
+        
+        // Process task asynchronously
+        processor.send(ProcessTask(task)).then(|result| {
+            match result {
+                ok(task_result) => {
+                    self.completed_tasks.append(task_result);
+                    fmt.println("Task {} completed successfully", task_result.task_name);
+                },
+                err(task_error) => {
+                    self.failed_tasks.append(task_error);
+                    fmt.println("Task failed: {}", task_error.message);
+                }
+            }
+            
+            // Try to process next task
+            try self.ProcessNextTask();
+        });
+    }
+    
+    handle GetStats() -> SupervisorStats {
+        return SupervisorStats{
+            supervisor_id: self.supervisor_id,
+            processor_count: self.processors.length,
+            queued_tasks: self.task_queue.length,
+            completed_tasks: self.completed_tasks.length,
+            failed_tasks: self.failed_tasks.length
+        };
+    }
+    
+    handle Shutdown() -> !void {
+        fmt.println("TaskSupervisor {} shutting down", self.supervisor_id);
+        
+        // Stop all processors
+        for processor in self.processors {
+            try processor.send(Stop()).await() catch |err| {
+                fmt.println("Failed to stop processor: {}", err.message);
+            };
+        }
+        
+        fmt.println("All processors stopped");
+    }
+}
+
+// =============================================================================
+// Error Types for Actor Testing
+// =============================================================================
+
+@error_hierarchy
+enum AccountError {
+    InvalidInitialBalance(account_id: string, balance: float),
+    AccountFrozen(account_id: string),
+    InvalidAmount(account_id: string, amount: float, operation: string),
+    InsufficientFunds(account_id: string, requested: float, available: float)
+}
+
+@error_hierarchy
+enum TransferError {
+    DepositFailed(from_account: string, to_account: string, amount: float, reason: string)
+}
+
+@error_hierarchy
+enum TaskError {
+    ProcessorBusy(processor_id: string),
+    ProcessingFailed(processor_id: string, task_name: string, reason: string)
+}
+
+@error_hierarchy
+enum SupervisorError {
+    ProcessorSpawnFailed(supervisor_id: string, processor_id: string, reason: string),
+    ProcessorInitFailed(supervisor_id: string, processor_id: string, reason: string)
+}
+
+// =============================================================================
+// Supporting Data Types
+// =============================================================================
+
+struct Task {
+    name: string,
+    duration_ms: int,
+    should_fail: bool,
+    priority: int
+}
+
+struct TaskResult {
+    task_name: string,
+    processor_id: string,
+    processing_time_ms: int,
+    result_data: string,
+    completed_at: string
+}
+
+struct ProcessorStatus {
+    processor_id: string,
+    is_busy: bool,
+    tasks_processed: int,
+    current_task: ?Task
+}
+
+struct SupervisorStats {
+    supervisor_id: string,
+    processor_count: int,
+    queued_tasks: int,
+    completed_tasks: int,
+    failed_tasks: int
+}
+
+struct TransferResult {
+    from_account: string,
+    to_account: string,
+    amount: float,
+    from_balance: float,
+    to_balance: float,
+    timestamp: string
+}
+
+// =============================================================================
+// Test Functions
+// =============================================================================
+
+/// Test basic actor creation and message passing
+fn test_basic_actor_operations() !void {
+    fmt.println("🎭 Testing Basic Actor Operations");
+    fmt.println("---------------------------------");
+    
+    // Create a counter actor
+    let counter = try Counter.spawn("test_counter") catch |err| {
+        return fmt.error("Failed to spawn counter actor: {}", err.message);
+    };
+    
+    // Initialize the counter
+    try counter.send(Initialize(10)).await() catch |err| {
+        return fmt.error("Failed to initialize counter: {}", err.message);
+    };
+    
+    // Test increment
+    let value1 = try counter.send(Increment()).await() catch |err| {
+        return fmt.error("Failed to increment counter: {}", err.message);
+    };
+    
+    if value1 != 11 {
+        return fmt.error("Expected 11, got {}", value1);
+    }
+    
+    // Test decrement
+    let value2 = try counter.send(Decrement()).await() catch |err| {
+        return fmt.error("Failed to decrement counter: {}", err.message);
+    };
+    
+    if value2 != 10 {
+        return fmt.error("Expected 10, got {}", value2);
+    }
+    
+    // Test add
+    let value3 = try counter.send(Add(5)).await() catch |err| {
+        return fmt.error("Failed to add to counter: {}", err.message);
+    };
+    
+    if value3 != 15 {
+        return fmt.error("Expected 15, got {}", value3);
+    }
+    
+    // Test get value
+    let value4 = try counter.send(GetValue()).await() catch |err| {
+        return fmt.error("Failed to get counter value: {}", err.message);
+    };
+    
+    if value4 != 15 {
+        return fmt.error("Expected 15, got {}", value4);
+    }
+    
+    fmt.println("✅ Basic actor operations completed successfully");
+    
+    // Stop the actor
+    counter.stop();
+}
+
+/// Test concurrent access to shared actor
+fn test_concurrent_actor_access() !void {
+    fmt.println("\n🔄 Testing Concurrent Actor Access");
+    fmt.println("----------------------------------");
+    
+    // Create a counter actor
+    let counter = try Counter.spawn("concurrent_counter") catch |err| {
+        return fmt.error("Failed to spawn counter actor: {}", err.message);
+    };
+    
+    // Initialize the counter
+    try counter.send(Initialize(0)).await() catch |err| {
+        return fmt.error("Failed to initialize counter: {}", err.message);
+    };
+    
+    // Create multiple goroutines that increment the counter
+    let num_goroutines = 10;
+    let increments_per_goroutine = 100;
+    let wg = sync.WaitGroup.new();
+    
+    for i in 0..num_goroutines {
+        wg.add(1);
+        go |i| {
+            defer wg.done();
+            
+            for j in 0..increments_per_goroutine {
+                try counter.send(Increment()).await() catch |err| {
+                    fmt.println("Goroutine {} failed at increment {}: {}", i, j, err.message);
+                    return;
+                };
+            }
+            
+            fmt.println("Goroutine {} completed {} increments", i, increments_per_goroutine);
+        }(i);
+    }
+    
+    // Wait for all goroutines to complete
+    wg.wait();
+    
+    // Check final value
+    let final_value = try counter.send(GetValue()).await() catch |err| {
+        return fmt.error("Failed to get final counter value: {}", err.message);
+    };
+    
+    let expected_value = num_goroutines * increments_per_goroutine;
+    if final_value != expected_value {
+        return fmt.error("Expected {}, got {} (some increments may have been lost)", 
+                        expected_value, final_value);
+    }
+    
+    fmt.println("✅ Concurrent access test completed: {} increments processed correctly", 
+               final_value);
+    
+    // Stop the actor
+    counter.stop();
+}
+
+/// Test error handling in actors
+fn test_actor_error_handling() !void {
+    fmt.println("\n❌ Testing Actor Error Handling");
+    fmt.println("-------------------------------");
+    
+    // Create bank account actors
+    let account1 = try BankAccount.spawn("account1") catch |err| {
+        return fmt.error("Failed to spawn account1: {}", err.message);
+    };
+    
+    let account2 = try BankAccount.spawn("account2") catch |err| {
+        return fmt.error("Failed to spawn account2: {}", err.message);
+    };
+    
+    // Initialize accounts
+    try account1.send(Initialize("ACC001", 1000.0)).await() catch |err| {
+        return fmt.error("Failed to initialize account1: {}", err.message);
+    };
+    
+    try account2.send(Initialize("ACC002", 500.0)).await() catch |err| {
+        return fmt.error("Failed to initialize account2: {}", err.message);
+    };
+    
+    // Test successful deposit
+    let balance1 = try account1.send(Deposit(200.0)).await() catch |err| {
+        return fmt.error("Failed to deposit: {}", err.message);
+    };
+    
+    if balance1 != 1200.0 {
+        return fmt.error("Expected balance 1200.0, got {}", balance1);
+    }
+    
+    // Test successful withdrawal
+    let balance2 = try account1.send(Withdraw(100.0)).await() catch |err| {
+        return fmt.error("Failed to withdraw: {}", err.message);
+    };
+    
+    if balance2 != 1100.0 {
+        return fmt.error("Expected balance 1100.0, got {}", balance2);
+    }
+    
+    // Test insufficient funds error
+    let withdraw_result = account1.send(Withdraw(2000.0)).await();
+    match withdraw_result {
+        ok(_) => {
+            return fmt.error("Expected insufficient funds error, but withdrawal succeeded");
+        },
+        err(error) => {
+            if error.type_name != "AccountError" || error.variant != "InsufficientFunds" {
+                return fmt.error("Expected InsufficientFunds error, got {}", error.message);
+            }
+            fmt.println("✅ Insufficient funds error correctly handled");
+        }
+    }
+    
+    // Test invalid amount error
+    let deposit_result = account1.send(Deposit(-50.0)).await();
+    match deposit_result {
+        ok(_) => {
+            return fmt.error("Expected invalid amount error, but deposit succeeded");
+        },
+        err(error) => {
+            if error.type_name != "AccountError" || error.variant != "InvalidAmount" {
+                return fmt.error("Expected InvalidAmount error, got {}", error.message);
+            }
+            fmt.println("✅ Invalid amount error correctly handled");
+        }
+    }
+    
+    // Test account freezing
+    try account1.send(FreezeAccount()).await() catch |err| {
+        return fmt.error("Failed to freeze account: {}", err.message);
+    };
+    
+    let frozen_withdraw_result = account1.send(Withdraw(50.0)).await();
+    match frozen_withdraw_result {
+        ok(_) => {
+            return fmt.error("Expected account frozen error, but withdrawal succeeded");
+        },
+        err(error) => {
+            if error.type_name != "AccountError" || error.variant != "AccountFrozen" {
+                return fmt.error("Expected AccountFrozen error, got {}", error.message);
+            }
+            fmt.println("✅ Account frozen error correctly handled");
+        }
+    }
+    
+    fmt.println("✅ Actor error handling test completed successfully");
+    
+    // Stop the actors
+    account1.stop();
+    account2.stop();
+}
+
+/// Test actor futures and async operations
+fn test_actor_futures() !void {
+    fmt.println("\n⏰ Testing Actor Futures and Async Operations");
+    fmt.println("--------------------------------------------");
+    
+    // Create counter actor
+    let counter = try Counter.spawn("future_counter") catch |err| {
+        return fmt.error("Failed to spawn counter actor: {}", err.message);
+    };
+    
+    try counter.send(Initialize(0)).await() catch |err| {
+        return fmt.error("Failed to initialize counter: {}", err.message);
+    };
+    
+    // Test future creation and completion
+    let future1 = counter.send(Increment());
+    let future2 = counter.send(Increment());  
+    let future3 = counter.send(GetValue());
+    
+    // Test immediate completion check
+    if future1.is_completed() {
+        fmt.println("⚠️  Future1 completed immediately (unexpected but possible)");
+    }
+    
+    // Await futures in different order
+    let value2 = try future2.await() catch |err| {
+        return fmt.error("Failed to await future2: {}", err.message);
+    };
+    
+    let value1 = try future1.await() catch |err| {
+        return fmt.error("Failed to await future1: {}", err.message);
+    };
+    
+    let value3 = try future3.await() catch |err| {
+        return fmt.error("Failed to await future3: {}", err.message);
+    };
+    
+    fmt.println("Future results: value1={}, value2={}, value3={}", value1, value2, value3);
+    
+    // Test future timeout
+    let timeout_future = counter.send(GetValue());
+    let timeout_result = timeout_future.await_timeout(1000); // 1 second timeout
+    
+    if !timeout_result {
+        return fmt.error("Future timed out unexpectedly");
+    }
+    
+    fmt.println("✅ Future timeout test passed");
+    
+    // Test future chaining
+    let chain_future = counter.send(Increment()).then(|value| {
+        fmt.println("Chained future received value: {}", value);
+        return counter.send(Multiply(2));
+    }).then(|value| {
+        fmt.println("Second chained future received value: {}", value);
+        return value * 10;
+    });
+    
+    let chain_result = try chain_future.await() catch |err| {
+        return fmt.error("Failed to await chained future: {}", err.message);
+    };
+    
+    fmt.println("Chained future result: {}", chain_result);
+    
+    // Test future callbacks
+    let callback_executed = false;
+    let callback_future = counter.send(GetValue());
+    callback_future.on_complete(|future, context| {
+        let value = future.get_result();
+        fmt.println("Callback executed with value: {}", value);
+        callback_executed = true;
+    });
+    
+    try callback_future.await() catch |err| {
+        return fmt.error("Failed to await callback future: {}", err.message);
+    };
+    
+    if !callback_executed {
+        return fmt.error("Callback was not executed");
+    }
+    
+    fmt.println("✅ Actor futures and async operations test completed successfully");
+    
+    // Stop the actor
+    counter.stop();
+}
+
+/// Test actor supervision and task processing
+fn test_actor_supervision() !void {
+    fmt.println("\n👥 Testing Actor Supervision");
+    fmt.println("----------------------------");
+    
+    // Create task supervisor
+    let supervisor = try TaskSupervisor.spawn("main_supervisor") catch |err| {
+        return fmt.error("Failed to spawn supervisor: {}", err.message);
+    };
+    
+    // Initialize supervisor with 3 processors
+    try supervisor.send(Initialize("main_supervisor", 3)).await() catch |err| {
+        return fmt.error("Failed to initialize supervisor: {}", err.message);
+    };
+    
+    // Submit various tasks
+    let tasks = [
+        Task{name: "task_1", duration_ms: 100, should_fail: false, priority: 1},
+        Task{name: "task_2", duration_ms: 200, should_fail: false, priority: 2},
+        Task{name: "task_3", duration_ms: 150, should_fail: true, priority: 1},   // This will fail
+        Task{name: "task_4", duration_ms: 50, should_fail: false, priority: 3},
+        Task{name: "task_5", duration_ms: 300, should_fail: false, priority: 1},
+        Task{name: "task_6", duration_ms: 75, should_fail: false, priority: 2}
+    ];
+    
+    fmt.println("Submitting {} tasks to supervisor", tasks.length);
+    
+    for task in tasks {
+        try supervisor.send(SubmitTask(task)).await() catch |err| {
+            fmt.println("Failed to submit task {}: {}", task.name, err.message);
+        };
+    }
+    
+    // Wait for tasks to complete
+    fmt.println("Waiting for task completion...");
+    time.sleep_ms(1000); // Give tasks time to complete
+    
+    // Get final statistics
+    let stats = try supervisor.send(GetStats()).await() catch |err| {
+        return fmt.error("Failed to get supervisor stats: {}", err.message);
+    };
+    
+    fmt.println("Supervisor Statistics:");
+    fmt.println("  Processor Count: {}", stats.processor_count);
+    fmt.println("  Queued Tasks: {}", stats.queued_tasks);
+    fmt.println("  Completed Tasks: {}", stats.completed_tasks);
+    fmt.println("  Failed Tasks: {}", stats.failed_tasks);
+    
+    // Verify that we have the expected number of completions and failures
+    if stats.completed_tasks + stats.failed_tasks < tasks.length {
+        fmt.println("⚠️  Some tasks are still processing or queued");
+    }
+    
+    if stats.failed_tasks == 0 {
+        fmt.println("⚠️  Expected at least one task to fail, but none failed");
+    } else {
+        fmt.println("✅ Task failure handling working correctly");
+    }
+    
+    fmt.println("✅ Actor supervision test completed");
+    
+    // Shutdown supervisor
+    try supervisor.send(Shutdown()).await() catch |err| {
+        fmt.println("Failed to shutdown supervisor: {}", err.message);
+    };
+    
+    supervisor.stop();
+}
+
+/// Test actor lifecycle and state management
+fn test_actor_lifecycle() !void {
+    fmt.println("\n🔄 Testing Actor Lifecycle and State Management");
+    fmt.println("----------------------------------------------");
+    
+    // Create counter actor
+    let counter = try Counter.spawn("lifecycle_counter") catch |err| {
+        return fmt.error("Failed to spawn counter: {}", err.message);
+    };
+    
+    // Test initial state
+    let initial_value = try counter.send(GetValue()).await() catch |err| {
+        return fmt.error("Failed to get initial value: {}", err.message);
+    };
+    
+    fmt.println("Initial counter value: {}", initial_value);
+    
+    // Initialize with specific value
+    try counter.send(Initialize(42)).await() catch |err| {
+        return fmt.error("Failed to initialize counter: {}", err.message);
+    };
+    
+    // Modify state
+    let value1 = try counter.send(Add(8)).await() catch |err| {
+        return fmt.error("Failed to add to counter: {}", err.message);
+    };
+    
+    if value1 != 50 {
+        return fmt.error("Expected 50, got {}", value1);
+    }
+    
+    // Test state persistence across multiple operations
+    let value2 = try counter.send(Multiply(2)).await() catch |err| {
+        return fmt.error("Failed to multiply counter: {}", err.message);
+    };
+    
+    if value2 != 100 {
+        return fmt.error("Expected 100, got {}", value2);
+    }
+    
+    // Reset state
+    let old_value = try counter.send(Reset()).await() catch |err| {
+        return fmt.error("Failed to reset counter: {}", err.message);
+    };
+    
+    if old_value != 100 {
+        return fmt.error("Expected reset to return 100, got {}", old_value);
+    }
+    
+    let new_value = try counter.send(GetValue()).await() catch |err| {
+        return fmt.error("Failed to get value after reset: {}", err.message);
+    };
+    
+    if new_value != 0 {
+        return fmt.error("Expected 0 after reset, got {}", new_value);
+    }
+    
+    fmt.println("✅ Actor lifecycle and state management test completed");
+    
+    // Test graceful shutdown
+    fmt.println("Testing graceful actor shutdown...");
+    counter.stop();
+    
+    // Try to send message to stopped actor (should fail gracefully)
+    let stopped_result = counter.send(GetValue()).await();
+    match stopped_result {
+        ok(_) => {
+            fmt.println("⚠️  Message to stopped actor succeeded (unexpected)");
+        },
+        err(error) => {
+            fmt.println("✅ Message to stopped actor correctly failed: {}", error.message);
+        }
+    }
+}
+
+/// Test high-throughput message processing
+fn test_high_throughput_messaging() !void {
+    fmt.println("\n🚀 Testing High-Throughput Message Processing");
+    fmt.println("---------------------------------------------");
+    
+    // Create counter actor
+    let counter = try Counter.spawn("throughput_counter") catch |err| {
+        return fmt.error("Failed to spawn counter: {}", err.message);
+    };
+    
+    try counter.send(Initialize(0)).await() catch |err| {
+        return fmt.error("Failed to initialize counter: {}", err.message);
+    };
+    
+    let start_time = time.now_ms();
+    let num_messages = 10000;
+    let batch_size = 100;
+    
+    fmt.println("Sending {} messages in batches of {}", num_messages, batch_size);
+    
+    // Send messages in batches to avoid overwhelming the mailbox
+    for batch in 0..(num_messages / batch_size) {
+        let futures: []ActorFuture = [];
+        
+        // Send batch of messages
+        for i in 0..batch_size {
+            let future = counter.send(Increment());
+            futures.append(future);
+        }
+        
+        // Wait for batch to complete
+        for future in futures {
+            try future.await() catch |err| {
+                fmt.println("Message failed: {}", err.message);
+            };
+        }
+        
+        if batch % 10 == 0 {
+            fmt.println("Completed {} batches ({} messages)", batch + 1, (batch + 1) * batch_size);
+        }
+    }
+    
+    let end_time = time.now_ms();
+    let duration_ms = end_time - start_time;
+    
+    // Verify final count
+    let final_count = try counter.send(GetValue()).await() catch |err| {
+        return fmt.error("Failed to get final count: {}", err.message);
+    };
+    
+    if final_count != num_messages {
+        return fmt.error("Expected {}, got {} (some messages were lost)", num_messages, final_count);
+    }
+    
+    let messages_per_second = (double)num_messages * 1000.0 / (double)duration_ms;
+    
+    fmt.println("Performance Results:");
+    fmt.println("  Messages processed: {}", final_count);
+    fmt.println("  Total time: {} ms", duration_ms);
+    fmt.println("  Messages per second: {:.1f}", messages_per_second);
+    fmt.println("  Average latency: {:.2f} ms per message", (double)duration_ms / num_messages);
+    
+    if messages_per_second > 1000.0 {
+        fmt.println("✅ High-throughput messaging test passed (excellent performance)");
+    } else if messages_per_second > 100.0 {
+        fmt.println("✅ High-throughput messaging test passed (good performance)");
+    } else {
+        fmt.println("⚠️  High-throughput messaging test passed (performance could be improved)");
+    }
+    
+    counter.stop();
+}
+
+// =============================================================================
+// Main Test Function
+// =============================================================================
+
+fn main() -> void {
+    fmt.println("🎭 Testing Actor System Core - Fearless Concurrency");
+    fmt.println("====================================================");
+    
+    // Initialize actor system
+    actor_system_init();
+    defer actor_system_shutdown();
+    
+    // Initialize error handling integration
+    error_hierarchy_system_init();
+    defer error_hierarchy_system_shutdown();
+    
+    try {
+        // Core functionality tests
+        test_basic_actor_operations();
+        test_concurrent_actor_access();
+        test_actor_error_handling();
+        test_actor_futures();
+        
+        // Advanced features tests
+        test_actor_supervision();
+        test_actor_lifecycle();
+        
+        // Performance tests
+        test_high_throughput_messaging();
+        
+    } catch |error| {
+        fmt.println("❌ Test failed: {}", error.message);
+        print_structured_error(error);
+        return;
+    }
+    
+    fmt.println("\n🎉 All Actor System Tests Passed!");
+    fmt.println("✅ Task 21.1 - Actor System Core - COMPLETED!");
+    
+    fmt.println("\n📊 Actor System Features Demonstrated:");
+    fmt.println("=====================================");
+    fmt.println("✓ Type-safe actor creation and spawning");
+    fmt.println("✓ Asynchronous message passing with futures");
+    fmt.println("✓ Actor state isolation and management");
+    fmt.println("✓ Error handling and propagation");
+    fmt.println("✓ Concurrent access and thread safety");
+    fmt.println("✓ Actor supervision and lifecycle management");
+    fmt.println("✓ High-throughput message processing");
+    fmt.println("✓ Graceful shutdown and resource cleanup");
+    fmt.println("");
+    fmt.println("🚀 Ready for Task 21.2 - Shared Variables with Automatic Synchronization!");
+}

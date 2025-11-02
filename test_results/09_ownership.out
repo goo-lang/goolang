@@ -1,0 +1,47 @@
+🚀 Goo Programming Language Analyzer
+=====================================
+
+🚀 Analyzing Goo file: tests/e2e/09_ownership.goo
+==============================
+
+📝 Lexical Analysis:
+📊 Token Analysis:
+Token: PACKAGE         | Literal: package    | Pos: 4:2
+Token: IDENT           | Literal: main       | Pos: 4:10
+Token: IMPORT          | Literal: import     | Pos: 6:2
+Token: STRING          | Literal: fmt        | Pos: 6:9
+Token: FUNC            | Literal: func       | Pos: 8:2
+Token: IDENT           | Literal: take_ownership | Pos: 8:7
+Token: LPAREN          | Literal: (          | Pos: 8:21
+Token: DATA            | Literal: data       | Pos: 8:22
+Token: LBRACKET        | Literal: [          | Pos: 8:27
+Token: RBRACKET        | Literal: ]          | Pos: 8:28
+Token: IDENT           | Literal: int        | Pos: 8:29
+Token: RPAREN          | Literal: )          | Pos: 8:32
+Token: LBRACE          | Literal: {          | Pos: 8:34
+Token: IDENT           | Literal: fmt        | Pos: 9:6
+Token: DOT             | Literal: .          | Pos: 9:9
+... (showing first 15 tokens)
+
+📈 Statistics:
+  • Total tokens: 93
+  • Keywords: 5
+  • Identifiers: 24
+  • Operators: 3
+  • Literals: 10
+
+🚀 Goo Language Features Detected:
+  ❌ Error Unions (!T)
+  ❌ Nullable Types (?T)
+  ❌ Channels
+  ❌ Goroutines
+
+🎉 Analysis complete!
+📄 File: tests/e2e/09_ownership.goo (628 bytes)
+✅ Lexical analysis successful
+📍 Main function detected
+📦 Main package detected
+📥 Import statements detected
+
+🎊 Success! Your Goo program was analyzed successfully.
+💡 This demonstrates that the Goo lexer can parse your code!

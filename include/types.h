@@ -41,8 +41,10 @@ typedef enum {
     // Goo extensions
     TYPE_ERROR_UNION,
     TYPE_NULLABLE,
-    TYPE_QUALIFIED,  // Type with ownership/mutability qualifiers
-    TYPE_CONCEPT,    // Concept type
+    TYPE_QUALIFIED,
+    TYPE_CONCEPT,
+    TYPE_PLACEHOLDER,
+    TYPE_VAR,
     
     // Higher-kinded types
     TYPE_PARAM,      // Type parameter (e.g., T in Vec<T>)
@@ -245,17 +247,20 @@ struct TypeChecker {
     Scope* current_scope;
     int next_scope_id;
     Type** builtin_types;   // Array of builtin types
-    
+
     // Error reporting
     char* current_file;
     int error_count;
     int warning_count;
-    
+
+    // Current function context (for return type checking)
+    Type* current_function_return_type;
+
     // Type cache for performance
     Type** type_cache;
     size_t type_cache_size;
     size_t type_cache_capacity;
-    
+
     // Enhanced interface system components
     struct ConstraintInferenceEngine* constraint_engine;
     struct ConceptRegistry* concept_registry;
@@ -280,7 +285,10 @@ Type* type_function(Type** param_types, size_t param_count, Type* return_type);
 Type* type_pointer(Type* pointee_type);
 Type* type_reference(Type* referenced_type, int is_mutable);
 
-// Goo extension types
+Type* type_new_placeholder();
+
+// Function to create a new type variable
+Type* type_new_variable();
 Type* type_error_union(Type* value_type, Type* error_type);
 Type* type_nullable(Type* base_type);
 Type* type_qualified(Type* base_type, OwnershipKind ownership, MutabilityKind mutability);
@@ -380,9 +388,19 @@ void type_warning(TypeChecker* checker, Position pos, const char* format, ...);
 // Builtin types access
 void type_checker_init_builtins(TypeChecker* checker);
 void type_checker_add_builtin_functions(TypeChecker* checker);
+void type_checker_add_fmt_functions(TypeChecker* checker);
 Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind);
 
 // Channel helper functions
 const char* channel_pattern_string(ChannelPattern pattern);
+
+// Ownership and memory safety analysis
+int perform_ownership_analysis(TypeChecker* checker, ASTNode* program);
+int check_borrow_rules(TypeChecker* checker, ASTNode* expr, Position pos);
+int check_memory_safety(TypeChecker* checker, ASTNode* expr, Position pos);
+int check_ownership_assignment(TypeChecker* checker, ASTNode* lvalue, ASTNode* rvalue, Position pos);
+int check_function_call_ownership(TypeChecker* checker, CallExprNode* call, Position pos);
+int is_move_operation(TypeChecker* checker, ASTNode* expr);
+void mark_variable_moved(TypeChecker* checker, const char* name, Position pos);
 
 #endif // TYPES_H

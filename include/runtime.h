@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <setjmp.h>
 
 // Forward declarations
 typedef struct goo_error goo_error_t;
@@ -42,15 +43,130 @@ void goo_init(int argc, char** argv);
 void goo_exit(int code);
 
 // Memory management
+void goo_memory_init(void);
+void goo_memory_shutdown(void);
 void* goo_alloc(size_t size);
+void* goo_alloc_stack(size_t size);
+void* goo_alloc_heap(size_t size);
+void* goo_alloc_arena(size_t size);
 void* goo_realloc(void* ptr, size_t size);
 void goo_free(void* ptr);
+
+// Arena allocation system
+typedef struct Arena Arena;
+
+// Arena management
+Arena* goo_arena_new(size_t initial_size, const char* debug_name);
+void goo_arena_free(Arena* arena);
+void goo_arena_reset(Arena* arena);
+
+// Arena allocation
+void* goo_arena_alloc(Arena* arena, size_t size);
+void* goo_arena_alloc_zero(Arena* arena, size_t size);
+char* goo_arena_strdup(Arena* arena, const char* str);
+
+// Scope management
+Arena* goo_arena_push_scope(size_t initial_size, const char* debug_name);
+void goo_arena_pop_scope(void);
+Arena* goo_arena_current_scope(void);
+int goo_arena_scope_depth(void);
+
+// Convenience allocators (use current scope)
+void* goo_arena_alloc_current(size_t size);
+void* goo_arena_alloc_zero_current(size_t size);
+char* goo_arena_strdup_current(const char* str);
+
+// Array allocation helpers
+void* goo_arena_alloc_array(Arena* arena, size_t count, size_t element_size);
+void* goo_arena_alloc_array_zero(Arena* arena, size_t count, size_t element_size);
+
+// System functions
+void goo_arena_init_system(void);
+void goo_arena_cleanup_system(void);
+
+// Statistics and debugging
+void goo_arena_print_stats(const Arena* arena);
+void goo_arena_print_global_stats(void);
+void goo_arena_print_scope_stack(void);
+int goo_arena_validate(const Arena* arena);
+void goo_arena_dump_blocks(const Arena* arena);
+
+// Ownership tracking
+void goo_move_value(void* dest, void* src, size_t size);
+void* goo_borrow_value(void* value);
+void goo_drop_reference(void* reference);
+int goo_is_moved(void* value, size_t size);
+
+// Reference counting
+typedef struct goo_rc_object goo_rc_object_t;
+goo_rc_object_t* goo_rc_new(void* data, void (*destructor)(void*));
+goo_rc_object_t* goo_rc_clone(goo_rc_object_t* rc);
+void goo_rc_drop(goo_rc_object_t* rc);
+void* goo_rc_data(goo_rc_object_t* rc);
 
 // Error handling
 void goo_panic(const char* message) __attribute__((noreturn));
 goo_error_t* goo_new_error(const char* message);
 goo_error_t* goo_new_error_with_code(const char* message, int code);
 void goo_error_free(goo_error_t* error);
+
+// Advanced error handling - Error unions and nullable types
+typedef struct goo_error_union goo_error_union_t;
+typedef struct goo_nullable goo_nullable_t;
+
+// Error handling system initialization
+void goo_error_system_init(void);
+void goo_error_system_shutdown(void);
+
+// Error union operations
+goo_error_union_t* goo_error_union_new_value(void* value, size_t value_size, void (*destructor)(void*));
+goo_error_union_t* goo_error_union_new_error(goo_error_t* error);
+void goo_error_union_free(goo_error_union_t* error_union);
+int goo_error_union_is_value(const goo_error_union_t* error_union);
+int goo_error_union_is_error(const goo_error_union_t* error_union);
+void* goo_error_union_get_value(const goo_error_union_t* error_union);
+goo_error_t* goo_error_union_get_error(const goo_error_union_t* error_union);
+int goo_error_union_try_get_value(const goo_error_union_t* error_union, void** value_out);
+int goo_error_union_try_get_error(const goo_error_union_t* error_union, goo_error_t** error_out);
+
+// Nullable type operations
+goo_nullable_t* goo_nullable_new_null(void);
+goo_nullable_t* goo_nullable_new_value(void* value, size_t value_size, void (*destructor)(void*));
+void goo_nullable_free(goo_nullable_t* nullable);
+int goo_nullable_is_null(const goo_nullable_t* nullable);
+int goo_nullable_is_value(const goo_nullable_t* nullable);
+void* goo_nullable_get_value(const goo_nullable_t* nullable);
+int goo_nullable_try_get_value(const goo_nullable_t* nullable, void** value_out);
+
+// Error propagation and unwrapping
+goo_error_union_t* goo_error_propagate(goo_error_union_t* source);
+void* goo_error_unwrap(goo_error_union_t* error_union);
+void* goo_error_unwrap_or(goo_error_union_t* error_union, void* default_value);
+void* goo_nullable_unwrap(goo_nullable_t* nullable);
+void* goo_nullable_unwrap_or(goo_nullable_t* nullable, void* default_value);
+
+// Try/catch style error handling
+typedef struct goo_try_context goo_try_context_t;
+int goo_try_begin(goo_try_context_t* context);
+void goo_try_end(void);
+void goo_throw_error(goo_error_t* error);
+goo_error_t* goo_try_get_error(void);
+
+// Error type registry
+int goo_register_error_type(goo_error_t* error_template);
+goo_error_t* goo_create_registered_error(int error_code);
+
+// Compiler support functions
+int goo_error_check_and_propagate(goo_error_union_t* error_union, goo_error_union_t** result_out);
+int goo_nullable_check_and_return(goo_nullable_t* nullable, void** value_out);
+
+// Debug and utility functions
+void goo_error_print_statistics(void);
+const char* goo_error_union_tag_to_string(const goo_error_union_t* error_union);
+const char* goo_nullable_tag_to_string(const goo_nullable_t* nullable);
+
+// Integration with runtime system
+void goo_error_handling_integrate_runtime(void);
 
 // I/O functions
 void goo_print(const char* message);
@@ -361,5 +477,8 @@ void goo_waitgroup_done(goo_waitgroup_t* wg);
 void goo_waitgroup_wait(goo_waitgroup_t* wg);
 
 goo_runtime_stats_t goo_get_runtime_stats(void);
+
+// Standard library functions
+void goo_printf(const char* format, ...);
 
 #endif // RUNTIME_H

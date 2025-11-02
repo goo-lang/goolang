@@ -295,6 +295,14 @@ int repl_cmd_debug_snapshot(REPLContext* ctx, const char* args);
 int repl_cmd_debug_enable(REPLContext* ctx, const char* args);
 int repl_cmd_debug_disable(REPLContext* ctx, const char* args);
 
+// Enhanced time-travel debugging commands
+int repl_cmd_debug_compare(REPLContext* ctx, const char* args);
+int repl_cmd_debug_export(REPLContext* ctx, const char* args);
+int repl_cmd_debug_import(REPLContext* ctx, const char* args);
+int repl_cmd_debug_visual(REPLContext* ctx, const char* args);
+int repl_cmd_debug_live(REPLContext* ctx, const char* args);
+int repl_cmd_debug_replay(REPLContext* ctx, const char* args);
+
 // Initialize debug system in REPL
 bool repl_debug_init(REPLContext* ctx);
 void repl_debug_cleanup(REPLContext* ctx);

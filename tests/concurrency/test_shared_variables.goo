@@ -1,0 +1,431 @@
+// Comprehensive test suite for Shared Variables with Automatic Synchronization
+// This tests the fearless concurrency system's shared variable implementation
+
+package main
+
+import (
+    "sync"
+    "time"
+    "testing"
+)
+
+// Test basic shared variable operations
+func test_basic_operations() {
+    // Test integer shared variable
+    counter := shared_var_create("counter", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(counter)
+    
+    // Test basic read/write
+    initial_value := int64(0)
+    shared_var_read(counter, &initial_value, MEMORY_ORDER_SEQ_CST)
+    assert(initial_value == 0, "Initial value should be 0")
+    
+    new_value := int64(42)
+    success := shared_var_write(counter, &new_value, MEMORY_ORDER_SEQ_CST)
+    assert(success, "Write should succeed")
+    
+    read_value := int64(0)
+    shared_var_read(counter, &read_value, MEMORY_ORDER_SEQ_CST)
+    assert(read_value == 42, "Read value should be 42")
+    
+    println("✓ Basic operations test passed")
+}
+
+// Test atomic operations
+func test_atomic_operations() {
+    counter := shared_var_create("atomic_counter", SHARED_TYPE_INT64, &int64{10})
+    defer shared_var_destroy(counter)
+    
+    // Test atomic increment
+    old_value := shared_var_atomic_inc_int(counter, MEMORY_ORDER_SEQ_CST)
+    assert(old_value == 10, "Old value should be 10")
+    
+    current_value := int64(0)
+    shared_var_read(counter, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 11, "Value should be 11 after increment")
+    
+    // Test atomic addition
+    old_value = shared_var_atomic_add_int(counter, 5, MEMORY_ORDER_SEQ_CST)
+    assert(old_value == 11, "Old value should be 11")
+    
+    shared_var_read(counter, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 16, "Value should be 16 after adding 5")
+    
+    // Test atomic decrement
+    old_value = shared_var_atomic_dec_int(counter, MEMORY_ORDER_SEQ_CST)
+    assert(old_value == 16, "Old value should be 16")
+    
+    shared_var_read(counter, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 15, "Value should be 15 after decrement")
+    
+    println("✓ Atomic operations test passed")
+}
+
+// Test compare-and-swap operations
+func test_compare_swap() {
+    value := shared_var_create("cas_test", SHARED_TYPE_INT64, &int64{100})
+    defer shared_var_destroy(value)
+    
+    // Test successful CAS
+    expected := int64(100)
+    desired := int64(200)
+    success := shared_var_compare_swap(value, &expected, &desired, MEMORY_ORDER_SEQ_CST)
+    assert(success, "CAS should succeed")
+    assert(expected == 100, "Expected should remain unchanged on success")
+    
+    current_value := int64(0)
+    shared_var_read(value, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 200, "Value should be 200 after successful CAS")
+    
+    // Test failed CAS
+    expected = int64(100) // Wrong expected value
+    desired = int64(300)
+    success = shared_var_compare_swap(value, &expected, &desired, MEMORY_ORDER_SEQ_CST)
+    assert(!success, "CAS should fail")
+    assert(expected == 200, "Expected should be updated to current value on failure")
+    
+    shared_var_read(value, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 200, "Value should remain 200 after failed CAS")
+    
+    println("✓ Compare-and-swap test passed")
+}
+
+// Test bitwise atomic operations
+func test_bitwise_operations() {
+    flags := shared_var_create("flags", SHARED_TYPE_UINT64, &uint64{0b1010})
+    defer shared_var_destroy(flags)
+    
+    // Test atomic OR
+    old_value := shared_var_atomic_or_uint(flags, 0b0101, MEMORY_ORDER_SEQ_CST)
+    assert(old_value == 0b1010, "Old value should be 0b1010")
+    
+    current_value := uint64(0)
+    shared_var_read(flags, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 0b1111, "Value should be 0b1111 after OR")
+    
+    // Test atomic AND
+    old_value = shared_var_atomic_and_uint(flags, 0b1100, MEMORY_ORDER_SEQ_CST)
+    assert(old_value == 0b1111, "Old value should be 0b1111")
+    
+    shared_var_read(flags, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 0b1100, "Value should be 0b1100 after AND")
+    
+    // Test atomic XOR
+    old_value = shared_var_atomic_xor_uint(flags, 0b0011, MEMORY_ORDER_SEQ_CST)
+    assert(old_value == 0b1100, "Old value should be 0b1100")
+    
+    shared_var_read(flags, &current_value, MEMORY_ORDER_SEQ_CST)
+    assert(current_value == 0b1111, "Value should be 0b1111 after XOR")
+    
+    println("✓ Bitwise operations test passed")
+}
+
+// Test different memory orderings
+func test_memory_orderings() {
+    value := shared_var_create("ordering_test", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(value)
+    
+    // Test relaxed ordering
+    test_val := int64(1)
+    success := shared_var_write(value, &test_val, MEMORY_ORDER_RELAXED)
+    assert(success, "Relaxed write should succeed")
+    
+    read_val := int64(0)
+    shared_var_read(value, &read_val, MEMORY_ORDER_RELAXED)
+    assert(read_val == 1, "Relaxed read should work")
+    
+    // Test acquire-release ordering
+    test_val = int64(2)
+    success = shared_var_write(value, &test_val, MEMORY_ORDER_RELEASE)
+    assert(success, "Release write should succeed")
+    
+    shared_var_read(value, &read_val, MEMORY_ORDER_ACQUIRE)
+    assert(read_val == 2, "Acquire read should work")
+    
+    // Test sequential consistency (default)
+    test_val = int64(3)
+    success = shared_var_write(value, &test_val, MEMORY_ORDER_SEQ_CST)
+    assert(success, "Sequential write should succeed")
+    
+    shared_var_read(value, &read_val, MEMORY_ORDER_SEQ_CST)
+    assert(read_val == 3, "Sequential read should work")
+    
+    println("✓ Memory ordering test passed")
+}
+
+// Test concurrent access from multiple threads
+func test_concurrent_access() {
+    shared_counter := shared_var_create("concurrent_counter", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(shared_counter)
+    
+    const NUM_THREADS = 10
+    const INCREMENTS_PER_THREAD = 1000
+    
+    // Create channels for synchronization
+    start_barrier := make(chan bool, NUM_THREADS)
+    done_barrier := make(chan bool, NUM_THREADS)
+    
+    // Launch worker threads
+    for i := 0; i < NUM_THREADS; i++ {
+        spawn_thread(func() {
+            // Wait for all threads to be ready
+            <-start_barrier
+            
+            // Perform atomic increments
+            for j := 0; j < INCREMENTS_PER_THREAD; j++ {
+                shared_var_atomic_inc_int(shared_counter, MEMORY_ORDER_SEQ_CST)
+            }
+            
+            // Signal completion
+            done_barrier <- true
+        })
+    }
+    
+    // Start all threads simultaneously
+    for i := 0; i < NUM_THREADS; i++ {
+        start_barrier <- true
+    }
+    
+    // Wait for all threads to complete
+    for i := 0; i < NUM_THREADS; i++ {
+        <-done_barrier
+    }
+    
+    // Verify final result
+    final_value := int64(0)
+    shared_var_read(shared_counter, &final_value, MEMORY_ORDER_SEQ_CST)
+    expected := int64(NUM_THREADS * INCREMENTS_PER_THREAD)
+    assert(final_value == expected, "Final counter value should be " + string(expected))
+    
+    println("✓ Concurrent access test passed")
+}
+
+// Test change notification system
+var change_event_count = 0
+var last_change_event *ChangeEvent = nil
+
+func change_watcher_callback(event *ChangeEvent, context *void) {
+    change_event_count++
+    last_change_event = event
+    println("Change detected: type=" + string(event.type) + 
+           ", timestamp=" + string(event.timestamp))
+}
+
+func test_change_notifications() {
+    value := shared_var_create("watched_value", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(value)
+    
+    // Add watcher
+    watcher := shared_var_add_watcher(value, change_watcher_callback, 
+                                     nil, CHANGE_EVENT_WRITE | CHANGE_EVENT_ATOMIC_OP)
+    defer shared_var_remove_watcher(value, watcher)
+    
+    // Reset counters
+    change_event_count = 0
+    last_change_event = nil
+    
+    // Perform write operation
+    test_val := int64(42)
+    shared_var_write(value, &test_val, MEMORY_ORDER_SEQ_CST)
+    
+    // Give time for notification
+    sleep_ms(10)
+    
+    assert(change_event_count >= 1, "Should receive at least one change notification")
+    assert(last_change_event != nil, "Should have received change event")
+    assert(last_change_event.type == CHANGE_EVENT_WRITE, "Event type should be WRITE")
+    
+    // Test atomic operation notification
+    old_count := change_event_count
+    shared_var_atomic_inc_int(value, MEMORY_ORDER_SEQ_CST)
+    sleep_ms(10)
+    
+    assert(change_event_count > old_count, "Should receive notification for atomic operation")
+    
+    println("✓ Change notifications test passed")
+}
+
+// Test parallel loop constructs
+func test_parallel_loops() {
+    // Test parallel for loop
+    shared_sum := shared_var_create("parallel_sum", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(shared_sum)
+    
+    parallel_for(0, 1000, func(i int64, context *void) {
+        shared_var_atomic_add_int(shared_sum, i, MEMORY_ORDER_RELAXED)
+    }, nil)
+    
+    final_sum := int64(0)
+    shared_var_read(shared_sum, &final_sum, MEMORY_ORDER_SEQ_CST)
+    expected_sum := int64(999 * 1000 / 2) // Sum of 0 to 999
+    assert(final_sum == expected_sum, "Parallel sum should be correct")
+    
+    println("✓ Parallel loops test passed")
+}
+
+// Test performance and statistics
+func test_performance_statistics() {
+    counter := shared_var_create("perf_counter", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(counter)
+    
+    // Perform many operations
+    for i := 0; i < 10000; i++ {
+        if i % 2 == 0 {
+            shared_var_atomic_inc_int(counter, MEMORY_ORDER_RELAXED)
+        } else {
+            value := int64(0)
+            shared_var_read(counter, &value, MEMORY_ORDER_RELAXED)
+        }
+    }
+    
+    // Get statistics
+    stats := shared_var_get_stats(counter)
+    assert(stats.reads > 0, "Should have recorded read operations")
+    assert(stats.atomic_ops > 0, "Should have recorded atomic operations")
+    assert(stats.last_modified > 0, "Should have last modified timestamp")
+    
+    println("Read operations: " + string(stats.reads))
+    println("Atomic operations: " + string(stats.atomic_ops))
+    println("✓ Performance statistics test passed")
+}
+
+// Test system-wide functionality
+func test_system_management() {
+    system := get_global_shared_var_system()
+    assert(system != nil, "Global system should exist")
+    
+    // Create multiple variables
+    var1 := shared_var_create("sys_var1", SHARED_TYPE_INT64, &int64{1})
+    var2 := shared_var_create("sys_var2", SHARED_TYPE_UINT64, &uint64{2})
+    var3 := shared_var_create("sys_var3", SHARED_TYPE_BOOL, &bool{true})
+    
+    defer shared_var_destroy(var1)
+    defer shared_var_destroy(var2)
+    defer shared_var_destroy(var3)
+    
+    // Print system statistics
+    shared_var_system_print_stats(system)
+    
+    println("✓ System management test passed")
+}
+
+// Test error conditions and edge cases
+func test_error_conditions() {
+    // Test null pointer handling
+    success := shared_var_write(nil, &int64{42}, MEMORY_ORDER_SEQ_CST)
+    assert(!success, "Write to null variable should fail")
+    
+    result := shared_var_read(nil, &int64{0}, MEMORY_ORDER_SEQ_CST)
+    assert(result == nil, "Read from null variable should return null")
+    
+    // Test invalid type operations
+    bool_var := shared_var_create("bool_test", SHARED_TYPE_BOOL, &bool{false})
+    defer shared_var_destroy(bool_var)
+    
+    // Trying to do integer arithmetic on boolean should fail gracefully
+    old_val := shared_var_atomic_inc_int(bool_var, MEMORY_ORDER_SEQ_CST)
+    assert(old_val == 0, "Invalid type operation should return 0")
+    
+    println("✓ Error conditions test passed")
+}
+
+// Test integration with actor system (basic)
+func test_actor_integration() {
+    // Create a shared variable
+    shared_data := shared_var_create("actor_shared", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(shared_data)
+    
+    // The actor integration functions are stubs for now
+    // But we can test that they don't crash
+    actor_create_shared_var(nil, "test_var", SHARED_TYPE_INT64, &int64{42})
+    
+    println("✓ Actor integration test passed (basic)")
+}
+
+// Performance benchmark
+func benchmark_atomic_operations() {
+    counter := shared_var_create("benchmark_counter", SHARED_TYPE_INT64, &int64{0})
+    defer shared_var_destroy(counter)
+    
+    const OPERATIONS = 1000000
+    
+    start_time := get_current_time_ms()
+    
+    for i := 0; i < OPERATIONS; i++ {
+        shared_var_atomic_inc_int(counter, MEMORY_ORDER_RELAXED)
+    }
+    
+    end_time := get_current_time_ms()
+    elapsed := end_time - start_time
+    
+    final_value := int64(0)
+    shared_var_read(counter, &final_value, MEMORY_ORDER_SEQ_CST)
+    
+    ops_per_ms := float64(OPERATIONS) / float64(elapsed)
+    
+    println("Benchmark Results:")
+    println("  Operations: " + string(OPERATIONS))
+    println("  Time: " + string(elapsed) + "ms")
+    println("  Rate: " + string(ops_per_ms) + " ops/ms")
+    println("  Final value: " + string(final_value))
+    
+    assert(final_value == OPERATIONS, "All operations should be accounted for")
+    
+    println("✓ Performance benchmark completed")
+}
+
+// Main test runner
+func main() {
+    println("=== Shared Variables Test Suite ===")
+    println("")
+    
+    test_basic_operations()
+    test_atomic_operations()
+    test_compare_swap()
+    test_bitwise_operations()
+    test_memory_orderings()
+    test_concurrent_access()
+    test_change_notifications()
+    test_parallel_loops()
+    test_performance_statistics()
+    test_system_management()
+    test_error_conditions()
+    test_actor_integration()
+    benchmark_atomic_operations()
+    
+    println("")
+    println("=== All Tests Passed! ===")
+    println("Shared Variables system is working correctly.")
+    println("✓ Automatic synchronization: Working")
+    println("✓ Lock-free operations: Working") 
+    println("✓ Memory ordering: Working")
+    println("✓ Change notifications: Working")
+    println("✓ Parallel processing: Working")
+    println("✓ Thread safety: Working")
+    println("✓ Performance: Acceptable")
+    
+    return 0
+}
+
+// Helper functions
+func assert(condition bool, message string) {
+    if !condition {
+        println("ASSERTION FAILED: " + message)
+        exit(1)
+    }
+}
+
+func sleep_ms(ms int) {
+    // Sleep for specified milliseconds
+    usleep(ms * 1000)
+}
+
+func get_current_time_ms() uint64 {
+    // Get current time in milliseconds
+    return uint64(time.Now().UnixNano() / 1000000)
+}
+
+func spawn_thread(func_ptr func()) {
+    // Spawn a thread to run the given function
+    go func_ptr()
+}

@@ -1,0 +1,47 @@
+🚀 Goo Programming Language Analyzer
+=====================================
+
+🚀 Analyzing Goo file: tests/e2e/08_structs.goo
+==============================
+
+📝 Lexical Analysis:
+📊 Token Analysis:
+Token: PACKAGE         | Literal: package    | Pos: 4:2
+Token: IDENT           | Literal: main       | Pos: 4:10
+Token: IMPORT          | Literal: import     | Pos: 6:2
+Token: STRING          | Literal: fmt        | Pos: 6:9
+Token: TYPE            | Literal: type       | Pos: 8:2
+Token: IDENT           | Literal: Point      | Pos: 8:7
+Token: STRUCT          | Literal: struct     | Pos: 8:13
+Token: LBRACE          | Literal: {          | Pos: 8:20
+Token: IDENT           | Literal: x          | Pos: 9:6
+Token: IDENT           | Literal: int        | Pos: 9:8
+Token: IDENT           | Literal: y          | Pos: 10:6
+Token: IDENT           | Literal: int        | Pos: 10:8
+Token: RBRACE          | Literal: }          | Pos: 11:2
+Token: FUNC            | Literal: func       | Pos: 13:2
+Token: LPAREN          | Literal: (          | Pos: 13:7
+... (showing first 15 tokens)
+
+📈 Statistics:
+  • Total tokens: 144
+  • Keywords: 11
+  • Identifiers: 56
+  • Operators: 3
+  • Literals: 9
+
+🚀 Goo Language Features Detected:
+  ❌ Error Unions (!T)
+  ❌ Nullable Types (?T)
+  ❌ Channels
+  ❌ Goroutines
+
+🎉 Analysis complete!
+📄 File: tests/e2e/08_structs.goo (658 bytes)
+✅ Lexical analysis successful
+📍 Main function detected
+📦 Main package detected
+📥 Import statements detected
+
+🎊 Success! Your Goo program was analyzed successfully.
+💡 This demonstrates that the Goo lexer can parse your code!

@@ -1,4 +1,4 @@
-#include "interface_system.h"
+#include "types/constraint_inference.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -188,9 +188,9 @@ TypeVariable* create_const_generic_parameter(const char* name, Type* const_type,
     param->bound_type = const_type ? type_copy(const_type) : NULL;
     
     // Add a constraint that this must be const-evaluable
-    InterfaceConstraint* const_constraint = interface_constraint_new(CONSTRAINT_CONST_EVAL, NULL, pos);
+    Constraint* const_constraint = constraint_new(CONSTRAINT_CONST_EVAL, NULL, pos);
     if (const_constraint) {
-        type_variable_add_constraint(param, const_constraint);
+        constraint_set_add(param, const_constraint);
     }
     
     return param;
@@ -1372,7 +1372,7 @@ void print_type_level_computation(const TypeLevelComputation* computation) {
         while (param) {
             printf("    - %s (%s)\n", 
                    param->name ? param->name : "<unnamed>",
-                   type_variable_kind_to_string(param->kind));
+                   constraint_kind_to_string(param->kind));
             param = param->next;
         }
     }

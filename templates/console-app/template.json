@@ -1,0 +1,83 @@
+{
+  "name": "Console Application",
+  "description": "A simple command-line application with argument parsing and error handling",
+  "category": "application",
+  "language": "goo",
+  "version": "1.0.0",
+  "author": "Goo Language Team",
+  "tags": ["console", "cli", "application"],
+  "requirements": {
+    "goo": ">=1.0.0"
+  },
+  "structure": {
+    "src/": {
+      "main.goo": "main source file",
+      "cli/": {
+        "args.goo": "command-line argument parsing",
+        "commands.goo": "command implementations"
+      },
+      "lib/": {
+        "utils.goo": "utility functions"
+      }
+    },
+    "tests/": {
+      "main_test.goo": "main function tests",
+      "cli_test.goo": "CLI functionality tests"
+    },
+    "docs/": {
+      "README.md": "project documentation",
+      "USAGE.md": "usage instructions"
+    },
+    "build.goo": "build configuration",
+    "go.mod": "dependency management",
+    ".gitignore": "git ignore file"
+  },
+  "variables": [
+    {
+      "name": "PROJECT_NAME",
+      "description": "Name of the project",
+      "type": "string",
+      "required": true,
+      "default": "my-console-app"
+    },
+    {
+      "name": "AUTHOR_NAME", 
+      "description": "Author name",
+      "type": "string",
+      "required": true,
+      "default": "Developer"
+    },
+    {
+      "name": "PROJECT_DESCRIPTION",
+      "description": "Project description",
+      "type": "string",
+      "required": false,
+      "default": "A Goo console application"
+    },
+    {
+      "name": "ENABLE_LOGGING",
+      "description": "Enable logging support",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    }
+  ],
+  "hooks": {
+    "pre_generate": [
+      "echo 'Generating console application template...'",
+      "mkdir -p {{PROJECT_NAME}}"
+    ],
+    "post_generate": [
+      "cd {{PROJECT_NAME}} && goo mod init {{PROJECT_NAME}}",
+      "echo 'Console application template generated successfully!'"
+    ]
+  },
+  "features": [
+    "Command-line argument parsing",
+    "Error union error handling",
+    "Logging support (optional)",
+    "Unit testing setup",
+    "Build configuration",
+    "Documentation templates"
+  ]
+}

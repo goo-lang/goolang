@@ -1,0 +1,27 @@
+// E2E Test 10: Generics
+// Tests: Generic functions, type parameters, constraints
+
+package main
+
+import "fmt"
+
+func max<T Comparable<T>>(a T, b T) T {
+    if a.Compare(b) > 0 {
+        return a
+    }
+    return b
+}
+
+func swap<T>(a T, b T) (T, T) {
+    return b, a
+}
+
+func main() {
+    // Test generic swap with ints
+    x, y := swap(10, 20)
+    fmt.Printf("After swap: x=%d, y=%d\n", x, y)
+
+    // Test generic swap with strings
+    s1, s2 := swap("hello", "world")
+    fmt.Printf("After swap: s1=%s, s2=%s\n", s1, s2)
+}

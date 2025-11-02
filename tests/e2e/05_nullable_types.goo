@@ -1,0 +1,33 @@
+// E2E Test 5: Nullable Types
+// Tests: Nullable types (?T), null checking, safe unwrapping
+
+package main
+
+import "fmt"
+
+func findUser(id int) ?string {
+    if id == 1 {
+        return "Alice"
+    } else if id == 2 {
+        return "Bob"
+    }
+    return nil
+}
+
+func main() {
+    // Test with valid user
+    user1 := findUser(1)
+    if user1? {
+        fmt.Printf("Found user: %s\n", user1!)
+    } else {
+        fmt.Printf("User not found\n")
+    }
+
+    // Test with invalid user
+    user2 := findUser(999)
+    if user2? {
+        fmt.Printf("Found user: %s\n", user2!)
+    } else {
+        fmt.Printf("User not found\n")
+    }
+}

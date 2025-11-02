@@ -123,7 +123,7 @@ static void register_all_tests(void) {
     // For now, we'll just have placeholders
     
     // TODO: Uncomment these as test files are created
-    // register_error_tests();
+    register_error_tests();
     // register_lexer_tests();
     // register_parser_tests();
     // register_type_tests();

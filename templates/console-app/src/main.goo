@@ -1,0 +1,101 @@
+// {{PROJECT_DESCRIPTION}}
+// Author: {{AUTHOR_NAME}}
+// Generated from Goo console application template
+
+package main
+
+import (
+    "fmt"
+    "os"
+    {{if ENABLE_LOGGING}}"log"{{endif}}
+    "./cli"
+    "./lib"
+)
+
+// Application configuration
+struct AppConfig {
+    verbose: bool,
+    output_file: string?,
+    {{if ENABLE_LOGGING}}log_level: string{{endif}}
+}
+
+// Application errors
+enum AppError {
+    InvalidArguments,
+    FileNotFound,
+    PermissionDenied,
+    UnknownError
+}
+
+// Main application logic
+fn run_app(config: AppConfig) -> void!AppError {
+    {{if ENABLE_LOGGING}}
+    if config.verbose {
+        log.println("Running {{PROJECT_NAME}} in verbose mode");
+    }
+    {{endif}}
+    
+    // Process the application logic here
+    let result = lib.process_data()?;
+    
+    // Handle output
+    match config.output_file {
+        Some(file) => {
+            try lib.write_to_file(file, result) catch |err| {
+                return AppError.PermissionDenied;
+            }
+        },
+        None => {
+            fmt.println("Result: {}", result);
+        }
+    }
+    
+    return void;
+}
+
+fn main() -> void!AppError {
+    // Parse command line arguments
+    let args = try cli.parse_args(os.args) catch |err| {
+        fmt.eprintln("Error parsing arguments: {}", err);
+        cli.print_usage();
+        return AppError.InvalidArguments;
+    };
+    
+    // Create application configuration
+    let config = AppConfig{
+        verbose: args.verbose,
+        output_file: args.output_file,
+        {{if ENABLE_LOGGING}}log_level: args.log_level || "info"{{endif}}
+    };
+    
+    {{if ENABLE_LOGGING}}
+    // Initialize logging
+    log.set_level(config.log_level);
+    {{endif}}
+    
+    // Run the application
+    try run_app(config) catch |err| {
+        match err {
+            AppError.InvalidArguments => {
+                fmt.eprintln("Invalid arguments provided");
+                cli.print_usage();
+            },
+            AppError.FileNotFound => {
+                fmt.eprintln("Required file not found");
+            },
+            AppError.PermissionDenied => {
+                fmt.eprintln("Permission denied accessing file");
+            },
+            AppError.UnknownError => {
+                fmt.eprintln("An unknown error occurred");
+            }
+        }
+        os.exit(1);
+    }
+    
+    {{if ENABLE_LOGGING}}
+    if config.verbose {
+        log.println("{{PROJECT_NAME}} completed successfully");
+    }
+    {{endif}}
+}

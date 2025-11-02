@@ -26,8 +26,6 @@ static void cleanup_test_type_checker(TypeChecker* tc) {
 
 // Test memory safety integration initialization
 int test_memory_safety_integration_init() {
-    printf("Testing memory safety integration initialization...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     assert(tc != NULL);
     
@@ -57,14 +55,11 @@ int test_memory_safety_integration_init() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ Memory safety integration initialization test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test basic memory safety checking
 int test_basic_memory_safety_checking() {
-    printf("Testing basic memory safety checking...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     integrate_memory_safety_with_type_checker(tc);
     
@@ -94,14 +89,11 @@ int test_basic_memory_safety_checking() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ Basic memory safety checking test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test nullable type safety
 int test_nullable_type_safety() {
-    printf("Testing nullable type safety...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     integrate_memory_safety_with_type_checker(tc);
     
@@ -127,14 +119,11 @@ int test_nullable_type_safety() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ Nullable type safety test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test resource management integration
 int test_resource_management_integration() {
-    printf("Testing resource management integration...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     integrate_memory_safety_with_type_checker(tc);
     
@@ -173,14 +162,11 @@ int test_resource_management_integration() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ Resource management integration test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test if-let null safety
 int test_if_let_null_safety() {
-    printf("Testing if-let null safety...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     integrate_memory_safety_with_type_checker(tc);
     
@@ -207,14 +193,11 @@ int test_if_let_null_safety() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ If-let null safety test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test field access safety
 int test_field_access_safety() {
-    printf("Testing field access safety...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     integrate_memory_safety_with_type_checker(tc);
     
@@ -245,14 +228,11 @@ int test_field_access_safety() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ Field access safety test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test statistics reporting
 int test_statistics_reporting() {
-    printf("Testing statistics reporting...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     integrate_memory_safety_with_type_checker(tc);
     
@@ -265,14 +245,11 @@ int test_statistics_reporting() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ Statistics reporting test passed\n");
-    return 1;
+    return 0;
 }
 
 // Test feature configuration
 int test_feature_configuration() {
-    printf("Testing feature configuration...\n");
-    
     TypeChecker* tc = create_test_type_checker();
     integrate_memory_safety_with_type_checker(tc);
     
@@ -307,41 +284,12 @@ int test_feature_configuration() {
     cleanup_memory_safety_integration();
     cleanup_test_type_checker(tc);
     
-    printf("✓ Feature configuration test passed\n");
-    return 1;
-}
-
-// Run all tests
-int TEST_MAIN() {
-    printf("=== Memory Safety Integration Tests ===\n\n");
-    
-    int tests_passed = 0;
-    int total_tests = 8;
-    
-    tests_passed += test_memory_safety_integration_init();
-    tests_passed += test_basic_memory_safety_checking();
-    tests_passed += test_nullable_type_safety();
-    tests_passed += test_resource_management_integration();
-    tests_passed += test_if_let_null_safety();
-    tests_passed += test_field_access_safety();
-    tests_passed += test_statistics_reporting();
-    tests_passed += test_feature_configuration();
-    
-    printf("\n=== Test Results ===\n");
-    printf("Tests passed: %d/%d\n", tests_passed, total_tests);
-    
-    if (tests_passed == total_tests) {
-        printf("✓ All memory safety integration tests passed!\n");
-        return 0;
-    } else {
-        printf("✗ Some tests failed!\n");
-        return 1;
-    }
+    return 0;
 }
 
 #ifndef STANDALONE_TEST
 // Register tests with the framework
-void register_memory_safety_integration_tests() {
+void register_memory_safety_integration_tests(void) {
     test_framework_register_test("memory_safety_integration_init", test_memory_safety_integration_init);
     test_framework_register_test("basic_memory_safety_checking", test_basic_memory_safety_checking);
     test_framework_register_test("nullable_type_safety", test_nullable_type_safety);

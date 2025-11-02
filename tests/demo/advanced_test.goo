@@ -1,0 +1,99 @@
+// Advanced test cases for visual test runner
+
+package test
+
+import "testing"
+
+fn test_ownership_tracking() {
+    let data = [1, 2, 3, 4, 5];
+    let owned_data = own data;
+    
+    // Test that ownership transfer works
+    let processed = process_owned_data(move owned_data);
+    assert(processed.len == 5, "Processed data should maintain length");
+}
+
+fn test_channel_operations() {
+    let ch = make(chan int, 2);
+    
+    // Test sending and receiving
+    ch <- 42;
+    ch <- 24;
+    
+    let first = <-ch;
+    let second = <-ch;
+    
+    assert(first == 42, "First value should be 42");
+    assert(second == 24, "Second value should be 24");
+}
+
+fn test_concurrent_processing() {
+    let ch = make(chan int, 10);
+    
+    // Start goroutine to send data
+    go send_numbers(ch, 10);
+    
+    // Receive and sum the numbers
+    var sum = 0;
+    for i in 0..10 {
+        sum += <-ch;
+    }
+    
+    // Sum of 0..9 is 45
+    assert(sum == 45, "Sum should be 45");
+}
+
+fn test_interface_polymorphism() {
+    let shapes: []Shape = [
+        Rectangle{width: 5, height: 3},
+        Circle{radius: 2}
+    ];
+    
+    let total_area = 0.0;
+    for shape in shapes {
+        total_area += shape.area();
+    }
+    
+    // Rectangle area: 15, Circle area: ~12.57
+    assert(total_area > 27.0 && total_area < 28.0, "Total area should be ~27.57");
+}
+
+// Helper types and functions
+interface Shape {
+    fn area() -> float64;
+}
+
+struct Rectangle {
+    width: float64,
+    height: float64
+}
+
+impl Shape for Rectangle {
+    fn area() -> float64 {
+        return self.width * self.height;
+    }
+}
+
+struct Circle {
+    radius: float64
+}
+
+impl Shape for Circle {
+    fn area() -> float64 {
+        return 3.14159 * self.radius * self.radius;
+    }
+}
+
+fn process_owned_data(own data: []int) -> []int {
+    var result = move data;
+    for i in 0..result.len {
+        result[i] *= 2;
+    }
+    return result;
+}
+
+fn send_numbers(ch: chan int, count: int) {
+    for i in 0..count {
+        ch <- i;
+    }
+}

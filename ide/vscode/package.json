@@ -59,7 +59,7 @@
         },
         "goo.languageServer.path": {
           "type": "string",
-          "default": "goo-lsp-standalone",
+          "default": "goo-lsp-goo-enhanced",
           "description": "Path to the Goo language server executable"
         },
         "goo.languageServer.args": {
@@ -111,6 +111,24 @@
         "title": "Run Program",
         "category": "Goo",
         "icon": "$(play)"
+      },
+      {
+        "command": "goo.showOwnershipInfo",
+        "title": "Show Ownership Information",
+        "category": "Goo",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "goo.checkErrorUnions",
+        "title": "Check Error Unions",
+        "category": "Goo",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "goo.showNullableInfo",
+        "title": "Check Null Safety",
+        "category": "Goo",
+        "icon": "$(question)"
       }
     ],
     "menus": {

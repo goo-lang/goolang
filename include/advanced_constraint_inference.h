@@ -1,13 +1,19 @@
 #ifndef ADVANCED_CONSTRAINT_INFERENCE_H
 #define ADVANCED_CONSTRAINT_INFERENCE_H
 
-#include "interface_system.h"
+#include "types/constraint_inference.h"
 #include "types.h"
 #include "ast.h"
 
 // =============================================================================
 // Task 22.6: Extended Automatic Constraint Inference for Advanced Use Cases
 // =============================================================================
+
+typedef struct ConstraintInferenceEngine ConstraintInferenceEngine;
+typedef struct TypeVariable TypeVariable;
+typedef struct Constraint Constraint;
+typedef struct ConstraintSet ConstraintSet;
+typedef struct UnificationContext UnificationContext;
 
 // Forward declarations
 typedef struct HigherOrderConstraint HigherOrderConstraint;
@@ -59,7 +65,7 @@ struct HigherOrderConstraint {
 // Variadic type parameter patterns
 struct VariadicTypePattern {
     char* name;                         // Pattern name (e.g., "...Args")
-    TypeVariableKind element_kind;      // Kind of each element
+    TypeVariable element_kind;      // Kind of each element
     size_t min_count;                   // Minimum number of elements
     size_t max_count;                   // Maximum number of elements (0 = unlimited)
     ConstraintSet* element_constraints; // Constraints on each element
@@ -108,7 +114,7 @@ typedef struct ConstraintError {
     Position primary_pos;               // Primary error location
     Position* secondary_positions;      // Related locations
     size_t secondary_count;
-    InterfaceConstraint* failing_constraint; // The constraint that failed
+    Constraint* failing_constraint; // The constraint that failed
     Type* expected_type;                // Expected type (if applicable)
     Type* actual_type;                  // Actual type (if applicable)
     float confidence_score;             // Confidence in error diagnosis
@@ -185,7 +191,7 @@ struct AdvancedConstraintSolver {
     double solve_time_ms;                   // Total solving time in milliseconds
     
     // Solver state
-    InterfaceConstraint** constraint_queue; // Priority queue of constraints
+    Constraint** constraint_queue; // Priority queue of constraints
     size_t queue_size;
     size_t queue_capacity;
     TypeVariable** variable_order;          // Optimal variable ordering
@@ -242,7 +248,7 @@ int infer_closure_constraints(ConstraintInferenceEngine* engine, ASTNode* closur
 int infer_generator_constraints(ConstraintInferenceEngine* engine, ASTNode* generator_expr);
 
 // Complex generic pattern support
-VariadicTypePattern* variadic_type_pattern_new(const char* name, TypeVariableKind element_kind, Position pos);
+VariadicTypePattern* variadic_type_pattern_new(const char* name, TypeVariable element_kind, Position pos);
 void variadic_type_pattern_free(VariadicTypePattern* pattern);
 int infer_variadic_constraints(ConstraintInferenceEngine* engine, VariadicTypePattern* pattern, ASTNode* usage);
 
@@ -269,13 +275,13 @@ AdvancedConstraintSolver* advanced_constraint_solver_new(ConstraintInferenceEngi
 void advanced_constraint_solver_free(AdvancedConstraintSolver* solver);
 int advanced_constraint_solver_set_optimization_flags(AdvancedConstraintSolver* solver, ConstraintOptimizerFlags flags);
 int advanced_constraint_solver_solve_advanced(AdvancedConstraintSolver* solver);
-int advanced_constraint_solver_solve_incrementally(AdvancedConstraintSolver* solver, InterfaceConstraint* new_constraint);
+int advanced_constraint_solver_solve_incrementally(AdvancedConstraintSolver* solver, Constraint* new_constraint);
 
 // Performance optimization functions
 int optimize_constraint_order(AdvancedConstraintSolver* solver);
 int prune_redundant_constraints(AdvancedConstraintSolver* solver);
-int cache_constraint_solution(AdvancedConstraintSolver* solver, InterfaceConstraint* constraint, Type* solution);
-Type* lookup_cached_solution(AdvancedConstraintSolver* solver, InterfaceConstraint* constraint);
+int cache_constraint_solution(AdvancedConstraintSolver* solver, Constraint* constraint, Type* solution);
+Type* lookup_cached_solution(AdvancedConstraintSolver* solver, Constraint* constraint);
 
 // Language feature integration
 LanguageFeatureIntegration* create_error_handling_integration(Type* error_union_type, Position pos);

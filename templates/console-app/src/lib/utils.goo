@@ -1,0 +1,101 @@
+// Utility functions for {{PROJECT_NAME}}
+
+package lib
+
+import (
+    "fmt"
+    "io"
+    "os"
+    "strings"
+)
+
+// Processing errors
+enum ProcessError {
+    DataCorrupted,
+    ProcessingFailed,
+    OutputError
+}
+
+// File I/O errors  
+enum FileError {
+    NotFound,
+    PermissionDenied,
+    ReadError,
+    WriteError
+}
+
+// Process input data (example implementation)
+pub fn process_data() -> string!ProcessError {
+    // Example data processing logic
+    let data = "Processed by {{PROJECT_NAME}}";
+    
+    // Simulate some processing work
+    if data.len == 0 {
+        return ProcessError.DataCorrupted;
+    }
+    
+    let result = strings.to_upper(data);
+    return result;
+}
+
+// Write data to file with error handling
+pub fn write_to_file(filename: string, content: string) -> void!FileError {
+    let file = try os.create(filename) catch |err| {
+        match err {
+            os.Error.PermissionDenied => return FileError.PermissionDenied,
+            default => return FileError.WriteError
+        }
+    };
+    defer file.close();
+    
+    try file.write_string(content) catch |err| {
+        return FileError.WriteError;
+    }
+    
+    return void;
+}
+
+// Read file contents with error handling
+pub fn read_file(filename: string) -> string!FileError {
+    let file = try os.open(filename) catch |err| {
+        match err {
+            os.Error.NotFound => return FileError.NotFound,
+            os.Error.PermissionDenied => return FileError.PermissionDenied,
+            default => return FileError.ReadError
+        }
+    };
+    defer file.close();
+    
+    let content = try file.read_all() catch |err| {
+        return FileError.ReadError;
+    };
+    
+    return content;
+}
+
+// Utility function to validate input
+pub fn validate_input(input: string) -> bool {
+    return input.len > 0 && !strings.contains(input, "\x00");
+}
+
+// Format output with consistent styling
+pub fn format_output(data: string, verbose: bool) -> string {
+    if verbose {
+        return fmt.sprintf("{{PROJECT_NAME}} Output:\n%s\n", data);
+    }
+    return data;
+}
+
+// Safe string comparison for security
+pub fn safe_string_compare(a: string, b: string) -> bool {
+    if a.len != b.len {
+        return false;
+    }
+    
+    var result = 0;
+    for i in 0..a.len {
+        result |= a[i] ^ b[i];
+    }
+    
+    return result == 0;
+}

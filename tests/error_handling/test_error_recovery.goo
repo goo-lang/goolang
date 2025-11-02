@@ -1,0 +1,498 @@
+/// Test file for error recovery pattern annotations
+/// Demonstrates @retry and @circuit_breaker annotations
+
+package main
+
+import (
+    "fmt"
+    "http"
+    "fs"
+    "time"
+)
+
+// Error types for testing
+enum NetworkError {
+    ConnectionTimeout,
+    ConnectionRefused,
+    ServerError(status_code: i32)
+}
+
+enum FileError {
+    NotFound,
+    PermissionDenied,
+    DiskFull
+}
+
+// =============================================================================
+// Retry Pattern Tests
+// =============================================================================
+
+/// Simple retry with default configuration
+/// @retry(max_attempts=3)
+fn fetch_data_simple() !string {
+    // Simulate a flaky network operation
+    if time.now().unix_timestamp() % 3 == 0 {
+        return NetworkError.ConnectionTimeout;
+    }
+    return "success data";
+}
+
+/// Retry with exponential backoff
+/// @retry(max_attempts=5, backoff="exponential", initial_delay_ms=100, multiplier=2.0)
+fn fetch_with_backoff() !string {
+    // Simulate operation that fails first few times
+    static attempt_count: i32 = 0;
+    attempt_count++;
+    
+    if attempt_count < 3 {
+        return NetworkError.ServerError(500);
+    }
+    
+    return "data after backoff";
+}
+
+/// Retry with jittered backoff to avoid thundering herd
+/// @retry(max_attempts=4, backoff="jittered", initial_delay_ms=200, jitter_factor=0.2)
+fn fetch_with_jitter() !string {
+    // Simulate random failures
+    if random_int(0, 10) < 7 {
+        return NetworkError.ConnectionRefused;
+    }
+    
+    return "jittered success";
+}
+
+/// Retry with timeout constraints
+/// @retry(max_attempts=10, total_timeout_ms=5000, per_attempt_timeout_ms=1000)
+fn fetch_with_timeout() !string {
+    // Simulate slow operation
+    sleep_ms(800); // Just under per-attempt timeout
+    
+    if random_int(0, 10) < 6 {
+        return NetworkError.ConnectionTimeout;
+    }
+    
+    return "timeout success";
+}
+
+/// Retry with custom error filtering
+/// @retry(max_attempts=3, retryable_errors=[ConnectionTimeout, ConnectionRefused])
+fn fetch_with_filtering() !string {
+    let error_type = random_int(0, 3);
+    
+    match error_type {
+        0 => return NetworkError.ConnectionTimeout,     // Retryable
+        1 => return NetworkError.ConnectionRefused,     // Retryable  
+        2 => return NetworkError.ServerError(401),      // Not retryable (auth error)
+        _ => return "filtered success"
+    }
+}
+
+// =============================================================================
+// Circuit Breaker Pattern Tests
+// =============================================================================
+
+/// Simple circuit breaker with default configuration
+/// @circuit_breaker(failure_threshold=5, open_timeout_ms=30000)
+fn call_external_service() !string {
+    // Simulate external service that becomes unreliable
+    static failure_streak: i32 = 0;
+    
+    if failure_streak < 3 {
+        failure_streak++;
+        return NetworkError.ServerError(503);
+    }
+    
+    failure_streak = 0;
+    return "service response";
+}
+
+/// Circuit breaker with failure rate threshold
+/// @circuit_breaker(failure_rate_threshold=0.6, failure_window_ms=60000, open_timeout_ms=10000)
+fn call_rate_limited_service() !string {
+    // Simulate service with intermittent failures
+    if random_int(0, 10) < 7 {
+        return NetworkError.ServerError(429); // Rate limited
+    }
+    
+    return "rate limited success";
+}
+
+/// Circuit breaker with half-open testing
+/// @circuit_breaker(failure_threshold=3, half_open_max_requests=2, recovery_threshold=2)
+fn call_recovering_service() !string {
+    static recovery_mode: bool = false;
+    static success_count: i32 = 0;
+    
+    if recovery_mode {
+        success_count++;
+        if success_count >= 2 {
+            recovery_mode = false;
+            success_count = 0;
+        }
+        return "recovering success";
+    }
+    
+    // Simulate initial failures
+    if random_int(0, 10) < 8 {
+        return NetworkError.ConnectionRefused;
+    }
+    
+    recovery_mode = true;
+    return "initial success";
+}
+
+// =============================================================================
+// Combined Patterns
+// =============================================================================
+
+/// Function with both retry and circuit breaker
+/// @retry(max_attempts=3, backoff="exponential")
+/// @circuit_breaker(failure_threshold=5, open_timeout_ms=20000)
+fn robust_api_call(endpoint: string) !string {
+    // Simulate API call with various failure modes
+    let failure_mode = random_int(0, 10);
+    
+    match failure_mode {
+        0..3 => return NetworkError.ConnectionTimeout,   // Temporary network issues
+        4..5 => return NetworkError.ServerError(500),    // Server errors
+        6 => return NetworkError.ServerError(404),       // Not found (shouldn't retry)
+        _ => return fmt.sprintf("API response from {}", endpoint)
+    }
+}
+
+/// File operations with retry for transient failures
+/// @retry(max_attempts=3, backoff="linear", initial_delay_ms=50)
+fn save_data_reliably(filename: string, data: string) !void {
+    // Simulate file system issues
+    if random_int(0, 10) < 3 {
+        return FileError.DiskFull;
+    }
+    
+    if random_int(0, 10) < 2 {
+        return FileError.PermissionDenied;
+    }
+    
+    // Success - data saved
+    fmt.println("Data saved to {}", filename);
+    return void;
+}
+
+/// Database connection with circuit breaker protection
+/// @circuit_breaker(failure_threshold=3, open_timeout_ms=15000)
+fn connect_to_database() !DatabaseConnection {
+    static connection_issues: i32 = 0;
+    
+    // Simulate database connectivity issues
+    if connection_issues < 5 {
+        connection_issues++;
+        return DatabaseError.ConnectionRefused;
+    }
+    
+    connection_issues = 0;
+    return DatabaseConnection.new("localhost:5432");
+}
+
+// =============================================================================
+// Performance Testing
+// =============================================================================
+
+/// High-frequency operation with circuit breaker
+/// @circuit_breaker(failure_threshold=10, failure_rate_threshold=0.3, failure_window_ms=10000)
+fn high_frequency_operation(id: i32) !string {
+    // Simulate high-frequency operation with occasional failures
+    if id % 13 == 0 {
+        return NetworkError.ServerError(500);
+    }
+    
+    return fmt.sprintf("processed {}", id);
+}
+
+/// Batch operation with individual retries
+/// @retry(max_attempts=2, backoff="constant", initial_delay_ms=10)
+fn process_batch_item(item: string) !string {
+    // Simulate processing with low failure rate
+    if random_int(0, 100) < 5 {
+        return ProcessingError.InvalidData;
+    }
+    
+    return fmt.sprintf("processed: {}", item);
+}
+
+// =============================================================================
+// Error Recovery Hooks
+// =============================================================================
+
+/// Function with retry hooks for monitoring
+/// @retry(max_attempts=3, on_retry=log_retry_attempt, on_exhausted=log_retry_exhausted)
+fn monitored_operation() !string {
+    if random_int(0, 10) < 8 {
+        return NetworkError.ConnectionTimeout;
+    }
+    
+    return "monitored success";
+}
+
+// Hook functions (would be implemented in runtime)
+fn log_retry_attempt(attempt: i32, error: Error) {
+    fmt.println("Retry attempt {} due to: {}", attempt, error.message);
+}
+
+fn log_retry_exhausted(attempts: i32, last_error: Error) {
+    fmt.println("Retry exhausted after {} attempts. Last error: {}", attempts, last_error.message);
+}
+
+/// Function with circuit breaker state change hooks
+/// @circuit_breaker(failure_threshold=3, on_state_change=log_circuit_state)
+fn monitored_circuit() !string {
+    static failure_count: i32 = 0;
+    
+    if failure_count < 4 {
+        failure_count++;
+        return NetworkError.ServerError(503);
+    }
+    
+    failure_count = 0;
+    return "circuit success";
+}
+
+fn log_circuit_state(old_state: CircuitState, new_state: CircuitState) {
+    fmt.println("Circuit state changed: {} -> {}", old_state, new_state);
+}
+
+// =============================================================================
+// Main Test Function
+// =============================================================================
+
+fn main() -> void {
+    fmt.println("🔄 Testing Error Recovery Patterns");
+    fmt.println("==================================");
+    
+    // Initialize error recovery system
+    error_recovery_system_init();
+    
+    // Test retry patterns
+    fmt.println("\n📝 Testing Retry Patterns");
+    
+    test_retry_simple();
+    test_retry_with_backoff();
+    test_retry_with_jitter();
+    test_retry_with_timeout();
+    test_retry_with_filtering();
+    
+    // Test circuit breaker patterns
+    fmt.println("\n🔧 Testing Circuit Breaker Patterns");
+    
+    test_circuit_breaker_simple();
+    test_circuit_breaker_rate_limited();
+    test_circuit_breaker_recovery();
+    
+    // Test combined patterns
+    fmt.println("\n🚀 Testing Combined Patterns");
+    
+    test_combined_patterns();
+    
+    // Performance tests
+    fmt.println("\n⚡ Performance Testing");
+    
+    test_performance();
+    
+    // Print statistics
+    fmt.println("\n📊 Final Statistics");
+    print_error_recovery_stats();
+    
+    // Cleanup
+    error_recovery_system_shutdown();
+    
+    fmt.println("\n✅ All error recovery tests completed!");
+}
+
+// =============================================================================
+// Test Helper Functions
+// =============================================================================
+
+fn test_retry_simple() {
+    fmt.println("Testing simple retry...");
+    
+    let result = try fetch_data_simple() catch |err| {
+        fmt.println("Simple retry failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("Simple retry succeeded: {}", result);
+}
+
+fn test_retry_with_backoff() {
+    fmt.println("Testing retry with exponential backoff...");
+    
+    let result = try fetch_with_backoff() catch |err| {
+        fmt.println("Backoff retry failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("Backoff retry succeeded: {}", result);
+}
+
+fn test_retry_with_jitter() {
+    fmt.println("Testing retry with jittered backoff...");
+    
+    let result = try fetch_with_jitter() catch |err| {
+        fmt.println("Jittered retry failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("Jittered retry succeeded: {}", result);
+}
+
+fn test_retry_with_timeout() {
+    fmt.println("Testing retry with timeout constraints...");
+    
+    let result = try fetch_with_timeout() catch |err| {
+        fmt.println("Timeout retry failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("Timeout retry succeeded: {}", result);
+}
+
+fn test_retry_with_filtering() {
+    fmt.println("Testing retry with error filtering...");
+    
+    let result = try fetch_with_filtering() catch |err| {
+        fmt.println("Filtered retry failed: {}", err.message);
+        return;
+    };
+    
+    fmt.println("Filtered retry succeeded: {}", result);
+}
+
+fn test_circuit_breaker_simple() {
+    fmt.println("Testing simple circuit breaker...");
+    
+    for i in 0..10 {
+        let result = try call_external_service() catch |err| {
+            fmt.println("Circuit breaker blocked request {}: {}", i, err.message);
+            continue;
+        };
+        
+        fmt.println("Circuit breaker allowed request {}: {}", i, result);
+    }
+}
+
+fn test_circuit_breaker_rate_limited() {
+    fmt.println("Testing rate-limited circuit breaker...");
+    
+    for i in 0..20 {
+        let result = try call_rate_limited_service() catch |err| {
+            fmt.println("Rate limited request {}: {}", i, err.message);
+            continue;
+        };
+        
+        fmt.println("Rate limited success {}: {}", i, result);
+    }
+}
+
+fn test_circuit_breaker_recovery() {
+    fmt.println("Testing circuit breaker recovery...");
+    
+    for i in 0..15 {
+        let result = try call_recovering_service() catch |err| {
+            fmt.println("Recovery test {}: {}", i, err.message);
+            continue;
+        };
+        
+        fmt.println("Recovery success {}: {}", i, result);
+    }
+}
+
+fn test_combined_patterns() {
+    fmt.println("Testing combined retry + circuit breaker...");
+    
+    let endpoints = ["api/users", "api/orders", "api/products"];
+    
+    for endpoint in endpoints {
+        let result = try robust_api_call(endpoint) catch |err| {
+            fmt.println("Combined pattern failed for {}: {}", endpoint, err.message);
+            continue;
+        };
+        
+        fmt.println("Combined pattern succeeded for {}: {}", endpoint, result);
+    }
+}
+
+fn test_performance() {
+    fmt.println("Running performance tests...");
+    
+    let start_time = time.now();
+    
+    // Test high-frequency operations
+    for i in 0..1000 {
+        let _ = try high_frequency_operation(i) catch |err| {
+            // Expected to have some failures
+            continue;
+        };
+    }
+    
+    // Test batch processing
+    let items = ["item1", "item2", "item3", "item4", "item5"];
+    for item in items {
+        let _ = try process_batch_item(item) catch |err| {
+            fmt.println("Batch item failed: {}", err.message);
+            continue;
+        };
+    }
+    
+    let end_time = time.now();
+    let duration = end_time.duration_since(start_time);
+    
+    fmt.println("Performance test completed in {} ms", duration.milliseconds());
+}
+
+// =============================================================================
+// Mock Types and Functions
+// =============================================================================
+
+struct DatabaseConnection {
+    host: string
+}
+
+impl DatabaseConnection {
+    fn new(host: string) -> DatabaseConnection {
+        return DatabaseConnection { host: host };
+    }
+}
+
+enum DatabaseError {
+    ConnectionRefused,
+    QueryTimeout,
+    InvalidQuery
+}
+
+enum ProcessingError {
+    InvalidData,
+    ProcessingTimeout
+}
+
+enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen
+}
+
+// Mock utility functions
+fn random_int(min: i32, max: i32) -> i32 {
+    // Simple pseudo-random number generator
+    static seed: i32 = 12345;
+    seed = (seed * 1103515245 + 12345) % (1 << 31);
+    return min + (seed % (max - min));
+}
+
+fn sleep_ms(ms: i32) {
+    // Sleep for specified milliseconds
+    // Implementation would use system sleep
+}
+
+struct Error {
+    message: string,
+    code: i32
+}
