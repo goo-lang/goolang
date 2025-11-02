@@ -658,8 +658,10 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
     LLVMBasicBlockRef post_block = codegen_create_block(codegen, "for.post");
     LLVMBasicBlockRef exit_block = codegen_create_block(codegen, "for.exit");
 
-    // Jump to init block
-    LLVMBuildBr(codegen->builder, init_block);
+    // Jump to init block (only if current block doesn't have a terminator)
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        LLVMBuildBr(codegen->builder, init_block);
+    }
 
     // Generate init block
     codegen_set_insert_point(codegen, init_block);
@@ -704,7 +706,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
     // Only add branch if the block doesn't already have a terminator
     // (break/continue/return might have already terminated the block)
-    if (!LLVMGetBasicBlockTerminator(body_block)) {
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
         LLVMBuildBr(codegen->builder, post_block);
     }
 
