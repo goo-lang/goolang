@@ -33,7 +33,10 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->target_machine = NULL;
     codegen->current_function = NULL;
     codegen->current_function_info = NULL;
-    
+
+    // Initialize loop context
+    codegen->current_loop = NULL;
+
     // Initialize symbol tables
     codegen->value_table = NULL;
     codegen->value_table_size = 0;
@@ -201,7 +204,7 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     }
     
     ProgramNode* prog = (ProgramNode*)program;
-    
+
     // Generate imports (TODO)
     if (prog->imports) {
         ASTNode* import = prog->imports;
@@ -210,7 +213,7 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
             import = import->next;
         }
     }
-    
+
     // Generate declarations
     if (prog->decls) {
         ASTNode* decl = prog->decls;
@@ -235,6 +238,9 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
             return codegen_generate_var_decl(codegen, checker, decl);
         case AST_CONST_DECL:
             return codegen_generate_const_decl(codegen, checker, decl);
+        case AST_TYPE_DECL:
+            // Type declarations are compile-time only and don't generate runtime code
+            return 1;
         case AST_CONCEPT_DECL:
             // Concepts are compile-time only and don't generate runtime code
             return 1;

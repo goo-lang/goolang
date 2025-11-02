@@ -209,12 +209,28 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
         }
     }
     
-    // Type check declarations
+    // Two-pass type checking:
+    // Pass 1: Register all type declarations first
     if (prog->decls) {
         ASTNode* decl = prog->decls;
         while (decl) {
-            if (!type_check_declaration(checker, decl)) {
-                return 0;
+            if (decl->type == AST_TYPE_DECL) {
+                if (!type_check_declaration(checker, decl)) {
+                    return 0;
+                }
+            }
+            decl = decl->next;
+        }
+    }
+
+    // Pass 2: Type check all other declarations
+    if (prog->decls) {
+        ASTNode* decl = prog->decls;
+        while (decl) {
+            if (decl->type != AST_TYPE_DECL) {
+                if (!type_check_declaration(checker, decl)) {
+                    return 0;
+                }
             }
             decl = decl->next;
         }
@@ -318,21 +334,60 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         return_type = type_checker_get_builtin(checker, TYPE_VOID);
     }
 
+    // Create function name (mangled for methods)
+    char* func_name = func->name;
+    char* mangled_name = NULL;
+    if (func->receiver_type) {
+        // Get the receiver type for mangling
+        Type* receiver_type = type_from_ast(checker, func->receiver_type);
+        const char* type_name = NULL;
+
+        if (receiver_type && receiver_type->kind == TYPE_STRUCT) {
+            type_name = receiver_type->data.struct_type.name;
+        } else if (receiver_type && receiver_type->kind == TYPE_POINTER &&
+                   receiver_type->data.pointer.pointee_type &&
+                   receiver_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+            type_name = receiver_type->data.pointer.pointee_type->data.struct_type.name;
+        }
+
+        if (type_name) {
+            // Mangle as: TypeName_methodName
+            size_t len = strlen(type_name) + strlen(func->name) + 2;
+            mangled_name = malloc(len);
+            snprintf(mangled_name, len, "%s_%s", type_name, func->name);
+            func_name = mangled_name;
+        }
+    }
+
     // Create proper function type with actual signature
     Type* func_type = type_function(param_types, param_count, return_type);
-    Variable* func_var = variable_new(func->name, func_type, func->base.pos);
+    Variable* func_var = variable_new(func_name, func_type, func->base.pos);
     if (func_var) {
         func_var->is_initialized = 1;
         if (!scope_add_variable(checker->current_scope, func_var)) {
-            type_error(checker, func->base.pos, "Function '%s' already declared", func->name);
+            type_error(checker, func->base.pos, "Function '%s' already declared", func_name);
             variable_free(func_var);
+            if (mangled_name) free(mangled_name);
             free(param_types);
             return 0;
         }
     }
+    if (mangled_name) free(mangled_name);
 
     // Create new scope for function
     scope_push(checker);
+
+    // Add receiver to scope if this is a method
+    if (func->receiver_name && func->receiver_type) {
+        Type* receiver_type = type_from_ast(checker, func->receiver_type);
+        if (receiver_type) {
+            Variable* receiver_var = variable_new(func->receiver_name, receiver_type, func->base.pos);
+            if (receiver_var) {
+                receiver_var->is_initialized = 1; // Receiver is always initialized
+                scope_add_variable(checker->current_scope, receiver_var);
+            }
+        }
+    }
 
     // Add function parameters to the function scope
     if (func->params) {
@@ -438,8 +493,10 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         }
         
         var->ownership = var_decl->ownership;
-        var->is_initialized = (var_decl->values != NULL);
-        
+        // All declared variables in Go/Goo are zero-initialized
+        // (numbers→0, arrays→all zeros, pointers→nil, etc.)
+        var->is_initialized = 1;
+
         if (!scope_add_variable(checker->current_scope, var)) {
             type_error(checker, var_decl->base.pos, 
                       "Variable '%s' already declared in this scope", var_decl->names[i]);
@@ -507,8 +564,58 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
 
 int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_TYPE_DECL) return 0;
-    
-    // TODO: Implement type declarations
+
+    TypeDeclNode* type_decl = (TypeDeclNode*)decl;
+
+    // Check if this is a struct type declaration
+    if (type_decl->type && type_decl->type->type == AST_STRUCT_TYPE) {
+        StructTypeNode* struct_node = (StructTypeNode*)type_decl->type;
+
+        // Create struct fields
+        StructField* fields = NULL;
+        if (struct_node->field_count > 0) {
+            fields = malloc(sizeof(StructField) * struct_node->field_count);
+
+            for (size_t i = 0; i < struct_node->field_count; i++) {
+                fields[i].name = strdup(struct_node->field_names[i]);
+                fields[i].type = type_from_ast(checker, struct_node->field_types[i]);
+                fields[i].offset = i;  // Will be computed properly in codegen
+                fields[i].ownership = OWNERSHIP_OWNED;
+                fields[i].mutability = MUTABILITY_MUTABLE;
+
+                if (!fields[i].type) {
+                    // Cleanup on error
+                    for (size_t j = 0; j < i; j++) {
+                        free(fields[j].name);
+                    }
+                    free(fields);
+                    return 0;
+                }
+            }
+        }
+
+        // Create the struct type
+        Type* struct_type = type_new(TYPE_STRUCT);
+        struct_type->data.struct_type.fields = fields;
+        struct_type->data.struct_type.field_count = struct_node->field_count;
+        struct_type->data.struct_type.name = strdup(type_decl->name);
+
+        // Register the type as a variable so it can be looked up
+        Variable* type_var = variable_new(type_decl->name, struct_type, type_decl->base.pos);
+        if (type_var) {
+            type_var->is_initialized = 1;
+            if (!scope_add_variable(checker->current_scope, type_var)) {
+                type_error(checker, type_decl->base.pos,
+                          "Type '%s' already declared in this scope", type_decl->name);
+                variable_free(type_var);
+                return 0;
+            }
+        }
+
+        return 1;
+    }
+
+    // TODO: Handle other type declarations (aliases, etc.)
     return 1;
 }
 
@@ -765,8 +872,13 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(ident->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(ident->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(ident->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
-            
-            // TODO: Handle user-defined types
+
+            // Look up user-defined types (structs, interfaces, etc.)
+            Variable* type_var = scope_lookup_variable(checker->current_scope, ident->name);
+            if (type_var && type_var->type) {
+                return type_var->type;
+            }
+
             type_error(checker, type_node->pos, "Unknown type '%s'", ident->name);
             return NULL;
         }
@@ -792,7 +904,13 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(basic->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(basic->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
-            
+
+            // Look up user-defined types (structs, interfaces, etc.)
+            Variable* type_var = scope_lookup_variable(checker->current_scope, basic->name);
+            if (type_var && type_var->type) {
+                return type_var->type;
+            }
+
             type_error(checker, type_node->pos, "Unknown type '%s'", basic->name);
             return NULL;
         }

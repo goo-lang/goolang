@@ -85,9 +85,10 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> unsafe_stmt asm_stmt parallel_for_stmt
 /* Removed useless rule type declarations */
 %type <node> expression primary_expr unary_expr binary_expr
-%type <node> call_expr index_expr selector_expr
+%type <node> call_expr index_expr selector_expr composite_literal field_init_list field_init
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
+%type <node> struct_type struct_field_list struct_field
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -234,7 +235,23 @@ func_decl:
         func->params = $4;
         func->return_type = $6;
         func->body = $7;
+        func->receiver_name = NULL;
+        func->receiver_type = NULL;
         ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC LPAREN identifier type RPAREN identifier LPAREN opt_func_params RPAREN opt_func_result block {
+        // Method declaration: func (receiver Type) method_name(params) return_type { body }
+        IdentifierNode* receiver_ident = (IdentifierNode*)$3;
+        IdentifierNode* func_ident = (IdentifierNode*)$6;
+        FuncDeclNode* func = ast_func_decl_new(func_ident->name, func_ident->base.pos);
+        func->receiver_name = strdup(receiver_ident->name);
+        func->receiver_type = $4;
+        func->params = $8;
+        func->return_type = $10;
+        func->body = $11;
+        ast_node_free($3);
+        ast_node_free($6);
         $$ = (ASTNode*)func;
     }
     | COMPTIME FUNC identifier LPAREN opt_func_params RPAREN opt_func_result block {
@@ -244,6 +261,8 @@ func_decl:
         func->return_type = $7;
         func->body = $8;
         func->is_comptime = 1;
+        func->receiver_name = NULL;
+        func->receiver_type = NULL;
         ast_node_free($3);
         $$ = (ASTNode*)func;
     }
@@ -254,6 +273,8 @@ func_decl:
         func->return_type = $7;
         func->body = $8;
         func->is_unsafe = 1;
+        func->receiver_name = NULL;
+        func->receiver_type = NULL;
         ast_node_free($3);
         $$ = (ASTNode*)func;
     }
@@ -815,6 +836,7 @@ binary_expr:
 primary_expr:
     identifier { $$ = $1; }
     | literal { $$ = $1; }
+    | composite_literal { $$ = $1; }
     | call_expr { $$ = $1; }
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }
@@ -875,6 +897,73 @@ selector_expr:
     }
     ;
 
+composite_literal:
+    identifier LBRACE RBRACE {
+        CompositeLitNode* comp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
+        comp->base.type = AST_COMPOSITE_LIT;
+        comp->base.pos = get_current_position();
+        comp->base.node_type = NULL;
+        comp->base.next = NULL;
+        comp->type = $1;
+        comp->field_names = NULL;
+        comp->field_values = NULL;
+        comp->field_count = 0;
+        $$ = (ASTNode*)comp;
+    }
+    | identifier LBRACE field_init_list RBRACE {
+        CompositeLitNode* comp = (CompositeLitNode*)$3;
+        comp->type = $1;
+        $$ = (ASTNode*)comp;
+    }
+    ;
+
+field_init_list:
+    field_init {
+        CompositeLitNode* comp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
+        comp->base.type = AST_COMPOSITE_LIT;
+        comp->base.pos = get_current_position();
+        comp->base.node_type = NULL;
+        comp->base.next = NULL;
+        comp->field_names = (char**)malloc(sizeof(char*));
+        comp->field_values = (ASTNode**)malloc(sizeof(ASTNode*));
+        comp->field_count = 1;
+        // $1 is a temporary CompositeLitNode with one field
+        CompositeLitNode* single = (CompositeLitNode*)$1;
+        comp->field_names[0] = single->field_names[0];
+        comp->field_values[0] = single->field_values[0];
+        free(single->field_names);
+        free(single->field_values);
+        free(single);
+        $$ = (ASTNode*)comp;
+    }
+    | field_init_list COMMA field_init {
+        CompositeLitNode* comp = (CompositeLitNode*)$1;
+        CompositeLitNode* single = (CompositeLitNode*)$3;
+        comp->field_count++;
+        comp->field_names = (char**)realloc(comp->field_names, sizeof(char*) * comp->field_count);
+        comp->field_values = (ASTNode**)realloc(comp->field_values, sizeof(ASTNode*) * comp->field_count);
+        comp->field_names[comp->field_count - 1] = single->field_names[0];
+        comp->field_values[comp->field_count - 1] = single->field_values[0];
+        free(single->field_names);
+        free(single->field_values);
+        free(single);
+        $$ = (ASTNode*)comp;
+    }
+    ;
+
+field_init:
+    identifier COLON expression {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        CompositeLitNode* temp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
+        temp->field_names = (char**)malloc(sizeof(char*));
+        temp->field_values = (ASTNode**)malloc(sizeof(ASTNode*));
+        temp->field_names[0] = strdup(ident->name);
+        temp->field_values[0] = $3;
+        ast_node_free($1);
+        $$ = (ASTNode*)temp;
+    }
+    ;
+
 expression_list:
     expression {
         $$ = $1;
@@ -895,9 +984,10 @@ type:
     | func_type { $$ = $1; }
     | pointer_type { $$ = $1; }
     | reference_type { $$ = $1; }     // Goo extension
-    | unsafe_ptr_type { $$ = $1; }    // Goo extension  
+    | unsafe_ptr_type { $$ = $1; }    // Goo extension
     | error_union_type { $$ = $1; }   // Goo extension
     | nullable_type { $$ = $1; }      // Goo extension
+    | struct_type { $$ = $1; }        // Struct types
     ;
 
 type_name:
@@ -1037,6 +1127,73 @@ nullable_type:
     QUESTION type {
         NullableTypeNode* nullable = ast_nullable_type_new($2, get_current_position());
         $$ = (ASTNode*)nullable;
+    }
+    ;
+
+struct_type:
+    STRUCT LBRACE struct_field_list RBRACE {
+        $$ = $3;
+    }
+    | STRUCT LBRACE RBRACE {
+        // Empty struct
+        StructTypeNode* struct_node = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+        struct_node->base.type = AST_STRUCT_TYPE;
+        struct_node->base.pos = get_current_position();
+        struct_node->base.node_type = NULL;
+        struct_node->base.next = NULL;
+        struct_node->field_names = NULL;
+        struct_node->field_types = NULL;
+        struct_node->field_count = 0;
+        $$ = (ASTNode*)struct_node;
+    }
+    ;
+
+struct_field_list:
+    struct_field {
+        $$ = $1;
+    }
+    | struct_field_list struct_field {
+        // Merge field lists
+        StructTypeNode* first = (StructTypeNode*)$1;
+        StructTypeNode* second = (StructTypeNode*)$2;
+
+        size_t new_count = first->field_count + second->field_count;
+        char** new_names = realloc(first->field_names, sizeof(char*) * new_count);
+        ASTNode** new_types = realloc(first->field_types, sizeof(ASTNode*) * new_count);
+
+        for (size_t i = 0; i < second->field_count; i++) {
+            new_names[first->field_count + i] = second->field_names[i];
+            new_types[first->field_count + i] = second->field_types[i];
+        }
+
+        free(second->field_names);
+        free(second->field_types);
+        free(second);
+
+        first->field_names = new_names;
+        first->field_types = new_types;
+        first->field_count = new_count;
+        $$ = (ASTNode*)first;
+    }
+    ;
+
+struct_field:
+    identifier type SEMICOLON {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+
+        StructTypeNode* struct_node = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+        struct_node->base.type = AST_STRUCT_TYPE;
+        struct_node->base.pos = get_current_position();
+        struct_node->base.node_type = NULL;
+        struct_node->base.next = NULL;
+        struct_node->field_count = 1;
+        struct_node->field_names = malloc(sizeof(char*));
+        struct_node->field_names[0] = strdup(ident->name);
+        struct_node->field_types = malloc(sizeof(ASTNode*));
+        struct_node->field_types[0] = $2;
+
+        ast_node_free($1);
+        $$ = (ASTNode*)struct_node;
     }
     ;
 

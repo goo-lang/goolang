@@ -301,23 +301,46 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
     if (func_decl->params && param_count > 0) {
         ASTNode* param = func_decl->params;
         int param_index = 0;
-        
+
         while (param && param_index < param_count) {
-            if (param->type == AST_IDENTIFIER) {
+            // Parameters are AST_VAR_DECL nodes created by the parser
+            if (param->type == AST_VAR_DECL) {
+                VarDeclNode* param_decl = (VarDeclNode*)param;
+
+                // Handle each name in the parameter declaration
+                for (size_t i = 0; i < param_decl->name_count && param_index < param_count; i++) {
+                    const char* param_name = param_decl->names[i];
+                    LLVMValueRef param_value = LLVMGetParam(function, param_index);
+
+                    // Create alloca for parameter
+                    LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_name);
+                    LLVMBuildStore(codegen->builder, param_value, param_alloca);
+
+                    // Add to value table
+                    ValueInfo* param_info = value_info_new(param_name, param_alloca,
+                                                          func_type_info->data.function.param_types[param_index]);
+                    param_info->is_lvalue = 1;
+                    param_info->is_initialized = 1;
+                    codegen_add_value(codegen, param_info);
+
+                    param_index++;
+                }
+            } else if (param->type == AST_IDENTIFIER) {
+                // Fallback for old-style identifier parameters (if any)
                 IdentifierNode* param_ident = (IdentifierNode*)param;
                 LLVMValueRef param_value = LLVMGetParam(function, param_index);
-                
+
                 // Create alloca for parameter
                 LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_ident->name);
                 LLVMBuildStore(codegen->builder, param_value, param_alloca);
-                
+
                 // Add to value table
-                ValueInfo* param_info = value_info_new(param_ident->name, param_alloca, 
+                ValueInfo* param_info = value_info_new(param_ident->name, param_alloca,
                                                       func_type_info->data.function.param_types[param_index]);
                 param_info->is_lvalue = 1;
                 param_info->is_initialized = 1;
                 codegen_add_value(codegen, param_info);
-                
+
                 param_index++;
             }
             param = param->next;

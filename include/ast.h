@@ -43,6 +43,7 @@ typedef enum {
     // Expressions
     AST_IDENTIFIER,
     AST_LITERAL,
+    AST_COMPOSITE_LIT,
     AST_BINARY_EXPR,
     AST_UNARY_EXPR,
     AST_POSTFIX_EXPR,
@@ -241,6 +242,9 @@ typedef struct {
     struct ASTNode* body;       // Function body
     int is_comptime;           // Goo extension: comptime function
     int is_unsafe;             // Goo extension: unsafe function
+    // Method receiver (for methods)
+    char* receiver_name;       // Receiver variable name (e.g., "c")
+    struct ASTNode* receiver_type; // Receiver type (e.g., Counter or *Counter)
 } FuncDeclNode;
 
 // Variable declaration
@@ -377,6 +381,15 @@ typedef struct {
     char* value;
 } LiteralNode;
 
+// Composite literal (e.g., Person{age: 30})
+typedef struct {
+    ASTNode base;
+    struct ASTNode* type;           // Type being initialized
+    char** field_names;             // Field names
+    struct ASTNode** field_values;  // Field value expressions
+    size_t field_count;             // Number of fields
+} CompositeLitNode;
+
 // Binary expression
 typedef struct {
     ASTNode base;
@@ -445,6 +458,14 @@ typedef struct {
     struct ASTNode* key_type;
     struct ASTNode* value_type;
 } MapTypeNode;
+
+// Struct type
+typedef struct {
+    ASTNode base;
+    char** field_names;
+    struct ASTNode** field_types;
+    size_t field_count;
+} StructTypeNode;
 
 // Channel type
 typedef struct {

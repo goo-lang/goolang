@@ -3,6 +3,9 @@
 #include <string.h>
 #include <stdio.h>
 
+// Forward declarations
+ValueInfo* codegen_generate_composite_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+
 // Expression code generation
 
 ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -13,6 +16,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_identifier(codegen, checker, expr);
         case AST_LITERAL:
             return codegen_generate_literal(codegen, checker, expr);
+        case AST_COMPOSITE_LIT:
+            return codegen_generate_composite_lit(codegen, checker, expr);
         case AST_BINARY_EXPR:
             return codegen_generate_binary_expr(codegen, checker, expr);
         case AST_UNARY_EXPR:
@@ -49,16 +54,29 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_IDENTIFIER) return NULL;
-    
+
     IdentifierNode* ident = (IdentifierNode*)expr;
-    
+
     // Look up the identifier in the symbol table
     ValueInfo* value_info = codegen_lookup_value(codegen, ident->name);
     if (!value_info) {
+        // If not found in value table, check if it's a function in the LLVM module
+        LLVMValueRef func = LLVMGetNamedFunction(codegen->module, ident->name);
+        if (func) {
+            // Get function type from type checker
+            Variable* func_var = type_checker_lookup_variable(checker, ident->name);
+            Type* func_type = NULL;
+            if (func_var && func_var->type && func_var->type->kind == TYPE_FUNCTION) {
+                func_type = func_var->type;
+            }
+            // Return function as a value (functions are not lvalues)
+            return value_info_new(ident->name, func, func_type);
+        }
+
         codegen_error(codegen, expr->pos, "Undefined identifier '%s'", ident->name);
         return NULL;
     }
-    
+
     // If it's an lvalue (variable), load the value
     if (value_info->is_lvalue) {
         LLVMValueRef loaded_value = LLVMBuildLoad2(codegen->builder, LLVMTypeOf(value_info->llvm_value), value_info->llvm_value, ident->name);
@@ -76,17 +94,27 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_LITERAL) return NULL;
-    
+
     LiteralNode* literal = (LiteralNode*)expr;
     LLVMValueRef llvm_value = NULL;
     Type* goo_type = NULL;
-    
+
     switch (literal->literal_type) {
         case TOKEN_INT: {
             // Parse integer value from string
             long long value = atoll(literal->value);
-            llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), value, 1);
-            goo_type = type_checker_get_builtin(checker, TYPE_INT64);
+
+            // Use type from type checker if available, otherwise default to INT32
+            goo_type = expr->node_type ? expr->node_type : type_checker_get_builtin(checker, TYPE_INT32);
+
+            // Generate appropriate LLVM constant based on Goo type
+            LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, goo_type);
+            if (!llvm_type) {
+                llvm_type = LLVMInt32TypeInContext(codegen->context);
+                goo_type = type_checker_get_builtin(checker, TYPE_INT32);
+            }
+
+            llvm_value = LLVMConstInt(llvm_type, value, 1);
             break;
         }
         
@@ -100,25 +128,29 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
         
         case TOKEN_STRING: {
             // Create global string constant
-            LLVMValueRef str_const = LLVMBuildGlobalStringPtr(codegen->builder, literal->value, "str");
-            
-            // Create string struct { ptr, len }
-            LLVMTypeRef string_type = LLVMStructTypeInContext(codegen->context, 
-                (LLVMTypeRef[]){
-                    LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
-                    LLVMInt64TypeInContext(codegen->context)
-                }, 2, 0);
-            LLVMValueRef string_val = LLVMGetUndef(string_type);
-            
-            // Set pointer
-            string_val = LLVMBuildInsertValue(codegen->builder, string_val, str_const, 0, "");
-            
-            // Set length
+            LLVMValueRef str_global = LLVMAddGlobal(codegen->module,
+                LLVMArrayType(LLVMInt8TypeInContext(codegen->context), strlen(literal->value) + 1),
+                ".str");
+            LLVMSetInitializer(str_global, LLVMConstStringInContext(codegen->context,
+                literal->value, strlen(literal->value), 0));
+            LLVMSetLinkage(str_global, LLVMPrivateLinkage);
+            LLVMSetGlobalConstant(str_global, 1);
+
+            // Get pointer to the string (GEP into the array)
+            LLVMValueRef indices[] = {
+                LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 0, 0),
+                LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 0, 0)
+            };
+            LLVMValueRef str_ptr = LLVMConstGEP2(
+                LLVMArrayType(LLVMInt8TypeInContext(codegen->context), strlen(literal->value) + 1),
+                str_global, indices, 2);
+
+            // Create string struct { ptr, len } as a constant
             size_t len = strlen(literal->value);
             LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), len, 0);
-            string_val = LLVMBuildInsertValue(codegen->builder, string_val, len_val, 1, "");
-            
-            llvm_value = string_val;
+            LLVMValueRef string_fields[] = {str_ptr, len_val};
+
+            llvm_value = LLVMConstStructInContext(codegen->context, string_fields, 2, 0);
             goo_type = type_checker_get_builtin(checker, TYPE_STRING);
             break;
         }
@@ -153,6 +185,81 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
 #endif
 }
 
+ValueInfo* codegen_generate_composite_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_COMPOSITE_LIT) return NULL;
+
+    CompositeLitNode* comp = (CompositeLitNode*)expr;
+
+    // Get the struct type
+    Type* struct_type = expr->node_type;
+    if (!struct_type || struct_type->kind != TYPE_STRUCT) {
+        codegen_error(codegen, expr->pos, "Composite literal must have struct type");
+        return NULL;
+    }
+
+    // Create LLVM struct type
+    LLVMTypeRef llvm_struct_type = codegen_type_to_llvm(codegen, struct_type);
+
+    // Create a zero-initialized struct value
+    LLVMValueRef struct_value = LLVMConstNull(llvm_struct_type);
+
+    // If there are field initializers, create a struct with those values
+    if (comp->field_count > 0) {
+        // Build array of field values (zero for uninitialized fields)
+        LLVMValueRef* field_values = (LLVMValueRef*)calloc(struct_type->data.struct_type.field_count,
+                                                           sizeof(LLVMValueRef));
+
+        // Initialize all fields to zero first
+        for (size_t i = 0; i < struct_type->data.struct_type.field_count; i++) {
+            LLVMTypeRef field_type = codegen_type_to_llvm(codegen, struct_type->data.struct_type.fields[i].type);
+            field_values[i] = LLVMConstNull(field_type);
+        }
+
+        // Set values for explicitly initialized fields
+        for (size_t i = 0; i < comp->field_count; i++) {
+            const char* field_name = comp->field_names[i];
+            ASTNode* field_value_expr = comp->field_values[i];
+
+            // Find field index
+            int field_index = -1;
+            for (size_t j = 0; j < struct_type->data.struct_type.field_count; j++) {
+                if (strcmp(struct_type->data.struct_type.fields[j].name, field_name) == 0) {
+                    field_index = (int)j;
+                    break;
+                }
+            }
+
+            if (field_index == -1) {
+                codegen_error(codegen, expr->pos, "Unknown field '%s'", field_name);
+                free(field_values);
+                return NULL;
+            }
+
+            // Generate the field value
+            ValueInfo* field_val = codegen_generate_expression(codegen, checker, field_value_expr);
+            if (!field_val) {
+                free(field_values);
+                return NULL;
+            }
+
+            field_values[field_index] = field_val->llvm_value;
+            value_info_free(field_val);
+        }
+
+        // Create the struct constant
+        struct_value = LLVMConstNamedStruct(llvm_struct_type, field_values,
+                                           struct_type->data.struct_type.field_count);
+        free(field_values);
+    }
+
+    return value_info_new(NULL, struct_value, struct_type);
+#endif
+}
+
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -164,26 +271,61 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     
     // Special handling for assignment
     if (binary->operator == TOKEN_ASSIGN) {
-        // Left side must be an lvalue
-        if (binary->left->type != AST_IDENTIFIER) {
-            codegen_error(codegen, expr->pos, "Assignment target must be an identifier");
+        // Left side must be an lvalue (identifier or index expression)
+        ValueInfo* target = NULL;
+
+        if (binary->left->type == AST_IDENTIFIER) {
+            // Simple identifier assignment
+            IdentifierNode* ident = (IdentifierNode*)binary->left;
+            target = codegen_lookup_value(codegen, ident->name);
+            if (!target || !target->is_lvalue) {
+                codegen_error(codegen, expr->pos, "Invalid assignment target '%s'", ident->name);
+                return NULL;
+            }
+        } else if (binary->left->type == AST_INDEX_EXPR) {
+            // Array/slice indexed assignment (e.g., arr[i] = value)
+            target = codegen_generate_index_expr(codegen, checker, binary->left);
+            if (!target) {
+                return NULL;
+            }
+            if (!target->is_lvalue) {
+                codegen_error(codegen, expr->pos, "Index expression is not assignable");
+                value_info_free(target);
+                return NULL;
+            }
+        } else if (binary->left->type == AST_SELECTOR_EXPR) {
+            // Struct field assignment (e.g., p.age = value)
+            target = codegen_generate_selector_expr(codegen, checker, binary->left);
+            if (!target) {
+                return NULL;
+            }
+            if (!target->is_lvalue) {
+                codegen_error(codegen, expr->pos, "Selector expression is not assignable");
+                value_info_free(target);
+                return NULL;
+            }
+        } else {
+            codegen_error(codegen, expr->pos, "Assignment target must be an identifier, index expression, or field access");
             return NULL;
         }
-        
-        IdentifierNode* ident = (IdentifierNode*)binary->left;
-        ValueInfo* target = codegen_lookup_value(codegen, ident->name);
-        if (!target || !target->is_lvalue) {
-            codegen_error(codegen, expr->pos, "Invalid assignment target '%s'", ident->name);
-            return NULL;
-        }
-        
+
         // Generate right side value
         ValueInfo* value = codegen_generate_expression(codegen, checker, binary->right);
-        if (!value) return NULL;
-        
+        if (!value) {
+            if (binary->left->type == AST_INDEX_EXPR || binary->left->type == AST_SELECTOR_EXPR) {
+                value_info_free(target);
+            }
+            return NULL;
+        }
+
         // Store the value
         LLVMBuildStore(codegen->builder, value->llvm_value, target->llvm_value);
-        
+
+        // Free target if it was an index or selector expression (we allocated it)
+        if (binary->left->type == AST_INDEX_EXPR || binary->left->type == AST_SELECTOR_EXPR) {
+            value_info_free(target);
+        }
+
         // Return the stored value
         return value;
     }
@@ -203,11 +345,16 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         return NULL;
     }
     
-    // Get the result type from the type checker
-    Type* result_type = type_check_binary_expr(checker, expr);
+    // Get the result type from the AST (already type-checked)
+    Type* result_type = expr->node_type;
+    if (!result_type) {
+        // Fallback: try to infer from operands
+        result_type = left_val->goo_type;
+    }
     if (!result_type) {
         value_info_free(left_val);
         value_info_free(right_val);
+        codegen_error(codegen, expr->pos, "Binary expression has no type information");
         return NULL;
     }
     
@@ -400,10 +547,15 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
     ValueInfo* operand = codegen_generate_expression(codegen, checker, unary->operand);
     if (!operand) return NULL;
     
-    // Get result type
-    Type* result_type = type_check_unary_expr(checker, expr);
+    // Get result type from AST (already type-checked)
+    Type* result_type = expr->node_type;
+    if (!result_type) {
+        // Fallback: use operand type
+        result_type = operand->goo_type;
+    }
     if (!result_type) {
         value_info_free(operand);
+        codegen_error(codegen, expr->pos, "Unary expression has no type information");
         return NULL;
     }
     
@@ -494,6 +646,51 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         if (strcmp(func_name->name, "goo_printf") == 0) {
             return codegen_generate_printf_call(codegen, checker, expr);
         }
+        if (strcmp(func_name->name, "len") == 0) {
+            // Handle len() built-in - returns the length of arrays/slices/strings/maps
+            if (!call->args) {
+                codegen_error(codegen, expr->pos, "len() requires an argument");
+                return NULL;
+            }
+
+            // Generate the argument to determine its type
+            ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
+            if (!arg_val) return NULL;
+
+            Type* arg_type = arg_val->goo_type;
+            LLVMValueRef len_value = NULL;
+            Type* int_type = type_checker_get_builtin(checker, TYPE_INT32);
+
+            if (arg_type->kind == TYPE_ARRAY) {
+                // For arrays, return the compile-time constant size
+                size_t array_length = arg_type->data.array.length;
+                len_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                        array_length, 0);
+                value_info_free(arg_val);
+            } else if (arg_type->kind == TYPE_SLICE || arg_type->kind == TYPE_STRING) {
+                // For slices/strings, extract the length field (index 1 in struct)
+                LLVMValueRef slice_val = arg_val->llvm_value;
+                if (arg_val->is_lvalue) {
+                    slice_val = LLVMBuildLoad2(codegen->builder,
+                                              codegen_type_to_llvm(codegen, arg_type),
+                                              slice_val, "slice_load");
+                }
+                len_value = LLVMBuildExtractValue(codegen->builder, slice_val, 1, "len");
+                value_info_free(arg_val);
+            } else if (arg_type->kind == TYPE_MAP) {
+                // For maps, would need runtime call - TODO
+                codegen_error(codegen, expr->pos, "len() for maps not yet implemented");
+                value_info_free(arg_val);
+                return NULL;
+            } else {
+                codegen_error(codegen, expr->pos,
+                            "len() requires array, slice, string, or map argument");
+                value_info_free(arg_val);
+                return NULL;
+            }
+
+            return value_info_new(NULL, len_value, int_type);
+        }
     }
     
     // Generate function expression
@@ -534,18 +731,26 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     }
     
     // Generate call
-    LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(func_val->llvm_value)), func_val->llvm_value, args, (unsigned)arg_count, "call");
+    // Get the function type - in LLVM with opaque pointers, use LLVMGlobalGetValueType for functions
+    LLVMTypeRef func_type = LLVMGlobalGetValueType(func_val->llvm_value);
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder, func_type, func_val->llvm_value, args, (unsigned)arg_count, "call");
     
     free(args);
-    
-    // Get return type
-    Type* return_type = type_check_call_expr(checker, expr);
+
+    // Get return type from AST (already type-checked)
+    Type* return_type = expr->node_type;
+    if (!return_type && func_val->goo_type && func_val->goo_type->kind == TYPE_FUNCTION) {
+        // Fallback: use function's return type
+        return_type = func_val->goo_type->data.function.return_type;
+    }
+
     value_info_free(func_val);
-    
+
     if (!return_type) {
+        codegen_error(codegen, expr->pos, "Call expression has no type information");
         return NULL;
     }
-    
+
     return value_info_new(NULL, result, return_type);
 #endif
 }
@@ -704,16 +909,31 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
-    
+
     SelectorExprNode* selector = (SelectorExprNode*)expr;
-    
+
     // Generate code for the base expression
-    ValueInfo* base_val = codegen_generate_expression(codegen, checker, selector->expr);
-    if (!base_val) {
-        codegen_error(codegen, expr->pos, "Failed to generate base expression for selector");
-        return NULL;
+    // Special case: if base is an identifier, look it up directly to get the lvalue pointer
+    ValueInfo* base_val = NULL;
+    if (selector->expr->type == AST_IDENTIFIER) {
+        IdentifierNode* ident = (IdentifierNode*)selector->expr;
+        base_val = codegen_lookup_value(codegen, ident->name);
+        if (!base_val) {
+            codegen_error(codegen, expr->pos, "Undefined identifier '%s'", ident->name);
+            return NULL;
+        }
+        // Don't free this - it's from the symbol table
+        // Make a copy so we can free it later
+        base_val = value_info_new(ident->name, base_val->llvm_value, base_val->goo_type);
+        base_val->is_lvalue = 1;  // Variables are always lvalues
+    } else {
+        base_val = codegen_generate_expression(codegen, checker, selector->expr);
+        if (!base_val) {
+            codegen_error(codegen, expr->pos, "Failed to generate base expression for selector");
+            return NULL;
+        }
     }
-    
+
     // Get the type of the base expression
     Type* base_type = base_val->goo_type;
     

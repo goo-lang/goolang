@@ -139,6 +139,7 @@ TestResult* run_test(TestCase* test) {
     double start_time = test_get_time_ms();
     
     // Setup fixture if needed
+    void* fixture_data = NULL;
     if (test->setup) {
         // Create fixture for fixture-based tests
         g_current_fixture = (TestFixture*)calloc(1, sizeof(TestFixture));
@@ -149,19 +150,20 @@ TestResult* run_test(TestCase* test) {
             // Allocate fixture data - we need to infer the size
             // For now, allocate a reasonable amount for test fixtures
             g_current_fixture->data = calloc(1, 1024); // 1KB should be enough for most test fixtures
+            fixture_data = g_current_fixture->data;
         }
-        test->setup();
+        test->setup(fixture_data);
     }
-    
+
     // Run the test
     TestStatus status = TEST_PASS;
     if (test->test_func) {
-        status = test->test_func();
+        status = test->test_func(fixture_data);
     }
-    
+
     // Teardown fixture if needed
     if (test->teardown) {
-        test->teardown();
+        test->teardown(fixture_data);
     }
     
     // Clean up fixture

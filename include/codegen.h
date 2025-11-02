@@ -28,39 +28,50 @@
 typedef struct CodeGenerator CodeGenerator;
 typedef struct FunctionInfo FunctionInfo;
 typedef struct ValueInfo ValueInfo;
+typedef struct LoopContext LoopContext;
 
 #if LLVM_AVAILABLE
+// Loop context for tracking break/continue targets
+struct LoopContext {
+    LLVMBasicBlockRef break_target;    // Where break jumps to (loop exit)
+    LLVMBasicBlockRef continue_target; // Where continue jumps to (loop post/cond)
+    LoopContext* parent;               // Parent loop for nested loops
+};
+
 // LLVM-based code generator
 struct CodeGenerator {
     LLVMContextRef context;
     LLVMModuleRef module;
     LLVMBuilderRef builder;
     LLVMTargetMachineRef target_machine;
-    
+
     // Current function being generated
     LLVMValueRef current_function;
     FunctionInfo* current_function_info;
-    
+
+    // Loop context stack for break/continue
+    LoopContext* current_loop;
+
     // Symbol tables
     ValueInfo** value_table;     // Maps variable names to LLVM values
     size_t value_table_size;
     size_t value_table_capacity;
-    
+
     // Type cache for LLVM types
     LLVMTypeRef* type_cache;
     size_t type_cache_size;
     size_t type_cache_capacity;
-    
+
     // Error reporting
     char* current_file;
     int error_count;
     int warning_count;
-    
+
     // Target information
     char* target_triple;
     char* target_cpu;
     char* target_features;
-    
+
     // WebAssembly-specific configuration
     int wasm_configured;
     int is_wasm_target;

@@ -15,10 +15,12 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     codegen_error(codegen, decl->pos, "LLVM support not available");
     return 0;
 #else
-    if (!codegen || !checker || !decl || decl->type != AST_FUNC_DECL) return 0;
-    
+    if (!codegen || !checker || !decl || decl->type != AST_FUNC_DECL) {
+        return 0;
+    }
+
     FuncDeclNode* func_decl = (FuncDeclNode*)decl;
-    
+
     // Get function type from AST
     Type* return_type = NULL;
     if (func_decl->return_type) {
@@ -26,7 +28,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     } else {
         return_type = type_checker_get_builtin(checker, TYPE_VOID);
     }
-    
+
     if (!return_type) {
         codegen_error(codegen, decl->pos, "Failed to determine function return type");
         return 0;
@@ -280,16 +282,15 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             // Local variable
             alloca_inst = codegen_create_entry_alloca(codegen, llvm_type, var_name);
         } else {
-            // Global variable
+            // Global variable - don't set initializer yet, we'll set it below
             alloca_inst = LLVMAddGlobal(codegen->module, llvm_type, var_name);
-            LLVMSetInitializer(alloca_inst, LLVMConstNull(llvm_type));
         }
-        
+
         if (!alloca_inst) {
             codegen_error(codegen, decl->pos, "Failed to create storage for variable '%s'", var_name);
             return 0;
         }
-        
+
         // Generate initializer if present
         if (var_decl->values) {
             ValueInfo* init_value = codegen_generate_expression(codegen, checker, var_decl->values);
@@ -297,13 +298,26 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 codegen_error(codegen, decl->pos, "Failed to generate initializer for variable '%s'", var_name);
                 return 0;
             }
-            
+
             // Store the initial value
             if (codegen->current_function) {
                 LLVMBuildStore(codegen->builder, init_value->llvm_value, alloca_inst);
             } else {
-                // Global initializer
+                // Global initializer - must be constant
                 if (LLVMIsConstant(init_value->llvm_value)) {
+                    // Verify types match (globals are pointers, need to check value type)
+                    LLVMTypeRef global_value_type = LLVMGlobalGetValueType(alloca_inst);
+                    LLVMTypeRef init_type = LLVMTypeOf(init_value->llvm_value);
+
+                    if (global_value_type != init_type) {
+                        fprintf(stderr, "[ERROR] Type mismatch for global '%s':\n", var_name);
+                        fprintf(stderr, "  Global value type: %s\n", LLVMPrintTypeToString(global_value_type));
+                        fprintf(stderr, "  Initializer type: %s\n", LLVMPrintTypeToString(init_type));
+                        codegen_error(codegen, decl->pos, "Global variable '%s' initializer type mismatch", var_name);
+                        value_info_free(init_value);
+                        return 0;
+                    }
+
                     LLVMSetInitializer(alloca_inst, init_value->llvm_value);
                 } else {
                     codegen_error(codegen, decl->pos, "Global variable '%s' requires constant initializer", var_name);
@@ -311,8 +325,13 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                     return 0;
                 }
             }
-            
+
             value_info_free(init_value);
+        } else {
+            // No initializer - set NULL initializer for globals
+            if (!codegen->current_function) {
+                LLVMSetInitializer(alloca_inst, LLVMConstNull(llvm_type));
+            }
         }
         
         // Add to symbol table
@@ -443,9 +462,29 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
         case AST_ASM_STMT:
             return codegen_generate_asm_stmt(codegen, checker, stmt);
         case AST_BREAK_STMT:
-        case AST_CONTINUE_STMT:
-            // TODO: Implement break/continue
+#if LLVM_AVAILABLE
+            if (!codegen->current_loop) {
+                codegen_error(codegen, stmt->pos, "break statement not inside a loop");
+                return 0;
+            }
+            LLVMBuildBr(codegen->builder, codegen->current_loop->break_target);
             return 1;
+#else
+            codegen_error(codegen, stmt->pos, "LLVM support not available");
+            return 0;
+#endif
+        case AST_CONTINUE_STMT:
+#if LLVM_AVAILABLE
+            if (!codegen->current_loop) {
+                codegen_error(codegen, stmt->pos, "continue statement not inside a loop");
+                return 0;
+            }
+            LLVMBuildBr(codegen->builder, codegen->current_loop->continue_target);
+            return 1;
+#else
+            codegen_error(codegen, stmt->pos, "LLVM support not available");
+            return 0;
+#endif
         default:
             codegen_error(codegen, stmt->pos, "Unknown statement type for code generation");
             return 0;
@@ -557,19 +596,19 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
     return 0;
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_FOR_STMT) return 0;
-    
+
     ForStmtNode* for_stmt = (ForStmtNode*)stmt;
-    
+
     // Create basic blocks
     LLVMBasicBlockRef init_block = codegen_create_block(codegen, "for.init");
     LLVMBasicBlockRef cond_block = codegen_create_block(codegen, "for.cond");
     LLVMBasicBlockRef body_block = codegen_create_block(codegen, "for.body");
     LLVMBasicBlockRef post_block = codegen_create_block(codegen, "for.post");
     LLVMBasicBlockRef exit_block = codegen_create_block(codegen, "for.exit");
-    
+
     // Jump to init block
     LLVMBuildBr(codegen->builder, init_block);
-    
+
     // Generate init block
     codegen_set_insert_point(codegen, init_block);
     if (for_stmt->init) {
@@ -578,7 +617,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         }
     }
     LLVMBuildBr(codegen->builder, cond_block);
-    
+
     // Generate condition block
     codegen_set_insert_point(codegen, cond_block);
     if (for_stmt->condition) {
@@ -586,23 +625,40 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (!condition) {
             return 0;
         }
-        
+
         LLVMBuildCondBr(codegen->builder, condition->llvm_value, body_block, exit_block);
         value_info_free(condition);
     } else {
         // Infinite loop
         LLVMBuildBr(codegen->builder, body_block);
     }
-    
+
+    // Push loop context for break/continue
+    LoopContext loop_ctx;
+    loop_ctx.break_target = exit_block;
+    loop_ctx.continue_target = post_block;
+    loop_ctx.parent = codegen->current_loop;
+    codegen->current_loop = &loop_ctx;
+
     // Generate body block
     codegen_set_insert_point(codegen, body_block);
     if (for_stmt->body) {
         if (!codegen_generate_statement(codegen, checker, for_stmt->body)) {
+            // Pop loop context before returning
+            codegen->current_loop = loop_ctx.parent;
             return 0;
         }
     }
-    LLVMBuildBr(codegen->builder, post_block);
-    
+
+    // Only add branch if the block doesn't already have a terminator
+    // (break/continue/return might have already terminated the block)
+    if (!LLVMGetBasicBlockTerminator(body_block)) {
+        LLVMBuildBr(codegen->builder, post_block);
+    }
+
+    // Pop loop context
+    codegen->current_loop = loop_ctx.parent;
+
     // Generate post block
     codegen_set_insert_point(codegen, post_block);
     if (for_stmt->post) {
@@ -611,10 +667,10 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         }
     }
     LLVMBuildBr(codegen->builder, cond_block);
-    
+
     // Continue with exit block
     codegen_set_insert_point(codegen, exit_block);
-    
+
     return 1;
 #endif
 }
