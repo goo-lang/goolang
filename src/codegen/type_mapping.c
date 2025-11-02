@@ -64,7 +64,34 @@ LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type) {
             
         case TYPE_STRUCT:
             return codegen_get_struct_type(codegen, type);
-            
+
+        case TYPE_TUPLE:
+            // Tuple is represented as a struct with element types
+            {
+                if (!type->data.tuple.element_types || type->data.tuple.element_count == 0) {
+                    return NULL;
+                }
+
+                LLVMTypeRef* element_types = malloc(sizeof(LLVMTypeRef) * type->data.tuple.element_count);
+                if (!element_types) return NULL;
+
+                for (size_t i = 0; i < type->data.tuple.element_count; i++) {
+                    element_types[i] = codegen_type_to_llvm(codegen, type->data.tuple.element_types[i]);
+                    if (!element_types[i]) {
+                        free(element_types);
+                        return NULL;
+                    }
+                }
+
+                LLVMTypeRef tuple_type = LLVMStructTypeInContext(codegen->context,
+                    element_types,
+                    (unsigned)type->data.tuple.element_count,
+                    0);  // Not packed
+
+                free(element_types);
+                return tuple_type;
+            }
+
         case TYPE_INTERFACE:
             // Interface is represented as { vtable*, data* }
             return LLVMStructTypeInContext(codegen->context,

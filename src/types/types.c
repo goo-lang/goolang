@@ -267,14 +267,14 @@ Type* type_pointer(Type* pointee_type) {
 
 Type* type_reference(Type* referenced_type, int is_mutable) {
     if (!referenced_type) return NULL;
-    
+
     Type* type = type_new(TYPE_REFERENCE);
     if (type) {
         type->data.reference.referenced_type = referenced_type;
         type->data.reference.is_mutable = is_mutable;
         type->size = sizeof(void*);
         type->align = sizeof(void*);
-        
+
         // Create name like "&int" or "mut &int"
         char* name = malloc(80);
         if (name) {
@@ -283,6 +283,72 @@ Type* type_reference(Type* referenced_type, int is_mutable) {
             } else {
                 snprintf(name, 80, "&%s", referenced_type->name ? referenced_type->name : "?");
             }
+            type->name = name;
+        }
+    }
+    return type;
+}
+
+Type* type_tuple(Type** element_types, size_t element_count) {
+    if (!element_types || element_count == 0) return NULL;
+
+    Type* type = type_new(TYPE_TUPLE);
+    if (type) {
+        type->data.tuple.element_types = element_types;
+        type->data.tuple.element_count = element_count;
+
+        // Calculate size and alignment (sum of element sizes, max alignment)
+        size_t total_size = 0;
+        size_t max_align = 1;
+        for (size_t i = 0; i < element_count; i++) {
+            if (element_types[i]) {
+                // Align current offset
+                if (element_types[i]->align > 0 && total_size % element_types[i]->align != 0) {
+                    total_size += element_types[i]->align - (total_size % element_types[i]->align);
+                }
+                total_size += element_types[i]->size;
+                if (element_types[i]->align > max_align) {
+                    max_align = element_types[i]->align;
+                }
+            }
+        }
+
+        // Final padding to meet alignment
+        if (max_align > 0 && total_size % max_align != 0) {
+            total_size += max_align - (total_size % max_align);
+        }
+
+        type->size = total_size;
+        type->align = max_align;
+
+        // Create name like "(int, bool, string)"
+        size_t name_size = 3; // "(" + ")" + null
+        for (size_t i = 0; i < element_count; i++) {
+            if (element_types[i] && element_types[i]->name) {
+                name_size += strlen(element_types[i]->name);
+            } else {
+                name_size += 1; // "?"
+            }
+            if (i < element_count - 1) name_size += 2; // ", "
+        }
+
+        char* name = malloc(name_size);
+        if (name) {
+            char* ptr = name;
+            *ptr++ = '(';
+            for (size_t i = 0; i < element_count; i++) {
+                const char* elem_name = (element_types[i] && element_types[i]->name)
+                    ? element_types[i]->name : "?";
+                size_t len = strlen(elem_name);
+                memcpy(ptr, elem_name, len);
+                ptr += len;
+                if (i < element_count - 1) {
+                    *ptr++ = ',';
+                    *ptr++ = ' ';
+                }
+            }
+            *ptr++ = ')';
+            *ptr = '\0';
             type->name = name;
         }
     }

@@ -89,8 +89,9 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field
+%type <node> type_list
 %type <node> identifier literal
-%type <node> expression_list
+%type <node> expression_list identifier_list
 
 // Goo Extensions
 %type <node> error_union_type nullable_type try_expr catch_expr
@@ -328,6 +329,30 @@ opt_func_result:
     /* empty */ { $$ = NULL; }
     | type { $$ = $1; }
     | LPAREN type RPAREN { $$ = $2; }
+    | LPAREN type_list RPAREN {
+        // Multiple return values - create tuple type
+        $$ = $2;
+    }
+    ;
+
+type_list:
+    type COMMA type {
+        // Create tuple type with two elements
+        ASTNode** types = malloc(sizeof(ASTNode*) * 2);
+        types[0] = $1;
+        types[1] = $3;
+        $$ = (ASTNode*)ast_tuple_type_new(types, 2, get_current_position());
+    }
+    | type_list COMMA type {
+        // Add another type to existing tuple
+        TupleTypeNode* tuple = (TupleTypeNode*)$1;
+        size_t new_count = tuple->element_count + 1;
+        ASTNode** new_types = realloc(tuple->element_types, sizeof(ASTNode*) * new_count);
+        new_types[new_count - 1] = $3;
+        tuple->element_types = new_types;
+        tuple->element_count = new_count;
+        $$ = $1;
+    }
     ;
 
 // Variable declaration
@@ -389,6 +414,46 @@ short_var_decl:
         var->is_short_decl = 1;  // Mark as short declaration
         ast_node_free($1);
         $$ = (ASTNode*)var;
+    }
+    | identifier_list SHORT_ASSIGN expression_list {
+        // Multiple assignment: a, b := f() or a, b := 1, 2
+        // Count identifiers
+        size_t count = 1;
+        for (ASTNode* n = $1; n->next != NULL; n = n->next) count++;
+
+        VarDeclNode* var = ast_var_decl_new(get_current_position());
+        var->names = malloc(sizeof(char*) * count);
+        var->name_count = count;
+
+        // Extract identifier names
+        ASTNode* id_node = $1;
+        for (size_t i = 0; i < count; i++) {
+            IdentifierNode* ident = (IdentifierNode*)id_node;
+            var->names[i] = strdup(ident->name);
+            ASTNode* next = id_node->next;
+            id_node->next = NULL;  // Break link before freeing
+            ast_node_free(id_node);
+            id_node = next;
+        }
+
+        var->values = $3;
+        var->is_short_decl = 1;
+        $$ = (ASTNode*)var;
+    }
+    ;
+
+identifier_list:
+    identifier COMMA identifier {
+        // Start a list with two identifiers
+        $1->next = $3;
+        $$ = $1;
+    }
+    | identifier_list COMMA identifier {
+        // Add another identifier to the list
+        ASTNode* last = $1;
+        while (last->next != NULL) last = last->next;
+        last->next = $3;
+        $$ = $1;
     }
     ;
 
@@ -652,7 +717,7 @@ return_stmt:
         ret->values = NULL;
         $$ = (ASTNode*)ret;
     }
-    | RETURN expression {
+    | RETURN expression_list {
         ReturnStmtNode* ret = (ReturnStmtNode*)malloc(sizeof(ReturnStmtNode));
         ret->base.type = AST_RETURN_STMT;
         ret->base.pos = get_current_position();

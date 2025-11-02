@@ -36,6 +36,7 @@ typedef enum {
     TYPE_POINTER,
     TYPE_REFERENCE,
     TYPE_STRUCT,
+    TYPE_TUPLE,
     TYPE_INTERFACE,
     
     // Goo extensions
@@ -128,7 +129,13 @@ struct Type {
             size_t field_count;
             char* name;
         } struct_type;
-        
+
+        // Tuple type (for multiple return values)
+        struct {
+            Type** element_types;
+            size_t element_count;
+        } tuple;
+
         // Interface type
         struct {
             struct InterfaceMethod* methods;
@@ -284,6 +291,7 @@ Type* type_channel(Type* element_type, ChannelPattern pattern);
 Type* type_function(Type** param_types, size_t param_count, Type* return_type);
 Type* type_pointer(Type* pointee_type);
 Type* type_reference(Type* referenced_type, int is_mutable);
+Type* type_tuple(Type** element_types, size_t element_count);
 
 Type* type_new_placeholder();
 

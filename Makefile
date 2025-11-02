@@ -577,3 +577,27 @@ $(TEST_STRUCTS_METHODS): $(TEST_UNIT_DIR)/codegen/structs_methods_test.c $(TEST_
 		$(TYPES_SRCS) \
 		$(CODEGEN_SRCS) \
 		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+
+# TDD Cycle 8: Multiple Return Values Tests
+TEST_MULTIPLE_RETURNS = $(BINDIR)/test_multiple_returns
+
+test-multiple-returns: $(TEST_MULTIPLE_RETURNS)
+	@echo "Running multiple return values tests..."
+	./$(TEST_MULTIPLE_RETURNS)
+
+$(TEST_MULTIPLE_RETURNS): $(TEST_UNIT_DIR)/codegen/multiple_returns_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building multiple return values tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/multiple_returns_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)

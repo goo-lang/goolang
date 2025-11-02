@@ -483,25 +483,62 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     
     // Store the type on the AST node for code generation
     var_decl->base.node_type = final_type;
-    
-    // Add variables to scope
-    for (size_t i = 0; i < var_decl->name_count; i++) {
-        Variable* var = variable_new(var_decl->names[i], final_type, var_decl->base.pos);
-        if (!var) {
-            type_error(checker, var_decl->base.pos, "Memory allocation failed");
+
+    // Handle multiple assignment from tuple
+    if (var_decl->name_count > 1 && final_type && final_type->kind == TYPE_TUPLE) {
+        // Check that the number of names matches the number of tuple elements
+        if (var_decl->name_count != final_type->data.tuple.element_count) {
+            type_error(checker, var_decl->base.pos,
+                      "Assignment mismatch: %zu variables but %zu values",
+                      var_decl->name_count, final_type->data.tuple.element_count);
             return 0;
         }
-        
-        var->ownership = var_decl->ownership;
-        // All declared variables in Go/Goo are zero-initialized
-        // (numbers→0, arrays→all zeros, pointers→nil, etc.)
-        var->is_initialized = 1;
 
-        if (!scope_add_variable(checker->current_scope, var)) {
-            type_error(checker, var_decl->base.pos, 
-                      "Variable '%s' already declared in this scope", var_decl->names[i]);
-            variable_free(var);
-            return 0;
+        // Add each variable with its corresponding tuple element type
+        for (size_t i = 0; i < var_decl->name_count; i++) {
+            // Skip underscore (ignored values)
+            if (strcmp(var_decl->names[i], "_") == 0) {
+                continue;
+            }
+
+            Type* elem_type = final_type->data.tuple.element_types[i];
+            Variable* var = variable_new(var_decl->names[i], elem_type, var_decl->base.pos);
+            if (!var) {
+                type_error(checker, var_decl->base.pos, "Memory allocation failed");
+                return 0;
+            }
+
+            var->ownership = var_decl->ownership;
+            var->is_initialized = 1;
+
+            if (!scope_add_variable(checker->current_scope, var)) {
+                type_error(checker, var_decl->base.pos,
+                          "Variable '%s' already declared in this scope", var_decl->names[i]);
+                variable_free(var);
+                return 0;
+            }
+        }
+    } else {
+        // Single variable or non-tuple type
+        // Add variables to scope
+        for (size_t i = 0; i < var_decl->name_count; i++) {
+            Variable* var = variable_new(var_decl->names[i], final_type, var_decl->base.pos);
+            if (!var) {
+                type_error(checker, var_decl->base.pos, "Memory allocation failed");
+                return 0;
+            }
+
+            var->ownership = var_decl->ownership;
+            // All declared variables in Go/Goo are zero-initialized
+            // (numbers→0, arrays→all zeros, pointers→nil, etc.)
+            var->is_initialized = 1;
+
+            if (!scope_add_variable(checker->current_scope, var)) {
+                type_error(checker, var_decl->base.pos,
+                          "Variable '%s' already declared in this scope", var_decl->names[i]);
+                variable_free(var);
+                return 0;
+            }
         }
     }
     
@@ -781,8 +818,36 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
 
     // Check return value if present
     if (ret_stmt->values) {
-        Type* actual_return_type = type_check_expression(checker, ret_stmt->values);
-        if (!actual_return_type) return 0;
+        // Count return values
+        ASTNode* current = ret_stmt->values;
+        size_t value_count = 0;
+        while (current) {
+            value_count++;
+            current = current->next;
+        }
+
+        Type* actual_return_type = NULL;
+        if (value_count > 1) {
+            // Multiple return values - build tuple type
+            Type** elem_types = malloc(sizeof(Type*) * value_count);
+            if (!elem_types) return 0;
+
+            current = ret_stmt->values;
+            for (size_t i = 0; i < value_count; i++) {
+                elem_types[i] = type_check_expression(checker, current);
+                if (!elem_types[i]) {
+                    free(elem_types);
+                    return 0;
+                }
+                current = current->next;
+            }
+
+            actual_return_type = type_tuple(elem_types, value_count);
+        } else {
+            // Single return value
+            actual_return_type = type_check_expression(checker, ret_stmt->values);
+            if (!actual_return_type) return 0;
+        }
 
         // Validate against function's declared return type
         if (checker->current_function_return_type) {
@@ -981,7 +1046,26 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (!base_type) return NULL;
             return type_nullable(base_type);
         }
-        
+
+        case AST_TUPLE_TYPE: {
+            TupleTypeNode* tuple_ast = (TupleTypeNode*)type_node;
+
+            // Convert each element type
+            Type** element_types = malloc(sizeof(Type*) * tuple_ast->element_count);
+            if (!element_types) return NULL;
+
+            for (size_t i = 0; i < tuple_ast->element_count; i++) {
+                element_types[i] = type_from_ast(checker, tuple_ast->element_types[i]);
+                if (!element_types[i]) {
+                    // Clean up on error
+                    free(element_types);
+                    return NULL;
+                }
+            }
+
+            return type_tuple(element_types, tuple_ast->element_count);
+        }
+
         default:
             type_error(checker, type_node->pos, "Invalid type node");
             return NULL;

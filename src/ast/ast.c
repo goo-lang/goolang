@@ -221,6 +221,14 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(nullable->base_type);
             break;
         }
+        case AST_TUPLE_TYPE: {
+            TupleTypeNode* tuple = (TupleTypeNode*)node;
+            for (size_t i = 0; i < tuple->element_count; i++) {
+                ast_node_free(tuple->element_types[i]);
+            }
+            free(tuple->element_types);
+            break;
+        }
         case AST_TRY_EXPR: {
             TryExprNode* try_expr = (TryExprNode*)node;
             ast_node_free(try_expr->expr);
@@ -808,13 +816,27 @@ ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos) 
 NullableTypeNode* ast_nullable_type_new(ASTNode* base_type, Position pos) {
     NullableTypeNode* node = (NullableTypeNode*)malloc(sizeof(NullableTypeNode));
     if (!node) return NULL;
-    
+
     node->base.type = AST_NULLABLE_TYPE;
     node->base.pos = pos;
     node->base.node_type = NULL;
     node->base.next = NULL;
     node->base_type = base_type;
-    
+
+    return node;
+}
+
+TupleTypeNode* ast_tuple_type_new(ASTNode** element_types, size_t element_count, Position pos) {
+    TupleTypeNode* node = (TupleTypeNode*)malloc(sizeof(TupleTypeNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_TUPLE_TYPE;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->element_types = element_types;
+    node->element_count = element_count;
+
     return node;
 }
 

@@ -63,6 +63,7 @@ typedef enum {
     AST_FUNC_TYPE,
     AST_INTERFACE_TYPE,
     AST_STRUCT_TYPE,
+    AST_TUPLE_TYPE,
     AST_POINTER_TYPE,
     AST_REFERENCE_TYPE,
     
@@ -466,6 +467,13 @@ typedef struct {
     struct ASTNode** field_types;
     size_t field_count;
 } StructTypeNode;
+
+// Tuple type (for multiple return values)
+typedef struct {
+    ASTNode base;
+    struct ASTNode** element_types;
+    size_t element_count;
+} TupleTypeNode;
 
 // Channel type
 typedef struct {
@@ -941,6 +949,7 @@ ForStmtNode* ast_for_stmt_new(ASTNode* init, ASTNode* condition, ASTNode* post, 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);
 NullableTypeNode* ast_nullable_type_new(ASTNode* base_type, Position pos);
+TupleTypeNode* ast_tuple_type_new(ASTNode** element_types, size_t element_count, Position pos);
 TryExprNode* ast_try_expr_new(ASTNode* expr, Position pos);
 CatchExprNode* ast_catch_expr_new(ASTNode* expr, const char* error_var, ASTNode* catch_body, Position pos);
 ComptimeBlockNode* ast_comptime_block_new(ASTNode* body, Position pos);

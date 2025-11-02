@@ -264,18 +264,70 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         codegen_error(codegen, decl->pos, "Variable declaration has no type information");
         return 0;
     }
-    
-    // Generate code for each variable
+
+    // Handle multiple assignment (a, b := f())
+    if (var_decl->name_count > 1 && var_decl->values) {
+        // Generate the tuple value
+        ValueInfo* tuple_value = codegen_generate_expression(codegen, checker, var_decl->values);
+        if (!tuple_value) {
+            codegen_error(codegen, decl->pos, "Failed to generate tuple value");
+            return 0;
+        }
+
+        // Extract each element and create variables
+        for (size_t i = 0; i < var_decl->name_count; i++) {
+            const char* var_name = var_decl->names[i];
+
+            // Handle underscore (ignored value)
+            if (strcmp(var_name, "_") == 0) {
+                continue;
+            }
+
+            // Get element type from tuple
+            Type* elem_type = NULL;
+            if (tuple_value->goo_type && tuple_value->goo_type->kind == TYPE_TUPLE) {
+                if (i < tuple_value->goo_type->data.tuple.element_count) {
+                    elem_type = tuple_value->goo_type->data.tuple.element_types[i];
+                }
+            }
+
+            if (!elem_type) {
+                codegen_error(codegen, decl->pos, "Failed to get element type for variable '%s'", var_name);
+                value_info_free(tuple_value);
+                return 0;
+            }
+
+            // Extract value from tuple
+            LLVMValueRef elem_value = LLVMBuildExtractValue(codegen->builder,
+                tuple_value->llvm_value, (unsigned)i, var_name);
+
+            // Create alloca and store
+            LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, elem_type);
+            LLVMValueRef alloca_inst = codegen_create_entry_alloca(codegen, llvm_type, var_name);
+            LLVMBuildStore(codegen->builder, elem_value, alloca_inst);
+
+            // Add to symbol table
+            ValueInfo* value_info = value_info_new(var_name, alloca_inst, elem_type);
+            value_info->is_lvalue = 1;
+            value_info->is_initialized = 1;
+            codegen_add_value(codegen, value_info);
+        }
+
+        value_info_free(tuple_value);
+        return 1;
+    }
+
+    // Generate code for each variable (non-tuple case)
     for (size_t i = 0; i < var_decl->name_count; i++) {
         const char* var_name = var_decl->names[i];
-        
+
         // Convert type to LLVM type
         LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, var_type);
         if (!llvm_type) {
             codegen_error(codegen, decl->pos, "Failed to convert type for variable '%s'", var_name);
             return 0;
         }
-        
+
         // Create alloca for the variable
         LLVMValueRef alloca_inst;
         if (codegen->current_function) {
@@ -333,17 +385,17 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 LLVMSetInitializer(alloca_inst, LLVMConstNull(llvm_type));
             }
         }
-        
+
         // Add to symbol table
         ValueInfo* value_info = value_info_new(var_name, alloca_inst, var_type);
         if (!value_info) {
             codegen_error(codegen, decl->pos, "Failed to create value info for variable '%s'", var_name);
             return 0;
         }
-        
+
         value_info->is_lvalue = 1;
         value_info->is_initialized = (var_decl->values != NULL);
-        
+
         if (!codegen_add_value(codegen, value_info)) {
             codegen_error(codegen, decl->pos, "Failed to add variable '%s' to symbol table", var_name);
             value_info_free(value_info);
@@ -691,32 +743,76 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     ReturnStmtNode* return_stmt = (ReturnStmtNode*)stmt;
     
     if (return_stmt->values) {
-        // Generate return value
-        ValueInfo* return_value = codegen_generate_expression(codegen, checker, return_stmt->values);
-        if (!return_value) {
-            return 0;
+        // Check if we have multiple return values
+        ASTNode* current = return_stmt->values;
+        size_t value_count = 0;
+        while (current) {
+            value_count++;
+            current = current->next;
         }
-        
-        // Get function return type for error union handling
-        Type* function_return_type = NULL;
-        if (codegen->current_function_info && codegen->current_function_info->goo_type) {
-            function_return_type = codegen->current_function_info->goo_type;
-        }
-        
-        // Handle error union returns
+
+        if (value_count > 1) {
+            // Multiple return values - build tuple struct
+            Type* function_return_type = NULL;
+            if (codegen->current_function_info && codegen->current_function_info->goo_type) {
+                function_return_type = codegen->current_function_info->goo_type;
+            }
+
+            if (!function_return_type || function_return_type->kind != TYPE_TUPLE) {
+                codegen_error(codegen, stmt->pos, "Multiple returns but function return type is not tuple");
+                return 0;
+            }
+
+            // Get the LLVM tuple type
+            LLVMTypeRef tuple_type = codegen_type_to_llvm(codegen, function_return_type);
+            if (!tuple_type) {
+                codegen_error(codegen, stmt->pos, "Failed to get LLVM type for tuple");
+                return 0;
+            }
+
+            // Build tuple with insertvalue instructions
+            LLVMValueRef tuple_value = LLVMGetUndef(tuple_type);
+            current = return_stmt->values;
+            for (size_t i = 0; i < value_count; i++) {
+                ValueInfo* elem_value = codegen_generate_expression(codegen, checker, current);
+                if (!elem_value) {
+                    return 0;
+                }
+                tuple_value = LLVMBuildInsertValue(codegen->builder, tuple_value,
+                    elem_value->llvm_value, (unsigned)i, "tuple_elem");
+                value_info_free(elem_value);
+                current = current->next;
+            }
+
+            LLVMBuildRet(codegen->builder, tuple_value);
+        } else {
+            // Single return value
+            ValueInfo* return_value = codegen_generate_expression(codegen, checker, return_stmt->values);
+            if (!return_value) {
+                return 0;
+            }
+
+            // Get function return type for error union handling
+            Type* function_return_type = NULL;
+            if (codegen->current_function_info && codegen->current_function_info->goo_type) {
+                function_return_type = codegen->current_function_info->goo_type;
+            }
+
+            // Handle error union returns
 #if LLVM_AVAILABLE
-        LLVMValueRef final_return_value = return_value->llvm_value;
-        if (function_return_type) {
-            final_return_value = codegen_generate_error_return(codegen, return_value->llvm_value, 
-                                                             return_value->goo_type, function_return_type);
-        }
-        LLVMBuildRet(codegen->builder, final_return_value);
+            LLVMValueRef final_return_value = return_value->llvm_value;
+            if (function_return_type) {
+                final_return_value = codegen_generate_error_return(codegen, return_value->llvm_value,
+                                                                 return_value->goo_type, function_return_type);
+            }
+            LLVMBuildRet(codegen->builder, final_return_value);
 #else
-        // Stub implementation when LLVM is not available
-        codegen_generate_error_return(codegen, return_value->llvm_value, 
-                                    return_value->goo_type, function_return_type);
+            // Stub implementation when LLVM is not available
+            codegen_generate_error_return(codegen, return_value->llvm_value,
+                                        return_value->goo_type, function_return_type);
 #endif
-        value_info_free(return_value);
+            value_info_free(return_value);
+        }
     } else {
         // Void return
         LLVMBuildRetVoid(codegen->builder);
