@@ -395,8 +395,9 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             if (method && method->type && method->type->kind == TYPE_FUNCTION) {
                 // It's a method call - return the return type
                 // TODO: Validate argument types
-                expr->node_type = method->type->data.function.return_type;
-                return method->type->data.function.return_type;
+                Type* return_type = method->type->data.function.return_type;
+                expr->node_type = return_type;
+                return return_type;
             }
         }
         // If not a method, fall through to regular selector type checking
@@ -486,9 +487,9 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     Type* expr_type = type_check_expression(checker, selector->expr);
     if (!expr_type) return NULL;
 
-    // Handle struct field access
+    // Handle struct field access and methods
     if (expr_type->kind == TYPE_STRUCT) {
-        // Look up the field in the struct
+        // First, look up the field in the struct
         for (size_t i = 0; i < expr_type->data.struct_type.field_count; i++) {
             if (strcmp(expr_type->data.struct_type.fields[i].name, selector->selector) == 0) {
                 Type* field_type = expr_type->data.struct_type.fields[i].type;
@@ -497,10 +498,63 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
             }
         }
 
-        // Field not found
+        // If not a field, check for a method
+        // Build mangled method name: TypeName_methodName
+        const char* type_name = expr_type->data.struct_type.name;
+        size_t mangled_len = strlen(type_name) + strlen(selector->selector) + 2;
+        char* mangled_name = malloc(mangled_len);
+        if (mangled_name) {
+            snprintf(mangled_name, mangled_len, "%s_%s", type_name, selector->selector);
+            Variable* method = type_checker_lookup_variable(checker, mangled_name);
+            free(mangled_name);
+
+            if (method && method->type && method->type->kind == TYPE_FUNCTION) {
+                expr->node_type = method->type;
+                return method->type;
+            }
+        }
+
+        // Neither field nor method found
         type_error(checker, expr->pos,
-                  "Struct type '%s' has no field named '%s'",
-                  expr_type->data.struct_type.name,
+                  "Field '%s' not found in struct",
+                  selector->selector);
+        return NULL;
+    }
+
+    // Handle pointer to struct (for pointer receiver methods)
+    if (expr_type->kind == TYPE_POINTER &&
+        expr_type->data.pointer.pointee_type &&
+        expr_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+
+        Type* struct_type = expr_type->data.pointer.pointee_type;
+
+        // First, look up the field in the struct (will auto-deref pointer)
+        for (size_t i = 0; i < struct_type->data.struct_type.field_count; i++) {
+            if (strcmp(struct_type->data.struct_type.fields[i].name, selector->selector) == 0) {
+                Type* field_type = struct_type->data.struct_type.fields[i].type;
+                expr->node_type = field_type;
+                return field_type;
+            }
+        }
+
+        // If not a field, check for a method (pointer receiver)
+        const char* type_name = struct_type->data.struct_type.name;
+        size_t mangled_len = strlen(type_name) + strlen(selector->selector) + 2;
+        char* mangled_name = malloc(mangled_len);
+        if (mangled_name) {
+            snprintf(mangled_name, mangled_len, "%s_%s", type_name, selector->selector);
+            Variable* method = type_checker_lookup_variable(checker, mangled_name);
+            free(mangled_name);
+
+            if (method && method->type && method->type->kind == TYPE_FUNCTION) {
+                expr->node_type = method->type;
+                return method->type;
+            }
+        }
+
+        // Neither field nor method found
+        type_error(checker, expr->pos,
+                  "Field '%s' not found in struct",
                   selector->selector);
         return NULL;
     }

@@ -698,7 +698,101 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             return value_info_new(NULL, len_value, int_type);
         }
     }
-    
+
+    // Special handling for method calls (obj.method())
+    if (call->function->type == AST_SELECTOR_EXPR) {
+        SelectorExprNode* selector = (SelectorExprNode*)call->function;
+
+        // Generate the receiver object
+        ValueInfo* receiver_val = codegen_generate_expression(codegen, checker, selector->expr);
+        if (!receiver_val) return NULL;
+
+        // Get the struct type name (handle both value and pointer receivers)
+        Type* receiver_type = receiver_val->goo_type;
+        const char* type_name = NULL;
+
+        if (receiver_type->kind == TYPE_STRUCT) {
+            type_name = receiver_type->data.struct_type.name;
+        } else if (receiver_type->kind == TYPE_POINTER &&
+                   receiver_type->data.pointer.pointee_type &&
+                   receiver_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+            type_name = receiver_type->data.pointer.pointee_type->data.struct_type.name;
+        }
+
+        if (type_name) {
+            // Build mangled method name: TypeName_methodName
+            size_t len = strlen(type_name) + strlen(selector->selector) + 2;
+            char* mangled_name = malloc(len);
+            snprintf(mangled_name, len, "%s_%s", type_name, selector->selector);
+
+            // Look up the method in LLVM module
+            LLVMValueRef method_func = LLVMGetNamedFunction(codegen->module, mangled_name);
+            free(mangled_name);
+
+            if (method_func) {
+                // It's a method call! Generate call with receiver as first argument
+                // Count arguments: receiver + actual arguments
+                size_t arg_count = 1;  // Start with receiver
+                ASTNode* arg = call->args;
+                while (arg) {
+                    arg_count++;
+                    arg = arg->next;
+                }
+
+                LLVMValueRef* args = malloc(sizeof(LLVMValueRef) * arg_count);
+                if (!args) {
+                    value_info_free(receiver_val);
+                    return NULL;
+                }
+
+                // First argument is the receiver
+                // Load if it's an lvalue
+                if (receiver_val->is_lvalue) {
+                    args[0] = LLVMBuildLoad2(codegen->builder,
+                                            codegen_type_to_llvm(codegen, receiver_type),
+                                            receiver_val->llvm_value,
+                                            "receiver_load");
+                } else {
+                    args[0] = receiver_val->llvm_value;
+                }
+                value_info_free(receiver_val);
+
+                // Add actual arguments
+                arg = call->args;
+                for (size_t i = 1; i < arg_count; i++) {
+                    ValueInfo* arg_val = codegen_generate_expression(codegen, checker, arg);
+                    if (!arg_val) {
+                        free(args);
+                        return NULL;
+                    }
+                    args[i] = arg_val->llvm_value;
+                    value_info_free(arg_val);
+                    arg = arg->next;
+                }
+
+                // Generate the method call
+                LLVMTypeRef func_type = LLVMGlobalGetValueType(method_func);
+                LLVMValueRef result = LLVMBuildCall2(codegen->builder, func_type,
+                                                    method_func, args,
+                                                    (unsigned)arg_count, "method_call");
+                free(args);
+
+                // Get return type from AST (type checker already validated this)
+                Type* return_type = expr->node_type;
+
+                if (!return_type) {
+                    codegen_error(codegen, expr->pos, "Method call has no type information");
+                    return NULL;
+                }
+
+                return value_info_new(NULL, result, return_type);
+            }
+        }
+
+        // Not a method, fall through to regular selector handling
+        value_info_free(receiver_val);
+    }
+
     // Generate function expression
     ValueInfo* func_val = codegen_generate_expression(codegen, checker, call->function);
     if (!func_val) return NULL;
