@@ -79,7 +79,13 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
 
     // If it's an lvalue (variable), load the value
     if (value_info->is_lvalue) {
-        LLVMValueRef loaded_value = LLVMBuildLoad2(codegen->builder, LLVMTypeOf(value_info->llvm_value), value_info->llvm_value, ident->name);
+        // Get the value type (not pointer type) for Load2
+        LLVMTypeRef value_type = codegen_type_to_llvm(codegen, value_info->goo_type);
+        if (!value_type) {
+            codegen_error(codegen, expr->pos, "Failed to convert type for identifier '%s'", ident->name);
+            return NULL;
+        }
+        LLVMValueRef loaded_value = LLVMBuildLoad2(codegen->builder, value_type, value_info->llvm_value, ident->name);
         return value_info_new(ident->name, loaded_value, value_info->goo_type);
     } else {
         // Direct value (constant, function, etc.)
