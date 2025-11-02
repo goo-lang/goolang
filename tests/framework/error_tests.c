@@ -2,7 +2,8 @@
 #include "test/test_framework.h"
 
 // Example test case
-TestStatus example_error_test() {
+TestStatus example_error_test(void* data) {
+    (void)data; // Unused
     ASSERT_TRUE(1 == 1);
     return TEST_PASS;
 }
