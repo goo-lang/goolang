@@ -38,7 +38,8 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_selector_expr(checker, expr);
         case AST_SLICE_EXPR:
             // TODO: Implement proper slice expression type checking
-            type_error(checker, expr->pos, "Slice expressions not yet implemented");
+            // For now, assume it returns string if the base is string
+            type_error(checker, expr->pos, "Slice expressions not yet fully implemented");
             return NULL;
         case AST_TYPE_ASSERT_EXPR:
             // TODO: Implement proper type assertion checking
@@ -580,13 +581,17 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     }
     
     Type* element_type = NULL;
-    
+
     switch (expr_type->kind) {
         case TYPE_ARRAY:
             element_type = expr_type->data.array.element_type;
             break;
         case TYPE_SLICE:
             element_type = expr_type->data.slice.element_type;
+            break;
+        case TYPE_STRING:
+            // String indexing returns a byte (uint8)
+            element_type = type_checker_get_builtin(checker, TYPE_UINT8);
             break;
         case TYPE_MAP:
             // For maps, check if index type is compatible with key type
@@ -600,7 +605,7 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
             element_type = expr_type->data.map.value_type;
             break;
         default:
-            type_error(checker, index->expr->pos, 
+            type_error(checker, index->expr->pos,
                       "Cannot index type %s", type_to_string(expr_type));
             return NULL;
     }

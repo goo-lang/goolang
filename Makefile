@@ -693,3 +693,26 @@ $(TEST_SLICE): $(TEST_UNIT_DIR)/codegen/slice_test.c $(TEST_UNIT_DIR)/codegen/te
 		$(TYPES_SRCS) \
 		$(CODEGEN_SRCS) \
 		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+# TDD Cycle 14: String Operations Tests
+TEST_STRING = $(BINDIR)/test_string
+
+test-string: $(TEST_STRING)
+	@echo "Running string operations tests..."
+	./$(TEST_STRING)
+
+$(TEST_STRING): $(TEST_UNIT_DIR)/codegen/string_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building string operations tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/string_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)

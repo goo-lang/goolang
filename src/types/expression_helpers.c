@@ -4,15 +4,20 @@
 
 // Helper functions for expression type checking
 
-Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op __attribute__((unused)), Position pos) {
+Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos) {
     if (!checker || !left_type || !right_type) return NULL;
-    
+
+    // Special case: string concatenation with + operator
+    if (op == TOKEN_PLUS && left_type->kind == TYPE_STRING && right_type->kind == TYPE_STRING) {
+        return type_checker_get_builtin(checker, TYPE_STRING);
+    }
+
     // Both operands must be numeric
     if (!type_is_numeric(left_type) || !type_is_numeric(right_type)) {
         type_error(checker, pos, "Arithmetic operation requires numeric operands");
         return NULL;
     }
-    
+
     // For now, return the "larger" type (simple promotion rules)
     if (type_is_float(left_type) || type_is_float(right_type)) {
         if (left_type->kind == TYPE_FLOAT64 || right_type->kind == TYPE_FLOAT64) {

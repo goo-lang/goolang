@@ -459,7 +459,22 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     switch (binary->operator) {
         // Arithmetic operators
         case TOKEN_PLUS:
-            if (type_is_integer(left_val->goo_type)) {
+            if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // String concatenation - call runtime function
+                LLVMTypeRef concat_fn_type = LLVMFunctionType(
+                    LLVMPointerTypeInContext(codegen->context, 0), // returns ptr
+                    (LLVMTypeRef[]){
+                        LLVMPointerTypeInContext(codegen->context, 0), // str1
+                        LLVMPointerTypeInContext(codegen->context, 0)  // str2
+                    },
+                    2, 0);
+                LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+                if (!concat_fn) {
+                    concat_fn = LLVMAddFunction(codegen->module, "goo_string_concat", concat_fn_type);
+                }
+                result = LLVMBuildCall2(codegen->builder, concat_fn_type, concat_fn,
+                                      (LLVMValueRef[]){left_llvm, right_llvm}, 2, "concat");
+            } else if (type_is_integer(left_val->goo_type)) {
                 result = LLVMBuildAdd(codegen->builder, left_llvm, right_llvm, "add");
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFAdd(codegen->builder, left_llvm, right_llvm, "fadd");
@@ -506,7 +521,24 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             
         // Comparison operators
         case TOKEN_EQ:
-            if (type_is_integer(left_val->goo_type)) {
+            if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // String comparison using strcmp or goo_string_compare
+                LLVMTypeRef strcmp_fn_type = LLVMFunctionType(
+                    LLVMInt32TypeInContext(codegen->context), // returns int
+                    (LLVMTypeRef[]){
+                        LLVMPointerTypeInContext(codegen->context, 0), // str1
+                        LLVMPointerTypeInContext(codegen->context, 0)  // str2
+                    },
+                    2, 0);
+                LLVMValueRef strcmp_fn = LLVMGetNamedFunction(codegen->module, "strcmp");
+                if (!strcmp_fn) {
+                    strcmp_fn = LLVMAddFunction(codegen->module, "strcmp", strcmp_fn_type);
+                }
+                LLVMValueRef cmp_result = LLVMBuildCall2(codegen->builder, strcmp_fn_type, strcmp_fn,
+                                                        (LLVMValueRef[]){left_llvm, right_llvm}, 2, "strcmp");
+                result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, cmp_result,
+                                      LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0), "streq");
+            } else if (type_is_integer(left_val->goo_type)) {
                 result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "eq");
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, left_llvm, right_llvm, "feq");
@@ -522,7 +554,24 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             break;
             
         case TOKEN_LT:
-            if (type_is_integer(left_val->goo_type)) {
+            if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // String comparison using strcmp
+                LLVMTypeRef strcmp_fn_type = LLVMFunctionType(
+                    LLVMInt32TypeInContext(codegen->context),
+                    (LLVMTypeRef[]){
+                        LLVMPointerTypeInContext(codegen->context, 0),
+                        LLVMPointerTypeInContext(codegen->context, 0)
+                    },
+                    2, 0);
+                LLVMValueRef strcmp_fn = LLVMGetNamedFunction(codegen->module, "strcmp");
+                if (!strcmp_fn) {
+                    strcmp_fn = LLVMAddFunction(codegen->module, "strcmp", strcmp_fn_type);
+                }
+                LLVMValueRef cmp_result = LLVMBuildCall2(codegen->builder, strcmp_fn_type, strcmp_fn,
+                                                        (LLVMValueRef[]){left_llvm, right_llvm}, 2, "strcmp");
+                result = LLVMBuildICmp(codegen->builder, LLVMIntSLT, cmp_result,
+                                      LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0), "strlt");
+            } else if (type_is_integer(left_val->goo_type)) {
                 if (type_is_signed(left_val->goo_type)) {
                     result = LLVMBuildICmp(codegen->builder, LLVMIntSLT, left_llvm, right_llvm, "slt");
                 } else {
