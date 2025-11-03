@@ -461,8 +461,13 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         case TOKEN_PLUS:
             if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
                 // String concatenation - call runtime function
+                // Extract pointers from string structs (string = {ptr, len})
+                LLVMValueRef left_ptr = LLVMBuildExtractValue(codegen->builder, left_llvm, 0, "left_str_ptr");
+                LLVMValueRef right_ptr = LLVMBuildExtractValue(codegen->builder, right_llvm, 0, "right_str_ptr");
+
+                // Declare/get concat function: char* goo_string_concat(const char*, const char*)
                 LLVMTypeRef concat_fn_type = LLVMFunctionType(
-                    LLVMPointerTypeInContext(codegen->context, 0), // returns ptr
+                    LLVMPointerTypeInContext(codegen->context, 0), // returns char*
                     (LLVMTypeRef[]){
                         LLVMPointerTypeInContext(codegen->context, 0), // str1
                         LLVMPointerTypeInContext(codegen->context, 0)  // str2
@@ -472,8 +477,28 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 if (!concat_fn) {
                     concat_fn = LLVMAddFunction(codegen->module, "goo_string_concat", concat_fn_type);
                 }
-                result = LLVMBuildCall2(codegen->builder, concat_fn_type, concat_fn,
-                                      (LLVMValueRef[]){left_llvm, right_llvm}, 2, "concat");
+
+                // Call concat function with extracted pointers
+                LLVMValueRef result_ptr = LLVMBuildCall2(codegen->builder, concat_fn_type, concat_fn,
+                                                        (LLVMValueRef[]){left_ptr, right_ptr}, 2, "concat_ptr");
+
+                // Build new string struct with result pointer and calculated length
+                // For now, call strlen to get the length
+                LLVMTypeRef strlen_fn_type = LLVMFunctionType(
+                    LLVMInt64TypeInContext(codegen->context), // returns size_t (i64)
+                    (LLVMTypeRef[]){LLVMPointerTypeInContext(codegen->context, 0)}, // const char*
+                    1, 0);
+                LLVMValueRef strlen_fn = LLVMGetNamedFunction(codegen->module, "strlen");
+                if (!strlen_fn) {
+                    strlen_fn = LLVMAddFunction(codegen->module, "strlen", strlen_fn_type);
+                }
+                LLVMValueRef result_len = LLVMBuildCall2(codegen->builder, strlen_fn_type, strlen_fn,
+                                                        (LLVMValueRef[]){result_ptr}, 1, "concat_len");
+
+                // Create string struct {ptr, len}
+                LLVMValueRef undef = LLVMGetUndef(codegen_type_to_llvm(codegen, result_type));
+                LLVMValueRef result_str = LLVMBuildInsertValue(codegen->builder, undef, result_ptr, 0, "str_with_ptr");
+                result = LLVMBuildInsertValue(codegen->builder, result_str, result_len, 1, "concat_result");
             } else if (type_is_integer(left_val->goo_type)) {
                 result = LLVMBuildAdd(codegen->builder, left_llvm, right_llvm, "add");
             } else if (type_is_float(left_val->goo_type)) {
@@ -522,7 +547,11 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         // Comparison operators
         case TOKEN_EQ:
             if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
-                // String comparison using strcmp or goo_string_compare
+                // String comparison using strcmp
+                // Extract pointers from string structs
+                LLVMValueRef left_ptr = LLVMBuildExtractValue(codegen->builder, left_llvm, 0, "left_str_ptr");
+                LLVMValueRef right_ptr = LLVMBuildExtractValue(codegen->builder, right_llvm, 0, "right_str_ptr");
+
                 LLVMTypeRef strcmp_fn_type = LLVMFunctionType(
                     LLVMInt32TypeInContext(codegen->context), // returns int
                     (LLVMTypeRef[]){
@@ -535,7 +564,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                     strcmp_fn = LLVMAddFunction(codegen->module, "strcmp", strcmp_fn_type);
                 }
                 LLVMValueRef cmp_result = LLVMBuildCall2(codegen->builder, strcmp_fn_type, strcmp_fn,
-                                                        (LLVMValueRef[]){left_llvm, right_llvm}, 2, "strcmp");
+                                                        (LLVMValueRef[]){left_ptr, right_ptr}, 2, "strcmp");
                 result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, cmp_result,
                                       LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0), "streq");
             } else if (type_is_integer(left_val->goo_type)) {
@@ -556,6 +585,10 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         case TOKEN_LT:
             if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
                 // String comparison using strcmp
+                // Extract pointers from string structs
+                LLVMValueRef left_ptr = LLVMBuildExtractValue(codegen->builder, left_llvm, 0, "left_str_ptr");
+                LLVMValueRef right_ptr = LLVMBuildExtractValue(codegen->builder, right_llvm, 0, "right_str_ptr");
+
                 LLVMTypeRef strcmp_fn_type = LLVMFunctionType(
                     LLVMInt32TypeInContext(codegen->context),
                     (LLVMTypeRef[]){
@@ -568,7 +601,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                     strcmp_fn = LLVMAddFunction(codegen->module, "strcmp", strcmp_fn_type);
                 }
                 LLVMValueRef cmp_result = LLVMBuildCall2(codegen->builder, strcmp_fn_type, strcmp_fn,
-                                                        (LLVMValueRef[]){left_llvm, right_llvm}, 2, "strcmp");
+                                                        (LLVMValueRef[]){left_ptr, right_ptr}, 2, "strcmp");
                 result = LLVMBuildICmp(codegen->builder, LLVMIntSLT, cmp_result,
                                       LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0), "strlt");
             } else if (type_is_integer(left_val->goo_type)) {

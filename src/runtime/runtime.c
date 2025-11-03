@@ -542,10 +542,36 @@ void* goo_rc_data(goo_rc_object_t* rc) {
 // Basic printf implementation for Goo
 void goo_printf(const char* format, ...) {
     if (!format) return;
-    
+
     va_list args;
     va_start(args, format);
     vprintf(format, args);
     va_end(args);
     fflush(stdout);
+}
+
+// String operations
+
+// String concatenation - takes two null-terminated C strings, returns new concatenated string
+// Note: The returned string is heap-allocated and should eventually be freed
+char* goo_string_concat(const char* s1, const char* s2) {
+    if (!s1 || !s2) {
+        return NULL;
+    }
+
+    size_t len1 = strlen(s1);
+    size_t len2 = strlen(s2);
+    size_t total_len = len1 + len2;
+
+    char* result = (char*)malloc(total_len + 1);
+    if (!result) {
+        goo_panic("Failed to allocate memory for string concatenation");
+        return NULL;
+    }
+
+    memcpy(result, s1, len1);
+    memcpy(result + len1, s2, len2);
+    result[total_len] = '\0';
+
+    return result;
 }
