@@ -583,7 +583,7 @@ ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Positio
 FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     FuncDeclNode* node = (FuncDeclNode*)malloc(sizeof(FuncDeclNode));
     if (!node) return NULL;
-    
+
     node->base.type = AST_FUNC_DECL;
     node->base.pos = pos;
     node->base.node_type = NULL;
@@ -594,7 +594,10 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     node->body = NULL;
     node->is_comptime = 0;
     node->is_unsafe = 0;
-    
+    node->receiver_name = NULL;
+    node->receiver_type = NULL;
+    node->named_returns = NULL;
+
     return node;
 }
 
@@ -1512,6 +1515,35 @@ ForStmtNode* ast_for_stmt_new(ASTNode* init, ASTNode* condition, ASTNode* post, 
     node->condition = condition;
     node->post = post;
     node->body = body;
+
+    return node;
+}
+
+SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos) {
+    SwitchStmtNode* node = (SwitchStmtNode*)malloc(sizeof(SwitchStmtNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_SWITCH_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->tag = tag;
+    node->cases = cases;
+
+    return node;
+}
+
+CaseClauseNode* ast_case_clause_new(ASTNode* values, ASTNode* body, int is_default, Position pos) {
+    CaseClauseNode* node = (CaseClauseNode*)malloc(sizeof(CaseClauseNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_CASE_CLAUSE;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->values = values;
+    node->body = body;
+    node->is_default = is_default;
 
     return node;
 }

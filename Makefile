@@ -586,12 +586,35 @@ test-multiple-returns: $(TEST_MULTIPLE_RETURNS)
 	@echo "Running multiple return values tests..."
 	./$(TEST_MULTIPLE_RETURNS)
 
+# TDD Cycle 10: Switch Statements Tests
+TEST_SWITCH = $(BINDIR)/test_switch
+
+test-switch: $(TEST_SWITCH)
+	@echo "Running switch statement tests..."
+	./$(TEST_SWITCH)
+
 $(TEST_MULTIPLE_RETURNS): $(TEST_UNIT_DIR)/codegen/multiple_returns_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
 	@mkdir -p $(BINDIR)
 	@echo "Building multiple return values tests..."
 	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
 		$(TEST_UNIT_DIR)/codegen/multiple_returns_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+$(TEST_SWITCH): $(TEST_UNIT_DIR)/codegen/switch_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building switch statement tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/switch_test.c \
 		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
 		$(SRCDIR)/parser/parser.tab.c \
 		$(SRCDIR)/parser/parser_error_stubs.c \

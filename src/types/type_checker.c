@@ -689,10 +689,22 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_expr_stmt(checker, stmt);
         case AST_VAR_DECL:
             return type_check_var_decl(checker, stmt);
+        case AST_CONST_DECL:
+        case AST_TYPE_DECL:
+            return 1;  // Type/const decls handled elsewhere, accept in statement context
         case AST_IF_STMT:
             return type_check_if_stmt(checker, stmt);
+        case AST_IF_LET_STMT:
+        case AST_DEFER_STMT:
+        case AST_UNSAFE_STMT:
+        case AST_ASM_STMT:
+        case AST_PARALLEL_FOR:
+        case AST_COMPTIME_BLOCK:
+            return 1;  // TODO: Implement full type checking for these
         case AST_FOR_STMT:
             return type_check_for_stmt(checker, stmt);
+        case AST_SWITCH_STMT:
+            return type_check_switch_stmt(checker, stmt);
         case AST_RETURN_STMT:
             return type_check_return_stmt(checker, stmt);
         case AST_BREAK_STMT:
@@ -703,7 +715,7 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
         case AST_SELECT_STMT:
             return type_check_select_stmt(checker, stmt);
         default:
-            type_error(checker, stmt->pos, "Unknown statement type");
+            type_error(checker, stmt->pos, "Unknown statement type: %d", stmt->type);
             return 0;
     }
 }
@@ -808,6 +820,77 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
     }
     
     scope_pop(checker);
+    return result;
+}
+
+int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_SWITCH_STMT) return 0;
+
+    SwitchStmtNode* switch_stmt = (SwitchStmtNode*)stmt;
+    Type* tag_type = NULL;
+
+    // If there's a tag expression, type check it
+    if (switch_stmt->tag) {
+        tag_type = type_check_expression(checker, switch_stmt->tag);
+        if (!tag_type) return 0;
+    }
+
+    int result = 1;
+
+    // Type check each case clause
+    ASTNode* case_node = switch_stmt->cases;
+    while (case_node) {
+        if (case_node->type != AST_CASE_CLAUSE) {
+            type_error(checker, case_node->pos, "Expected case clause in switch");
+            result = 0;
+            case_node = case_node->next;
+            continue;
+        }
+
+        CaseClauseNode* case_clause = (CaseClauseNode*)case_node;
+
+        // For non-default cases, check case values
+        if (!case_clause->is_default && case_clause->values) {
+            ASTNode* value_node = case_clause->values;
+            while (value_node) {
+                Type* value_type = type_check_expression(checker, value_node);
+                if (!value_type) {
+                    result = 0;
+                } else if (tag_type) {
+                    // With tag: case values must match tag type
+                    if (!type_equals(value_type, tag_type)) {
+                        type_error(checker, value_node->pos,
+                                  "Case value type %s does not match switch tag type %s",
+                                  type_to_string(value_type), type_to_string(tag_type));
+                        result = 0;
+                    }
+                } else {
+                    // Without tag: case values must be boolean
+                    if (value_type->kind != TYPE_BOOL) {
+                        type_error(checker, value_node->pos,
+                                  "Case value in tagless switch must be boolean, got %s",
+                                  type_to_string(value_type));
+                        result = 0;
+                    }
+                }
+                value_node = value_node->next;
+            }
+        }
+
+        // Type check case body
+        if (case_clause->body) {
+            ASTNode* body_stmt = case_clause->body;
+            while (body_stmt) {
+                if (!type_check_statement(checker, body_stmt)) {
+                    result = 0;
+                }
+                body_stmt = body_stmt->next;
+            }
+        }
+
+        case_node = case_node->next;
+    }
+
     return result;
 }
 

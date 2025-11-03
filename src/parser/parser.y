@@ -80,8 +80,9 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result opt_func_params opt_func_result
 %type <node> statement_list statement block simple_stmt
-%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
+%type <node> if_stmt for_stmt switch_stmt return_stmt break_stmt continue_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
+%type <node> case_clause_list case_clause
 %type <node> unsafe_stmt asm_stmt parallel_for_stmt
 /* Removed useless rule type declarations */
 %type <node> expression primary_expr unary_expr binary_expr
@@ -641,6 +642,7 @@ statement:
     | if_stmt { $$ = $1; }
     | if_let_stmt { $$ = $1; }
     | for_stmt { $$ = $1; }
+    | switch_stmt { $$ = $1; }
     | return_stmt SEMICOLON { $$ = $1; }
     | break_stmt SEMICOLON { $$ = $1; }
     | continue_stmt SEMICOLON { $$ = $1; }
@@ -715,6 +717,49 @@ if_let_stmt:
 for_stmt:
     FOR block { $$ = (ASTNode*)ast_for_stmt_new(NULL, NULL, NULL, $2, get_current_position()); }
     | FOR non_composite_expr block { $$ = (ASTNode*)ast_for_stmt_new(NULL, $2, NULL, $3, get_current_position()); }
+    ;
+
+switch_stmt:
+    SWITCH LBRACE case_clause_list RBRACE {
+        // Tagless switch (like if-else chain)
+        $$ = (ASTNode*)ast_switch_stmt_new(NULL, $3, get_current_position());
+    }
+    | SWITCH expression LBRACE case_clause_list RBRACE {
+        // Switch with tag expression
+        $$ = (ASTNode*)ast_switch_stmt_new($2, $4, get_current_position());
+    }
+    | SWITCH LBRACE RBRACE {
+        // Empty switch
+        $$ = (ASTNode*)ast_switch_stmt_new(NULL, NULL, get_current_position());
+    }
+    | SWITCH expression LBRACE RBRACE {
+        // Empty switch with tag
+        $$ = (ASTNode*)ast_switch_stmt_new($2, NULL, get_current_position());
+    }
+    ;
+
+case_clause_list:
+    case_clause {
+        $$ = $1;
+    }
+    | case_clause_list case_clause {
+        // Link case clauses together using the next pointer
+        ASTNode* current = $1;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = $2;
+        $$ = $1;
+    }
+    ;
+
+case_clause:
+    CASE expression_list COLON statement_list {
+        $$ = (ASTNode*)ast_case_clause_new($2, $4, 0, get_current_position());
+    }
+    | DEFAULT COLON statement_list {
+        $$ = (ASTNode*)ast_case_clause_new(NULL, $3, 1, get_current_position());
+    }
     ;
 
 return_stmt:

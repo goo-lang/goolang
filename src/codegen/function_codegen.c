@@ -248,9 +248,40 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             param = param->next;
         }
     }
-    
+
     if (param_types) free(param_types);
-    
+
+    // Generate named return parameters as local variables
+    if (func_decl->named_returns) {
+        ASTNode* named_ret = func_decl->named_returns;
+        while (named_ret) {
+            if (named_ret->type == AST_VAR_DECL) {
+                VarDeclNode* ret_decl = (VarDeclNode*)named_ret;
+
+                // Each named return has one name
+                if (ret_decl->name_count > 0) {
+                    const char* ret_name = ret_decl->names[0];
+                    Type* ret_type = type_from_ast(checker, ret_decl->type);
+
+                    if (ret_type) {
+                        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, ret_type);
+                        if (llvm_type) {
+                            // Create alloca for named return variable
+                            LLVMValueRef ret_alloca = codegen_create_entry_alloca(codegen, llvm_type, ret_name);
+
+                            // Add to value table (uninitialized)
+                            ValueInfo* ret_info = value_info_new(ret_name, ret_alloca, ret_type);
+                            ret_info->is_lvalue = 1;
+                            ret_info->is_initialized = 0; // Not initialized yet
+                            codegen_add_value(codegen, ret_info);
+                        }
+                    }
+                }
+            }
+            named_ret = named_ret->next;
+        }
+    }
+
     // Generate function body with special handling for main
     int result = 1;
     
@@ -570,6 +601,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_if_stmt(codegen, checker, stmt);
         case AST_FOR_STMT:
             return codegen_generate_for_stmt(codegen, checker, stmt);
+        case AST_SWITCH_STMT:
+            return codegen_generate_switch_stmt(codegen, checker, stmt);
         case AST_RETURN_STMT:
             return codegen_generate_return_stmt(codegen, checker, stmt);
         case AST_GO_STMT:
@@ -798,9 +831,148 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
 #endif
 }
 
+int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_SWITCH_STMT) return 0;
+
+    SwitchStmtNode* switch_stmt = (SwitchStmtNode*)stmt;
+
+    // Evaluate tag expression once if present
+    ValueInfo* tag_value = NULL;
+    if (switch_stmt->tag) {
+        tag_value = codegen_generate_expression(codegen, checker, switch_stmt->tag);
+        if (!tag_value) return 0;
+    }
+
+    // Create merge block
+    LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "switch.merge");
+
+    // Set up loop context for break statements
+    LoopContext loop_ctx;
+    loop_ctx.parent = codegen->current_loop;
+    loop_ctx.break_target = merge_block;
+    loop_ctx.continue_target = NULL;  // No continue in switch
+    codegen->current_loop = &loop_ctx;
+
+    // Generate code for each case
+    CaseClauseNode* default_case = NULL;
+    ASTNode* case_node = switch_stmt->cases;
+
+    while (case_node) {
+        if (case_node->type != AST_CASE_CLAUSE) {
+            case_node = case_node->next;
+            continue;
+        }
+
+        CaseClauseNode* case_clause = (CaseClauseNode*)case_node;
+
+        // Save default case for last
+        if (case_clause->is_default) {
+            default_case = case_clause;
+            case_node = case_node->next;
+            continue;
+        }
+
+        // Generate case blocks
+        LLVMBasicBlockRef case_body_block = codegen_create_block(codegen, "case.body");
+        LLVMBasicBlockRef next_case_block = codegen_create_block(codegen, "case.next");
+
+        // Generate case condition (OR of all case values)
+        LLVMValueRef case_condition = NULL;
+        ASTNode* value_node = case_clause->values;
+
+        while (value_node) {
+            ValueInfo* case_value_info = codegen_generate_expression(codegen, checker, value_node);
+            if (!case_value_info) {
+                if (tag_value) value_info_free(tag_value);
+                return 0;
+            }
+
+            LLVMValueRef comparison;
+            if (tag_value) {
+                // Compare case value with tag
+                comparison = LLVMBuildICmp(codegen->builder, LLVMIntEQ,
+                                          tag_value->llvm_value, case_value_info->llvm_value, "case.cmp");
+            } else {
+                // Tagless switch: case value should be boolean
+                comparison = case_value_info->llvm_value;
+            }
+
+            value_info_free(case_value_info);
+
+            // OR with previous comparisons
+            if (case_condition) {
+                case_condition = LLVMBuildOr(codegen->builder, case_condition, comparison, "case.or");
+            } else {
+                case_condition = comparison;
+            }
+
+            value_node = value_node->next;
+        }
+
+        // Branch based on condition
+        if (case_condition) {
+            LLVMBuildCondBr(codegen->builder, case_condition, case_body_block, next_case_block);
+        } else {
+            // No case values, skip to next
+            LLVMBuildBr(codegen->builder, next_case_block);
+        }
+
+        // Generate case body
+        codegen_set_insert_point(codegen, case_body_block);
+        ASTNode* body_stmt = case_clause->body;
+        while (body_stmt) {
+            if (!codegen_generate_statement(codegen, checker, body_stmt)) {
+                if (tag_value) value_info_free(tag_value);
+                return 0;
+            }
+            body_stmt = body_stmt->next;
+        }
+
+        // Branch to merge (Go switch cases don't fall through by default)
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            LLVMBuildBr(codegen->builder, merge_block);
+        }
+
+        // Continue with next case check
+        codegen_set_insert_point(codegen, next_case_block);
+        case_node = case_node->next;
+    }
+
+    // Generate default case if present
+    if (default_case) {
+        ASTNode* body_stmt = default_case->body;
+        while (body_stmt) {
+            if (!codegen_generate_statement(codegen, checker, body_stmt)) {
+                if (tag_value) value_info_free(tag_value);
+                return 0;
+            }
+            body_stmt = body_stmt->next;
+        }
+    }
+
+    // Branch to merge if no terminator
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        LLVMBuildBr(codegen->builder, merge_block);
+    }
+
+    // Restore loop context
+    codegen->current_loop = loop_ctx.parent;
+
+    // Continue with merge block
+    codegen_set_insert_point(codegen, merge_block);
+
+    if (tag_value) value_info_free(tag_value);
+    return 1;
+#endif
+}
+
 #if LLVM_AVAILABLE
 // Forward declaration for error return generation
-LLVMValueRef codegen_generate_error_return(CodeGenerator* codegen, LLVMValueRef return_value, 
+LLVMValueRef codegen_generate_error_return(CodeGenerator* codegen, LLVMValueRef return_value,
                                          Type* return_type, Type* function_return_type);
 #endif
 

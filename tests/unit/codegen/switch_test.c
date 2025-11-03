@@ -70,143 +70,26 @@ static int ir_contains(const char* ir, const char* pattern) {
 }
 
 // ============================================================================
-// Test 1: Basic Multiple Return Declaration
+// TDD Cycle 10: Switch Statements
 // ============================================================================
-TEST_FUNC(test_multiple_return_declaration) {
+
+// ============================================================================
+// Test 1: Basic Switch with Integer
+// ============================================================================
+TEST_FUNC(test_basic_switch_int) {
     TEST_START();
 
-    // Given: Function with multiple return values
+    // Given: Basic switch with integer cases
     const char* source =
         "package main\n"
-        "func divide(a int, b int) (int, bool) {\n"
-        "    if b == 0 {\n"
-        "        return 0, false;\n"
-        "    }\n"
-        "    return a / b, true;\n"
-        "}\n"
-        "func test() int {\n"
-        "    return 42;\n"
-        "}\n";
-
-    // When: Compile to LLVM IR
-    char* ir = compile_to_llvm_ir(source);
-
-    // Then: IR should contain divide function with struct return type
-    ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@divide"), "IR should contain divide function");
-
-    free(ir);
-    TEST_PASS();
-}
-
-// ============================================================================
-// Test 2: Multiple Assignment
-// ============================================================================
-TEST_FUNC(test_multiple_assignment) {
-    TEST_START();
-
-    // Given: Function call with multiple assignment
-    const char* source =
-        "package main\n"
-        "func get_values() (int, int) {\n"
-        "    return 10, 20;\n"
-        "}\n"
-        "func test() int {\n"
-        "    a, b := get_values();\n"
-        "    return a + b;\n"
-        "}\n";
-
-    // When: Compile to LLVM IR
-    char* ir = compile_to_llvm_ir(source);
-
-    // Then: IR should handle multiple assignment
-    ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@get_values"), "IR should contain get_values function");
-    ASSERT_TRUE(ir_contains(ir, "add"), "IR should contain addition");
-
-    free(ir);
-    TEST_PASS();
-}
-
-// ============================================================================
-// Test 3: Error Handling Pattern
-// ============================================================================
-TEST_FUNC(test_error_handling_pattern) {
-    TEST_START();
-
-    // Given: Go-style error handling pattern
-    const char* source =
-        "package main\n"
-        "func divide(a int, b int) (int, bool) {\n"
-        "    if b == 0 {\n"
-        "        return 0, false;\n"
-        "    }\n"
-        "    return a / b, true;\n"
-        "}\n"
-        "func test() int {\n"
-        "    result, ok := divide(10, 2);\n"
-        "    if (ok) {\n"
-        "        return result;\n"
-        "    }\n"
-        "    return -1;\n"
-        "}\n";
-
-    // When: Compile to LLVM IR
-    char* ir = compile_to_llvm_ir(source);
-
-    // Then: IR should handle error checking
-    ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@divide"), "IR should contain divide function");
-    ASSERT_TRUE(ir_contains(ir, "br"), "IR should contain conditional branch");
-
-    free(ir);
-    TEST_PASS();
-}
-
-// ============================================================================
-// Test 4: Underscore for Unused Returns
-// ============================================================================
-TEST_FUNC(test_underscore_unused_return) {
-    TEST_START();
-
-    // Given: Using underscore to ignore return value
-    const char* source =
-        "package main\n"
-        "func get_values() (int, int) {\n"
-        "    return 10, 20;\n"
-        "}\n"
-        "func test() int {\n"
-        "    _, b := get_values();\n"
-        "    return b;\n"
-        "}\n";
-
-    // When: Compile to LLVM IR
-    char* ir = compile_to_llvm_ir(source);
-
-    // Then: IR should ignore first return value
-    ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@get_values"), "IR should contain get_values function");
-
-    free(ir);
-    TEST_PASS();
-}
-
-// ============================================================================
-// Test 5: Multiple Returns with Different Types
-// ============================================================================
-TEST_FUNC(test_multiple_returns_different_types) {
-    TEST_START();
-
-    // Given: Function returning different types
-    const char* source =
-        "package main\n"
-        "func get_info() (int, bool, int) {\n"
-        "    return 42, true, 100;\n"
-        "}\n"
-        "func test() int {\n"
-        "    a, b, c := get_info();\n"
-        "    if (b) {\n"
-        "        return a + c;\n"
+        "func test(x int) int {\n"
+        "    switch x {\n"
+        "    case 1:\n"
+        "        return 10;\n"
+        "    case 2:\n"
+        "        return 20;\n"
+        "    case 3:\n"
+        "        return 30;\n"
         "    }\n"
         "    return 0;\n"
         "}\n";
@@ -214,167 +97,299 @@ TEST_FUNC(test_multiple_returns_different_types) {
     // When: Compile to LLVM IR
     char* ir = compile_to_llvm_ir(source);
 
-    // Then: IR should handle three return values
+    // Then: IR should contain switch or branch instructions
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@get_info"), "IR should contain get_info function");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
+    ASSERT_TRUE(ir_contains(ir, "switch") || ir_contains(ir, "icmp"),
+                "IR should contain switch or comparison instructions");
 
     free(ir);
     TEST_PASS();
 }
 
 // ============================================================================
-// Test 6: Named Return Parameters
+// Test 2: Switch with Multiple Values per Case
 // ============================================================================
-TEST_FUNC(test_named_return_parameters) {
+TEST_FUNC(test_switch_multiple_values) {
     TEST_START();
 
-    // Given: Function with named return parameters
+    // Given: Switch with multiple values in one case
     const char* source =
         "package main\n"
-        "func divide(a int, b int) (result int, ok bool) {\n"
-        "    if b == 0 {\n"
-        "        result = 0;\n"
-        "        ok = false;\n"
-        "        return result, ok;\n"
+        "func test(x int) int {\n"
+        "    switch x {\n"
+        "    case 1, 2, 3:\n"
+        "        return 100;\n"
+        "    case 4, 5:\n"
+        "        return 200;\n"
         "    }\n"
-        "    result = a / b;\n"
-        "    ok = true;\n"
-        "    return result, ok;\n"
-        "}\n"
-        "func test() int {\n"
-        "    r, _ := divide(10, 2);\n"
-        "    return r;\n"
+        "    return 0;\n"
         "}\n";
 
     // When: Compile to LLVM IR
     char* ir = compile_to_llvm_ir(source);
 
-    // Then: IR should handle named returns
+    // Then: IR should handle multiple case values
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@divide"), "IR should contain divide function");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
 
     free(ir);
     TEST_PASS();
 }
 
 // ============================================================================
-// Test 7: Returning from Multiple Paths
+// Test 3: Switch with Default Case
 // ============================================================================
-TEST_FUNC(test_multiple_return_paths) {
+TEST_FUNC(test_switch_default) {
     TEST_START();
 
-    // Given: Multiple return statements in different branches
+    // Given: Switch with default case
     const char* source =
         "package main\n"
-        "func check_value(x int) (int, bool) {\n"
-        "    if (x) > 0 {\n"
-        "        return x, true;\n"
+        "func test(x int) int {\n"
+        "    switch x {\n"
+        "    case 1:\n"
+        "        return 10;\n"
+        "    case 2:\n"
+        "        return 20;\n"
+        "    default:\n"
+        "        return 99;\n"
         "    }\n"
-        "    if (x) < 0 {\n"
-        "        return -x, false;\n"
+        "}\n";
+
+    // When: Compile to LLVM IR
+    char* ir = compile_to_llvm_ir(source);
+
+    // Then: IR should handle default case
+    ASSERT_NOT_NULL(ir, "IR generation should succeed");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
+
+    free(ir);
+    TEST_PASS();
+}
+
+// ============================================================================
+// Test 4: Switch with No Condition (Type Switch Pattern)
+// ============================================================================
+TEST_FUNC(test_switch_no_condition) {
+    TEST_START();
+
+    // Given: Switch without condition (like if-else chain)
+    const char* source =
+        "package main\n"
+        "func test(x int, y int) int {\n"
+        "    switch {\n"
+        "    case x > 10:\n"
+        "        return 1;\n"
+        "    case y > 20:\n"
+        "        return 2;\n"
+        "    default:\n"
+        "        return 0;\n"
         "    }\n"
-        "    return 0, false;\n"
-        "}\n"
-        "func test() int {\n"
-        "    v, _ := check_value(5);\n"
-        "    return v;\n"
         "}\n";
 
     // When: Compile to LLVM IR
     char* ir = compile_to_llvm_ir(source);
 
-    // Then: IR should handle all return paths
+    // Then: IR should handle boolean cases
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@check_value"), "IR should contain check_value function");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
+    ASSERT_TRUE(ir_contains(ir, "icmp"), "IR should contain comparisons");
 
     free(ir);
     TEST_PASS();
 }
 
 // ============================================================================
-// Test 8: Passing Multiple Returns to Another Function
+// Test 5: Switch with Break Statement
 // ============================================================================
-TEST_FUNC(test_passing_multiple_returns) {
+TEST_FUNC(test_switch_break) {
     TEST_START();
 
-    // Given: Using multiple returns as function arguments
+    // Given: Switch with explicit break
     const char* source =
         "package main\n"
-        "func get_pair() (int, int) {\n"
-        "    return 3, 4;\n"
-        "}\n"
-        "func add(a int, b int) int {\n"
-        "    return a + b;\n"
-        "}\n"
-        "func test() int {\n"
-        "    x, y := get_pair();\n"
-        "    return add(x, y);\n"
+        "func test(x int) int {\n"
+        "    var result int = 0;\n"
+        "    switch x {\n"
+        "    case 1:\n"
+        "        result = 10;\n"
+        "        break;\n"
+        "    case 2:\n"
+        "        result = 20;\n"
+        "        break;\n"
+        "    }\n"
+        "    return result;\n"
         "}\n";
 
     // When: Compile to LLVM IR
     char* ir = compile_to_llvm_ir(source);
 
-    // Then: IR should extract and pass values
+    // Then: IR should handle break properly
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@get_pair"), "IR should contain get_pair function");
-    ASSERT_TRUE(ir_contains(ir, "@add"), "IR should contain add function");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
+    ASSERT_TRUE(ir_contains(ir, "br"), "IR should contain branch instructions");
 
     free(ir);
     TEST_PASS();
 }
 
 // ============================================================================
-// Test 9: Simple Two Value Return
+// Test 6: Nested Switch Statements
 // ============================================================================
-TEST_FUNC(test_simple_two_value_return) {
+TEST_FUNC(test_nested_switch) {
     TEST_START();
 
-    // Given: Simplest multiple return case
+    // Given: Nested switch statements
     const char* source =
         "package main\n"
-        "func swap(a int, b int) (int, int) {\n"
-        "    return b, a;\n"
-        "}\n"
-        "func test() int {\n"
-        "    x, y := swap(1, 2);\n"
-        "    return x + y;\n"
+        "func test(x int, y int) int {\n"
+        "    switch x {\n"
+        "    case 1:\n"
+        "        switch y {\n"
+        "        case 10:\n"
+        "            return 100;\n"
+        "        case 20:\n"
+        "            return 200;\n"
+        "        }\n"
+        "        return 0;\n"
+        "    case 2:\n"
+        "        return 300;\n"
+        "    }\n"
+        "    return 0;\n"
         "}\n";
 
     // When: Compile to LLVM IR
     char* ir = compile_to_llvm_ir(source);
 
-    // Then: IR should swap values
+    // Then: IR should handle nested switches
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@swap"), "IR should contain swap function");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
 
     free(ir);
     TEST_PASS();
 }
 
 // ============================================================================
-// Test 10: Multiple Returns in Expression
+// Test 7: Switch with Variable Assignment
 // ============================================================================
-TEST_FUNC(test_multiple_returns_in_expression) {
+TEST_FUNC(test_switch_variable_assignment) {
     TEST_START();
 
-    // Given: Using multiple returns directly
+    // Given: Switch with variable assignments in cases
     const char* source =
         "package main\n"
-        "func get_values() (int, int) {\n"
-        "    return 5, 10;\n"
-        "}\n"
-        "func test() int {\n"
-        "    a, b := get_values();\n"
-        "    return a * b;\n"
+        "func test(x int) int {\n"
+        "    var result int = 0;\n"
+        "    switch x {\n"
+        "    case 1:\n"
+        "        result = result + 10;\n"
+        "    case 2:\n"
+        "        result = result + 20;\n"
+        "    case 3:\n"
+        "        result = result + 30;\n"
+        "    }\n"
+        "    return result;\n"
         "}\n";
 
     // When: Compile to LLVM IR
     char* ir = compile_to_llvm_ir(source);
 
-    // Then: IR should handle expression with multiple values
+    // Then: IR should handle variable assignments
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@get_values"), "IR should contain get_values function");
-    ASSERT_TRUE(ir_contains(ir, "mul"), "IR should contain multiplication");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
+    ASSERT_TRUE(ir_contains(ir, "store") || ir_contains(ir, "add"),
+                "IR should contain store or add instructions");
+
+    free(ir);
+    TEST_PASS();
+}
+
+// ============================================================================
+// Test 8: Switch with Expression Cases
+// ============================================================================
+TEST_FUNC(test_switch_expression_cases) {
+    TEST_START();
+
+    // Given: Switch with expression in tag
+    const char* source =
+        "package main\n"
+        "func test(x int, y int) int {\n"
+        "    switch x + y {\n"
+        "    case 10:\n"
+        "        return 1;\n"
+        "    case 20:\n"
+        "        return 2;\n"
+        "    default:\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+
+    // When: Compile to LLVM IR
+    char* ir = compile_to_llvm_ir(source);
+
+    // Then: IR should evaluate expression
+    ASSERT_NOT_NULL(ir, "IR generation should succeed");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
+    ASSERT_TRUE(ir_contains(ir, "add"), "IR should contain add instruction");
+
+    free(ir);
+    TEST_PASS();
+}
+
+// ============================================================================
+// Test 9: Switch Returns in All Cases
+// ============================================================================
+TEST_FUNC(test_switch_all_return) {
+    TEST_START();
+
+    // Given: Switch where all cases return
+    const char* source =
+        "package main\n"
+        "func test(x int) int {\n"
+        "    switch x {\n"
+        "    case 1:\n"
+        "        return 10;\n"
+        "    case 2:\n"
+        "        return 20;\n"
+        "    default:\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+
+    // When: Compile to LLVM IR
+    char* ir = compile_to_llvm_ir(source);
+
+    // Then: IR should handle all-return switch
+    ASSERT_NOT_NULL(ir, "IR generation should succeed");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
+    ASSERT_TRUE(ir_contains(ir, "ret"), "IR should contain return instructions");
+
+    free(ir);
+    TEST_PASS();
+}
+
+// ============================================================================
+// Test 10: Empty Switch
+// ============================================================================
+TEST_FUNC(test_switch_empty) {
+    TEST_START();
+
+    // Given: Empty switch (should compile but do nothing)
+    const char* source =
+        "package main\n"
+        "func test(x int) int {\n"
+        "    switch x {\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n";
+
+    // When: Compile to LLVM IR
+    char* ir = compile_to_llvm_ir(source);
+
+    // Then: IR should handle empty switch
+    ASSERT_NOT_NULL(ir, "IR generation should succeed");
+    ASSERT_TRUE(ir_contains(ir, "@test"), "IR should contain test function");
 
     free(ir);
     TEST_PASS();
@@ -383,23 +398,23 @@ TEST_FUNC(test_multiple_returns_in_expression) {
 // ============================================================================
 // Main Test Runner
 // ============================================================================
-int main() {
+int main(void) {
     printf("\n");
     printf("\033[0;34m========================================\033[0m\n");
-    printf("\033[0;34m  TDD Cycle 8: Multiple Returns Tests\033[0m\n");
+    printf("\033[0;34m  TDD Cycle 10: Switch Statements\033[0m\n");
     printf("\033[0;34m========================================\033[0m\n");
     printf("\n");
 
-    RUN_TEST(test_multiple_return_declaration);
-    RUN_TEST(test_multiple_assignment);
-    RUN_TEST(test_error_handling_pattern);
-    RUN_TEST(test_underscore_unused_return);
-    RUN_TEST(test_multiple_returns_different_types);
-    RUN_TEST(test_named_return_parameters);
-    RUN_TEST(test_multiple_return_paths);
-    RUN_TEST(test_passing_multiple_returns);
-    RUN_TEST(test_simple_two_value_return);
-    RUN_TEST(test_multiple_returns_in_expression);
+    RUN_TEST(test_basic_switch_int);
+    RUN_TEST(test_switch_multiple_values);
+    RUN_TEST(test_switch_default);
+    RUN_TEST(test_switch_no_condition);
+    RUN_TEST(test_switch_break);
+    RUN_TEST(test_nested_switch);
+    RUN_TEST(test_switch_variable_assignment);
+    RUN_TEST(test_switch_expression_cases);
+    RUN_TEST(test_switch_all_return);
+    RUN_TEST(test_switch_empty);
 
     printf("\n");
     printf("\033[0;34m================================\033[0m\n");

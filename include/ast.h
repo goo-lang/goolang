@@ -246,6 +246,8 @@ typedef struct {
     // Method receiver (for methods)
     char* receiver_name;       // Receiver variable name (e.g., "c")
     struct ASTNode* receiver_type; // Receiver type (e.g., Counter or *Counter)
+    // Named return parameters (Go feature)
+    struct ASTNode* named_returns; // List of VarDeclNode for named returns
 } FuncDeclNode;
 
 // Variable declaration
@@ -321,6 +323,21 @@ typedef struct {
     struct ASTNode* post;       // Optional post statement
     struct ASTNode* body;
 } ForStmtNode;
+
+// Switch statement
+typedef struct {
+    ASTNode base;
+    struct ASTNode* tag;        // Optional tag expression to switch on (NULL for tagless switch)
+    struct ASTNode* cases;      // List of case clauses
+} SwitchStmtNode;
+
+// Case clause for switch statement
+typedef struct {
+    ASTNode base;
+    struct ASTNode* values;     // List of expressions to match (NULL for default case)
+    struct ASTNode* body;       // Case body (list of statements)
+    int is_default;             // 1 if this is the default case
+} CaseClauseNode;
 
 // Return statement
 typedef struct {
@@ -945,6 +962,8 @@ UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
 IfStmtNode* ast_if_stmt_new(ASTNode* condition, ASTNode* then_stmt, ASTNode* else_stmt, Position pos);
 ForStmtNode* ast_for_stmt_new(ASTNode* init, ASTNode* condition, ASTNode* post, ASTNode* body, Position pos);
+SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos);
+CaseClauseNode* ast_case_clause_new(ASTNode* values, ASTNode* body, int is_default, Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);

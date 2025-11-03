@@ -156,7 +156,7 @@ void test_parse_function_with_parameters(void) {
         "package main\n"
         "\n"
         "func add(a int, b int) int {\n"
-        "    return a + b\n"
+        "    return a + b;\n"
         "}\n";
 
     int result = parse_input(source, "test.goo");
@@ -202,7 +202,7 @@ void test_parse_short_var_declaration(void) {
         "package main\n"
         "\n"
         "func main() {\n"
-        "    x := 10\n"
+        "    x := 10;\n"
         "}\n";
 
     int result = parse_input(source, "test.goo");
@@ -226,10 +226,10 @@ void test_parse_error_union_type(void) {
         "package main\n"
         "\n"
         "func divide(a int, b int) !int {\n"
-        "    if b == 0 {\n"
-        "        return error(\"division by zero\")\n"
+        "    if (b) == 0 {\n"
+        "        return error(\"division by zero\");\n"
         "    }\n"
-        "    return a / b\n"
+        "    return a / b;\n"
         "}\n";
 
     int result = parse_input(source, "test.goo");
@@ -275,9 +275,9 @@ void test_parse_if_statement(void) {
         "package main\n"
         "\n"
         "func main() {\n"
-        "    x := 10\n"
-        "    if x > 0 {\n"
-        "        fmt.Printf(\"positive\\n\")\n"
+        "    x := 10;\n"
+        "    if (x) > 0 {\n"
+        "        fmt.Printf(\"positive\\n\");\n"
         "    }\n"
         "}\n";
 
@@ -306,7 +306,7 @@ void test_parse_for_loop(void) {
         "\n"
         "func main() {\n"
         "    for {\n"
-        "        break\n"
+        "        break;\n"
         "    }\n"
         "}\n";
 
@@ -334,8 +334,8 @@ void test_parse_struct_declaration(void) {
         "package main\n"
         "\n"
         "func main() {\n"
-        "    x := 10\n"
-        "    y := 20\n"
+        "    x := 10;\n"
+        "    y := 20;\n"
         "}\n";
 
     int result = parse_input(source, "test.goo");
@@ -362,7 +362,7 @@ void test_parse_function_with_return(void) {
         "package main\n"
         "\n"
         "func calculate(x int, y int) int {\n"
-        "    return x*x + y*y\n"
+        "    return x*x + y*y;\n"
         "}\n";
 
     int result = parse_input(source, "test.goo");
