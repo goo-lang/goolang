@@ -334,6 +334,39 @@ opt_func_result:
         // Multiple return values - create tuple type
         $$ = $2;
     }
+    | LPAREN func_params RPAREN {
+        // Named return parameters (e.g., (result int, ok bool))
+        // Extract types from parameters and create tuple type
+        VarDeclNode* param = (VarDeclNode*)$2;
+
+        // Count parameters
+        size_t count = 0;
+        for (ASTNode* p = (ASTNode*)param; p != NULL; p = p->next) {
+            count++;
+        }
+
+        // Extract types into array
+        ASTNode** types = malloc(sizeof(ASTNode*) * count);
+        size_t i = 0;
+        for (ASTNode* p = (ASTNode*)param; p != NULL; p = p->next) {
+            VarDeclNode* var = (VarDeclNode*)p;
+            types[i++] = var->type;
+            // Set type to NULL so it doesn't get freed with the param node
+            var->type = NULL;
+        }
+
+        // Free the parameter nodes (we only need the types)
+        ast_node_free((ASTNode*)param);
+
+        if (count == 1) {
+            // Single named return - just use the type
+            $$ = types[0];
+            free(types);
+        } else {
+            // Multiple named returns - create tuple type
+            $$ = (ASTNode*)ast_tuple_type_new(types, count, get_current_position());
+        }
+    }
     ;
 
 type_list:
