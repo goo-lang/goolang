@@ -86,7 +86,6 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> unsafe_stmt asm_stmt parallel_for_stmt
 /* Removed useless rule type declarations */
 %type <node> expression primary_expr unary_expr binary_expr
-%type <node> non_composite_expr non_composite_primary_expr non_composite_unary_expr non_composite_binary_expr
 %type <node> call_expr index_expr selector_expr composite_literal field_init_list field_init
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
@@ -108,6 +107,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 // Operator precedence (lowest to highest)
 %left COMMA
 %right TRY CATCH  // Try/catch expressions (low precedence)
+%right ASSIGN SHORT_ASSIGN PLUS_ASSIGN MINUS_ASSIGN MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN AND_ASSIGN OR_ASSIGN XOR_ASSIGN LSHIFT_ASSIGN RSHIFT_ASSIGN
 %right QUESTION COLON  // Ternary operator (if we add it)
 %left OR
 %left AND
@@ -699,28 +699,18 @@ simple_stmt:
         expr_stmt->expr = $1;
         $$ = (ASTNode*)expr_stmt;
     }
-    | expression ASSIGN expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ASSIGN), $3, get_current_position());
-        ExprStmtNode* expr_stmt = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
-        expr_stmt->base.type = AST_EXPR_STMT;
-        expr_stmt->base.pos = get_current_position();
-        expr_stmt->base.node_type = NULL;
-        expr_stmt->base.next = NULL;
-        expr_stmt->expr = (ASTNode*)binary;
-        $$ = (ASTNode*)expr_stmt;
-    }
     ;
 
 if_stmt:
-    IF non_composite_expr block {
+    IF expression block {
         IfStmtNode* if_node = ast_if_stmt_new($2, $3, NULL, get_current_position());
         $$ = (ASTNode*)if_node;
     }
-    | IF non_composite_expr block ELSE if_stmt {
+    | IF expression block ELSE if_stmt {
         IfStmtNode* if_node = ast_if_stmt_new($2, $3, $5, get_current_position());
         $$ = (ASTNode*)if_node;
     }
-    | IF non_composite_expr block ELSE block {
+    | IF expression block ELSE block {
         IfStmtNode* if_node = ast_if_stmt_new($2, $3, $5, get_current_position());
         $$ = (ASTNode*)if_node;
     }
@@ -749,7 +739,7 @@ if_let_stmt:
 
 for_stmt:
     FOR block { $$ = (ASTNode*)ast_for_stmt_new(NULL, NULL, NULL, $2, get_current_position()); }
-    | FOR non_composite_expr block { $$ = (ASTNode*)ast_for_stmt_new(NULL, $2, NULL, $3, get_current_position()); }
+    | FOR expression block { $$ = (ASTNode*)ast_for_stmt_new(NULL, $2, NULL, $3, get_current_position()); }
     ;
 
 switch_stmt:
@@ -972,120 +962,18 @@ binary_expr:
         BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(OR), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
+    | expression ASSIGN expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ASSIGN), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression SHORT_ASSIGN expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(SHORT_ASSIGN), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
     | expression ARROW expression {
         BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ARROW), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
-    ;
-
-// Non-composite expressions (for use in if/for conditions to avoid ambiguity)
-non_composite_expr:
-    non_composite_unary_expr { $$ = $1; }
-    | non_composite_binary_expr { $$ = $1; }
-    | try_expr { $$ = $1; }
-    | catch_expr { $$ = $1; }
-    | match_expr { $$ = $1; }
-    ;
-
-non_composite_unary_expr:
-    non_composite_primary_expr { $$ = $1; }
-    | NOT non_composite_unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(NOT), $2, get_current_position());
-        $$ = (ASTNode*)unary;
-    }
-    | BIT_NOT non_composite_unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_NOT), $2, get_current_position());
-        $$ = (ASTNode*)unary;
-    }
-    | MINUS non_composite_unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MINUS), $2, get_current_position());
-        $$ = (ASTNode*)unary;
-    }
-    | PLUS non_composite_unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(PLUS), $2, get_current_position());
-        $$ = (ASTNode*)unary;
-    }
-    | ARROW non_composite_unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(ARROW), $2, get_current_position());
-        $$ = (ASTNode*)unary;
-    }
-    | BIT_AND non_composite_unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_AND), $2, get_current_position());
-        $$ = (ASTNode*)unary;
-    }
-    | MULTIPLY non_composite_unary_expr {
-        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MULTIPLY), $2, get_current_position());
-        $$ = (ASTNode*)unary;
-    }
-    ;
-
-non_composite_binary_expr:
-    non_composite_expr PLUS non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(PLUS), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr MINUS non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MINUS), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr MULTIPLY non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MULTIPLY), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr DIVIDE non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(DIVIDE), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr MODULO non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(MODULO), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr EQ non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(EQ), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr NE non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(NE), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr LT non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LT), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr LE non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LE), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr GT non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GT), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr GE non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(GE), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr AND non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(AND), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr OR non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(OR), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | non_composite_expr ARROW non_composite_expr {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ARROW), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    ;
-
-non_composite_primary_expr:
-    identifier { $$ = $1; }
-    | literal { $$ = $1; }
-    | call_expr { $$ = $1; }
-    | index_expr { $$ = $1; }
-    | selector_expr { $$ = $1; }
-    | kernel_launch { $$ = $1; }
-    | LPAREN expression RPAREN { $$ = $2; }
     ;
 
 primary_expr:
@@ -1156,21 +1044,21 @@ selector_expr:
     ;
 
 composite_literal:
-    type_name LBRACE RBRACE {
+    identifier LBRACE RBRACE {
         CompositeLitNode* comp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
         comp->base.type = AST_COMPOSITE_LIT;
         comp->base.pos = get_current_position();
         comp->base.node_type = NULL;
         comp->base.next = NULL;
-        comp->type = (ASTNode*)$1;
+        comp->type = $1;
         comp->field_names = NULL;
         comp->field_values = NULL;
         comp->field_count = 0;
         $$ = (ASTNode*)comp;
     }
-    | type_name LBRACE field_init_list RBRACE {
+    | identifier LBRACE field_init_list RBRACE {
         CompositeLitNode* comp = (CompositeLitNode*)$3;
-        comp->type = (ASTNode*)$1;
+        comp->type = $1;
         $$ = (ASTNode*)comp;
     }
     ;
