@@ -343,14 +343,14 @@ int main() {
 
     RUN_TEST(test_string_literal);
     // RUN_TEST(test_string_escapes);  // TODO: Parser doesn't handle escape sequences yet
-    // RUN_TEST(test_string_concatenation);
-    // RUN_TEST(test_string_indexing);
-    // // RUN_TEST(test_string_slicing);  // TODO: Parser doesn't support slice syntax yet
-    // RUN_TEST(test_string_equality);
-    // RUN_TEST(test_string_less_than);
+    RUN_TEST(test_string_concatenation);
+    RUN_TEST(test_string_indexing);
+    // RUN_TEST(test_string_slicing);  // TODO: Parser doesn't support slice syntax yet
+    RUN_TEST(test_string_equality);
+    RUN_TEST(test_string_less_than);
     // RUN_TEST(test_string_length);
     // RUN_TEST(test_empty_string);
-    // // RUN_TEST(test_string_param_return);  // TODO: Debug this test
+    // RUN_TEST(test_string_param_return);
 
     printf("\n");
     printf("\033[0;34m================================\033[0m\n");
