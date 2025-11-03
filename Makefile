@@ -593,6 +593,13 @@ test-switch: $(TEST_SWITCH)
 	@echo "Running switch statement tests..."
 	./$(TEST_SWITCH)
 
+# TDD Cycle 13: Range Loop Tests
+TEST_RANGE = $(BINDIR)/test_range
+
+test-range: $(TEST_RANGE)
+	@echo "Running range loop tests..."
+	./$(TEST_RANGE)
+
 $(TEST_MULTIPLE_RETURNS): $(TEST_UNIT_DIR)/codegen/multiple_returns_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
 	@mkdir -p $(BINDIR)
 	@echo "Building multiple return values tests..."
@@ -615,6 +622,22 @@ $(TEST_SWITCH): $(TEST_UNIT_DIR)/codegen/switch_test.c $(TEST_UNIT_DIR)/codegen/
 	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
 		$(TEST_UNIT_DIR)/codegen/switch_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+$(TEST_RANGE): $(TEST_UNIT_DIR)/codegen/range_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building range loop tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/range_test.c \
 		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
 		$(SRCDIR)/parser/parser.tab.c \
 		$(SRCDIR)/parser/parser_error_stubs.c \

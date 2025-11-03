@@ -19,6 +19,7 @@ static const char* ast_node_type_strings[] = {
     [AST_IF_STMT] = "IfStmt",
     [AST_IF_LET_STMT] = "IfLetStmt",
     [AST_FOR_STMT] = "ForStmt",
+    [AST_RANGE_STMT] = "RangeStmt",
     [AST_RETURN_STMT] = "ReturnStmt",
     [AST_BREAK_STMT] = "BreakStmt",
     [AST_CONTINUE_STMT] = "ContinueStmt",
@@ -208,6 +209,14 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(if_let->nullable_expr);
             ast_node_free(if_let->then_stmt);
             ast_node_free(if_let->else_stmt);
+            break;
+        }
+        case AST_RANGE_STMT: {
+            RangeStmtNode* range = (RangeStmtNode*)node;
+            free(range->index_var);
+            free(range->value_var);
+            ast_node_free(range->range_expr);
+            ast_node_free(range->body);
             break;
         }
         case AST_ERROR_UNION_TYPE: {
@@ -1514,6 +1523,22 @@ ForStmtNode* ast_for_stmt_new(ASTNode* init, ASTNode* condition, ASTNode* post, 
     node->init = init;
     node->condition = condition;
     node->post = post;
+    node->body = body;
+
+    return node;
+}
+
+RangeStmtNode* ast_range_stmt_new(const char* index_var, const char* value_var, ASTNode* range_expr, ASTNode* body, Position pos) {
+    RangeStmtNode* node = (RangeStmtNode*)malloc(sizeof(RangeStmtNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_RANGE_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->index_var = index_var ? strdup(index_var) : NULL;
+    node->value_var = value_var ? strdup(value_var) : NULL;
+    node->range_expr = range_expr;
     node->body = body;
 
     return node;

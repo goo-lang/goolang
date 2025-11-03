@@ -235,10 +235,36 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$2;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->params = $4;
-        func->return_type = $6;
         func->body = $7;
         func->receiver_name = NULL;
         func->receiver_type = NULL;
+
+        // Handle named return parameters
+        if ($6 && $6->type == AST_VAR_DECL) {
+            // Named returns: extract types and keep parameters
+            VarDeclNode* param = (VarDeclNode*)$6;
+            size_t count = 0;
+            for (ASTNode* p = $6; p != NULL; p = p->next) count++;
+
+            ASTNode** types = malloc(sizeof(ASTNode*) * count);
+            size_t i = 0;
+            for (ASTNode* p = $6; p != NULL; p = p->next) {
+                VarDeclNode* var = (VarDeclNode*)p;
+                types[i++] = var->type;
+            }
+
+            if (count == 1) {
+                func->return_type = types[0];
+                free(types);
+            } else {
+                func->return_type = (ASTNode*)ast_tuple_type_new(types, count, get_current_position());
+            }
+            func->named_returns = $6;
+        } else {
+            func->return_type = $6;
+            func->named_returns = NULL;
+        }
+
         ast_node_free($2);
         $$ = (ASTNode*)func;
     }
@@ -250,8 +276,30 @@ func_decl:
         func->receiver_name = strdup(receiver_ident->name);
         func->receiver_type = $4;
         func->params = $8;
-        func->return_type = $10;
         func->body = $11;
+
+        // Handle named return parameters
+        if ($10 && $10->type == AST_VAR_DECL) {
+            size_t count = 0;
+            for (ASTNode* p = $10; p != NULL; p = p->next) count++;
+            ASTNode** types = malloc(sizeof(ASTNode*) * count);
+            size_t i = 0;
+            for (ASTNode* p = $10; p != NULL; p = p->next) {
+                VarDeclNode* var = (VarDeclNode*)p;
+                types[i++] = var->type;
+            }
+            if (count == 1) {
+                func->return_type = types[0];
+                free(types);
+            } else {
+                func->return_type = (ASTNode*)ast_tuple_type_new(types, count, get_current_position());
+            }
+            func->named_returns = $10;
+        } else {
+            func->return_type = $10;
+            func->named_returns = NULL;
+        }
+
         ast_node_free($3);
         ast_node_free($6);
         $$ = (ASTNode*)func;
@@ -260,11 +308,33 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->params = $5;
-        func->return_type = $7;
         func->body = $8;
         func->is_comptime = 1;
         func->receiver_name = NULL;
         func->receiver_type = NULL;
+
+        // Handle named return parameters
+        if ($7 && $7->type == AST_VAR_DECL) {
+            size_t count = 0;
+            for (ASTNode* p = $7; p != NULL; p = p->next) count++;
+            ASTNode** types = malloc(sizeof(ASTNode*) * count);
+            size_t i = 0;
+            for (ASTNode* p = $7; p != NULL; p = p->next) {
+                VarDeclNode* var = (VarDeclNode*)p;
+                types[i++] = var->type;
+            }
+            if (count == 1) {
+                func->return_type = types[0];
+                free(types);
+            } else {
+                func->return_type = (ASTNode*)ast_tuple_type_new(types, count, get_current_position());
+            }
+            func->named_returns = $7;
+        } else {
+            func->return_type = $7;
+            func->named_returns = NULL;
+        }
+
         ast_node_free($3);
         $$ = (ASTNode*)func;
     }
@@ -272,11 +342,33 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$3;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->params = $5;
-        func->return_type = $7;
         func->body = $8;
         func->is_unsafe = 1;
         func->receiver_name = NULL;
         func->receiver_type = NULL;
+
+        // Handle named return parameters
+        if ($7 && $7->type == AST_VAR_DECL) {
+            size_t count = 0;
+            for (ASTNode* p = $7; p != NULL; p = p->next) count++;
+            ASTNode** types = malloc(sizeof(ASTNode*) * count);
+            size_t i = 0;
+            for (ASTNode* p = $7; p != NULL; p = p->next) {
+                VarDeclNode* var = (VarDeclNode*)p;
+                types[i++] = var->type;
+            }
+            if (count == 1) {
+                func->return_type = types[0];
+                free(types);
+            } else {
+                func->return_type = (ASTNode*)ast_tuple_type_new(types, count, get_current_position());
+            }
+            func->named_returns = $7;
+        } else {
+            func->return_type = $7;
+            func->named_returns = NULL;
+        }
+
         ast_node_free($3);
         $$ = (ASTNode*)func;
     }
@@ -336,36 +428,8 @@ opt_func_result:
     }
     | LPAREN func_params RPAREN {
         // Named return parameters (e.g., (result int, ok bool))
-        // Extract types from parameters and create tuple type
-        VarDeclNode* param = (VarDeclNode*)$2;
-
-        // Count parameters
-        size_t count = 0;
-        for (ASTNode* p = (ASTNode*)param; p != NULL; p = p->next) {
-            count++;
-        }
-
-        // Extract types into array
-        ASTNode** types = malloc(sizeof(ASTNode*) * count);
-        size_t i = 0;
-        for (ASTNode* p = (ASTNode*)param; p != NULL; p = p->next) {
-            VarDeclNode* var = (VarDeclNode*)p;
-            types[i++] = var->type;
-            // Set type to NULL so it doesn't get freed with the param node
-            var->type = NULL;
-        }
-
-        // Free the parameter nodes (we only need the types)
-        ast_node_free((ASTNode*)param);
-
-        if (count == 1) {
-            // Single named return - just use the type
-            $$ = types[0];
-            free(types);
-        } else {
-            // Multiple named returns - create tuple type
-            $$ = (ASTNode*)ast_tuple_type_new(types, count, get_current_position());
-        }
+        // Return the parameter list directly - it will be handled by func_decl
+        $$ = $2;
     }
     ;
 
@@ -745,6 +809,20 @@ if_let_stmt:
 for_stmt:
     FOR block { $$ = (ASTNode*)ast_for_stmt_new(NULL, NULL, NULL, $2, get_current_position()); }
     | FOR expression block { $$ = (ASTNode*)ast_for_stmt_new(NULL, $2, NULL, $3, get_current_position()); }
+    | FOR identifier SHORT_ASSIGN RANGE expression block {
+        // for i := range arr { body }
+        IdentifierNode* index = (IdentifierNode*)$2;
+        $$ = (ASTNode*)ast_range_stmt_new(index->name, NULL, $5, $6, get_current_position());
+        ast_node_free($2);
+    }
+    | FOR identifier COMMA identifier SHORT_ASSIGN RANGE expression block {
+        // for i, v := range arr { body }
+        IdentifierNode* index = (IdentifierNode*)$2;
+        IdentifierNode* value = (IdentifierNode*)$4;
+        $$ = (ASTNode*)ast_range_stmt_new(index->name, value->name, $7, $8, get_current_position());
+        ast_node_free($2);
+        ast_node_free($4);
+    }
     ;
 
 switch_stmt:
@@ -1074,6 +1152,40 @@ composite_literal:
         comp->type = $1;
         $$ = (ASTNode*)comp;
     }
+    | array_type LBRACE RBRACE {
+        CompositeLitNode* comp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
+        comp->base.type = AST_COMPOSITE_LIT;
+        comp->base.pos = get_current_position();
+        comp->base.node_type = NULL;
+        comp->base.next = NULL;
+        comp->type = $1;
+        comp->field_names = NULL;
+        comp->field_values = NULL;
+        comp->field_count = 0;
+        $$ = (ASTNode*)comp;
+    }
+    | array_type LBRACE field_init_list RBRACE {
+        CompositeLitNode* comp = (CompositeLitNode*)$3;
+        comp->type = $1;
+        $$ = (ASTNode*)comp;
+    }
+    | slice_type LBRACE RBRACE {
+        CompositeLitNode* comp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
+        comp->base.type = AST_COMPOSITE_LIT;
+        comp->base.pos = get_current_position();
+        comp->base.node_type = NULL;
+        comp->base.next = NULL;
+        comp->type = $1;
+        comp->field_names = NULL;
+        comp->field_values = NULL;
+        comp->field_count = 0;
+        $$ = (ASTNode*)comp;
+    }
+    | slice_type LBRACE field_init_list RBRACE {
+        CompositeLitNode* comp = (CompositeLitNode*)$3;
+        comp->type = $1;
+        $$ = (ASTNode*)comp;
+    }
     ;
 
 field_init_list:
@@ -1119,6 +1231,15 @@ field_init:
         temp->field_names[0] = strdup(ident->name);
         temp->field_values[0] = $3;
         ast_node_free($1);
+        $$ = (ASTNode*)temp;
+    }
+    | expression {
+        /* Positional init for arrays/slices - no field name */
+        CompositeLitNode* temp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
+        temp->field_names = (char**)malloc(sizeof(char*));
+        temp->field_values = (ASTNode**)malloc(sizeof(ASTNode*));
+        temp->field_names[0] = NULL;  /* NULL indicates positional */
+        temp->field_values[0] = $1;
         $$ = (ASTNode*)temp;
     }
     ;

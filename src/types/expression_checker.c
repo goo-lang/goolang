@@ -800,20 +800,77 @@ Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Po
     return channel_type->data.channel.element_type;
 }
 
-// Type check composite literal (struct literal)
+// Type check composite literal (struct/array/slice literal)
 Type* type_check_composite_lit(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_COMPOSITE_LIT) return NULL;
 
     CompositeLitNode* comp = (CompositeLitNode*)expr;
 
-    // Get the struct type being initialized
-    Type* struct_type = type_from_ast(checker, comp->type);
-    if (!struct_type) {
+    // Get the type being initialized
+    Type* composite_type = type_from_ast(checker, comp->type);
+    if (!composite_type) {
         return NULL;
     }
 
-    if (struct_type->kind != TYPE_STRUCT) {
-        type_error(checker, expr->pos, "Composite literal can only be used with struct types");
+    // Handle array literals
+    if (composite_type->kind == TYPE_ARRAY) {
+        Type* elem_type = composite_type->data.array.element_type;
+
+        // Check element count doesn't exceed array size
+        if (comp->field_count > composite_type->data.array.length) {
+            type_error(checker, expr->pos,
+                      "Array literal has %zu elements but array size is %zu",
+                      comp->field_count, composite_type->data.array.length);
+            return NULL;
+        }
+
+        // Type check each element
+        for (size_t i = 0; i < comp->field_count; i++) {
+            ASTNode* elem_value = comp->field_values[i];
+            Type* value_type = type_check_expression(checker, elem_value);
+            if (!value_type) {
+                return NULL;
+            }
+
+            if (!type_equals(value_type, elem_type)) {
+                type_error(checker, elem_value->pos,
+                          "Array element has type %s but array expects %s",
+                          type_to_string(value_type), type_to_string(elem_type));
+                return NULL;
+            }
+        }
+
+        expr->node_type = composite_type;
+        return composite_type;
+    }
+
+    // Handle slice literals
+    if (composite_type->kind == TYPE_SLICE) {
+        Type* elem_type = composite_type->data.slice.element_type;
+
+        // Type check each element
+        for (size_t i = 0; i < comp->field_count; i++) {
+            ASTNode* elem_value = comp->field_values[i];
+            Type* value_type = type_check_expression(checker, elem_value);
+            if (!value_type) {
+                return NULL;
+            }
+
+            if (!type_equals(value_type, elem_type)) {
+                type_error(checker, elem_value->pos,
+                          "Slice element has type %s but slice expects %s",
+                          type_to_string(value_type), type_to_string(elem_type));
+                return NULL;
+            }
+        }
+
+        expr->node_type = composite_type;
+        return composite_type;
+    }
+
+    // Handle struct literals
+    if (composite_type->kind != TYPE_STRUCT) {
+        type_error(checker, expr->pos, "Composite literal can only be used with struct, array, or slice types");
         return NULL;
     }
 
@@ -824,16 +881,16 @@ Type* type_check_composite_lit(TypeChecker* checker, ASTNode* expr) {
 
         // Find the field in the struct type
         StructField* field = NULL;
-        for (size_t j = 0; j < struct_type->data.struct_type.field_count; j++) {
-            if (strcmp(struct_type->data.struct_type.fields[j].name, field_name) == 0) {
-                field = &struct_type->data.struct_type.fields[j];
+        for (size_t j = 0; j < composite_type->data.struct_type.field_count; j++) {
+            if (strcmp(composite_type->data.struct_type.fields[j].name, field_name) == 0) {
+                field = &composite_type->data.struct_type.fields[j];
                 break;
             }
         }
 
         if (!field) {
             type_error(checker, expr->pos, "Struct %s has no field named %s",
-                      struct_type->data.struct_type.name, field_name);
+                      composite_type->data.struct_type.name, field_name);
             return NULL;
         }
 
@@ -852,6 +909,6 @@ Type* type_check_composite_lit(TypeChecker* checker, ASTNode* expr) {
         }
     }
 
-    expr->node_type = struct_type;
-    return struct_type;
+    expr->node_type = composite_type;
+    return composite_type;
 }

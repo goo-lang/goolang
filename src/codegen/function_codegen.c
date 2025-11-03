@@ -632,6 +632,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_if_stmt(codegen, checker, stmt);
         case AST_FOR_STMT:
             return codegen_generate_for_stmt(codegen, checker, stmt);
+        case AST_RANGE_STMT:
+            return codegen_generate_range_stmt(codegen, checker, stmt);
         case AST_SWITCH_STMT:
             return codegen_generate_switch_stmt(codegen, checker, stmt);
         case AST_RETURN_STMT:
@@ -862,6 +864,175 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
 #endif
 }
 
+int codegen_generate_range_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_RANGE_STMT) return 0;
+
+    RangeStmtNode* range_stmt = (RangeStmtNode*)stmt;
+
+    // Generate the range expression (array or slice)
+    ValueInfo* range_value = codegen_generate_expression(codegen, checker, range_stmt->range_expr);
+    if (!range_value) {
+        return 0;
+    }
+
+    // Get the type to determine length
+    Type* range_type = range_stmt->range_expr->node_type;
+    LLVMValueRef length_value = NULL;
+
+    // Get length based on type
+    if (range_type->kind == TYPE_ARRAY) {
+        // Array length is a constant
+        length_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                     range_type->data.array.length, 0);
+    } else if (range_type->kind == TYPE_SLICE) {
+        // Slice length is in the struct at index 1
+        LLVMTypeRef slice_llvm_type = codegen_type_to_llvm(codegen, range_type);
+        LLVMValueRef length_ptr = LLVMBuildStructGEP2(codegen->builder,
+                                                       slice_llvm_type,
+                                                       range_value->llvm_value,
+                                                       1, "slice.len.ptr");
+        length_value = LLVMBuildLoad2(codegen->builder, 
+                                       LLVMInt64TypeInContext(codegen->context),
+                                       length_ptr, "slice.len");
+        // Convert i64 to i32 for index
+        length_value = LLVMBuildTrunc(codegen->builder, length_value,
+                                       LLVMInt32TypeInContext(codegen->context), "len.i32");
+    } else {
+        value_info_free(range_value);
+        codegen_error(codegen, stmt->pos, "Can only range over arrays and slices");
+        return 0;
+    }
+
+    // Allocate index variable (always needed internally)
+    LLVMValueRef index_alloca = codegen_create_entry_alloca(codegen,
+                                                             LLVMInt32TypeInContext(codegen->context),
+                                                             "_range_index");
+    LLVMBuildStore(codegen->builder, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0), index_alloca);
+
+    // Register index variable in symbol table if not "_"
+    if (range_stmt->index_var && strcmp(range_stmt->index_var, "_") != 0) {
+        Type* index_type = type_checker_get_builtin(checker, TYPE_INT32);
+        ValueInfo* index_info = value_info_new(range_stmt->index_var, index_alloca, index_type);
+        if (index_info) {
+            index_info->is_lvalue = 1;
+            codegen_add_value(codegen, index_info);
+        }
+    }
+
+    // Create basic blocks for the loop
+    LLVMBasicBlockRef cond_block = codegen_create_block(codegen, "range.cond");
+    LLVMBasicBlockRef body_block = codegen_create_block(codegen, "range.body");
+    LLVMBasicBlockRef post_block = codegen_create_block(codegen, "range.post");
+    LLVMBasicBlockRef exit_block = codegen_create_block(codegen, "range.exit");
+
+    // Jump to condition block
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        LLVMBuildBr(codegen->builder, cond_block);
+    }
+
+    // Generate condition block: i < len
+    codegen_set_insert_point(codegen, cond_block);
+    LLVMValueRef current_index = LLVMBuildLoad2(codegen->builder,
+                                                 LLVMInt32TypeInContext(codegen->context),
+                                                 index_alloca, "i");
+    LLVMValueRef cond = LLVMBuildICmp(codegen->builder, LLVMIntSLT, current_index, length_value, "range.cond");
+    LLVMBuildCondBr(codegen->builder, cond, body_block, exit_block);
+
+    // Push loop context for break/continue
+    LoopContext loop_ctx;
+    loop_ctx.break_target = exit_block;
+    loop_ctx.continue_target = post_block;
+    loop_ctx.parent = codegen->current_loop;
+    codegen->current_loop = &loop_ctx;
+
+    // Generate body block
+    codegen_set_insert_point(codegen, body_block);
+
+    // If we have a value variable (not "_"), load arr[i]
+    if (range_stmt->value_var && strcmp(range_stmt->value_var, "_") != 0) {
+        // Get element pointer
+        LLVMValueRef indices[2] = {
+            LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
+            current_index
+        };
+
+        LLVMValueRef element_ptr = NULL;
+        if (range_type->kind == TYPE_ARRAY) {
+            LLVMTypeRef array_llvm_type = codegen_type_to_llvm(codegen, range_type);
+            element_ptr = LLVMBuildGEP2(codegen->builder, array_llvm_type,
+                                        range_value->llvm_value, indices, 2, "elem.ptr");
+        } else if (range_type->kind == TYPE_SLICE) {
+            // For slices, first get the data pointer
+            LLVMTypeRef slice_llvm_type = codegen_type_to_llvm(codegen, range_type);
+            LLVMValueRef data_ptr_ptr = LLVMBuildStructGEP2(codegen->builder,
+                                                             slice_llvm_type,
+                                                             range_value->llvm_value,
+                                                             0, "slice.data.ptr");
+            LLVMTypeRef element_type = codegen_type_to_llvm(codegen, range_type->data.slice.element_type);
+            LLVMValueRef data_ptr = LLVMBuildLoad2(codegen->builder,
+                                                    LLVMPointerTypeInContext(codegen->context, 0),
+                                                    data_ptr_ptr, "slice.data");
+            element_ptr = LLVMBuildGEP2(codegen->builder, element_type,
+                                        data_ptr, &current_index, 1, "elem.ptr");
+        }
+
+        // Allocate space for the value variable
+        Type* elem_goo_type = range_type->kind == TYPE_ARRAY ?
+                              range_type->data.array.element_type :
+                              range_type->data.slice.element_type;
+        LLVMTypeRef elem_llvm_type = codegen_type_to_llvm(codegen, elem_goo_type);
+        LLVMValueRef value_alloca = codegen_create_entry_alloca(codegen, elem_llvm_type,
+                                                                 range_stmt->value_var);
+
+        // Load and store the element
+        LLVMValueRef element_value = LLVMBuildLoad2(codegen->builder, elem_llvm_type,
+                                                     element_ptr, "elem.val");
+        LLVMBuildStore(codegen->builder, element_value, value_alloca);
+
+        // Register value variable in symbol table
+        ValueInfo* value_info = value_info_new(range_stmt->value_var, value_alloca, elem_goo_type);
+        if (value_info) {
+            value_info->is_lvalue = 1;
+            codegen_add_value(codegen, value_info);
+        }
+    }
+
+    // Generate loop body
+    if (range_stmt->body) {
+        if (!codegen_generate_statement(codegen, checker, range_stmt->body)) {
+            codegen->current_loop = loop_ctx.parent;
+            value_info_free(range_value);
+            return 0;
+        }
+    }
+
+    // Only add branch if no terminator
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        LLVMBuildBr(codegen->builder, post_block);
+    }
+
+    // Pop loop context
+    codegen->current_loop = loop_ctx.parent;
+
+    // Generate post block: i = i + 1
+    codegen_set_insert_point(codegen, post_block);
+    LLVMValueRef next_index = LLVMBuildAdd(codegen->builder, current_index,
+                                           LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 1, 0),
+                                           "i.next");
+    LLVMBuildStore(codegen->builder, next_index, index_alloca);
+    LLVMBuildBr(codegen->builder, cond_block);
+
+    // Continue with exit block
+    codegen_set_insert_point(codegen, exit_block);
+
+    value_info_free(range_value);
+    return 1;
+#endif
+}
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available");

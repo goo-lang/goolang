@@ -418,6 +418,35 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         }
     }
 
+    // Add named return parameters to the function scope (Go semantics: zero-initialized)
+    if (func->named_returns) {
+        ASTNode* named_return = func->named_returns;
+        while (named_return) {
+            if (named_return->type == AST_VAR_DECL) {
+                VarDeclNode* return_decl = (VarDeclNode*)named_return;
+
+                // Get return parameter type
+                Type* return_type_param = NULL;
+                if (return_decl->type) {
+                    return_type_param = type_from_ast(checker, return_decl->type);
+                } else {
+                    return_type_param = type_checker_get_builtin(checker, TYPE_INT32); // Default type
+                }
+
+                if (return_type_param) {
+                    for (size_t i = 0; i < return_decl->name_count; i++) {
+                        Variable* return_var = variable_new(return_decl->names[i], return_type_param, return_decl->base.pos);
+                        if (return_var) {
+                            return_var->is_initialized = 1; // Named returns are zero-initialized
+                            scope_add_variable(checker->current_scope, return_var);
+                        }
+                    }
+                }
+            }
+            named_return = named_return->next;
+        }
+    }
+
     // Set current function return type for return statement validation
     Type* saved_return_type = checker->current_function_return_type;
     checker->current_function_return_type = return_type;
@@ -703,6 +732,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return 1;  // TODO: Implement full type checking for these
         case AST_FOR_STMT:
             return type_check_for_stmt(checker, stmt);
+        case AST_RANGE_STMT:
+            return type_check_range_stmt(checker, stmt);
         case AST_SWITCH_STMT:
             return type_check_switch_stmt(checker, stmt);
         case AST_RETURN_STMT:
@@ -819,6 +850,77 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
         }
     }
     
+    scope_pop(checker);
+    return result;
+}
+
+int type_check_range_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_RANGE_STMT) return 0;
+
+    RangeStmtNode* range_stmt = (RangeStmtNode*)stmt;
+
+    // Type check the range expression
+    Type* range_type = type_check_expression(checker, range_stmt->range_expr);
+    if (!range_type) {
+        type_error(checker, range_stmt->range_expr->pos, "Invalid range expression");
+        return 0;
+    }
+
+    // Determine element type based on what we're ranging over
+    Type* element_type = NULL;
+    Type* index_type = type_checker_get_builtin(checker, TYPE_INT32);
+
+    if (range_type->kind == TYPE_ARRAY) {
+        element_type = range_type->data.array.element_type;
+    } else if (range_type->kind == TYPE_SLICE) {
+        element_type = range_type->data.slice.element_type;
+    } else {
+        type_error(checker, range_stmt->range_expr->pos,
+                  "Can only range over arrays and slices, got %s",
+                  type_to_string(range_type));
+        return 0;
+    }
+
+    // Create new scope for loop variables
+    scope_push(checker);
+
+    int result = 1;
+
+    // Add index variable to scope (unless it's "_")
+    if (range_stmt->index_var && strcmp(range_stmt->index_var, "_") != 0) {
+        Variable* index_var = variable_new(range_stmt->index_var, index_type, range_stmt->base.pos);
+        if (index_var) {
+            index_var->is_initialized = 1;  // Loop variables are initialized
+            if (!scope_add_variable(checker->current_scope, index_var)) {
+                type_error(checker, range_stmt->base.pos,
+                          "Variable '%s' already declared", range_stmt->index_var);
+                variable_free(index_var);
+                result = 0;
+            }
+        }
+    }
+
+    // Add value variable to scope (unless it's "_" or NULL)
+    if (range_stmt->value_var && strcmp(range_stmt->value_var, "_") != 0) {
+        Variable* value_var = variable_new(range_stmt->value_var, element_type, range_stmt->base.pos);
+        if (value_var) {
+            value_var->is_initialized = 1;  // Loop variables are initialized
+            if (!scope_add_variable(checker->current_scope, value_var)) {
+                type_error(checker, range_stmt->base.pos,
+                          "Variable '%s' already declared", range_stmt->value_var);
+                variable_free(value_var);
+                result = 0;
+            }
+        }
+    }
+
+    // Type check the body
+    if (range_stmt->body) {
+        if (!type_check_statement(checker, range_stmt->body)) {
+            result = 0;
+        }
+    }
+
     scope_pop(checker);
     return result;
 }

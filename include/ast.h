@@ -27,6 +27,7 @@ typedef enum {
     AST_IF_STMT,
     AST_IF_LET_STMT,
     AST_FOR_STMT,
+    AST_RANGE_STMT,
     AST_RETURN_STMT,
     AST_BREAK_STMT,
     AST_CONTINUE_STMT,
@@ -323,6 +324,15 @@ typedef struct {
     struct ASTNode* post;       // Optional post statement
     struct ASTNode* body;
 } ForStmtNode;
+
+// Range statement (for i, v := range expr)
+typedef struct {
+    ASTNode base;
+    char* index_var;           // Index variable name (can be "_" for unused)
+    char* value_var;           // Value variable name (can be "_" or NULL for index-only)
+    struct ASTNode* range_expr; // Expression to range over (array, slice, etc.)
+    struct ASTNode* body;      // Loop body
+} RangeStmtNode;
 
 // Switch statement
 typedef struct {
@@ -962,6 +972,7 @@ UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
 IfStmtNode* ast_if_stmt_new(ASTNode* condition, ASTNode* then_stmt, ASTNode* else_stmt, Position pos);
 ForStmtNode* ast_for_stmt_new(ASTNode* init, ASTNode* condition, ASTNode* post, ASTNode* body, Position pos);
+RangeStmtNode* ast_range_stmt_new(const char* index_var, const char* value_var, ASTNode* range_expr, ASTNode* body, Position pos);
 SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos);
 CaseClauseNode* ast_case_clause_new(ASTNode* values, ASTNode* body, int is_default, Position pos);
 

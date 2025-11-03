@@ -199,16 +199,103 @@ ValueInfo* codegen_generate_composite_lit(CodeGenerator* codegen, TypeChecker* c
     if (!codegen || !checker || !expr || expr->type != AST_COMPOSITE_LIT) return NULL;
 
     CompositeLitNode* comp = (CompositeLitNode*)expr;
+    Type* composite_type = expr->node_type;
 
-    // Get the struct type
-    Type* struct_type = expr->node_type;
-    if (!struct_type || struct_type->kind != TYPE_STRUCT) {
-        codegen_error(codegen, expr->pos, "Composite literal must have struct type");
+    if (!composite_type) {
+        codegen_error(codegen, expr->pos, "Composite literal has no type");
+        return NULL;
+    }
+
+    // Handle array literals
+    if (composite_type->kind == TYPE_ARRAY) {
+        Type* elem_type = composite_type->data.array.element_type;
+        size_t array_length = composite_type->data.array.length;
+        LLVMTypeRef elem_llvm_type = codegen_type_to_llvm(codegen, elem_type);
+
+        // Create array of element values
+        LLVMValueRef* elem_values = (LLVMValueRef*)calloc(array_length, sizeof(LLVMValueRef));
+
+        // Initialize all elements to zero first
+        for (size_t i = 0; i < array_length; i++) {
+            elem_values[i] = LLVMConstNull(elem_llvm_type);
+        }
+
+        // Set explicitly initialized elements
+        for (size_t i = 0; i < comp->field_count && i < array_length; i++) {
+            ValueInfo* elem_val = codegen_generate_expression(codegen, checker, comp->field_values[i]);
+            if (!elem_val) {
+                free(elem_values);
+                return NULL;
+            }
+            elem_values[i] = elem_val->llvm_value;
+            value_info_free(elem_val);
+        }
+
+        // Create constant array
+        LLVMValueRef array_value = LLVMConstArray(elem_llvm_type, elem_values, (unsigned)array_length);
+        free(elem_values);
+
+        return value_info_new(NULL, array_value, composite_type);
+    }
+
+    // Handle slice literals
+    if (composite_type->kind == TYPE_SLICE) {
+        Type* elem_type = composite_type->data.slice.element_type;
+        LLVMTypeRef elem_llvm_type = codegen_type_to_llvm(codegen, elem_type);
+
+        // Allocate array on stack for slice data
+        LLVMValueRef data_alloca = codegen_create_entry_alloca(codegen,
+            LLVMArrayType(elem_llvm_type, (unsigned)comp->field_count), "slice.data");
+
+        // Initialize elements
+        for (size_t i = 0; i < comp->field_count; i++) {
+            ValueInfo* elem_val = codegen_generate_expression(codegen, checker, comp->field_values[i]);
+            if (!elem_val) {
+                return NULL;
+            }
+
+            LLVMValueRef indices[2] = {
+                LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
+                LLVMConstInt(LLVMInt32TypeInContext(codegen->context), i, 0)
+            };
+            LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
+                LLVMArrayType(elem_llvm_type, (unsigned)comp->field_count),
+                data_alloca, indices, 2, "elem.ptr");
+            LLVMBuildStore(codegen->builder, elem_val->llvm_value, elem_ptr);
+            value_info_free(elem_val);
+        }
+
+        // Create slice struct {ptr, len, cap}
+        LLVMTypeRef slice_type = codegen_type_to_llvm(codegen, composite_type);
+        LLVMValueRef slice_value = LLVMGetUndef(slice_type);
+
+        // Get pointer to first element
+        LLVMValueRef zero_indices[2] = {
+            LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
+            LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0)
+        };
+        LLVMValueRef data_ptr = LLVMBuildGEP2(codegen->builder,
+            LLVMArrayType(elem_llvm_type, (unsigned)comp->field_count),
+            data_alloca, zero_indices, 2, "slice.data.ptr");
+
+        // Build slice struct
+        slice_value = LLVMBuildInsertValue(codegen->builder, slice_value, data_ptr, 0, "slice.data");
+        slice_value = LLVMBuildInsertValue(codegen->builder, slice_value,
+            LLVMConstInt(LLVMInt64TypeInContext(codegen->context), comp->field_count, 0), 1, "slice.len");
+        slice_value = LLVMBuildInsertValue(codegen->builder, slice_value,
+            LLVMConstInt(LLVMInt64TypeInContext(codegen->context), comp->field_count, 0), 2, "slice.cap");
+
+        return value_info_new(NULL, slice_value, composite_type);
+    }
+
+    // Handle struct literals
+    if (composite_type->kind != TYPE_STRUCT) {
+        codegen_error(codegen, expr->pos, "Composite literal must have struct, array, or slice type");
         return NULL;
     }
 
     // Create LLVM struct type
-    LLVMTypeRef llvm_struct_type = codegen_type_to_llvm(codegen, struct_type);
+    LLVMTypeRef llvm_struct_type = codegen_type_to_llvm(codegen, composite_type);
 
     // Create a zero-initialized struct value
     LLVMValueRef struct_value = LLVMConstNull(llvm_struct_type);
@@ -216,12 +303,12 @@ ValueInfo* codegen_generate_composite_lit(CodeGenerator* codegen, TypeChecker* c
     // If there are field initializers, create a struct with those values
     if (comp->field_count > 0) {
         // Build array of field values (zero for uninitialized fields)
-        LLVMValueRef* field_values = (LLVMValueRef*)calloc(struct_type->data.struct_type.field_count,
+        LLVMValueRef* field_values = (LLVMValueRef*)calloc(composite_type->data.struct_type.field_count,
                                                            sizeof(LLVMValueRef));
 
         // Initialize all fields to zero first
-        for (size_t i = 0; i < struct_type->data.struct_type.field_count; i++) {
-            LLVMTypeRef field_type = codegen_type_to_llvm(codegen, struct_type->data.struct_type.fields[i].type);
+        for (size_t i = 0; i < composite_type->data.struct_type.field_count; i++) {
+            LLVMTypeRef field_type = codegen_type_to_llvm(codegen, composite_type->data.struct_type.fields[i].type);
             field_values[i] = LLVMConstNull(field_type);
         }
 
@@ -232,8 +319,8 @@ ValueInfo* codegen_generate_composite_lit(CodeGenerator* codegen, TypeChecker* c
 
             // Find field index
             int field_index = -1;
-            for (size_t j = 0; j < struct_type->data.struct_type.field_count; j++) {
-                if (strcmp(struct_type->data.struct_type.fields[j].name, field_name) == 0) {
+            for (size_t j = 0; j < composite_type->data.struct_type.field_count; j++) {
+                if (strcmp(composite_type->data.struct_type.fields[j].name, field_name) == 0) {
                     field_index = (int)j;
                     break;
                 }
@@ -258,11 +345,11 @@ ValueInfo* codegen_generate_composite_lit(CodeGenerator* codegen, TypeChecker* c
 
         // Create the struct constant
         struct_value = LLVMConstNamedStruct(llvm_struct_type, field_values,
-                                           struct_type->data.struct_type.field_count);
+                                           composite_type->data.struct_type.field_count);
         free(field_values);
     }
 
-    return value_info_new(NULL, struct_value, struct_type);
+    return value_info_new(NULL, struct_value, composite_type);
 #endif
 }
 
