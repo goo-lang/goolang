@@ -375,6 +375,123 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = int_type;
             return int_type;
         }
+
+        // Handle make() built-in
+        if (strcmp(func_ident->name, "make") == 0) {
+            // make() takes a type as first argument, then size arguments
+            if (!call->args) {
+                type_error(checker, expr->pos, "make() requires a type argument");
+                return NULL;
+            }
+
+            // First argument is a type node (AST_SLICE_TYPE, AST_MAP_TYPE, AST_CHAN_TYPE)
+            ASTNode* type_arg = call->args;
+            Type* result_type = NULL;
+
+            // Convert type AST to Type*
+            if (type_arg->type == AST_SLICE_TYPE ||
+                type_arg->type == AST_MAP_TYPE ||
+                type_arg->type == AST_CHAN_TYPE) {
+                result_type = type_from_ast(checker, type_arg);
+            } else {
+                type_error(checker, type_arg->pos, "make() first argument must be a slice, map, or channel type");
+                return NULL;
+            }
+
+            if (!result_type) {
+                type_error(checker, type_arg->pos, "Failed to resolve type for make()");
+                return NULL;
+            }
+
+            // Type check the size arguments (skip the first type argument)
+            ASTNode* size_arg = type_arg->next;
+            while (size_arg) {
+                Type* size_type = type_check_expression(checker, size_arg);
+                if (!size_type) return NULL;
+
+                // Size arguments should be integers
+                if (!type_is_integer(size_type)) {
+                    type_error(checker, size_arg->pos, "make() size arguments must be integers");
+                    return NULL;
+                }
+                size_arg = size_arg->next;
+            }
+
+            // make() returns the constructed type
+            expr->node_type = result_type;
+            return result_type;
+        }
+
+        // Handle cap() built-in
+        if (strcmp(func_ident->name, "cap") == 0) {
+            // cap() takes one argument (slice or channel)
+            if (!call->args) {
+                type_error(checker, expr->pos, "cap() requires one argument");
+                return NULL;
+            }
+            if (call->args->next) {
+                type_error(checker, expr->pos, "cap() takes exactly one argument");
+                return NULL;
+            }
+
+            // Check the argument type
+            Type* arg_type = type_check_expression(checker, call->args);
+            if (!arg_type) return NULL;
+
+            // cap() works on slices and channels
+            if (arg_type->kind != TYPE_SLICE && arg_type->kind != TYPE_CHANNEL) {
+                type_error(checker, call->args->pos,
+                          "cap() argument must be slice or channel, got %s",
+                          type_to_string(arg_type));
+                return NULL;
+            }
+
+            // cap() returns int
+            Type* int_type = type_checker_get_builtin(checker, TYPE_INT32);
+            expr->node_type = int_type;
+            return int_type;
+        }
+
+        // Handle append() built-in
+        if (strcmp(func_ident->name, "append") == 0) {
+            // append() takes a slice and elements to append
+            if (!call->args) {
+                type_error(checker, expr->pos, "append() requires at least one argument");
+                return NULL;
+            }
+
+            // First argument must be a slice
+            Type* slice_type = type_check_expression(checker, call->args);
+            if (!slice_type) return NULL;
+
+            if (slice_type->kind != TYPE_SLICE) {
+                type_error(checker, call->args->pos,
+                          "append() first argument must be a slice, got %s",
+                          type_to_string(slice_type));
+                return NULL;
+            }
+
+            // Type check elements to append (they should match slice element type)
+            ASTNode* elem_arg = call->args->next;
+            Type* elem_type = slice_type->data.slice.element_type;
+            while (elem_arg) {
+                Type* arg_type = type_check_expression(checker, elem_arg);
+                if (!arg_type) return NULL;
+
+                // Check if element type matches
+                if (!type_equals(arg_type, elem_type)) {
+                    type_error(checker, elem_arg->pos,
+                              "append() element type mismatch: expected %s, got %s",
+                              type_to_string(elem_type), type_to_string(arg_type));
+                    return NULL;
+                }
+                elem_arg = elem_arg->next;
+            }
+
+            // append() returns the same slice type
+            expr->node_type = slice_type;
+            return slice_type;
+        }
     }
 
     // Special handling for method calls (selector.method())

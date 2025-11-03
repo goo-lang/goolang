@@ -1066,6 +1066,9 @@ primary_expr:
     /* removed gpu_memory_alloc and gpu_memory_copy references */
     /* Removed gpu_sync and gpu_intrinsic rules to fix conflicts */
     | LPAREN expression RPAREN { $$ = $2; }
+    | slice_type { $$ = $1; }  /* Allow slice types as expressions for make() */
+    | map_type { $$ = $1; }    /* Allow map types as expressions for make() */
+    | chan_type { $$ = $1; }   /* Allow channel types as expressions for make() */
     ;
 
 call_expr:
@@ -1086,30 +1089,6 @@ call_expr:
         call->base.node_type = NULL;
         call->base.next = NULL;
         call->function = $1;
-        call->args = $3;
-        $$ = (ASTNode*)call;
-    }
-    | identifier LPAREN type RPAREN {
-        // Special case for make(Type) or new(Type)
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;  // Type as first argument
-        $$ = (ASTNode*)call;
-    }
-    | identifier LPAREN type COMMA expression_list RPAREN {
-        // Special case for make(Type, args...) or new(Type, args...)
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        // Chain type as first arg, then expression list
-        $3->next = $5;
         call->args = $3;
         $$ = (ASTNode*)call;
     }
