@@ -322,20 +322,51 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         LLVMValueRef return_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
         LLVMBuildRet(codegen->builder, return_value);
     } else {
-        // Regular function body generation
+        // Regular function body generation with defer support
+
+        // Create exit block for defer execution
+        func_info->exit_block = LLVMAppendBasicBlockInContext(codegen->context, function, "exit");
+
+        // Create return value alloca if function returns non-void
+        if (LLVMGetTypeKind(llvm_return_type) != LLVMVoidTypeKind) {
+            func_info->return_value = codegen_create_entry_alloca(codegen, llvm_return_type, "return.value");
+        }
+
+        // Generate function body
         if (func_decl->body) {
             result = codegen_generate_statement(codegen, checker, func_decl->body);
         }
-        
-        // Add return if missing for non-main functions
+
+        // Jump to exit block if no terminator
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
-            if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
-                LLVMBuildRetVoid(codegen->builder);
-            } else {
-                // Return zero/null for non-void functions without explicit return
+            // Store default return value if needed
+            if (func_info->return_value) {
                 LLVMValueRef zero_val = LLVMConstNull(llvm_return_type);
-                LLVMBuildRet(codegen->builder, zero_val);
+                LLVMBuildStore(codegen->builder, zero_val, func_info->return_value);
             }
+            LLVMBuildBr(codegen->builder, func_info->exit_block);
+        }
+
+        // Generate exit block with defer execution
+        codegen_set_insert_point(codegen, func_info->exit_block);
+
+        // Execute deferred calls in LIFO order
+        struct DeferredCall* deferred = func_info->defer_stack;
+        while (deferred) {
+            // Generate the deferred call
+            ValueInfo* call_result = codegen_generate_expression(codegen, checker, deferred->call_expr);
+            if (call_result) {
+                value_info_free(call_result);
+            }
+            deferred = deferred->next;
+        }
+
+        // Generate final return
+        if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
+            LLVMBuildRetVoid(codegen->builder);
+        } else {
+            LLVMValueRef ret_val = LLVMBuildLoad2(codegen->builder, llvm_return_type, func_info->return_value, "return.load");
+            LLVMBuildRet(codegen->builder, ret_val);
         }
     }
     
@@ -1027,7 +1058,11 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 current = current->next;
             }
 
-            LLVMBuildRet(codegen->builder, tuple_value);
+            // Store tuple value and jump to exit block
+            if (codegen->current_function_info && codegen->current_function_info->return_value) {
+                LLVMBuildStore(codegen->builder, tuple_value, codegen->current_function_info->return_value);
+            }
+            LLVMBuildBr(codegen->builder, codegen->current_function_info->exit_block);
         } else {
             // Single return value
             ValueInfo* return_value = codegen_generate_expression(codegen, checker, return_stmt->values);
@@ -1048,7 +1083,11 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 final_return_value = codegen_generate_error_return(codegen, return_value->llvm_value,
                                                                  return_value->goo_type, function_return_type);
             }
-            LLVMBuildRet(codegen->builder, final_return_value);
+            // Store return value and jump to exit block
+            if (codegen->current_function_info && codegen->current_function_info->return_value) {
+                LLVMBuildStore(codegen->builder, final_return_value, codegen->current_function_info->return_value);
+            }
+            LLVMBuildBr(codegen->builder, codegen->current_function_info->exit_block);
 #else
             // Stub implementation when LLVM is not available
             codegen_generate_error_return(codegen, return_value->llvm_value,
@@ -1057,8 +1096,8 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             value_info_free(return_value);
         }
     } else {
-        // Void return
-        LLVMBuildRetVoid(codegen->builder);
+        // Void return - just jump to exit block
+        LLVMBuildBr(codegen->builder, codegen->current_function_info->exit_block);
     }
     
     return 1;
@@ -1151,17 +1190,25 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     return 0;
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_DEFER_STMT) return 0;
-    
-    // TODO: Implement defer statements
-    // For now, just treat it as a regular function call for compilation purposes
+
     DeferStmtNode* defer_stmt = (DeferStmtNode*)stmt;
-    
-    // Generate the deferred call as a regular expression for now
-    ValueInfo* result = codegen_generate_expression(codegen, checker, defer_stmt->call);
-    if (result) {
-        value_info_free(result);
+
+    if (!codegen->current_function_info) {
+        codegen_error(codegen, stmt->pos, "defer statement outside of function");
+        return 0;
     }
-    
+
+    // Push the deferred call onto the stack (LIFO)
+    struct DeferredCall* deferred = malloc(sizeof(struct DeferredCall));
+    if (!deferred) {
+        codegen_error(codegen, stmt->pos, "Failed to allocate deferred call");
+        return 0;
+    }
+
+    deferred->call_expr = defer_stmt->call;
+    deferred->next = codegen->current_function_info->defer_stack;
+    codegen->current_function_info->defer_stack = deferred;
+
     return 1;
 #endif
 }

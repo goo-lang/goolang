@@ -345,19 +345,21 @@ FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* g
     info->entry_block = NULL;
     info->exit_block = NULL;
     info->return_value = NULL;
-    
+
     info->locals = NULL;
     info->local_count = 0;
     info->local_capacity = 0;
-    
+
+    info->defer_stack = NULL;
+
     return info;
 }
 
 void function_info_free(FunctionInfo* info) {
     if (!info) return;
-    
+
     free(info->name);
-    
+
     if (info->locals) {
         for (size_t i = 0; i < info->local_count; i++) {
             if (info->locals[i]) {
@@ -366,7 +368,14 @@ void function_info_free(FunctionInfo* info) {
         }
         free(info->locals);
     }
-    
+
+    // Free defer stack
+    while (info->defer_stack) {
+        struct DeferredCall* next = info->defer_stack->next;
+        free(info->defer_stack);
+        info->defer_stack = next;
+    }
+
     free(info);
 }
 

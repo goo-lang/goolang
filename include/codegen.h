@@ -77,22 +77,31 @@ struct CodeGenerator {
     int is_wasm_target;
 };
 
+// Deferred call information
+struct DeferredCall {
+    ASTNode* call_expr;             // The call expression to defer
+    struct DeferredCall* next;      // Next in stack (linked list)
+};
+
 // Function information for code generation
 struct FunctionInfo {
     char* name;
     LLVMValueRef function;
     LLVMTypeRef function_type;
     Type* goo_type;
-    
+
     // Basic blocks
     LLVMBasicBlockRef entry_block;
     LLVMBasicBlockRef exit_block;
     LLVMValueRef return_value;  // Alloca for return value
-    
+
     // Local variables
     ValueInfo** locals;
     size_t local_count;
     size_t local_capacity;
+
+    // Defer stack (LIFO)
+    struct DeferredCall* defer_stack;
 };
 
 // Value information for variables and expressions
