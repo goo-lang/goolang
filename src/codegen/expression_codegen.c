@@ -652,6 +652,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         if (strcmp(func_name->name, "goo_printf") == 0) {
             return codegen_generate_printf_call(codegen, checker, expr);
         }
+        if (strcmp(func_name->name, "make") == 0) {
+            // Handle make() built-in for slices, maps, channels
+            return codegen_generate_make_call(codegen, checker, expr);
+        }
+        if (strcmp(func_name->name, "cap") == 0) {
+            // Handle cap() built-in - returns capacity of slices/channels
+            return codegen_generate_cap_call(codegen, checker, expr);
+        }
+        if (strcmp(func_name->name, "append") == 0) {
+            // Handle append() built-in - appends elements to slice
+            return codegen_generate_append_call(codegen, checker, expr);
+        }
         if (strcmp(func_name->name, "len") == 0) {
             // Handle len() built-in - returns the length of arrays/slices/strings/maps
             if (!call->args) {
@@ -1630,5 +1642,279 @@ ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* che
     // Return void value info
     ValueInfo* result_info = value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_VOID));
     return result_info;
+#endif
+}
+
+// make() builtin for slices, maps, channels
+ValueInfo* codegen_generate_make_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+
+    CallExprNode* call = (CallExprNode*)expr;
+    if (!call->args) {
+        codegen_error(codegen, expr->pos, "make() requires a type argument");
+        return NULL;
+    }
+
+    // First argument should be a type
+    ASTNode* type_arg = call->args;
+    Type* slice_type = NULL;
+
+    // Determine the slice type from the type argument
+    if (type_arg->type == AST_SLICE_TYPE) {
+        slice_type = type_from_ast(checker, type_arg);
+        if (!slice_type) {
+            codegen_error(codegen, expr->pos, "Failed to resolve slice type");
+            return NULL;
+        }
+    } else {
+        codegen_error(codegen, expr->pos, "make() currently only supports slice types");
+        return NULL;
+    }
+
+    // Get length argument (required)
+    ASTNode* len_arg = type_arg->next;
+    if (!len_arg) {
+        codegen_error(codegen, expr->pos, "make() for slices requires length argument");
+        return NULL;
+    }
+
+    ValueInfo* len_val = codegen_generate_expression(codegen, checker, len_arg);
+    if (!len_val) return NULL;
+
+    // Get capacity argument (optional, defaults to length)
+    LLVMValueRef cap_llvm;
+    ASTNode* cap_arg = len_arg->next;
+    if (cap_arg) {
+        ValueInfo* cap_val = codegen_generate_expression(codegen, checker, cap_arg);
+        if (!cap_val) {
+            value_info_free(len_val);
+            return NULL;
+        }
+        cap_llvm = cap_val->llvm_value;
+        value_info_free(cap_val);
+    } else {
+        cap_llvm = len_val->llvm_value;
+    }
+
+    // Get LLVM types
+    LLVMTypeRef slice_llvm_type = codegen_type_to_llvm(codegen, slice_type);
+    LLVMTypeRef element_llvm_type = codegen_type_to_llvm(codegen, slice_type->data.slice.element_type);
+
+    // Allocate array: ptr = malloc(cap * sizeof(element))
+    LLVMValueRef element_size = LLVMSizeOf(element_llvm_type);
+    LLVMValueRef alloc_size = LLVMBuildMul(codegen->builder, cap_llvm, element_size, "alloc_size");
+
+    // Call malloc
+    LLVMTypeRef malloc_type = LLVMFunctionType(LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                                                (LLVMTypeRef[]){LLVMInt64TypeInContext(codegen->context)}, 1, 0);
+    LLVMValueRef malloc_func = LLVMGetNamedFunction(codegen->module, "malloc");
+    if (!malloc_func) {
+        malloc_func = LLVMAddFunction(codegen->module, "malloc", malloc_type);
+    }
+
+    LLVMValueRef alloc_size_64 = LLVMBuildZExtOrBitCast(codegen->builder, alloc_size,
+                                                         LLVMInt64TypeInContext(codegen->context), "alloc_size_64");
+    LLVMValueRef ptr = LLVMBuildCall2(codegen->builder, malloc_type, malloc_func,
+                                     (LLVMValueRef[]){alloc_size_64}, 1, "slice_data");
+
+    // Cast to element pointer type
+    ptr = LLVMBuildBitCast(codegen->builder, ptr, LLVMPointerType(element_llvm_type, 0), "slice_ptr");
+
+    // Build slice struct: {ptr, len, cap}
+    LLVMValueRef slice_val = LLVMGetUndef(slice_llvm_type);
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, ptr, 0, "slice.ptr");
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val->llvm_value, 1, "slice.len");
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, cap_llvm, 2, "slice.cap");
+
+    value_info_free(len_val);
+
+    ValueInfo* result = value_info_new(NULL, slice_val, slice_type);
+    return result;
+#endif
+}
+
+// cap() builtin for slices and channels
+ValueInfo* codegen_generate_cap_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+
+    CallExprNode* call = (CallExprNode*)expr;
+    if (!call->args) {
+        codegen_error(codegen, expr->pos, "cap() requires an argument");
+        return NULL;
+    }
+
+    // Generate the argument
+    ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
+    if (!arg_val) return NULL;
+
+    Type* arg_type = arg_val->goo_type;
+    LLVMValueRef cap_value = NULL;
+    Type* int_type = type_checker_get_builtin(checker, TYPE_INT32);
+
+    if (arg_type->kind == TYPE_SLICE) {
+        // For slices, extract the capacity field (index 2 in struct)
+        LLVMValueRef slice_val = arg_val->llvm_value;
+        if (arg_val->is_lvalue) {
+            slice_val = LLVMBuildLoad2(codegen->builder,
+                                      codegen_type_to_llvm(codegen, arg_type),
+                                      slice_val, "slice_load");
+        }
+        cap_value = LLVMBuildExtractValue(codegen->builder, slice_val, 2, "cap");
+        value_info_free(arg_val);
+    } else if (arg_type->kind == TYPE_CHANNEL) {
+        // For channels, would need runtime call - TODO
+        codegen_error(codegen, expr->pos, "cap() for channels not yet implemented");
+        value_info_free(arg_val);
+        return NULL;
+    } else {
+        codegen_error(codegen, expr->pos, "cap() requires slice or channel argument");
+        value_info_free(arg_val);
+        return NULL;
+    }
+
+    ValueInfo* result = value_info_new(NULL, cap_value, int_type);
+    return result;
+#endif
+}
+
+// append() builtin for slices
+ValueInfo* codegen_generate_append_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+
+    CallExprNode* call = (CallExprNode*)expr;
+    if (!call->args) {
+        codegen_error(codegen, expr->pos, "append() requires at least one argument");
+        return NULL;
+    }
+
+    // First argument is the slice
+    ValueInfo* slice_val = codegen_generate_expression(codegen, checker, call->args);
+    if (!slice_val) return NULL;
+
+    Type* slice_type = slice_val->goo_type;
+    if (slice_type->kind != TYPE_SLICE) {
+        codegen_error(codegen, expr->pos, "First argument to append() must be a slice");
+        value_info_free(slice_val);
+        return NULL;
+    }
+
+    // For now, implement simple append of one element
+    // TODO: Handle multiple elements and slice append
+    ASTNode* elem_arg = call->args->next;
+    if (!elem_arg) {
+        // No elements to append, return original slice
+        return slice_val;
+    }
+
+    ValueInfo* elem_val = codegen_generate_expression(codegen, checker, elem_arg);
+    if (!elem_val) {
+        value_info_free(slice_val);
+        return NULL;
+    }
+
+    // Extract slice fields
+    LLVMValueRef slice = slice_val->llvm_value;
+    if (slice_val->is_lvalue) {
+        slice = LLVMBuildLoad2(codegen->builder,
+                              codegen_type_to_llvm(codegen, slice_type),
+                              slice, "slice_load");
+    }
+
+    LLVMValueRef ptr = LLVMBuildExtractValue(codegen->builder, slice, 0, "ptr");
+    LLVMValueRef len = LLVMBuildExtractValue(codegen->builder, slice, 1, "len");
+    LLVMValueRef cap = LLVMBuildExtractValue(codegen->builder, slice, 2, "cap");
+
+    // Check if we need to grow: len < cap
+    LLVMValueRef need_grow = LLVMBuildICmp(codegen->builder, LLVMIntEQ, len, cap, "need_grow");
+
+    LLVMBasicBlockRef grow_block = codegen_create_block(codegen, "grow");
+    LLVMBasicBlockRef no_grow_block = codegen_create_block(codegen, "no_grow");
+    LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "merge");
+
+    LLVMBuildCondBr(codegen->builder, need_grow, grow_block, no_grow_block);
+
+    // Grow block: allocate new array with double capacity
+    codegen_set_insert_point(codegen, grow_block);
+    LLVMValueRef new_cap = LLVMBuildMul(codegen->builder, cap,
+                                        LLVMConstInt(LLVMTypeOf(cap), 2, 0), "new_cap");
+    // Handle zero capacity
+    LLVMValueRef cap_is_zero = LLVMBuildICmp(codegen->builder, LLVMIntEQ, cap,
+                                             LLVMConstInt(LLVMTypeOf(cap), 0, 0), "cap_is_zero");
+    new_cap = LLVMBuildSelect(codegen->builder, cap_is_zero,
+                              LLVMConstInt(LLVMTypeOf(cap), 1, 0), new_cap, "new_cap_fixed");
+
+    LLVMTypeRef element_type = codegen_type_to_llvm(codegen, slice_type->data.slice.element_type);
+    LLVMValueRef element_size = LLVMSizeOf(element_type);
+    LLVMValueRef new_alloc_size = LLVMBuildMul(codegen->builder, new_cap, element_size, "new_alloc_size");
+
+    // malloc
+    LLVMTypeRef malloc_type = LLVMFunctionType(LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                                                (LLVMTypeRef[]){LLVMInt64TypeInContext(codegen->context)}, 1, 0);
+    LLVMValueRef malloc_func = LLVMGetNamedFunction(codegen->module, "malloc");
+    if (!malloc_func) {
+        malloc_func = LLVMAddFunction(codegen->module, "malloc", malloc_type);
+    }
+
+    LLVMValueRef new_alloc_size_64 = LLVMBuildZExtOrBitCast(codegen->builder, new_alloc_size,
+                                                             LLVMInt64TypeInContext(codegen->context), "new_alloc_size_64");
+    LLVMValueRef new_ptr = LLVMBuildCall2(codegen->builder, malloc_type, malloc_func,
+                                          (LLVMValueRef[]){new_alloc_size_64}, 1, "new_ptr");
+    new_ptr = LLVMBuildBitCast(codegen->builder, new_ptr, LLVMTypeOf(ptr), "new_ptr_cast");
+
+    // TODO: memcpy old data to new array
+    LLVMValueRef ptr_grow = new_ptr;
+    LLVMValueRef cap_grow = new_cap;
+    LLVMBuildBr(codegen->builder, merge_block);
+
+    // No grow block: use existing array
+    codegen_set_insert_point(codegen, no_grow_block);
+    LLVMBuildBr(codegen->builder, merge_block);
+
+    // Merge block: phi for ptr and cap
+    codegen_set_insert_point(codegen, merge_block);
+    LLVMValueRef ptr_phi = LLVMBuildPhi(codegen->builder, LLVMTypeOf(ptr), "ptr_phi");
+    LLVMValueRef cap_phi = LLVMBuildPhi(codegen->builder, LLVMTypeOf(cap), "cap_phi");
+
+    LLVMValueRef ptr_values[] = {ptr_grow, ptr};
+    LLVMBasicBlockRef ptr_blocks[] = {grow_block, no_grow_block};
+    LLVMAddIncoming(ptr_phi, ptr_values, ptr_blocks, 2);
+
+    LLVMValueRef cap_values[] = {cap_grow, cap};
+    LLVMBasicBlockRef cap_blocks[] = {grow_block, no_grow_block};
+    LLVMAddIncoming(cap_phi, cap_values, cap_blocks, 2);
+
+    // Store element at ptr[len]
+    LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, element_type, ptr_phi,
+                                          (LLVMValueRef[]){len}, 1, "elem_ptr");
+    LLVMBuildStore(codegen->builder, elem_val->llvm_value, elem_ptr);
+
+    // Increment len
+    LLVMValueRef new_len = LLVMBuildAdd(codegen->builder, len,
+                                        LLVMConstInt(LLVMTypeOf(len), 1, 0), "new_len");
+
+    // Build new slice
+    LLVMTypeRef slice_llvm_type = codegen_type_to_llvm(codegen, slice_type);
+    LLVMValueRef new_slice = LLVMGetUndef(slice_llvm_type);
+    new_slice = LLVMBuildInsertValue(codegen->builder, new_slice, ptr_phi, 0, "new_slice.ptr");
+    new_slice = LLVMBuildInsertValue(codegen->builder, new_slice, new_len, 1, "new_slice.len");
+    new_slice = LLVMBuildInsertValue(codegen->builder, new_slice, cap_phi, 2, "new_slice.cap");
+
+    value_info_free(slice_val);
+    value_info_free(elem_val);
+
+    ValueInfo* result = value_info_new(NULL, new_slice, slice_type);
+    return result;
 #endif
 }

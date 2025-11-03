@@ -61,10 +61,23 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_IDENTIFIER) return NULL;
-    
+
     IdentifierNode* ident = (IdentifierNode*)expr;
+
+    // Check for builtin functions - these don't need to be declared
+    if (strcmp(ident->name, "make") == 0 ||
+        strcmp(ident->name, "len") == 0 ||
+        strcmp(ident->name, "cap") == 0 ||
+        strcmp(ident->name, "append") == 0 ||
+        strcmp(ident->name, "make_chan") == 0 ||
+        strcmp(ident->name, "goo_printf") == 0) {
+        // Return a function type for builtins (generic function)
+        expr->node_type = type_checker_get_builtin(checker, TYPE_FUNCTION);
+        return expr->node_type;
+    }
+
     Variable* var = type_checker_lookup_variable(checker, ident->name);
-    
+
     if (!var) {
         type_error(checker, expr->pos, "Undefined variable '%s'", ident->name);
         return NULL;

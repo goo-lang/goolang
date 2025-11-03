@@ -647,3 +647,26 @@ $(TEST_DEFER): $(TEST_UNIT_DIR)/codegen/defer_test.c $(TEST_UNIT_DIR)/codegen/te
 		$(TYPES_SRCS) \
 		$(CODEGEN_SRCS) \
 		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+# TDD Cycle 12: Slices Tests
+TEST_SLICE = $(BINDIR)/test_slice
+
+test-slice: $(TEST_SLICE)
+	@echo "Running slice tests..."
+	./$(TEST_SLICE)
+
+$(TEST_SLICE): $(TEST_UNIT_DIR)/codegen/slice_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building slice tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/slice_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)
