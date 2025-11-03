@@ -7,6 +7,7 @@
 static const char* token_strings[] = {
     [TOKEN_EOF] = "EOF",
     [TOKEN_IDENT] = "IDENT",
+    [TOKEN_TYPE_IDENT] = "TYPE_IDENT",
     [TOKEN_INT] = "INT",
     [TOKEN_FLOAT] = "FLOAT",
     [TOKEN_STRING] = "STRING",

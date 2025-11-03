@@ -29,7 +29,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 }
 
 // Token declarations with types
-%token <string> IDENTIFIER STRING_LITERAL
+%token <string> IDENTIFIER TYPE_IDENTIFIER STRING_LITERAL
 %token <integer> INT_LITERAL
 %token <real> FLOAT_LITERAL
 %token <token> CHAR_LITERAL
@@ -91,7 +91,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field
 %type <node> type_list
-%type <node> identifier literal
+%type <node> identifier type_identifier literal
 %type <node> expression_list identifier_list
 
 // Goo Extensions
@@ -539,11 +539,16 @@ type_decl:
         type_node->base.pos = get_current_position();
         type_node->base.node_type = NULL;
         type_node->base.next = NULL;
-        
+
         IdentifierNode* ident = (IdentifierNode*)$2;
         type_node->name = strdup(ident->name);
         type_node->type = $3;
-        
+
+        // Register this type name with the lexer so it can be recognized as TYPE_IDENTIFIER
+        if (current_lexer) {
+            lexer_register_type_name(current_lexer, ident->name);
+        }
+
         ast_node_free($2);
         $$ = (ASTNode*)type_node;
     }
@@ -1043,8 +1048,16 @@ selector_expr:
     }
     ;
 
+type_identifier:
+    TYPE_IDENTIFIER {
+        IdentifierNode* ident = ast_identifier_new($1, get_current_position());
+        free($1);
+        $$ = (ASTNode*)ident;
+    }
+    ;
+
 composite_literal:
-    identifier LBRACE RBRACE {
+    type_identifier LBRACE RBRACE {
         CompositeLitNode* comp = (CompositeLitNode*)malloc(sizeof(CompositeLitNode));
         comp->base.type = AST_COMPOSITE_LIT;
         comp->base.pos = get_current_position();
@@ -1056,7 +1069,7 @@ composite_literal:
         comp->field_count = 0;
         $$ = (ASTNode*)comp;
     }
-    | identifier LBRACE field_init_list RBRACE {
+    | type_identifier LBRACE field_init_list RBRACE {
         CompositeLitNode* comp = (CompositeLitNode*)$3;
         comp->type = $1;
         $$ = (ASTNode*)comp;
@@ -1442,6 +1455,11 @@ parallel_for_stmt:
 // Basic elements
 identifier:
     IDENTIFIER {
+        IdentifierNode* ident = ast_identifier_new($1, get_current_position());
+        free($1);
+        $$ = (ASTNode*)ident;
+    }
+    | TYPE_IDENTIFIER {
         IdentifierNode* ident = ast_identifier_new($1, get_current_position());
         free($1);
         $$ = (ASTNode*)ident;

@@ -5,6 +5,12 @@
 #include <stddef.h>
 #include <stdio.h>
 
+// Forward declaration for type name storage
+typedef struct TypeNameNode {
+    char* name;
+    struct TypeNameNode* next;
+} TypeNameNode;
+
 // Lexer state structure
 typedef struct {
     const char* input;      // Source code input
@@ -14,6 +20,7 @@ typedef struct {
     char ch;                // Current character under examination
     Position pos;           // Current position info (line, column, etc.)
     const char* filename;   // Name of the file being lexed
+    TypeNameNode* type_names; // Linked list of registered type names
 } Lexer;
 
 // Lexer functions
@@ -42,5 +49,10 @@ int lexer_is_whitespace(char ch);
 
 // Error handling
 void lexer_error(Lexer* lexer, const char* message);
+
+// Type name tracking functions
+void lexer_register_type_name(Lexer* lexer, const char* name);
+int lexer_is_type_name(Lexer* lexer, const char* name);
+void lexer_clear_type_names(Lexer* lexer);
 
 #endif // LEXER_H

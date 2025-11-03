@@ -75,14 +75,14 @@ static int ir_contains(const char* ir, const char* pattern) {
 TEST_FUNC(test_for_loop_basic) {
     TEST_START();
 
-    // Given: While-style for loop - parser requires () around identifier comparisons
+    // Given: While-style for loop with Go-style if condition (no parentheses)
     const char* source =
         "package main\n"
         "func sum_to_n(n int) int {\n"
         "    var sum int = 0;\n"
         "    var i int = 0;\n"
         "    for true {\n"
-        "        if (i >= n) { break; }\n"
+        "        if i >= n { break; }\n"
         "        sum = sum + i;\n"
         "        i = i + 1;\n"
         "    }\n"
@@ -140,16 +140,16 @@ TEST_FUNC(test_for_loop_infinite) {
 TEST_FUNC(test_for_loop_continue) {
     TEST_START();
 
-    // Given: While-style for loop with continue statement - parser requires ()
+    // Given: While-style for loop with continue statement and Go-style if
     const char* source =
         "package main\n"
         "func sum_evens(n int) int {\n"
         "    var sum int = 0;\n"
         "    var i int = 0;\n"
         "    for true {\n"
-        "        if (i >= n) { break; }\n"
+        "        if i >= n { break; }\n"
         "        i = i + 1;\n"
-        "        if (i % 2 != 0) {\n"
+        "        if i % 2 != 0 {\n"
         "            continue;\n"
         "        }\n"
         "        sum = sum + i;\n"
@@ -175,17 +175,17 @@ TEST_FUNC(test_for_loop_continue) {
 TEST_FUNC(test_nested_loops) {
     TEST_START();
 
-    // Given: Nested while-style loops - parser requires () around identifier comparisons
+    // Given: Nested while-style loops with Go-style if (no parentheses)
     const char* source =
         "package main\n"
         "func multiply_add(n int) int {\n"
         "    var sum int = 0;\n"
         "    var i int = 0;\n"
         "    for true {\n"
-        "        if (i >= n) { break; }\n"
+        "        if i >= n { break; }\n"
         "        var j int = 0;\n"
         "        for true {\n"
-        "            if (j >= n) { break; }\n"
+        "            if j >= n { break; }\n"
         "            sum = sum + 1;\n"
         "            j = j + 1;\n"
         "        }\n"
@@ -321,14 +321,14 @@ TEST_FUNC(test_array_assignment) {
 TEST_FUNC(test_loop_array_iteration) {
     TEST_START();
 
-    // Given: Loop iterating over array - parser requires () around identifier comparisons
+    // Given: Loop iterating over array with Go-style if (no parentheses)
     const char* source =
         "package main\n"
         "func sum_array(arr [5]int) int {\n"
         "    var sum int = 0;\n"
         "    var i int = 0;\n"
         "    for true {\n"
-        "        if (i >= 5) { break; }\n"
+        "        if i >= 5 { break; }\n"
         "        sum = sum + arr[i];\n"
         "        i = i + 1;\n"
         "    }\n"

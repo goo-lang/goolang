@@ -9,7 +9,8 @@ typedef enum {
     TOKEN_EOF = 0,
     
     // Literals
-    TOKEN_IDENT,        // identifiers
+    TOKEN_IDENT,        // identifiers (variables, functions)
+    TOKEN_TYPE_IDENT,   // type identifiers (struct names, etc.)
     TOKEN_INT,          // integer literals
     TOKEN_FLOAT,        // floating point literals
     TOKEN_STRING,       // string literals

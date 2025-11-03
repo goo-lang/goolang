@@ -8,28 +8,31 @@
 Lexer* lexer_new(const char* input, const char* filename) {
     Lexer* lexer = malloc(sizeof(Lexer));
     if (!lexer) return NULL;
-    
+
     lexer->input = input;
     lexer->input_length = strlen(input);
     lexer->position = 0;
     lexer->read_position = 0;
     lexer->ch = 0;
     lexer->filename = filename;
-    
+    lexer->type_names = NULL;  // Initialize empty type name list
+
     // Initialize position
     lexer->pos.line = 1;
     lexer->pos.column = 1;
     lexer->pos.offset = 0;
     lexer->pos.filename = filename;
-    
+
     // Read first character
     lexer_read_char(lexer);
-    
+
     return lexer;
 }
 
 void lexer_free(Lexer* lexer) {
     if (lexer) {
+        // Free type names list
+        lexer_clear_type_names(lexer);
         free(lexer);
     }
 }
@@ -381,8 +384,14 @@ Token* lexer_next_token(Lexer* lexer) {
                 size_t length;
                 char* identifier = lexer_read_identifier(lexer, &length);
                 if (identifier) {
-                    TokenType type = token_is_keyword(identifier) ? 
-                                   token_keyword_type(identifier) : TOKEN_IDENT;
+                    TokenType type;
+                    if (token_is_keyword(identifier)) {
+                        type = token_keyword_type(identifier);
+                    } else if (lexer_is_type_name(lexer, identifier)) {
+                        type = TOKEN_TYPE_IDENT;
+                    } else {
+                        type = TOKEN_IDENT;
+                    }
                     token = token_new(type, identifier, length, current_pos);
                     free(identifier);
                 } else {
@@ -558,4 +567,48 @@ void lexer_error(Lexer* lexer, const char* message) {
     fprintf(stderr, "Lexer error at %s:%d:%d: %s\n", 
             lexer->pos.filename ? lexer->pos.filename : "<stdin>",
             lexer->pos.line, lexer->pos.column, message);
+}
+// Type name tracking functions
+
+void lexer_register_type_name(Lexer* lexer, const char* name) {
+    if (!lexer || !name) return;
+    
+    // Check if already registered
+    if (lexer_is_type_name(lexer, name)) {
+        return;
+    }
+    
+    // Create new node
+    TypeNameNode* node = malloc(sizeof(TypeNameNode));
+    if (!node) return;
+    
+    node->name = strdup(name);
+    node->next = lexer->type_names;
+    lexer->type_names = node;
+}
+
+int lexer_is_type_name(Lexer* lexer, const char* name) {
+    if (!lexer || !name) return 0;
+    
+    TypeNameNode* current = lexer->type_names;
+    while (current) {
+        if (strcmp(current->name, name) == 0) {
+            return 1;
+        }
+        current = current->next;
+    }
+    return 0;
+}
+
+void lexer_clear_type_names(Lexer* lexer) {
+    if (!lexer) return;
+    
+    TypeNameNode* current = lexer->type_names;
+    while (current) {
+        TypeNameNode* next = current->next;
+        free(current->name);
+        free(current);
+        current = next;
+    }
+    lexer->type_names = NULL;
 }

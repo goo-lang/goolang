@@ -22,6 +22,7 @@ static int map_token_to_bison(TokenType type) {
         
         // Literals
         case TOKEN_IDENT: return IDENTIFIER;
+        case TOKEN_TYPE_IDENT: return TYPE_IDENTIFIER;
         case TOKEN_INT: return INT_LITERAL;
         case TOKEN_FLOAT: return FLOAT_LITERAL;
         case TOKEN_STRING: return STRING_LITERAL;
@@ -152,6 +153,7 @@ int yylex(void) {
     // Set the semantic value based on token type
     switch (token->type) {
         case TOKEN_IDENT:
+        case TOKEN_TYPE_IDENT:
         case TOKEN_STRING:
             yylval.string = strdup(token->literal);
             break;
@@ -176,6 +178,67 @@ int yylex(void) {
     return bison_token;
 }
 
+// Pre-scan to find type declarations and register type names
+static void prescan_type_declarations(const char* input, Lexer* lexer) {
+    // Simple scan for "type NAME struct" or "type NAME TYPENAME"
+    const char* ptr = input;
+    while (*ptr) {
+        // Look for "type " keyword at word boundary
+        if (strncmp(ptr, "type", 4) == 0) {
+            // Check it's a complete word (not part of another identifier)
+            if (ptr > input) {
+                char prev = *(ptr - 1);
+                if ((prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') ||
+                    (prev >= '0' && prev <= '9') || prev == '_') {
+                    ptr++;
+                    continue; // Not a keyword, part of identifier
+                }
+            }
+
+            char next = ptr[4];
+            if (next != ' ' && next != '\t' && next != '\n' && next != '\r') {
+                ptr++;
+                continue; // Not a keyword, part of identifier
+            }
+
+            ptr += 4;
+
+            // Skip whitespace after "type"
+            while (*ptr && (*ptr == ' ' || *ptr == '\t' || *ptr == '\n' || *ptr == '\r')) {
+                ptr++;
+            }
+
+            // Extract the type name (must start with letter or underscore)
+            if ((*ptr >= 'A' && *ptr <= 'Z') || (*ptr >= 'a' && *ptr <= 'z') || *ptr == '_') {
+                const char* name_start = ptr;
+                while ((*ptr >= 'A' && *ptr <= 'Z') || (*ptr >= 'a' && *ptr <= 'z') ||
+                       (*ptr >= '0' && *ptr <= '9') || *ptr == '_') {
+                    ptr++;
+                }
+
+                // Register the type name (but not keywords)
+                size_t name_len = ptr - name_start;
+                char* type_name = malloc(name_len + 1);
+                if (type_name) {
+                    memcpy(type_name, name_start, name_len);
+                    type_name[name_len] = '\0';
+
+                    // Don't register Go keywords
+                    if (strcmp(type_name, "struct") != 0 &&
+                        strcmp(type_name, "interface") != 0 &&
+                        strcmp(type_name, "func") != 0 &&
+                        strcmp(type_name, "map") != 0 &&
+                        strcmp(type_name, "chan") != 0) {
+                        lexer_register_type_name(lexer, type_name);
+                    }
+                    free(type_name);
+                }
+            }
+        }
+        ptr++;
+    }
+}
+
 // Initialize parser with input
 int parse_input(const char* input, const char* filename) {
     current_lexer = lexer_new(input, filename);
@@ -183,12 +246,15 @@ int parse_input(const char* input, const char* filename) {
         fprintf(stderr, "Error: Failed to create lexer\n");
         return -1;
     }
-    
+
+    // Pre-scan to register type names before parsing
+    prescan_type_declarations(input, current_lexer);
+
     int result = yyparse();
-    
+
     lexer_free(current_lexer);
     current_lexer = NULL;
-    
+
     return result;
 }
 
