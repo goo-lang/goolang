@@ -37,16 +37,17 @@ LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type) {
             return codegen_get_array_type(codegen, type);
             
         case TYPE_SLICE:
-            // Slice is represented as { T*, i64 } (pointer + length)
+            // Slice is represented as { T*, i64, i64 } (pointer + length + capacity)
             {
                 LLVMTypeRef element_type = codegen_type_to_llvm(codegen, type->data.slice.element_type);
                 if (!element_type) return NULL;
-                
+
                 return LLVMStructTypeInContext(codegen->context,
                     (LLVMTypeRef[]){
-                        LLVMPointerType(element_type, 0),
-                        LLVMInt64TypeInContext(codegen->context)
-                    }, 2, 0);
+                        LLVMPointerType(element_type, 0),  // ptr
+                        LLVMInt64TypeInContext(codegen->context),  // len
+                        LLVMInt64TypeInContext(codegen->context)   // cap
+                    }, 3, 0);
             }
             
         case TYPE_MAP:

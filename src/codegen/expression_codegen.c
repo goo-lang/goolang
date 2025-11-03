@@ -1753,7 +1753,15 @@ ValueInfo* codegen_generate_cap_call(CodeGenerator* codegen, TypeChecker* checke
 
     // Generate the argument
     ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
-    if (!arg_val) return NULL;
+    if (!arg_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate argument for cap()");
+        return NULL;
+    }
+    if (!arg_val->llvm_value) {
+        codegen_error(codegen, expr->pos, "cap() argument has NULL LLVM value");
+        value_info_free(arg_val);
+        return NULL;
+    }
 
     Type* arg_type = arg_val->goo_type;
     LLVMValueRef cap_value = NULL;
@@ -1766,6 +1774,16 @@ ValueInfo* codegen_generate_cap_call(CodeGenerator* codegen, TypeChecker* checke
             slice_val = LLVMBuildLoad2(codegen->builder,
                                       codegen_type_to_llvm(codegen, arg_type),
                                       slice_val, "slice_load");
+            if (!slice_val) {
+                codegen_error(codegen, expr->pos, "Failed to load slice value for cap()");
+                value_info_free(arg_val);
+                return NULL;
+            }
+        }
+        if (!slice_val) {
+            codegen_error(codegen, expr->pos, "cap() has NULL slice value");
+            value_info_free(arg_val);
+            return NULL;
         }
         cap_value = LLVMBuildExtractValue(codegen->builder, slice_val, 2, "cap");
         value_info_free(arg_val);
