@@ -739,3 +739,26 @@ $(TEST_MAP): $(TEST_UNIT_DIR)/codegen/map_test.c $(TEST_UNIT_DIR)/codegen/test_c
 		$(TYPES_SRCS) \
 		$(CODEGEN_SRCS) \
 		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+# TDD Cycle 16: Type Aliases Tests
+TEST_TYPE_ALIAS = $(BINDIR)/test_type_alias
+
+test-type-alias: $(TEST_TYPE_ALIAS)
+	@echo "Running type alias tests..."
+	./$(TEST_TYPE_ALIAS)
+
+$(TEST_TYPE_ALIAS): $(TEST_UNIT_DIR)/codegen/type_alias_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building type alias tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/type_alias_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)
