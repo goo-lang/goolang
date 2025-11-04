@@ -288,6 +288,8 @@ TEST_FUNC(test_string_length) {
 TEST_FUNC(test_empty_string) {
     TEST_START();
 
+    printf("DEBUG: Starting test_empty_string\n");
+
     // Given: Empty string literal
     const char* source =
         "package main\n"
@@ -295,8 +297,12 @@ TEST_FUNC(test_empty_string) {
         "    return \"\";\n"
         "}\n";
 
+    printf("DEBUG: About to compile empty string\n");
+
     // When: Compile to LLVM IR
     char* ir = compile_to_llvm_ir(source);
+
+    printf("DEBUG: Compilation complete, ir=%p\n", (void*)ir);
 
     // Then: IR should handle empty string
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
@@ -354,7 +360,7 @@ int main() {
     // RUN_TEST(test_string_less_than);  // TODO: Debug - IR generation fails
     RUN_TEST(test_string_length);
     // RUN_TEST(test_empty_string);
-    // RUN_TEST(test_string_param_return);
+    RUN_TEST(test_string_param_return);
 
     printf("\n");
     printf("\033[0;34m================================\033[0m\n");
