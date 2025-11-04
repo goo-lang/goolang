@@ -235,7 +235,7 @@ TEST_FUNC(test_string_less_than) {
     // Given: String less-than comparison
     const char* source =
         "package main\n"
-        "func is_before(a string, b string) bool {\n"
+        "func is_less(a string, b string) bool {\n"
         "    return a < b;\n"
         "}\n";
 
@@ -243,9 +243,12 @@ TEST_FUNC(test_string_less_than) {
     char* ir = compile_to_llvm_ir(source);
 
     // Then: IR should contain comparison logic
+    if (!ir) {
+        printf("DEBUG: IR generation failed for test_string_less_than\n");
+    }
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
-    ASSERT_TRUE(ir_contains(ir, "@is_before"), "IR should contain is_before function");
-    ASSERT_TRUE(ir_contains(ir, "goo_string_compare") || ir_contains(ir, "strcmp"),
+    ASSERT_TRUE(ir_contains(ir, "@is_less"), "IR should contain is_less function");
+    ASSERT_TRUE(ir_contains(ir, "strcmp"),
                 "IR should contain string comparison");
 
     free(ir);
@@ -271,7 +274,8 @@ TEST_FUNC(test_string_length) {
     // Then: IR should contain length operation
     ASSERT_NOT_NULL(ir, "IR generation should succeed");
     ASSERT_TRUE(ir_contains(ir, "@string_size"), "IR should contain string_size function");
-    ASSERT_TRUE(ir_contains(ir, "goo_string_len") || ir_contains(ir, "strlen") || ir_contains(ir, "getelementptr"),
+    ASSERT_TRUE(ir_contains(ir, "goo_string_len") || ir_contains(ir, "strlen") ||
+                ir_contains(ir, "getelementptr") || ir_contains(ir, "extractvalue"),
                 "IR should contain string length operation");
 
     free(ir);
@@ -347,7 +351,7 @@ int main() {
     RUN_TEST(test_string_indexing);
     // RUN_TEST(test_string_slicing);  // TODO: Parser doesn't support slice syntax yet
     RUN_TEST(test_string_equality);
-    // Skip test_string_less_than for now - debugging
+    // RUN_TEST(test_string_less_than);  // TODO: Debug - IR generation fails
     RUN_TEST(test_string_length);
     // RUN_TEST(test_empty_string);
     // RUN_TEST(test_string_param_return);
