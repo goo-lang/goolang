@@ -402,6 +402,19 @@ func_param:
         ast_node_free($1);
         $$ = (ASTNode*)param;
     }
+    | identifier ELLIPSIS type {
+        // Variadic parameter (e.g., nums ...int)
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = malloc(sizeof(char*));
+        param->names[0] = strdup(ident->name);
+        param->name_count = 1;
+        param->type = $3;
+        param->values = NULL;
+        param->is_variadic = 1;
+        ast_node_free($1);
+        $$ = (ASTNode*)param;
+    }
     | type {
         // Anonymous parameter - create a var decl with no name
         VarDeclNode* param = ast_var_decl_new(get_current_position());

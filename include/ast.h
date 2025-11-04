@@ -260,6 +260,7 @@ typedef struct {
     struct ASTNode* values;    // Initial values
     OwnershipKind ownership;   // Goo extension: ownership qualifier
     int is_short_decl;         // True for := declarations
+    int is_variadic;           // True for variadic parameters (...type)
 } VarDeclNode;
 
 // Constant declaration

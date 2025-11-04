@@ -639,7 +639,8 @@ VarDeclNode* ast_var_decl_new(Position pos) {
     node->values = NULL;
     node->ownership = OWNERSHIP_NONE;
     node->is_short_decl = 0;
-    
+    node->is_variadic = 0;
+
     return node;
 }
 

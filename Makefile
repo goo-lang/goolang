@@ -785,3 +785,26 @@ $(TEST_CONST): $(TEST_UNIT_DIR)/codegen/const_test.c $(TEST_UNIT_DIR)/codegen/te
 		$(TYPES_SRCS) \
 		$(CODEGEN_SRCS) \
 		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+# TDD Cycle 18: Variadic Functions Tests
+TEST_VARIADIC = $(BINDIR)/test_variadic
+
+test-variadic: $(TEST_VARIADIC)
+	@echo "Running variadic function tests..."
+	./$(TEST_VARIADIC)
+
+$(TEST_VARIADIC): $(TEST_UNIT_DIR)/codegen/variadic_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building variadic function tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/variadic_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)
