@@ -576,7 +576,7 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
 
 int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_CONST_DECL) return 0;
-    
+
     ConstDeclNode* const_decl = (ConstDeclNode*)decl;
     
     // Constants must have values
@@ -598,7 +598,7 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         if (!declared_type) {
             return 0;
         }
-        
+
         if (!type_compatible(value_type, declared_type)) {
             type_error(checker, const_decl->base.pos,
                       "Cannot assign %s to %s",
@@ -608,7 +608,10 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         }
         value_type = declared_type;
     }
-    
+
+    // Store the type on the AST node for code generation
+    const_decl->base.node_type = value_type;
+
     // Add constants to scope (treated as immutable variables)
     for (size_t i = 0; i < const_decl->name_count; i++) {
         Variable* var = variable_new(const_decl->names[i], value_type, const_decl->base.pos);
@@ -624,7 +627,7 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
             return 0;
         }
     }
-    
+
     return 1;
 }
 
@@ -710,7 +713,7 @@ int type_check_concept_decl(TypeChecker* checker, ASTNode* decl) {
 
 int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt) return 0;
-    
+
     switch (stmt->type) {
         case AST_BLOCK_STMT:
             return type_check_block_stmt(checker, stmt);
@@ -719,8 +722,9 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
         case AST_VAR_DECL:
             return type_check_var_decl(checker, stmt);
         case AST_CONST_DECL:
+            return type_check_const_decl(checker, stmt);
         case AST_TYPE_DECL:
-            return 1;  // Type/const decls handled elsewhere, accept in statement context
+            return 1;  // Type decls handled elsewhere, accept in statement context
         case AST_IF_STMT:
             return type_check_if_stmt(checker, stmt);
         case AST_IF_LET_STMT:

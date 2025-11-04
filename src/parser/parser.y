@@ -739,6 +739,7 @@ statement_list:
 
 statement:
     var_decl SEMICOLON { $$ = $1; }
+    | const_decl SEMICOLON { $$ = $1; }
     | short_var_decl SEMICOLON { $$ = $1; }
     | simple_stmt SEMICOLON { $$ = $1; }
     | if_stmt { $$ = $1; }

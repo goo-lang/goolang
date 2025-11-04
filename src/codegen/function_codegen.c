@@ -544,70 +544,96 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
     return 0;
 #else
     if (!codegen || !checker || !decl || decl->type != AST_CONST_DECL) return 0;
-    
+
     ConstDeclNode* const_decl = (ConstDeclNode*)decl;
-    
+
     // Constants must have initializers
     if (!const_decl->values) {
         codegen_error(codegen, decl->pos, "Constant declaration must have initializer");
         return 0;
     }
-    
+
+    // Get type from AST node (set during type checking)
+    Type* const_type = decl->node_type;
+    if (!const_type) {
+        codegen_error(codegen, decl->pos, "Constant declaration has no type information");
+        return 0;
+    }
+
     // Generate the constant value
     ValueInfo* const_value = codegen_generate_expression(codegen, checker, const_decl->values);
     if (!const_value) {
         codegen_error(codegen, decl->pos, "Failed to generate constant value");
         return 0;
     }
-    
-    // Constants must be compile-time constants
-    if (!LLVMIsConstant(const_value->llvm_value)) {
-        codegen_error(codegen, decl->pos, "Constant value must be compile-time constant");
-        value_info_free(const_value);
-        return 0;
-    }
-    
+
     // Generate code for each constant
     for (size_t i = 0; i < const_decl->name_count; i++) {
         const char* const_name = const_decl->names[i];
-        
-        // Get type from type checker
-        Variable* var = type_checker_lookup_variable(checker, const_name);
-        if (!var) {
-            codegen_error(codegen, decl->pos, "Constant '%s' not found in type checker", const_name);
-            value_info_free(const_value);
-            return 0;
-        }
-        
+
         // Convert type to LLVM type
-        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, var->type);
+        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, const_type);
         if (!llvm_type) {
             codegen_error(codegen, decl->pos, "Failed to convert type for constant '%s'", const_name);
             value_info_free(const_value);
             return 0;
         }
-        
-        // Create global constant
-        LLVMValueRef global_const = LLVMAddGlobal(codegen->module, llvm_type, const_name);
-        LLVMSetInitializer(global_const, const_value->llvm_value);
-        LLVMSetGlobalConstant(global_const, 1);  // Mark as constant
-        
-        // Add to symbol table
-        ValueInfo* value_info = value_info_new(const_name, global_const, var->type);
-        if (!value_info) {
-            codegen_error(codegen, decl->pos, "Failed to create value info for constant '%s'", const_name);
-            value_info_free(const_value);
-            return 0;
-        }
-        
-        value_info->is_lvalue = 0;  // Constants are not lvalues
-        value_info->is_initialized = 1;
-        
-        if (!codegen_add_value(codegen, value_info)) {
-            codegen_error(codegen, decl->pos, "Failed to add constant '%s' to symbol table", const_name);
-            value_info_free(value_info);
-            value_info_free(const_value);
-            return 0;
+
+        // Check if this is a local or global constant
+        if (codegen->current_function) {
+            // Local constant - treat like an immutable local variable
+            // For true constants (compile-time values), we could just inline them,
+            // but for simplicity, we create a local alloca and mark it as initialized
+            LLVMValueRef alloca_inst = codegen_create_entry_alloca(codegen, llvm_type, const_name);
+            if (!alloca_inst) {
+                codegen_error(codegen, decl->pos, "Failed to create storage for constant '%s'", const_name);
+                value_info_free(const_value);
+                return 0;
+            }
+
+            // Store the constant value
+            LLVMBuildStore(codegen->builder, const_value->llvm_value, alloca_inst);
+
+            // Add to symbol table as an lvalue (so it can be loaded)
+            ValueInfo* value_info = value_info_new(const_name, alloca_inst, const_type);
+            if (!value_info) {
+                codegen_error(codegen, decl->pos, "Failed to create value info for constant '%s'", const_name);
+                value_info_free(const_value);
+                return 0;
+            }
+            value_info->is_lvalue = 1;
+            value_info->is_initialized = 1;
+            codegen_add_value(codegen, value_info);
+        } else {
+            // Global constant - verify it's a compile-time constant
+            if (!LLVMIsConstant(const_value->llvm_value)) {
+                codegen_error(codegen, decl->pos, "Global constant value must be compile-time constant");
+                value_info_free(const_value);
+                return 0;
+            }
+
+            // Create global constant
+            LLVMValueRef global_const = LLVMAddGlobal(codegen->module, llvm_type, const_name);
+            LLVMSetInitializer(global_const, const_value->llvm_value);
+            LLVMSetGlobalConstant(global_const, 1);  // Mark as constant
+
+            // Add to symbol table
+            ValueInfo* value_info = value_info_new(const_name, global_const, const_type);
+            if (!value_info) {
+                codegen_error(codegen, decl->pos, "Failed to create value info for constant '%s'", const_name);
+                value_info_free(const_value);
+                return 0;
+            }
+
+            value_info->is_lvalue = 0;  // Global constants are not lvalues
+            value_info->is_initialized = 1;
+
+            if (!codegen_add_value(codegen, value_info)) {
+                codegen_error(codegen, decl->pos, "Failed to add constant '%s' to symbol table", const_name);
+                value_info_free(value_info);
+                value_info_free(const_value);
+                return 0;
+            }
         }
     }
     
@@ -628,6 +654,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_expr_stmt(codegen, checker, stmt);
         case AST_VAR_DECL:
             return codegen_generate_var_decl(codegen, checker, stmt);
+        case AST_CONST_DECL:
+            return codegen_generate_const_decl(codegen, checker, stmt);
         case AST_IF_STMT:
             return codegen_generate_if_stmt(codegen, checker, stmt);
         case AST_FOR_STMT:
