@@ -30,17 +30,19 @@ static int tests_passed = 0;
 
 // Helper function to compile Goo source to LLVM IR
 static char* compile_to_llvm_ir(const char* source) {
+    printf("DEBUG: Compiling source:\n%s\n", source);
     lexer_init(source, "test.goo");
 
     ASTNode* ast = parse_program();
     if (!ast) {
-        fprintf(stderr, "Parse error\n");
+        fprintf(stderr, "DEBUG: Parse failed\n");
         return NULL;
     }
+    printf("DEBUG: Parse succeeded\n");
 
     CodeGenerator* codegen = codegen_new("test_module");
     if (!codegen) {
-        fprintf(stderr, "Failed to create code generator\n");
+        fprintf(stderr, "DEBUG: Codegen creation failed\n");
         ast_node_free(ast);
         return NULL;
     }
@@ -49,11 +51,12 @@ static char* compile_to_llvm_ir(const char* source) {
     int codegen_result = codegen_generate(codegen, ast);
 
     if (!codegen_result) {
-        fprintf(stderr, "Code generation failed\n");
+        fprintf(stderr, "DEBUG: Code generation failed\n");
         codegen_free(codegen);
         ast_node_free(ast);
         return NULL;
     }
+    printf("DEBUG: Code generation succeeded\n");
 
     char* ir = codegen_get_ir_string(codegen);
 
@@ -74,12 +77,12 @@ static int ir_contains(const char* ir, const char* pattern) {
 TEST_FUNC(test_int_const) {
     TEST_START();
 
-    // Given: Integer constant declaration
+    // Given: Integer constant declaration (local const)
     const char* source =
         "package main\n"
-        "const MaxSize int = 100\n"
         "func get_max() int {\n"
-        "    return MaxSize\n"
+        "    const MaxSize int = 100;\n"
+        "    return MaxSize;\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -104,9 +107,9 @@ TEST_FUNC(test_string_const) {
     // Given: String constant declaration
     const char* source =
         "package main\n"
-        "const Greeting string = \"Hello\"\n"
+        "const Greeting string = \"Hello\";\n"
         "func get_greeting() string {\n"
-        "    return Greeting\n"
+        "    return Greeting;\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -131,9 +134,9 @@ TEST_FUNC(test_const_expression) {
     // Given: Constant with expression
     const char* source =
         "package main\n"
-        "const Size int = 10 * 10\n"
+        "const Size int = 10 * 10;\n"
         "func get_size() int {\n"
-        "    return Size\n"
+        "    return Size;\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -158,10 +161,10 @@ TEST_FUNC(test_multiple_consts) {
     // Given: Multiple constant declarations
     const char* source =
         "package main\n"
-        "const Width int = 800\n"
-        "const Height int = 600\n"
+        "const Width int = 800;\n"
+        "const Height int = 600;\n"
         "func get_area() int {\n"
-        "    return Width * Height\n"
+        "    return Width * Height;\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -186,10 +189,10 @@ TEST_FUNC(test_const_in_var_init) {
     // Given: Constant used in variable initialization
     const char* source =
         "package main\n"
-        "const DefaultValue int = 42\n"
+        "const DefaultValue int = 42;\n"
         "func create_value() int {\n"
-        "    var x int = DefaultValue\n"
-        "    return x\n"
+        "    var x int = DefaultValue;\n"
+        "    return x;\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -214,9 +217,9 @@ TEST_FUNC(test_bool_const) {
     // Given: Boolean constant
     const char* source =
         "package main\n"
-        "const Debug bool = true\n"
+        "const Debug bool = true;\n"
         "func is_debug() bool {\n"
-        "    return Debug\n"
+        "    return Debug;\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -241,9 +244,9 @@ TEST_FUNC(test_const_arithmetic) {
     // Given: Constant used in arithmetic expression
     const char* source =
         "package main\n"
-        "const Base int = 100\n"
+        "const Base int = 100;\n"
         "func add_to_base(x int) int {\n"
-        "    return x + Base\n"
+        "    return x + Base;\n"
         "}\n";
 
     // When: Compile to LLVM IR
