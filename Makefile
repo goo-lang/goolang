@@ -808,3 +808,26 @@ $(TEST_VARIADIC): $(TEST_UNIT_DIR)/codegen/variadic_test.c $(TEST_UNIT_DIR)/code
 		$(TYPES_SRCS) \
 		$(CODEGEN_SRCS) \
 		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+# TDD Cycle 19: Function Literals/Closures Tests
+TEST_CLOSURE = $(BINDIR)/test_closure
+
+test-closure: $(TEST_CLOSURE)
+	@echo "Running function literal/closure tests..."
+	./$(TEST_CLOSURE)
+
+$(TEST_CLOSURE): $(TEST_UNIT_DIR)/codegen/closure_test.c $(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c $(SRCDIR)/parser/parser.y | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	@echo "Building function literal/closure tests..."
+	@bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y 2>/dev/null || true
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ \
+		$(TEST_UNIT_DIR)/codegen/closure_test.c \
+		$(TEST_UNIT_DIR)/codegen/test_codegen_helpers.c \
+		$(SRCDIR)/parser/parser.tab.c \
+		$(SRCDIR)/parser/parser_error_stubs.c \
+		$(SRCDIR)/parser/lexer_bridge.c \
+		$(LEXER_SRCS) \
+		$(AST_SRCS) \
+		$(TYPES_SRCS) \
+		$(CODEGEN_SRCS) \
+		$(LDFLAGS) $(LLVM_LDFLAGS)
