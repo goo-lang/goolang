@@ -18,6 +18,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_literal(codegen, checker, expr);
         case AST_COMPOSITE_LIT:
             return codegen_generate_composite_lit(codegen, checker, expr);
+        case AST_FUNC_LIT:
+            return codegen_generate_func_lit(codegen, checker, expr);
         case AST_BINARY_EXPR:
             return codegen_generate_binary_expr(codegen, checker, expr);
         case AST_UNARY_EXPR:
@@ -2184,4 +2186,142 @@ ValueInfo* codegen_generate_append_call(CodeGenerator* codegen, TypeChecker* che
     ValueInfo* result = value_info_new(NULL, new_slice, slice_type);
     return result;
 #endif
+}
+// Generate code for function literal
+ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+    if (!codegen || !checker || !expr) return NULL;
+    
+    FuncLitNode* func_lit = (FuncLitNode*)expr;
+    
+    // Generate a unique name for the anonymous function
+    static int func_lit_counter = 0;
+    char func_name[64];
+    snprintf(func_name, sizeof(func_name), "__anon_func_%d", func_lit_counter++);
+    
+    // Get the function type from the expression
+    Type* func_type = expr->node_type;
+    if (!func_type || func_type->kind != TYPE_FUNCTION) {
+        codegen_error(codegen, expr->pos, "Function literal has no function type");
+        return NULL;
+    }
+    
+    // Create LLVM function type
+    LLVMTypeRef return_type = codegen_type_to_llvm(codegen, func_type->data.function.return_type);
+    
+    // Build parameter types
+    size_t param_count = func_type->data.function.param_count;
+    LLVMTypeRef* param_types = NULL;
+    if (param_count > 0) {
+        param_types = malloc(sizeof(LLVMTypeRef) * param_count);
+        for (size_t i = 0; i < param_count; i++) {
+            param_types[i] = codegen_type_to_llvm(codegen, func_type->data.function.param_types[i]);
+        }
+    }
+    
+    LLVMTypeRef llvm_func_type = LLVMFunctionType(return_type, param_types, param_count, 0);
+    free(param_types);
+    
+    // Create the LLVM function
+    LLVMValueRef llvm_func = LLVMAddFunction(codegen->module, func_name, llvm_func_type);
+    
+    // Save current insert block
+    LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(codegen->builder);
+    
+    // Create entry block for the function
+    LLVMBasicBlockRef entry_block = LLVMAppendBasicBlock(llvm_func, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry_block);
+    
+    // Create a new scope for function parameters
+    // TODO: Proper scope management for parameters
+    
+    // Generate code for function body
+    if (func_lit->body) {
+        codegen_generate_statement(codegen, checker, func_lit->body);
+    }
+    
+    // Add return if missing (for void functions)
+    if (func_type->data.function.return_type->kind == TYPE_VOID) {
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            LLVMBuildRetVoid(codegen->builder);
+        }
+    }
+    
+    // Restore previous insert block
+    if (saved_block) {
+        LLVMPositionBuilderAtEnd(codegen->builder, saved_block);
+    }
+    
+    // Return function pointer
+    ValueInfo* result = malloc(sizeof(ValueInfo));
+    result->value = llvm_func;
+    result->type = func_type;
+    return result;
+}
+
+// Generate code for function literal
+ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+    if (!codegen || !codegen->builder || !checker || !expr) return NULL;
+
+    FuncLitNode* func_lit = (FuncLitNode*)expr;
+
+    // Generate a unique name for the anonymous function
+    static int func_lit_counter = 0;
+    char func_name[64];
+    snprintf(func_name, sizeof(func_name), "__anon_func_%d", func_lit_counter++);
+
+    // Get the function type from the expression
+    Type* func_type = expr->node_type;
+    if (!func_type || func_type->kind != TYPE_FUNCTION) {
+        codegen_error(codegen, expr->pos, "Function literal has no function type");
+        return NULL;
+    }
+
+    // Create LLVM function type
+    LLVMTypeRef return_type = codegen_type_to_llvm(codegen, func_type->data.function.return_type);
+
+    // Build parameter types
+    size_t param_count = func_type->data.function.param_count;
+    LLVMTypeRef* param_types = NULL;
+    if (param_count > 0) {
+        param_types = malloc(sizeof(LLVMTypeRef) * param_count);
+        for (size_t i = 0; i < param_count; i++) {
+            param_types[i] = codegen_type_to_llvm(codegen, func_type->data.function.param_types[i]);
+        }
+    }
+
+    LLVMTypeRef llvm_func_type = LLVMFunctionType(return_type, param_types, param_count, 0);
+    free(param_types);
+
+    // Create the LLVM function
+    LLVMValueRef llvm_func = LLVMAddFunction(codegen->module, func_name, llvm_func_type);
+
+    // Save current insert block
+    LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(codegen->builder);
+
+    // Create entry block for the function
+    LLVMBasicBlockRef entry_block = LLVMAppendBasicBlock(llvm_func, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry_block);
+
+    // Generate code for function body
+    if (func_lit->body) {
+        codegen_generate_statement(codegen, checker, func_lit->body);
+    }
+
+    // Add return if missing (for void functions)
+    if (func_type->data.function.return_type->kind == TYPE_VOID) {
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            LLVMBuildRetVoid(codegen->builder);
+        }
+    }
+
+    // Restore previous insert block
+    if (saved_block) {
+        LLVMPositionBuilderAtEnd(codegen->builder, saved_block);
+    }
+
+    // Return function pointer
+    ValueInfo* result = malloc(sizeof(ValueInfo));
+    result->value = llvm_func;
+    result->type = func_type;
+    return result;
 }
