@@ -75,10 +75,10 @@ TEST_FUNC(test_simple_variadic) {
     const char* source =
         "package main\n"
         "func sum(nums ...int) int {\n"
-        "    return 0\n"
+        "    return 0;\n"
         "}\n"
         "func main() {\n"
-        "    var x int = sum(1, 2, 3)\n"
+        "    var x int = sum(1, 2, 3);\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -103,10 +103,10 @@ TEST_FUNC(test_variadic_with_fixed) {
     const char* source =
         "package main\n"
         "func printf_like(format string, args ...int) int {\n"
-        "    return 0\n"
+        "    return 0;\n"
         "}\n"
         "func main() {\n"
-        "    var n int = printf_like(\"test\", 1, 2, 3)\n"
+        "    var n int = printf_like(\"test\", 1, 2, 3);\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -130,10 +130,10 @@ TEST_FUNC(test_empty_variadic) {
     const char* source =
         "package main\n"
         "func count(nums ...int) int {\n"
-        "    return 0\n"
+        "    return 0;\n"
         "}\n"
         "func main() {\n"
-        "    var n int = count()\n"
+        "    var n int = count();\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -157,10 +157,10 @@ TEST_FUNC(test_single_variadic_arg) {
     const char* source =
         "package main\n"
         "func get_first(nums ...int) int {\n"
-        "    return 0\n"
+        "    return 0;\n"
         "}\n"
         "func main() {\n"
-        "    var x int = get_first(42)\n"
+        "    var x int = get_first(42);\n"
         "}\n";
 
     // When: Compile to LLVM IR
@@ -184,12 +184,12 @@ TEST_FUNC(test_multiple_variadic_calls) {
     const char* source =
         "package main\n"
         "func max_int(nums ...int) int {\n"
-        "    return 0\n"
+        "    return 0;\n"
         "}\n"
         "func main() {\n"
-        "    var a int = max_int(1, 2)\n"
-        "    var b int = max_int(5, 3, 9, 1)\n"
-        "    var c int = max_int()\n"
+        "    var a int = max_int(1, 2);\n"
+        "    var b int = max_int(5, 3, 9, 1);\n"
+        "    var c int = max_int();\n"
         "}\n";
 
     // When: Compile to LLVM IR
