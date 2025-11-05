@@ -1077,6 +1077,14 @@ primary_expr:
     identifier { $$ = $1; }
     | literal { $$ = $1; }
     | composite_literal { $$ = $1; }
+    | FUNC LPAREN opt_func_params RPAREN opt_func_result block {
+        // Function literal: func(params) return_type { body }
+        FuncLitNode* func_lit = ast_func_lit_new(get_current_position());
+        func_lit->params = $3;
+        func_lit->return_type = $5;
+        func_lit->body = $6;
+        $$ = (ASTNode*)func_lit;
+    }
     | call_expr { $$ = $1; }
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }

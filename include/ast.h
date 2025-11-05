@@ -45,6 +45,7 @@ typedef enum {
     AST_IDENTIFIER,
     AST_LITERAL,
     AST_COMPOSITE_LIT,
+    AST_FUNC_LIT,           // function literal (closure)
     AST_BINARY_EXPR,
     AST_UNARY_EXPR,
     AST_POSTFIX_EXPR,
@@ -250,6 +251,17 @@ typedef struct {
     // Named return parameters (Go feature)
     struct ASTNode* named_returns; // List of VarDeclNode for named returns
 } FuncDeclNode;
+
+// Function literal (closure)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* params;      // Parameter list
+    struct ASTNode* return_type; // Return type
+    struct ASTNode* body;        // Function body
+    // Closure support
+    char** captured_vars;        // Names of captured variables
+    size_t captured_count;       // Number of captured variables
+} FuncLitNode;
 
 // Variable declaration
 typedef struct {
@@ -956,6 +968,7 @@ ProgramNode* ast_program_new(Position pos);
 PackageDeclNode* ast_package_decl_new(const char* name, Position pos);
 ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Position pos);
 FuncDeclNode* ast_func_decl_new(const char* name, Position pos);
+FuncLitNode* ast_func_lit_new(Position pos);
 ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos);
 VarDeclNode* ast_var_decl_new(Position pos);
 IdentifierNode* ast_identifier_new(const char* name, Position pos);

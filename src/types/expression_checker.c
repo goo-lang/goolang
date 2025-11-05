@@ -23,6 +23,37 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_literal(checker, expr);
         case AST_COMPOSITE_LIT:
             return type_check_composite_lit(checker, expr);
+        case AST_FUNC_LIT: {
+            // Function literal - create a function type from params and return type
+            FuncLitNode* func_lit = (FuncLitNode*)expr;
+
+            // Build function type from parameters and return type
+            Type* func_type = type_function_new();
+
+            // Set return type
+            if (func_lit->return_type) {
+                func_type->data.function.return_type = type_from_ast(checker, func_lit->return_type);
+            } else {
+                func_type->data.function.return_type = type_void_new();
+            }
+
+            // Add parameters
+            ASTNode* param = func_lit->params;
+            while (param) {
+                VarDeclNode* var = (VarDeclNode*)param;
+                Type* param_type = type_from_ast(checker, var->type);
+                type_add_param(func_type, param_type);
+                param = param->next;
+            }
+
+            // Type check the function body
+            if (func_lit->body) {
+                type_check_statement(checker, func_lit->body);
+            }
+
+            expr->node_type = func_type;
+            return func_type;
+        }
         case AST_BINARY_EXPR:
             return type_check_binary_expr(checker, expr);
         case AST_UNARY_EXPR:

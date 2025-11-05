@@ -155,6 +155,17 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(func->body);
             break;
         }
+        case AST_FUNC_LIT: {
+            FuncLitNode* func_lit = (FuncLitNode*)node;
+            ast_node_free(func_lit->params);
+            ast_node_free(func_lit->return_type);
+            ast_node_free(func_lit->body);
+            for (size_t i = 0; i < func_lit->captured_count; i++) {
+                free(func_lit->captured_vars[i]);
+            }
+            free(func_lit->captured_vars);
+            break;
+        }
         case AST_CONCEPT_DECL: {
             ConceptDeclNode* concept = (ConceptDeclNode*)node;
             free(concept->name);
@@ -606,6 +617,23 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     node->receiver_name = NULL;
     node->receiver_type = NULL;
     node->named_returns = NULL;
+
+    return node;
+}
+
+FuncLitNode* ast_func_lit_new(Position pos) {
+    FuncLitNode* node = (FuncLitNode*)malloc(sizeof(FuncLitNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_FUNC_LIT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->params = NULL;
+    node->return_type = NULL;
+    node->body = NULL;
+    node->captured_vars = NULL;
+    node->captured_count = 0;
 
     return node;
 }
