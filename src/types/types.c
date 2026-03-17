@@ -545,13 +545,17 @@ Type* type_application(Type* constructor, Type** arguments, size_t arg_count) {
             
             char* name = malloc(name_size);
             if (name) {
-                strcpy(name, constructor->name);
-                strcat(name, "<");
+                size_t n_off = 0;
+                n_off += snprintf(name + n_off, name_size - n_off, "%s<", constructor->name);
                 for (size_t i = 0; i < arg_count; i++) {
-                    if (i > 0) strcat(name, ", ");
-                    strcat(name, arguments[i]->name ? arguments[i]->name : "?");
+                    if (i > 0 && n_off < name_size - 1)
+                        n_off += snprintf(name + n_off, name_size - n_off, ", ");
+                    if (n_off < name_size - 1)
+                        n_off += snprintf(name + n_off, name_size - n_off, "%s",
+                                          arguments[i]->name ? arguments[i]->name : "?");
                 }
-                strcat(name, ">");
+                if (n_off < name_size - 1)
+                    snprintf(name + n_off, name_size - n_off, ">");
                 type->name = name;
             }
         }

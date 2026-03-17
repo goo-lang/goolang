@@ -960,37 +960,36 @@ char* structured_error_generate_detailed_info(StructuredError* error) {
         error->thread_id);
     
     // Add field information
+    size_t info_offset = strlen(info);
     if (error->field_values && error->field_count > 0) {
-        strcat(info, "  Fields:\n");
+        info_offset += snprintf(info + info_offset, buffer_size - info_offset, "  Fields:\n");
         for (int i = 0; i < error->field_count; i++) {
             ErrorFieldValue* field = &error->field_values[i];
-            if (field->is_set) {
-                char field_info[256];
+            if (field->is_set && info_offset < buffer_size - 1) {
                 switch (field->type) {
                     case ERROR_FIELD_STRING:
-                        snprintf(field_info, sizeof(field_info), 
+                        info_offset += snprintf(info + info_offset, buffer_size - info_offset,
                                 "    %s: \"%s\"\n", field->field_name, field->string_value);
                         break;
                     case ERROR_FIELD_INT:
-                        snprintf(field_info, sizeof(field_info),
+                        info_offset += snprintf(info + info_offset, buffer_size - info_offset,
                                 "    %s: %ld\n", field->field_name, field->int_value);
                         break;
                     case ERROR_FIELD_FLOAT:
-                        snprintf(field_info, sizeof(field_info),
+                        info_offset += snprintf(info + info_offset, buffer_size - info_offset,
                                 "    %s: %f\n", field->field_name, field->float_value);
                         break;
                     case ERROR_FIELD_BOOL:
-                        snprintf(field_info, sizeof(field_info),
-                                "    %s: %s\n", field->field_name, 
+                        info_offset += snprintf(info + info_offset, buffer_size - info_offset,
+                                "    %s: %s\n", field->field_name,
                                 field->bool_value ? "true" : "false");
                         break;
                     default:
-                        snprintf(field_info, sizeof(field_info),
+                        info_offset += snprintf(info + info_offset, buffer_size - info_offset,
                                 "    %s: [%s]\n", field->field_name,
                                 error_field_type_to_string(field->type));
                         break;
                 }
-                strcat(info, field_info);
             }
         }
     }
