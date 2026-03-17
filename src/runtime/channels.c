@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 // External scheduler reference
 extern goo_scheduler_t* g_scheduler;
@@ -280,11 +281,57 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         goo_mutex_unlock(ch->mutex);
         return 1;  // Success
     } else {
-        // Unbuffered channel - need direct handoff
-        // TODO: Implement direct goroutine handoff
-        // For now, just fail
+        // Unbuffered channel - rendezvous handoff
+        // Check if a receiver is already waiting
+        if (ch->recv_waiters) {
+            // A receiver is waiting — copy data directly and wake it
+            // The receiver stored its destination pointer in recv_waiters->arg
+            goo_goroutine_t* receiver = ch->recv_waiters;
+            ch->recv_waiters = receiver->next;
+            receiver->next = NULL;
+
+            if (receiver->arg) {
+                memcpy(receiver->arg, data, ch->elem_size);
+            }
+
+            // Wake the receiver
+            receiver->waiting_on_channel = NULL;
+            receiver->state = GOO_GOROUTINE_READY;
+#ifdef GOO_PLATFORM_UNIX
+            pthread_cond_signal(&ch->not_empty->cond);
+#endif
+
+            goo_mutex_unlock(ch->mutex);
+            return 1;
+        }
+
+        // No receiver waiting — block until one arrives
+        // Store our data pointer so the receiver can copy from it
+        goo_goroutine_t* self = g_scheduler ? g_scheduler->current_goroutine : NULL;
+        if (self) {
+            self->arg = data;
+            self->waiting_on_channel = ch;
+            self->waiting_for_send = 1;
+            self->state = GOO_GOROUTINE_BLOCKED;
+            self->next = ch->send_waiters;
+            ch->send_waiters = self;
+        }
+
+#ifdef GOO_PLATFORM_UNIX
+        while (!ch->closed && self && self->state == GOO_GOROUTINE_BLOCKED) {
+            pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+        }
+#endif
+
+        if (self) {
+            self->waiting_on_channel = NULL;
+            self->waiting_for_send = 0;
+            self->state = GOO_GOROUTINE_RUNNING;
+        }
+
+        int success = !ch->closed;
         goo_mutex_unlock(ch->mutex);
-        return 0;
+        return success;
     }
 }
 
@@ -367,11 +414,62 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         goo_mutex_unlock(ch->mutex);
         return 1;  // Success
     } else {
-        // Unbuffered channel - need direct handoff
-        // TODO: Implement direct goroutine handoff
-        // For now, just fail
+        // Unbuffered channel - rendezvous handoff
+        // Check if a sender is already waiting
+        if (ch->send_waiters) {
+            // A sender is waiting — copy data directly from its buffer
+            goo_goroutine_t* sender = ch->send_waiters;
+            ch->send_waiters = sender->next;
+            sender->next = NULL;
+
+            if (sender->arg) {
+                memcpy(data, sender->arg, ch->elem_size);
+            }
+
+            // Wake the sender
+            sender->waiting_on_channel = NULL;
+            sender->waiting_for_send = 0;
+            sender->state = GOO_GOROUTINE_READY;
+#ifdef GOO_PLATFORM_UNIX
+            pthread_cond_signal(&ch->not_full->cond);
+#endif
+
+            goo_mutex_unlock(ch->mutex);
+            return 1;
+        }
+
+        // Closed channel with no senders — fail
+        if (ch->closed) {
+            goo_mutex_unlock(ch->mutex);
+            return 0;
+        }
+
+        // No sender waiting — block until one arrives
+        // Store our destination pointer so the sender can copy into it
+        goo_goroutine_t* self = g_scheduler ? g_scheduler->current_goroutine : NULL;
+        if (self) {
+            self->arg = data;
+            self->waiting_on_channel = ch;
+            self->waiting_for_send = 0;
+            self->state = GOO_GOROUTINE_BLOCKED;
+            self->next = ch->recv_waiters;
+            ch->recv_waiters = self;
+        }
+
+#ifdef GOO_PLATFORM_UNIX
+        while (!ch->closed && self && self->state == GOO_GOROUTINE_BLOCKED) {
+            pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
+        }
+#endif
+
+        if (self) {
+            self->waiting_on_channel = NULL;
+            self->state = GOO_GOROUTINE_RUNNING;
+        }
+
+        int success = !ch->closed;
         goo_mutex_unlock(ch->mutex);
-        return 0;
+        return success;
     }
 }
 
@@ -466,48 +564,179 @@ size_t goo_chan_cap(goo_channel_t* ch) {
     return ch->capacity;
 }
 
-// Timeout operations (simplified implementation)
+// Timeout operations
 int goo_chan_send_timeout(goo_channel_t* ch, void* data, uint64_t timeout_ns) {
-    // For now, just try non-blocking operation
-    // TODO: Implement proper timeout with timer
-    (void)timeout_ns;
+    if (!ch || !data) return 0;
+
+    // Try non-blocking first
+    if (goo_chan_try_send(ch, data)) return 1;
+    if (timeout_ns == 0) return 0;
+
+#ifdef GOO_PLATFORM_UNIX
+    goo_mutex_lock(ch->mutex);
+
+    if (ch->closed) {
+        goo_mutex_unlock(ch->mutex);
+        return 0;
+    }
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_ns / 1000000000ULL;
+    deadline.tv_nsec += timeout_ns % 1000000000ULL;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    // Wait for space (buffered) or receiver (unbuffered)
+    while ((ch->capacity > 0 ? ch->length >= ch->capacity : !ch->recv_waiters) && !ch->closed) {
+        int rc = pthread_cond_timedwait(&ch->not_full->cond, &ch->mutex->mutex, &deadline);
+        if (rc != 0) {
+            goo_mutex_unlock(ch->mutex);
+            return 0;  // Timeout
+        }
+    }
+
+    goo_mutex_unlock(ch->mutex);
+
+    // Try the actual send now that there may be space/receiver
+    return goo_chan_try_send(ch, data) ? 1 : goo_chan_send(ch, data);
+#else
     return goo_chan_try_send(ch, data);
+#endif
 }
 
 int goo_chan_recv_timeout(goo_channel_t* ch, void* data, uint64_t timeout_ns) {
-    // For now, just try non-blocking operation
-    // TODO: Implement proper timeout with timer
-    (void)timeout_ns;
+    if (!ch || !data) return 0;
+
+    // Try non-blocking first
+    if (goo_chan_try_recv(ch, data)) return 1;
+    if (timeout_ns == 0) return 0;
+
+#ifdef GOO_PLATFORM_UNIX
+    goo_mutex_lock(ch->mutex);
+
+    if (ch->closed && ch->length == 0) {
+        goo_mutex_unlock(ch->mutex);
+        return 0;
+    }
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_ns / 1000000000ULL;
+    deadline.tv_nsec += timeout_ns % 1000000000ULL;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    // Wait for data (buffered) or sender (unbuffered)
+    while ((ch->capacity > 0 ? ch->length == 0 : !ch->send_waiters) && !ch->closed) {
+        int rc = pthread_cond_timedwait(&ch->not_empty->cond, &ch->mutex->mutex, &deadline);
+        if (rc != 0) {
+            goo_mutex_unlock(ch->mutex);
+            return 0;  // Timeout
+        }
+    }
+
+    goo_mutex_unlock(ch->mutex);
+
+    // Try the actual recv now that there may be data/sender
+    return goo_chan_try_recv(ch, data) ? 1 : goo_chan_recv(ch, data);
+#else
     return goo_chan_try_recv(ch, data);
+#endif
 }
 
-// Select operation (simplified implementation)
+// Select operation — polls cases, then blocks with timeout if none ready
 int goo_select(goo_select_case_t* cases, size_t num_cases, int64_t timeout_ns) {
     if (!cases || num_cases == 0) {
-        return -1;  // No cases
+        return -1;
     }
-    
-    // Simple implementation: try each case once
+
+    // Phase 1: Non-blocking poll of all cases
     for (size_t i = 0; i < num_cases; i++) {
-        goo_select_case_t* case_ptr = &cases[i];
-        case_ptr->ready = 0;
-        
-        if (case_ptr->is_send) {
-            if (goo_chan_try_send(case_ptr->channel, case_ptr->data)) {
-                case_ptr->ready = 1;
-                return (int)i;  // Return index of ready case
+        goo_select_case_t* c = &cases[i];
+        c->ready = 0;
+
+        if (c->is_send) {
+            if (goo_chan_try_send(c->channel, c->data)) {
+                c->ready = 1;
+                return (int)i;
             }
         } else {
-            if (goo_chan_try_recv(case_ptr->channel, case_ptr->data)) {
-                case_ptr->ready = 1;
-                return (int)i;  // Return index of ready case
+            if (goo_chan_try_recv(c->channel, c->data)) {
+                c->ready = 1;
+                return (int)i;
             }
         }
     }
-    
-    // TODO: Implement proper select with blocking and timeout
-    (void)timeout_ns;
-    return -1;  // No case ready
+
+    // If timeout is 0, non-blocking only
+    if (timeout_ns == 0) {
+        return -1;
+    }
+
+#ifdef GOO_PLATFORM_UNIX
+    // Phase 2: Block with polling loop and timeout
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    if (timeout_ns > 0) {
+        deadline.tv_sec += timeout_ns / 1000000000LL;
+        deadline.tv_nsec += timeout_ns % 1000000000LL;
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+    }
+
+    // Use the first case's channel condition variable for waiting
+    // This is a simplified approach — a full implementation would
+    // register with all channels for wakeup
+    goo_channel_t* wait_ch = cases[0].channel;
+    if (!wait_ch) return -1;
+
+    goo_mutex_lock(wait_ch->mutex);
+
+    while (1) {
+        // Try all cases again under lock
+        goo_mutex_unlock(wait_ch->mutex);
+
+        for (size_t i = 0; i < num_cases; i++) {
+            goo_select_case_t* c = &cases[i];
+            if (c->is_send) {
+                if (goo_chan_try_send(c->channel, c->data)) {
+                    c->ready = 1;
+                    return (int)i;
+                }
+            } else {
+                if (goo_chan_try_recv(c->channel, c->data)) {
+                    c->ready = 1;
+                    return (int)i;
+                }
+            }
+        }
+
+        goo_mutex_lock(wait_ch->mutex);
+
+        // Check timeout
+        if (timeout_ns > 0) {
+            int rc = pthread_cond_timedwait(&wait_ch->not_empty->cond,
+                                            &wait_ch->mutex->mutex, &deadline);
+            if (rc != 0) {
+                // Timeout or error
+                goo_mutex_unlock(wait_ch->mutex);
+                return -1;
+            }
+        } else {
+            // Block indefinitely (timeout_ns < 0)
+            pthread_cond_wait(&wait_ch->not_empty->cond, &wait_ch->mutex->mutex);
+        }
+    }
+#else
+    return -1;
+#endif
 }
 
 // Channel pattern management functions
