@@ -1465,7 +1465,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             case_blocks[case_index] = default_block;
         } else {
             // Regular case
-            char case_name[32];
+            char case_name[64];
             snprintf(case_name, sizeof(case_name), "select_case_%zu", case_index);
             case_blocks[case_index] = LLVMAppendBasicBlock(codegen->current_function, case_name);
             

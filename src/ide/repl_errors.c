@@ -201,15 +201,15 @@ void repl_error_display_summary(ErrorContext* ctx) {
     
     printf("\n=== Summary ===\n");
     if (ctx->error_count > 0) {
-        printf("%s%d error%s%s", 
-               COLOR_RED, ctx->error_count, 
+        printf("%s%zu error%s%s",
+               COLOR_RED, ctx->error_count,
                ctx->error_count == 1 ? "" : "s", COLOR_RESET);
     }
     
     if (ctx->warning_count > 0) {
         if (ctx->error_count > 0) printf(", ");
-        printf("%s%d warning%s%s", 
-               COLOR_YELLOW, ctx->warning_count, 
+        printf("%s%zu warning%s%s",
+               COLOR_YELLOW, ctx->warning_count,
                ctx->warning_count == 1 ? "" : "s", COLOR_RESET);
     }
     
@@ -376,7 +376,7 @@ char* repl_format_error_with_context(Error* error, bool use_colors) {
     if (use_colors) {
         snprintf(formatted, 1024,
                 "%s%s%s: %s%s%s\n"
-                "  %s-->%s %s:%d:%d\n"
+                "  %s-->%s %s:%zu:%zu\n"
                 "  %sCategory:%s %s",
                 repl_error_get_severity_color(error->severity),
                 error_severity_to_string(error->severity),
@@ -392,7 +392,7 @@ char* repl_format_error_with_context(Error* error, bool use_colors) {
     } else {
         snprintf(formatted, 1024,
                 "%s: %s\n"
-                "  --> %s:%d:%d\n"
+                "  --> %s:%zu:%zu\n"
                 "  Category: %s",
                 error_severity_to_string(error->severity),
                 error->message,

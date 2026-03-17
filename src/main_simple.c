@@ -214,7 +214,7 @@ int compile_goo_file(const char* filename) {
     
     // Generate object file using llc
     printf("\n🔧 Object File Generation:\n");
-    char llc_command[512];
+    char llc_command[1024];
     snprintf(llc_command, sizeof(llc_command), "llc -filetype=obj %s -o %s", ir_filename, obj_filename);
     
     int llc_result = system(llc_command);
@@ -230,7 +230,7 @@ int compile_goo_file(const char* filename) {
     
     // Link to create executable using clang with runtime library
     printf("\n🔗 Executable Linking:\n");
-    char link_command[512];
+    char link_command[1024];
     snprintf(link_command, sizeof(link_command), "clang %s build/runtime/*.o -o %s -lm -lpthread", obj_filename, exe_filename);
     
     int link_result = system(link_command);
