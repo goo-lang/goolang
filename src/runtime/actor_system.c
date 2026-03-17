@@ -986,21 +986,106 @@ bool actor_ref_is_valid(ActorRef* ref) {
     return ref->is_valid;
 }
 
-// =============================================================================
-// Placeholder implementations for remaining functions
-// =============================================================================
+Actor* actor_ref_resolve(ActorRef* ref) {
+    if (!ref || !ref->is_valid) return NULL;
 
-// These would be fully implemented in a complete system
-ActorSystem* actor_system_create(const char* name, ActorSystemConfig* config) {
-    (void)name;
-    (void)config;
-    // Placeholder - would create full actor system
+    // Try cached pointer first
+    if (ref->cached_actor && ref->cache_version == ref->version) {
+        return ref->cached_actor;
+    }
+
+    // Look up in the system's actor registry
+    ActorSystem* system = ref->system;
+    if (!system) return NULL;
+
+    pthread_mutex_lock(&system->actors_mutex);
+    for (int i = 0; i < system->actor_count; i++) {
+        if (system->actors[i] && system->actors[i]->actor_id == ref->actor_id) {
+            ref->cached_actor = system->actors[i];
+            ref->cache_version = ref->version;
+            pthread_mutex_unlock(&system->actors_mutex);
+            return ref->cached_actor;
+        }
+    }
+    pthread_mutex_unlock(&system->actors_mutex);
+
     return NULL;
 }
 
+// =============================================================================
+// ActorSystem implementation
+// =============================================================================
+
+static uint64_t g_next_system_id = 1;
+
+ActorSystem* actor_system_create(const char* name, ActorSystemConfig* config) {
+    ActorSystem* system = calloc(1, sizeof(ActorSystem));
+    if (!system) return NULL;
+
+    system->system_id = generate_unique_id(&g_next_system_id);
+    system->system_name = safe_strdup(name ? name : "default");
+
+    // Apply config or defaults
+    if (config) {
+        system->config = *config;
+    } else {
+        system->config.thread_pool_size = 4;
+        system->config.use_dedicated_threads = true;
+        system->config.message_timeout_ms = 5000;
+        system->config.actor_timeout_ms = 30000;
+        system->config.default_arena_size = 4096;
+        system->config.message_pool_size = 256;
+    }
+
+    // Initialize actor registry
+    system->actor_capacity = 16;
+    system->actors = calloc(system->actor_capacity, sizeof(Actor*));
+    system->actor_refs = calloc(system->actor_capacity, sizeof(ActorRef*));
+    if (!system->actors || !system->actor_refs) {
+        free(system->actors);
+        free(system->actor_refs);
+        free((void*)system->system_name);
+        free(system);
+        return NULL;
+    }
+
+    pthread_mutex_init(&system->actors_mutex, NULL);
+    pthread_mutex_init(&system->refs_mutex, NULL);
+    system->system_running = true;
+
+    return system;
+}
+
 void actor_system_destroy(ActorSystem* system) {
-    (void)system;
-    // Placeholder - would clean up actor system
+    if (!system) return;
+
+    system->system_running = false;
+
+    // Stop and destroy all actors
+    pthread_mutex_lock(&system->actors_mutex);
+    for (int i = 0; i < system->actor_count; i++) {
+        if (system->actors[i]) {
+            actor_destroy(system->actors[i]);
+        }
+    }
+    pthread_mutex_unlock(&system->actors_mutex);
+
+    // Release all references
+    pthread_mutex_lock(&system->refs_mutex);
+    for (int i = 0; i < system->ref_count; i++) {
+        if (system->actor_refs[i]) {
+            actor_ref_release(system->actor_refs[i]);
+        }
+    }
+    pthread_mutex_unlock(&system->refs_mutex);
+
+    pthread_mutex_destroy(&system->actors_mutex);
+    pthread_mutex_destroy(&system->refs_mutex);
+    free(system->actors);
+    free(system->actor_refs);
+    free(system->worker_threads);
+    free((void*)system->system_name);
+    free(system);
 }
 
 ActorRef* actor_spawn(ActorSystem* system, const char* name, ActorBehavior* behavior) {
@@ -1018,30 +1103,69 @@ ActorRef* actor_spawn(ActorSystem* system, const char* name, ActorBehavior* beha
     
     actor->self_ref = ref;
     actor_ref_retain(ref);
-    
+
+    // Register actor in the system
+    pthread_mutex_lock(&system->actors_mutex);
+    if (system->actor_count >= system->actor_capacity) {
+        int new_cap = system->actor_capacity * 2;
+        Actor** tmp = realloc(system->actors, new_cap * sizeof(Actor*));
+        if (tmp) {
+            system->actors = tmp;
+            system->actor_capacity = new_cap;
+        }
+    }
+    if (system->actor_count < system->actor_capacity) {
+        system->actors[system->actor_count++] = actor;
+    }
+    pthread_mutex_unlock(&system->actors_mutex);
+
     // Start actor
     if (!actor_start_thread(actor)) {
         actor_ref_release(ref);
         actor_destroy(actor);
         return NULL;
     }
-    
+
     return ref;
 }
 
 ActorFuture* actor_send(ActorRef* to, const char* handler, void* payload, size_t payload_size) {
-    (void)to;
-    (void)handler;
-    (void)payload;
-    (void)payload_size;
-    // Placeholder - would implement message sending
-    return NULL;
+    if (!to || !handler) return NULL;
+
+    Actor* actor = actor_ref_resolve(to);
+    if (!actor || !actor->mailbox) return NULL;
+
+    // Create message
+    ActorMessage* msg = actor_message_create(handler, payload, payload_size);
+    if (!msg) return NULL;
+
+    // Create future for the response
+    ActorFuture* future = actor_future_create();
+    if (!future) {
+        actor_message_destroy(msg);
+        return NULL;
+    }
+
+    // Enqueue to actor's mailbox
+    if (!actor_mailbox_send(actor->mailbox, msg)) {
+        actor_message_destroy(msg);
+        actor_future_release(future);
+        return NULL;
+    }
+
+    return future;
 }
 
 void actor_send_system_message(ActorRef* to, ActorSystemMessageType msg_type) {
-    (void)to;
-    (void)msg_type;
-    // Placeholder - would send system message
+    if (!to) return;
+
+    Actor* actor = actor_ref_resolve(to);
+    if (!actor || !actor->mailbox) return;
+
+    ActorMessage* msg = actor_message_create_system(msg_type);
+    if (!msg) return;
+
+    actor_mailbox_send(actor->mailbox, msg);
 }
 
 // =============================================================================
