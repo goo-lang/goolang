@@ -62,10 +62,12 @@ static int goroutine_depends_on(goo_goroutine_t* g1, goo_goroutine_t* g2) {
         goo_goroutine_t* waiter = channel->recv_waiters;
         while (waiter) {
             if (waiter == g2) {
+#ifndef NDEBUG
                 printf("DEBUG: g%llu depends on g%llu (g%llu sending to ch%llu, g%llu receiving)\n",
                        (unsigned long long)g1->id, (unsigned long long)g2->id,
                        (unsigned long long)g1->id, (unsigned long long)channel->id,
                        (unsigned long long)g2->id);
+#endif
                 return 1;
             }
             waiter = waiter->next;
@@ -76,10 +78,12 @@ static int goroutine_depends_on(goo_goroutine_t* g1, goo_goroutine_t* g2) {
         goo_goroutine_t* waiter = channel->send_waiters;
         while (waiter) {
             if (waiter == g2) {
+#ifndef NDEBUG
                 printf("DEBUG: g%llu depends on g%llu (g%llu receiving from ch%llu, g%llu sending)\n",
                        (unsigned long long)g1->id, (unsigned long long)g2->id,
                        (unsigned long long)g1->id, (unsigned long long)channel->id,
                        (unsigned long long)g2->id);
+#endif
                 return 1;
             }
             waiter = waiter->next;

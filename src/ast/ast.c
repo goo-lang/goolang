@@ -578,9 +578,10 @@ LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos) {
     node->literal_type = type;
     node->value = str_dup(value);
     
-    // Debug: print what we're creating
-    printf("DEBUG: Created literal node with type %d at %s:%d:%d, value='%s'\n", 
+#ifndef NDEBUG
+    printf("DEBUG: Created literal node with type %d at %s:%d:%d, value='%s'\n",
            node->base.type, pos.filename ? pos.filename : "unknown", pos.line, pos.column, value ? value : "null");
+#endif
     
     return node;
 }
