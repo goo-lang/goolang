@@ -96,11 +96,7 @@ typedef enum {
     AST_GUARD_CONDITION,   // guard condition (if clause in pattern)
     AST_KERNEL_DECL,       // GPU kernel function declaration
     AST_KERNEL_LAUNCH,     // GPU kernel launch expression
-    AST_GPU_MEMORY_ALLOC,  // GPU memory allocation
-    AST_GPU_MEMORY_COPY,   // GPU memory copy operation
-    AST_GPU_SYNC,          // GPU synchronization
-    AST_GPU_INTRINSIC,     // GPU-specific intrinsic function
-    
+
     // Contract Programming Support
     AST_CONTRACT_CLAUSE,   // generic contract clause
     AST_REQUIRES_CLAUSE,   // requires precondition
@@ -109,19 +105,6 @@ typedef enum {
     AST_ASSERT_STMT,       // assertion statement
     AST_ASSUME_STMT,       // assumption statement
     AST_CONTRACT_BLOCK,    // block of contract clauses
-    
-    // WebAssembly Support
-    AST_WASM_EXPORT,       // WebAssembly export declaration
-    AST_WASM_IMPORT,       // WebAssembly import declaration
-    AST_WASM_MEMORY,       // WebAssembly linear memory declaration
-    AST_WASM_TABLE,        // WebAssembly table declaration
-    AST_WASM_GLOBAL,       // WebAssembly global variable
-    AST_WASM_TYPE,         // WebAssembly type declaration
-    AST_WASM_START,        // WebAssembly start function
-    AST_WASM_ELEM,         // WebAssembly element segment
-    AST_WASM_DATA,         // WebAssembly data segment
-    AST_JS_INTEROP,        // JavaScript interop call
-    AST_DOM_ACCESS,        // DOM API access
     
     AST_NODE_COUNT
 } ASTNodeType;
@@ -155,22 +138,6 @@ typedef enum {
     PATTERN_OR              // alternative patterns (e.g., 1 | 2 | 3)
 } PatternType;
 
-// GPU memory types
-typedef enum {
-    GPU_MEMORY_GLOBAL,      // Global device memory
-    GPU_MEMORY_SHARED,      // Shared memory (block-local)
-    GPU_MEMORY_CONSTANT,    // Constant memory
-    GPU_MEMORY_LOCAL,       // Local/private memory
-    GPU_MEMORY_TEXTURE      // Texture memory
-} GPUMemoryType;
-
-// GPU execution contexts
-typedef enum {
-    GPU_CONTEXT_HOST,       // Host (CPU) execution
-    GPU_CONTEXT_DEVICE,     // Device (GPU) execution
-    GPU_CONTEXT_KERNEL      // Kernel function context
-} GPUExecutionContext;
-
 // GPU target architectures
 typedef enum {
     GPU_TARGET_NVPTX,       // NVIDIA PTX
@@ -179,33 +146,6 @@ typedef enum {
     GPU_TARGET_METAL        // Metal Shading Language
 } GPUTargetArch;
 
-// WebAssembly target environments
-typedef enum {
-    WASM_ENV_BROWSER,       // Browser environment
-    WASM_ENV_NODE,          // Node.js environment
-    WASM_ENV_WASI,          // WASI (WebAssembly System Interface)
-    WASM_ENV_EMBEDDED       // Embedded/standalone runtime
-} WasmEnvironment;
-
-// WebAssembly value types
-typedef enum {
-    WASM_TYPE_I32,          // 32-bit integer
-    WASM_TYPE_I64,          // 64-bit integer
-    WASM_TYPE_F32,          // 32-bit float
-    WASM_TYPE_F64,          // 64-bit float
-    WASM_TYPE_V128,         // 128-bit vector (SIMD)
-    WASM_TYPE_FUNCREF,      // Function reference
-    WASM_TYPE_EXTERNREF     // External reference
-} WasmValueType;
-
-// JavaScript interop types
-typedef enum {
-    JS_INTEROP_CALL,        // Call JavaScript function
-    JS_INTEROP_GET,         // Get JavaScript property
-    JS_INTEROP_SET,         // Set JavaScript property
-    JS_INTEROP_NEW,         // Create JavaScript object
-    JS_INTEROP_TYPEOF       // Get typeof JavaScript value
-} JSInteropType;
 
 // Base AST node structure
 struct ASTNode {
@@ -754,140 +694,6 @@ typedef struct {
     struct ASTNode* stream;         // CUDA stream (optional)
 } KernelLaunchNode;
 
-// GPU memory allocation
-typedef struct {
-    ASTNode base;
-    struct ASTNode* size;           // Size in bytes
-    struct ASTNode* element_type;   // Type of elements
-    GPUMemoryType memory_type;      // Type of GPU memory
-    int is_managed;                 // Unified memory flag
-    int alignment;                  // Memory alignment requirements
-} GPUMemoryAllocNode;
-
-// GPU memory copy operation
-typedef struct {
-    ASTNode base;
-    struct ASTNode* dest;           // Destination pointer
-    struct ASTNode* src;            // Source pointer
-    struct ASTNode* size;           // Size in bytes
-    int direction;                  // 0=HostToDevice, 1=DeviceToHost, 2=DeviceToDevice
-    int is_async;                   // Async copy flag
-    struct ASTNode* stream;         // CUDA stream (optional)
-} GPUMemoryCopyNode;
-
-// GPU synchronization
-typedef struct {
-    ASTNode base;
-    int sync_type;                  // 0=DeviceSync, 1=StreamSync, 2=EventSync
-    struct ASTNode* stream;         // Stream to sync (optional)
-    struct ASTNode* event;          // Event to sync (optional)
-} GPUSyncNode;
-
-// GPU intrinsic function call
-typedef struct {
-    ASTNode base;
-    char* intrinsic_name;           // Name of intrinsic (e.g., "blockIdx", "threadIdx")
-    struct ASTNode* args;           // Arguments to intrinsic
-    GPUExecutionContext context;   // Where this intrinsic is valid
-} GPUIntrinsicNode;
-
-// WebAssembly export declaration
-typedef struct {
-    ASTNode base;
-    char* export_name;              // Name to export
-    struct ASTNode* item;           // Item to export (function, memory, etc.)
-    char* export_type;              // "func", "memory", "table", "global"
-} WasmExportNode;
-
-// WebAssembly import declaration
-typedef struct {
-    ASTNode base;
-    char* module_name;              // Module to import from
-    char* import_name;              // Name of imported item
-    char* local_name;               // Local name to bind to
-    char* import_type;              // "func", "memory", "table", "global"
-    struct ASTNode* signature;     // Type signature for imports
-} WasmImportNode;
-
-// WebAssembly linear memory declaration
-typedef struct {
-    ASTNode base;
-    struct ASTNode* min_pages;      // Minimum number of pages
-    struct ASTNode* max_pages;      // Maximum number of pages (optional)
-    int is_shared;                  // Shared memory flag
-    int is_exported;                // Export flag
-    char* export_name;              // Export name (if exported)
-} WasmMemoryNode;
-
-// WebAssembly table declaration
-typedef struct {
-    ASTNode base;
-    WasmValueType element_type;     // Element type (funcref, externref)
-    struct ASTNode* min_size;       // Minimum size
-    struct ASTNode* max_size;       // Maximum size (optional)
-    int is_exported;                // Export flag
-    char* export_name;              // Export name (if exported)
-} WasmTableNode;
-
-// WebAssembly global variable
-typedef struct {
-    ASTNode base;
-    char* name;                     // Global variable name
-    WasmValueType value_type;       // Value type
-    int is_mutable;                 // Mutability flag
-    struct ASTNode* init_value;     // Initial value
-    int is_exported;                // Export flag
-    char* export_name;              // Export name (if exported)
-} WasmGlobalNode;
-
-// WebAssembly type declaration
-typedef struct {
-    ASTNode base;
-    char* name;                     // Type name
-    struct ASTNode* params;         // Parameter types
-    struct ASTNode* results;        // Result types
-} WasmTypeNode;
-
-// WebAssembly start function
-typedef struct {
-    ASTNode base;
-    struct ASTNode* function;       // Function to call at start
-} WasmStartNode;
-
-// WebAssembly element segment
-typedef struct {
-    ASTNode base;
-    struct ASTNode* table_index;    // Table index
-    struct ASTNode* offset;         // Offset expression
-    struct ASTNode* elements;       // List of elements
-} WasmElemNode;
-
-// WebAssembly data segment
-typedef struct {
-    ASTNode base;
-    struct ASTNode* memory_index;   // Memory index
-    struct ASTNode* offset;         // Offset expression
-    struct ASTNode* data;           // Data bytes
-} WasmDataNode;
-
-// JavaScript interop call
-typedef struct {
-    ASTNode base;
-    JSInteropType interop_type;     // Type of interop operation
-    char* object_name;              // JavaScript object name
-    char* property_name;            // Property/method name (optional)
-    struct ASTNode* args;           // Arguments for calls
-    WasmEnvironment target_env;     // Target environment
-} JSInteropNode;
-
-// DOM API access
-typedef struct {
-    ASTNode base;
-    char* api_name;                 // DOM API name (e.g., "document", "window")
-    char* method_name;              // Method or property name
-    struct ASTNode* args;           // Arguments
-    int is_property;                // True for property access, false for method call
-} DOMAccessNode;
 
 // =============================================================================
 // Contract Programming AST Nodes
@@ -1019,23 +825,6 @@ PatternNode* ast_pattern_new(PatternType pattern_type, Position pos);
 GuardConditionNode* ast_guard_condition_new(ASTNode* condition, Position pos);
 KernelDeclNode* ast_kernel_decl_new(const char* name, ASTNode* params, ASTNode* return_type, ASTNode* body, GPUTargetArch target_arch, Position pos);
 KernelLaunchNode* ast_kernel_launch_new(ASTNode* kernel_func, ASTNode* grid_dim, ASTNode* block_dim, ASTNode* args, Position pos);
-GPUMemoryAllocNode* ast_gpu_memory_alloc_new(ASTNode* size, ASTNode* element_type, GPUMemoryType memory_type, Position pos);
-GPUMemoryCopyNode* ast_gpu_memory_copy_new(ASTNode* dest, ASTNode* src, ASTNode* size, int direction, Position pos);
-GPUSyncNode* ast_gpu_sync_new(int sync_type, ASTNode* stream, ASTNode* event, Position pos);
-GPUIntrinsicNode* ast_gpu_intrinsic_new(const char* intrinsic_name, ASTNode* args, GPUExecutionContext context, Position pos);
-
-// WebAssembly constructors
-WasmExportNode* ast_wasm_export_new(const char* export_name, ASTNode* item, const char* export_type, Position pos);
-WasmImportNode* ast_wasm_import_new(const char* module_name, const char* import_name, const char* local_name, const char* import_type, ASTNode* signature, Position pos);
-WasmMemoryNode* ast_wasm_memory_new(ASTNode* min_pages, ASTNode* max_pages, int is_shared, Position pos);
-WasmTableNode* ast_wasm_table_new(WasmValueType element_type, ASTNode* min_size, ASTNode* max_size, Position pos);
-WasmGlobalNode* ast_wasm_global_new(const char* name, WasmValueType value_type, int is_mutable, ASTNode* init_value, Position pos);
-WasmTypeNode* ast_wasm_type_new(const char* name, ASTNode* params, ASTNode* results, Position pos);
-WasmStartNode* ast_wasm_start_new(ASTNode* function, Position pos);
-WasmElemNode* ast_wasm_elem_new(ASTNode* table_index, ASTNode* offset, ASTNode* elements, Position pos);
-WasmDataNode* ast_wasm_data_new(ASTNode* memory_index, ASTNode* offset, ASTNode* data, Position pos);
-JSInteropNode* ast_js_interop_new(JSInteropType interop_type, const char* object_name, const char* property_name, ASTNode* args, WasmEnvironment target_env, Position pos);
-DOMAccessNode* ast_dom_access_new(const char* api_name, const char* method_name, ASTNode* args, int is_property, Position pos);
 
 // Utility functions
 void ast_add_child(ASTNode* parent, ASTNode* child);

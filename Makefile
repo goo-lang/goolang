@@ -42,7 +42,7 @@ AST_SRCS = $(SRCDIR)/ast/ast.c
 # Temporarily disabled files for TDD Cycle 5 (have compilation errors - Task #22 incomplete implementations)
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/arena_integration.c $(SRCDIR)/types/channel_integration.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c
 # Disabled: advanced_constraint_inference, concept_generics, higher_kinded_types, type_level_programming, interface_integration, hkt_auto_impl, protocol_oriented_programming, dependent_types, contracts, proof_generation, runtime_optimization
-CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c
+CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/runtime_integration.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/error_handling.c $(SRCDIR)/runtime/error_context.c $(SRCDIR)/runtime/error_recovery.c $(SRCDIR)/runtime/error_aggregation.c $(SRCDIR)/runtime/error_hierarchies.c $(SRCDIR)/runtime/error_transformation.c $(SRCDIR)/runtime/actor_system.c $(SRCDIR)/runtime/shared_variables.c $(SRCDIR)/runtime/structured_concurrency.c $(SRCDIR)/runtime/advanced_channels.c $(SRCDIR)/runtime/deadlock_prevention.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/repl_type_info.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c $(SRCDIR)/ide/auto_fix.c $(SRCDIR)/ide/repl_autofix.c
@@ -72,7 +72,7 @@ TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check test-e2e test-integration-pipeline test-tdd
+.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check test-e2e test-integration-pipeline test-tdd test-lexer
 
 all: lexer
 
@@ -831,3 +831,14 @@ $(TEST_CLOSURE): $(TEST_UNIT_DIR)/codegen/closure_test.c $(TEST_UNIT_DIR)/codege
 		$(TYPES_SRCS) \
 		$(CODEGEN_SRCS) \
 		$(LDFLAGS) $(LLVM_LDFLAGS)
+
+# Lexer unit tests
+TEST_LEXER = $(BINDIR)/test_lexer
+
+test-lexer: $(TEST_LEXER)
+	@echo "Running lexer unit tests..."
+	./$(TEST_LEXER)
+
+$(TEST_LEXER): $(TEST_UNIT_DIR)/lexer/lexer_test.c $(LEXER_SRCS) $(TEST_FRAMEWORK_SRCS) | $(BINDIR)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $< $(LEXER_SRCS) $(TEST_FRAMEWORK_SRCS) $(LDFLAGS)
