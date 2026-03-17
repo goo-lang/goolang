@@ -78,7 +78,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
-%type <node> func_signature func_params func_param func_result opt_func_params opt_func_result
+%type <node> func_signature func_params func_param opt_func_params opt_func_result
 %type <node> statement_list statement block simple_stmt
 %type <node> if_stmt for_stmt switch_stmt return_stmt break_stmt continue_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case

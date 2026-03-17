@@ -857,6 +857,8 @@ void hot_reload_platform_unwatch_file(void* handle) {
 }
 
 bool hot_reload_platform_check_modified(void* handle, time_t* last_modified) {
+    (void)handle;
+    (void)last_modified;
     // TODO: Implement proper inotify event checking
     return false;
 }

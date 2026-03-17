@@ -317,8 +317,8 @@ int reference_manager_analyze_statement(ReferenceManager* mgr, ASTNode* stmt, si
         
         case AST_BLOCK_STMT: {
             // Enter a new scope for the block
-            LifetimeScope* block_scope = reference_manager_enter_scope(mgr, LIFETIME_SCOPE_BLOCK, position);
-            
+            (void)reference_manager_enter_scope(mgr, LIFETIME_SCOPE_BLOCK, position);
+
             BlockStmtNode* block = (BlockStmtNode*)stmt;
             // Analyze statements in the block (simple traversal for now)
             ASTNode* current = block->statements;
@@ -339,12 +339,12 @@ int reference_manager_analyze_statement(ReferenceManager* mgr, ASTNode* stmt, si
             reference_manager_analyze_expression(mgr, if_stmt->condition, position);
             
             // Create conditional scopes
-            LifetimeScope* then_scope = reference_manager_enter_scope(mgr, LIFETIME_SCOPE_CONDITIONAL, position);
+            reference_manager_enter_scope(mgr, LIFETIME_SCOPE_CONDITIONAL, position);
             reference_manager_analyze_statement(mgr, if_stmt->then_stmt, position + 1);
             reference_manager_exit_scope(mgr, position + 2);
             
             if (if_stmt->else_stmt) {
-                LifetimeScope* else_scope = reference_manager_enter_scope(mgr, LIFETIME_SCOPE_CONDITIONAL, position);
+                reference_manager_enter_scope(mgr, LIFETIME_SCOPE_CONDITIONAL, position);
                 reference_manager_analyze_statement(mgr, if_stmt->else_stmt, position + 3);
                 reference_manager_exit_scope(mgr, position + 4);
             }
@@ -367,6 +367,8 @@ int reference_manager_analyze_statement(ReferenceManager* mgr, ASTNode* stmt, si
 
 // Generate reference management code (for codegen integration)
 int reference_manager_generate_cleanup_code(ReferenceManager* mgr, ASTNode* function) {
+    (void)mgr;
+    (void)function;
     // This would generate automatic cleanup code for references
     // For now, just return success
     return 1;

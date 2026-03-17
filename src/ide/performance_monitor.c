@@ -496,8 +496,9 @@ int performance_monitor_track_memory_usage(PerformanceMonitor* monitor) {
 }
 
 int performance_monitor_track_allocation(PerformanceMonitor* monitor, size_t size, const char* location) {
+    (void)size;
     if (!monitor) return -1;
-    
+
     performance_monitor_record_metric(monitor, PERF_METRIC_ALLOCATION_COUNT, 1.0, location);
     
     // Update memory usage
@@ -507,8 +508,9 @@ int performance_monitor_track_allocation(PerformanceMonitor* monitor, size_t siz
 }
 
 int performance_monitor_track_deallocation(PerformanceMonitor* monitor, size_t size, const char* location) {
+    (void)size;
     if (!monitor) return -1;
-    
+
     performance_monitor_record_metric(monitor, PERF_METRIC_DEALLOCATION_COUNT, 1.0, location);
     
     return 0;

@@ -428,8 +428,9 @@ void debug_record_expression_start(DebugState* state, const char* expression,
     }
 }
 
-void debug_record_expression_end(DebugState* state, const char* expression, 
+void debug_record_expression_end(DebugState* state, const char* expression,
                                  void* result) {
+    (void)result;
     if (!state || !state->enabled) return;
     
     DebugSnapshot* snapshot = debug_snapshot_create(state, DEBUG_EVENT_EXPRESSION_END,

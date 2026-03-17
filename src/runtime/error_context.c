@@ -269,6 +269,7 @@ EnhancedError* enhanced_error_create(goo_error_t* base_error) {
 
 EnhancedError* enhanced_error_create_with_context(goo_error_t* base_error,
                                                  const char* context_description) {
+    (void)context_description;
     EnhancedError* enhanced = enhanced_error_create(base_error);
     if (!enhanced) return NULL;
     

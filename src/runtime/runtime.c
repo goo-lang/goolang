@@ -163,6 +163,7 @@ void goo_memory_shutdown(void) {
 
 // Stack allocation (compile-time determined)
 void* goo_alloc_stack(size_t size) {
+    (void)size;
     // Stack allocation is handled by the compiler (alloca in LLVM)
     // This function is mainly for tracking statistics
     goo_memory_state.total_stack_allocations++;

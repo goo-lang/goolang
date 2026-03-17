@@ -296,6 +296,8 @@ int main(int argc, char* argv[]) {
         printf("Warning: File '%s' doesn't have .goo extension\n", filename);
     }
     
+    (void)show_tokens; // TODO: implement token display mode
+
     // Compile the file
     int result = compile_goo_file(filename);
     

@@ -54,15 +54,6 @@ static char* safe_strdup(const char* str) {
     return copy;
 }
 
-static int hash_string(const char* str) {
-    if (!str) return 0;
-    unsigned long hash = 5381;
-    int c;
-    while ((c = *str++)) {
-        hash = ((hash << 5) + hash) + c;
-    }
-    return (int)(hash % INT32_MAX);
-}
 
 // =============================================================================
 // Error Code Registry Implementation
@@ -518,6 +509,7 @@ void error_transformer_add_message_template(ErrorTransformer* transformer,
 ErrorMessageTemplate* error_transformer_find_template(const ErrorTransformer* transformer,
                                                      const char* error_identifier,
                                                      ErrorLanguage language) {
+    (void)language;
     if (!transformer || !error_identifier) return NULL;
     
     // For now, we'll ignore language and just find by identifier
@@ -535,6 +527,7 @@ ErrorMessageTemplate* error_transformer_find_template(const ErrorTransformer* tr
 char* error_replace_placeholders(const char* template_str,
                                 const StructuredError* error,
                                 const ErrorLocalizationContext* context) {
+    (void)context;
     if (!template_str || !error) return safe_strdup(template_str);
     
     // Simple placeholder replacement implementation
