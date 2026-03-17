@@ -432,9 +432,10 @@ void error_type_set_parent(ErrorTypeDefinition* child, ErrorTypeDefinition* pare
     g_global_hierarchy->inheritance_table[child_index].parent = parent;
     
     // Add child to parent's children list
-    parent->children = realloc(parent->children, 
+    ErrorTypeDefinition** tmp = realloc(parent->children,
                               (parent->child_count + 1) * sizeof(ErrorTypeDefinition*));
-    if (parent->children) {
+    if (tmp) {
+        parent->children = tmp;
         parent->children[parent->child_count] = child;
         parent->child_count++;
     }

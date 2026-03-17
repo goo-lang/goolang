@@ -129,9 +129,11 @@ BasicBlock* cfg_add_block(ControlFlowGraph* cfg) {
     
     // Expand capacity if needed
     if (cfg->block_count >= cfg->block_capacity) {
-        cfg->block_capacity *= 2;
-        cfg->blocks = realloc(cfg->blocks, sizeof(BasicBlock*) * cfg->block_capacity);
-        if (!cfg->blocks) return NULL;
+        size_t new_cap = cfg->block_capacity * 2;
+        BasicBlock** tmp = realloc(cfg->blocks, sizeof(BasicBlock*) * new_cap);
+        if (!tmp) return NULL;
+        cfg->blocks = tmp;
+        cfg->block_capacity = new_cap;
     }
     
     BasicBlock* block = malloc(sizeof(BasicBlock));
@@ -157,13 +159,17 @@ void cfg_add_edge(BasicBlock* from, BasicBlock* to) {
     if (!from || !to) return;
     
     // Add to successors of 'from'
-    from->successors = realloc(from->successors, 
+    BasicBlock** tmp_succ = realloc(from->successors,
                               sizeof(BasicBlock*) * (from->successor_count + 1));
+    if (!tmp_succ) return;
+    from->successors = tmp_succ;
     from->successors[from->successor_count++] = to;
-    
+
     // Add to predecessors of 'to'
-    to->predecessors = realloc(to->predecessors, 
+    BasicBlock** tmp_pred = realloc(to->predecessors,
                               sizeof(BasicBlock*) * (to->predecessor_count + 1));
+    if (!tmp_pred) return;
+    to->predecessors = tmp_pred;
     to->predecessors[to->predecessor_count++] = from;
 }
 
@@ -179,8 +185,10 @@ void cfg_build_from_ast(ControlFlowGraph* cfg, ASTNode* node,
             
             while (stmt) {
                 // Add statement to current block
-                current_block->statements = realloc(current_block->statements,
+                ASTNode** tmp_stmts = realloc(current_block->statements,
                     sizeof(ASTNode*) * (current_block->statement_count + 1));
+                if (!tmp_stmts) break;
+                current_block->statements = tmp_stmts;
                 current_block->statements[current_block->statement_count++] = stmt;
                 
                 // Handle control flow changing statements
@@ -217,12 +225,15 @@ void cfg_build_from_ast(ControlFlowGraph* cfg, ASTNode* node,
             break;
         }
         
-        default:
+        default: {
             // For other node types, just add to current block
-            current_block->statements = realloc(current_block->statements,
+            ASTNode** tmp_stmts = realloc(current_block->statements,
                 sizeof(ASTNode*) * (current_block->statement_count + 1));
+            if (!tmp_stmts) break;
+            current_block->statements = tmp_stmts;
             current_block->statements[current_block->statement_count++] = node;
             break;
+        }
     }
 }
 
@@ -483,9 +494,11 @@ void ownership_state_add_value(OwnershipState* state, ValueState* value) {
     
     // Expand capacity if needed
     if (state->value_count >= state->value_capacity) {
-        state->value_capacity *= 2;
-        state->values = realloc(state->values, sizeof(ValueState*) * state->value_capacity);
-        if (!state->values) return;
+        size_t new_cap = state->value_capacity * 2;
+        ValueState** tmp = realloc(state->values, sizeof(ValueState*) * new_cap);
+        if (!tmp) return;
+        state->values = tmp;
+        state->value_capacity = new_cap;
     }
     
     state->values[state->value_count++] = value;

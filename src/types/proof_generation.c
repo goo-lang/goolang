@@ -98,9 +98,10 @@ int proof_generation_enable_domain(ProofGenerationContext* ctx, AbstractDomain d
     }
     
     // Add new domain
-    ctx->enabled_domains = realloc(ctx->enabled_domains, 
+    AbstractDomain* tmp = realloc(ctx->enabled_domains,
                                   (ctx->domain_count + 1) * sizeof(AbstractDomain));
-    if (!ctx->enabled_domains) return 0;
+    if (!tmp) return 0;
+    ctx->enabled_domains = tmp;
     
     ctx->enabled_domains[ctx->domain_count] = domain;
     ctx->domain_count++;

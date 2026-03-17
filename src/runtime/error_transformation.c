@@ -140,14 +140,25 @@ MachineErrorCode* error_code_register(ErrorCodeRegistry* registry,
         registry->code_capacity = new_capacity;
         
         // Expand lookup tables too
-        registry->code_lookup.codes = realloc(registry->code_lookup.codes,
-                                            new_capacity * sizeof(int));
-        registry->code_lookup.entries = realloc(registry->code_lookup.entries,
-                                               new_capacity * sizeof(MachineErrorCode*));
-        registry->identifier_lookup.identifiers = realloc(registry->identifier_lookup.identifiers,
-                                                         new_capacity * sizeof(char*));
-        registry->identifier_lookup.entries = realloc(registry->identifier_lookup.entries,
-                                                     new_capacity * sizeof(MachineErrorCode*));
+        int* tmp_codes = realloc(registry->code_lookup.codes,
+                                 new_capacity * sizeof(int));
+        MachineErrorCode** tmp_code_entries = realloc(registry->code_lookup.entries,
+                                                      new_capacity * sizeof(MachineErrorCode*));
+        char** tmp_identifiers = realloc(registry->identifier_lookup.identifiers,
+                                         new_capacity * sizeof(char*));
+        MachineErrorCode** tmp_id_entries = realloc(registry->identifier_lookup.entries,
+                                                    new_capacity * sizeof(MachineErrorCode*));
+        if (!tmp_codes || !tmp_code_entries || !tmp_identifiers || !tmp_id_entries) {
+            if (tmp_codes) registry->code_lookup.codes = tmp_codes;
+            if (tmp_code_entries) registry->code_lookup.entries = tmp_code_entries;
+            if (tmp_identifiers) registry->identifier_lookup.identifiers = tmp_identifiers;
+            if (tmp_id_entries) registry->identifier_lookup.entries = tmp_id_entries;
+            return NULL;
+        }
+        registry->code_lookup.codes = tmp_codes;
+        registry->code_lookup.entries = tmp_code_entries;
+        registry->identifier_lookup.identifiers = tmp_identifiers;
+        registry->identifier_lookup.entries = tmp_id_entries;
     }
     
     // Initialize the new error code

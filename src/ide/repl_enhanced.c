@@ -118,9 +118,11 @@ static void insert_char(char c) {
     
     // Ensure buffer has space
     if (g_enhanced_repl->buffer_len >= g_enhanced_repl->buffer_size - 1) {
-        g_enhanced_repl->buffer_size *= 2;
-        g_enhanced_repl->buffer = realloc(g_enhanced_repl->buffer, g_enhanced_repl->buffer_size);
-        if (!g_enhanced_repl->buffer) return;
+        size_t new_size = g_enhanced_repl->buffer_size * 2;
+        char* tmp = realloc(g_enhanced_repl->buffer, new_size);
+        if (!tmp) return;
+        g_enhanced_repl->buffer = tmp;
+        g_enhanced_repl->buffer_size = new_size;
     }
     
     // Shift characters to the right

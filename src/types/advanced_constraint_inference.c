@@ -423,8 +423,9 @@ void constraint_error_free(ConstraintError* error) {
 void constraint_error_add_suggestion(ConstraintError* error, const char* suggestion) {
     if (!error || !suggestion) return;
     
-    error->suggestions = realloc(error->suggestions, sizeof(char*) * (error->suggestion_count + 1));
-    if (error->suggestions) {
+    char** tmp = realloc(error->suggestions, sizeof(char*) * (error->suggestion_count + 1));
+    if (tmp) {
+        error->suggestions = tmp;
         error->suggestions[error->suggestion_count] = str_dup(suggestion);
         error->suggestion_count++;
     }
@@ -433,9 +434,10 @@ void constraint_error_add_suggestion(ConstraintError* error, const char* suggest
 void constraint_error_add_secondary_position(ConstraintError* error, Position pos) {
     if (!error) return;
     
-    error->secondary_positions = realloc(error->secondary_positions, 
+    Position* tmp_pos = realloc(error->secondary_positions,
                                         sizeof(Position) * (error->secondary_count + 1));
-    if (error->secondary_positions) {
+    if (tmp_pos) {
+        error->secondary_positions = tmp_pos;
         error->secondary_positions[error->secondary_count] = pos;
         error->secondary_count++;
     }
