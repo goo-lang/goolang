@@ -43,7 +43,7 @@ AST_SRCS = $(SRCDIR)/ast/ast.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/arena_integration.c $(SRCDIR)/types/channel_integration.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/security_analysis.c
 # Disabled: advanced_constraint_inference, concept_generics, higher_kinded_types, type_level_programming, interface_integration, hkt_auto_impl, protocol_oriented_programming, dependent_types, contracts, proof_generation, runtime_optimization
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/runtime_integration.c
-RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/error_handling.c $(SRCDIR)/runtime/error_context.c $(SRCDIR)/runtime/error_recovery.c $(SRCDIR)/runtime/error_aggregation.c $(SRCDIR)/runtime/error_hierarchies.c $(SRCDIR)/runtime/error_transformation.c $(SRCDIR)/runtime/actor_system.c $(SRCDIR)/runtime/shared_variables.c $(SRCDIR)/runtime/structured_concurrency.c $(SRCDIR)/runtime/advanced_channels.c $(SRCDIR)/runtime/deadlock_prevention.c
+RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/error_handling.c $(SRCDIR)/runtime/error_context.c $(SRCDIR)/runtime/error_recovery.c $(SRCDIR)/runtime/error_aggregation.c $(SRCDIR)/runtime/error_hierarchies.c $(SRCDIR)/runtime/error_transformation.c $(SRCDIR)/runtime/actor_system.c $(SRCDIR)/runtime/shared_variables.c $(SRCDIR)/runtime/structured_concurrency.c $(SRCDIR)/runtime/advanced_channels.c $(SRCDIR)/runtime/deadlock_prevention.c $(SRCDIR)/runtime/async_runtime.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/repl_type_info.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c $(SRCDIR)/ide/auto_fix.c $(SRCDIR)/ide/repl_autofix.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
@@ -72,7 +72,7 @@ TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check test-e2e test-integration-pipeline test-tdd test-lexer test-security
+.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp coverage coverage-report coverage-clean debug format check test-e2e test-integration-pipeline test-tdd test-lexer test-security test-async
 
 all: lexer
 
@@ -123,6 +123,7 @@ TEST_REFERENCE_MANAGER = $(BINDIR)/test_reference_manager
 TEST_SHARED_VARIABLES = $(BINDIR)/test_shared_variables
 TEST_STRUCTURED_CONCURRENCY = $(BINDIR)/test_structured_concurrency
 TEST_SECURITY = $(BINDIR)/test_security
+TEST_ASYNC = $(BINDIR)/test_async
 
 # Tests
 test: $(TEST_RUNNER)
@@ -169,6 +170,14 @@ test-flow: $(TEST_FLOW_ANALYSIS)
 	./$(TEST_FLOW_ANALYSIS)
 
 $(TEST_FLOW_ANALYSIS): $(TEST_UNIT_DIR)/flow/flow_analysis_test.c $(OBJS)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
+
+# Async runtime test
+test-async: $(TEST_ASYNC)
+	./$(TEST_ASYNC)
+
+$(TEST_ASYNC): $(TEST_UNIT_DIR)/runtime/async_runtime_test.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
