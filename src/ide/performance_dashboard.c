@@ -326,16 +326,19 @@ char* dashboard_generate_html(const char* dashboard_id) {
 // Generate JSON data for metrics
 char* dashboard_generate_json_data(const char* metric_name) {
     static char json_buffer[8192];
-    
+    size_t offset = 0;
+    size_t remaining = sizeof(json_buffer);
+    int written;
+
     if (metric_name) {
         // Single metric
         PerformanceMetric* metric = dashboard_get_metric(metric_name);
         if (!metric) {
-            strcpy(json_buffer, "{}");
+            snprintf(json_buffer, sizeof(json_buffer), "{}");
             return json_buffer;
         }
-        
-        snprintf(json_buffer, sizeof(json_buffer),
+
+        written = snprintf(json_buffer + offset, remaining,
             "{"
                 "\"name\":\"%s\","
                 "\"current\":%.2f,"
@@ -343,64 +346,91 @@ char* dashboard_generate_json_data(const char* metric_name) {
                 "\"max\":%.2f,"
                 "\"avg\":%.2f,"
                 "\"unit\":\"%s\","
-                "\"history\":["
-            "}",
+                "\"history\":[",
             metric->name, metric->current_value, metric->min_value,
             metric->max_value, metric->avg_value, metric->unit);
-        
+        if (written > 0 && (size_t)written < remaining) {
+            offset += written;
+            remaining -= written;
+        }
+
         // Add history data points
-        for (int i = 0; i < metric->data_count; i++) {
-            char point_json[128];
-            snprintf(point_json, sizeof(point_json),
+        for (int i = 0; i < metric->data_count && remaining > 2; i++) {
+            written = snprintf(json_buffer + offset, remaining,
                 "%s{\"x\":%llu,\"y\":%.2f}",
                 (i > 0) ? "," : "",
                 (unsigned long long)metric->data[i].timestamp,
                 metric->data[i].value);
-            strcat(json_buffer, point_json);
+            if (written > 0 && (size_t)written < remaining) {
+                offset += written;
+                remaining -= written;
+            } else {
+                break;
+            }
         }
-        
-        strcat(json_buffer, "]}");
+
+        if (remaining > 2) {
+            snprintf(json_buffer + offset, remaining, "]}");
+        }
     } else {
         // All metrics
-        strcpy(json_buffer, "{");
-        
-        for (int i = 0; i < g_dashboard->metric_count; i++) {
+        written = snprintf(json_buffer + offset, remaining, "{");
+        if (written > 0 && (size_t)written < remaining) {
+            offset += written;
+            remaining -= written;
+        }
+
+        for (int i = 0; i < g_dashboard->metric_count && remaining > 2; i++) {
             PerformanceMetric* metric = &g_dashboard->metrics[i];
-            char metric_json[1024];
-            
-            snprintf(metric_json, sizeof(metric_json),
+
+            written = snprintf(json_buffer + offset, remaining,
                 "%s\"%s\":{"
                     "\"current\":%.2f,"
                     "\"min\":%.2f,"
                     "\"max\":%.2f,"
                     "\"avg\":%.2f,"
                     "\"unit\":\"%s\","
-                    "\"history\":["
-                "}",
+                    "\"history\":[",
                 (i > 0) ? "," : "",
                 metric->name, metric->current_value, metric->min_value,
                 metric->max_value, metric->avg_value, metric->unit);
-            
-            strcat(json_buffer, metric_json);
-            
+            if (written > 0 && (size_t)written < remaining) {
+                offset += written;
+                remaining -= written;
+            } else {
+                break;
+            }
+
             // Add limited history for all metrics overview
             int start = (metric->data_count > 20) ? metric->data_count - 20 : 0;
-            for (int j = start; j < metric->data_count; j++) {
-                char point_json[64];
-                snprintf(point_json, sizeof(point_json),
+            for (int j = start; j < metric->data_count && remaining > 2; j++) {
+                written = snprintf(json_buffer + offset, remaining,
                     "%s{\"x\":%llu,\"y\":%.2f}",
                     (j > start) ? "," : "",
                     (unsigned long long)metric->data[j].timestamp,
                     metric->data[j].value);
-                strcat(json_buffer, point_json);
+                if (written > 0 && (size_t)written < remaining) {
+                    offset += written;
+                    remaining -= written;
+                } else {
+                    break;
+                }
             }
-            
-            strcat(json_buffer, "]}");
+
+            if (remaining > 2) {
+                written = snprintf(json_buffer + offset, remaining, "]}");
+                if (written > 0 && (size_t)written < remaining) {
+                    offset += written;
+                    remaining -= written;
+                }
+            }
         }
-        
-        strcat(json_buffer, "}");
+
+        if (remaining > 1) {
+            snprintf(json_buffer + offset, remaining, "}");
+        }
     }
-    
+
     return json_buffer;
 }
 
