@@ -242,7 +242,6 @@ func_decl:
         // Handle named return parameters
         if ($6 && $6->type == AST_VAR_DECL) {
             // Named returns: extract types and keep parameters
-            VarDeclNode* param = (VarDeclNode*)$6;
             size_t count = 0;
             for (ASTNode* p = $6; p != NULL; p = p->next) count++;
 
@@ -424,11 +423,6 @@ func_param:
         param->values = NULL;
         $$ = (ASTNode*)param;
     }
-    ;
-
-func_result:
-    type { $$ = $1; }
-    | LPAREN type RPAREN { $$ = $2; }
     ;
 
 opt_func_result:
