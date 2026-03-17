@@ -10,6 +10,9 @@
 // 19.4: Automatic Resource Management Implementation
 // =============================================================================
 
+// Forward declarations
+void scope_cleanup_free(ScopeCleanup* scope);
+
 // Helper function for string duplication
 static char* str_dup(const char* str) {
     if (!str) return NULL;
@@ -1035,7 +1038,7 @@ void resource_manager_error(ResourceManager* rm, Position pos, const char* forma
     va_list args;
     va_start(args, format);
     
-    fprintf(stderr, "Resource Manager Error at %s:%zu:%zu: ", 
+    fprintf(stderr, "Resource Manager Error at %s:%d:%d: ",
             pos.filename, pos.line, pos.column);
     vfprintf(stderr, format, args);
     fprintf(stderr, "\n");
@@ -1052,7 +1055,7 @@ void resource_manager_warning(ResourceManager* rm, Position pos, const char* for
     va_list args;
     va_start(args, format);
     
-    fprintf(stderr, "Resource Manager Warning at %s:%zu:%zu: ", 
+    fprintf(stderr, "Resource Manager Warning at %s:%d:%d: ",
             pos.filename, pos.line, pos.column);
     vfprintf(stderr, format, args);
     fprintf(stderr, "\n");

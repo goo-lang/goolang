@@ -552,9 +552,9 @@ void goo_printf(const char* format, ...) {
 
 // String operations
 
-// String concatenation - takes two null-terminated C strings, returns new concatenated string
-// Note: The returned string is heap-allocated and should eventually be freed
-char* goo_string_concat(const char* s1, const char* s2) {
+// C-string concatenation - takes two null-terminated C strings, returns new concatenated string
+// Used by codegen for simple string + string operations
+char* goo_cstring_concat(const char* s1, const char* s2) {
     if (!s1 || !s2) {
         return NULL;
     }

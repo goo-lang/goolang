@@ -11,10 +11,11 @@ Type* type_check_composite_lit(TypeChecker* checker, ASTNode* expr);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr) return NULL;
     
-    // Debug: show what node type we received
-    printf("DEBUG: Type checking expression with type %d at %s:%d:%d\n", 
-           expr->type, expr->pos.filename ? expr->pos.filename : "unknown", 
+#ifndef NDEBUG
+    printf("DEBUG: Type checking expression with type %d at %s:%d:%d\n",
+           expr->type, expr->pos.filename ? expr->pos.filename : "unknown",
            expr->pos.line, expr->pos.column);
+#endif
     
     switch (expr->type) {
         case AST_IDENTIFIER:
@@ -27,24 +28,28 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             // Function literal - create a function type from params and return type
             FuncLitNode* func_lit = (FuncLitNode*)expr;
 
-            // Build function type from parameters and return type
-            Type* func_type = type_function_new();
+            // Determine return type
+            Type* ret_type = func_lit->return_type
+                ? type_from_ast(checker, func_lit->return_type)
+                : type_void();
 
-            // Set return type
-            if (func_lit->return_type) {
-                func_type->data.function.return_type = type_from_ast(checker, func_lit->return_type);
-            } else {
-                func_type->data.function.return_type = type_void_new();
+            // Count and collect parameter types
+            size_t param_count = 0;
+            for (ASTNode* p = func_lit->params; p; p = p->next) param_count++;
+
+            Type** param_types = NULL;
+            if (param_count > 0) {
+                param_types = calloc(param_count, sizeof(Type*));
+                if (!param_types) return NULL;
+                size_t i = 0;
+                for (ASTNode* p = func_lit->params; p; p = p->next, i++) {
+                    VarDeclNode* var = (VarDeclNode*)p;
+                    param_types[i] = type_from_ast(checker, var->type);
+                }
             }
 
-            // Add parameters
-            ASTNode* param = func_lit->params;
-            while (param) {
-                VarDeclNode* var = (VarDeclNode*)param;
-                Type* param_type = type_from_ast(checker, var->type);
-                type_add_param(func_type, param_type);
-                param = param->next;
-            }
+            Type* func_type = type_function(param_types, param_count, ret_type);
+            free(param_types);
 
             // Type check the function body
             if (func_lit->body) {
