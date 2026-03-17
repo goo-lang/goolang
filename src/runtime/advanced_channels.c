@@ -22,7 +22,6 @@
 // Global counters
 static atomic_uint_least64_t g_next_channel_id = 1;
 static atomic_uint_least64_t g_next_message_id = 1;
-static atomic_uint_least64_t g_next_node_id = 1;
 
 // Thread-local selector for channel operations
 static __thread ChannelSelector* g_current_selector = NULL;
@@ -38,9 +37,6 @@ static uint64_t get_current_time_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000UL + (uint64_t)ts.tv_nsec;
 }
 
-static uint64_t get_current_time_ms(void) {
-    return get_current_time_ns() / 1000000;
-}
 
 static char* safe_strdup(const char* str) {
     if (!str) return NULL;

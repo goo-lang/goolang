@@ -37,9 +37,6 @@ static uint64_t get_current_time_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000UL + (uint64_t)ts.tv_nsec;
 }
 
-static uint64_t get_current_time_ms(void) {
-    return get_current_time_ns() / 1000000;
-}
 
 static char* safe_strdup(const char* str) {
     if (!str) return NULL;
@@ -363,7 +360,6 @@ static void concurrent_task_set_state(ConcurrentTask* task, TaskState new_state)
     if (!task) return;
     
     pthread_mutex_lock(&task->task_mutex);
-    TaskState old_state = task->state;
     task->state = new_state;
     
     // Update timestamps

@@ -625,9 +625,7 @@ char* error_transformer_generate_message(ErrorTransformer* transformer,
                                         const ErrorLocalizationContext* context,
                                         const char* message_type) {
     if (!transformer || !error || !message_type) return NULL;
-    
-    uint64_t start_time = get_current_time_ms();
-    
+
     // Find appropriate template
     const char* error_identifier = error->type_def->name;  // Simplified
     ErrorLanguage language = context ? context->language : transformer->default_language;
@@ -671,9 +669,6 @@ char* error_transformer_generate_message(ErrorTransformer* transformer,
     
     // Update statistics
     transformer->stats.messages_generated++;
-    
-    uint64_t end_time = get_current_time_ms();
-    double duration = (double)(end_time - start_time);
     
     return message;
 }

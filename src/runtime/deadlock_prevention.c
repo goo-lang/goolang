@@ -38,19 +38,6 @@ static uint64_t get_current_time_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000UL + (uint64_t)ts.tv_nsec;
 }
 
-static uint64_t get_thread_id(void) {
-    return (uint64_t)pthread_self();
-}
-
-static uint32_t hash_resource_id(uint64_t resource_id) {
-    // Simple hash function for resource IDs
-    resource_id ^= resource_id >> 16;
-    resource_id *= 0x85ebca6b;
-    resource_id ^= resource_id >> 13;
-    resource_id *= 0xc2b2ae35;
-    resource_id ^= resource_id >> 16;
-    return (uint32_t)resource_id;
-}
 
 // =============================================================================
 // Resource Descriptor Implementation
@@ -141,16 +128,6 @@ static void lock_graph_destroy(LockGraph* graph) {
     free(graph);
 }
 
-static LockNode* lock_graph_find_node(LockGraph* graph, uint64_t resource_id) {
-    for (size_t i = 0; i < graph->node_count; i++) {
-        if (graph->nodes[i] && 
-            graph->nodes[i]->resource && 
-            graph->nodes[i]->resource->resource_id == resource_id) {
-            return graph->nodes[i];
-        }
-    }
-    return NULL;
-}
 
 static bool lock_graph_has_cycle_dfs(LockGraph* graph, size_t node_index) {
     if (node_index >= graph->node_count) return false;

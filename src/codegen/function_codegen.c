@@ -105,7 +105,6 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     if (is_main_function) {
         // Create C-style main: int main(int argc, char** argv)
         LLVMTypeRef int_type = LLVMInt32TypeInContext(codegen->context);
-        LLVMTypeRef char_ptr_type = LLVMPointerTypeInContext(codegen->context, 0);
         LLVMTypeRef char_ptr_ptr_type = LLVMPointerTypeInContext(codegen->context, 0);
         LLVMTypeRef main_param_types[2] = {int_type, char_ptr_ptr_type};
 
@@ -157,10 +156,8 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         
         // Add WebAssembly-specific function attributes
         if (return_type && return_type->kind == TYPE_VOID) {
-            // Add no-return attribute for void functions if they don't return
-            LLVMAttributeRef no_return_attr = LLVMCreateEnumAttribute(codegen->context, 
-                                                                     LLVMGetEnumAttributeKindForName("noreturn", 8), 0);
-            // Only add if function actually doesn't return (TODO: analyze control flow)
+            // TODO: Add no-return attribute for void functions that don't return
+            // Requires control flow analysis to determine if function actually never returns
         }
     }
     
@@ -1325,7 +1322,6 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         CallExprNode* call = (CallExprNode*)go_stmt->call;
         
         // Create promise wrapper function
-        LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
         LLVMValueRef create_promise_func = codegen_get_runtime_function(codegen, "js_create_promise");
         
         if (create_promise_func) {

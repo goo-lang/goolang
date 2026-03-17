@@ -550,12 +550,12 @@ int codegen_declare_wasm_runtime_functions(CodeGenerator* codegen) {
     // i32 @llvm.wasm.memory.grow.i32(i32 %memory_index, i32 %delta)
     LLVMTypeRef grow_params[] = { i32_type, i32_type };
     LLVMTypeRef grow_type = LLVMFunctionType(i32_type, grow_params, 2, 0);
-    LLVMValueRef grow_func = LLVMAddFunction(codegen->module, "llvm.wasm.memory.grow.i32", grow_type);
-    
+    LLVMAddFunction(codegen->module, "llvm.wasm.memory.grow.i32", grow_type);
+
     // i32 @llvm.wasm.memory.size.i32(i32 %memory_index)
     LLVMTypeRef size_params[] = { i32_type };
     LLVMTypeRef size_type = LLVMFunctionType(i32_type, size_params, 1, 0);
-    LLVMValueRef size_func = LLVMAddFunction(codegen->module, "llvm.wasm.memory.size.i32", size_type);
+    LLVMAddFunction(codegen->module, "llvm.wasm.memory.size.i32", size_type);
     
     return 1;
 }
@@ -570,7 +570,6 @@ int codegen_configure_wasm_concurrency(CodeGenerator* codegen) {
     // for go statements in WASM vs native targets
     
     // Add JavaScript async/await helper imports
-    LLVMTypeRef void_type = LLVMVoidTypeInContext(codegen->context);
     LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
     
     // Import JavaScript Promise handling functions
