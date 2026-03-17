@@ -419,7 +419,8 @@ bool shared_var_write(SharedVar* var, const void* src, MemoryOrder order) {
                     *(bool*)old_value = atomic_load(&var->storage.bool_val);
                 }
                 break;
-            // Add other types as needed
+            default:
+                break;
         }
     }
     
@@ -494,7 +495,8 @@ bool shared_var_write(SharedVar* var, const void* src, MemoryOrder order) {
                         event->value_size = sizeof(int64_t);
                     }
                     break;
-                // Add other types as needed
+                default:
+                    break;
             }
             
             event->memory_order = order;
