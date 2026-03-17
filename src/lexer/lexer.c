@@ -72,20 +72,22 @@ void lexer_skip_whitespace(Lexer* lexer) {
 
 Token* lexer_next_token(Lexer* lexer) {
     Token* token = NULL;
+
+    for (;;) {
     Position current_pos = lexer->pos;
-    
+
     lexer_skip_whitespace(lexer);
     current_pos = lexer->pos; // Update position after skipping whitespace
-    
+
     switch (lexer->ch) {
         case 0:
             token = token_new(TOKEN_EOF, NULL, 0, current_pos);
             break;
-            
+
         case '\n':
             // Skip newlines for now since they're not used in the grammar
             lexer_read_char(lexer);
-            return lexer_next_token(lexer); // Get next token
+            continue; // Get next token iteratively
             
         // Single character tokens
         case '(':
@@ -195,7 +197,7 @@ Token* lexer_next_token(Lexer* lexer) {
                 while (lexer->ch != '\n' && lexer->ch != 0) {
                     lexer_read_char(lexer);
                 }
-                return lexer_next_token(lexer); // Recursively get next token
+                continue; // Get next token iteratively
             } else if (lexer_peek_char(lexer) == '*') {
                 // Block comment - skip to */
                 lexer_read_char(lexer); // skip /
@@ -208,7 +210,7 @@ Token* lexer_next_token(Lexer* lexer) {
                     }
                     lexer_read_char(lexer);
                 }
-                return lexer_next_token(lexer); // Recursively get next token
+                continue; // Get next token iteratively
             } else {
                 token = token_new(TOKEN_DIVIDE, "/", 1, current_pos);
                 lexer_read_char(lexer);
@@ -414,8 +416,9 @@ Token* lexer_next_token(Lexer* lexer) {
             }
             break;
     }
-    
+
     return token;
+    } // end for(;;)
 }
 
 char* lexer_read_identifier(Lexer* lexer, size_t* length) {
