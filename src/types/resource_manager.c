@@ -135,13 +135,18 @@ typedef struct ResourceManager {
     int generate_cleanup_comments;   // Add comments to generated cleanup
     int enable_error_cleanup;        // Cleanup in error paths
     
+    // Completed scope tracking for cleanup
+    ScopeCleanup** completed_scopes;
+    size_t completed_scope_count;
+    size_t completed_scope_capacity;
+
     // Statistics
     size_t resources_tracked;
     size_t cleanups_generated;
     size_t scopes_processed;
     size_t defers_processed;
     size_t errors_detected;
-    
+
     // Error tracking
     int error_count;
     int warning_count;
@@ -182,7 +187,18 @@ ResourceManager* resource_manager_new(TypeChecker* type_checker) {
     }
     rm->pending_count = 0;
     rm->pending_capacity = 16;
-    
+
+    // Initialize completed scope tracking
+    rm->completed_scopes = malloc(sizeof(ScopeCleanup*) * 16);
+    if (!rm->completed_scopes) {
+        free(rm->pending_cleanups);
+        free(rm->all_resources);
+        free(rm);
+        return NULL;
+    }
+    rm->completed_scope_count = 0;
+    rm->completed_scope_capacity = 16;
+
     // Default configuration
     rm->enable_raii = 1;
     rm->enable_defer = 1;
@@ -226,9 +242,20 @@ void resource_manager_free(ResourceManager* rm) {
     }
     free(rm->pending_cleanups);
     
-    // Free scopes (simplified - would need recursive cleanup)
-    // TODO: Implement proper scope cleanup
-    
+    // Free completed scopes
+    for (size_t i = 0; i < rm->completed_scope_count; i++) {
+        scope_cleanup_free(rm->completed_scopes[i]);
+    }
+    free(rm->completed_scopes);
+
+    // Free any still-active scopes (walk up from current to global)
+    ScopeCleanup* scope = rm->current_scope;
+    while (scope) {
+        ScopeCleanup* parent = scope->parent;
+        scope_cleanup_free(scope);
+        scope = parent;
+    }
+
     free(rm);
 }
 
@@ -341,9 +368,20 @@ void resource_manager_exit_scope(ResourceManager* rm) {
     // Move to parent scope
     rm->current_scope = current->parent;
     rm->current_depth--;
-    
-    // Note: We don't free the scope here as it may be referenced later
-    // for code generation. It should be freed when the entire analysis is done.
+
+    // Track exited scope for later cleanup
+    if (rm->completed_scope_count >= rm->completed_scope_capacity) {
+        size_t new_cap = rm->completed_scope_capacity * 2;
+        ScopeCleanup** tmp = realloc(rm->completed_scopes,
+            sizeof(ScopeCleanup*) * new_cap);
+        if (tmp) {
+            rm->completed_scopes = tmp;
+            rm->completed_scope_capacity = new_cap;
+        }
+    }
+    if (rm->completed_scope_count < rm->completed_scope_capacity) {
+        rm->completed_scopes[rm->completed_scope_count++] = current;
+    }
 }
 
 // =============================================================================
