@@ -23,9 +23,12 @@ static void add_runtime_function(CodeGenerator* codegen, const char* name,
                                 LLVMTypeRef return_type, LLVMTypeRef* param_types, 
                                 unsigned param_count) {
     if (runtime_function_count >= runtime_function_capacity) {
-        runtime_function_capacity = runtime_function_capacity ? runtime_function_capacity * 2 : 16;
-        runtime_functions = realloc(runtime_functions, 
-                                   sizeof(RuntimeFunction) * runtime_function_capacity);
+        size_t new_capacity = runtime_function_capacity ? runtime_function_capacity * 2 : 16;
+        RuntimeFunction* tmp = realloc(runtime_functions,
+                                       sizeof(RuntimeFunction) * new_capacity);
+        if (!tmp) return;
+        runtime_functions = tmp;
+        runtime_function_capacity = new_capacity;
     }
     
     RuntimeFunction* func = &runtime_functions[runtime_function_count++];
