@@ -17,7 +17,6 @@
 static uint64_t g_next_actor_id = 1;
 static uint64_t g_next_message_id = 1;
 static uint64_t g_next_future_id = 1;
-static uint64_t g_next_supervisor_id = 1;
 static pthread_mutex_t g_id_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Thread-local storage for current actor context
@@ -471,27 +470,6 @@ static void actor_future_complete_internal(ActorFuture* future, void* result, si
     }
 }
 
-static void actor_future_fail_internal(ActorFuture* future, StructuredError* error) {
-    pthread_mutex_lock(&future->mutex);
-    
-    if (future->state != ACTOR_FUTURE_PENDING) {
-        pthread_mutex_unlock(&future->mutex);
-        return;
-    }
-    
-    future->state = ACTOR_FUTURE_FAILED;
-    future->completed_at = get_current_time_ms();
-    future->error = error;
-    
-    // Notify waiters
-    pthread_cond_broadcast(&future->completed);
-    pthread_mutex_unlock(&future->mutex);
-    
-    // Call error callback
-    if (future->on_error) {
-        future->on_error(future, error, future->callback_context);
-    }
-}
 
 void* actor_future_await(ActorFuture* future) {
     if (!future) return NULL;
@@ -1014,11 +992,14 @@ bool actor_ref_is_valid(ActorRef* ref) {
 
 // These would be fully implemented in a complete system
 ActorSystem* actor_system_create(const char* name, ActorSystemConfig* config) {
+    (void)name;
+    (void)config;
     // Placeholder - would create full actor system
     return NULL;
 }
 
 void actor_system_destroy(ActorSystem* system) {
+    (void)system;
     // Placeholder - would clean up actor system
 }
 
@@ -1049,11 +1030,17 @@ ActorRef* actor_spawn(ActorSystem* system, const char* name, ActorBehavior* beha
 }
 
 ActorFuture* actor_send(ActorRef* to, const char* handler, void* payload, size_t payload_size) {
+    (void)to;
+    (void)handler;
+    (void)payload;
+    (void)payload_size;
     // Placeholder - would implement message sending
     return NULL;
 }
 
 void actor_send_system_message(ActorRef* to, ActorSystemMessageType msg_type) {
+    (void)to;
+    (void)msg_type;
     // Placeholder - would send system message
 }
 

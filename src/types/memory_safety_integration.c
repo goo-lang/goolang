@@ -415,17 +415,26 @@ Type* memory_safe_check_try_expression(MemorySafetyContext* ctx, ASTNode* expr, 
 
 // Helper functions for null safety checking
 int is_null_checked_context(MemorySafetyContext* ctx, const char* var_name, Position pos) {
+    (void)ctx;
+    (void)var_name;
+    (void)pos;
     // TODO: Implement flow-sensitive null checking
     // For now, assume variables are checked if they're in an if-let context
     return 0; // Conservative: require explicit null checks
 }
 
 int is_guaranteed_non_null(MemorySafetyContext* ctx, const char* var_name, Position pos) {
+    (void)ctx;
+    (void)var_name;
+    (void)pos;
     // TODO: Implement flow-sensitive analysis to determine if variable is guaranteed non-null
     return 0; // Conservative: no guarantees without explicit checks
 }
 
 int should_move_value(MemorySafetyContext* ctx, Variable* var, Position pos) {
+    (void)ctx;
+    (void)var;
+    (void)pos;
     // Simple heuristic: move if this is the last use of the variable
     // TODO: Implement proper last-use analysis
     return 0; // Conservative: don't move unless explicitly requested
@@ -470,8 +479,6 @@ int memory_safe_check_variable_declaration(MemorySafetyContext* ctx, ASTNode* st
     
     // Analyze each variable declaration
     for (size_t i = 0; i < var_decl->name_count; i++) {
-        const char* var_name = var_decl->names[i];
-        
         // Check if this is a resource allocation
         if (ctx->enable_resource_management && var_decl->values && ctx->resource_manager) {
             resource_manager_analyze_statement(ctx->resource_manager, stmt);
@@ -491,7 +498,6 @@ int memory_safe_check_defer_statement(MemorySafetyContext* ctx, ASTNode* stmt) {
     if (!ctx || !stmt) return 1;
     
     if (ctx->enable_resource_management && ctx->resource_manager) {
-        DeferStmtNode* defer_stmt = (DeferStmtNode*)stmt;
         resource_manager_process_defer(ctx->resource_manager, stmt, stmt->pos);
     }
     

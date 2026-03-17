@@ -735,8 +735,6 @@ static void* parallel_worker_thread(void* arg) {
     // Wait for all threads to be ready
     pthread_barrier_wait(&context->start_barrier);
     
-    uint64_t start_time = get_current_time_us();
-    
     // Determine work range for this thread
     int thread_id = 0; // Would need proper thread ID assignment
     int64_t total_work = context->end - context->start;
@@ -756,8 +754,6 @@ static void* parallel_worker_thread(void* arg) {
         default:
             break;
     }
-    
-    uint64_t end_time = get_current_time_us();
     
     // Update statistics
     context->stats.total_operations += (thread_end - thread_start);
@@ -805,8 +801,9 @@ void parallel_context_add_shared_var(ParallelContext* context, SharedVar* var) {
 }
 
 void parallel_context_execute(ParallelContext* context, void* func, void* user_context) {
+    (void)user_context;
     if (!context || !func) return;
-    
+
     context->stats.start_time = get_current_time_us();
     
     // Create worker threads
@@ -1047,19 +1044,28 @@ void shared_var_dump_info(SharedVar* var) {
 
 // Placeholder implementations for integration functions
 void shared_var_register_with_actor(SharedVar* var, ActorRef* actor) {
+    (void)var;
+    (void)actor;
     // Would implement actor integration
 }
 
 void shared_var_notify_actor_on_change(SharedVar* var, ActorRef* actor, const char* message) {
+    (void)var;
+    (void)actor;
+    (void)message;
     // Would implement actor notification system
 }
 
-SharedVar* actor_create_shared_var(ActorRef* actor, const char* name, SharedVarType type, 
+SharedVar* actor_create_shared_var(ActorRef* actor, const char* name, SharedVarType type,
                                   const void* initial_value) {
+    (void)actor;
     // Would create shared variable in actor context
     return shared_var_create(name, type, initial_value);
 }
 
 void actor_watch_shared_var(ActorRef* actor, SharedVar* var, const char* handler_name) {
+    (void)actor;
+    (void)var;
+    (void)handler_name;
     // Would register actor watcher for shared variable
 }
