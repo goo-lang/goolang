@@ -12,8 +12,11 @@ static size_t allocated_capacity = 0;
 // Add node to global tracking
 static void track_node(SafeASTNode* node) {
     if (allocated_count >= allocated_capacity) {
-        allocated_capacity = allocated_capacity ? allocated_capacity * 2 : 16;
-        allocated_nodes = realloc(allocated_nodes, allocated_capacity * sizeof(SafeASTNode*));
+        size_t new_capacity = allocated_capacity ? allocated_capacity * 2 : 16;
+        SafeASTNode** tmp = realloc(allocated_nodes, new_capacity * sizeof(SafeASTNode*));
+        if (!tmp) return;
+        allocated_nodes = tmp;
+        allocated_capacity = new_capacity;
     }
     allocated_nodes[allocated_count++] = node;
 }
@@ -54,9 +57,11 @@ SafeASTNode* safe_ast_node_new(ASTNodeType type, Position pos, const char* file,
     // Track this allocation
     track_node(node);
     
-    printf("SAFE_AST: Created node type %d at %s:%d (ptr=%p)\n", 
+#ifndef NDEBUG
+    printf("SAFE_AST: Created node type %d at %s:%d (ptr=%p)\n",
            type, file, line, (void*)node);
-    
+#endif
+
     return node;
 }
 
@@ -99,8 +104,10 @@ void safe_ast_node_add_ref(SafeASTNode* node) {
     }
     
     node->ref_count++;
-    printf("SAFE_AST: Added reference to node at %p (refs=%d)\n", 
+#ifndef NDEBUG
+    printf("SAFE_AST: Added reference to node at %p (refs=%d)\n",
            (void*)node, node->ref_count);
+#endif
 }
 
 void safe_ast_node_release(SafeASTNode* node) {
@@ -110,8 +117,10 @@ void safe_ast_node_release(SafeASTNode* node) {
     }
     
     node->ref_count--;
-    printf("SAFE_AST: Released reference to node at %p (refs=%d)\n", 
+#ifndef NDEBUG
+    printf("SAFE_AST: Released reference to node at %p (refs=%d)\n",
            (void*)node, node->ref_count);
+#endif
     
     if (node->ref_count == 0) {
         safe_ast_node_free(node);
@@ -126,9 +135,11 @@ void safe_ast_node_free(SafeASTNode* node) {
         return;
     }
     
-    printf("SAFE_AST: Freeing node type %d created at %s:%d (ptr=%p)\n", 
+#ifndef NDEBUG
+    printf("SAFE_AST: Freeing node type %d created at %s:%d (ptr=%p)\n",
            node->base.type, node->created_file, node->created_line, (void*)node);
-    
+#endif
+
     // Remove from tracking
     untrack_node(node);
     
@@ -171,10 +182,12 @@ SafeASTNode* safe_ast_literal_new(TokenType type, const char* value, Position po
     // Track this allocation
     track_node(safe_node);
     
-    printf("SAFE_AST: Created literal node with type %d at %s:%d:%d, value='%s' (ptr=%p)\n", 
-           AST_LITERAL, pos.filename ? pos.filename : "unknown", pos.line, pos.column, 
+#ifndef NDEBUG
+    printf("SAFE_AST: Created literal node with type %d at %s:%d:%d, value='%s' (ptr=%p)\n",
+           AST_LITERAL, pos.filename ? pos.filename : "unknown", pos.line, pos.column,
            value ? value : "null", (void*)safe_node);
-    
+#endif
+
     return safe_node;
 }
 

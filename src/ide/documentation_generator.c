@@ -337,13 +337,22 @@ DocumentationComment* documentation_parse_comment(const char* comment_text) {
                 char* param_desc = doc_duplicate_string(space + 1);
                 
                 // Add to parameters array
-                comment->parameters = realloc(comment->parameters, 
+                char** tmp_params = realloc(comment->parameters,
                                             (comment->parameter_count + 1) * sizeof(char*));
-                comment->parameter_descriptions = realloc(comment->parameter_descriptions,
-                                                        (comment->parameter_count + 1) * sizeof(char*));
-                comment->parameters[comment->parameter_count] = param_name;
-                comment->parameter_descriptions[comment->parameter_count] = param_desc;
-                comment->parameter_count++;
+                char** tmp_descs = realloc(comment->parameter_descriptions,
+                                           (comment->parameter_count + 1) * sizeof(char*));
+                if (!tmp_params || !tmp_descs) {
+                    free(param_name);
+                    free(param_desc);
+                    if (tmp_params) comment->parameters = tmp_params;
+                    if (tmp_descs) comment->parameter_descriptions = tmp_descs;
+                } else {
+                    comment->parameters = tmp_params;
+                    comment->parameter_descriptions = tmp_descs;
+                    comment->parameters[comment->parameter_count] = param_name;
+                    comment->parameter_descriptions[comment->parameter_count] = param_desc;
+                    comment->parameter_count++;
+                }
             }
         } else if (strncmp(line, "@return", 7) == 0) {
             char* return_line = line + 7;
@@ -353,10 +362,13 @@ DocumentationComment* documentation_parse_comment(const char* comment_text) {
             char* example_line = line + 8;
             while (isspace(*example_line)) example_line++;
             
-            comment->examples = realloc(comment->examples,
-                                      (comment->example_count + 1) * sizeof(char*));
-            comment->examples[comment->example_count] = doc_duplicate_string(example_line);
-            comment->example_count++;
+            char** tmp_examples = realloc(comment->examples,
+                                          (comment->example_count + 1) * sizeof(char*));
+            if (tmp_examples) {
+                comment->examples = tmp_examples;
+                comment->examples[comment->example_count] = doc_duplicate_string(example_line);
+                comment->example_count++;
+            }
         } else if (strncmp(line, "@since", 6) == 0) {
             char* since_line = line + 6;
             while (isspace(*since_line)) since_line++;

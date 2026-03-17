@@ -20,13 +20,17 @@ void list_free(List* list) {
     free(list);
 }
 
-void list_add(List* list, void* item) {
-    if (!list) return;
+int list_add(List* list, void* item) {
+    if (!list) return -1;
     if (list->size >= list->capacity) {
-        list->capacity *= 2;
-        list->items = realloc(list->items, sizeof(void*) * list->capacity);
+        size_t new_capacity = list->capacity * 2;
+        void** tmp = realloc(list->items, sizeof(void*) * new_capacity);
+        if (!tmp) return -1;
+        list->items = tmp;
+        list->capacity = new_capacity;
     }
     list->items[list->size++] = item;
+    return 0;
 }
 
 void* list_get(List* list, size_t index) {

@@ -11,7 +11,7 @@ typedef struct List {
 
 List* list_new();
 void list_free(List* list);
-void list_add(List* list, void* item);
+int list_add(List* list, void* item);
 void* list_get(List* list, size_t index);
 size_t list_size(List* list);
 
