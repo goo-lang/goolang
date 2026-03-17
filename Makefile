@@ -40,7 +40,7 @@ LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/annotation_parser.c
 AST_SRCS = $(SRCDIR)/ast/ast.c
 # Temporarily disabled files for TDD Cycle 5 (have compilation errors - Task #22 incomplete implementations)
-TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/arena_integration.c $(SRCDIR)/types/channel_integration.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/security_analysis.c $(SRCDIR)/types/comptime_eval.c $(SRCDIR)/types/optimizer.c
+TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/arena_integration.c $(SRCDIR)/types/channel_integration.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/security_analysis.c $(SRCDIR)/types/comptime_eval.c $(SRCDIR)/types/optimizer.c $(SRCDIR)/types/auto_parallel.c
 # Disabled: advanced_constraint_inference, concept_generics, higher_kinded_types, type_level_programming, interface_integration, hkt_auto_impl, protocol_oriented_programming, dependent_types, contracts, proof_generation, runtime_optimization
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/runtime_integration.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/error_handling.c $(SRCDIR)/runtime/error_context.c $(SRCDIR)/runtime/error_recovery.c $(SRCDIR)/runtime/error_aggregation.c $(SRCDIR)/runtime/error_hierarchies.c $(SRCDIR)/runtime/error_transformation.c $(SRCDIR)/runtime/actor_system.c $(SRCDIR)/runtime/shared_variables.c $(SRCDIR)/runtime/structured_concurrency.c $(SRCDIR)/runtime/advanced_channels.c $(SRCDIR)/runtime/deadlock_prevention.c $(SRCDIR)/runtime/async_runtime.c
@@ -126,6 +126,7 @@ TEST_SECURITY = $(BINDIR)/test_security
 TEST_ASYNC = $(BINDIR)/test_async
 TEST_COMPTIME = $(BINDIR)/test_comptime
 TEST_OPTIMIZER = $(BINDIR)/test_optimizer
+TEST_PARALLEL = $(BINDIR)/test_parallel
 
 # Tests
 test: $(TEST_RUNNER)
@@ -172,6 +173,14 @@ test-flow: $(TEST_FLOW_ANALYSIS)
 	./$(TEST_FLOW_ANALYSIS)
 
 $(TEST_FLOW_ANALYSIS): $(TEST_UNIT_DIR)/flow/flow_analysis_test.c $(OBJS)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
+
+# Auto-parallel test
+test-parallel: $(TEST_PARALLEL)
+	./$(TEST_PARALLEL)
+
+$(TEST_PARALLEL): $(TEST_UNIT_DIR)/types/auto_parallel_test.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
