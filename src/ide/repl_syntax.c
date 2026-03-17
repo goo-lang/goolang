@@ -294,102 +294,110 @@ char* repl_highlight_line(const char* line, const SyntaxTheme* theme) {
     size_t output_size = len * 4; // Conservative estimate with ANSI codes
     char* output = malloc(output_size);
     if (!output) return strdup(line);
-    
+
+    size_t off = 0;
     output[0] = '\0';
-    
+
     SyntaxContext context = {0};
-    
+
+    #define OUT_APPEND_STR(s) do { \
+        if (off < output_size - 1) off += snprintf(output + off, output_size - off, "%s", (s)); \
+    } while(0)
+    #define OUT_APPEND_CHAR(c) do { \
+        if (off < output_size - 1) { output[off++] = (c); output[off] = '\0'; } \
+    } while(0)
+
     const char* p = line;
     while (*p) {
         // Handle whitespace
         if (isspace(*p)) {
-            strncat(output, p, 1);
+            OUT_APPEND_CHAR(*p);
             p++;
             continue;
         }
-        
+
         // Handle string literals
         if (*p == '"' || *p == '\'' || *p == '`') {
             char delimiter = *p;
-            
-            strcat(output, theme->string_color);
+
+            OUT_APPEND_STR(theme->string_color);
             while (*p && (*p != delimiter || context.escape_next)) {
                 if (context.escape_next) {
                     context.escape_next = false;
                 } else if (*p == '\\') {
                     context.escape_next = true;
                 }
-                strncat(output, p, 1);
+                OUT_APPEND_CHAR(*p);
                 p++;
             }
             if (*p == delimiter) {
-                strncat(output, p, 1);
+                OUT_APPEND_CHAR(*p);
                 p++;
             }
-            strcat(output, ANSI_RESET);
+            OUT_APPEND_STR(ANSI_RESET);
             continue;
         }
-        
+
         // Handle comments
         if (*p == '/' && *(p + 1) == '/') {
-            strcat(output, theme->comment_color);
+            OUT_APPEND_STR(theme->comment_color);
             while (*p) {
-                strncat(output, p, 1);
+                OUT_APPEND_CHAR(*p);
                 p++;
             }
-            strcat(output, ANSI_RESET);
+            OUT_APPEND_STR(ANSI_RESET);
             break;
         }
-        
+
         // Handle multi-character operators
         if (*p == '<' && *(p + 1) == '-') {
-            strcat(output, theme->goo_specific_color);
-            strncat(output, p, 2);
-            strcat(output, ANSI_RESET);
-            p += 2;
+            OUT_APPEND_STR(theme->goo_specific_color);
+            OUT_APPEND_CHAR(*p); p++;
+            OUT_APPEND_CHAR(*p); p++;
+            OUT_APPEND_STR(ANSI_RESET);
             continue;
         }
-        
+
         // Handle single-character operators and Goo-specific syntax
         if (strchr("+-*/%&|^<>=!:;,()[]{}?", *p)) {
             if (*p == '!' || *p == '?') {
-                strcat(output, theme->goo_specific_color);
+                OUT_APPEND_STR(theme->goo_specific_color);
             } else {
-                strcat(output, theme->operator_color);
+                OUT_APPEND_STR(theme->operator_color);
             }
-            strncat(output, p, 1);
-            strcat(output, ANSI_RESET);
+            OUT_APPEND_CHAR(*p);
+            OUT_APPEND_STR(ANSI_RESET);
             p++;
             continue;
         }
-        
+
         // Handle numbers
         if (isdigit(*p) || (*p == '.' && isdigit(*(p + 1)))) {
-            strcat(output, theme->number_color);
-            while (*p && (isdigit(*p) || *p == '.' || *p == 'e' || *p == 'E' || 
+            OUT_APPEND_STR(theme->number_color);
+            while (*p && (isdigit(*p) || *p == '.' || *p == 'e' || *p == 'E' ||
                          *p == '+' || *p == '-' || *p == 'x' || *p == 'X' ||
                          (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F'))) {
-                strncat(output, p, 1);
+                OUT_APPEND_CHAR(*p);
                 p++;
             }
-            strcat(output, ANSI_RESET);
+            OUT_APPEND_STR(ANSI_RESET);
             continue;
         }
-        
+
         // Handle identifiers, keywords, and types
         if (isalpha(*p) || *p == '_') {
             const char* start = p;
             while (*p && (isalnum(*p) || *p == '_')) {
                 p++;
             }
-            
+
             size_t word_len = p - start;
             char* word = malloc(word_len + 1);
             strncpy(word, start, word_len);
             word[word_len] = '\0';
-            
+
             SyntaxElementType type = repl_classify_token(word, &context);
-            
+
             const char* color = theme->identifier_color;
             switch (type) {
                 case SYNTAX_KEYWORD:
@@ -411,20 +419,23 @@ char* repl_highlight_line(const char* line, const SyntaxTheme* theme) {
                     color = theme->identifier_color;
                     break;
             }
-            
-            strcat(output, color);
-            strcat(output, word);
-            strcat(output, ANSI_RESET);
-            
+
+            OUT_APPEND_STR(color);
+            OUT_APPEND_STR(word);
+            OUT_APPEND_STR(ANSI_RESET);
+
             free(word);
             continue;
         }
-        
+
         // Default: just copy the character
-        strncat(output, p, 1);
+        OUT_APPEND_CHAR(*p);
         p++;
     }
-    
+
+    #undef OUT_APPEND_STR
+    #undef OUT_APPEND_CHAR
+
     return output;
 }
 
@@ -724,20 +735,22 @@ char* repl_highlight_matching_parens(const char* line, int cursor_pos) {
     if (match_pos == -1) return strdup(line);
     
     size_t len = strlen(line);
-    char* output = malloc(len * 3); // Space for ANSI codes
+    size_t output_size = len * 3; // Space for ANSI codes
+    char* output = malloc(output_size);
     if (!output) return strdup(line);
-    
-    strcpy(output, "");
-    
+
+    size_t off = 0;
+    output[0] = '\0';
+
     for (int i = 0; i < (int)len; i++) {
         if (i == cursor_pos || i == match_pos) {
-            strcat(output, g_current_theme->match_paren_color);
-            strncat(output, &line[i], 1);
-            strcat(output, ANSI_RESET);
+            if (off < output_size - 1)
+                off += snprintf(output + off, output_size - off, "%s%c%s",
+                                g_current_theme->match_paren_color, line[i], ANSI_RESET);
         } else {
-            strncat(output, &line[i], 1);
+            if (off < output_size - 1) { output[off++] = line[i]; output[off] = '\0'; }
         }
     }
-    
+
     return output;
 }

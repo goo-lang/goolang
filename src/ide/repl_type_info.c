@@ -41,117 +41,108 @@ char* repl_format_type_detailed(REPLContext* ctx, const Type* type, bool include
     if (!ctx || !type) return strdup("unknown");
     
     char buffer[4096];
+    size_t off = 0;
     buffer[0] = '\0';
-    
+
+    #define BUF_APPEND(...) do { \
+        if (off < sizeof(buffer) - 1) off += snprintf(buffer + off, sizeof(buffer) - off, __VA_ARGS__); \
+    } while(0)
+
     // Basic type information
     char* basic_type = repl_format_type(type, false);
     if (basic_type) {
         if (ctx->color_output) {
-            snprintf(buffer, sizeof(buffer), "%s%s%s", ANSI_CYAN, basic_type, ANSI_RESET);
+            BUF_APPEND("%s%s%s", ANSI_CYAN, basic_type, ANSI_RESET);
         } else {
-            strcpy(buffer, basic_type);
+            BUF_APPEND("%s", basic_type);
         }
         free(basic_type);
     }
-    
+
     // Add size information
-    char size_info[128];
-    snprintf(size_info, sizeof(size_info), " (size: %zu bytes", type->size);
-    
     if (type->align > 0) {
-        char align_info[64];
-        snprintf(align_info, sizeof(align_info), ", align: %zu", type->align);
-        strcat(size_info, align_info);
+        BUF_APPEND(" (size: %zu bytes, align: %zu)", type->size, type->align);
+    } else {
+        BUF_APPEND(" (size: %zu bytes)", type->size);
     }
-    strcat(size_info, ")");
-    strcat(buffer, size_info);
-    
+
     // Add additional type-specific information
     switch (type->kind) {
         case TYPE_ARRAY:
             if (type->data.array.element_type) {
                 char* elem_details = repl_format_type_detailed(ctx, type->data.array.element_type, false);
-                char array_info[512];
-                snprintf(array_info, sizeof(array_info), "\n  Element type: %s", elem_details);
-                strcat(buffer, array_info);
+                BUF_APPEND("\n  Element type: %s", elem_details);
                 free(elem_details);
             }
             break;
-            
+
         case TYPE_SLICE:
             if (type->data.slice.element_type) {
                 char* elem_details = repl_format_type_detailed(ctx, type->data.slice.element_type, false);
-                char slice_info[512];
-                snprintf(slice_info, sizeof(slice_info), "\n  Element type: %s", elem_details);
-                strcat(buffer, slice_info);
+                BUF_APPEND("\n  Element type: %s", elem_details);
                 free(elem_details);
             }
             break;
-            
+
         case TYPE_POINTER:
             if (type->data.pointer.pointee_type) {
                 char* pointee_details = repl_format_type_detailed(ctx, type->data.pointer.pointee_type, false);
-                char pointer_info[512];
-                snprintf(pointer_info, sizeof(pointer_info), "\n  Points to: %s", pointee_details);
-                strcat(buffer, pointer_info);
+                BUF_APPEND("\n  Points to: %s", pointee_details);
                 free(pointee_details);
             }
             break;
-            
+
         case TYPE_ERROR_UNION:
             if (type->data.error_union.value_type) {
                 char* value_details = repl_format_type_detailed(ctx, type->data.error_union.value_type, false);
-                char error_info[512];
-                snprintf(error_info, sizeof(error_info), "\n  Success type: %s", value_details);
-                strcat(buffer, error_info);
+                BUF_APPEND("\n  Success type: %s", value_details);
                 free(value_details);
             }
-            strcat(buffer, "\n  Error handling: Rust-style error unions");
+            BUF_APPEND("\n  Error handling: Rust-style error unions");
             break;
-            
+
         case TYPE_NULLABLE:
             if (type->data.nullable.base_type) {
                 char* base_details = repl_format_type_detailed(ctx, type->data.nullable.base_type, false);
-                char null_info[512];
-                snprintf(null_info, sizeof(null_info), "\n  Base type: %s", base_details);
-                strcat(buffer, null_info);
+                BUF_APPEND("\n  Base type: %s", base_details);
                 free(base_details);
             }
-            strcat(buffer, "\n  Null safety: Enforced at compile time");
+            BUF_APPEND("\n  Null safety: Enforced at compile time");
             break;
-            
+
         case TYPE_FUNCTION:
-            strcat(buffer, "\n  Function properties:");
-            strcat(buffer, "\n    - First-class value");
-            strcat(buffer, "\n    - Can be stored in variables");
-            strcat(buffer, "\n    - Supports closures");
+            BUF_APPEND("\n  Function properties:"
+                       "\n    - First-class value"
+                       "\n    - Can be stored in variables"
+                       "\n    - Supports closures");
             break;
-            
+
         case TYPE_INTERFACE:
-            strcat(buffer, "\n  Interface properties:");
-            strcat(buffer, "\n    - Duck typing support");
-            strcat(buffer, "\n    - Method set validation");
+            BUF_APPEND("\n  Interface properties:"
+                       "\n    - Duck typing support"
+                       "\n    - Method set validation");
             break;
-            
+
         default:
             break;
     }
-    
+
     // Add memory layout information for complex types
     if (type->kind == TYPE_STRUCT) {
-        strcat(buffer, "\n  Memory layout: Struct with automatic padding");
+        BUF_APPEND("\n  Memory layout: Struct with automatic padding");
     }
-    
+
     // Add documentation if requested
     if (include_docs && type->name) {
         char* docs = repl_get_type_documentation(ctx, type->name);
         if (docs) {
-            strcat(buffer, "\n  Documentation: ");
-            strcat(buffer, docs);
+            BUF_APPEND("\n  Documentation: %s", docs);
             free(docs);
         }
     }
-    
+
+    #undef BUF_APPEND
+
     return strdup(buffer);
 }
 

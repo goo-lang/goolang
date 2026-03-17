@@ -351,11 +351,11 @@ int repl_handle_multiline(REPLContext* ctx, const char* line) {
     
     // Append line to buffer
     if (ctx->multiline_size > 0) {
-        strcat(ctx->multiline_buffer, "\n");
-        ctx->multiline_size++;
+        ctx->multiline_buffer[ctx->multiline_size++] = '\n';
     }
-    strcat(ctx->multiline_buffer, line);
+    memcpy(ctx->multiline_buffer + ctx->multiline_size, line, line_len);
     ctx->multiline_size += line_len;
+    ctx->multiline_buffer[ctx->multiline_size] = '\0';
     
     // Check if expression is complete
     if (repl_is_complete_expression(ctx->multiline_buffer)) {

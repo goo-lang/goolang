@@ -238,9 +238,13 @@ static TestResult* run_single_test(const char* test_file, const char* test_name)
     
     // Read test output
     char output_buffer[4096] = {0};
+    size_t out_offset = 0;
     char line[256];
     while (fgets(line, sizeof(line), pipe)) {
-        strcat(output_buffer, line);
+        if (out_offset < sizeof(output_buffer) - 1) {
+            out_offset += snprintf(output_buffer + out_offset,
+                                   sizeof(output_buffer) - out_offset, "%s", line);
+        }
     }
     
     int exit_status = pclose(pipe);
