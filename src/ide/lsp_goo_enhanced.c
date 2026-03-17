@@ -358,22 +358,25 @@ static void analyze_goo_syntax(const char* content, const char* uri) {
 // Completion Provider
 // =============================================================================
 
-static void add_completion_item(char* result, bool* first, const char* label, 
-                               int kind, const char* detail, const char* insert_text,
-                               const char* documentation) {
-    if (!*first) strcat(result, ",");
-    
-    char item[1024];
-    snprintf(item, sizeof(item),
-        "{\"label\":\"%s\",\"kind\":%d,\"detail\":\"%s\",\"insertText\":\"%s\",\"documentation\":\"%s\"}",
-        label, kind, detail ? detail : "", insert_text ? insert_text : label, 
-        documentation ? documentation : "");
-    strcat(result, item);
+static void add_completion_item_ex(char* result, size_t result_size, size_t* offset, bool* first,
+                                   const char* label, int kind, const char* detail,
+                                   const char* insert_text, const char* documentation) {
+    if (*offset >= result_size - 1) return;
+    if (!*first) {
+        *offset += snprintf(result + *offset, result_size - *offset, ",");
+    }
+    if (*offset < result_size - 1) {
+        *offset += snprintf(result + *offset, result_size - *offset,
+            "{\"label\":\"%s\",\"kind\":%d,\"detail\":\"%s\",\"insertText\":\"%s\",\"documentation\":\"%s\"}",
+            label, kind, detail ? detail : "", insert_text ? insert_text : label,
+            documentation ? documentation : "");
+    }
     *first = false;
 }
 
-static void generate_goo_completions(const char* content, int line, int character, char* result) {
-    strcpy(result, "{\"isIncomplete\":false,\"items\":[");
+static void generate_goo_completions(const char* content, int line, int character,
+                                     char* result, size_t result_size) {
+    size_t offset = snprintf(result, result_size, "{\"isIncomplete\":false,\"items\":[");
     bool first = true;
     
     // Goo-specific keywords with detailed completion info
@@ -399,7 +402,7 @@ static void generate_goo_completions(const char* content, int line, int characte
     };
     
     for (size_t i = 0; i < sizeof(goo_keywords) / sizeof(goo_keywords[0]); i++) {
-        add_completion_item(result, &first, goo_keywords[i].keyword, 14, // keyword kind
+        add_completion_item_ex(result, result_size, &offset, &first, goo_keywords[i].keyword, 14, // keyword kind
                           goo_keywords[i].detail, goo_keywords[i].insert_text, 
                           goo_keywords[i].documentation);
     }
@@ -425,7 +428,7 @@ static void generate_goo_completions(const char* content, int line, int characte
     };
     
     for (size_t i = 0; i < sizeof(goo_types) / sizeof(goo_types[0]); i++) {
-        add_completion_item(result, &first, goo_types[i].type, 25, // type parameter kind
+        add_completion_item_ex(result, result_size, &offset, &first, goo_types[i].type, 25, // type parameter kind
                           goo_types[i].detail, NULL, goo_types[i].documentation);
     }
     
@@ -450,30 +453,33 @@ static void generate_goo_completions(const char* content, int line, int characte
                      symbol->is_owned ? "Owned resource\\n" : "",
                      symbol->is_moved ? "Value has been moved\\n" : "");
             
-            add_completion_item(result, &first, symbol->name, kind, detail, NULL, documentation);
+            add_completion_item_ex(result, result_size, &offset, &first, symbol->name, kind, detail, NULL, documentation);
         }
     }
     
-    strcat(result, "]}");
+    if (offset < result_size - 1) {
+        snprintf(result + offset, result_size - offset, "]}");
+    }
 }
 
 // =============================================================================
 // Diagnostics Provider
 // =============================================================================
 
-static void generate_diagnostics(DocumentState* doc, char* diagnostics_json) {
-    strcpy(diagnostics_json, "[");
+static void generate_diagnostics(DocumentState* doc, char* diagnostics_json, size_t json_size) {
+    size_t offset = snprintf(diagnostics_json, json_size, "[");
     bool first = true;
-    
+
     if (!doc || !doc->content) {
-        strcat(diagnostics_json, "]");
+        if (offset < json_size - 1)
+            snprintf(diagnostics_json + offset, json_size - offset, "]");
         return;
     }
-    
+
     char* content = doc->content;
     char* lines[1000];
     int line_count = 0;
-    
+
     // Split content into lines
     char* content_copy = strdup(content);
     char* token = strtok(content_copy, "\n");
@@ -481,58 +487,66 @@ static void generate_diagnostics(DocumentState* doc, char* diagnostics_json) {
         lines[line_count++] = token;
         token = strtok(NULL, "\n");
     }
-    
+
     // Check for Goo-specific issues
     for (int i = 0; i < line_count; i++) {
         char* line = lines[i];
-        
+
         // Check for unhandled error unions
         if (strstr(line, "!") && !strstr(line, "try") && !strstr(line, "catch")) {
-            if (!first) strcat(diagnostics_json, ",");
-            
-            char diagnostic[512];
-            snprintf(diagnostic, sizeof(diagnostic),
-                "{\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":%d}},"
-                "\"severity\":2,\"source\":\"goo\",\"message\":\"Potential unhandled error union. Consider using 'try' or 'catch'.\"}",
-                i, i, (int)strlen(line));
-            strcat(diagnostics_json, diagnostic);
+            if (offset >= json_size - 1) break;
+            if (!first)
+                offset += snprintf(diagnostics_json + offset, json_size - offset, ",");
+
+            if (offset < json_size - 1) {
+                offset += snprintf(diagnostics_json + offset, json_size - offset,
+                    "{\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":%d}},"
+                    "\"severity\":2,\"source\":\"goo\",\"message\":\"Potential unhandled error union. Consider using 'try' or 'catch'.\"}",
+                    i, i, (int)strlen(line));
+            }
             first = false;
             doc->error_count++;
         }
-        
+
         // Check for potential null pointer dereference
         if (strstr(line, "?") && strstr(line, ".") && !strstr(line, "if")) {
-            if (!first) strcat(diagnostics_json, ",");
-            
-            char diagnostic[512];
-            snprintf(diagnostic, sizeof(diagnostic),
-                "{\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":%d}},"
-                "\"severity\":2,\"source\":\"goo\",\"message\":\"Potential null pointer access. Consider null checking.\"}",
-                i, i, (int)strlen(line));
-            strcat(diagnostics_json, diagnostic);
+            if (offset >= json_size - 1) break;
+            if (!first)
+                offset += snprintf(diagnostics_json + offset, json_size - offset, ",");
+
+            if (offset < json_size - 1) {
+                offset += snprintf(diagnostics_json + offset, json_size - offset,
+                    "{\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":%d}},"
+                    "\"severity\":2,\"source\":\"goo\",\"message\":\"Potential null pointer access. Consider null checking.\"}",
+                    i, i, (int)strlen(line));
+            }
             first = false;
             doc->error_count++;
         }
-        
+
         // Check for use after move
         for (GooSymbol* symbol = g_symbols; symbol; symbol = symbol->next) {
             if (symbol->is_moved && strstr(line, symbol->name)) {
-                if (!first) strcat(diagnostics_json, ",");
-                
-                char diagnostic[512];
-                snprintf(diagnostic, sizeof(diagnostic),
-                    "{\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":%d}},"
-                    "\"severity\":1,\"source\":\"goo\",\"message\":\"Use after move: '%s' has been moved.\"}",
-                    i, i, (int)strlen(line), symbol->name);
-                strcat(diagnostics_json, diagnostic);
+                if (offset >= json_size - 1) break;
+                if (!first)
+                    offset += snprintf(diagnostics_json + offset, json_size - offset, ",");
+
+                if (offset < json_size - 1) {
+                    offset += snprintf(diagnostics_json + offset, json_size - offset,
+                        "{\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":%d}},"
+                        "\"severity\":1,\"source\":\"goo\",\"message\":\"Use after move: '%s' has been moved.\"}",
+                        i, i, (int)strlen(line), symbol->name);
+                }
                 first = false;
                 doc->error_count++;
             }
         }
     }
-    
+
     doc->has_errors = doc->error_count > 0;
-    strcat(diagnostics_json, "]");
+    if (offset < json_size - 1) {
+        snprintf(diagnostics_json + offset, json_size - offset, "]");
+    }
     free(content_copy);
 }
 
@@ -606,7 +620,7 @@ static void handle_text_document_did_open(const char* params) {
     
     // Generate and send diagnostics
     char diagnostics[8192];
-    generate_diagnostics(doc, diagnostics);
+    generate_diagnostics(doc, diagnostics, sizeof(diagnostics));
     
     char notification[16384];
     snprintf(notification, sizeof(notification),
@@ -628,7 +642,7 @@ static void handle_completion(int id, const char* params) {
     if (char_start) character = atoi(char_start + 12);
     
     char result[16384];
-    generate_goo_completions("", line, character, result);
+    generate_goo_completions("", line, character, result, sizeof(result));
     
     send_response(id, result);
     LSP_LOG_DEBUG("Completion provided for line %d, char %d", line, character);

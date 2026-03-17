@@ -213,24 +213,27 @@ static void get_completion_context(const char* content, int line, int character,
 }
 
 // Helper function to add completion item
-static void add_completion_item(char* result, bool* first, const char* label, const char* kind_str, const char* detail, const char* insert_text) {
-    if (!*first) strcat(result, ",");
-    
-    char item[512];
-    snprintf(item, sizeof(item),
-        "{\"label\":\"%s\",\"kind\":%s,\"detail\":\"%s\",\"insertText\":\"%s\"}",
-        label, kind_str, detail, insert_text ? insert_text : label);
-    strcat(result, item);
+static void add_completion_item_ex(char* result, size_t result_size, size_t* offset, bool* first,
+                                   const char* label, const char* kind_str, const char* detail, const char* insert_text) {
+    if (*offset >= result_size - 1) return;
+    if (!*first) {
+        *offset += snprintf(result + *offset, result_size - *offset, ",");
+    }
+    if (*offset < result_size - 1) {
+        *offset += snprintf(result + *offset, result_size - *offset,
+            "{\"label\":\"%s\",\"kind\":%s,\"detail\":\"%s\",\"insertText\":\"%s\"}",
+            label, kind_str, detail, insert_text ? insert_text : label);
+    }
     *first = false;
 }
 
 // Generate intelligent completions based on context
-static void generate_intelligent_completions(const char* context_type, const char* partial_word, 
-                                           const char* scope_context, char* result) {
+static void generate_intelligent_completions(const char* context_type, const char* partial_word,
+                                           const char* scope_context, char* result, size_t result_size) {
     if (!context_type || !partial_word || !scope_context || !result) return;
-    
-    strcpy(result, "{\"isIncomplete\":false,\"items\":[");
-    
+
+    size_t offset = snprintf(result, result_size, "{\"isIncomplete\":false,\"items\":[");
+
     bool first = true;
     
     // Goo language keywords
@@ -259,42 +262,42 @@ static void generate_intelligent_completions(const char* context_type, const cha
     if (strcmp(context_type, "function_decl") == 0) {
         for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
             if (strlen(partial_word) == 0 || strstr(types[i], partial_word) == types[i]) {
-                add_completion_item(result, &first, types[i], "25", "Built-in type", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, types[i], "25", "Built-in type", NULL);
             }
         }
     } else if (strcmp(context_type, "variable_decl") == 0) {
         for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
             if (strlen(partial_word) == 0 || strstr(types[i], partial_word) == types[i]) {
-                add_completion_item(result, &first, types[i], "25", "Built-in type", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, types[i], "25", "Built-in type", NULL);
             }
         }
     } else if (strcmp(context_type, "import_stmt") == 0) {
         // Package suggestions
-        add_completion_item(result, &first, "fmt", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "os", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "io", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "math", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "time", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "fmt", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "os", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "io", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "math", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "time", "9", "Goo package", NULL);
     } else if (strcmp(context_type, "member_access") == 0) {
         // Common methods/fields
-        add_completion_item(result, &first, "len", "2", "Property", NULL);
-        add_completion_item(result, &first, "cap", "2", "Property", NULL);
-        add_completion_item(result, &first, "toString", "2", "Method", "toString()");
-        add_completion_item(result, &first, "clone", "2", "Method", "clone()");
+        add_completion_item_ex(result, result_size, &offset, &first, "len", "2", "Property", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "cap", "2", "Property", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "toString", "2", "Method", "toString()");
+        add_completion_item_ex(result, result_size, &offset, &first, "clone", "2", "Method", "clone()");
     } else {
         // General context completions
         
         // Keywords
         for (size_t i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++) {
             if (strlen(partial_word) == 0 || strstr(keywords[i], partial_word) == keywords[i]) {
-                add_completion_item(result, &first, keywords[i], "14", "Goo keyword", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, keywords[i], "14", "Goo keyword", NULL);
             }
         }
         
         // Types
         for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
             if (strlen(partial_word) == 0 || strstr(types[i], partial_word) == types[i]) {
-                add_completion_item(result, &first, types[i], "25", "Built-in type", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, types[i], "25", "Built-in type", NULL);
             }
         }
         
@@ -303,56 +306,58 @@ static void generate_intelligent_completions(const char* context_type, const cha
             if (strlen(partial_word) == 0 || strstr(builtins[i], partial_word) == builtins[i]) {
                 char insert_text[64];
                 snprintf(insert_text, sizeof(insert_text), "%s($1)", builtins[i]);
-                add_completion_item(result, &first, builtins[i], "3", "Built-in function", insert_text);
+                add_completion_item_ex(result, result_size, &offset, &first, builtins[i], "3", "Built-in function", insert_text);
             }
         }
         
         // Goo-specific features
         if (strlen(partial_word) == 0 || strstr("try", partial_word) == "try") {
-            add_completion_item(result, &first, "try", "14", "Goo keyword", "try ");
+            add_completion_item_ex(result, result_size, &offset, &first, "try", "14", "Goo keyword", "try ");
         }
         if (strlen(partial_word) == 0 || strstr("catch", partial_word) == "catch") {
-            add_completion_item(result, &first, "catch", "14", "Goo keyword", "catch |$1| {$2}");
+            add_completion_item_ex(result, result_size, &offset, &first, "catch", "14", "Goo keyword", "catch |$1| {$2}");
         }
         if (strlen(partial_word) == 0 || strstr("match", partial_word) == "match") {
-            add_completion_item(result, &first, "match", "14", "Goo keyword", "match $1 {$2}");
+            add_completion_item_ex(result, result_size, &offset, &first, "match", "14", "Goo keyword", "match $1 {$2}");
         }
         
         // Error union and nullable types
-        add_completion_item(result, &first, "!T", "15", "Error union type", "!${1:T}");
-        add_completion_item(result, &first, "?T", "15", "Nullable type", "?${1:T}");
+        add_completion_item_ex(result, result_size, &offset, &first, "!T", "15", "Error union type", "!${1:T}");
+        add_completion_item_ex(result, result_size, &offset, &first, "?T", "15", "Nullable type", "?${1:T}");
         
         // Channel operations
-        add_completion_item(result, &first, "<-", "24", "Channel receive", "<-");
-        add_completion_item(result, &first, "chan", "14", "Channel type", "chan ${1:T}");
+        add_completion_item_ex(result, result_size, &offset, &first, "<-", "24", "Channel receive", "<-");
+        add_completion_item_ex(result, result_size, &offset, &first, "chan", "14", "Channel type", "chan ${1:T}");
         
         // Ownership qualifiers
         if (strlen(partial_word) == 0 || strstr("owned", partial_word) == "owned") {
-            add_completion_item(result, &first, "owned", "14", "Ownership qualifier", "owned ");
+            add_completion_item_ex(result, result_size, &offset, &first, "owned", "14", "Ownership qualifier", "owned ");
         }
         if (strlen(partial_word) == 0 || strstr("borrowed", partial_word) == "borrowed") {
-            add_completion_item(result, &first, "borrowed", "14", "Ownership qualifier", "borrowed ");
+            add_completion_item_ex(result, result_size, &offset, &first, "borrowed", "14", "Ownership qualifier", "borrowed ");
         }
         if (strlen(partial_word) == 0 || strstr("shared", partial_word) == "shared") {
-            add_completion_item(result, &first, "shared", "14", "Ownership qualifier", "shared ");
+            add_completion_item_ex(result, result_size, &offset, &first, "shared", "14", "Ownership qualifier", "shared ");
         }
     }
     
     // Common code snippets
     if (strcmp(scope_context, "function") == 0) {
-        add_completion_item(result, &first, "if_stmt", "15", "if statement", "if ${1:condition} {\\n\\t$2\\n}");
-        add_completion_item(result, &first, "for_loop", "15", "for loop", "for ${1:i} := 0; ${1:i} < ${2:n}; ${1:i}++ {\\n\\t$3\\n}");
-        add_completion_item(result, &first, "while_loop", "15", "while loop", "while ${1:condition} {\\n\\t$2\\n}");
-        add_completion_item(result, &first, "match_expr", "15", "match expression", "match ${1:expr} {\\n\\t${2:pattern} => ${3:result},\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "if_stmt", "15", "if statement", "if ${1:condition} {\\n\\t$2\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "for_loop", "15", "for loop", "for ${1:i} := 0; ${1:i} < ${2:n}; ${1:i}++ {\\n\\t$3\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "while_loop", "15", "while loop", "while ${1:condition} {\\n\\t$2\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "match_expr", "15", "match expression", "match ${1:expr} {\\n\\t${2:pattern} => ${3:result},\\n}");
     }
     
     if (strcmp(context_type, "global") == 0) {
-        add_completion_item(result, &first, "fn_decl", "15", "function declaration", "fn ${1:name}(${2:params}) ${3:return_type} {\\n\\t$4\\n}");
-        add_completion_item(result, &first, "struct_decl", "15", "struct declaration", "struct ${1:Name} {\\n\\t${2:field}: ${3:type},\\n}");
-        add_completion_item(result, &first, "interface_decl", "15", "interface declaration", "interface ${1:Name} {\\n\\t${2:method}(${3:params}) ${4:return_type}\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "fn_decl", "15", "function declaration", "fn ${1:name}(${2:params}) ${3:return_type} {\\n\\t$4\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "struct_decl", "15", "struct declaration", "struct ${1:Name} {\\n\\t${2:field}: ${3:type},\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "interface_decl", "15", "interface declaration", "interface ${1:Name} {\\n\\t${2:method}(${3:params}) ${4:return_type}\\n}");
     }
     
-    strcat(result, "]}");
+    if (offset < result_size - 1) {
+        snprintf(result + offset, result_size - offset, "]}");
+    }
 }
 
 // Enhanced completion handler
@@ -411,7 +416,7 @@ static void handle_completion(int id, const char* params) {
     
     // Generate intelligent completions
     char result[4096];
-    generate_intelligent_completions(context_type, partial_word, scope_context, result);
+    generate_intelligent_completions(context_type, partial_word, scope_context, result, sizeof(result));
     
     send_response(id, result);
 }

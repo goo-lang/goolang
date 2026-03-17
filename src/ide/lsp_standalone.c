@@ -33,14 +33,17 @@ static void send_response(int id, const char* result) {
 }
 
 // Helper function to add completion item
-static void add_completion_item(char* result, bool* first, const char* label, const char* kind_str, const char* detail, const char* insert_text) {
-    if (!*first) strcat(result, ",");
-    
-    char item[512];
-    snprintf(item, sizeof(item),
-        "{\"label\":\"%s\",\"kind\":%s,\"detail\":\"%s\",\"insertText\":\"%s\"}",
-        label, kind_str, detail, insert_text ? insert_text : label);
-    strcat(result, item);
+static void add_completion_item_ex(char* result, size_t result_size, size_t* offset, bool* first,
+                                   const char* label, const char* kind_str, const char* detail, const char* insert_text) {
+    if (*offset >= result_size - 1) return;
+    if (!*first) {
+        *offset += snprintf(result + *offset, result_size - *offset, ",");
+    }
+    if (*offset < result_size - 1) {
+        *offset += snprintf(result + *offset, result_size - *offset,
+            "{\"label\":\"%s\",\"kind\":%s,\"detail\":\"%s\",\"insertText\":\"%s\"}",
+            label, kind_str, detail, insert_text ? insert_text : label);
+    }
     *first = false;
 }
 
@@ -126,12 +129,12 @@ static void get_completion_context(const char* content, int line, int character,
 }
 
 // Generate enhanced completions based on context
-static void generate_enhanced_completions(const char* context_type, const char* partial_word, 
-                                        const char* scope_context, char* result) {
+static void generate_enhanced_completions(const char* context_type, const char* partial_word,
+                                        const char* scope_context, char* result, size_t result_size) {
     if (!context_type || !partial_word || !scope_context || !result) return;
-    
-    strcpy(result, "{\"isIncomplete\":false,\"items\":[");
-    
+
+    size_t offset = snprintf(result, result_size, "{\"isIncomplete\":false,\"items\":[");
+
     bool first = true;
     
     // Goo language keywords
@@ -160,47 +163,47 @@ static void generate_enhanced_completions(const char* context_type, const char* 
     if (strcmp(context_type, "function_decl") == 0) {
         for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
             if (strlen(partial_word) == 0 || strncmp(types[i], partial_word, strlen(partial_word)) == 0) {
-                add_completion_item(result, &first, types[i], "25", "Built-in type", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, types[i], "25", "Built-in type", NULL);
             }
         }
     } else if (strcmp(context_type, "variable_decl") == 0) {
         for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
             if (strlen(partial_word) == 0 || strncmp(types[i], partial_word, strlen(partial_word)) == 0) {
-                add_completion_item(result, &first, types[i], "25", "Built-in type", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, types[i], "25", "Built-in type", NULL);
             }
         }
     } else if (strcmp(context_type, "import_stmt") == 0) {
         // Package suggestions
-        add_completion_item(result, &first, "fmt", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "os", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "io", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "math", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "time", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "net", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "http", "9", "Goo package", NULL);
-        add_completion_item(result, &first, "json", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "fmt", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "os", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "io", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "math", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "time", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "net", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "http", "9", "Goo package", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "json", "9", "Goo package", NULL);
     } else if (strcmp(context_type, "member_access") == 0) {
         // Common methods/fields
-        add_completion_item(result, &first, "len", "2", "Property", NULL);
-        add_completion_item(result, &first, "cap", "2", "Property", NULL);
-        add_completion_item(result, &first, "toString", "2", "Method", "toString()");
-        add_completion_item(result, &first, "clone", "2", "Method", "clone()");
-        add_completion_item(result, &first, "isEmpty", "2", "Method", "isEmpty()");
-        add_completion_item(result, &first, "size", "2", "Property", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "len", "2", "Property", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "cap", "2", "Property", NULL);
+        add_completion_item_ex(result, result_size, &offset, &first, "toString", "2", "Method", "toString()");
+        add_completion_item_ex(result, result_size, &offset, &first, "clone", "2", "Method", "clone()");
+        add_completion_item_ex(result, result_size, &offset, &first, "isEmpty", "2", "Method", "isEmpty()");
+        add_completion_item_ex(result, result_size, &offset, &first, "size", "2", "Property", NULL);
     } else {
         // General context completions
         
         // Keywords
         for (size_t i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++) {
             if (strlen(partial_word) == 0 || strncmp(keywords[i], partial_word, strlen(partial_word)) == 0) {
-                add_completion_item(result, &first, keywords[i], "14", "Goo keyword", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, keywords[i], "14", "Goo keyword", NULL);
             }
         }
         
         // Types
         for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
             if (strlen(partial_word) == 0 || strncmp(types[i], partial_word, strlen(partial_word)) == 0) {
-                add_completion_item(result, &first, types[i], "25", "Built-in type", NULL);
+                add_completion_item_ex(result, result_size, &offset, &first, types[i], "25", "Built-in type", NULL);
             }
         }
         
@@ -209,53 +212,55 @@ static void generate_enhanced_completions(const char* context_type, const char* 
             if (strlen(partial_word) == 0 || strncmp(builtins[i], partial_word, strlen(partial_word)) == 0) {
                 char insert_text[64];
                 snprintf(insert_text, sizeof(insert_text), "%s($1)", builtins[i]);
-                add_completion_item(result, &first, builtins[i], "3", "Built-in function", insert_text);
+                add_completion_item_ex(result, result_size, &offset, &first, builtins[i], "3", "Built-in function", insert_text);
             }
         }
         
         // Goo-specific types and operations
         if (strlen(partial_word) == 0 || strncmp("chan", partial_word, strlen(partial_word)) == 0) {
-            add_completion_item(result, &first, "chan", "14", "Channel type", "chan ${1:T}");
+            add_completion_item_ex(result, result_size, &offset, &first, "chan", "14", "Channel type", "chan ${1:T}");
         }
         
         // Error union and nullable types
-        add_completion_item(result, &first, "!T", "15", "Error union type", "!${1:T}");
-        add_completion_item(result, &first, "?T", "15", "Nullable type", "?${1:T}");
+        add_completion_item_ex(result, result_size, &offset, &first, "!T", "15", "Error union type", "!${1:T}");
+        add_completion_item_ex(result, result_size, &offset, &first, "?T", "15", "Nullable type", "?${1:T}");
         
         // Channel operations
-        add_completion_item(result, &first, "<-", "24", "Channel receive", "<-");
+        add_completion_item_ex(result, result_size, &offset, &first, "<-", "24", "Channel receive", "<-");
         
         // Ownership qualifiers
         if (strlen(partial_word) == 0 || strncmp("owned", partial_word, strlen(partial_word)) == 0) {
-            add_completion_item(result, &first, "owned", "14", "Ownership qualifier", "owned ");
+            add_completion_item_ex(result, result_size, &offset, &first, "owned", "14", "Ownership qualifier", "owned ");
         }
         if (strlen(partial_word) == 0 || strncmp("borrowed", partial_word, strlen(partial_word)) == 0) {
-            add_completion_item(result, &first, "borrowed", "14", "Ownership qualifier", "borrowed ");
+            add_completion_item_ex(result, result_size, &offset, &first, "borrowed", "14", "Ownership qualifier", "borrowed ");
         }
         if (strlen(partial_word) == 0 || strncmp("shared", partial_word, strlen(partial_word)) == 0) {
-            add_completion_item(result, &first, "shared", "14", "Ownership qualifier", "shared ");
+            add_completion_item_ex(result, result_size, &offset, &first, "shared", "14", "Ownership qualifier", "shared ");
         }
     }
     
     // Common code snippets
     if (strcmp(scope_context, "function") == 0) {
-        add_completion_item(result, &first, "if_stmt", "15", "if statement", "if ${1:condition} {\\n\\t$2\\n}");
-        add_completion_item(result, &first, "for_loop", "15", "for loop", "for ${1:i} := 0; ${1:i} < ${2:n}; ${1:i}++ {\\n\\t$3\\n}");
-        add_completion_item(result, &first, "while_loop", "15", "while loop", "while ${1:condition} {\\n\\t$2\\n}");
-        add_completion_item(result, &first, "match_expr", "15", "match expression", "match ${1:expr} {\\n\\t${2:pattern} => ${3:result},\\n}");
-        add_completion_item(result, &first, "try_catch", "15", "try-catch block", "try {\\n\\t${1:code}\\n} catch |${2:err}| {\\n\\t${3:handle}\\n}");
-        add_completion_item(result, &first, "defer_stmt", "15", "defer statement", "defer ${1:cleanup}()");
+        add_completion_item_ex(result, result_size, &offset, &first, "if_stmt", "15", "if statement", "if ${1:condition} {\\n\\t$2\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "for_loop", "15", "for loop", "for ${1:i} := 0; ${1:i} < ${2:n}; ${1:i}++ {\\n\\t$3\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "while_loop", "15", "while loop", "while ${1:condition} {\\n\\t$2\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "match_expr", "15", "match expression", "match ${1:expr} {\\n\\t${2:pattern} => ${3:result},\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "try_catch", "15", "try-catch block", "try {\\n\\t${1:code}\\n} catch |${2:err}| {\\n\\t${3:handle}\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "defer_stmt", "15", "defer statement", "defer ${1:cleanup}()");
     }
     
     if (strcmp(context_type, "global") == 0 || strcmp(scope_context, "") == 0) {
-        add_completion_item(result, &first, "fn_decl", "15", "function declaration", "fn ${1:name}(${2:params}) ${3:return_type} {\\n\\t$4\\n}");
-        add_completion_item(result, &first, "struct_decl", "15", "struct declaration", "struct ${1:Name} {\\n\\t${2:field}: ${3:type},\\n}");
-        add_completion_item(result, &first, "interface_decl", "15", "interface declaration", "interface ${1:Name} {\\n\\t${2:method}(${3:params}) ${4:return_type}\\n}");
-        add_completion_item(result, &first, "enum_decl", "15", "enum declaration", "enum ${1:Name} {\\n\\t${2:Variant},\\n}");
-        add_completion_item(result, &first, "type_alias", "15", "type alias", "type ${1:Alias} = ${2:Type}");
+        add_completion_item_ex(result, result_size, &offset, &first, "fn_decl", "15", "function declaration", "fn ${1:name}(${2:params}) ${3:return_type} {\\n\\t$4\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "struct_decl", "15", "struct declaration", "struct ${1:Name} {\\n\\t${2:field}: ${3:type},\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "interface_decl", "15", "interface declaration", "interface ${1:Name} {\\n\\t${2:method}(${3:params}) ${4:return_type}\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "enum_decl", "15", "enum declaration", "enum ${1:Name} {\\n\\t${2:Variant},\\n}");
+        add_completion_item_ex(result, result_size, &offset, &first, "type_alias", "15", "type alias", "type ${1:Alias} = ${2:Type}");
     }
     
-    strcat(result, "]}");
+    if (offset < result_size - 1) {
+        snprintf(result + offset, result_size - offset, "]}");
+    }
 }
 
 // Enhanced completion handler
@@ -296,7 +301,7 @@ static void handle_completion(int id, const char* params) {
     
     // Generate enhanced completions
     char result[4096];
-    generate_enhanced_completions(context_type, partial_word, scope_context, result);
+    generate_enhanced_completions(context_type, partial_word, scope_context, result, sizeof(result));
     
     send_response(id, result);
 }
@@ -822,33 +827,37 @@ static int tokenize_goo_content(const char* content, SemanticToken* tokens, int 
 
 // Convert semantic tokens to LSP delta encoding
 static void encode_semantic_tokens(SemanticToken* tokens, int token_count, char* result, size_t result_size) {
-    strcpy(result, "{\"data\":[");
-    
+    size_t offset = snprintf(result, result_size, "{\"data\":[");
+
     int prev_line = 0;
     int prev_character = 0;
     bool first = true;
-    
+
     for (int i = 0; i < token_count; i++) {
-        if (!first) strcat(result, ",");
-        
+        if (offset >= result_size - 1) break;
+        if (!first) {
+            offset += snprintf(result + offset, result_size - offset, ",");
+        }
+
         int delta_line = tokens[i].line - prev_line;
-        int delta_character = (tokens[i].line == prev_line) ? 
-                             tokens[i].character - prev_character : 
+        int delta_character = (tokens[i].line == prev_line) ?
+                             tokens[i].character - prev_character :
                              tokens[i].character;
-        
-        char token_data[128];
-        snprintf(token_data, sizeof(token_data), "%d,%d,%d,%d,%d",
-                delta_line, delta_character, tokens[i].length, 
-                tokens[i].token_type, tokens[i].modifiers);
-        
-        strcat(result, token_data);
-        
+
+        if (offset < result_size - 1) {
+            offset += snprintf(result + offset, result_size - offset, "%d,%d,%d,%d,%d",
+                    delta_line, delta_character, tokens[i].length,
+                    tokens[i].token_type, tokens[i].modifiers);
+        }
+
         prev_line = tokens[i].line;
         prev_character = tokens[i].character;
         first = false;
     }
-    
-    strcat(result, "]}");
+
+    if (offset < result_size - 1) {
+        snprintf(result + offset, result_size - offset, "]}");
+    }
 }
 
 // Enhanced semantic tokens handler
@@ -917,35 +926,41 @@ static void handle_workspace_symbols(int id, const char* params) {
     
     // Filter workspace symbols based on query
     char workspace_symbols[2048];
-    strcpy(workspace_symbols, "[");
-    
+    size_t ws_offset = snprintf(workspace_symbols, sizeof(workspace_symbols), "[");
+
     bool first = true;
     const char* common_symbols[] = {"main", "print", "println", "Person", "calculate", "init", "setup"};
-    
+
     for (size_t i = 0; i < sizeof(common_symbols) / sizeof(common_symbols[0]); i++) {
         if (strlen(query) == 0 || strstr(common_symbols[i], query)) {
-            if (!first) strcat(workspace_symbols, ",");
-            
-            char symbol_item[512];
-            snprintf(symbol_item, sizeof(symbol_item),
-                "{"
-                    "\"name\":\"%s\","
-                    "\"kind\":12,"
-                    "\"location\":{"
-                        "\"uri\":\"file:///example.goo\","
-                        "\"range\":{"
-                            "\"start\":{\"line\":%zu,\"character\":0},"
-                            "\"end\":{\"line\":%zu,\"character\":%zu}"
+            if (ws_offset >= sizeof(workspace_symbols) - 1) break;
+            if (!first) {
+                ws_offset += snprintf(workspace_symbols + ws_offset,
+                                      sizeof(workspace_symbols) - ws_offset, ",");
+            }
+
+            if (ws_offset < sizeof(workspace_symbols) - 1) {
+                ws_offset += snprintf(workspace_symbols + ws_offset,
+                    sizeof(workspace_symbols) - ws_offset,
+                    "{"
+                        "\"name\":\"%s\","
+                        "\"kind\":12,"
+                        "\"location\":{"
+                            "\"uri\":\"file:///example.goo\","
+                            "\"range\":{"
+                                "\"start\":{\"line\":%zu,\"character\":0},"
+                                "\"end\":{\"line\":%zu,\"character\":%zu}"
+                            "}"
                         "}"
-                    "}"
-                "}", common_symbols[i], i * 5, i * 5, strlen(common_symbols[i]));
-            
-            strcat(workspace_symbols, symbol_item);
+                    "}", common_symbols[i], i * 5, i * 5, strlen(common_symbols[i]));
+            }
             first = false;
         }
     }
-    
-    strcat(workspace_symbols, "]");
+
+    if (ws_offset < sizeof(workspace_symbols) - 1) {
+        snprintf(workspace_symbols + ws_offset, sizeof(workspace_symbols) - ws_offset, "]");
+    }
     send_response(id, workspace_symbols);
 }
 
