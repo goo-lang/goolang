@@ -1233,8 +1233,16 @@ field_init_list:
         CompositeLitNode* comp = (CompositeLitNode*)$1;
         CompositeLitNode* single = (CompositeLitNode*)$3;
         comp->field_count++;
-        comp->field_names = (char**)realloc(comp->field_names, sizeof(char*) * comp->field_count);
-        comp->field_values = (ASTNode**)realloc(comp->field_values, sizeof(ASTNode*) * comp->field_count);
+        char** tmp_names = (char**)realloc(comp->field_names, sizeof(char*) * comp->field_count);
+        ASTNode** tmp_values = (ASTNode**)realloc(comp->field_values, sizeof(ASTNode*) * comp->field_count);
+        if (!tmp_names || !tmp_values) {
+            if (tmp_names) comp->field_names = tmp_names;
+            if (tmp_values) comp->field_values = tmp_values;
+            comp->field_count--;
+            YYABORT;
+        }
+        comp->field_names = tmp_names;
+        comp->field_values = tmp_values;
         comp->field_names[comp->field_count - 1] = single->field_names[0];
         comp->field_values[comp->field_count - 1] = single->field_values[0];
         free(single->field_names);
