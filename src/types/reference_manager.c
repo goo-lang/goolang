@@ -70,15 +70,22 @@ void reference_manager_free(ReferenceManager* mgr) {
 // Enter a new lifetime scope
 LifetimeScope* reference_manager_enter_scope(ReferenceManager* mgr, LifetimeScopeKind kind, size_t start_pos) {
     LifetimeScope* new_scope = lifetime_scope_new(kind, start_pos, mgr->current_scope);
+    if (!new_scope) return NULL;
     new_scope->scope_id = mgr->next_scope_id++;
     
     // Add to parent's children
     if (mgr->current_scope) {
         if (mgr->current_scope->child_count >= mgr->current_scope->child_capacity) {
-            mgr->current_scope->child_capacity = mgr->current_scope->child_capacity ? 
+            size_t new_cap = mgr->current_scope->child_capacity ?
                 mgr->current_scope->child_capacity * 2 : 4;
-            mgr->current_scope->children = realloc(mgr->current_scope->children,
-                mgr->current_scope->child_capacity * sizeof(LifetimeScope*));
+            LifetimeScope** tmp = realloc(mgr->current_scope->children,
+                new_cap * sizeof(LifetimeScope*));
+            if (!tmp) {
+                lifetime_scope_free(new_scope);
+                return NULL;
+            }
+            mgr->current_scope->children = tmp;
+            mgr->current_scope->child_capacity = new_cap;
         }
         mgr->current_scope->children[mgr->current_scope->child_count++] = new_scope;
     }
@@ -127,18 +134,24 @@ ReferenceInfo* reference_manager_create_reference(ReferenceManager* mgr,
     
     // Add to global reference list
     if (mgr->reference_count >= mgr->reference_capacity) {
-        mgr->reference_capacity *= 2;
-        mgr->all_references = realloc(mgr->all_references,
-            mgr->reference_capacity * sizeof(ReferenceInfo*));
+        size_t new_cap = mgr->reference_capacity * 2;
+        ReferenceInfo** tmp = realloc(mgr->all_references,
+            new_cap * sizeof(ReferenceInfo*));
+        if (!tmp) { reference_info_free(ref); return NULL; }
+        mgr->all_references = tmp;
+        mgr->reference_capacity = new_cap;
     }
     mgr->all_references[mgr->reference_count++] = ref;
-    
+
     // Add to current scope
     if (mgr->current_scope->reference_count >= mgr->current_scope->reference_capacity) {
-        mgr->current_scope->reference_capacity = mgr->current_scope->reference_capacity ? 
+        size_t new_cap = mgr->current_scope->reference_capacity ?
             mgr->current_scope->reference_capacity * 2 : 8;
-        mgr->current_scope->references = realloc(mgr->current_scope->references,
-            mgr->current_scope->reference_capacity * sizeof(ReferenceInfo*));
+        ReferenceInfo** tmp = realloc(mgr->current_scope->references,
+            new_cap * sizeof(ReferenceInfo*));
+        if (!tmp) return ref;  // Already in global list, just skip scope tracking
+        mgr->current_scope->references = tmp;
+        mgr->current_scope->reference_capacity = new_cap;
     }
     mgr->current_scope->references[mgr->current_scope->reference_count++] = ref;
     
@@ -147,19 +160,25 @@ ReferenceInfo* reference_manager_create_reference(ReferenceManager* mgr,
     if (!tracker) {
         tracker = borrow_tracker_new(target_name);
         if (mgr->tracker_count >= mgr->tracker_capacity) {
-            mgr->tracker_capacity *= 2;
-            mgr->borrow_trackers = realloc(mgr->borrow_trackers,
-                mgr->tracker_capacity * sizeof(BorrowTracker*));
+            size_t new_cap = mgr->tracker_capacity * 2;
+            BorrowTracker** tmp = realloc(mgr->borrow_trackers,
+                new_cap * sizeof(BorrowTracker*));
+            if (!tmp) return ref;
+            mgr->borrow_trackers = tmp;
+            mgr->tracker_capacity = new_cap;
         }
         mgr->borrow_trackers[mgr->tracker_count++] = tracker;
     }
     
     // Add to borrower list
     if (tracker->borrower_count >= tracker->borrower_capacity) {
-        tracker->borrower_capacity = tracker->borrower_capacity ? 
+        size_t new_cap = tracker->borrower_capacity ?
             tracker->borrower_capacity * 2 : 4;
-        tracker->borrowers = realloc(tracker->borrowers,
-            tracker->borrower_capacity * sizeof(ReferenceInfo*));
+        ReferenceInfo** tmp = realloc(tracker->borrowers,
+            new_cap * sizeof(ReferenceInfo*));
+        if (!tmp) return ref;
+        tracker->borrowers = tmp;
+        tracker->borrower_capacity = new_cap;
     }
     tracker->borrowers[tracker->borrower_count++] = ref;
     

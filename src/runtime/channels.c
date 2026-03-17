@@ -10,14 +10,22 @@ extern goo_scheduler_t* g_scheduler;
 // Channel creation
 goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer_size) {
     goo_channel_t* ch = goo_alloc(sizeof(goo_channel_t));
+    if (!ch) return NULL;
     memset(ch, 0, sizeof(goo_channel_t));
-    
+
     ch->elem_size = elem_size;
     ch->capacity = buffer_size;
     ch->pattern = GOO_CHANNEL_BASIC;
     ch->mutex = goo_mutex_new();
     ch->not_empty = goo_alloc(sizeof(goo_cond_t));
     ch->not_full = goo_alloc(sizeof(goo_cond_t));
+    if (!ch->mutex || !ch->not_empty || !ch->not_full) {
+        if (ch->not_full) goo_free(ch->not_full);
+        if (ch->not_empty) goo_free(ch->not_empty);
+        if (ch->mutex) goo_mutex_free(ch->mutex);
+        goo_free(ch);
+        return NULL;
+    }
     
 #ifdef GOO_PLATFORM_UNIX
     pthread_cond_init(&ch->not_empty->cond, NULL);

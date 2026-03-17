@@ -59,20 +59,31 @@ bool dap_server_init(FILE* input, FILE* output) {
     // Initialize storage
     g_dap_server->max_breakpoints = 100;
     g_dap_server->breakpoints = malloc(sizeof(DAPBreakpoint) * g_dap_server->max_breakpoints);
-    
+
     g_dap_server->max_variables = 1000;
     g_dap_server->variables = malloc(sizeof(DAPVariable) * g_dap_server->max_variables);
-    
+
     g_dap_server->max_frames = 100;
     g_dap_server->stack_frames = malloc(sizeof(DAPStackFrame) * g_dap_server->max_frames);
-    
+
     g_dap_server->max_threads = 10;
     g_dap_server->threads = malloc(sizeof(DAPThread) * g_dap_server->max_threads);
-    
+
+    if (!g_dap_server->breakpoints || !g_dap_server->variables ||
+        !g_dap_server->stack_frames || !g_dap_server->threads) {
+        free(g_dap_server->breakpoints);
+        free(g_dap_server->variables);
+        free(g_dap_server->stack_frames);
+        free(g_dap_server->threads);
+        free(g_dap_server);
+        g_dap_server = NULL;
+        return false;
+    }
+
     // Initialize current state
     g_dap_server->current_thread_id = 1;
     g_dap_server->current_frame_id = 0;
-    
+
     return true;
 }
 
