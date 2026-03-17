@@ -120,8 +120,10 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     //
     // The current implementation works on all Unix-like systems and provides
     // the necessary goroutine functionality for the Goo language runtime.
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     if (getcontext(&goroutine->context) == -1) {
         goo_panic("Failed to get goroutine context");
     }
@@ -131,7 +133,9 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     goroutine->context.uc_link = &g_scheduler->main_context;
     
     makecontext(&goroutine->context, goroutine_wrapper, 0);
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
 #endif
     
     // Add to scheduler
@@ -153,12 +157,16 @@ void goo_yield(void) {
     
     // Switch to scheduler
 #ifdef GOO_PLATFORM_UNIX
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     if (swapcontext(&current->context, &g_scheduler->main_context) == -1) {
         goo_panic("Failed to yield goroutine");
     }
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
 #endif
 }
 
@@ -182,10 +190,14 @@ void goo_goroutine_exit(void) {
     
     // Return to scheduler
 #ifdef GOO_PLATFORM_UNIX
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     setcontext(&g_scheduler->main_context);
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
 #endif
 }
 
@@ -215,12 +227,16 @@ static void* scheduler_main_loop(void* arg) {
             goo_mutex_unlock(g_scheduler->scheduler_mutex);
             
 #ifdef GOO_PLATFORM_UNIX
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
             if (swapcontext(&g_scheduler->main_context, &goroutine->context) == -1) {
                 goo_panic("Failed to switch to goroutine");
             }
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
 #endif
         } else {
             // No goroutines ready, check for deadlock
