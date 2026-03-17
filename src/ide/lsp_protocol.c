@@ -390,17 +390,21 @@ int lsp_handle_completion(LSPServer* server, const char* request_id, const char*
     LSPCompletionItem* items = lsp_provide_completion(doc, position, server->global_type_checker);
     
     // Create response - simplified JSON
-    char response[4096] = "{\"items\":[";
-    
-    if (items) {
-        strcat(response, "{\"label\":\"example\",\"kind\":6}");
+    char response[4096];
+    size_t offset = snprintf(response, sizeof(response), "{\"items\":[");
+
+    if (items && offset < sizeof(response) - 1) {
+        offset += snprintf(response + offset, sizeof(response) - offset,
+                           "{\"label\":\"example\",\"kind\":6}");
     }
-    
-    strcat(response, "]}");
-    
+
+    if (offset < sizeof(response) - 1) {
+        snprintf(response + offset, sizeof(response) - offset, "]}");
+    }
+
     lsp_completion_list_free(items);
     free(uri);
-    
+
     return lsp_send_response(server, request_id, response);
 }
 

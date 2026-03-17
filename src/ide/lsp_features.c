@@ -76,30 +76,36 @@ void lsp_publish_diagnostics(LSPServer* server, const char* uri, LSPDiagnostic* 
     
     // Create diagnostics array
     char diagnostics_json[4096] = "[";
+    size_t offset = 1;
     bool first = true;
-    
+
     LSPDiagnostic* diag = diagnostics;
     while (diag) {
-        if (!first) strcat(diagnostics_json, ",");
+        if (!first && offset < sizeof(diagnostics_json) - 1) {
+            offset += snprintf(diagnostics_json + offset,
+                               sizeof(diagnostics_json) - offset, ",");
+        }
         first = false;
-        
-        char diag_json[1024];
+
         char* escaped_message = lsp_escape_json_string(diag->message);
-        
-        snprintf(diag_json, sizeof(diag_json),
-                "{\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
-                "\"end\":{\"line\":%u,\"character\":%u}},"
-                "\"severity\":%d,\"source\":\"goo\",\"message\":%s}",
-                diag->range.start.line, diag->range.start.character,
-                diag->range.end.line, diag->range.end.character,
-                diag->severity, escaped_message ? escaped_message : "\"Unknown error\"");
-        
-        strcat(diagnostics_json, diag_json);
+
+        if (offset < sizeof(diagnostics_json) - 1) {
+            offset += snprintf(diagnostics_json + offset,
+                    sizeof(diagnostics_json) - offset,
+                    "{\"range\":{\"start\":{\"line\":%u,\"character\":%u},"
+                    "\"end\":{\"line\":%u,\"character\":%u}},"
+                    "\"severity\":%d,\"source\":\"goo\",\"message\":%s}",
+                    diag->range.start.line, diag->range.start.character,
+                    diag->range.end.line, diag->range.end.character,
+                    diag->severity, escaped_message ? escaped_message : "\"Unknown error\"");
+        }
         free(escaped_message);
-        
+
         diag = diag->next;
     }
-    strcat(diagnostics_json, "]");
+    if (offset < sizeof(diagnostics_json) - 1) {
+        snprintf(diagnostics_json + offset, sizeof(diagnostics_json) - offset, "]");
+    }
     
     // Create full notification
     char* escaped_uri = lsp_escape_json_string(uri);
