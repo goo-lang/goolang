@@ -7,15 +7,6 @@
 #include <stdarg.h>
 #include <stdbool.h>
 
-static char* str_dup(const char* str) {
-    if (!str) return NULL;
-    size_t len = strlen(str);
-    char* dup = malloc(len + 1);
-    if (dup) {
-        strcpy(dup, str);
-    }
-    return dup;
-}
 
 ConstraintInferenceEngine* constraint_inference_engine_new(ErrorContext* error_ctx) {
     ConstraintInferenceEngine* engine = malloc(sizeof(ConstraintInferenceEngine));
@@ -58,24 +49,32 @@ ConstraintInferenceEngine* constraint_inference_engine_new(ErrorContext* error_c
 }
 
 void constraint_inference_engine_free(ConstraintInferenceEngine* engine) {
+    (void)engine;
 }
 
 TypeVariable* type_variable_new(ConstraintInferenceEngine* engine, const char* name, Position pos) {
+    (void)engine;
+    (void)name;
+    (void)pos;
     return NULL;
 }
 
 void type_variable_free(TypeVariable* type_var) {
+    (void)type_var;
 }
 
 TypeVariable* type_variable_copy(const TypeVariable* type_var) {
+    (void)type_var;
     return NULL;
 }
 
 bool type_variable_is_resolved(const TypeVariable* type_var) {
+    (void)type_var;
     return false;
 }
 
 Type* type_variable_get_resolved_type(const TypeVariable* type_var) {
+    (void)type_var;
     return NULL;
 }
 
@@ -90,6 +89,7 @@ Constraint* constraint_new(ConstraintKind kind, ConstraintPriority priority, Pos
 }
 
 void constraint_free(Constraint* constraint) {
+    (void)constraint;
 }
 
 Constraint* constraint_equality(Type* left, Type* right, ConstraintPriority priority, Position pos) {
@@ -101,20 +101,39 @@ Constraint* constraint_equality(Type* left, Type* right, ConstraintPriority prio
 }
 
 Constraint* constraint_subtype(Type* subtype, Type* supertype, ConstraintPriority priority, Position pos) {
+    (void)subtype;
+    (void)supertype;
+    (void)priority;
+    (void)pos;
     return NULL;
 }
 
 Constraint* constraint_implements(Type* type, Type* interface, ConstraintPriority priority, Position pos) {
+    (void)type;
+    (void)interface;
+    (void)priority;
+    (void)pos;
     return NULL;
 }
 
-Constraint* constraint_has_method(Type* type, const char* method_name, Type* signature, 
+Constraint* constraint_has_method(Type* type, const char* method_name, Type* signature,
                                   ConstraintPriority priority, Position pos) {
+    (void)type;
+    (void)method_name;
+    (void)signature;
+    (void)priority;
+    (void)pos;
     return NULL;
 }
 
-Constraint* constraint_callable(Type* type, Type** arg_types, size_t arg_count, 
+Constraint* constraint_callable(Type* type, Type** arg_types, size_t arg_count,
                                Type* return_type, ConstraintPriority priority, Position pos) {
+    (void)type;
+    (void)arg_types;
+    (void)arg_count;
+    (void)return_type;
+    (void)priority;
+    (void)pos;
     return NULL;
 }
 
@@ -133,6 +152,7 @@ ConstraintSet* constraint_set_new(void) {
 }
 
 void constraint_set_free(ConstraintSet* set) {
+    (void)set;
 }
 
 bool constraint_set_add(ConstraintSet* set, Constraint* constraint) {
@@ -144,57 +164,86 @@ bool constraint_set_add(ConstraintSet* set, Constraint* constraint) {
 }
 
 bool constraint_set_remove(ConstraintSet* set, Constraint* constraint) {
+    (void)set;
+    (void)constraint;
     return false;
 }
 
 void constraint_set_merge(ConstraintSet* target, ConstraintSet* source) {
+    (void)target;
+    (void)source;
 }
 
 bool collect_constraints_from_function(ConstraintInferenceEngine* engine, ASTNode* func_node) {
+    (void)engine;
+    (void)func_node;
     return false;
 }
 
 bool collect_constraints_from_expression(ConstraintInferenceEngine* engine, ASTNode* expr_node) {
+    (void)engine;
+    (void)expr_node;
     return false;
 }
 
 bool collect_constraints_from_statement(ConstraintInferenceEngine* engine, ASTNode* stmt_node) {
+    (void)engine;
+    (void)stmt_node;
     return false;
 }
 
 bool collect_constraints_from_type_annotation(ConstraintInferenceEngine* engine, ASTNode* type_node) {
+    (void)engine;
+    (void)type_node;
     return false;
 }
 
 bool infer_constraints_for_function_call(ConstraintInferenceEngine* engine, ASTNode* call_node) {
+    (void)engine;
+    (void)call_node;
     return false;
 }
 
 bool infer_constraints_for_binary_operation(ConstraintInferenceEngine* engine, ASTNode* binary_node) {
+    (void)engine;
+    (void)binary_node;
     return false;
 }
 
 bool infer_constraints_for_assignment(ConstraintInferenceEngine* engine, ASTNode* assign_node) {
+    (void)engine;
+    (void)assign_node;
     return false;
 }
 
 bool infer_constraints_for_return_statement(ConstraintInferenceEngine* engine, ASTNode* return_node) {
+    (void)engine;
+    (void)return_node;
     return false;
 }
 
 bool solve_constraints(ConstraintInferenceEngine* engine) {
+    (void)engine;
     return false;
 }
 
 bool unify_types(UnificationContext* ctx, Type* type1, Type* type2) {
+    (void)ctx;
+    (void)type1;
+    (void)type2;
     return false;
 }
 
 bool apply_substitution(UnificationContext* ctx, TypeVariable* var, Type* type) {
+    (void)ctx;
+    (void)var;
+    (void)type;
     return false;
 }
 
 Type* resolve_type_variable(UnificationContext* ctx, TypeVariable* var) {
+    (void)ctx;
+    (void)var;
     return NULL;
 }
 
@@ -206,72 +255,105 @@ void initialize_builtin_constraint_patterns(ConstraintInferenceEngine* engine) {
 }
 
 bool match_numeric_pattern(Type* type) {
+    (void)type;
     return false;
 }
 
 bool match_comparable_pattern(Type* type) {
+    (void)type;
     return false;
 }
 
 bool match_iterable_pattern(Type* type, Type** element_type) {
+    (void)type;
+    (void)element_type;
     return false;
 }
 
 bool match_callable_pattern(Type* type, Type*** arg_types, size_t* arg_count, Type** return_type) {
+    (void)type;
+    (void)arg_types;
+    (void)arg_count;
+    (void)return_type;
     return false;
 }
 
 void report_constraint_error(ConstraintInferenceEngine* engine, const char* message, Position pos) {
+    (void)engine;
+    (void)message;
+    (void)pos;
 }
 
 void report_unification_error(UnificationContext* ctx, Type* type1, Type* type2, Position pos) {
+    (void)ctx;
+    (void)type1;
+    (void)type2;
+    (void)pos;
 }
 
-void report_missing_method_error(ConstraintInferenceEngine* engine, Type* type, 
+void report_missing_method_error(ConstraintInferenceEngine* engine, Type* type,
                                 const char* method_name, Position pos) {
+    (void)engine;
+    (void)type;
+    (void)method_name;
+    (void)pos;
 }
 
 void print_constraint(const Constraint* constraint) {
+    (void)constraint;
 }
 
 void print_constraint_set(const ConstraintSet* set) {
+    (void)set;
 }
 
 void print_type_variable(const TypeVariable* var) {
+    (void)var;
 }
 
 char* constraint_to_string(const Constraint* constraint) {
+    (void)constraint;
     return NULL;
 }
 
 char* type_variable_to_string(const TypeVariable* var) {
+    (void)var;
     return NULL;
 }
 
 const char* constraint_kind_to_string(ConstraintKind kind) {
+    (void)kind;
     return NULL;
 }
 
 const char* constraint_priority_to_string(ConstraintPriority priority) {
+    (void)priority;
     return NULL;
 }
 
 bool is_type_variable(const Type* type) {
+    (void)type;
     return false;
 }
 
 TypeVariable* as_type_variable(Type* type) {
+    (void)type;
     return NULL;
 }
 
 Type* type_variable_as_type(TypeVariable* var) {
+    (void)var;
     return NULL;
 }
 
 bool integrate_inferred_constraints(TypeChecker* checker, ConstraintInferenceEngine* engine) {
+    (void)checker;
+    (void)engine;
     return false;
 }
 
 Type* finalize_inferred_type(ConstraintInferenceEngine* engine, TypeVariable* var) {
+    (void)engine;
+    (void)var;
     return NULL;
 }
