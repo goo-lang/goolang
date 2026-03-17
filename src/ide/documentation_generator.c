@@ -386,10 +386,16 @@ DocumentationComment* documentation_parse_comment(const char* comment_text) {
                 comment->brief_description = doc_duplicate_string(line);
                 in_detailed = true;
             } else if (in_detailed) {
-                if (strlen(detailed_buffer) > 0) {
-                    strcat(detailed_buffer, "\n");
+                size_t used = strlen(detailed_buffer);
+                size_t remaining = sizeof(detailed_buffer) - used;
+                if (used > 0 && remaining > 1) {
+                    snprintf(detailed_buffer + used, remaining, "\n");
+                    used++;
+                    remaining--;
                 }
-                strcat(detailed_buffer, line);
+                if (remaining > 1) {
+                    snprintf(detailed_buffer + used, remaining, "%s", line);
+                }
             }
         }
         
@@ -536,10 +542,16 @@ int documentation_generator_parse_file(DocumentationGenerator* gen, const char* 
         
         if (strncmp(trimmed, "///", 3) == 0) {
             // Documentation comment
-            if (strlen(comment_buffer) > 0) {
-                strcat(comment_buffer, "\n");
+            size_t used = strlen(comment_buffer);
+            size_t remaining = sizeof(comment_buffer) - used;
+            if (used > 0 && remaining > 1) {
+                snprintf(comment_buffer + used, remaining, "\n");
+                used++;
+                remaining--;
             }
-            strcat(comment_buffer, trimmed);
+            if (remaining > 1) {
+                snprintf(comment_buffer + used, remaining, "%s", trimmed);
+            }
             in_comment_block = true;
         } else if (in_comment_block && strlen(trimmed) > 0) {
             // We have a comment block, now parse the following code
