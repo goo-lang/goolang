@@ -101,19 +101,19 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
         case TOKEN_STRING: {
             // Create global string constant
             LLVMValueRef str_const = LLVMBuildGlobalStringPtr(codegen->builder, literal->value, "str");
-            
+
             // Create string struct { ptr, len }
             LLVMTypeRef string_type = codegen_get_basic_type(codegen, TYPE_STRING);
             LLVMValueRef string_val = LLVMGetUndef(string_type);
-            
+
             // Set pointer
             string_val = LLVMBuildInsertValue(codegen->builder, string_val, str_const, 0, "");
-            
+
             // Set length
             size_t len = strlen(literal->value);
             LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), len, 0);
             string_val = LLVMBuildInsertValue(codegen->builder, string_val, len_val, 1, "");
-            
+
             llvm_value = string_val;
             goo_type = type_checker_get_builtin(checker, TYPE_STRING);
             break;
@@ -492,6 +492,22 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         }
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);
+        }
+    }
+
+    // Stdlib package calls. The type checker resolves these against a
+    // hardcoded symbol table (see stdlib_package_lookup); codegen routes
+    // each known call to its runtime backing. This is the deliberate
+    // shortcut for M7-stdlib-expansion: no multi-file compilation yet,
+    // so package method calls become direct runtime intrinsic emits.
+    if (call->function->type == AST_SELECTOR_EXPR) {
+        SelectorExprNode* sel = (SelectorExprNode*)call->function;
+        if (sel->expr && sel->expr->type == AST_IDENTIFIER) {
+            IdentifierNode* pkg = (IdentifierNode*)sel->expr;
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
+                // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
+                return codegen_generate_println_call(codegen, checker, expr);
+            }
         }
     }
     
@@ -1249,9 +1265,9 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
-    
+
     CallExprNode* call = (CallExprNode*)expr;
-    
+
     // Get the goo_println function from the module
     LLVMValueRef println_func = LLVMGetNamedFunction(codegen->module, "goo_println");
     if (!println_func) {
@@ -1261,10 +1277,10 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
     
     // For now, handle simple string arguments
     if (!call->args) {
-        // println() with no arguments - just print a newline
-        LLVMValueRef empty_str = LLVMConstString("", 0, 0);
+        // println() with no arguments — empty line
+        LLVMValueRef empty_str = LLVMBuildGlobalStringPtr(codegen->builder, "", "empty");
         LLVMValueRef args[] = { empty_str };
-        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(println_func)), 
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(println_func),
                       println_func, args, 1, "");
     } else {
         // Handle first argument (simplified for now)
@@ -1273,12 +1289,19 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
             codegen_error(codegen, expr->pos, "Failed to generate argument for println");
             return NULL;
         }
-        
-        // For string literals, use the LLVM value directly
-        LLVMValueRef args[] = { arg_val->llvm_value };
-        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(println_func)), 
+
+        // goo_println takes a raw C-string pointer (const char*). Goo's
+        // TYPE_STRING is represented as a { ptr, i64 } struct, so when
+        // the arg is a string we extract the pointer field. Anything else
+        // is passed through verbatim (caller-beware; older code path).
+        LLVMValueRef call_arg = arg_val->llvm_value;
+        if (arg_val->goo_type && arg_val->goo_type->kind == TYPE_STRING) {
+            call_arg = LLVMBuildExtractValue(codegen->builder, call_arg, 0, "str_ptr");
+        }
+        LLVMValueRef args[] = { call_arg };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(println_func),
                       println_func, args, 1, "");
-        
+
         value_info_free(arg_val);
     }
     
@@ -1316,7 +1339,7 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
         // print() with no arguments - do nothing
         LLVMValueRef empty_str = LLVMConstString("", 0, 0);
         LLVMValueRef args[] = { empty_str };
-        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(print_func)), 
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func), 
                       print_func, args, 1, "");
     } else {
         ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
@@ -1326,7 +1349,7 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
         }
         
         LLVMValueRef args[] = { arg_val->llvm_value };
-        LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(print_func)), 
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func), 
                       print_func, args, 1, "");
         
         value_info_free(arg_val);
