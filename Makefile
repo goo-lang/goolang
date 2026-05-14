@@ -145,6 +145,23 @@ test-pipeline: $(COMPILER) $(RUNTIME_LIB)
 	$(CC) $(CFLAGS) tests/test_runner.c -o tests/test_runner
 	./tests/test_runner
 
+# M7-stdlib-expansion completion gate: compile + run the stdlib smoke
+# test, which exercises one function from each of fmt, strings, math, os
+# and exits 0. Used by `coord milestone-status M7-stdlib-expansion`.
+smoke-stdlib: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/stdlib_smoke examples/stdlib_smoke.goo
+	@actual="$$(./build/stdlib_smoke)"; \
+	  expected="hello, world"; \
+	  if [ "$$actual" = "$$expected" ]; then \
+	    echo "smoke-stdlib: PASS"; \
+	  else \
+	    echo "smoke-stdlib: FAIL"; \
+	    echo "  expected: $$expected"; \
+	    echo "  got:      $$actual"; \
+	    exit 1; \
+	  fi
+
 # Unit tests
 test-lexer: $(OBJS)
 	@mkdir -p tests/unit/lexer

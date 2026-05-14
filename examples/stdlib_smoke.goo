@@ -1,0 +1,16 @@
+// M7-stdlib-expansion smoke test: exercises one function from each of
+// fmt, strings, math, os. Compiles to a native binary that prints
+// "hello, world" and exits 0. Used by `make smoke-stdlib`.
+package main
+
+import "fmt"
+import "strings"
+import "math"
+import "os"
+
+func main() {
+    fmt.Println("hello, world")
+    strings.Contains("hello, world", "world")
+    math.Sqrt(4.0)
+    os.Exit(0)
+}
