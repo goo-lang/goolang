@@ -233,11 +233,54 @@ declaration:
 
 // Function declaration
 func_decl:
-    FUNC identifier func_signature block {
+    FUNC identifier LPAREN RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $5;
+        func->params = NULL;
+        func->return_type = NULL;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LPAREN func_params RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $6;
+        func->params = $4;
+        func->return_type = NULL;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LPAREN RPAREN func_result block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $6;
+        func->params = NULL;
+        func->return_type = $5;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LPAREN func_params RPAREN func_result block {
+        // The "both params and result" form — previously fell through
+        // func_signature's TODO and dropped the result, leaving every
+        // function with return_type=NULL and the type checker stamping
+        // them all as `() -> void`.
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $7;
+        func->params = $4;
+        func->return_type = $6;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier func_signature block {
+        // Kept as a fall-back catch (covers attribute_list/COMPTIME/
+        // UNSAFE-prefixed forms that still go via func_signature). The
+        // attribute variants still drop the result; tracked separately.
         IdentifierNode* ident = (IdentifierNode*)$2;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $4;
-        func->params = $3;  // Assign the function signature (parameters)
+        func->params = $3;
         ast_node_free($2);
         $$ = (ASTNode*)func;
     }
@@ -908,15 +951,15 @@ primary_expr:
     | call_expr { $$ = $1; }
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }
-    | kernel_launch { $$ = $1; }
-    /* gpu_memory_alloc, gpu_memory_copy, gpu_sync, and gpu_intrinsic
-       deliberately disabled in primary_expr: each matched a generic
-       identifier.identifier(…) shape (only checking "is this cuda.*?"
-       at semantic-action time), which collided with selector_expr for
-       every package method call. fmt.Println() was reduced to gpu_sync
-       and failed with "Unknown GPU sync function". GPU constructs need
-       a syntactic context marker before they can re-enter primary_expr.
-       kernel_launch is kept because it has the unique <<<…>>> marker. */
+    /* All GPU constructs deliberately disabled in primary_expr.
+       kernel_launch (identifier LT LT LT … GT GT GT (…)) was removed
+       because bison can't disambiguate `i < 10` from the start of a
+       kernel launch on lookahead, so every `if i < N { … }` failed
+       to parse. gpu_memory_alloc/copy/sync/intrinsic were each
+       overly-broad ident.ident shapes that hijacked package method
+       calls (fmt.Println parsed as a CUDA intrinsic). GPU constructs
+       need a syntactic context marker (e.g., inside a `kernel { … }`
+       block) before they can re-enter primary_expr. */
     | LPAREN expression RPAREN { $$ = $2; }
     ;
 
