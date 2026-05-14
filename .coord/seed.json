@@ -29,7 +29,10 @@
     {"id": "V1", "track": "V1", "status": "pending"},
     {"id": "V1-ccomp-audit", "track": "V1", "status": "pending"},
     {"id": "V1-ccomp-install", "track": "V1", "status": "pending"},
-    {"id": "V1-ccomp-validate", "track": "V1", "status": "pending"}
+    {"id": "V1-ccomp-validate", "track": "V1", "status": "pending"},
+    {"id": "V1-stdatomic-cleanup", "track": "V1", "status": "pending"},
+    {"id": "V1-c23-enum-cleanup", "track": "V1", "status": "pending"},
+    {"id": "V1-ccomp-link", "track": "V1", "status": "pending"}
   ],
   "deps": [
     {"from": "M2", "to": "M1"},
@@ -58,6 +61,10 @@
     {"from": "M8-postfix-incr", "to": "M8"},
     {"from": "V1-ccomp-audit", "to": "V1"},
     {"from": "V1-ccomp-install", "to": "V1"},
-    {"from": "V1-ccomp-validate", "to": "V1-ccomp-install"}
+    {"from": "V1-ccomp-validate", "to": "V1-ccomp-install"},
+    {"from": "V1-stdatomic-cleanup", "to": "V1-ccomp-validate"},
+    {"from": "V1-c23-enum-cleanup", "to": "V1-ccomp-validate"},
+    {"from": "V1-ccomp-link", "to": "V1-stdatomic-cleanup"},
+    {"from": "V1-ccomp-link", "to": "V1-c23-enum-cleanup"}
   ]
 }

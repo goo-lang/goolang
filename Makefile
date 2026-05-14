@@ -166,7 +166,7 @@ ccomp-audit:
 # too) and report pass/fail counts. Requires ccomp installed via
 # `opam install coq-compcert`. Prints failing files for follow-up.
 CCOMP ?= ccomp
-CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I/opt/homebrew/Cellar/llvm/22.1.4/include -std=c99 -fstruct-passing -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I/opt/homebrew/Cellar/llvm/22.1.4/include -std=c99 -fstruct-passing -include include/ccomp_shim.h -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
 
 ccomp-survey:
 	@command -v $(CCOMP) >/dev/null || (echo "ccomp not installed — see V1-ccomp-install" && exit 1)

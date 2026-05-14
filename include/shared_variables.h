@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include <pthread.h>
 #include <stddef.h>
 #include <time.h>
@@ -138,7 +138,7 @@ typedef union {
         atomic_uint_fast32_t value_u32;
         atomic_uint_fast64_t value_u64;
         atomic_bool value_bool;
-        _Atomic(void*) value_ptr;
+        GOO_ATOMIC_PTR value_ptr;
     } atomic;
     
     struct {
@@ -524,7 +524,7 @@ typedef struct {
     SharedVariable* head;
     SharedVariable* tail;
     size_t capacity;
-    _Atomic(size_t) size;
+    GOO_ATOMIC_SIZE_T size;
 } WaitFreeQueue;
 
 WaitFreeQueue* wait_free_queue_create(SharedVarManager* manager, const char* name, size_t capacity);

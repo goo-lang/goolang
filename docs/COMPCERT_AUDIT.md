@@ -271,3 +271,48 @@ Revised next steps:
 
 The full Goo bootstrap path then becomes much cheaper than predicted:
 not a multi-month codegen rewrite, but a multi-day header-cleanup pass.
+
+## State after V1-stdatomic-cleanup (2026-05-15)
+
+**91 of 119 files compile** under CompCert (77%, up from 69 / 58%).
+
+Mechanism: `include/ccomp_shim.h` declares stub typedefs and macros
+for everything CompCert can't natively handle, and `make ccomp-survey`
+force-includes the shim via `-include include/ccomp_shim.h`. Source
+edits to non-shim files were minimal — only 2 sites in
+`include/shared_variables.h` had the `_Atomic(T)` parametrized form
+that can't be expressed via a flat keyword macro; both rewritten to
+`GOO_ATOMIC_PTR` / `GOO_ATOMIC_SIZE_T` macros defined in the shim.
+
+Shim handles, transparently under `__COMPCERT__`:
+
+- `_Atomic`, `_Thread_local`, `__thread` — stripped to empty
+- `<stdbool.h>` — pulled in (C23 makes `bool` a keyword; C99 needs it)
+- 18 `atomic_*_t` typedefs (least/fast/intptr/etc.) — non-atomic
+- `memory_order` enum + relaxed/seq_cst/etc. — constants only
+- `atomic_load`/`store`/`fetch_add`/etc. — degrade to plain reads/writes
+- `GOO_ATOMIC_PTR` / `GOO_ATOMIC_SIZE_T` — for the 2 `_Atomic(T)` sites
+
+**Correctness trade-off**: ccomp-built binaries from this tree are
+single-thread-safe only. Atomic operations under the shim are NOT
+atomic. V1's goal is verifying the COMPILER's translation
+correctness, not the runtime's concurrency guarantees — so this is
+in scope. Don't run ccomp-built binaries in a multi-threaded context.
+
+## Long tail of remaining failures (~28 files)
+
+Each is a per-file fix, no longer a single cascade:
+
+| Pattern | Files | Fix |
+|---|---|---|
+| `^` Apple block-syntax in expressions | async_streams.c:1019 | rewrite as plain function pointer |
+| `typeof(...)` compound literal | capability_security.c:576 + 2 others | rewrite with explicit type names |
+| Undeclared types in headers (genuine code bug) | error_reporting.h:193 (`ErrorContext` never declared), error_recovery.h:117 (dup typedef) | declare or unify the types |
+| `Pipeline` struct dup-defined | advanced_channels.h:482 | unify the duplicate |
+| VLA | code_specialization.c:245 | fixed-size buffer |
+| Inline `asm` | crypto_security.c:42 | add `-finline-asm` flag or rewrite |
+| Other long-tail | ~20 files | per-file investigation |
+
+These are tracked as future `V1-*` follow-ups; not blocking V1-ccomp-link
+since the lexer/parser/AST/most of types and codegen all build under
+CompCert today.
