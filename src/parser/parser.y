@@ -744,6 +744,21 @@ for_stmt:
         for_node->body = $3;
         $$ = (ASTNode*)for_node;
     }
+    | FOR simple_stmt SEMICOLON expression SEMICOLON simple_stmt block {
+        // C-style three-clause `for init; cond; post { … }`. The
+        // codegen for ForStmtNode already wires init/condition/post
+        // blocks — the parser was just missing the grammar rule.
+        ForStmtNode* for_node = (ForStmtNode*)malloc(sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = get_current_position();
+        for_node->base.node_type = NULL;
+        for_node->base.next = NULL;
+        for_node->init = $2;
+        for_node->condition = $4;
+        for_node->post = $6;
+        for_node->body = $7;
+        $$ = (ASTNode*)for_node;
+    }
     ;
 
 return_stmt:

@@ -71,9 +71,10 @@ func main() {
         }
     }
 
-    // 5. for c-style — DEFERRED (no PASS).
-    // Grammar's for_stmt rule (parser.y:679) only has `FOR block` and
-    // `FOR expression block` — no `FOR init; cond; post block` form.
+    // 5. for c-style (using j = j+1 — postfix ++ not in grammar yet)
+    for j := 0; j < 1; j = j + 1 {
+        fmt.Println("PASS: for c-style")
+    }
 
     // 6. while-style for cond {}
     var k int = 0
