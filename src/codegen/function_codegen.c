@@ -237,14 +237,20 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // Create alloca for the variable
         LLVMValueRef alloca_inst;
         if (codegen->current_function) {
-            // Local variable
+            // Local variable. Zero-initialize on alloca so `var p Point`
+            // (no explicit initializer) behaves like Go's zero value
+            // semantics. Without this, struct fields read as garbage
+            // from the stack.
             alloca_inst = codegen_create_entry_alloca(codegen, llvm_type, var_name);
+            if (alloca_inst && !var_decl->values) {
+                LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_type), alloca_inst);
+            }
         } else {
             // Global variable
             alloca_inst = LLVMAddGlobal(codegen->module, llvm_type, var_name);
             LLVMSetInitializer(alloca_inst, LLVMConstNull(llvm_type));
         }
-        
+
         if (!alloca_inst) {
             codegen_error(codegen, decl->pos, "Failed to create storage for variable '%s'", var_name);
             return 0;
@@ -283,7 +289,10 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         }
         
         value_info->is_lvalue = 1;
-        value_info->is_initialized = (var_decl->values != NULL);
+        // Mirror the type-checker rule: a var with an explicit declared
+        // type is zero-initialized at codegen alloca time, so it counts
+        // as initialized even without an explicit `= …` initializer.
+        value_info->is_initialized = (var_decl->values != NULL) || (var_decl->type != NULL);
 
         if (!codegen_add_value(codegen, value_info)) {
             codegen_error(codegen, decl->pos, "Failed to add variable '%s' to symbol table", var_name);

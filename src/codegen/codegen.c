@@ -238,6 +238,12 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
         case AST_CONCEPT_DECL:
             // Concepts are compile-time only and don't generate runtime code
             return 1;
+        case AST_TYPE_DECL:
+            // Type declarations (e.g. `type Point struct { x int }`)
+            // are compile-time only — the named type is registered with
+            // the type checker so subsequent references resolve. No
+            // runtime artifact is emitted.
+            return 1;
         default:
             codegen_error(codegen, decl->pos, "Unknown declaration type for code generation");
             return 0;

@@ -214,7 +214,21 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     // Generate left and right operands
     ValueInfo* left_val = codegen_generate_expression(codegen, checker, binary->left);
     if (!left_val) return NULL;
-    
+
+    // Auto-load any lvalue (selector / index / parameter / var read)
+    // before using it as a value. codegen_generate_identifier loads
+    // automatically; codegen_generate_selector_expr returns the field
+    // address as an lvalue so it can also serve assignment targets,
+    // which means binary_expr (and similar consumers) have to
+    // dereference it themselves to get the actual scalar value.
+    if (left_val->is_lvalue && left_val->goo_type) {
+        LLVMTypeRef lt = codegen_type_to_llvm(codegen, left_val->goo_type);
+        if (lt) {
+            left_val->llvm_value = LLVMBuildLoad2(codegen->builder, lt, left_val->llvm_value, "lval");
+            left_val->is_lvalue = 0;
+        }
+    }
+
     ValueInfo* right_val = codegen_generate_expression(codegen, checker, binary->right);
     if (!right_val) {
         value_info_free(left_val);
