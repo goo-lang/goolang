@@ -89,6 +89,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field
+%type <node> slice_lit
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -967,6 +968,7 @@ primary_expr:
     | call_expr { $$ = $1; }
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }
+    | slice_lit { $$ = $1; }
     /* All GPU constructs deliberately disabled in primary_expr.
        kernel_launch (identifier LT LT LT … GT GT GT (…)) was removed
        because bison can't disambiguate `i < 10` from the start of a
@@ -1110,6 +1112,32 @@ struct_field:
         field->values = NULL;
         ast_node_free($1);
         $$ = (ASTNode*)field;
+    }
+    ;
+
+slice_lit:
+    LBRACKET expression_list RBRACKET {
+        // `[1, 2, 3]` — slice literal. Tagged AST_SLICE_EXPR because
+        // that enum slot was unused for actual slicing expressions
+        // (goolang doesn't parse `arr[i:j]` today). The expression
+        // list head is stored in `elements` via the same struct
+        // layout (SliceLitNode shares ASTNode base).
+        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+        lit->base.type = AST_SLICE_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = $2;
+        $$ = (ASTNode*)lit;
+    }
+    | LBRACKET RBRACKET {
+        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+        lit->base.type = AST_SLICE_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = NULL;
+        $$ = (ASTNode*)lit;
     }
     ;
 

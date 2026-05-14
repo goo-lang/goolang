@@ -489,6 +489,16 @@ typedef struct {
     struct ASTNode* fields;
 } StructTypeNode;
 
+// Slice literal: `[1, 2, 3]`. Elements are a `next`-chained list of
+// expression nodes. The element type is inferred from the first
+// element by the type checker. Tags as AST_SLICE_EXPR — the enum
+// slot was previously reserved for `arr[i:j]` slicing expressions
+// which goolang doesn't actually parse today, so the slot is reused.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* elements;
+} SliceLitNode;
+
 // Goo Extensions
 
 // Error union type (!T)
