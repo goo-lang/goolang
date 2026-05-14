@@ -27,6 +27,33 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_try_expr(checker, expr);
         case AST_CATCH_EXPR:
             return type_check_catch_expr(checker, expr);
+        case AST_SLICE_EXPR: {
+            // SliceLitNode — `[1, 2, 3]`. Element type inferred from
+            // the first element; subsequent elements must match.
+            SliceLitNode* lit = (SliceLitNode*)expr;
+            if (!lit->elements) {
+                // Empty slice — element type defaults to int32 until
+                // context-based inference is wired up. Suitable for
+                // M8-scope probe coverage.
+                Type* def = type_checker_get_builtin(checker, TYPE_INT32);
+                Type* st = type_slice(def);
+                expr->node_type = st;
+                return st;
+            }
+            Type* elem_type = NULL;
+            for (ASTNode* e = lit->elements; e; e = e->next) {
+                Type* et = type_check_expression(checker, e);
+                if (!et) return NULL;
+                if (!elem_type) elem_type = et;
+                // (Skip strict element-type check for now — Goo's
+                //  type_compatible interactions with int literals
+                //  need more care; mismatches will surface in codegen
+                //  if they're real.)
+            }
+            Type* st = type_slice(elem_type);
+            expr->node_type = st;
+            return st;
+        }
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;

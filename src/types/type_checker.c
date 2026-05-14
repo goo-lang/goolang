@@ -120,6 +120,16 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, print_var);
     }
 
+    // len(slice|array|string) -> int  (single-arg builtin; the codegen
+    // path dispatches on the arg's TypeKind)
+    Type* len_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT32]);
+    Variable* len_var = variable_new("len", len_type, (Position){0, 0, 0, "builtin"});
+    if (len_var) {
+        len_var->is_builtin = 1;
+        len_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, len_var);
+    }
+
     // Stdlib package identifiers. Registered globally for now (matching the
     // pattern above) — the type checker is lenient about whether `import`
     // was actually written. Selector access (e.g. fmt.Println) resolves
