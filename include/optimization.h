@@ -156,8 +156,8 @@ typedef struct OptimizationContext {
 // =============================================================================
 
 // Context management
-OptimizationContext* optimization_context_new(ComptimeContext* comptime_ctx);
-void optimization_context_free(OptimizationContext* ctx);
+OptimizationContext* comptime_optimization_context_new(ComptimeContext* comptime_ctx);
+void comptime_optimization_context_free(OptimizationContext* ctx);
 
 // Target information
 TargetInfo* target_info_detect(void);

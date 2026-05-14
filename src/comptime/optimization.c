@@ -161,7 +161,7 @@ bool target_has_feature(TargetInfo* info, HardwareFeature feature) {
 // Optimization Context Management
 // =============================================================================
 
-OptimizationContext* optimization_context_new(ComptimeContext* comptime_ctx) {
+OptimizationContext* comptime_optimization_context_new(ComptimeContext* comptime_ctx) {
     OptimizationContext* ctx = malloc(sizeof(OptimizationContext));
     if (!ctx) return NULL;
     
@@ -192,7 +192,7 @@ OptimizationContext* optimization_context_new(ComptimeContext* comptime_ctx) {
     return ctx;
 }
 
-void optimization_context_free(OptimizationContext* ctx) {
+void comptime_optimization_context_free(OptimizationContext* ctx) {
     if (!ctx) return;
     
     target_info_free(ctx->target_info);

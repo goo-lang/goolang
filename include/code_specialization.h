@@ -187,7 +187,7 @@ bool inline_type_checks(ASTNode* ast);
 
 // Range analysis
 bool specialize_for_ranges(ASTNode* ast, const SpecializationParam* params, size_t param_count);
-bool eliminate_bounds_checks(ASTNode* ast, const SpecializationParam* params);
+bool comptime_eliminate_bounds_checks(ASTNode* ast, const SpecializationParam* params);
 bool strength_reduce_operations(ASTNode* ast);
 
 // Pattern recognition

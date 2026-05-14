@@ -258,7 +258,7 @@ SpecializedFunction* generate_specialization(SpecializationContext* context,
     // 3. Range analysis
     if (context->heuristics->enable_range_analysis) {
         success &= specialize_for_ranges(specialized->specialized_ast, params, param_count);
-        success &= eliminate_bounds_checks(specialized->specialized_ast, params);
+        success &= comptime_eliminate_bounds_checks(specialized->specialized_ast, params);
     }
     
     // 4. Hardware specialization
@@ -352,7 +352,7 @@ bool specialize_for_ranges(ASTNode* ast, const SpecializationParam* params, size
     return true;
 }
 
-bool eliminate_bounds_checks(ASTNode* ast, const SpecializationParam* params) {
+bool comptime_eliminate_bounds_checks(ASTNode* ast, const SpecializationParam* params) {
     if (!ast || !params) return false;
     
     // Remove array bounds checks when we can prove they're safe

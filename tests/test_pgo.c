@@ -19,7 +19,7 @@ void test_profile_data_management(void) {
     printf("Testing profile data management...\n");
     
     // Test profile data creation
-    ProfileData* data = profile_data_new("test_program.c");
+    ProfileData* data = comptime_profile_data_new("test_program.c");
     assert(data != NULL);
     assert(strcmp(data->source_file, "test_program.c") == 0);
     assert(data->functions == NULL);
@@ -69,7 +69,7 @@ void test_profile_data_management(void) {
     // Test hot/cold function identification
     profile_identify_hot_cold_functions(data, 0.5, 0.1);
     
-    profile_data_free(data);
+    comptime_profile_data_free(data);
     
     printf("✓ Profile data management tests passed!\n");
 }
@@ -109,7 +109,7 @@ void test_profile_collector(void) {
 void test_profile_analysis(void) {
     printf("Testing profile analysis...\n");
     
-    ProfileData* data = profile_data_new("analysis_test.c");
+    ProfileData* data = comptime_profile_data_new("analysis_test.c");
     
     // Add test data
     profile_add_function(data, "hot_function", 1000, 10000000);
@@ -149,7 +149,7 @@ void test_profile_analysis(void) {
     bool is_cold = profile_is_function_cold(data, "cold_function", 0.1);
     assert(is_cold == true);
     
-    profile_data_free(data);
+    comptime_profile_data_free(data);
     
     printf("✓ Profile analysis tests passed!\n");
 }
@@ -158,7 +158,7 @@ void test_pgo_optimization_generation(void) {
     printf("Testing PGO optimization generation...\n");
     
     // Create profile data
-    ProfileData* data = profile_data_new("pgo_test.c");
+    ProfileData* data = comptime_profile_data_new("pgo_test.c");
     profile_add_function(data, "hot_function", 1000, 10000000);
     profile_add_function(data, "cold_function", 1, 100);
     profile_add_branch(data, "test.c:15:5", 950, 50);
@@ -167,7 +167,7 @@ void test_pgo_optimization_generation(void) {
     
     // Create optimization context
     ComptimeContext* comptime_ctx = comptime_context_new(NULL);
-    OptimizationContext* opt_ctx = optimization_context_new(comptime_ctx);
+    OptimizationContext* opt_ctx = comptime_optimization_context_new(comptime_ctx);
     PGOContext* pgo_ctx = pgo_context_new(data, opt_ctx);
     
     assert(pgo_ctx != NULL);
@@ -213,9 +213,9 @@ void test_pgo_optimization_generation(void) {
     free(func_node);
     free(branch_node);
     pgo_context_free(pgo_ctx);
-    optimization_context_free(opt_ctx);
+    comptime_optimization_context_free(opt_ctx);
     comptime_context_free(comptime_ctx);
-    profile_data_free(data);
+    comptime_profile_data_free(data);
     
     printf("✓ PGO optimization generation tests passed!\n");
 }
@@ -285,7 +285,7 @@ void test_pgo_intrinsics(void) {
 void test_profile_utilities(void) {
     printf("Testing profile utilities...\n");
     
-    ProfileData* data = profile_data_new("utilities_test.c");
+    ProfileData* data = comptime_profile_data_new("utilities_test.c");
     
     // Add comprehensive test data
     profile_add_function(data, "main", 1, 500000);
@@ -315,7 +315,7 @@ void test_profile_utilities(void) {
     }
     assert(found_hot_process_data == true);
     
-    profile_data_free(data);
+    comptime_profile_data_free(data);
     
     printf("✓ Profile utilities tests passed!\n");
 }

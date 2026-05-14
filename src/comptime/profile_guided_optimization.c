@@ -13,7 +13,7 @@ static void profile_simulate_data(ProfileData* data);
 // Profile Data Management
 // =============================================================================
 
-ProfileData* profile_data_new(const char* source_file) {
+ProfileData* comptime_profile_data_new(const char* source_file) {
     ProfileData* data = malloc(sizeof(ProfileData));
     if (!data) return NULL;
     
@@ -38,7 +38,7 @@ ProfileData* profile_data_new(const char* source_file) {
     return data;
 }
 
-void profile_data_free(ProfileData* data) {
+void comptime_profile_data_free(ProfileData* data) {
     if (!data) return;
     
     free(data->source_file);
@@ -125,7 +125,7 @@ void profile_collector_free(ProfileCollector* collector) {
     if (!collector) return;
     
     free(collector->output_file);
-    profile_data_free(collector->current_data);
+    comptime_profile_data_free(collector->current_data);
     free(collector);
 }
 
@@ -137,7 +137,7 @@ int profile_collector_start(ProfileCollector* collector, const char* target_prog
     }
     
     // Initialize profile data
-    collector->current_data = profile_data_new(target_program);
+    collector->current_data = comptime_profile_data_new(target_program);
     if (!collector->current_data) return 0;
     
     collector->is_collecting = true;
@@ -578,12 +578,12 @@ ComptimeResult* comptime_pgo_analyze(ComptimeContext* ctx, const char* profile_f
     
     // In a real implementation, would load and parse the profile file
     // For now, create simulated profile data
-    ProfileData* data = profile_data_new(profile_file);
+    ProfileData* data = comptime_profile_data_new(profile_file);
     profile_simulate_data(data);
     
     char* analysis_result = malloc(1024);
     if (!analysis_result) {
-        profile_data_free(data);
+        comptime_profile_data_free(data);
         return comptime_result_new(NULL, comptime_error_new("Out of memory", (Position){0}), NULL);
     }
     
@@ -605,7 +605,7 @@ ComptimeResult* comptime_pgo_analyze(ComptimeContext* ctx, const char* profile_f
     ComptimeValue* result_value = comptime_value_new(COMPTIME_VALUE_STRING);
     result_value->string_value = strdup(analysis_result);
     
-    profile_data_free(data);
+    comptime_profile_data_free(data);
     
     return comptime_result_new(result_value, NULL, analysis_result);
 }

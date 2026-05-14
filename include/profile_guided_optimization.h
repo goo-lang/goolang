@@ -161,8 +161,8 @@ int profile_collector_stop(ProfileCollector* collector);
 int profile_collector_save(ProfileCollector* collector, const char* filename);
 
 // Profile data management
-ProfileData* profile_data_new(const char* source_file);
-void profile_data_free(ProfileData* data);
+ProfileData* comptime_profile_data_new(const char* source_file);
+void comptime_profile_data_free(ProfileData* data);
 ProfileData* profile_data_load(const char* filename);
 int profile_data_save(ProfileData* data, const char* filename);
 ProfileData* profile_data_merge(ProfileData* data1, ProfileData* data2);

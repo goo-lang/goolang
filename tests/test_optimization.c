@@ -64,7 +64,7 @@ void test_optimization_context_creation(void) {
     assert(comptime_ctx != NULL);
     
     // Create optimization context
-    OptimizationContext* opt_ctx = optimization_context_new(comptime_ctx);
+    OptimizationContext* opt_ctx = comptime_optimization_context_new(comptime_ctx);
     assert(opt_ctx != NULL);
     assert(opt_ctx->comptime_ctx == comptime_ctx);
     assert(opt_ctx->target_info != NULL);
@@ -91,7 +91,7 @@ void test_optimization_context_creation(void) {
     OptimizationDirective* not_found = optimization_context_find_directive(opt_ctx, "@nonexistent");
     assert(not_found == NULL);
     
-    optimization_context_free(opt_ctx);
+    comptime_optimization_context_free(opt_ctx);
     comptime_context_free(comptime_ctx);
     
     printf("✓ Optimization context creation tests passed!\n");
@@ -101,7 +101,7 @@ void test_optimization_directives(void) {
     printf("Testing optimization directives...\n");
     
     ComptimeContext* comptime_ctx = comptime_context_new(NULL);
-    OptimizationContext* opt_ctx = optimization_context_new(comptime_ctx);
+    OptimizationContext* opt_ctx = comptime_optimization_context_new(comptime_ctx);
     
     // Create a mock AST node for testing
     ASTNode* mock_target = malloc(sizeof(ASTNode));
@@ -195,7 +195,7 @@ void test_optimization_directives(void) {
     // Clean up mock AST node
     free(mock_target);
     
-    optimization_context_free(opt_ctx);
+    comptime_optimization_context_free(opt_ctx);
     comptime_context_free(comptime_ctx);
     
     printf("✓ Optimization directive tests passed!\n");
@@ -233,7 +233,7 @@ void test_algorithm_selection(void) {
     printf("Testing algorithm selection...\n");
     
     ComptimeContext* comptime_ctx = comptime_context_new(NULL);
-    OptimizationContext* opt_ctx = optimization_context_new(comptime_ctx);
+    OptimizationContext* opt_ctx = comptime_optimization_context_new(comptime_ctx);
     
     // Register built-in algorithms
     register_builtin_algorithms(opt_ctx);
@@ -258,7 +258,7 @@ void test_algorithm_selection(void) {
     assert(found_quicksort);
     assert(found_simd_sort);
     
-    optimization_context_free(opt_ctx);
+    comptime_optimization_context_free(opt_ctx);
     comptime_context_free(comptime_ctx);
     
     printf("✓ Algorithm selection tests passed!\n");
@@ -268,7 +268,7 @@ void test_performance_estimation(void) {
     printf("Testing performance estimation...\n");
     
     ComptimeContext* comptime_ctx = comptime_context_new(NULL);
-    OptimizationContext* opt_ctx = optimization_context_new(comptime_ctx);
+    OptimizationContext* opt_ctx = comptime_optimization_context_new(comptime_ctx);
     
     // Create a test directive
     OptimizationDirective* directive = optimization_directive_new("@test_perf", OPT_GOAL_THROUGHPUT);
@@ -293,7 +293,7 @@ void test_performance_estimation(void) {
     printf("Memory optimization improvement: %.2fx\n", improvement);
     
     optimization_directive_free(directive);
-    optimization_context_free(opt_ctx);
+    comptime_optimization_context_free(opt_ctx);
     comptime_context_free(comptime_ctx);
     
     printf("✓ Performance estimation tests passed!\n");
@@ -303,7 +303,7 @@ void test_builtin_registration(void) {
     printf("Testing built-in registration...\n");
     
     ComptimeContext* comptime_ctx = comptime_context_new(NULL);
-    OptimizationContext* opt_ctx = optimization_context_new(comptime_ctx);
+    OptimizationContext* opt_ctx = comptime_optimization_context_new(comptime_ctx);
     
     // Register built-in directives
     register_builtin_optimization_directives(opt_ctx);
@@ -328,7 +328,7 @@ void test_builtin_registration(void) {
     assert(strcmp(optimization_strategy_name(OPT_STRATEGY_PARALLEL), "parallel") == 0);
     assert(strcmp(optimization_strategy_name(OPT_STRATEGY_CACHE_FRIENDLY), "cache_friendly") == 0);
     
-    optimization_context_free(opt_ctx);
+    comptime_optimization_context_free(opt_ctx);
     comptime_context_free(comptime_ctx);
     
     printf("✓ Built-in registration tests passed!\n");
