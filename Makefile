@@ -46,7 +46,14 @@ CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SR
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
-PACKAGE_SRCS = $(SRCDIR)/package/module.c $(SRCDIR)/package/goo_mod_parser.c $(SRCDIR)/package/ipfs_client.c $(SRCDIR)/package/gmod_ipfs_cli.c $(SRCDIR)/package/gateway_intelligence.c $(SRCDIR)/package/ipns_manager.c $(SRCDIR)/package/crypto_verifier.c $(SRCDIR)/package/p2p_discovery.c $(SRCDIR)/package/hybrid_registry.c $(SRCDIR)/package/ai_cache.c $(SRCDIR)/package/reputation_system.c
+# The package/ subsystem (IPFS package manager — task #42) has pre-existing
+# build breakage: gmod_cli.c includes both goo_mod.h and package_manager.h
+# which redefine the same types; gmod_ipfs_cli.c includes missing
+# gmod_cli.h; gateway_intelligence.c has a stale ipfs_gateway_create call.
+# No core compiler code (compiler/, parser/, types/, codegen/, lexer/, ast/)
+# depends on package/, so we exclude the subsystem from the compiler build.
+# Repair lives in a separate task.
+PACKAGE_SRCS =
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
 COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/hardware_aware.c $(SRCDIR)/comptime/code_specialization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
@@ -115,8 +122,12 @@ $(SRCDIR)/parser/parser.tab.c: $(SRCDIR)/parser/parser.y
 # Main compiler executable
 goo: $(COMPILER)
 
-$(COMPILER): $(OBJS) $(COMPILER_SRCS) | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+# Compiler binary does not link the test framework — it's a runtime concern
+# for test runners. The test framework's header (test/test_framework.h) is
+# missing from include/, so building TEST_FRAMEWORK_OBJ fails; that breakage
+# belongs to task #33 and shouldn't gate compiler builds.
+$(COMPILER): $(SRC_OBJS) $(COMPILER_SRCS) | $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(SRC_OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Runtime library
 runtime-lib: $(RUNTIME_LIB)
