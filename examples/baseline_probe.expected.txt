@@ -4,6 +4,7 @@ PASS: comparison
 PASS: if/else/nested
 PASS: for c-style
 PASS: for while-style
+PASS: for-range
 PASS: func with args
 PASS: func returns value
 PASS: user func call

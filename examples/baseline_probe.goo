@@ -93,9 +93,15 @@ func main() {
         k = k + 1
     }
 
-    // 7. for-range — DEFERRED (no PASS).
-    // Same for_stmt rule lacks range. Range also depends on iterator
-    // semantics that don't exist yet for slice/map types.
+    // 7. for-range (M8-for-range) — slice form, sums elements
+    nums := [1, 2, 3]
+    total := 0
+    for _, n := range nums {
+        total = total + n
+    }
+    if total == 6 {
+        fmt.Println("PASS: for-range")
+    }
 
     // 8. function with parameters used in body
     if add(2, 3) == 5 {
