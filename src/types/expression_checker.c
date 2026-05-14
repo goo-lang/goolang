@@ -437,8 +437,28 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
         return NULL;
     }
 
-    // TODO: Implement struct field access
-    type_error(checker, expr->pos, "Struct field access not yet implemented");
+    // Struct field access (also covers *Struct via the codegen layer
+    // which dereferences pointers automatically). Walk the fields of
+    // the resolved struct Type until we find a matching name.
+    Type* struct_type = expr_type;
+    if (struct_type->kind == TYPE_POINTER &&
+        struct_type->data.pointer.pointee_type &&
+        struct_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+        struct_type = struct_type->data.pointer.pointee_type;
+    }
+    if (struct_type->kind == TYPE_STRUCT) {
+        for (size_t i = 0; i < struct_type->data.struct_type.field_count; i++) {
+            StructField* f = &struct_type->data.struct_type.fields[i];
+            if (f->name && strcmp(f->name, selector->selector) == 0) {
+                expr->node_type = f->type;
+                return f->type;
+            }
+        }
+        type_error(checker, expr->pos, "Struct has no field '%s'", selector->selector);
+        return NULL;
+    }
+
+    type_error(checker, expr->pos, "Selector on non-struct, non-package type");
     return NULL;
 }
 

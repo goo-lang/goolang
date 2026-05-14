@@ -358,7 +358,13 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         }
         
         var->ownership = var_decl->ownership;
-        var->is_initialized = (var_decl->values != NULL);
+        // Variables with an explicit type are zero-initialized at
+        // declaration (Go-style default-value semantics) — even when
+        // no explicit initializer expression is supplied. Without
+        // this, `var p Point` would read as uninitialized when its
+        // fields are later accessed, even though the struct's bytes
+        // are zeroed by the alloca.
+        var->is_initialized = (var_decl->values != NULL) || (declared_type != NULL);
         
         if (!scope_add_variable(checker->current_scope, var)) {
             type_error(checker, var_decl->base.pos, 
@@ -427,8 +433,30 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
 
 int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_TYPE_DECL) return 0;
-    
-    // TODO: Implement type declarations
+
+    TypeDeclNode* td = (TypeDeclNode*)decl;
+    if (!td->name || !td->type) return 1;  // tolerate malformed
+
+    // Resolve the right-hand-side type expression to a concrete Type.
+    Type* resolved = type_from_ast(checker, td->type);
+    if (!resolved) {
+        type_error(checker, decl->pos, "Cannot resolve type for '%s'", td->name);
+        return 0;
+    }
+
+    // Register the named type by piggybacking on the variable scope:
+    // a Variable whose `type` IS the named Type. AST_BASIC_TYPE lookup
+    // in type_from_ast will recover it. This is a pragmatic shortcut
+    // until a proper named-types table exists.
+    Variable* alias = variable_new(td->name, resolved, decl->pos);
+    if (!alias) return 0;
+    alias->is_initialized = 1;
+    alias->is_builtin = 1;  // not a real variable for use-tracking purposes
+    if (!scope_add_variable(checker->current_scope, alias)) {
+        type_error(checker, decl->pos, "Type '%s' already declared", td->name);
+        variable_free(alias);
+        return 0;
+    }
     return 1;
 }
 
@@ -694,7 +722,20 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(basic->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(basic->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
-            
+
+            // User-defined named type? type_check_type_decl registers
+            // `type Foo = ...` aliases by piggybacking on the variable
+            // scope (Variable whose `type` field IS the named Type).
+            // Exclude TYPE_PACKAGE / TYPE_FUNCTION — those names came
+            // from stdlib-package vars or function decls, not from
+            // user `type` declarations.
+            Variable* named = type_checker_lookup_variable(checker, basic->name);
+            if (named && named->type &&
+                named->type->kind != TYPE_PACKAGE &&
+                named->type->kind != TYPE_FUNCTION) {
+                return named->type;
+            }
+
             type_error(checker, type_node->pos, "Unknown type '%s'", basic->name);
             return NULL;
         }
@@ -714,6 +755,45 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             Type* element_type = type_from_ast(checker, slice->element_type);
             if (!element_type) return NULL;
             return type_slice(element_type);
+        }
+
+        case AST_STRUCT_TYPE: {
+            // Build a TYPE_STRUCT directly. The struct's fields chain
+            // is a list of VarDeclNode entries (one per field), since
+            // the parser reuses VarDeclNode for struct fields (same
+            // shape as a func parameter — name + type, no value).
+            StructTypeNode* st = (StructTypeNode*)type_node;
+            size_t count = 0;
+            for (ASTNode* f = st->fields; f; f = f->next) {
+                if (f->type == AST_VAR_DECL) count++;
+            }
+            Type* result = type_new(TYPE_STRUCT);
+            if (!result) return NULL;
+            result->data.struct_type.field_count = count;
+            result->data.struct_type.fields = count ? calloc(count, sizeof(StructField)) : NULL;
+            size_t idx = 0;
+            size_t total_size = 0;
+            size_t max_align = 1;
+            for (ASTNode* f = st->fields; f; f = f->next) {
+                if (f->type != AST_VAR_DECL) continue;
+                VarDeclNode* fd = (VarDeclNode*)f;
+                if (fd->name_count == 0) continue;
+                Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
+                if (!ft) {
+                    free(result->data.struct_type.fields);
+                    free(result);
+                    return NULL;
+                }
+                result->data.struct_type.fields[idx].name = strdup(fd->names[0]);
+                result->data.struct_type.fields[idx].type = ft;
+                result->data.struct_type.fields[idx].offset = total_size;
+                total_size += ft->size ? ft->size : 8;
+                if (ft->align > max_align) max_align = ft->align;
+                idx++;
+            }
+            result->size = total_size;
+            result->align = max_align;
+            return result;
         }
         
         case AST_MAP_TYPE: {
