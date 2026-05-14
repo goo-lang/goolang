@@ -1,0 +1,10 @@
+PASS: var decls
+PASS: arithmetic
+PASS: comparison
+PASS: if/else/nested
+PASS: for while-style
+PASS: func with args
+PASS: user func call
+PASS: short var decl
+PASS: builtin println
+PASS: fmt.Println

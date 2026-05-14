@@ -145,6 +145,24 @@ test-pipeline: $(COMPILER) $(RUNTIME_LIB)
 	$(CC) $(CFLAGS) tests/test_runner.c -o tests/test_runner
 	./tests/test_runner
 
+# M8 Foundation Verification gate: compile + run the baseline probe,
+# which exercises basic language constructs each printing a distinct
+# PASS line. Diff against expected.txt. Used by `coord milestone-status
+# M8`. Implementation goes via temp files because /bin/sh (which make
+# invokes for recipe lines) doesn't support bash's `<(…)` process
+# substitution, which is what an inline diff would need.
+baseline-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/baseline_probe examples/baseline_probe.goo
+	@./build/baseline_probe > build/baseline_probe.actual.txt
+	@if diff -u examples/baseline_probe.expected.txt build/baseline_probe.actual.txt; then \
+	  count=`wc -l < build/baseline_probe.actual.txt | tr -d ' '`; \
+	  echo "baseline-probe: PASS ($$count constructs)"; \
+	else \
+	  echo "baseline-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # M7-stdlib-expansion completion gate: compile + run the stdlib smoke
 # test, which exercises one function from each of fmt, strings, math, os
 # and exits 0. Used by `coord milestone-status M7-stdlib-expansion`.

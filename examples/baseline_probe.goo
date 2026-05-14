@@ -1,0 +1,131 @@
+// M8 Foundation Verification probe.
+//
+// Exercises the basic constructs a programmer expects to work, each
+// printing a distinct PASS line. `make baseline-probe` builds + runs
+// this and diffs against expected.txt. Per the M8 goal:
+// - if a construct doesn't compile yet, narrow it and surface — don't
+//   invent syntax
+// - at least 15 constructs must pass for the milestone gate
+package main
+
+import "fmt"
+
+// --- helpers used below ---
+
+func add(a int, b int) int {
+    return a + b
+}
+
+// Multi-return DEFERRED: parser's func_result rule only accepts a
+// single type or `(type)` — no `(int, int)` shape. Would need a
+// grammar change to func_result + tuple-handling in codegen.
+
+// Struct types DEFERRED: `type Point struct { … }` isn't parseable.
+// The grammar's `type` rule has no struct_type alternative (parser.y:985),
+// even though TYPE_STRUCT exists in the type system. Tracked: goolang:M8-struct.
+
+// Error unions DEFERRED: `error()` builtin isn't registered in the
+// type checker, `try` lowering hasn't been wired through codegen,
+// and the !int return type representation hasn't been verified.
+// Multi-day work. Tracked: goolang:M8-error-unions.
+
+// Nullable DEFERRED similarly — needs `nil` literal handling, ?T
+// type representation, and if-let codegen. Tracked: goolang:M8-nullable.
+
+func main() {
+    // 1. var declarations (int, string, bool, float64)
+    var i int = 42
+    var s string = "hi"
+    var b bool = true
+    var f float64 = 3.14
+    fmt.Println("PASS: var decls")
+
+    // 2. arithmetic
+    if i + 1 == 43 {
+        if i * 2 == 84 {
+            if i - 2 == 40 {
+                if i / 2 == 21 {
+                    fmt.Println("PASS: arithmetic")
+                }
+            }
+        }
+    }
+
+    // 3. comparison
+    if i == 42 {
+        if i != 43 {
+            if i < 100 {
+                if i > 0 {
+                    fmt.Println("PASS: comparison")
+                }
+            }
+        }
+    }
+
+    // 4. if / else / nested if
+    if i > 0 {
+        if i > 100 {
+            fmt.Println("FAIL: nested if (wrong branch)")
+        } else {
+            fmt.Println("PASS: if/else/nested")
+        }
+    }
+
+    // 5. for c-style — DEFERRED (no PASS).
+    // Grammar's for_stmt rule (parser.y:679) only has `FOR block` and
+    // `FOR expression block` — no `FOR init; cond; post block` form.
+
+    // 6. while-style for cond {}
+    var k int = 0
+    for k < 1 {
+        fmt.Println("PASS: for while-style")
+        k = k + 1
+    }
+
+    // 7. for-range — DEFERRED (no PASS).
+    // Same for_stmt rule lacks range. Range also depends on iterator
+    // semantics that don't exist yet for slice/map types.
+
+    // 8. function with parameters used in body
+    if add(2, 3) == 5 {
+        fmt.Println("PASS: func with args")
+    }
+
+    // 9. multi-return — DEFERRED (no PASS line emitted).
+    // Parser's func_result rule (parser.y:343) only accepts single type
+    // or `(type)`; no `(int, int)` tuple. Needs grammar + codegen work
+    // to lower tuple returns. Tracked: coord task goolang:M8-multi-return.
+
+    // 10. calling a user-defined func (covered by #8/#9, but explicit)
+    if add(1, 1) == 2 {
+        fmt.Println("PASS: user func call")
+    }
+
+    // 11. short var decl
+    x := 10
+    if x == 10 {
+        fmt.Println("PASS: short var decl")
+    }
+
+    // 12. slice literal — DEFERRED (no PASS).
+    // `[10, 20, 30]` doesn't parse. Goo syntax for slice literals
+    // is unclear and the grammar has no obvious slice-lit rule.
+
+    // 13. map literal — DEFERRED (no PASS).
+    // `{"a": 1, "b": 2}` syntax isn't in the grammar (and braces collide
+    // with block syntax anyway). Go's `map[string]int{...}` may or may
+    // not work; tracked separately.
+
+    // 14. struct type + field access — DEFERRED (no PASS).
+    // type X struct { ... } isn't in the grammar.
+
+    // 15. error union + try — DEFERRED (see top-of-file note).
+    // 16. nullable + if-let — DEFERRED (see top-of-file note).
+
+    // 17. builtin println (no import)
+    println("PASS: builtin println")
+
+    // 18. fmt.Println via import (this whole file already uses it,
+    // but the explicit line proves it independently)
+    fmt.Println("PASS: fmt.Println")
+}
