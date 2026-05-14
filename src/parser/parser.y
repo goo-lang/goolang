@@ -723,42 +723,56 @@ if_let_stmt:
 
 for_stmt:
     FOR block {
-        ForStmtNode* for_node = (ForStmtNode*)malloc(sizeof(ForStmtNode));
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
         for_node->base.type = AST_FOR_STMT;
         for_node->base.pos = get_current_position();
-        for_node->base.node_type = NULL;
-        for_node->base.next = NULL;
-        for_node->init = NULL;
-        for_node->condition = NULL;
-        for_node->post = NULL;
         for_node->body = $2;
         $$ = (ASTNode*)for_node;
     }
     | FOR expression block {
-        ForStmtNode* for_node = (ForStmtNode*)malloc(sizeof(ForStmtNode));
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
         for_node->base.type = AST_FOR_STMT;
         for_node->base.pos = get_current_position();
-        for_node->base.node_type = NULL;
-        for_node->base.next = NULL;
-        for_node->init = NULL;
         for_node->condition = $2;
-        for_node->post = NULL;
         for_node->body = $3;
         $$ = (ASTNode*)for_node;
     }
     | FOR simple_stmt SEMICOLON expression SEMICOLON simple_stmt block {
-        // C-style three-clause `for init; cond; post { … }`. The
-        // codegen for ForStmtNode already wires init/condition/post
-        // blocks — the parser was just missing the grammar rule.
-        ForStmtNode* for_node = (ForStmtNode*)malloc(sizeof(ForStmtNode));
+        // C-style three-clause `for init; cond; post { … }`.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
         for_node->base.type = AST_FOR_STMT;
         for_node->base.pos = get_current_position();
-        for_node->base.node_type = NULL;
-        for_node->base.next = NULL;
         for_node->init = $2;
         for_node->condition = $4;
         for_node->post = $6;
         for_node->body = $7;
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR identifier SHORT_ASSIGN RANGE expression block {
+        // `for k := range expr { … }` — key/index-only form.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = get_current_position();
+        IdentifierNode* kid = (IdentifierNode*)$2;
+        for_node->key_name = strdup(kid->name);
+        for_node->range_expr = $5;
+        for_node->body = $6;
+        ast_node_free($2);
+        $$ = (ASTNode*)for_node;
+    }
+    | FOR identifier COMMA identifier SHORT_ASSIGN RANGE expression block {
+        // `for k, v := range expr { … }` — key+value form.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = get_current_position();
+        IdentifierNode* kid = (IdentifierNode*)$2;
+        IdentifierNode* vid = (IdentifierNode*)$4;
+        for_node->key_name = strdup(kid->name);
+        for_node->value_name = strdup(vid->name);
+        for_node->range_expr = $7;
+        for_node->body = $8;
+        ast_node_free($2);
+        ast_node_free($4);
         $$ = (ASTNode*)for_node;
     }
     ;

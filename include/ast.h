@@ -316,6 +316,14 @@ typedef struct {
     struct ASTNode* condition;  // Optional condition
     struct ASTNode* post;       // Optional post statement
     struct ASTNode* body;
+    // for-range fields. range_expr is non-NULL only for range loops
+    // (`for i := range sl` / `for i, v := range sl`). In that mode,
+    // init/condition/post are NULL and the codegen desugars to an
+    // indexed traversal using key_name as the index var and (if set)
+    // value_name as the per-iteration loaded element.
+    struct ASTNode* range_expr;
+    char* key_name;
+    char* value_name;
 } ForStmtNode;
 
 // Return statement
