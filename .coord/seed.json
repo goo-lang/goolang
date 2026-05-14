@@ -1,0 +1,34 @@
+{
+  "comment": "Goolang compiler milestones — hybrid shape: phase-level milestones M1–M6 (all done) plus per-task tracking for active production-readiness work under M7. Status reflects taskmaster snapshot 2026-05-14: 35/42 done, 2 in-progress, 5 pending. Track prefix M1..M7 lets `coord milestone-status M<n>` gate per phase. M1–M6 done tasks lack LEARNED_FROM lessons (no closing-PR history in taskmaster), so milestone-status will report incomplete for them — that's honest historical state. status enum: pending|in-progress|blocked|done|deferred|cancelled.",
+  "tasks": [
+    {"id": "M1", "track": "M1", "status": "done"},
+    {"id": "M2", "track": "M2", "status": "done"},
+    {"id": "M3", "track": "M3", "status": "done"},
+    {"id": "M4", "track": "M4", "status": "done"},
+    {"id": "M5", "track": "M5", "status": "done"},
+    {"id": "M6", "track": "M6", "status": "done"},
+    {"id": "M7-pkg-mgmt", "track": "M7", "status": "pending"},
+    {"id": "M7-rust-interop", "track": "M7", "status": "pending"},
+    {"id": "M7-security-design", "track": "M7", "status": "in-progress"},
+    {"id": "M7-multi-lang-interop", "track": "M7", "status": "pending"},
+    {"id": "M7-security-analysis", "track": "M7", "status": "pending"},
+    {"id": "M7-stdlib-expansion", "track": "M7", "status": "in-progress"},
+    {"id": "M7-modern-errors", "track": "M7", "status": "pending"},
+    {"id": "M7-parser-cleanup", "track": "M7", "status": "pending"}
+  ],
+  "deps": [
+    {"from": "M2", "to": "M1"},
+    {"from": "M3", "to": "M2"},
+    {"from": "M4", "to": "M3"},
+    {"from": "M5", "to": "M4"},
+    {"from": "M6", "to": "M5"},
+    {"from": "M7-pkg-mgmt", "to": "M6"},
+    {"from": "M7-rust-interop", "to": "M6"},
+    {"from": "M7-security-design", "to": "M6"},
+    {"from": "M7-multi-lang-interop", "to": "M7-rust-interop"},
+    {"from": "M7-security-analysis", "to": "M7-security-design"},
+    {"from": "M7-stdlib-expansion", "to": "M6"},
+    {"from": "M7-modern-errors", "to": "M6"},
+    {"from": "M7-parser-cleanup", "to": "M6"}
+  ]
+}
