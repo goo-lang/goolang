@@ -10,5 +10,6 @@ PASS: user func call
 PASS: short var decl
 PASS: slice lit + index + len
 PASS: struct + field access
+PASS: error union + try
 PASS: builtin println
 PASS: fmt.Println
