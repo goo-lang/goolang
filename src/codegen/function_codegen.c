@@ -112,28 +112,65 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // Enter function scope
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
+
+    // Mirror the type-checker scope so re-invocations of type_check_*
+    // from inside codegen (e.g. type_check_binary_expr at
+    // expression_codegen.c:208) can resolve `a` and `b` inside the
+    // function body. Without this the type-checker scope is whatever
+    // was last left around (usually global) and any identifier lookup
+    // from codegen fails. Mirror only the params; the body's nested
+    // blocks will push their own scopes the same way the type-check
+    // pass did.
+    scope_push(checker);
+    if (func_decl->params) {
+        for (ASTNode* p = func_decl->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            Type* pt = pd->type ? type_from_ast(checker, pd->type)
+                                : type_checker_get_builtin(checker, TYPE_INT32);
+            for (size_t i = 0; pt && i < pd->name_count; i++) {
+                Variable* pv = variable_new(pd->names[i], pt, pd->base.pos);
+                if (pv) {
+                    pv->is_initialized = 1;
+                    scope_add_variable(checker->current_scope, pv);
+                }
+            }
+        }
+    }
     
-    // Generate function parameters as local variables
+    // Generate function parameters as local variables. The parser builds
+    // params as AST_VAR_DECL nodes (see parser.y::func_param creating
+    // VarDeclNode with names[0]/name_count=1), not AST_IDENTIFIER as
+    // this loop previously assumed. The mismatched check meant the loop
+    // body never ran and `a` / `b` in any function body resolved to
+    // "Undefined identifier" — every user function with parameters was
+    // broken end-to-end.
     if (func_decl->params && param_count > 0) {
         ASTNode* param = func_decl->params;
         int param_index = 0;
-        
+
         while (param && param_index < param_count) {
-            if (param->type == AST_IDENTIFIER) {
-                IdentifierNode* param_ident = (IdentifierNode*)param;
+            const char* param_name = NULL;
+            if (param->type == AST_VAR_DECL) {
+                VarDeclNode* pd = (VarDeclNode*)param;
+                if (pd->name_count > 0 && pd->names) param_name = pd->names[0];
+            } else if (param->type == AST_IDENTIFIER) {
+                // Defensive: keep the old path working for any path that
+                // builds params as bare identifiers.
+                param_name = ((IdentifierNode*)param)->name;
+            }
+            if (param_name) {
                 LLVMValueRef param_value = LLVMGetParam(function, param_index);
-                
-                // Create alloca for parameter
-                LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_ident->name);
+
+                LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_name);
                 LLVMBuildStore(codegen->builder, param_value, param_alloca);
-                
-                // Add to value table
-                ValueInfo* param_info = value_info_new(param_ident->name, param_alloca, 
+
+                ValueInfo* param_info = value_info_new(param_name, param_alloca,
                                                       func_type_info->data.function.param_types[param_index]);
                 param_info->is_lvalue = 1;
                 param_info->is_initialized = 1;
                 codegen_add_value(codegen, param_info);
-                
+
                 param_index++;
             }
             param = param->next;
@@ -159,12 +196,13 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
     
-    // Exit function scope
+    // Exit function scope (codegen value table and mirrored type-check scope)
     codegen_exit_function(codegen);
-    
+    scope_pop(checker);
+
     // Clean up function info
     function_info_free(func_info);
-    
+
     return result;
 #endif
 }
@@ -246,14 +284,26 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         
         value_info->is_lvalue = 1;
         value_info->is_initialized = (var_decl->values != NULL);
-        
+
         if (!codegen_add_value(codegen, value_info)) {
             codegen_error(codegen, decl->pos, "Failed to add variable '%s' to symbol table", var_name);
             value_info_free(value_info);
             return 0;
         }
+
+        // Mirror to the type-checker scope so later expressions inside
+        // the function body that re-invoke type_check_* (e.g. via
+        // codegen_generate_binary_expr → type_check_binary_expr) can
+        // resolve this identifier. See function_codegen.c::function_decl
+        // for the broader story on why codegen and type-checker scopes
+        // need to stay in sync.
+        Variable* tv = variable_new(var_name, var_type, decl->pos);
+        if (tv) {
+            tv->is_initialized = value_info->is_initialized;
+            scope_add_variable(checker->current_scope, tv);
+        }
     }
-    
+
     return 1;
 #endif
 }

@@ -56,17 +56,34 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
     if (!codegen || !checker || !expr || expr->type != AST_IDENTIFIER) return NULL;
     
     IdentifierNode* ident = (IdentifierNode*)expr;
-    
+
     // Look up the identifier in the symbol table
     ValueInfo* value_info = codegen_lookup_value(codegen, ident->name);
     if (!value_info) {
+        // Fall back to module-level functions. User-defined functions
+        // (`func add(...)`) are registered via LLVMAddFunction during
+        // codegen_generate_function_decl but never make it into the
+        // codegen value table, so any `add(2,3)` call would fail here.
+        LLVMValueRef func_val = LLVMGetNamedFunction(codegen->module, ident->name);
+        if (func_val) {
+            Variable* func_var = type_checker_lookup_variable(checker, ident->name);
+            Type* func_type = func_var ? func_var->type : NULL;
+            return value_info_new(ident->name, func_val, func_type);
+        }
         codegen_error(codegen, expr->pos, "Undefined identifier '%s'", ident->name);
         return NULL;
     }
     
-    // If it's an lvalue (variable), load the value
+    // If it's an lvalue (variable), load the value. With LLVM 22 opaque
+    // pointers, LLVMTypeOf(alloca) returns just `ptr`, not `ptr i32` —
+    // we have to supply the load type from goo_type. Previously every
+    // var read produced `load ptr, ptr %x` which fed `ptr` values into
+    // `icmp sgt`/`add`, failing module verification.
     if (value_info->is_lvalue) {
-        LLVMValueRef loaded_value = LLVMBuildLoad2(codegen->builder, LLVMTypeOf(value_info->llvm_value), value_info->llvm_value, ident->name);
+        LLVMTypeRef load_type = value_info->goo_type
+            ? codegen_type_to_llvm(codegen, value_info->goo_type)
+            : LLVMTypeOf(value_info->llvm_value);
+        LLVMValueRef loaded_value = LLVMBuildLoad2(codegen->builder, load_type, value_info->llvm_value, ident->name);
         return value_info_new(ident->name, loaded_value, value_info->goo_type);
     } else {
         // Direct value (constant, function, etc.)
@@ -565,9 +582,12 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         }
     }
     
-    // Generate call
-    LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGetElementType(LLVMTypeOf(func_val->llvm_value)), func_val->llvm_value, args, (unsigned)arg_count, "call");
-    
+    // Generate call. LLVMGetElementType doesn't work with LLVM 22 opaque
+    // pointers — use LLVMGlobalGetValueType which returns the underlying
+    // function type directly for any global value (functions are globals).
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(func_val->llvm_value), func_val->llvm_value, args, (unsigned)arg_count, "call");
+
+
     free(args);
     
     // Get return type
