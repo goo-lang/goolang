@@ -7,6 +7,8 @@
 static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeChecker* checker,
                                                ASTNode* expr, const char* runtime_symbol,
                                                TypeKind return_kind, int unused_extra);
+static ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker,
+                                             ASTNode* expr);
 
 // Expression code generation
 
@@ -42,6 +44,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_port_io(codegen, checker, expr);
         case AST_MMIO_ACCESS:
             return codegen_generate_mmio_access(codegen, checker, expr);
+        case AST_SLICE_EXPR:
+            return codegen_generate_slice_lit(codegen, checker, expr);
         default:
             codegen_error(codegen, expr->pos, "Unknown expression type for code generation");
             return NULL;
@@ -525,6 +529,24 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         }
         if (strcmp(func_name->name, "println") == 0) {
             return codegen_generate_println_call(codegen, checker, expr);
+        }
+        if (strcmp(func_name->name, "len") == 0 && call->args) {
+            // len(arg) — extract field 1 (the length) from a slice or
+            // string struct. Both share the `{ ptr, i64 }` layout, so
+            // a single InsertValue path covers them. Array len could
+            // be constant-folded; deferred until needed.
+            ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!arg) return NULL;
+            LLVMValueRef raw = arg->llvm_value;
+            if (arg->is_lvalue && arg->goo_type) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
+                if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "len_load");
+            }
+            LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "len");
+            LLVMValueRef len32 = LLVMBuildTrunc(codegen->builder, len64,
+                                                LLVMInt32TypeInContext(codegen->context), "len_i32");
+            value_info_free(arg);
+            return value_info_new(NULL, len32, type_checker_get_builtin(checker, TYPE_INT32));
         }
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);
@@ -1474,5 +1496,63 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
     result->is_initialized = 1;
     
     return result;
+#endif
+}
+// codegen_generate_slice_lit lowers `[1, 2, 3]` to a slice struct
+// { ptr, i64 } pointing at a global constant array. Element type is
+// inferred from the type-check pass (goo_type on the AST node is
+// already TYPE_SLICE).
+static ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_SLICE_EXPR) return NULL;
+
+    SliceLitNode* lit = (SliceLitNode*)expr;
+    Type* slice_type = expr->node_type;  // set by type checker
+    if (!slice_type || slice_type->kind != TYPE_SLICE) {
+        codegen_error(codegen, expr->pos, "Slice literal missing TYPE_SLICE node_type");
+        return NULL;
+    }
+    Type* elem_type = slice_type->data.slice.element_type;
+    LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
+    if (!llvm_elem) {
+        codegen_error(codegen, expr->pos, "Cannot lower slice element type");
+        return NULL;
+    }
+
+    // Count + evaluate elements.
+    size_t count = 0;
+    for (ASTNode* e = lit->elements; e; e = e->next) count++;
+
+    LLVMValueRef* elem_vals = count ? calloc(count, sizeof(LLVMValueRef)) : NULL;
+    size_t idx = 0;
+    for (ASTNode* e = lit->elements; e; e = e->next, idx++) {
+        ValueInfo* v = codegen_generate_expression(codegen, checker, e);
+        if (!v) { free(elem_vals); return NULL; }
+        elem_vals[idx] = v->llvm_value;
+        value_info_free(v);
+    }
+
+    // Build a constant array initializer. All elements must be LLVM
+    // constants for this path. For non-const elements we'd need to
+    // allocate a stack buffer and store each — defer to future work.
+    LLVMTypeRef arr_type = LLVMArrayType(llvm_elem, count);
+    LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
+    LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
+    LLVMSetInitializer(global, arr_const);
+    LLVMSetLinkage(global, LLVMPrivateLinkage);
+    LLVMSetGlobalConstant(global, 1);
+    free(elem_vals);
+
+    // Build the slice struct { ptr, i64 }.
+    LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
+    LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, global, 0, "slice_ptr");
+    LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 1, "slice_len");
+
+    return value_info_new(NULL, slice_val, slice_type);
 #endif
 }
