@@ -17,7 +17,15 @@
     {"id": "M7-parser-cleanup", "track": "M7", "status": "pending"},
     {"id": "M8", "track": "M8", "status": "pending"},
     {"id": "M9", "track": "M9", "status": "pending"},
-    {"id": "M10", "track": "M10", "status": "pending"}
+    {"id": "M10", "track": "M10", "status": "pending"},
+    {"id": "M8-multi-return", "track": "M8", "status": "pending"},
+    {"id": "M8-struct", "track": "M8", "status": "pending"},
+    {"id": "M8-for-range", "track": "M8", "status": "pending"},
+    {"id": "M8-slice-literal", "track": "M8", "status": "pending"},
+    {"id": "M8-map-literal", "track": "M8", "status": "pending"},
+    {"id": "M8-error-unions", "track": "M8", "status": "pending"},
+    {"id": "M8-nullable", "track": "M8", "status": "pending"},
+    {"id": "M8-postfix-incr", "track": "M8", "status": "pending"}
   ],
   "deps": [
     {"from": "M2", "to": "M1"},
@@ -35,6 +43,14 @@
     {"from": "M7-parser-cleanup", "to": "M6"},
     {"from": "M8", "to": "M7-stdlib-expansion"},
     {"from": "M9", "to": "M8"},
-    {"from": "M10", "to": "M9"}
+    {"from": "M10", "to": "M9"},
+    {"from": "M8-multi-return", "to": "M8"},
+    {"from": "M8-struct", "to": "M8"},
+    {"from": "M8-for-range", "to": "M8"},
+    {"from": "M8-slice-literal", "to": "M8"},
+    {"from": "M8-map-literal", "to": "M8"},
+    {"from": "M8-error-unions", "to": "M8"},
+    {"from": "M8-nullable", "to": "M8"},
+    {"from": "M8-postfix-incr", "to": "M8"}
   ]
 }
