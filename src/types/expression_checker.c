@@ -394,6 +394,24 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
     if (strcmp(package, "fmt") == 0 && strcmp(name, "Println") == 0) {
         return type_function(NULL, 0, void_t);
     }
+
+    // os.Exit(int) -> void
+    if (strcmp(package, "os") == 0 && strcmp(name, "Exit") == 0) {
+        return type_function(NULL, 0, void_t);
+    }
+
+    // math.Sqrt(float64) -> float64
+    if (strcmp(package, "math") == 0 && strcmp(name, "Sqrt") == 0) {
+        Type* float_t = type_checker_get_builtin(checker, TYPE_FLOAT64);
+        return type_function(NULL, 0, float_t);
+    }
+
+    // strings.Contains(string, string) -> bool
+    if (strcmp(package, "strings") == 0 && strcmp(name, "Contains") == 0) {
+        Type* bool_t = type_checker_get_builtin(checker, TYPE_BOOL);
+        return type_function(NULL, 0, bool_t);
+    }
+
     return NULL;
 }
 

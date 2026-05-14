@@ -3,6 +3,11 @@
 #include <string.h>
 #include <stdio.h>
 
+// Forward declarations for helpers defined later in this file
+static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeChecker* checker,
+                                               ASTNode* expr, const char* runtime_symbol,
+                                               TypeKind return_kind, int unused_extra);
+
 // Expression code generation
 
 ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -507,6 +512,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
                 // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
                 return codegen_generate_println_call(codegen, checker, expr);
+            }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_exit", TYPE_VOID, 0);
+            }
+            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_math_sqrt", TYPE_FLOAT64, 0);
+            }
+            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Contains") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_strings_contains", TYPE_BOOL, 1);
             }
         }
     }
@@ -1259,6 +1276,64 @@ ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* che
 }
 
 // Built-in function implementations
+// codegen_generate_stdlib_call lowers a stdlib package call (e.g.
+// os.Exit, math.Sqrt) to a direct LLVM call against a pre-declared
+// runtime function. unused_extra exists so future stub flags fit
+// into the signature without a refactor; pass 0 for now.
+//
+// Behaviour notes:
+//   - TYPE_STRING arguments have their pointer field extracted before
+//     being passed (matches goo_strings_contains / goo_println, etc.).
+//   - The return-type kind drives the LLVM result. Callers that want a
+//     non-primitive return (e.g. a string-builder) need their own path.
+static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeChecker* checker,
+                                               ASTNode* expr, const char* runtime_symbol,
+                                               TypeKind return_kind, int unused_extra) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    (void)unused_extra;
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+
+    CallExprNode* call = (CallExprNode*)expr;
+    LLVMValueRef func = LLVMGetNamedFunction(codegen->module, runtime_symbol);
+    if (!func) {
+        codegen_error(codegen, expr->pos, "%s not found in module", runtime_symbol);
+        return NULL;
+    }
+
+    // Count + materialise args
+    size_t arg_count = 0;
+    for (ASTNode* a = call->args; a; a = a->next) arg_count++;
+
+    LLVMValueRef* args = arg_count ? malloc(sizeof(LLVMValueRef) * arg_count) : NULL;
+    ASTNode* a = call->args;
+    for (size_t i = 0; i < arg_count; i++, a = a->next) {
+        ValueInfo* v = codegen_generate_expression(codegen, checker, a);
+        if (!v) {
+            free(args);
+            codegen_error(codegen, expr->pos, "Failed to generate arg %zu for %s", i, runtime_symbol);
+            return NULL;
+        }
+        LLVMValueRef val = v->llvm_value;
+        if (v->goo_type && v->goo_type->kind == TYPE_STRING) {
+            val = LLVMBuildExtractValue(codegen->builder, val, 0, "str_ptr");
+        }
+        args[i] = val;
+        value_info_free(v);
+    }
+
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder,
+                                         LLVMGlobalGetValueType(func),
+                                         func, args, (unsigned)arg_count,
+                                         return_kind == TYPE_VOID ? "" : "stdlib_ret");
+    free(args);
+
+    return value_info_new(NULL, result, type_checker_get_builtin(checker, return_kind));
+#endif
+}
+
 ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");

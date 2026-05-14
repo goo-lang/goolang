@@ -152,7 +152,22 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { string_type };
         add_runtime_function(codegen, "goo_string_free", void_type, params, 1);
     }
-    
+
+    // Stdlib package backings
+    // int goo_strings_contains(const char* haystack, const char* needle)
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_strings_contains",
+                             LLVMInt32TypeInContext(codegen->context), params, 2);
+    }
+
+    // double goo_math_sqrt(double x)
+    {
+        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_math_sqrt",
+                             LLVMDoubleTypeInContext(codegen->context), params, 1);
+    }
+
     // Slice operations
     // goo_slice_t goo_slice_new(size_t element_size, size_t capacity)
     {
