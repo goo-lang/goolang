@@ -45,6 +45,12 @@ struct CodeGenerator {
     ValueInfo** value_table;     // Maps variable names to LLVM values
     size_t value_table_size;
     size_t value_table_capacity;
+    // High-water mark captured on codegen_enter_function. Used by
+    // codegen_exit_function to truncate the value table back to its
+    // pre-function size so per-function locals don't leak across
+    // function boundaries and produce "Referring to an instruction
+    // in another function" verifier errors on later lookups.
+    size_t value_table_function_start;
     
     // Type cache for LLVM types
     LLVMTypeRef* type_cache;

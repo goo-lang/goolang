@@ -372,16 +372,28 @@ void function_info_free(FunctionInfo* info) {
 
 int codegen_enter_function(CodeGenerator* codegen, FunctionInfo* func_info) {
     if (!codegen || !func_info) return 0;
-    
+
     codegen->current_function = func_info->function;
     codegen->current_function_info = func_info;
-    
+    // Capture the current value table position — anything added past
+    // this point belongs to this function and gets cleared on exit.
+    codegen->value_table_function_start = codegen->value_table_size;
+
     return 1;
 }
 
 void codegen_exit_function(CodeGenerator* codegen) {
     if (!codegen) return;
-    
+
+    // Truncate the value table back to its pre-function size so this
+    // function's locals don't leak into the next function's lookups.
+    // Per-info free isn't done here because value_info_free's call
+    // pattern in this codebase is inconsistent — the entries stay
+    // logically dead and will be overwritten by future adds.
+    if (codegen->value_table_size > codegen->value_table_function_start) {
+        codegen->value_table_size = codegen->value_table_function_start;
+    }
+
     codegen->current_function = NULL;
     codegen->current_function_info = NULL;
 }
