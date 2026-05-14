@@ -1,5 +1,5 @@
 {
-  "comment": "Goolang compiler milestones — hybrid shape: phase-level milestones M1–M6 (all done) plus per-task tracking for active production-readiness work under M7. Status reflects taskmaster snapshot 2026-05-14: 35/42 done, 2 in-progress, 5 pending. Track prefix M1..M7 lets `coord milestone-status M<n>` gate per phase. M1–M6 done tasks lack LEARNED_FROM lessons (no closing-PR history in taskmaster), so milestone-status will report incomplete for them — that's honest historical state. status enum: pending|in-progress|blocked|done|deferred|cancelled.",
+  "comment": "Goolang compiler milestones. Two layers: phase milestones M1–M6 (historical, done), and active work split across M7 (production-readiness; in flight, with M7-stdlib-expansion shipped 2026-05-14) and M8–M10 (a 'is this language actually usable' track surfaced after M7-stdlib-expansion exposed how narrow the working baseline really is). status enum: pending|in-progress|blocked|done|deferred|cancelled. Coord seed is additive; statuses on already-existing tasks are NOT overwritten — re-running this file is safe.",
   "tasks": [
     {"id": "M1", "track": "M1", "status": "done"},
     {"id": "M2", "track": "M2", "status": "done"},
@@ -14,7 +14,10 @@
     {"id": "M7-security-analysis", "track": "M7", "status": "pending"},
     {"id": "M7-stdlib-expansion", "track": "M7", "status": "in-progress"},
     {"id": "M7-modern-errors", "track": "M7", "status": "pending"},
-    {"id": "M7-parser-cleanup", "track": "M7", "status": "pending"}
+    {"id": "M7-parser-cleanup", "track": "M7", "status": "pending"},
+    {"id": "M8", "track": "M8", "status": "pending"},
+    {"id": "M9", "track": "M9", "status": "pending"},
+    {"id": "M10", "track": "M10", "status": "pending"}
   ],
   "deps": [
     {"from": "M2", "to": "M1"},
@@ -29,6 +32,9 @@
     {"from": "M7-security-analysis", "to": "M7-security-design"},
     {"from": "M7-stdlib-expansion", "to": "M6"},
     {"from": "M7-modern-errors", "to": "M6"},
-    {"from": "M7-parser-cleanup", "to": "M6"}
+    {"from": "M7-parser-cleanup", "to": "M6"},
+    {"from": "M8", "to": "M7-stdlib-expansion"},
+    {"from": "M9", "to": "M8"},
+    {"from": "M10", "to": "M9"}
   ]
 }
