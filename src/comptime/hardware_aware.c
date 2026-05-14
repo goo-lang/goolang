@@ -15,8 +15,20 @@
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
 #else
-// macOS ARM64 - use sysctl instead
+// macOS ARM64 - use sysctl instead. <sys/sysctl.h> transitively pulls
+// in <mach/port.h> which uses C23 enum-with-underlying-type that
+// CompCert can't parse. Under __COMPCERT__ we skip the include and
+// stub sysctlbyname; this disables CPU brand detection (a non-critical
+// optimization hint) but keeps the rest of hardware-aware codegen
+// available to the ccomp build.
+#ifndef __COMPCERT__
 #include <sys/sysctl.h>
+#else
+static int sysctlbyname(const char* name, void* oldp, size_t* oldlenp, void* newp, size_t newlen) {
+    (void)name; (void)oldp; (void)oldlenp; (void)newp; (void)newlen;
+    return -1;  // signal "not available"
+}
+#endif
 #endif
 #endif
 

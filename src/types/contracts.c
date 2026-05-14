@@ -4,8 +4,14 @@
 #include <string.h>
 #include <assert.h>
 
-// C23 compatibility check
+// C23 compatibility check. Under CompCert the underlying-type
+// specifier on `typedef enum : unsigned char` is stripped (see
+// ccomp_shim.h's GOO_ENUM_U8) and the enum widens to int, so the
+// 1-byte expectation no longer holds. The assertion still verifies
+// the intended layout on the regular C23 build.
+#ifndef __COMPCERT__
 _Static_assert(sizeof(ContractType) == 1, "ContractType should be 1 byte");
+#endif
 
 // =============================================================================
 // Contract Creation Functions using C23 features

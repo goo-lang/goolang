@@ -168,6 +168,40 @@ ccomp-audit:
 CCOMP ?= ccomp
 CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I/opt/homebrew/Cellar/llvm/22.1.4/include -std=c99 -fstruct-passing -include include/ccomp_shim.h -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
 
+# V1-ccomp-link: build bin/goo-ccomp from CompCert .o files. The
+# resulting binary is the Goo compiler compiled through CompCert
+# (verified-C-compiler) end-to-end. LLVM, libpthread, libm, libcurl,
+# libjson-c, libz remain trusted external deps.
+CCOMP_LDLIBS = -lm -lpthread -ljson-c -lcurl -lz -L/opt/homebrew/lib -L/opt/homebrew/Cellar/llvm/22.1.4/lib -lLLVM-22
+CCOMP_ESSENTIAL_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS) $(COMPILER_SRCS) $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
+
+ccomp-build:
+	@command -v $(CCOMP) >/dev/null || (echo "ccomp not installed — see V1-ccomp-install" && exit 1)
+	@mkdir -p build/ccomp $(BINDIR)
+	@echo "Compiling Goo compiler under CompCert..."
+	@for f in $(CCOMP_ESSENTIAL_SRCS); do \
+	  obj=build/ccomp/`echo "$$f" | tr '/' '_' | sed 's/\.c$$/.o/'`; \
+	  $(CCOMP) -c "$$f" $(CCOMP_CFLAGS) -o "$$obj" 2>/dev/null || (echo "ccomp compile failed: $$f" && exit 1); \
+	done
+	@echo "Linking bin/goo-ccomp..."
+	@$(CCOMP) build/ccomp/*.o -o $(BINDIR)/goo-ccomp $(CCOMP_LDLIBS)
+	@echo "ccomp-build: $(BINDIR)/goo-ccomp built"
+
+# V1-ccomp-link gate: build goo-ccomp, run baseline_probe through it,
+# diff against the clang-built expected output. PASS iff identical.
+ccomp-link: ccomp-build
+	@mkdir -p build
+	@$(BINDIR)/goo-ccomp -o build/probe_via_ccomp examples/baseline_probe.goo >/dev/null 2>&1 || (echo "ccomp-link: FAIL — goo-ccomp couldn't compile baseline_probe" && exit 1)
+	@build/probe_via_ccomp > build/probe_via_ccomp.actual.txt
+	@if diff -u examples/baseline_probe.expected.txt build/probe_via_ccomp.actual.txt >/dev/null; then \
+	  count=`wc -l < build/probe_via_ccomp.actual.txt | tr -d ' '`; \
+	  echo "ccomp-link: PASS ($$count constructs, identical to clang-built goo)"; \
+	else \
+	  echo "ccomp-link: FAIL — output differs from clang-built goo"; \
+	  diff -u examples/baseline_probe.expected.txt build/probe_via_ccomp.actual.txt; \
+	  exit 1; \
+	fi
+
 ccomp-survey:
 	@command -v $(CCOMP) >/dev/null || (echo "ccomp not installed — see V1-ccomp-install" && exit 1)
 	@mkdir -p build/ccomp

@@ -241,8 +241,12 @@ SpecializedFunction* generate_specialization(SpecializationContext* context,
     
     // 2. Type specialization
     if (context->heuristics->enable_type_specialization) {
-        // Extract types from params
-        Type* types[param_count];
+        // Extract types from params. The original used a VLA
+        // `Type* types[param_count]`; CompCert doesn't support VLAs.
+        // Heap allocation works for both compilers and is freed
+        // below; param_count is small (function arity) so the
+        // allocation overhead is negligible.
+        Type** types = (Type**)malloc(sizeof(Type*) * (param_count > 0 ? param_count : 1));
         size_t type_count = 0;
         for (size_t i = 0; i < param_count; i++) {
             if (params[i].type == SPEC_TYPE_TYPE) {
@@ -250,9 +254,10 @@ SpecializedFunction* generate_specialization(SpecializationContext* context,
             }
         }
         if (type_count > 0) {
-            success &= specialize_for_types(specialized->specialized_ast, 
+            success &= specialize_for_types(specialized->specialized_ast,
                                           (const Type**)types, type_count);
         }
+        free(types);
     }
     
     // 3. Range analysis

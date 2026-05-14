@@ -22,7 +22,10 @@
 #endif
 #endif
 
-#ifdef __APPLE__
+// Under __COMPCERT__ we skip <sys/sysctl.h> (transitively pulls in
+// <mach/port.h>'s C23 enum). CPU detection then falls back to the
+// generic path; non-critical for V1.
+#if defined(__APPLE__) && !defined(__COMPCERT__)
 #include <sys/sysctl.h>
 #endif
 
