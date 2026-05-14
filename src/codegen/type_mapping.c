@@ -113,6 +113,15 @@ LLVMTypeRef codegen_get_basic_type(CodeGenerator* codegen, TypeKind kind) {
             return LLVMFloatTypeInContext(codegen->context);
         case TYPE_FLOAT64:
             return LLVMDoubleTypeInContext(codegen->context);
+        case TYPE_STRING:
+            // String is { i8*, i64 } — must match codegen_type_to_llvm.
+            // codegen_get_basic_type used to return NULL here, causing
+            // a SIGSEGV in string-literal codegen via LLVMGetUndef(NULL).
+            return LLVMStructTypeInContext(codegen->context,
+                (LLVMTypeRef[]){
+                    LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                    LLVMInt64TypeInContext(codegen->context)
+                }, 2, 0);
         default:
             return NULL;
     }
