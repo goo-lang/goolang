@@ -88,6 +88,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> call_expr index_expr selector_expr
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
+%type <node> struct_type struct_field_list struct_field
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -1049,9 +1050,67 @@ type:
     | func_type { $$ = $1; }
     | pointer_type { $$ = $1; }
     | reference_type { $$ = $1; }     // Goo extension
-    | unsafe_ptr_type { $$ = $1; }    // Goo extension  
+    | unsafe_ptr_type { $$ = $1; }    // Goo extension
     | error_union_type { $$ = $1; }   // Goo extension
     | nullable_type { $$ = $1; }      // Goo extension
+    | struct_type { $$ = $1; }
+    ;
+
+struct_type:
+    STRUCT LBRACE struct_field_list RBRACE {
+        StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+        st->base.type = AST_STRUCT_TYPE;
+        st->base.pos = get_current_position();
+        st->base.node_type = NULL;
+        st->base.next = NULL;
+        st->fields = $3;
+        $$ = (ASTNode*)st;
+    }
+    | STRUCT LBRACE RBRACE {
+        StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+        st->base.type = AST_STRUCT_TYPE;
+        st->base.pos = get_current_position();
+        st->base.node_type = NULL;
+        st->base.next = NULL;
+        st->fields = NULL;
+        $$ = (ASTNode*)st;
+    }
+    ;
+
+struct_field_list:
+    struct_field { $$ = $1; }
+    | struct_field_list struct_field {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+struct_field:
+    identifier type {
+        // Reuse VarDeclNode for fields — same shape as a function
+        // parameter. type_from_ast for AST_STRUCT_TYPE will walk
+        // this chain and build the Type's struct_type.fields[].
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* field = ast_var_decl_new(get_current_position());
+        field->names = malloc(sizeof(char*));
+        field->names[0] = strdup(ident->name);
+        field->name_count = 1;
+        field->type = $2;
+        field->values = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)field;
+    }
+    | identifier type SEMICOLON {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* field = ast_var_decl_new(get_current_position());
+        field->names = malloc(sizeof(char*));
+        field->names[0] = strdup(ident->name);
+        field->name_count = 1;
+        field->type = $2;
+        field->values = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)field;
+    }
     ;
 
 type_name:

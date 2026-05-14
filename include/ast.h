@@ -481,6 +481,14 @@ typedef struct {
     struct ASTNode* element_type;  // Optional element type
 } UnsafePtrTypeNode;
 
+// Struct type definition: `struct { x int; y int }`
+// Fields are a `next`-chained list of VarDeclNode entries (same shape
+// as function parameters — name + type, no initial value).
+typedef struct {
+    ASTNode base;
+    struct ASTNode* fields;
+} StructTypeNode;
+
 // Goo Extensions
 
 // Error union type (!T)
