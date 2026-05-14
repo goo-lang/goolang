@@ -379,14 +379,46 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     return element_type;
 }
 
+// stdlib_package_lookup returns a function Type for a (package, name) pair
+// drawn from the four hardcoded stdlib packages. Returns NULL if the pair
+// isn't known. This is a deliberate shortcut for M7-stdlib-expansion: the
+// type checker doesn't yet load stdlib/*.goo files, so we hand it the
+// minimum surface needed to type-check fmt.Println etc.
+static Type* stdlib_package_lookup(TypeChecker* checker,
+                                   const char* package,
+                                   const char* name) {
+    if (!checker || !package || !name) return NULL;
+    Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
+
+    // fmt.Println(string) -> void  (one-arg-only stub; full variadic comes later)
+    if (strcmp(package, "fmt") == 0 && strcmp(name, "Println") == 0) {
+        return type_function(NULL, 0, void_t);
+    }
+    return NULL;
+}
+
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
-    
+
     SelectorExprNode* selector = (SelectorExprNode*)expr;
-    
+
     Type* expr_type = type_check_expression(checker, selector->expr);
     if (!expr_type) return NULL;
-    
+
+    // Package member access: when the left side is an imported package
+    // identifier, resolve the selector against the stdlib symbol table.
+    if (expr_type->kind == TYPE_PACKAGE && selector->expr->type == AST_IDENTIFIER) {
+        IdentifierNode* pkg_ident = (IdentifierNode*)selector->expr;
+        Type* fn_type = stdlib_package_lookup(checker, pkg_ident->name, selector->selector);
+        if (fn_type) {
+            expr->node_type = fn_type;
+            return fn_type;
+        }
+        type_error(checker, expr->pos, "Package '%s' has no member '%s'",
+                   pkg_ident->name, selector->selector);
+        return NULL;
+    }
+
     // TODO: Implement struct field access
     type_error(checker, expr->pos, "Struct field access not yet implemented");
     return NULL;

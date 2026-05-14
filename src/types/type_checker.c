@@ -119,6 +119,21 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         print_var->is_initialized = 1;
         scope_add_variable(checker->current_scope, print_var);
     }
+
+    // Stdlib package identifiers. Registered globally for now (matching the
+    // pattern above) — the type checker is lenient about whether `import`
+    // was actually written. Selector access (e.g. fmt.Println) resolves
+    // through type_check_selector_expr's package-table fallback.
+    static const char* const stdlib_packages[] = {"fmt", "os", "strings", "math"};
+    for (size_t i = 0; i < sizeof(stdlib_packages) / sizeof(stdlib_packages[0]); i++) {
+        Type* pkg_type = type_new(TYPE_PACKAGE);
+        Variable* pkg_var = variable_new(stdlib_packages[i], pkg_type, (Position){0, 0, 0, "builtin"});
+        if (pkg_var) {
+            pkg_var->is_builtin = 1;
+            pkg_var->is_initialized = 1;
+            scope_add_variable(checker->current_scope, pkg_var);
+        }
+    }
 }
 
 // Scope management

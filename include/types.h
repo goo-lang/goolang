@@ -49,7 +49,12 @@ typedef enum {
     TYPE_PARAM_HKT,  // Higher-kinded type parameter (e.g., F in F<_>)
     TYPE_CONSTRUCTOR,// Type constructor (e.g., Vec, Option)
     TYPE_APPLICATION,// Type application (e.g., Vec<int>)
-    
+
+    // Package marker: the type of an imported package identifier
+    // (e.g., the `fmt` in `fmt.Println(...)`). Selector access against
+    // this kind resolves through the stdlib symbol table.
+    TYPE_PACKAGE,
+
     TYPE_UNKNOWN,
     TYPE_COUNT
 } TypeKind;
