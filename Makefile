@@ -161,6 +161,36 @@ ccomp-audit:
 	@echo ""
 	@echo "Full report: docs/COMPCERT_AUDIT.md"
 
+# V1 empirical CompCert survey: try ccomp -c against every .c file in
+# src/ (excluding src/package/ which is excluded from the gcc build
+# too) and report pass/fail counts. Requires ccomp installed via
+# `opam install coq-compcert`. Prints failing files for follow-up.
+CCOMP ?= ccomp
+CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I/opt/homebrew/Cellar/llvm/22.1.4/include -std=c99 -fstruct-passing -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+
+ccomp-survey:
+	@command -v $(CCOMP) >/dev/null || (echo "ccomp not installed — see V1-ccomp-install" && exit 1)
+	@mkdir -p build/ccomp
+	@find src -name "*.c" -not -path "*/package/*" 2>/dev/null | sort > build/ccomp/files.txt
+	@total=0; pass=0; rm -f build/ccomp/fail.txt; \
+	while IFS= read -r f; do \
+	  total=$$((total+1)); \
+	  obj=build/ccomp/`echo "$$f" | tr '/' '_' | sed 's/\.c$$/.o/'`; \
+	  if $(CCOMP) -c "$$f" $(CCOMP_CFLAGS) -o "$$obj" >/dev/null 2>&1; then \
+	    pass=$$((pass+1)); \
+	  else \
+	    echo "$$f" >> build/ccomp/fail.txt; \
+	  fi; \
+	done < build/ccomp/files.txt; \
+	echo "ccomp-survey: PASS $$pass / $$total"; \
+	if [ -s build/ccomp/fail.txt ]; then \
+	  echo "FAIL list (first error each):"; \
+	  while IFS= read -r f; do \
+	    err=`$(CCOMP) -c "$$f" $(CCOMP_CFLAGS) -o /dev/null 2>&1 | grep -E "error:|unsupported" | head -1`; \
+	    echo "  $$f → $$err"; \
+	  done < build/ccomp/fail.txt; \
+	fi
+
 # M8 Foundation Verification gate: compile + run the baseline probe,
 # which exercises basic language constructs each printing a distinct
 # PASS line. Diff against expected.txt. Used by `coord milestone-status

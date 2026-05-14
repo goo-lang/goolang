@@ -148,7 +148,8 @@ codegen path to be brought under CompCert (or replaced).
 
 ## Verification
 
-Re-run this audit with the helper script committed alongside this doc:
+Re-run the static audit with the helper script committed alongside this
+doc:
 
 ```
 make ccomp-audit
@@ -157,3 +158,116 @@ make ccomp-audit
 The target prints counts for every category above and exits 0 — it's
 a regression check, not a gate. The numbers will shift as adaptation
 work lands; the doc tracks the current state.
+
+## Empirical run (CompCert 3.15 installed 2026-05-15)
+
+After CompCert 3.15 was installed (opam, V1-ccomp-install), running
+`ccomp -c` against every `.c` file in `src/` (excluding `src/package/`,
+which is excluded from the regular build):
+
+```
+make ccomp-survey                          # see Makefile target
+```
+
+**Result: 69 of 119 files compile cleanly under ccomp.** Required
+flags:
+
+```
+ccomp -c file.c -Iinclude -I/opt/homebrew/include \
+  -I/opt/homebrew/Cellar/llvm/22.1.4/include \
+  -std=c99 -fstruct-passing \
+  -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS \
+  -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+```
+
+`-fstruct-passing` is mandatory — without it ccomp rejects functions
+that take a `goo_string_t` (or any struct) by value, which the lexer
+does heavily.
+
+### What actually killed the 50 failing files
+
+The static-grep audit overstated two issues and missed one entirely:
+
+**LLVM C API — NOT a blocker.** CompCert treats every `LLVMValueRef`,
+`LLVMBuild*`, etc. as an opaque external symbol once the LLVM headers
+are on the include path. The 478 call sites compile fine. Codegen +
+runtime files (`src/codegen/*.c`, `src/runtime/*.c`) all pass except
+where they pull in `<stdatomic.h>` transitively.
+
+**`_Atomic` / `<stdatomic.h>` — the real headline blocker.**
+Including `<stdatomic.h>` at all kills CompCert with:
+
+```
+.../stdatomic.h:97:9: syntax error after 'typedef' and before '_Atomic'.
+```
+
+This cascades through transitive includes. Anything that includes
+`include/work_stealing.h`, `include/async_resource.h`,
+`include/async_streams.h`, `include/numa_scheduling.h`, or
+`include/capability_security.h` is dead until those headers are
+either guarded by `#ifndef __COMPCERT__` or rewritten to avoid C11
+atomics.
+
+**`typedef enum : type` (C23 enum with underlying type) — the
+contracts-header killer.** `include/contracts.h:19`:
+
+```c
+typedef enum : unsigned char {
+    CONTRACT_PRECONDITION = 0,
+    CONTRACT_POSTCONDITION,
+    ...
+} ContractType;
+```
+
+CompCert: `syntax error after 'enum' and before ':'`. The `:
+unsigned char` is C23. Every file including `contracts.h`
+(`src/types/contracts.c`, `proof_generation.c`,
+`flow_analysis_core.c`, etc.) fails on this single line. Trivial
+fix: strip the `: unsigned char` underlying-type specifier.
+
+### Other real failures (one-offs)
+
+- `src/comptime/code_specialization.c:245` — VLA (variable-length
+  array). CompCert doesn't support VLAs.
+- `src/errors/error_recovery.c:117` — actual code bug: duplicate
+  typedef `RecoveryConfig` with different definitions. Worth fixing
+  regardless of CompCert. (One more pattern of the
+  status-docs-not-ground-truth issue — that subsystem is supposedly
+  done.)
+- `src/security/crypto_security.c:42` — inline `asm`. CompCert needs
+  `-finline-asm` flag to accept it; might just work if added.
+
+### Updated minimal CompCert-buildable subset
+
+Empirically verified to compile cleanly under ccomp with the flags
+above:
+
+- `src/lexer/`, `src/parser/`, `src/ast/`
+- Most of `src/types/` (those NOT including contracts.h or transitively
+  pulling in stdatomic.h)
+- All of `src/codegen/` (except files that transitively reach
+  stdatomic.h)
+- Most of `src/runtime/`, `src/errors/`, `src/comptime/`, `src/ide/`
+
+The "minimal pilot" originally proposed (lexer + parser + ast) is
+much smaller than what actually works. **A near-complete compiler
+build under CompCert is achievable** if the stdatomic.h and contracts.h
+header issues are fixed — likely <100 lines of source edits total.
+
+### Updated path to V1 completion
+
+Revised next steps:
+
+1. **`V1-stdatomic-cleanup`** — guard `<stdatomic.h>` includes with
+   `#ifndef __COMPCERT__` and provide stub `_Atomic` macro for ccomp
+   builds. ~5 headers affected.
+2. **`V1-c23-enum-cleanup`** — strip C23 underlying-type from enums
+   (1 site in contracts.h, possibly more — needs a sweep).
+3. **`V1-ccomp-link`** — `make ccomp-core` target that compiles the
+   verified-buildable subset and links it. The linker step is where
+   we'll find out whether CompCert .o files link with system libs.
+4. **`V1-ccomp-full`** — get to 119/119 (or document the residual gap
+   honestly).
+
+The full Goo bootstrap path then becomes much cheaper than predicted:
+not a multi-month codegen rewrite, but a multi-day header-cleanup pass.
