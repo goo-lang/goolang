@@ -92,7 +92,13 @@ func main() {
         fmt.Println("PASS: func with args")
     }
 
-    // 9. multi-return — DEFERRED (no PASS line emitted).
+    // 9a. func returning a value (single return)
+    var sum int = add(10, 7)
+    if sum == 17 {
+        fmt.Println("PASS: func returns value")
+    }
+
+    // 9b. multi-return — DEFERRED (no PASS line emitted).
     // Parser's func_result rule (parser.y:343) only accepts single type
     // or `(type)`; no `(int, int)` tuple. Needs grammar + codegen work
     // to lower tuple returns. Tracked: coord task goolang:M8-multi-return.

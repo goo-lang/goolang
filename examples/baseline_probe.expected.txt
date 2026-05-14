@@ -5,6 +5,7 @@ PASS: if/else/nested
 PASS: for c-style
 PASS: for while-style
 PASS: func with args
+PASS: func returns value
 PASS: user func call
 PASS: short var decl
 PASS: builtin println
