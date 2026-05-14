@@ -220,9 +220,34 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
     
     FuncDeclNode* func = (FuncDeclNode*)decl;
-    
+
+    // Build the function's parameter type vector and resolve its return
+    // type. Previously this was a `() -> void` stub with a year-old TODO,
+    // so every call site saw `void` and any comparison against the call
+    // result failed type-checking. Now mirror what func_decl actually
+    // declared.
+    size_t param_count = 0;
+    for (ASTNode* p = func->params; p; p = p->next) {
+        if (p->type == AST_VAR_DECL) param_count++;
+    }
+    Type** param_types = NULL;
+    if (param_count > 0) {
+        param_types = calloc(param_count, sizeof(Type*));
+        size_t idx = 0;
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            Type* pt = pd->type ? type_from_ast(checker, pd->type)
+                                : type_checker_get_builtin(checker, TYPE_INT32);
+            param_types[idx++] = pt;
+        }
+    }
+    Type* return_type = func->return_type
+        ? type_from_ast(checker, func->return_type)
+        : type_checker_get_builtin(checker, TYPE_VOID);
+
     // Add function to global scope first (for recursive calls and forward references)
-    Type* func_type = type_function(NULL, 0, type_checker_get_builtin(checker, TYPE_VOID)); // TODO: proper signature
+    Type* func_type = type_function(param_types, param_count, return_type);
     Variable* func_var = variable_new(func->name, func_type, func->base.pos);
     if (func_var) {
         func_var->is_initialized = 1;

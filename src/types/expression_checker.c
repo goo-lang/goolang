@@ -35,10 +35,10 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_IDENTIFIER) return NULL;
-    
+
     IdentifierNode* ident = (IdentifierNode*)expr;
     Variable* var = type_checker_lookup_variable(checker, ident->name);
-    
+
     if (!var) {
         type_error(checker, expr->pos, "Undefined variable '%s'", ident->name);
         return NULL;
