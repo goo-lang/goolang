@@ -25,7 +25,9 @@
     {"id": "M8-multi-return", "track": "M8", "status": "pending"},
     {"id": "M8-nullable", "track": "M8", "status": "pending"},
     {"id": "M8-map-literal", "track": "M8", "status": "pending"},
-    {"id": "M8-postfix-incr", "track": "M8", "status": "pending"}
+    {"id": "M8-postfix-incr", "track": "M8", "status": "pending"},
+    {"id": "V1", "track": "V1", "status": "pending"},
+    {"id": "V1-ccomp-audit", "track": "V1", "status": "pending"}
   ],
   "deps": [
     {"from": "M2", "to": "M1"},
@@ -51,6 +53,7 @@
     {"from": "M8-map-literal", "to": "M8"},
     {"from": "M8-error-unions", "to": "M8"},
     {"from": "M8-nullable", "to": "M8"},
-    {"from": "M8-postfix-incr", "to": "M8"}
+    {"from": "M8-postfix-incr", "to": "M8"},
+    {"from": "V1-ccomp-audit", "to": "V1"}
   ]
 }

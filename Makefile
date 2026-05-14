@@ -145,6 +145,22 @@ test-pipeline: $(COMPILER) $(RUNTIME_LIB)
 	$(CC) $(CFLAGS) tests/test_runner.c -o tests/test_runner
 	./tests/test_runner
 
+# V1 CompCert-compatibility audit: prints counts for the non-CompCert-
+# friendly constructs catalogued in docs/COMPCERT_AUDIT.md. Static check
+# only — doesn't run ccomp. Exits 0 (informational regression metric).
+ccomp-audit:
+	@echo "=== Goo C-source CompCert compatibility audit ==="
+	@echo "Build flag (Makefile:2):    $$(grep -E '^CFLAGS' Makefile | head -1)"
+	@echo "LLVM C API call sites:      $$(grep -rE '\bLLVMBuild|\bLLVMConst|\bLLVMType|\bLLVMAdd|\bLLVMGet' src/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo "_Atomic declarations:       $$(grep -rE '_Atomic|_Thread_local' src/ include/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo "<stdatomic.h> includes:     $$(grep -rE '<stdatomic\.h>|<threads\.h>' src/ include/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo "__attribute__ uses:         $$(grep -rE '__attribute__' src/ include/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo "__builtin_ uses:            $$(grep -rE '__builtin_' src/ include/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo "(typeof(...)){} sites:      $$(grep -rE '\(typeof\(' src/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo "C23 nullptr keyword:        $$(grep -rE '\bnullptr\b' src/ include/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo ""
+	@echo "Full report: docs/COMPCERT_AUDIT.md"
+
 # M8 Foundation Verification gate: compile + run the baseline probe,
 # which exercises basic language constructs each printing a distinct
 # PASS line. Diff against expected.txt. Used by `coord milestone-status
