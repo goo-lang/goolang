@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <math.h>
 
 // Global runtime state
 static struct {
@@ -188,8 +189,19 @@ goo_string_t goo_string_concat(goo_string_t a, goo_string_t b) {
     memcpy(result, a.data, a.length);
     memcpy(result + a.length, b.data, b.length);
     result[total_length] = '\0';
-    
+
     return (goo_string_t){result, total_length};
+}
+
+// Stdlib package backings
+
+int goo_strings_contains(const char* haystack, const char* needle) {
+    if (!haystack || !needle) return 0;
+    return strstr(haystack, needle) != NULL;
+}
+
+double goo_math_sqrt(double x) {
+    return sqrt(x);
 }
 
 // Slice operations

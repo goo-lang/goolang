@@ -64,6 +64,11 @@ goo_string_t goo_string_new_with_length(const char* data, size_t length);
 void goo_string_free(goo_string_t str);
 goo_string_t goo_string_concat(goo_string_t a, goo_string_t b);
 
+// Stdlib package backings (used by codegen to lower fmt.*, os.*,
+// strings.*, math.* calls into runtime symbols)
+int goo_strings_contains(const char* haystack, const char* needle);
+double goo_math_sqrt(double x);
+
 // Slice operations
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity);
 void goo_slice_free(goo_slice_t slice);
