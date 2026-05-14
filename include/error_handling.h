@@ -1,6 +1,7 @@
 #ifndef ERROR_HANDLING_H
 #define ERROR_HANDLING_H
 
+#include "ccomp_shim.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -16,7 +17,7 @@ _Static_assert(sizeof(bool) == 1, "bool should be 1 byte");
 // =============================================================================
 
 // Error categories for classification
-typedef enum : unsigned char {
+typedef enum GOO_ENUM_U8 {
     ERROR_CATEGORY_MEMORY = 0,      // Memory allocation, bounds, etc.
     ERROR_CATEGORY_IO,              // File I/O, network, etc.  
     ERROR_CATEGORY_LOGIC,           // Logic errors, assertions
@@ -29,7 +30,7 @@ typedef enum : unsigned char {
 } ErrorCategory;
 
 // Error severity levels
-typedef enum : unsigned char {
+typedef enum GOO_ENUM_U8 {
     ERROR_SEVERITY_INFO = 0,        // Informational, can continue
     ERROR_SEVERITY_WARNING,         // Warning, should investigate
     ERROR_SEVERITY_ERROR,           // Error, operation failed
@@ -39,7 +40,7 @@ typedef enum : unsigned char {
 } ErrorSeverity;
 
 // Error handling strategies
-typedef enum : unsigned char {
+typedef enum GOO_ENUM_U8 {
     ERROR_STRATEGY_PROPAGATE = 0,   // Propagate error up call stack
     ERROR_STRATEGY_RECOVER,         // Attempt recovery
     ERROR_STRATEGY_RETRY,           // Retry operation
@@ -50,7 +51,7 @@ typedef enum : unsigned char {
 } ErrorStrategy;
 
 // Exception safety guarantees
-typedef enum : unsigned char {
+typedef enum GOO_ENUM_U8 {
     EXCEPTION_SAFETY_NONE = 0,      // No guarantees
     EXCEPTION_SAFETY_BASIC,         // Basic guarantee (no leaks)
     EXCEPTION_SAFETY_STRONG,        // Strong guarantee (rollback)

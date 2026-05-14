@@ -1,6 +1,7 @@
 #ifndef CONTRACTS_H
 #define CONTRACTS_H
 
+#include "ccomp_shim.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -16,7 +17,7 @@ _Static_assert(sizeof(bool) == 1, "bool should be 1 byte");
 #endif
 
 // Contract types using C23 enum features
-typedef enum : unsigned char {
+typedef enum GOO_ENUM_U8 {
     CONTRACT_PRECONDITION = 0,    // requires clause
     CONTRACT_POSTCONDITION,       // ensures clause
     CONTRACT_INVARIANT,           // loop invariant

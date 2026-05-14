@@ -34,6 +34,17 @@
 // storage degrades to plain static.
 #define __thread
 
+// C23 enum-with-underlying-type. Used in contracts.h / error_handling.h
+// to pack enum values into a byte. CompCert is C99 + no C23 — under
+// the shim the enum widens to int (C99's default), which is
+// semantically equivalent for value access but takes 4 bytes
+// per slot instead of 1. Acceptable for the V1 build (the binary
+// it produces only needs to be observationally correct, not
+// byte-identical).
+#define GOO_ENUM_U8
+#define GOO_ENUM_U16
+#define GOO_ENUM_U32
+
 // _Atomic(T) parametrized form — used in 2 sites in shared_variables.h
 // to atomic-qualify void* / size_t. Under the shim we drop the
 // qualifier (single-thread runtime). Defined as a macro so the
@@ -116,6 +127,11 @@ typedef struct { _Atomic _Bool _flag; } atomic_flag;
 #include <stdatomic.h>
 #define GOO_ATOMIC_PTR    _Atomic(void*)
 #define GOO_ATOMIC_SIZE_T _Atomic(size_t)
+
+// On gcc/clang (C23-aware) we preserve the packed enum width.
+#define GOO_ENUM_U8  : unsigned char
+#define GOO_ENUM_U16 : unsigned short
+#define GOO_ENUM_U32 : unsigned int
 
 #endif  // __COMPCERT__
 
