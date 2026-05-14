@@ -583,13 +583,52 @@ int type_check_if_stmt(TypeChecker* checker, ASTNode* stmt) {
 
 int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_FOR_STMT) return 0;
-    
+
     ForStmtNode* for_stmt = (ForStmtNode*)stmt;
-    
+
     scope_push(checker);
-    
+
     int result = 1;
-    
+
+    // For-range: register the key as int and the value (if present)
+    // as the element type of the range expression, both in scope for
+    // the body. Slice range is the supported case for M8; map/string
+    // range deferred.
+    if (for_stmt->range_expr) {
+        Type* range_type = type_check_expression(checker, for_stmt->range_expr);
+        if (!range_type) {
+            scope_pop(checker);
+            return 0;
+        }
+        Type* elem_type = NULL;
+        if (range_type->kind == TYPE_SLICE) {
+            elem_type = range_type->data.slice.element_type;
+        } else if (range_type->kind == TYPE_ARRAY) {
+            elem_type = range_type->data.array.element_type;
+        } else {
+            type_error(checker, for_stmt->range_expr->pos,
+                      "for-range supported only on slice/array types in M8");
+            scope_pop(checker);
+            return 0;
+        }
+        if (for_stmt->key_name) {
+            Variable* kv = variable_new(for_stmt->key_name,
+                                       type_checker_get_builtin(checker, TYPE_INT32),
+                                       stmt->pos);
+            if (kv) {
+                kv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, kv);
+            }
+        }
+        if (for_stmt->value_name && elem_type) {
+            Variable* vv = variable_new(for_stmt->value_name, elem_type, stmt->pos);
+            if (vv) {
+                vv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, vv);
+            }
+        }
+    }
+
     // Check initialization
     if (for_stmt->init) {
         if (!type_check_statement(checker, for_stmt->init)) {
