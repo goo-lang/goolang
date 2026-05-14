@@ -8,5 +8,6 @@ PASS: func with args
 PASS: func returns value
 PASS: user func call
 PASS: short var decl
+PASS: struct + field access
 PASS: builtin println
 PASS: fmt.Println

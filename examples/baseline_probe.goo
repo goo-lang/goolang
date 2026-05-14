@@ -20,9 +20,13 @@ func add(a int, b int) int {
 // single type or `(type)` — no `(int, int)` shape. Would need a
 // grammar change to func_result + tuple-handling in codegen.
 
-// Struct types DEFERRED: `type Point struct { … }` isn't parseable.
-// The grammar's `type` rule has no struct_type alternative (parser.y:985),
-// even though TYPE_STRUCT exists in the type system. Tracked: goolang:M8-struct.
+// Struct types: declaration + field access work end-to-end (M8-struct).
+// Struct literal `Point{x: 3, y: 4}` isn't in the grammar yet, so the
+// probe uses `var p Point` (zero-initialized) and tests field read.
+type Point struct {
+    x int
+    y int
+}
 
 // Error unions DEFERRED: `error()` builtin isn't registered in the
 // type checker, `try` lowering hasn't been wired through codegen,
@@ -123,8 +127,13 @@ func main() {
     // with block syntax anyway). Go's `map[string]int{...}` may or may
     // not work; tracked separately.
 
-    // 14. struct type + field access — DEFERRED (no PASS).
-    // type X struct { ... } isn't in the grammar.
+    // 14. struct type + field access (literal still deferred — use var)
+    var pt Point
+    if pt.x == 0 {
+        if pt.y == 0 {
+            fmt.Println("PASS: struct + field access")
+        }
+    }
 
     // 15. error union + try — DEFERRED (see top-of-file note).
     // 16. nullable + if-let — DEFERRED (see top-of-file note).
