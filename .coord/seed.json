@@ -1,5 +1,5 @@
 {
-  "comment": "Goolang compiler milestones. Two layers: phase milestones M1–M6 (historical, done), and active work split across M7 (production-readiness; in flight, with M7-stdlib-expansion shipped 2026-05-14) and M8–M10 (a 'is this language actually usable' track surfaced after M7-stdlib-expansion exposed how narrow the working baseline really is). status enum: pending|in-progress|blocked|done|deferred|cancelled. Coord seed is additive; statuses on already-existing tasks are NOT overwritten — re-running this file is safe.",
+  "comment": "Goolang compiler milestones. Three layers: phase milestones M1–M6 (historical, done), production-readiness work under M7 (with M7-stdlib-expansion shipped 2026-05-14), and the usability track M8–M10. M8 Foundation Verification shipped 2026-05-14 with 12 baseline constructs landing end-to-end; the 8 deferred constructs are tracked as M8-* children, listed below in leverage order (highest leverage first): M8-struct, M8-slice-literal, M8-error-unions, M8-for-range, M8-multi-return, M8-nullable, M8-map-literal, M8-postfix-incr. status enum: pending|in-progress|blocked|done|deferred|cancelled. Coord seed is additive; statuses on already-existing tasks are NOT overwritten — re-running this file is safe.",
   "tasks": [
     {"id": "M1", "track": "M1", "status": "done"},
     {"id": "M2", "track": "M2", "status": "done"},
@@ -18,13 +18,13 @@
     {"id": "M8", "track": "M8", "status": "pending"},
     {"id": "M9", "track": "M9", "status": "pending"},
     {"id": "M10", "track": "M10", "status": "pending"},
-    {"id": "M8-multi-return", "track": "M8", "status": "pending"},
     {"id": "M8-struct", "track": "M8", "status": "pending"},
-    {"id": "M8-for-range", "track": "M8", "status": "pending"},
     {"id": "M8-slice-literal", "track": "M8", "status": "pending"},
-    {"id": "M8-map-literal", "track": "M8", "status": "pending"},
     {"id": "M8-error-unions", "track": "M8", "status": "pending"},
+    {"id": "M8-for-range", "track": "M8", "status": "pending"},
+    {"id": "M8-multi-return", "track": "M8", "status": "pending"},
     {"id": "M8-nullable", "track": "M8", "status": "pending"},
+    {"id": "M8-map-literal", "track": "M8", "status": "pending"},
     {"id": "M8-postfix-incr", "track": "M8", "status": "pending"}
   ],
   "deps": [
