@@ -118,9 +118,13 @@ func main() {
         fmt.Println("PASS: short var decl")
     }
 
-    // 12. slice literal — DEFERRED (no PASS).
-    // `[10, 20, 30]` doesn't parse. Goo syntax for slice literals
-    // is unclear and the grammar has no obvious slice-lit rule.
+    // 12. slice literal + indexing + len() (M8-slice-literal)
+    sl := [10, 20, 30]
+    if sl[1] == 20 {
+        if len(sl) == 3 {
+            fmt.Println("PASS: slice lit + index + len")
+        }
+    }
 
     // 13. map literal — DEFERRED (no PASS).
     // `{"a": 1, "b": 2}` syntax isn't in the grammar (and braces collide
