@@ -65,7 +65,11 @@ OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
 
 # Runtime library
 RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o
+# Runtime library must include every translation unit referenced by
+# the runtime entrypoints. runtime.o's goo_init/goo_exit call into
+# deadlock.o, and concurrency.o calls channels/sync/platform — leaving
+# any of these out fails the link of even a hello-world executable.
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/deadlock.o
 
 # Main targets
 COMPILER = $(BINDIR)/goo
