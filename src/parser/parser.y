@@ -909,10 +909,14 @@ primary_expr:
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }
     | kernel_launch { $$ = $1; }
-    | gpu_memory_alloc { $$ = $1; }
-    | gpu_memory_copy { $$ = $1; }
-    | gpu_sync { $$ = $1; }
-    | gpu_intrinsic { $$ = $1; }
+    /* gpu_memory_alloc, gpu_memory_copy, gpu_sync, and gpu_intrinsic
+       deliberately disabled in primary_expr: each matched a generic
+       identifier.identifier(…) shape (only checking "is this cuda.*?"
+       at semantic-action time), which collided with selector_expr for
+       every package method call. fmt.Println() was reduced to gpu_sync
+       and failed with "Unknown GPU sync function". GPU constructs need
+       a syntactic context marker before they can re-enter primary_expr.
+       kernel_launch is kept because it has the unique <<<…>>> marker. */
     | LPAREN expression RPAREN { $$ = $2; }
     ;
 
