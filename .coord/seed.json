@@ -50,6 +50,7 @@
     {"id": "M11-engine-recursion-audit", "track": "M11", "status": "pending"},
     {"id": "M11-engine-recursion-spike", "track": "M11", "status": "pending"},
     {"id": "M11-engine-recursion-impl", "track": "M11", "status": "pending"},
+    {"id": "M11-types-const-fn-bind", "track": "M11", "status": "pending"},
     {"id": "M9-fmt-println-int", "track": "M9", "status": "pending"},
     {"id": "M9-const-ref-load", "track": "M9", "status": "pending"},
     {"id": "M7-test-makefile-cleanup", "track": "M7", "status": "pending"}
@@ -103,6 +104,8 @@
     {"from": "M11-engine-recursion-audit", "to": "M11-engine-recursion"},
     {"from": "M11-engine-recursion-spike", "to": "M11-engine-recursion-audit"},
     {"from": "M11-engine-recursion-impl", "to": "M11-engine-recursion-spike"},
+    {"from": "M11-types-const-fn-bind", "to": "M11-engine-recursion-impl"},
+    {"from": "M11-types-const-fn-bind", "to": "M9-const-ref-load"},
     {"from": "M9-fmt-println-int", "to": "M9"},
     {"from": "M9-const-ref-load", "to": "M9"},
     {"from": "M7-test-makefile-cleanup", "to": "M6"}

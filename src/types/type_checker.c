@@ -211,6 +211,26 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
         }
     }
     
+    // Pre-pass: register every top-level function in the comptime engine
+    // context so an `is_comptime` const RHS like `fib(10)` can resolve user-
+    // defined calls regardless of decl ordering. Mirrors the type checker's
+    // own forward-reference handling in type_check_function_decl (which adds
+    // the function to scope before walking its body). Without this, the
+    // engine's lookup_func returns NULL and comptime const evaluation falls
+    // through to the codegen's "must be compile-time constant" rejection.
+    if (prog->decls && checker->comptime_type_ctx
+                    && checker->comptime_type_ctx->comptime_ctx) {
+        ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
+        for (ASTNode* d = prog->decls; d; d = d->next) {
+            if (d->type == AST_FUNC_DECL) {
+                FuncDeclNode* func = (FuncDeclNode*)d;
+                if (func->name) {
+                    comptime_context_bind_func(ctx, func->name, d);
+                }
+            }
+        }
+    }
+
     // Type check declarations
     if (prog->decls) {
         ASTNode* decl = prog->decls;
@@ -221,7 +241,7 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
             decl = decl->next;
         }
     }
-    
+
     return checker->error_count == 0;
 }
 
