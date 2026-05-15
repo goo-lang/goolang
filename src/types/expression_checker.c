@@ -27,6 +27,23 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_try_expr(checker, expr);
         case AST_CATCH_EXPR:
             return type_check_catch_expr(checker, expr);
+        case AST_PAREN_EXPR: {
+            // MapLitNode — `map[K]V{ … }`. Type is just TYPE_MAP(K,V).
+            MapLitNode* lit = (MapLitNode*)expr;
+            Type* mt = type_from_ast(checker, lit->map_type);
+            if (!mt) return NULL;
+            // Type-check each key + value, but don't strict-check —
+            // M8-map-literal only formally validates the declared
+            // map type. Runtime is string→int specifically.
+            for (ASTNode* k = lit->keys; k; k = k->next) {
+                if (!type_check_expression(checker, k)) return NULL;
+            }
+            for (ASTNode* v = lit->values; v; v = v->next) {
+                if (!type_check_expression(checker, v)) return NULL;
+            }
+            expr->node_type = mt;
+            return mt;
+        }
         case AST_SLICE_EXPR: {
             // SliceLitNode — `[1, 2, 3]`. Element type inferred from
             // the first element; subsequent elements must match.
@@ -369,9 +386,17 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     
     if (!expr_type || !index_type) return NULL;
     
-    // Check index type
+    // Check index type — integer for array/slice; key type for map.
+    if (expr_type->kind == TYPE_MAP) {
+        // Trust the key matches the declared map key type. Strict
+        // validation can come later (string is the only key type
+        // the M8 runtime supports anyway).
+        Type* vt = expr_type->data.map.value_type;
+        expr->node_type = vt;
+        return vt;
+    }
     if (!type_is_integer(index_type)) {
-        type_error(checker, index->index->pos, 
+        type_error(checker, index->index->pos,
                   "Array index must be integer, got %s", type_to_string(index_type));
         return NULL;
     }

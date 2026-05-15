@@ -168,6 +168,22 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
                              LLVMDoubleTypeInContext(codegen->context), params, 1);
     }
 
+    // GooMapSI* goo_map_new_si(void)
+    {
+        add_runtime_function(codegen, "goo_map_new_si", ptr_type, NULL, 0);
+    }
+    // void goo_map_set_si(GooMapSI*, const char*, int)
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type, LLVMInt32TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_map_set_si", void_type, params, 3);
+    }
+    // int goo_map_get_si(GooMapSI*, const char*)
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_map_get_si",
+                             LLVMInt32TypeInContext(codegen->context), params, 2);
+    }
+
     // Slice operations
     // goo_slice_t goo_slice_new(size_t element_size, size_t capacity)
     {

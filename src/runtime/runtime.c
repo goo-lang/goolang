@@ -204,6 +204,44 @@ double goo_math_sqrt(double x) {
     return sqrt(x);
 }
 
+// Map runtime: linked-list {string → int}. Linear scan.
+typedef struct GooMapEntrySI {
+    const char* key;
+    int value;
+    struct GooMapEntrySI* next;
+} GooMapEntrySI;
+
+GooMapSI* goo_map_new_si(void) {
+    GooMapSI* m = goo_alloc(sizeof(GooMapSI));
+    if (m) m->head = NULL;
+    return m;
+}
+
+void goo_map_set_si(GooMapSI* m, const char* k, int v) {
+    if (!m || !k) return;
+    GooMapEntrySI* e = (GooMapEntrySI*)m->head;
+    while (e) {
+        if (strcmp(e->key, k) == 0) { e->value = v; return; }
+        e = e->next;
+    }
+    e = goo_alloc(sizeof(GooMapEntrySI));
+    if (!e) return;
+    e->key = k;
+    e->value = v;
+    e->next = (GooMapEntrySI*)m->head;
+    m->head = e;
+}
+
+int goo_map_get_si(GooMapSI* m, const char* k) {
+    if (!m || !k) return 0;
+    GooMapEntrySI* e = (GooMapEntrySI*)m->head;
+    while (e) {
+        if (strcmp(e->key, k) == 0) return e->value;
+        e = e->next;
+    }
+    return 0;  // zero-value default
+}
+
 // Slice operations
 
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {

@@ -69,6 +69,18 @@ goo_string_t goo_string_concat(goo_string_t a, goo_string_t b);
 int goo_strings_contains(const char* haystack, const char* needle);
 double goo_math_sqrt(double x);
 
+// Minimum-viable map for `map[string]int{...}` literals + indexing
+// (M8-map-literal). Linear-scan linked list — performance is not the
+// point; correctness for the probe is. Generic maps and richer key
+// types are future work.
+struct GooMapEntrySI;
+typedef struct GooMapSI {
+    struct GooMapEntrySI* head;
+} GooMapSI;
+GooMapSI* goo_map_new_si(void);
+void goo_map_set_si(GooMapSI* m, const char* k, int v);
+int goo_map_get_si(GooMapSI* m, const char* k);
+
 // Slice operations
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity);
 void goo_slice_free(goo_slice_t slice);

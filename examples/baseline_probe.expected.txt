@@ -11,6 +11,7 @@ PASS: multi-return
 PASS: user func call
 PASS: short var decl
 PASS: slice lit + index + len
+PASS: map lit + key access
 PASS: struct + field access
 PASS: error union + try
 PASS: nullable + if-let

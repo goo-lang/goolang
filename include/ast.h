@@ -507,6 +507,19 @@ typedef struct {
     struct ASTNode* elements;
 } SliceLitNode;
 
+// Map literal: `map[K]V{k: v, …}`. Tagged AST_PAREN_EXPR — that
+// enum slot was reserved for parenthesized expressions (which Goo
+// actually parses inline as identity, so the slot was unused).
+// Keys and values are paired: keys[i] and values[i] are kept as
+// two parallel `next`-chained lists at parse time, walked together
+// at type-check / codegen.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* map_type;     // AST_MAP_TYPE — declared K/V
+    struct ASTNode* keys;         // expression list (chained via next)
+    struct ASTNode* values;       // expression list (chained via next)
+} MapLitNode;
+
 // Goo Extensions
 
 // Error union type (!T)

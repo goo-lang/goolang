@@ -46,6 +46,40 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_mmio_access(codegen, checker, expr);
         case AST_SLICE_EXPR:
             return codegen_generate_slice_lit(codegen, checker, expr);
+        case AST_PAREN_EXPR: {
+            // MapLitNode — `map[K]V{ … }`. Lowers to:
+            //   m = goo_map_new_si()
+            //   for each (k,v): goo_map_set_si(m, k_ptr, v)
+            // Returns the GooMapSI* as a raw ptr-typed value.
+            MapLitNode* lit = (MapLitNode*)expr;
+            LLVMValueRef new_fn = LLVMGetNamedFunction(codegen->module, "goo_map_new_si");
+            LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, "goo_map_set_si");
+            if (!new_fn || !set_fn) {
+                codegen_error(codegen, expr->pos, "map runtime symbols missing");
+                return NULL;
+            }
+            LLVMValueRef m = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(new_fn),
+                                            new_fn, NULL, 0, "map_new");
+            ASTNode* k = lit->keys;
+            ASTNode* v = lit->values;
+            while (k && v) {
+                ValueInfo* kv = codegen_generate_expression(codegen, checker, k);
+                ValueInfo* vv = codegen_generate_expression(codegen, checker, v);
+                if (!kv || !vv) return NULL;
+                LLVMValueRef kp = kv->llvm_value;
+                if (kv->goo_type && kv->goo_type->kind == TYPE_STRING) {
+                    kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
+                }
+                LLVMValueRef args[3] = { m, kp, vv->llvm_value };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn),
+                              set_fn, args, 3, "");
+                value_info_free(kv);
+                value_info_free(vv);
+                k = k->next;
+                v = v->next;
+            }
+            return value_info_new(NULL, m, expr->node_type);
+        }
         default:
             codegen_error(codegen, expr->pos, "Unknown expression type for code generation");
             return NULL;
@@ -665,7 +699,28 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
     Type* base_type = base_val->goo_type;
     Type* element_type = NULL;
     LLVMValueRef result = NULL;
-    
+
+    // Map indexing fast-path: lower `m[k]` to goo_map_get_si.
+    // The map runtime is the minimum-viable string→int variant.
+    if (base_type && base_type->kind == TYPE_MAP) {
+        LLVMValueRef get_fn = LLVMGetNamedFunction(codegen->module, "goo_map_get_si");
+        if (!get_fn) {
+            codegen_error(codegen, expr->pos, "goo_map_get_si missing");
+            value_info_free(base_val); value_info_free(index_val);
+            return NULL;
+        }
+        LLVMValueRef kp = index_val->llvm_value;
+        if (index_val->goo_type && index_val->goo_type->kind == TYPE_STRING) {
+            kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
+        }
+        LLVMValueRef args[2] = { base_val->llvm_value, kp };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
+                                get_fn, args, 2, "map_get");
+        value_info_free(base_val);
+        value_info_free(index_val);
+        return value_info_new(NULL, result, base_type->data.map.value_type);
+    }
+
     // Handle different indexed types
     switch (base_type->kind) {
         case TYPE_ARRAY: {

@@ -91,6 +91,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> struct_type struct_field_list struct_field
 %type <node> slice_lit
 %type <node> multi_return_type_list
+%type <node> map_lit map_entry_list map_entry
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -1062,6 +1063,7 @@ primary_expr:
     | index_expr { $$ = $1; }
     | selector_expr { $$ = $1; }
     | slice_lit { $$ = $1; }
+    | map_lit { $$ = $1; }
     /* All GPU constructs deliberately disabled in primary_expr.
        kernel_launch (identifier LT LT LT … GT GT GT (…)) was removed
        because bison can't disambiguate `i < 10` from the start of a
@@ -1205,6 +1207,66 @@ struct_field:
         field->values = NULL;
         ast_node_free($1);
         $$ = (ASTNode*)field;
+    }
+    ;
+
+// map[K]V{k: v, …} — tagged AST_PAREN_EXPR (unused enum slot).
+// keys and values are stored as two parallel `next`-chained lists.
+map_lit:
+    map_type LBRACE map_entry_list RBRACE {
+        MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
+        lit->base.type = AST_PAREN_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->map_type = $1;
+        lit->keys = $3;  // map_entry_list returns the keys head
+        lit->values = (ASTNode*)((ASTNode*)$3)->node_type;  // values stashed on key.node_type
+        // node_type field repurposed as a side-channel for the
+        // parallel values list head; cleared after extraction so
+        // type_check / codegen don't see it.
+        ((ASTNode*)$3)->node_type = NULL;
+        $$ = (ASTNode*)lit;
+    }
+    | map_type LBRACE RBRACE {
+        MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
+        lit->base.type = AST_PAREN_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->map_type = $1;
+        lit->keys = NULL;
+        lit->values = NULL;
+        $$ = (ASTNode*)lit;
+    }
+    ;
+
+map_entry_list:
+    map_entry { $$ = $1; }
+    | map_entry_list COMMA map_entry {
+        // Append key to keys-chain; append value to values-chain
+        // (the values-chain head is stashed on the keys-list-head's
+        // node_type field so we can recover both from one stack
+        // value).
+        ASTNode* keys_head = $1;
+        ASTNode* values_head = (ASTNode*)keys_head->node_type;
+        ASTNode* new_key = $3;
+        ASTNode* new_val = (ASTNode*)new_key->node_type;
+        new_key->node_type = NULL;
+        ast_add_child(keys_head, new_key);
+        ast_add_child(values_head, new_val);
+        $$ = keys_head;
+    }
+    ;
+
+map_entry:
+    expression COLON expression {
+        // The KEY node is returned. The matching VALUE is stashed
+        // on key->node_type as a side-channel; map_entry_list
+        // extracts and re-chains it into a parallel values list.
+        ASTNode* k = $1;
+        k->node_type = (Type*)$3;
+        $$ = k;
     }
     ;
 

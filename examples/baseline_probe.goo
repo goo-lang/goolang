@@ -143,10 +143,11 @@ func main() {
         }
     }
 
-    // 13. map literal — DEFERRED (no PASS).
-    // `{"a": 1, "b": 2}` syntax isn't in the grammar (and braces collide
-    // with block syntax anyway). Go's `map[string]int{...}` may or may
-    // not work; tracked separately.
+    // 13. map literal + key access (M8-map-literal)
+    pm := map[string]int{"a": 1, "b": 2}
+    if pm["a"] == 1 {
+        fmt.Println("PASS: map lit + key access")
+    }
 
     // 14. struct type + field access (literal still deferred — use var)
     var pt Point
