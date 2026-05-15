@@ -65,6 +65,13 @@ static TokenType bison_token_to_token_type(int bison_token);
 
 // Delimiters
 %token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
+// LBRACE_BODY: context-sensitive variant emitted by the lexer bridge in place
+// of LBRACE when the bridge's frame stack says "this `{` closes a cond/match/
+// select context that's been pinned open by a preceding IF/FOR/MATCH/SELECT
+// at depth 0." struct_lit's grammar accepts only LBRACE, so the IDENT.LBRACE
+// shift/reduce ambiguity never arises at the cond/body boundary. See
+// docs/M10_GRAMMAR_DECISION.md + docs/M10_LEXER_LAYER_PROBE.md.
+%token LBRACE_BODY
 %token SEMICOLON COMMA DOT COLON ELLIPSIS
 %token NEWLINE
 
@@ -92,6 +99,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> slice_lit
 %type <node> multi_return_type_list
 %type <node> map_lit map_entry_list map_entry
+%type <node> struct_lit struct_lit_inits struct_lit_init
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -679,6 +687,18 @@ block:
         BlockStmtNode* block = ast_block_stmt_new(get_current_position());
         $$ = (ASTNode*)block;
     }
+    /* LBRACE_BODY variants: identical AST, different brace token. The lexer
+       bridge emits LBRACE_BODY in place of LBRACE when we're transitioning
+       from cond/match/select context into the body — see M10 design docs. */
+    | LBRACE_BODY statement_list RBRACE {
+        BlockStmtNode* block = ast_block_stmt_new(get_current_position());
+        block->statements = $2;
+        $$ = (ASTNode*)block;
+    }
+    | LBRACE_BODY RBRACE {
+        BlockStmtNode* block = ast_block_stmt_new(get_current_position());
+        $$ = (ASTNode*)block;
+    }
     ;
 
 statement_list:
@@ -912,6 +932,14 @@ select_stmt:
         select_node->cases = $3;
         $$ = (ASTNode*)select_node;
     }
+    /* SELECT pushes a SELECT_COND frame; the bridge emits LBRACE_BODY for
+       the immediately-following `{`. Both forms accepted so a bridge bug
+       doesn't break select parsing. */
+    | SELECT LBRACE_BODY select_case_list RBRACE {
+        SelectStmtNode* select_node = ast_select_stmt_new(get_current_position());
+        select_node->cases = $3;
+        $$ = (ASTNode*)select_node;
+    }
     ;
 
 select_case_list:
@@ -1072,6 +1100,7 @@ primary_expr:
     | selector_expr { $$ = $1; }
     | slice_lit { $$ = $1; }
     | map_lit { $$ = $1; }
+    | struct_lit { $$ = $1; }
     /* All GPU constructs deliberately disabled in primary_expr.
        kernel_launch (identifier LT LT LT … GT GT GT (…)) was removed
        because bison can't disambiguate `i < 10` from the start of a
@@ -1246,6 +1275,73 @@ map_lit:
         lit->keys = NULL;
         lit->values = NULL;
         $$ = (ASTNode*)lit;
+    }
+    ;
+
+/* M10 struct literal: `Point{x: 3, y: 4}` (keyed) or `Point{3, 4}` (positional).
+   The IDENT.LBRACE shape conflicts with `if X { body }`; resolved at the lexer
+   level — the bridge emits LBRACE_BODY for cond-body braces, so struct_lit's
+   plain LBRACE is only matched outside cond contexts (or inside parens).
+   See docs/M10_GRAMMAR_DECISION.md. Type-check + codegen ship as a separate
+   M10-struct-literal-impl child. */
+struct_lit:
+    identifier LBRACE struct_lit_inits RBRACE {
+        IdentifierNode* type_ident = (IdentifierNode*)$1;
+        StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
+        lit->base.type = AST_STRUCT_LITERAL;
+        lit->base.pos = get_current_position();
+        lit->type_name = strdup(type_ident->name);
+        ast_node_free($1);
+        ASTNode* head = $3;
+        lit->is_keyed = (head && head->node_type == (Type*)(intptr_t)1) ? 1 : 0;
+        if (head) head->node_type = NULL;
+        lit->field_values = head;
+        lit->field_names = NULL;
+        lit->field_count = 0;
+        for (ASTNode* a = head; a; a = a->next) lit->field_count++;
+        $$ = (ASTNode*)lit;
+    }
+    | identifier LBRACE RBRACE {
+        IdentifierNode* type_ident = (IdentifierNode*)$1;
+        StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
+        lit->base.type = AST_STRUCT_LITERAL;
+        lit->base.pos = get_current_position();
+        lit->type_name = strdup(type_ident->name);
+        ast_node_free($1);
+        lit->is_keyed = 0;
+        lit->field_values = NULL;
+        lit->field_names = NULL;
+        lit->field_count = 0;
+        $$ = (ASTNode*)lit;
+    }
+    ;
+
+struct_lit_inits:
+    struct_lit_init { $$ = $1; }
+    | struct_lit_inits COMMA struct_lit_init {
+        /* Propagate is_keyed flag (stashed on head->node_type low bit) when
+           the chain grows. The flag is read by struct_lit's reducer. */
+        Type* keyed = ((ASTNode*)$1)->node_type;
+        ast_add_child($1, $3);
+        if ($3->node_type == (Type*)(intptr_t)1) keyed = (Type*)(intptr_t)1;
+        ((ASTNode*)$1)->node_type = keyed;
+        $$ = $1;
+    }
+    ;
+
+struct_lit_init:
+    expression {
+        /* Positional init. node_type=NULL signals "not keyed." */
+        $$ = $1;
+        $$->node_type = NULL;
+    }
+    | identifier COLON expression {
+        /* Keyed init. The first M10-struct-literal-impl child will refine
+           the AST to preserve key names; the spike grammar discards them
+           with a TODO so type-check rejection is clean. */
+        ast_node_free($1);
+        $$ = $3;
+        $$->node_type = (Type*)(intptr_t)1;
     }
     ;
 
@@ -1776,6 +1872,13 @@ gpu_memory_qualifier:
 // Pattern matching
 match_expr:
     MATCH expression LBRACE match_case_list RBRACE {
+        MatchExprNode* match_node = ast_match_expr_new($2, $4, get_current_position());
+        $$ = (ASTNode*)match_node;
+    }
+    /* MATCH pushes a MATCH_COND frame so `match Point{x:1} { ... }` works:
+       the inner `{` of the struct_lit gets plain LBRACE (paren_depth check
+       in the bridge), the outer match body `{` gets LBRACE_BODY. */
+    | MATCH expression LBRACE_BODY match_case_list RBRACE {
         MatchExprNode* match_node = ast_match_expr_new($2, $4, get_current_position());
         $$ = (ASTNode*)match_node;
     }

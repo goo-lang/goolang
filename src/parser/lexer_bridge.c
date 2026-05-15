@@ -15,6 +15,62 @@ extern YYSTYPE yylval;
 // Bison parser function
 extern int yyparse(void);
 
+// M10 composite-literal disambiguation: lexer-layer frame stack.
+// See docs/M10_LEXER_LAYER_PROBE.md and docs/M10_GRAMMAR_DECISION.md.
+//
+// The bridge tracks a stack of "cond frames" pushed when emitting IF/FOR/
+// MATCH/SELECT/SWITCH and popped when a `{` arrives at the same paren_depth
+// the frame was pushed at. The popping `{` is emitted as LBRACE_BODY rather
+// than LBRACE; only `block`, `match_expr`, and `select_stmt` accept it, so
+// struct_lit (`identifier LBRACE ...`) cannot match at the cond/body
+// boundary. Inside parens or brackets, paren_depth rises and the frame
+// doesn't fire — so `if (Foo{x:1}.y > 0)` works and `for k := range []int{1,2,3}`
+// works (the `[]int{...}` brace is at paren_depth >= 1 due to the leading `[`).
+//
+// IF_COND has a special transition: a guard-condition `case Foo if x > 0:`
+// terminates with COLON, not LBRACE. Without this, the IF frame leaks past
+// the case and the next statement's first `{` gets wrongly recolored.
+
+#define M10_FRAME_KIND_IF      1
+#define M10_FRAME_KIND_FOR     2
+#define M10_FRAME_KIND_MATCH   3
+#define M10_FRAME_KIND_SELECT  4
+#define M10_FRAME_KIND_SWITCH  5
+
+typedef struct {
+    int kind;
+    int paren_depth_at_push;
+} M10CondFrame;
+
+#define M10_MAX_FRAMES 64
+static M10CondFrame m10_frame_stack[M10_MAX_FRAMES];
+static int m10_frame_top = -1;
+static int m10_paren_depth = 0;
+
+static void m10_push_frame(int kind) {
+    if (m10_frame_top + 1 >= M10_MAX_FRAMES) {
+        // Overflow: silently no-op. Realistically unreachable (would require
+        // ~64 levels of nested if/for, which the parser would reject anyway
+        // on recursion-limit grounds elsewhere). Documented for the audit.
+        return;
+    }
+    m10_frame_top++;
+    m10_frame_stack[m10_frame_top].kind = kind;
+    m10_frame_stack[m10_frame_top].paren_depth_at_push = m10_paren_depth;
+}
+
+static void m10_pop_frame(void) {
+    if (m10_frame_top >= 0) m10_frame_top--;
+}
+
+// Reset the M10 state. Called from parse_input on entry so a parse error
+// in a prior invocation doesn't leak frames into the next. Also exposed
+// for LSP use (see parser_init/parser_cleanup callers in src/ide/).
+void bridge_reset_cond_state(void) {
+    m10_frame_top = -1;
+    m10_paren_depth = 0;
+}
+
 // Map our tokens to Bison tokens
 static int map_token_to_bison(TokenType type) {
     switch (type) {
@@ -40,20 +96,28 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_DEFER: return DEFER;
         case TOKEN_ELSE: return ELSE;
         case TOKEN_FALLTHROUGH: return FALLTHROUGH;
-        case TOKEN_FOR: return FOR;
+        case TOKEN_FOR:
+            m10_push_frame(M10_FRAME_KIND_FOR);
+            return FOR;
         case TOKEN_FUNC: return FUNC;
         case TOKEN_GO: return GO;
         case TOKEN_GOTO: return GOTO;
-        case TOKEN_IF: return IF;
+        case TOKEN_IF:
+            m10_push_frame(M10_FRAME_KIND_IF);
+            return IF;
         case TOKEN_IMPORT: return IMPORT;
         case TOKEN_INTERFACE: return INTERFACE;
         case TOKEN_MAP: return MAP;
         case TOKEN_PACKAGE: return PACKAGE;
         case TOKEN_RANGE: return RANGE;
         case TOKEN_RETURN: return RETURN;
-        case TOKEN_SELECT: return SELECT;
+        case TOKEN_SELECT:
+            m10_push_frame(M10_FRAME_KIND_SELECT);
+            return SELECT;
         case TOKEN_STRUCT: return STRUCT;
-        case TOKEN_SWITCH: return SWITCH;
+        case TOKEN_SWITCH:
+            m10_push_frame(M10_FRAME_KIND_SWITCH);
+            return SWITCH;
         case TOKEN_TYPE: return TYPE;
         case TOKEN_VAR: return VAR;
         
@@ -119,16 +183,47 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_QUESTION: return QUESTION;
         
         // Delimiters
-        case TOKEN_LPAREN: return LPAREN;
-        case TOKEN_RPAREN: return RPAREN;
-        case TOKEN_LBRACE: return LBRACE;
+        case TOKEN_LPAREN:
+            m10_paren_depth++;
+            return LPAREN;
+        case TOKEN_RPAREN:
+            if (m10_paren_depth > 0) m10_paren_depth--;
+            return RPAREN;
+        case TOKEN_LBRACE:
+            // The lookahead from this point: if there's a cond frame on top
+            // whose paren_depth_at_push matches our current paren_depth, the
+            // `{` closes that cond's expression and opens its body — emit
+            // LBRACE_BODY and pop. Otherwise it's a plain brace (struct_lit
+            // opener, nested block, etc.) — emit LBRACE.
+            if (m10_frame_top >= 0
+                && m10_frame_stack[m10_frame_top].paren_depth_at_push == m10_paren_depth) {
+                m10_pop_frame();
+                return LBRACE_BODY;
+            }
+            return LBRACE;
         case TOKEN_RBRACE: return RBRACE;
-        case TOKEN_LBRACKET: return LBRACKET;
-        case TOKEN_RBRACKET: return RBRACKET;
+        case TOKEN_LBRACKET:
+            // LBRACKET also raises paren_depth so that `[]int{1,2,3}` after
+            // an IF/FOR has its struct-lit-like brace at depth >= 1, keeping
+            // the cond frame alive until the real body brace at depth 0.
+            m10_paren_depth++;
+            return LBRACKET;
+        case TOKEN_RBRACKET:
+            if (m10_paren_depth > 0) m10_paren_depth--;
+            return RBRACKET;
         case TOKEN_SEMICOLON: return SEMICOLON;
         case TOKEN_COMMA: return COMMA;
         case TOKEN_DOT: return DOT;
-        case TOKEN_COLON: return COLON;
+        case TOKEN_COLON:
+            // Guard-condition terminator: `case Foo if x > 0:` ends with COLON
+            // instead of LBRACE. Pop the topmost IF_COND frame at the same
+            // paren_depth so it doesn't leak into the case body.
+            if (m10_frame_top >= 0
+                && m10_frame_stack[m10_frame_top].kind == M10_FRAME_KIND_IF
+                && m10_frame_stack[m10_frame_top].paren_depth_at_push == m10_paren_depth) {
+                m10_pop_frame();
+            }
+            return COLON;
         case TOKEN_ELLIPSIS: return ELLIPSIS;
         case TOKEN_NEWLINE: return NEWLINE;
         
@@ -184,12 +279,16 @@ int parse_input(const char* input, const char* filename) {
         fprintf(stderr, "Error: Failed to create lexer\n");
         return -1;
     }
-    
+
+    // Reset M10 disambiguation state so a parse error in a prior call doesn't
+    // leak frames or paren-depth into this parse.
+    bridge_reset_cond_state();
+
     int result = yyparse();
-    
+
     lexer_free(current_lexer);
     current_lexer = NULL;
-    
+
     return result;
 }
 
