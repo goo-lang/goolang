@@ -334,14 +334,21 @@ comptime-block-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi
 
 # Unit tests
-test-lexer: $(OBJS)
+# Link against $(SRC_OBJS), NOT $(OBJS): the latter includes the test
+# framework object, whose source `tests/framework/test_framework.c`
+# #includes a missing header `test/test_framework.h`. The framework is
+# unused by these unit tests (they use plain assert + stdio), so linking
+# the compiler objects directly is correct and sidesteps the broken
+# include. Restoring the framework header is its own task; this target
+# does not need to wait on that work.
+test-lexer: $(SRC_OBJS)
 	@mkdir -p tests/unit/lexer
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/lexer/test_lexer_basic.c $(OBJS) -o tests/test_lexer $(LDFLAGS) $(LLVM_LDFLAGS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/lexer/test_lexer_basic.c $(SRC_OBJS) -o tests/test_lexer $(LDFLAGS) $(LLVM_LDFLAGS)
 	./tests/test_lexer
 
-test-codegen: $(OBJS)
+test-codegen: $(SRC_OBJS)
 	@mkdir -p tests/unit/codegen
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/codegen/test_target_detection.c $(OBJS) -o tests/test_codegen $(LDFLAGS) $(LLVM_LDFLAGS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) tests/unit/codegen/test_target_detection.c $(SRC_OBJS) -o tests/test_codegen $(LDFLAGS) $(LLVM_LDFLAGS)
 	./tests/test_codegen
 
 test-units: test-lexer test-codegen
@@ -974,8 +981,13 @@ $(REACTIVE_PROGRAMMING_DEMO): examples/reactive_programming_demo.c $(REACTIVE_PR
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# Compile-time execution test
-comptime_test: tests/test_comptime.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+# Compile-time execution test.
+# `types.c` is required because comptime.c's comptime_value_get_type calls
+# type_new. Without it the link fails with "Undefined symbols: _type_new".
+# `errors/error.c` defines goo_error_new and friends that types.c references.
+# `parser/parser_errors.c` defines parser_error which lexer.c calls via
+# the bridge; otherwise we'd see an undefined-symbol cascade.
+comptime_test: tests/test_comptime.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Compile-time types integration test
