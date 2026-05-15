@@ -101,6 +101,10 @@ typedef struct {
     ComptimeValue* value;
     ComptimeError* error;
     char* generated_code; // For @emit and code generation
+    // True when this result carries a return-statement value. Block walkers
+    // stop iterating and propagate up so subsequent statements in the same
+    // block don't overwrite the function's return value.
+    bool is_return;
 } ComptimeResult;
 
 // Core compile-time execution functions

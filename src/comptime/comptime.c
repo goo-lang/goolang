@@ -507,7 +507,8 @@ ComptimeResult* comptime_result_new(ComptimeValue* value, ComptimeError* error, 
     result->value = value;
     result->error = error;
     result->generated_code = generated_code;
-    
+    result->is_return = false;
+
     return result;
 }
 
@@ -525,6 +526,11 @@ void comptime_result_free(ComptimeResult* result) {
 static ComptimeResult* comptime_eval_binary_expr(ComptimeContext* ctx, ASTNode* expr);
 static ComptimeResult* comptime_eval_unary_expr(ComptimeContext* ctx, ASTNode* expr);
 static ComptimeResult* comptime_eval_identifier(ComptimeContext* ctx, ASTNode* expr);
+// Non-static — also called from the bridge (comptime_types.c, type_checker glue).
+// Forward-declared here because the block walker at line ~1085 calls it before
+// its definition further down the file.
+ComptimeResult* comptime_eval_statement_enhanced(ComptimeContext* ctx, ASTNode* stmt);
+ComptimeResult* comptime_eval_function_call_enhanced(ComptimeContext* ctx, ASTNode* call);
 
 // Evaluate an expression at compile time
 ComptimeResult* comptime_eval_expression(ComptimeContext* ctx, ASTNode* expr) {
@@ -551,7 +557,11 @@ ComptimeResult* comptime_eval_expression(ComptimeContext* ctx, ASTNode* expr) {
         }
         
         case AST_CALL_EXPR: {
-            return comptime_eval_function_call(ctx, expr);
+            // Route through _enhanced so user-defined function calls work.
+            // The original handler still has a TODO at line ~867 that
+            // short-circuits with "User-defined function calls not yet
+            // implemented"; _enhanced dispatches to comptime_call_user_function.
+            return comptime_eval_function_call_enhanced(ctx, expr);
         }
         
         default: {
@@ -1081,13 +1091,16 @@ ComptimeResult* comptime_eval_block(ComptimeContext* ctx, ASTNode* block) {
         return comptime_result_new(NULL, comptime_error_new("Failed to create block context", block->pos), NULL);
     }
     
-    // Execute each statement in the block
-    // For now, we'll handle the statements as a linked list or single statement
-    // This is a simplification - in practice you'd iterate through the statement list
-    if (block_node->statements) {
-        last_result = comptime_eval_statement(block_ctx, block_node->statements);
-        
-        if (last_result->error) {
+    // Walk the statement linked list. Dispatch via _enhanced so IF/FOR/RETURN
+    // statements are evaluated (the non-enhanced switch only knows EXPR/CONST/VAR).
+    // Stop and propagate immediately on error or on a return-statement result so
+    // the function's return value isn't overwritten by a trailing statement.
+    for (ASTNode* stmt = block_node->statements; stmt; stmt = stmt->next) {
+        comptime_result_free(last_result);
+        last_result = comptime_eval_statement_enhanced(block_ctx, stmt);
+
+        if (!last_result) break;
+        if (last_result->error || last_result->is_return) {
             comptime_context_free(block_ctx);
             return last_result;
         }
@@ -1182,16 +1195,20 @@ ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_
     
     func_ctx->current_recursion_depth = ctx->current_recursion_depth + 1;
     
-    // Bind function parameters to arguments
-    // Note: This is a simplified implementation. In a real implementation,
-    // we'd need to properly parse the function signature and match parameters
-    for (size_t i = 0; i < arg_count && i < 10; i++) { // Assuming max 10 params for now
-        char param_name[32];
-        snprintf(param_name, sizeof(param_name), "param_%zu", i);
-        
-        if (!comptime_context_bind_var(func_ctx, param_name, comptime_value_copy(args[i]))) {
-            comptime_context_free(func_ctx);
-            return comptime_result_new(NULL, comptime_error_new("Failed to bind function parameter", func_node->pos), NULL);
+    // Bind arguments to parameters using the parameters' real names from
+    // func->params. Each param decl is an AST_VAR_DECL with names[]/name_count,
+    // so a single decl may declare several params (e.g. `a, b int`). Walk both
+    // axes in lockstep with the flat args[] array.
+    size_t arg_idx = 0;
+    for (ASTNode* p = func->params; p && arg_idx < arg_count; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        VarDeclNode* pd = (VarDeclNode*)p;
+        for (size_t n = 0; n < pd->name_count && arg_idx < arg_count; n++) {
+            if (!comptime_context_bind_var(func_ctx, pd->names[n], comptime_value_copy(args[arg_idx]))) {
+                comptime_context_free(func_ctx);
+                return comptime_result_new(NULL, comptime_error_new("Failed to bind function parameter", func_node->pos), NULL);
+            }
+            arg_idx++;
         }
     }
     
@@ -1228,14 +1245,40 @@ ComptimeResult* comptime_eval_function_call_enhanced(ComptimeContext* ctx, ASTNo
         // Look up user-defined function
         ASTNode* func_node = comptime_context_lookup_func(ctx, func_ident->name);
         if (func_node) {
-            // Evaluate arguments
-            ComptimeValue* args[16]; // Max 16 arguments
+            // Evaluate each argument in the call site's context, threading the
+            // resulting ComptimeValue* into a flat args[] array for the callee.
+            // Args are a linked list (CallExprNode.args -> next). On any
+            // argument-evaluation error we free everything evaluated so far
+            // and bubble the error up.
+            ComptimeValue* args[16];
             size_t actual_arg_count = 0;
-            
-            // For now, assume no arguments since we don't have proper argument parsing
-            // In a real implementation, we'd parse the arguments from call_node
-            
-            return comptime_call_user_function(ctx, func_node, args, actual_arg_count);
+            for (ASTNode* a = call_node->args; a && actual_arg_count < 16; a = a->next) {
+                ComptimeResult* arg_res = comptime_eval_expression(ctx, a);
+                if (!arg_res || arg_res->error || !arg_res->value) {
+                    for (size_t i = 0; i < actual_arg_count; i++) {
+                        comptime_value_free(args[i]);
+                    }
+                    if (arg_res) return arg_res;
+                    return comptime_result_new(NULL, comptime_error_new("Argument evaluation failed", call->pos), NULL);
+                }
+                args[actual_arg_count++] = arg_res->value;
+                arg_res->value = NULL; // ownership transferred into args[]
+                comptime_result_free(arg_res);
+            }
+
+            ComptimeResult* call_res = comptime_call_user_function(ctx, func_node, args, actual_arg_count);
+
+            // The callee copied each arg into its scope (comptime_value_copy in
+            // the bind loop), so the originals here are ours to free.
+            for (size_t i = 0; i < actual_arg_count; i++) {
+                comptime_value_free(args[i]);
+            }
+
+            // A return-statement-carrying result should propagate the *value*
+            // up but not the is_return flag — the call expression is itself a
+            // value-producing expression, not a return inside the caller.
+            if (call_res) call_res->is_return = false;
+            return call_res;
         }
         
         // Function not found
@@ -1264,11 +1307,14 @@ static ComptimeResult* comptime_eval_if_stmt(ComptimeContext* ctx, ASTNode* stmt
     bool condition_true = comptime_value_is_truthy(cond_result->value);
     comptime_result_free(cond_result);
     
-    // Execute appropriate branch
+    // Execute appropriate branch via the enhanced dispatcher so block bodies
+    // (the common case — `if cond { return n }`) and nested if/for/return
+    // statements are handled. The non-enhanced dispatcher only knows
+    // EXPR/CONST/VAR_DECL.
     if (condition_true) {
-        return comptime_eval_statement(ctx, if_stmt->then_stmt);
+        return comptime_eval_statement_enhanced(ctx, if_stmt->then_stmt);
     } else if (if_stmt->else_stmt) {
-        return comptime_eval_statement(ctx, if_stmt->else_stmt);
+        return comptime_eval_statement_enhanced(ctx, if_stmt->else_stmt);
     } else {
         // No else branch, return null
         return comptime_result_new(comptime_value_new(COMPTIME_VALUE_NULL), NULL, NULL);
@@ -1378,12 +1424,13 @@ static ComptimeResult* comptime_eval_return_stmt(ComptimeContext* ctx, ASTNode* 
         if (expr_result->error) {
             return expr_result;
         }
-        
-        // Mark this result as a return value (we'd need to modify the result structure for this)
+
+        expr_result->is_return = true;
         return expr_result;
     } else {
-        // Return without value
-        return comptime_result_new(comptime_value_new(COMPTIME_VALUE_NULL), NULL, NULL);
+        ComptimeResult* res = comptime_result_new(comptime_value_new(COMPTIME_VALUE_NULL), NULL, NULL);
+        if (res) res->is_return = true;
+        return res;
     }
 }
 
@@ -1394,15 +1441,20 @@ ComptimeResult* comptime_eval_statement_enhanced(ComptimeContext* ctx, ASTNode* 
     }
     
     switch (stmt->type) {
+        case AST_BLOCK_STMT:
+            // Blocks (e.g. an if/for body) recurse into comptime_eval_block,
+            // which walks all statements and propagates is_return up.
+            return comptime_eval_block(ctx, stmt);
+
         case AST_IF_STMT:
             return comptime_eval_if_stmt(ctx, stmt);
-            
+
         case AST_FOR_STMT:
             return comptime_eval_for_stmt(ctx, stmt);
-            
+
         case AST_RETURN_STMT:
             return comptime_eval_return_stmt(ctx, stmt);
-            
+
         case AST_FUNC_DECL: {
             // Register function in context
             FuncDeclNode* func_decl = (FuncDeclNode*)stmt;
