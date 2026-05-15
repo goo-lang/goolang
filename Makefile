@@ -287,8 +287,10 @@ smoke-stdlib: $(COMPILER) $(RUNTIME_LIB)
 # assert the binary exits with code 55 (= fib(10)). Exit-code verification
 # is used instead of stdout-diff because fmt.Println(int_const) currently
 # misprints ints as ASCII chars — see docs/COMPTIME_AUDIT.md. Once the
-# Println bug is fixed, this gate could optionally check stdout too. Used
-# by `coord milestone-status M11`.
+# Println bug (M9-fmt-println-int) is fixed, this gate could optionally
+# check stdout too. Was the aspirational red gate during M11; promoted
+# into the `verify` aggregate once M11 closed, so any regression that
+# breaks compile-time fib(10) evaluation now fails the standard net.
 comptime-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	$(COMPILER) -o build/comptime_probe examples/comptime_probe.goo
@@ -301,13 +303,13 @@ comptime-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi
 
 # Aggregate verification net per `verification_gates.md`. Runs the
-# four green gates in sequence: baseline-probe, smoke-stdlib,
-# v2-bootstrap-pilot, comptime-block-probe. Exits non-zero on any
-# failure. Use this on cross-cutting changes; use individual targets
-# when iterating on a specific area. comptime-probe is intentionally
-# NOT included — it stays red until M11-engine-recursion and
-# M9-const-ref-load both land.
-verify: baseline-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe
+# five green gates in sequence: baseline-probe, smoke-stdlib,
+# v2-bootstrap-pilot, comptime-block-probe, comptime-probe. Exits
+# non-zero on any failure. Use this on cross-cutting changes; use
+# individual targets when iterating on a specific area. comptime-probe
+# was the aspirational red gate during M11 and joined the net once
+# M11 closed (commits 605acaf, 47b5ca2, d7bc61c).
+verify: baseline-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
