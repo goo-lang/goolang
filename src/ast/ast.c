@@ -43,7 +43,8 @@ static const char* ast_node_type_strings[] = {
     [AST_SLICE_EXPR] = "SliceExpr",
     [AST_TYPE_ASSERT_EXPR] = "TypeAssertExpr",
     [AST_PAREN_EXPR] = "ParenExpr",
-    
+    [AST_STRUCT_LITERAL] = "StructLiteral",
+
     [AST_BASIC_TYPE] = "BasicType",
     [AST_ARRAY_TYPE] = "ArrayType",
     [AST_SLICE_TYPE] = "SliceType",

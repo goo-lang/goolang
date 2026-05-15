@@ -119,6 +119,11 @@ typedef enum {
     AST_JS_INTEROP,        // JavaScript interop call
     AST_DOM_ACCESS,        // DOM API access
     
+    // M10: composite literals. Added at the tail so it doesn't shift the
+    // values of pre-existing enum entries — those values are baked into
+    // switch-by-int dispatches across the codebase.
+    AST_STRUCT_LITERAL,    // Point{x: 3, y: 4} and Point{3, 4}
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -519,6 +524,22 @@ typedef struct {
     struct ASTNode* keys;         // expression list (chained via next)
     struct ASTNode* values;       // expression list (chained via next)
 } MapLitNode;
+
+// Struct literal (M10): `Point{x: 3, y: 4}` or `Point{3, 4}`. Tagged
+// AST_STRUCT_LITERAL. type_name is the leading identifier; for keyed
+// form, `field_names[i]` corresponds to `field_values[i]`; for
+// positional form, field_names is NULL and only field_values is set
+// (in declared order). The keyed/positional choice is determined at
+// parse time by inspecting the first init; mixing the two forms in
+// one literal is rejected by type-check (when implemented).
+typedef struct {
+    ASTNode base;
+    char* type_name;
+    int is_keyed;                 // 1 if any init uses `name: value`, 0 if all positional
+    struct ASTNode* field_values; // expression list, parallel with field_names if keyed
+    char** field_names;           // NULL if positional; otherwise parallel array
+    size_t field_count;
+} StructLiteralNode;
 
 // Goo Extensions
 
