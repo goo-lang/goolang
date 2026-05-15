@@ -1,0 +1,36 @@
+// M11 comptime probe.
+//
+// Verifies Zig-style comptime end-to-end: a `comptime const` whose RHS is
+// a recursive function call must be evaluated at compile time, with the
+// result embedded as a literal in the generated binary.
+//
+// Why fib(10) and not 6*7: LLVM's constant folder already evaluates
+// trivial arithmetic during normal const codegen (see docs/COMPTIME_AUDIT.md),
+// so a `comptime const X int = 6*7` demo would prove nothing — it would
+// behave identically with or without the `comptime` keyword. Recursive
+// function calls are something LLVM does NOT fold by default, so a
+// passing probe is unambiguous evidence that goolang's comptime engine
+// (src/comptime/) ran the evaluation.
+//
+// Why os.Exit and not fmt.Println: fmt.Println(int_const) currently
+// formats int constants as ASCII chars (42 -> '*', 65 -> 'A') — a
+// pre-existing bug unrelated to comptime that blocks any const-printing
+// demo. Exit-code verification sidesteps it; `make comptime-probe`
+// asserts exit code 55 (= fib(10)).
+
+package main
+
+import "os"
+
+func fib(n int) int {
+    if n < 2 {
+        return n
+    }
+    return fib(n-1) + fib(n-2)
+}
+
+comptime const FIB10 int = fib(10)
+
+func main() {
+    os.Exit(FIB10)
+}

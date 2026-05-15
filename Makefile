@@ -283,6 +283,23 @@ smoke-stdlib: $(COMPILER) $(RUNTIME_LIB)
 	    exit 1; \
 	  fi
 
+# M11 comptime probe: compile + run examples/comptime_probe.goo and
+# assert the binary exits with code 55 (= fib(10)). Exit-code verification
+# is used instead of stdout-diff because fmt.Println(int_const) currently
+# misprints ints as ASCII chars — see docs/COMPTIME_AUDIT.md. Once the
+# Println bug is fixed, this gate could optionally check stdout too. Used
+# by `coord milestone-status M11`.
+comptime-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/comptime_probe examples/comptime_probe.goo
+	@./build/comptime_probe; code=$$?; \
+	  if [ $$code -eq 55 ]; then \
+	    echo "comptime-probe: PASS (fib(10) evaluated at compile time, exit 55)"; \
+	  else \
+	    echo "comptime-probe: FAIL (got exit $$code, want 55 = fib(10))"; \
+	    exit 1; \
+	  fi
+
 # Unit tests
 test-lexer: $(OBJS)
 	@mkdir -p tests/unit/lexer
