@@ -167,3 +167,77 @@ A new prerequisite emerges:
 Minimum cut for M11 MVP: **2 dispatch arms (~50 LOC total) + 1 helper function body + 1 Makefile-line fix + 1 example file**. The hard work is in deciding what the demo actually proves; the wiring itself is small.
 
 The Option α `fib(10)` demo is the cleanest path: it sidesteps the unrelated Println bug, exercises the comptime engine in a way LLVM cannot replicate, and produces a binary whose exit code is unambiguous evidence of compile-time evaluation.
+
+---
+
+## Engine reachability findings (M11-types-const-spike, 2026-05-15)
+
+Empirical probe of the comptime engine's `comptime_eval_expression` entry point via four escalating tiers. Test lives at `tests/unit/comptime/test_engine_reachability.c`; build command in the file header.
+
+### Results
+
+| Tier | Source | Result |
+|---|---|---|
+| 1 | `comptime const X int = 42` (literal) | **PASS** — returns `ComptimeValue{int=42}` |
+| 2 | `comptime const X int = 1 + 2` (arithmetic) | **PASS** — returns `ComptimeValue{int=3}` |
+| 3 | `comptime const X int = fib(2)` (function call) | **FAIL** — null value (engine stub) |
+| 4 | `comptime const X int = fib(10)` (recursive call) | **FAIL** — null value (engine stub) |
+
+### Root cause: function-call evaluation is unimplemented
+
+Two engine entry points exist for `AST_CALL_EXPR`:
+
+- **`comptime_eval_function_call`** (`src/comptime/comptime.c:805`) handles intrinsics (`@emit`, `@typeof`, `@sizeof`) but explicitly TODO's user-defined function calls at line 867:
+  ```c
+  // TODO: Implement user-defined function calls
+  return comptime_result_new(NULL, comptime_error_new(
+      "User-defined function calls not yet implemented", call->pos), NULL);
+  ```
+- **`comptime_eval_function_call_enhanced`** (`src/comptime/comptime.c:1211`) appears to *attempt* user-defined call evaluation via `comptime_call_user_function`, but its argument-passing path is also unimplemented at line 1233:
+  ```c
+  ComptimeValue* args[16]; // Max 16 arguments
+  size_t actual_arg_count = 0;
+  // For now, assume no arguments since we don't have proper argument parsing
+  // In a real implementation, we'd parse the arguments from call_node
+  return comptime_call_user_function(ctx, func_node, args, actual_arg_count);
+  ```
+
+So `fib(10)` would reach `comptime_call_user_function` with `actual_arg_count = 0` even via the "enhanced" path — `fib` gets called with no args and fails. The half-implementation is misleading because the dispatch exists but the argument plumbing doesn't.
+
+The engine *does* successfully evaluate: AST_LITERAL, AST_BINARY_EXPR, AST_IDENTIFIER, AST_UNARY_EXPR, plus control flow inside comptime blocks (AST_IF_STMT, AST_FOR_STMT — see lines 1250–1290). The capability ceiling is precisely at user-defined function calls with arguments.
+
+### Engine entry point recommendation for integrate
+
+Use **`comptime_eval_expression(ctx, rhs)`** directly. It correctly dispatches to the right specialized handlers (literal → AST_LITERAL case, arithmetic → AST_BINARY_EXPR case) without requiring a TypeChecker. The higher-level `comptime_type_evaluate` (declared at `include/types.h:440`) is a TypeChecker-coupled wrapper; the spike confirmed the lower-level pure-AST path works fine for the arithmetic/literal subset.
+
+### Verdict: degraded scope (Option 3b)
+
+The originally-planned MVP (`comptime const FIB10 int = fib(10)`) **cannot** ship via M11-types-const-integrate alone. The integration wiring is the easy part; the engine needs new code to support user-defined function calls with arguments. This is a genuine engine extension, not a dispatch tweak.
+
+Two paths from here:
+
+1. **Open `M11-engine-recursion`** as a follow-up coord task that implements argument passing in `comptime_call_user_function` and removes the line-867/1235 TODOs. M11-types-const-integrate ships with arithmetic-only dispatch; comptime-probe stays in TDD red until M11-engine-recursion lands.
+2. **Replace the MVP demo with an intrinsic-based one.** The engine handles `@sizeof` etc. — a probe like `comptime const X int = @sizeof(int)` → `os.Exit(X)` would pass through the engine via a path LLVM doesn't have. But this requires (a) adding `@`-prefixed intrinsics to the parser/lexer (may not currently work), (b) defining a Goo `int` type-sized constant target. Scope creep.
+
+**Recommendation:** path 1. Ship M11-types-const-integrate as scoped (arithmetic + literals), open M11-engine-recursion. The probe stays as the cross-cutting gate that brings both home.
+
+### Engine transitive dependencies (build artifact)
+
+The spike binary links against (in addition to test_engine_reachability.c):
+
+```
+src/comptime/comptime.c
+src/ast/ast.c
+src/lexer/lexer.c
+src/lexer/token.c
+src/parser/parser.tab.c
+src/parser/lexer_bridge.c
+src/parser/parser_errors.c
+src/types/types.c
+src/errors/error.c
+src/errors/ergonomic_errors.c
+```
+
+`src/comptime/comptime_types.c` is **not** required for direct engine reachability — it's the TypeChecker bridge layer. Dropping it from the link sidesteps `type_check_expression` / `type_check_statement` undefined symbols. The M11-types-const-integrate task will need either type_checker.c (for the bridge path) or to skip the bridge entirely and call `comptime_eval_expression` directly.
+
+`parser_init` and `parser_cleanup` are **declared in `include/parser.h:18-19` but never defined** anywhere in `src/`. Existing callers must work without them — calling either yields an unresolved-symbol error at link time. Probably another scaffolding-without-glue artifact; not blocking but worth noting for the broader audit pattern.
