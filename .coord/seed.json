@@ -32,7 +32,9 @@
     {"id": "V1-ccomp-validate", "track": "V1", "status": "pending"},
     {"id": "V1-stdatomic-cleanup", "track": "V1", "status": "pending"},
     {"id": "V1-c23-enum-cleanup", "track": "V1", "status": "pending"},
-    {"id": "V1-ccomp-link", "track": "V1", "status": "pending"}
+    {"id": "V1-ccomp-link", "track": "V1", "status": "pending"},
+    {"id": "V2", "track": "V2", "status": "pending"},
+    {"id": "V2-bootstrap-pilot", "track": "V2", "status": "pending"}
   ],
   "deps": [
     {"from": "M2", "to": "M1"},
@@ -65,6 +67,8 @@
     {"from": "V1-stdatomic-cleanup", "to": "V1-ccomp-validate"},
     {"from": "V1-c23-enum-cleanup", "to": "V1-ccomp-validate"},
     {"from": "V1-ccomp-link", "to": "V1-stdatomic-cleanup"},
-    {"from": "V1-ccomp-link", "to": "V1-c23-enum-cleanup"}
+    {"from": "V1-ccomp-link", "to": "V1-c23-enum-cleanup"},
+    {"from": "V2", "to": "V1-ccomp-link"},
+    {"from": "V2-bootstrap-pilot", "to": "V2"}
   ]
 }

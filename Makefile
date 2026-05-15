@@ -161,6 +161,27 @@ ccomp-audit:
 	@echo ""
 	@echo "Full report: docs/COMPCERT_AUDIT.md"
 
+# V2-bootstrap-pilot: build examples/tinygoo_v2.goo with bin/goo-ccomp
+# (CompCert-built compiler), run it to emit LLVM IR, link with clang,
+# verify the resulting binary prints the expected string. Proves the
+# chain Goo source → ccomp-built compiler → IR emitter → clang →
+# working executable.
+v2-bootstrap-pilot: ccomp-build
+	@mkdir -p build/v2
+	@$(BINDIR)/goo-ccomp -o build/v2/tinygoo examples/tinygoo_v2.goo
+	@build/v2/tinygoo > build/v2/tinygoo.ll
+	@clang -o build/v2/tiny build/v2/tinygoo.ll 2>/dev/null
+	@actual="`./build/v2/tiny`"; \
+	  expected="hello from tinygoo v2"; \
+	  if [ "$$actual" = "$$expected" ]; then \
+	    echo "v2-bootstrap-pilot: PASS  (Goo→ccomp-built→IR emitter→clang→'$$actual')"; \
+	  else \
+	    echo "v2-bootstrap-pilot: FAIL"; \
+	    echo "  expected: $$expected"; \
+	    echo "  got:      $$actual"; \
+	    exit 1; \
+	  fi
+
 # V1 empirical CompCert survey: try ccomp -c against every .c file in
 # src/ (excluding src/package/ which is excluded from the gcc build
 # too) and report pass/fail counts. Requires ccomp installed via

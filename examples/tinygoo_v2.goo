@@ -1,0 +1,31 @@
+// V2-bootstrap-pilot: a Goo program that emits LLVM IR for a
+// hello-world program. Build with bin/goo-ccomp (the CompCert-
+// built compiler), pipe its stdout to a .ll file, then clang
+// assembles + links into a working binary that prints
+// "hello from tinygoo v2".
+//
+// This is the smallest meaningful self-host artifact: a Goo program,
+// built via CompCert, generating valid LLVM IR that an external
+// toolchain turns into a runnable binary. It's not a real compiler —
+// it ignores stdin and always emits the same hard-coded IR — but
+// it proves the chain Goo→ccomp-built→IR-emitter→clang→working binary.
+//
+// IR uses [N x i8] byte-array form instead of c"..." string form
+// because goolang's string lexer doesn't unescape \" into a literal
+// double-quote (it preserves the backslash). The byte-array form
+// avoids needing quotes inside string literals entirely.
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("declare i32 @puts(ptr)")
+    fmt.Println(" ")
+    // "hello from tinygoo v2\0"  as 22 raw bytes
+    fmt.Println("@msg = private constant [22 x i8] [i8 104, i8 101, i8 108, i8 108, i8 111, i8 32, i8 102, i8 114, i8 111, i8 109, i8 32, i8 116, i8 105, i8 110, i8 121, i8 103, i8 111, i8 111, i8 32, i8 118, i8 50, i8 0]")
+    fmt.Println(" ")
+    fmt.Println("define i32 @main() {")
+    fmt.Println("  %1 = call i32 @puts(ptr @msg)")
+    fmt.Println("  ret i32 0")
+    fmt.Println("}")
+}
