@@ -1,4 +1,5 @@
 #include "types.h"
+#include "comptime.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -709,7 +710,7 @@ int type_is_error_union(const Type* type) {
 Variable* variable_new(const char* name, Type* type, Position pos) {
     Variable* var = malloc(sizeof(Variable));
     if (!var) return NULL;
-    
+
     var->name = str_dup(name);
     var->type = type;
     var->ownership = OWNERSHIP_OWNED;  // Default ownership
@@ -720,14 +721,16 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->is_initialized = 0;
     var->is_builtin = 0;
     var->declared_pos = pos;
+    var->comptime_value = NULL;  // populated by type_check_const_decl for is_comptime consts
     var->next = NULL;
-    
+
     return var;
 }
 
 void variable_free(Variable* var) {
     if (var) {
         free(var->name);
+        if (var->comptime_value) comptime_value_free(var->comptime_value);
         free(var);
     }
 }

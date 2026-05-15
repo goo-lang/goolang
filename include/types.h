@@ -229,6 +229,12 @@ typedef struct Variable {
     int is_initialized;
     int is_builtin;         // Built-in function/variable
     Position declared_pos;
+    // M11-types-const-integrate: comptime-evaluated value attached to
+    // is_comptime constants. NULL for non-comptime variables and for
+    // comptime constants whose RHS the engine cannot yet evaluate
+    // (e.g., user-defined function calls — see M11-engine-recursion).
+    // Owned by the Variable; freed in variable_free.
+    struct ComptimeValue* comptime_value;
     struct Variable* next;  // For linked list in scope
 } Variable;
 

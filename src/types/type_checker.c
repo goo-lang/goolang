@@ -458,14 +458,43 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         value_type = declared_type;
     }
     
+    // M11-types-const-integrate: if the const is marked `comptime`,
+    // evaluate the RHS through the comptime engine and attach the
+    // result to the Variable so codegen can read it (M11-codegen-const).
+    // Engine call uses the raw context directly per the spike's
+    // recommendation (lesson-1778811668-591661). Engine failure is
+    // non-fatal here: function-call RHS will return null-value until
+    // M11-engine-recursion lands, and codegen will fail at its
+    // LLVMIsConstant check — same failure mode as before, just one
+    // dispatch layer deeper.
+    ComptimeValue* comptime_val = NULL;
+    if (const_decl->is_comptime && checker->comptime_type_ctx
+                                && checker->comptime_type_ctx->comptime_ctx) {
+        ComptimeContext* raw_ctx = checker->comptime_type_ctx->comptime_ctx;
+        ComptimeResult* res = comptime_eval_expression(raw_ctx, const_decl->values);
+        if (res && res->value && !res->error) {
+            comptime_val = comptime_value_copy(res->value);
+        }
+        if (res) comptime_result_free(res);
+    }
+
     // Add constants to scope (treated as immutable variables)
     for (size_t i = 0; i < const_decl->name_count; i++) {
         Variable* var = variable_new(const_decl->names[i], value_type, const_decl->base.pos);
-        if (!var) return 0;
-        
+        if (!var) {
+            if (comptime_val) comptime_value_free(comptime_val);
+            return 0;
+        }
+
         var->mutability = MUTABILITY_IMMUTABLE;
         var->is_initialized = 1;
-        
+        if (comptime_val) {
+            // First variable takes ownership of the original copy;
+            // subsequent variables get their own copies. The multi-name
+            // case (`comptime const X, Y int = 42`) is rare but legal.
+            var->comptime_value = (i == 0) ? comptime_val : comptime_value_copy(comptime_val);
+        }
+
         if (!scope_add_variable(checker->current_scope, var)) {
             type_error(checker, const_decl->base.pos,
                       "Constant '%s' already declared in this scope", const_decl->names[i]);
@@ -473,7 +502,7 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
             return 0;
         }
     }
-    
+
     return 1;
 }
 
