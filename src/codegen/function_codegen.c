@@ -602,6 +602,16 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
         case AST_CONTINUE_STMT:
             // TODO: Implement break/continue
             return 1;
+        case AST_COMPTIME_BLOCK: {
+            // M11-block-dispatch: `comptime { ... }` blocks produce no
+            // runtime code in the MVP scope. The type checker already
+            // validated the body in subtask M11-types-const-stub; here
+            // we simply emit nothing for the block, treating it as a
+            // pure compile-time-only construct. A future task can lift
+            // the values escaping from a comptime block to outer-scope
+            // constants — out of scope for the MVP.
+            return 1;
+        }
         default:
             codegen_error(codegen, stmt->pos, "Unknown statement type for code generation");
             return 0;
