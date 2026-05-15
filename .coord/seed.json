@@ -60,6 +60,9 @@
     {"id": "M10-composite-literal-spike", "track": "M10", "status": "pending"},
     {"id": "M10-composite-literal-grammar", "track": "M10", "status": "pending"},
     {"id": "M10-grammar-strategy", "track": "M10", "status": "pending"},
+    {"id": "M10-lexer-layer-impl", "track": "M10", "status": "pending"},
+    {"id": "M10-struct-literal-impl", "track": "M10", "status": "pending"},
+    {"id": "M10-probe-gate-v2", "track": "M10", "status": "pending"},
     {"id": "M9-fmt-println-int", "track": "M9", "status": "pending"},
     {"id": "M9-const-ref-load", "track": "M9", "status": "pending"},
     {"id": "M7-test-makefile-cleanup", "track": "M7", "status": "pending"}
@@ -127,6 +130,9 @@
     {"from": "M10-composite-literal-spike", "to": "M10-audit"},
     {"from": "M10-composite-literal-grammar", "to": "M10-composite-literal-spike"},
     {"from": "M10-grammar-strategy", "to": "M10-composite-literal-spike"},
+    {"from": "M10-lexer-layer-impl", "to": "M10-grammar-strategy"},
+    {"from": "M10-struct-literal-impl", "to": "M10-lexer-layer-impl"},
+    {"from": "M10-probe-gate-v2", "to": "M10-struct-literal-impl"},
     {"from": "M9-fmt-println-int", "to": "M9"},
     {"from": "M9-const-ref-load", "to": "M9"},
     {"from": "M7-test-makefile-cleanup", "to": "M6"}
