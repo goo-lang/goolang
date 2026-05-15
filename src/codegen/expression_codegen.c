@@ -153,14 +153,21 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
     // we have to supply the load type from goo_type. Previously every
     // var read produced `load ptr, ptr %x` which fed `ptr` values into
     // `icmp sgt`/`add`, failing module verification.
-    if (value_info->is_lvalue) {
+    // A global const (codegen_const_decl creates one via LLVMAddGlobal) lives
+    // in the value table as is_lvalue=0 but its LLVM value is the address, not
+    // the contents. Reading it as an expression must load through that address
+    // — otherwise `os.Exit(X)` passes `ptr @X` to a function expecting `i32`
+    // and module verification rejects it (M9-const-ref-load).
+    bool needs_load = value_info->is_lvalue
+        || (LLVMIsAGlobalVariable(value_info->llvm_value) && value_info->goo_type);
+    if (needs_load) {
         LLVMTypeRef load_type = value_info->goo_type
             ? codegen_type_to_llvm(codegen, value_info->goo_type)
             : LLVMTypeOf(value_info->llvm_value);
         LLVMValueRef loaded_value = LLVMBuildLoad2(codegen->builder, load_type, value_info->llvm_value, ident->name);
         return value_info_new(ident->name, loaded_value, value_info->goo_type);
     } else {
-        // Direct value (constant, function, etc.)
+        // Direct value (function pointer, inlined literal, etc.)
         return value_info_new(ident->name, value_info->llvm_value, value_info->goo_type);
     }
 #endif
