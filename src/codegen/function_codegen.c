@@ -443,7 +443,11 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
             return 1;
         }
     }
-fallback:
+fallback:;
+    // ^ empty statement after label — C99/CompCert require a label to
+    // precede a statement, not a declaration. The "ValueInfo*" line
+    // below is a declaration, so without this `;` ccomp rejects the
+    // file (clang/C23 allow label-before-decl, ccomp does not).
 
     // Generate the constant value
     ValueInfo* const_value = codegen_generate_expression(codegen, checker, const_decl->values);
