@@ -161,6 +161,25 @@ void goo_println_float(double value) {
     fflush(stdout);
 }
 
+// Print-without-newline variants, used by variadic fmt.Println codegen
+// (M10-variadic-println) to emit each arg, then a single trailing
+// newline. Without these, codegen had to call the println variant per
+// arg, producing N newlines for an N-arg call — wrong shape.
+void goo_print_int(int64_t value) {
+    printf("%lld", (long long)value);
+    fflush(stdout);
+}
+
+void goo_print_bool(int value) {
+    printf("%s", value ? "true" : "false");
+    fflush(stdout);
+}
+
+void goo_print_float(double value) {
+    printf("%g", value);
+    fflush(stdout);
+}
+
 // String operations
 
 goo_string_t goo_string_new(const char* data) {

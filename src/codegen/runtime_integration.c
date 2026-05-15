@@ -152,6 +152,24 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
         add_runtime_function(codegen, "goo_println_float", void_type, params, 1);
     }
+
+    // Print-without-newline variants. The variadic fmt.Println codegen
+    // emits one print-no-newline per arg, then a single goo_println("")
+    // for the trailing newline. Same width semantics as their println
+    // siblings (sext to i64 for ints, zext to i32 for bools, fpext to
+    // f64 for floats).
+    {
+        LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_print_int", void_type, params, 1);
+    }
+    {
+        LLVMTypeRef params[] = { LLVMInt32TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_print_bool", void_type, params, 1);
+    }
+    {
+        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_print_float", void_type, params, 1);
+    }
     
     // String operations
     // goo_string_t goo_string_new(const char* data)

@@ -1504,81 +1504,85 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
         return NULL;
     }
     
-    // No-arg `fmt.Println()` prints a single newline.
-    if (!call->args) {
-        LLVMValueRef empty_str = LLVMBuildGlobalStringPtr(codegen->builder, "", "empty");
-        LLVMValueRef args[] = { empty_str };
-        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(println_func),
-                      println_func, args, 1, "");
-    } else {
-        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
+    // Variadic Println (M10-variadic-println): walk the args list,
+    // emit one print-no-newline call per arg, a single-space separator
+    // between adjacent args, and a single trailing newline. Empty arg
+    // list still emits one newline so `fmt.Println()` prints a blank
+    // line — matches Go's behavior. Each arg is type-dispatched the
+    // same way M9-fmt-println-int did the single-arg case; the
+    // *_println_* runtime fns are replaced here with their no-newline
+    // siblings (goo_print_int/bool/float/string).
+    size_t arg_count = 0;
+    for (ASTNode* a = call->args; a; a = a->next) arg_count++;
+
+    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
+    if (!print_func) {
+        codegen_error(codegen, expr->pos, "goo_print function not found in module");
+        return NULL;
+    }
+
+    size_t idx = 0;
+    for (ASTNode* a = call->args; a; a = a->next, idx++) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
         if (!arg_val) {
-            codegen_error(codegen, expr->pos, "Failed to generate argument for println");
+            codegen_error(codegen, expr->pos, "Failed to generate argument for Println");
             return NULL;
         }
 
-        // Dispatch on the argument's static Goo type to the matching runtime
-        // function. Without this, every println call routed through
-        // goo_println (which expects `const char*`) and module verification
-        // rejected `i32 42` etc. — M9-fmt-println-int. String args still
-        // extract the data pointer from the { ptr, i64 } struct and call the
-        // legacy goo_println for backwards compatibility with the existing
-        // smoke-stdlib gate.
         TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);
-        LLVMValueRef result_call = NULL;
         if (kind == TYPE_STRING) {
             LLVMValueRef ptr = LLVMBuildExtractValue(codegen->builder, arg_val->llvm_value, 0, "str_ptr");
             LLVMValueRef args[] = { ptr };
-            result_call = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(println_func),
-                                         println_func, args, 1, "");
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                          print_func, args, 1, "");
         } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
-            LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_println_int");
-            if (!int_fn) {
-                codegen_error(codegen, expr->pos, "goo_println_int function not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
+            LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_print_int");
             LLVMValueRef widened = LLVMBuildSExt(codegen->builder, arg_val->llvm_value,
                                                  LLVMInt64TypeInContext(codegen->context), "sext");
             LLVMValueRef args[] = { widened };
-            result_call = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
-                                         int_fn, args, 1, "");
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
+                          int_fn, args, 1, "");
         } else if (kind == TYPE_BOOL) {
-            LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_println_bool");
-            if (!bool_fn) {
-                codegen_error(codegen, expr->pos, "goo_println_bool function not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
+            LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_print_bool");
             LLVMValueRef widened = LLVMBuildZExt(codegen->builder, arg_val->llvm_value,
                                                  LLVMInt32TypeInContext(codegen->context), "zext");
             LLVMValueRef args[] = { widened };
-            result_call = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
-                                         bool_fn, args, 1, "");
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
+                          bool_fn, args, 1, "");
         } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
-            LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_println_float");
-            if (!float_fn) {
-                codegen_error(codegen, expr->pos, "goo_println_float function not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
+            LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_print_float");
             LLVMValueRef widened = (kind == TYPE_FLOAT32)
                 ? LLVMBuildFPExt(codegen->builder, arg_val->llvm_value,
                                  LLVMDoubleTypeInContext(codegen->context), "fpext")
                 : arg_val->llvm_value;
             LLVMValueRef args[] = { widened };
-            result_call = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
-                                         float_fn, args, 1, "");
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
+                          float_fn, args, 1, "");
         } else {
-            // Fall back to the raw goo_println for unknown types — preserves
-            // any existing escape-hatch behavior and surfaces the type at
-            // verifier time rather than crashing here.
+            // Fallback: pass through to goo_print. Will surface at the
+            // verifier if the type's wrong rather than crashing here.
             LLVMValueRef args[] = { arg_val->llvm_value };
-            result_call = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(println_func),
-                                         println_func, args, 1, "");
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                          print_func, args, 1, "");
         }
-        (void)result_call;
         value_info_free(arg_val);
+
+        // Space separator between adjacent args (matches Go's fmt.Println).
+        if (idx + 1 < arg_count) {
+            LLVMValueRef space = LLVMBuildGlobalStringPtr(codegen->builder, " ", "ps");
+            LLVMValueRef args[] = { space };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                          print_func, args, 1, "");
+        }
+    }
+
+    // Trailing newline. Single goo_println("") call covers both the
+    // 0-arg case (just a blank line) and the post-args newline.
+    {
+        LLVMValueRef empty_str = LLVMBuildGlobalStringPtr(codegen->builder, "", "empty");
+        LLVMValueRef args[] = { empty_str };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(println_func),
+                      println_func, args, 1, "");
     }
     
     // Return void value
