@@ -300,6 +300,17 @@ comptime-probe: $(COMPILER) $(RUNTIME_LIB)
 	    exit 1; \
 	  fi
 
+# Aggregate verification net per `verification_gates.md`. Runs the
+# four green gates in sequence: baseline-probe, smoke-stdlib,
+# v2-bootstrap-pilot, comptime-block-probe. Exits non-zero on any
+# failure. Use this on cross-cutting changes; use individual targets
+# when iterating on a specific area. comptime-probe is intentionally
+# NOT included — it stays red until M11-engine-recursion and
+# M9-const-ref-load both land.
+verify: baseline-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe
+	@echo ""
+	@echo "verify: ALL GREEN GATES PASSED"
+
 # M11 comptime BLOCK probe: sibling to comptime-probe that exercises
 # the AST_COMPTIME_BLOCK dispatch path independently of the engine's
 # function-call capability (which comptime-probe needs and which is
