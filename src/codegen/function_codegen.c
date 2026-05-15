@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "comptime.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -367,15 +368,83 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
     return 0;
 #else
     if (!codegen || !checker || !decl || decl->type != AST_CONST_DECL) return 0;
-    
+
     ConstDeclNode* const_decl = (ConstDeclNode*)decl;
-    
+
     // Constants must have initializers
     if (!const_decl->values) {
         codegen_error(codegen, decl->pos, "Constant declaration must have initializer");
         return 0;
     }
-    
+
+    // M11-codegen-const: comptime fast path. If type_check_const_decl
+    // attached a comptime-evaluated value to the Variable (see
+    // include/types.h Variable.comptime_value + lesson-1778812208-594aea),
+    // emit it directly as an LLVM constant. Bypasses
+    // codegen_generate_expression entirely — important because that
+    // path would refuse any RHS LLVM can't fold itself (call
+    // expressions, etc.) at the LLVMIsConstant check below.
+    //
+    // Only int-typed comptime values are handled here for the MVP.
+    // Float/bool/string fall through to the existing path. Comptime
+    // consts whose RHS the engine couldn't evaluate
+    // (var->comptime_value == NULL — e.g. fib(10) until
+    // M11-engine-recursion lands) also fall through, preserving the
+    // existing "must be compile-time constant" error message rather
+    // than silently miscompiling.
+    if (const_decl->is_comptime && const_decl->name_count > 0) {
+        Variable* probe = type_checker_lookup_variable(checker, const_decl->names[0]);
+        if (probe && probe->comptime_value
+                  && probe->comptime_value->type == COMPTIME_VALUE_INT) {
+            for (size_t i = 0; i < const_decl->name_count; i++) {
+                const char* const_name = const_decl->names[i];
+                Variable* var = type_checker_lookup_variable(checker, const_name);
+                if (!var || !var->comptime_value
+                         || var->comptime_value->type != COMPTIME_VALUE_INT) {
+                    // Defensive: multi-name comptime const where some
+                    // names lack an attached value. Shouldn't happen
+                    // given type_check_const_decl's copy-per-name
+                    // pattern, but bail to existing path rather than
+                    // crash.
+                    goto fallback;
+                }
+                LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, var->type);
+                if (!llvm_type) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to convert type for comptime constant '%s'",
+                                  const_name);
+                    return 0;
+                }
+                LLVMValueRef llvm_const = LLVMConstInt(
+                    llvm_type,
+                    (unsigned long long)var->comptime_value->int_value,
+                    1 /* sign-extend */);
+                LLVMValueRef global_const = LLVMAddGlobal(codegen->module, llvm_type, const_name);
+                LLVMSetInitializer(global_const, llvm_const);
+                LLVMSetGlobalConstant(global_const, 1);
+
+                ValueInfo* value_info = value_info_new(const_name, global_const, var->type);
+                if (!value_info) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to create value info for comptime constant '%s'",
+                                  const_name);
+                    return 0;
+                }
+                value_info->is_lvalue = 0;
+                value_info->is_initialized = 1;
+                if (!codegen_add_value(codegen, value_info)) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to add comptime constant '%s' to symbol table",
+                                  const_name);
+                    value_info_free(value_info);
+                    return 0;
+                }
+            }
+            return 1;
+        }
+    }
+fallback:
+
     // Generate the constant value
     ValueInfo* const_value = codegen_generate_expression(codegen, checker, const_decl->values);
     if (!const_value) {
