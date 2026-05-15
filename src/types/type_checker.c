@@ -1,4 +1,5 @@
 #include "types.h"
+#include "comptime.h"
 #include "taint_analysis.h"
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +10,7 @@
 TypeChecker* type_checker_new(void) {
     TypeChecker* checker = malloc(sizeof(TypeChecker));
     if (!checker) return NULL;
-    
+
     checker->current_scope = scope_new(NULL);
     checker->next_scope_id = 1;
     checker->builtin_types = NULL;
@@ -19,17 +20,26 @@ TypeChecker* type_checker_new(void) {
     checker->type_cache = NULL;
     checker->type_cache_size = 0;
     checker->type_cache_capacity = 0;
-    
+
+    // M11-types-const-integrate (part A): set up a comptime context so
+    // that is_comptime const-decl RHS expressions can be routed through
+    // comptime_eval_expression. The wrapper owns the type-level scaffold
+    // (registered TypeFunctions, computed-type cache); the inner raw
+    // context is what comptime_eval_expression actually consumes. Both
+    // are torn down in type_checker_free.
+    ComptimeContext* raw = comptime_context_new(NULL);
+    checker->comptime_type_ctx = raw ? comptime_type_context_new(raw) : NULL;
+
     type_checker_init_builtins(checker);
-    
+
     return checker;
 }
 
 void type_checker_free(TypeChecker* checker) {
     if (!checker) return;
-    
+
     scope_free(checker->current_scope);
-    
+
     // Free builtin types
     if (checker->builtin_types) {
         for (int i = 0; i < TYPE_COUNT; i++) {
@@ -39,7 +49,7 @@ void type_checker_free(TypeChecker* checker) {
         }
         free(checker->builtin_types);
     }
-    
+
     // Free type cache
     if (checker->type_cache) {
         for (size_t i = 0; i < checker->type_cache_size; i++) {
@@ -49,7 +59,16 @@ void type_checker_free(TypeChecker* checker) {
         }
         free(checker->type_cache);
     }
-    
+
+    // comptime_type_context_free does NOT free the inner raw context —
+    // that's the caller's responsibility. Order: capture the raw pointer,
+    // free the wrapper, free the raw.
+    if (checker->comptime_type_ctx) {
+        ComptimeContext* raw = checker->comptime_type_ctx->comptime_ctx;
+        comptime_type_context_free(checker->comptime_type_ctx);
+        if (raw) comptime_context_free(raw);
+    }
+
     free(checker->current_file);
     free(checker);
 }
