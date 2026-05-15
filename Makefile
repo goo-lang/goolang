@@ -166,13 +166,15 @@ ccomp-audit:
 # too) and report pass/fail counts. Requires ccomp installed via
 # `opam install coq-compcert`. Prints failing files for follow-up.
 CCOMP ?= ccomp
-CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I/opt/homebrew/Cellar/llvm/22.1.4/include -std=c99 -fstruct-passing -include include/ccomp_shim.h -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+CCOMP_LLVM_INC := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --includedir 2>/dev/null || echo /opt/homebrew/include)
+CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -fstruct-passing -include include/ccomp_shim.h -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
 
 # V1-ccomp-link: build bin/goo-ccomp from CompCert .o files. The
 # resulting binary is the Goo compiler compiled through CompCert
 # (verified-C-compiler) end-to-end. LLVM, libpthread, libm, libcurl,
 # libjson-c, libz remain trusted external deps.
-CCOMP_LDLIBS = -lm -lpthread -ljson-c -lcurl -lz -L/opt/homebrew/lib -L/opt/homebrew/Cellar/llvm/22.1.4/lib -lLLVM-22
+CCOMP_LLVM_LIB := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --libdir 2>/dev/null || echo /opt/homebrew/lib)
+CCOMP_LDLIBS = -lm -lpthread -ljson-c -lcurl -lz -L/opt/homebrew/lib -L$(CCOMP_LLVM_LIB) -lLLVM-22
 CCOMP_ESSENTIAL_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS) $(COMPILER_SRCS) $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
 
 ccomp-build:

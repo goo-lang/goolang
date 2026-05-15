@@ -294,7 +294,20 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 codegen_error(codegen, decl->pos, "Failed to generate initializer for variable '%s'", var_name);
                 return 0;
             }
-            
+
+            // Auto-wrap a plain value into a nullable struct when the
+            // declared type is TYPE_NULLABLE. `var hit ?int = 42`
+            // builds a {is_null=0, value=42} aggregate.
+            if (var_type && var_type->kind == TYPE_NULLABLE &&
+                init_value->goo_type && init_value->goo_type->kind != TYPE_NULLABLE) {
+                LLVMValueRef agg = LLVMGetUndef(llvm_type);
+                LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+                agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "null_tag");
+                agg = LLVMBuildInsertValue(codegen->builder, agg, init_value->llvm_value, 1, "null_val");
+                init_value->llvm_value = agg;
+                init_value->goo_type = var_type;
+            }
+
             // Store the initial value
             if (codegen->current_function) {
                 LLVMBuildStore(codegen->builder, init_value->llvm_value, alloca_inst);
@@ -440,6 +453,68 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_var_decl(codegen, checker, stmt);
         case AST_IF_STMT:
             return codegen_generate_if_stmt(codegen, checker, stmt);
+        case AST_IF_LET_STMT: {
+            // Desugar `if let v = expr { … } [else { … }]` to:
+            //   evaluate expr (TYPE_NULLABLE struct {i1 is_null, T value})
+            //   br is_null, .else_or_skip, .then
+            //   .then: alloca v; v = ExtractValue 1; codegen then_stmt
+            //   .else: codegen else_stmt if present
+            //   .exit
+            // Declarations are hoisted to the top of the block so the
+            // CompCert build (C99-strict, no mid-block decls) accepts.
+            IfLetStmtNode* il;
+            ValueInfo* nv;
+            LLVMValueRef raw;
+            LLVMValueRef is_null;
+            LLVMBasicBlockRef then_bb;
+            LLVMBasicBlockRef else_bb;
+            LLVMBasicBlockRef exit_bb;
+            Type* inner_type;
+            int then_ok;
+            int else_ok;
+
+            il = (IfLetStmtNode*)stmt;
+            nv = codegen_generate_expression(codegen, checker, il->nullable_expr);
+            if (!nv) return 0;
+            raw = nv->llvm_value;
+            if (nv->is_lvalue && nv->goo_type) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, nv->goo_type);
+                if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "il_load");
+            }
+            is_null = LLVMBuildExtractValue(codegen->builder, raw, 0, "is_null");
+            then_bb = codegen_create_block(codegen, "iflet.then");
+            else_bb = codegen_create_block(codegen, "iflet.else");
+            exit_bb = codegen_create_block(codegen, "iflet.exit");
+            LLVMBuildCondBr(codegen->builder, is_null, else_bb, then_bb);
+
+            codegen_set_insert_point(codegen, then_bb);
+            inner_type = nv->goo_type ? nv->goo_type->data.nullable.base_type : NULL;
+            scope_push(checker);
+            if (il->var_name && inner_type) {
+                LLVMTypeRef inner_llvm = codegen_type_to_llvm(codegen, inner_type);
+                LLVMValueRef val = LLVMBuildExtractValue(codegen->builder, raw, 1, il->var_name);
+                LLVMValueRef alloca_v = codegen_create_entry_alloca(codegen, inner_llvm, il->var_name);
+                LLVMBuildStore(codegen->builder, val, alloca_v);
+                ValueInfo* vi = value_info_new(il->var_name, alloca_v, inner_type);
+                vi->is_lvalue = 1; vi->is_initialized = 1;
+                codegen_add_value(codegen, vi);
+                {
+                    Variable* tv = variable_new(il->var_name, inner_type, stmt->pos);
+                    if (tv) { tv->is_initialized = 1; scope_add_variable(checker->current_scope, tv); }
+                }
+            }
+            then_ok = il->then_stmt ? codegen_generate_statement(codegen, checker, il->then_stmt) : 1;
+            scope_pop(checker);
+            LLVMBuildBr(codegen->builder, exit_bb);
+
+            codegen_set_insert_point(codegen, else_bb);
+            else_ok = il->else_stmt ? codegen_generate_statement(codegen, checker, il->else_stmt) : 1;
+            LLVMBuildBr(codegen->builder, exit_bb);
+
+            codegen_set_insert_point(codegen, exit_bb);
+            value_info_free(nv);
+            return then_ok && else_ok;
+        }
         case AST_FOR_STMT:
             return codegen_generate_for_stmt(codegen, checker, stmt);
         case AST_RETURN_STMT:

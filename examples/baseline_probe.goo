@@ -41,8 +41,8 @@ func safe_div(n int, d int) !int {
     return n / d
 }
 
-// Nullable DEFERRED similarly — needs `nil` literal handling, ?T
-// type representation, and if-let codegen. Tracked: goolang:M8-nullable.
+// Nullable (M8-nullable) — ?T type, auto-wrap on init, if-let unwrap.
+// `nil` literal not exercised here (separate codegen path).
 
 func main() {
     // 1. var declarations (int, string, bool, float64)
@@ -162,7 +162,13 @@ func main() {
         fmt.Println("PASS: error union + try")
     }
 
-    // 16. nullable + if-let — DEFERRED (see top-of-file note).
+    // 16. nullable + if-let (M8-nullable)
+    var hit ?int = 42
+    if let hv = hit {
+        if hv == 42 {
+            fmt.Println("PASS: nullable + if-let")
+        }
+    }
 
     // 17. builtin println (no import)
     println("PASS: builtin println")

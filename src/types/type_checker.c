@@ -512,7 +512,6 @@ int type_check_concept_decl(TypeChecker* checker, ASTNode* decl) {
 
 int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt) return 0;
-    
     switch (stmt->type) {
         case AST_BLOCK_STMT:
             return type_check_block_stmt(checker, stmt);
@@ -522,6 +521,25 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_var_decl(checker, stmt);
         case AST_IF_STMT:
             return type_check_if_stmt(checker, stmt);
+        case AST_IF_LET_STMT: {
+            IfLetStmtNode* il = (IfLetStmtNode*)stmt;
+            Type* nt = type_check_expression(checker, il->nullable_expr);
+            if (!nt) return 0;
+            if (nt->kind != TYPE_NULLABLE) {
+                type_error(checker, stmt->pos, "if-let requires a nullable expression");
+                return 0;
+            }
+            Type* inner = nt->data.nullable.base_type;
+            scope_push(checker);
+            if (il->var_name && inner) {
+                Variable* v = variable_new(il->var_name, inner, stmt->pos);
+                if (v) { v->is_initialized = 1; scope_add_variable(checker->current_scope, v); }
+            }
+            int ok = il->then_stmt ? type_check_statement(checker, il->then_stmt) : 1;
+            scope_pop(checker);
+            if (il->else_stmt) ok = ok && type_check_statement(checker, il->else_stmt);
+            return ok;
+        }
         case AST_FOR_STMT:
             return type_check_for_stmt(checker, stmt);
         case AST_RETURN_STMT:

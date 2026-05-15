@@ -72,6 +72,7 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_OWNED: return OWNED;
         case TOKEN_BORROWED: return BORROWED;
         case TOKEN_SHARED: return SHARED;
+        case TOKEN_LET: return LET;
         
         // Operators
         case TOKEN_PLUS: return PLUS;

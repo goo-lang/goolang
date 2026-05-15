@@ -13,5 +13,6 @@ PASS: short var decl
 PASS: slice lit + index + len
 PASS: struct + field access
 PASS: error union + try
+PASS: nullable + if-let
 PASS: builtin println
 PASS: fmt.Println
