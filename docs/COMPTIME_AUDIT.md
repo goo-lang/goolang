@@ -241,3 +241,79 @@ src/errors/ergonomic_errors.c
 `src/comptime/comptime_types.c` is **not** required for direct engine reachability — it's the TypeChecker bridge layer. Dropping it from the link sidesteps `type_check_expression` / `type_check_statement` undefined symbols. The M11-types-const-integrate task will need either type_checker.c (for the bridge path) or to skip the bridge entirely and call `comptime_eval_expression` directly.
 
 `parser_init` and `parser_cleanup` are **declared in `include/parser.h:18-19` but never defined** anywhere in `src/`. Existing callers must work without them — calling either yields an unresolved-symbol error at link time. Probably another scaffolding-without-glue artifact; not blocking but worth noting for the broader audit pattern.
+
+---
+
+## Engine-recursion findings (M11-engine-recursion-audit, 2026-05-15)
+
+Drilled into `src/comptime/comptime.c` after `comptime_call_user_function` (the half-implementation target at the line-1235 TODO). Verdict: **(b) full body-eval implementation, but most scaffolding exists** — the work is wiring up disconnected parts rather than building from scratch.
+
+### What's already implemented
+
+**`comptime_call_user_function`** (`comptime.c:1164`) — NOT a stub. Has a real body:
+- Creates child context for function scope (line 1178)
+- Tracks recursion depth via `ctx->current_recursion_depth` / `ctx->max_recursion_depth` (lines 1172-1174 + 1183) — recursion safety infrastructure already in place
+- Binds params to **wrong names** (lines 1188-1196): hardcoded `"param_0"`, `"param_1"`, etc. via `snprintf`, not the actual parameter names from `func->params`. So the function body can't find its own parameters.
+- Evaluates body via `comptime_eval_block(func_ctx, func->body)` (line 1199)
+- Returns the result up the call chain
+
+**`comptime_eval_statement_enhanced`** (`comptime.c:1391`) — handles `AST_IF_STMT`, `AST_FOR_STMT`, `AST_RETURN_STMT`, `AST_FUNC_DECL`. Falls back to the "original" `comptime_eval_statement` for anything else.
+
+**`comptime_eval_function_call_enhanced`** (`comptime.c:1211`) — dispatches user-defined calls to `comptime_call_user_function`. The line-1235 TODO ("actual_arg_count = 0") is the args-passing gap.
+
+**`comptime_eval_if_stmt`** (`comptime.c:1251`), **`comptime_eval_for_stmt`** (`comptime.c:1279`), **`comptime_eval_return_stmt`** (`comptime.c:1369`) — all have real bodies. Return-stmt currently treats return as a normal value-producing expression (no "early exit" signal).
+
+### What's broken or missing
+
+Six concrete bugs, all in `src/comptime/comptime.c`:
+
+1. **Line 553-554** (`comptime_eval_expression`'s AST_CALL_EXPR case) dispatches to `comptime_eval_function_call` (the *original*, line 805), not `_enhanced`. So `_enhanced` (the one that knows how to call user functions) is never reached from the standard expression evaluator.
+
+2. **Line 867** (`comptime_eval_function_call`): the explicit TODO returning "User-defined function calls not yet implemented" short-circuits before any user-function dispatch happens.
+
+3. **Line 1233** (`comptime_eval_function_call_enhanced`): args are hardcoded to count 0. Even if the dispatch reached `comptime_call_user_function`, no values would be threaded in. Comment at lines 1235-1236: "For now, assume no arguments since we don't have proper argument parsing".
+
+4. **Lines 1188-1196** (`comptime_call_user_function`'s param binding): uses positional names `"param_0"`, `"param_1"` instead of looking up the actual parameter names from `func->params`. Fib's body references `n`, not `param_0`, so the lookup fails.
+
+5. **Lines 1087-1088** (`comptime_eval_block`): only evaluates the **first** statement of a block — `last_result = comptime_eval_statement(block_ctx, block_node->statements)`. Doesn't walk the linked list via `->next`. Comment at lines 1085-1086 admits this is a simplification. Fib's body has two top-level statements (`if n<2 { return n }` and `return fib(n-1) + fib(n-2)`), so the second is never reached.
+
+6. **Line 1088** (same line): dispatches to the **original** `comptime_eval_statement`, not `_enhanced`. So even if the block walked all statements, AST_IF_STMT would hit the original's default case ("Unsupported statement type") because the original only handles EXPR/CONST_DECL/VAR_DECL.
+
+Plus a design issue: return-statement value propagation. When `if n < 2 { return n }` evaluates with n=0, the engine has no flag/sentinel to tell the outer block "stop, the function is returning." Currently `comptime_eval_return_stmt` just returns the value normally, so the block walker would continue to the next statement (the recursive call) and overwrite the return value with the recursive result. The fix is a `is_return` flag on `ComptimeResult` that the block walker honors as "stop and propagate up."
+
+### Estimated work
+
+| Fix | Location | LOC |
+|---|---|---|
+| Route call-expr to `_enhanced` | comptime.c:553-554 (one-line redirect) | ~1 |
+| Remove TODO at line 867 (or route through enhanced) | comptime.c:805-869 | ~5 |
+| Actually evaluate call args | comptime.c:1228-1238 | ~15-25 |
+| Bind real param names | comptime.c:1185-1196 | ~10-15 |
+| Walk all block statements | comptime.c:1085-1094 | ~10 |
+| Dispatch via `_enhanced` (or merge) | comptime.c:1088 | ~1 (one-line redirect) or ~50 (merge) |
+| `is_return` flag + propagation | ComptimeResult struct + return-stmt + block walker | ~20-30 |
+| Cleanup: merge original/enhanced duals or document why both | engine-wide | ~10-30 |
+
+**Total estimate:** 70-150 LOC of real changes plus 1 struct-field addition.
+
+### Audit Q answers (per the plan)
+
+- **Q1:** `comptime_call_user_function` is implemented but with a critical bug (wrong param names). Not a stub. ✓
+- **Q2:** Param binding uses positional `"param_N"` names; should look up actual names from `func->params` (a linked list of VarDeclNodes per the type checker's convention at `src/types/type_checker.c:241,248,278`). ✓
+- **Q3:** Return propagates via the function-eval's last `ComptimeResult`, but the block walker can't distinguish "this is a return" from "this is just the last statement's value." Needs an `is_return` flag. ✓
+- **Q4:** Other eval stubs/limitations:
+  - `comptime_eval_block` evaluates only the first statement of a block (line 1087) — biggest single bug.
+  - `comptime_eval_statement` doesn't dispatch on IF/FOR/RETURN — `_enhanced` does, but isn't reached.
+  - `comptime_eval_if_stmt`, `for_stmt`, `return_stmt` themselves appear complete except for the return-propagation design gap.
+
+### Verdict and decomposition
+
+This is **verdict (b) but optimistic**: substantial wiring rather than from-scratch implementation. The three-subtask shape (audit → spike → impl) still fits:
+
+- **audit** (this commit): documents the six bugs and the design gap. Done.
+- **spike**: fix the bare minimum to make Tier 3 (fib(2)) PASS via direct engine API. Likely: (a) route call-expr dispatch through `_enhanced`, (b) fix args-passing at line 1228-1238, (c) fix param-name binding at lines 1185-1196, (d) add minimal block-walking + `is_return` propagation. Estimated 50-80 LOC.
+- **impl**: scale the spike for full recursion (Tier 4, fib(10)). Likely just removing the trivial depth-limit hardcode in spike, plus polish: removing dead enhanced/original duals, edge cases, the eval_function_call line-867 TODO cleanup. Estimated 20-50 LOC additional.
+
+The biggest risk now is **R3** (state corruption under recursion) from the original plan — `comptime_call_user_function` creates a new context per call (`comptime_context_new(ctx)` at line 1178) so scoping should be safe, but variable shadowing inside recursive calls hasn't been verified.
+
+The line-867 TODO in the *original* `comptime_eval_function_call` could either be (a) replaced to dispatch through `_enhanced`, (b) removed entirely if we route the AST_CALL_EXPR dispatch to `_enhanced` instead. Path (b) is cleaner — picks the working implementation, leaves the half-implementation to be deleted in the impl-cleanup phase. The audit recommends (b).
