@@ -146,6 +146,21 @@ void goo_println_string(goo_string_t str) {
     fflush(stdout);
 }
 
+void goo_println_int(int64_t value) {
+    printf("%lld\n", (long long)value);
+    fflush(stdout);
+}
+
+void goo_println_bool(int value) {
+    printf("%s\n", value ? "true" : "false");
+    fflush(stdout);
+}
+
+void goo_println_float(double value) {
+    printf("%g\n", value);
+    fflush(stdout);
+}
+
 // String operations
 
 goo_string_t goo_string_new(const char* data) {

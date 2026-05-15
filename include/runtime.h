@@ -57,6 +57,9 @@ void goo_print(const char* message);
 void goo_println(const char* message);
 void goo_print_string(goo_string_t str);
 void goo_println_string(goo_string_t str);
+void goo_println_int(int64_t value);
+void goo_println_bool(int value);
+void goo_println_float(double value);
 
 // String operations
 goo_string_t goo_string_new(const char* data);

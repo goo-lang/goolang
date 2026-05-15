@@ -133,6 +133,25 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { string_type };
         add_runtime_function(codegen, "goo_println_string", void_type, params, 1);
     }
+
+    // void goo_println_int(int64_t value) — Println dispatch target for any
+    // signed integer; codegen sign-extends narrower int types to i64.
+    {
+        LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_println_int", void_type, params, 1);
+    }
+
+    // void goo_println_bool(int value) — i1 zero-extended to i32 at the call site.
+    {
+        LLVMTypeRef params[] = { LLVMInt32TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_println_bool", void_type, params, 1);
+    }
+
+    // void goo_println_float(double value) — f32 promoted to f64 at the call site.
+    {
+        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_println_float", void_type, params, 1);
+    }
     
     // String operations
     // goo_string_t goo_string_new(const char* data)
