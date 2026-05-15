@@ -16,9 +16,11 @@ func add(a int, b int) int {
     return a + b
 }
 
-// Multi-return DEFERRED: parser's func_result rule only accepts a
-// single type or `(type)` — no `(int, int)` shape. Would need a
-// grammar change to func_result + tuple-handling in codegen.
+// Multi-return (M8-multi-return) — tuple-typed return via anonymous
+// struct, multi-LHS short var decl destructures via ExtractValue.
+func divmod(n int, d int) (int, int) {
+    return n / d, n % d
+}
 
 // Struct types: declaration + field access work end-to-end (M8-struct).
 // Struct literal `Point{x: 3, y: 4}` isn't in the grammar yet, so the
@@ -114,10 +116,13 @@ func main() {
         fmt.Println("PASS: func returns value")
     }
 
-    // 9b. multi-return — DEFERRED (no PASS line emitted).
-    // Parser's func_result rule (parser.y:343) only accepts single type
-    // or `(type)`; no `(int, int)` tuple. Needs grammar + codegen work
-    // to lower tuple returns. Tracked: coord task goolang:M8-multi-return.
+    // 9b. multi-return (M8-multi-return)
+    q, r := divmod(7, 2)
+    if q == 3 {
+        if r == 1 {
+            fmt.Println("PASS: multi-return")
+        }
+    }
 
     // 10. calling a user-defined func (covered by #8/#9, but explicit)
     if add(1, 1) == 2 {
