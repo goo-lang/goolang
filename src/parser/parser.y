@@ -90,6 +90,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field
 %type <node> slice_lit
+%type <node> multi_return_type_list
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -388,6 +389,52 @@ func_param:
 func_result:
     type { $$ = $1; }
     | LPAREN type RPAREN { $$ = $2; }
+    | LPAREN multi_return_type_list RPAREN {
+        // Multi-return: builds an anonymous StructTypeNode whose
+        // fields are VarDeclNodes named _0, _1, ... — the type
+        // checker reuses its existing AST_STRUCT_TYPE path to
+        // build a TYPE_STRUCT. Function codegen then returns the
+        // anonymous struct via LLVM insertvalue + ret.
+        StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+        st->base.type = AST_STRUCT_TYPE;
+        st->base.pos = get_current_position();
+        st->base.node_type = NULL;
+        st->base.next = NULL;
+        st->fields = $2;
+        $$ = (ASTNode*)st;
+    }
+    ;
+
+multi_return_type_list:
+    type COMMA type {
+        // Always at least two types (the COMMA disambiguates from
+        // the single-type form above).
+        char buf[8];
+        VarDeclNode* f0 = ast_var_decl_new(get_current_position());
+        f0->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_0");
+        f0->names[0] = strdup(buf); f0->name_count = 1;
+        f0->type = $1; f0->values = NULL;
+        VarDeclNode* f1 = ast_var_decl_new(get_current_position());
+        f1->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_1");
+        f1->names[0] = strdup(buf); f1->name_count = 1;
+        f1->type = $3; f1->values = NULL;
+        ast_add_child((ASTNode*)f0, (ASTNode*)f1);
+        $$ = (ASTNode*)f0;
+    }
+    | multi_return_type_list COMMA type {
+        // Append additional return types. Field index = current
+        // length of the chain. Walk to find it.
+        ASTNode* tail = $1;
+        size_t idx = 1;
+        while (tail->next) { tail = tail->next; idx++; }
+        char buf[16];
+        VarDeclNode* fn = ast_var_decl_new(get_current_position());
+        fn->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_%zu", idx);
+        fn->names[0] = strdup(buf); fn->name_count = 1;
+        fn->type = $3; fn->values = NULL;
+        ast_add_child($1, (ASTNode*)fn);
+        $$ = $1;
+    }
     ;
 
 // Variable declaration
@@ -446,8 +493,26 @@ short_var_decl:
         var->names[0] = strdup(ident->name);
         var->name_count = 1;
         var->values = $3;
-        var->is_short_decl = 1;  // Mark as short declaration
+        var->is_short_decl = 1;
         ast_node_free($1);
+        $$ = (ASTNode*)var;
+    }
+    | identifier COMMA identifier SHORT_ASSIGN expression {
+        // Multi-LHS short var decl `a, b := expr`. Destructuring is
+        // resolved at codegen time: the RHS must produce a TYPE_STRUCT
+        // with at least 2 fields, and a/b are bound to its fields 0
+        // and 1 respectively.
+        VarDeclNode* var = ast_var_decl_new(get_current_position());
+        IdentifierNode* i1 = (IdentifierNode*)$1;
+        IdentifierNode* i2 = (IdentifierNode*)$3;
+        var->names = malloc(sizeof(char*) * 2);
+        var->names[0] = strdup(i1->name);
+        var->names[1] = strdup(i2->name);
+        var->name_count = 2;
+        var->values = $5;
+        var->is_short_decl = 1;
+        ast_node_free($1);
+        ast_node_free($3);
         $$ = (ASTNode*)var;
     }
     ;
@@ -793,6 +858,20 @@ return_stmt:
         ret->base.pos = get_current_position();
         ret->base.node_type = NULL;
         ret->base.next = NULL;
+        ret->values = $2;
+        $$ = (ASTNode*)ret;
+    }
+    | RETURN expression COMMA expression_list {
+        // Multi-value return: `return a, b`. The first expression
+        // becomes the head of values; the rest chain via `next`.
+        // The codegen detects 2+ values and builds a struct via
+        // insertvalue.
+        ReturnStmtNode* ret = (ReturnStmtNode*)malloc(sizeof(ReturnStmtNode));
+        ret->base.type = AST_RETURN_STMT;
+        ret->base.pos = get_current_position();
+        ret->base.node_type = NULL;
+        ret->base.next = NULL;
+        ast_add_child($2, $4);
         ret->values = $2;
         $$ = (ASTNode*)ret;
     }
