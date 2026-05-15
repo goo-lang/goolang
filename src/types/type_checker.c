@@ -551,6 +551,17 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_go_stmt(checker, stmt);
         case AST_SELECT_STMT:
             return type_check_select_stmt(checker, stmt);
+        case AST_COMPTIME_BLOCK: {
+            // M11-types-const-stub: minimum dispatch — treat the body as
+            // ordinary statements. Engine engagement (real comptime
+            // evaluation via comptime_type_evaluate) is M11-types-const-
+            // integrate; this arm exists to close the "Unknown statement
+            // type" failure mode for bare comptime { } blocks without
+            // committing to integration depth before the spike.
+            ComptimeBlockNode* cb = (ComptimeBlockNode*)stmt;
+            if (!cb->body) return 1;
+            return type_check_statement(checker, cb->body);
+        }
         default:
             type_error(checker, stmt->pos, "Unknown statement type");
             return 0;
