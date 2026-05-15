@@ -2,7 +2,7 @@
 #define DYNAMIC_CHUNKING_H
 
 #include <stdint.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include <stdbool.h>
 #include "structured_concurrency.h"
 

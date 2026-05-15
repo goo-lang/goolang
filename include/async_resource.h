@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <pthread.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 
 // Forward declarations
 typedef struct AsyncResource AsyncResource;

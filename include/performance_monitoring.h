@@ -2,7 +2,7 @@
 #define PERFORMANCE_MONITORING_H
 
 #include <stdint.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include <stdbool.h>
 #include <time.h>
 

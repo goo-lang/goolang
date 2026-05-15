@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <pthread.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include <stdio.h>
 #include <time.h>
 #include "security_framework.h"

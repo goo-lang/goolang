@@ -1,7 +1,7 @@
 #ifndef WORK_STEALING_H
 #define WORK_STEALING_H
 
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>

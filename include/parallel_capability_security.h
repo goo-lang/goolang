@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include "structured_concurrency.h"
 #include "work_stealing.h"
 

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <pthread.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include "ergonomic_errors.h"
 #include "fearless_concurrency.h"
 #include "shared_variables.h"

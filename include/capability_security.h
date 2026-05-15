@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <pthread.h>
-#include <stdatomic.h>
+#include "ccomp_shim.h"
 #include "security_framework.h"
 #include "ergonomic_errors.h"
 #include "ast.h"
