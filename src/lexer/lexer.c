@@ -477,34 +477,55 @@ char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float) {
 char* lexer_read_string(Lexer* lexer, size_t* length) {
     lexer_read_char(lexer); // consume opening quote
     size_t start_pos = lexer->position;
-    
+
     while (lexer->ch != '"' && lexer->ch != 0) {
         if (lexer->ch == '\\') {
-            lexer_read_char(lexer); // skip escape character
+            lexer_read_char(lexer);
             if (lexer->ch != 0) {
-                lexer_read_char(lexer); // skip escaped character
+                lexer_read_char(lexer);
             }
         } else {
             lexer_read_char(lexer);
         }
     }
-    
+
     if (lexer->ch != '"') {
         return NULL; // Unterminated string
     }
-    
-    size_t len = lexer->position - start_pos;
-    if (length) *length = len;
-    
-    char* string = malloc(len + 1);
-    if (!string) return NULL;
-    
-    strncpy(string, &lexer->input[start_pos], len);
-    string[len] = '\0';
-    
+
+    size_t raw_len = lexer->position - start_pos;
+    char* out = malloc(raw_len + 1); // escapes can only shrink, never grow
+    if (!out) return NULL;
+
+    size_t out_len = 0;
+    for (size_t i = 0; i < raw_len; i++) {
+        char c = lexer->input[start_pos + i];
+        if (c != '\\' || i + 1 >= raw_len) {
+            out[out_len++] = c;
+            continue;
+        }
+        char next = lexer->input[start_pos + i + 1];
+        i++; // consume the escaped char
+        switch (next) {
+            case 'a':  out[out_len++] = '\a'; break;
+            case 'b':  out[out_len++] = '\b'; break;
+            case 'f':  out[out_len++] = '\f'; break;
+            case 'n':  out[out_len++] = '\n'; break;
+            case 'r':  out[out_len++] = '\r'; break;
+            case 't':  out[out_len++] = '\t'; break;
+            case 'v':  out[out_len++] = '\v'; break;
+            case '\\': out[out_len++] = '\\'; break;
+            case '"':  out[out_len++] = '"';  break;
+            case '\'': out[out_len++] = '\''; break;
+            case '0':  out[out_len++] = '\0'; break;
+            default:   out[out_len++] = next; break; // forgiving: drop backslash
+        }
+    }
+    out[out_len] = '\0';
+    if (length) *length = out_len;
+
     lexer_read_char(lexer); // consume closing quote
-    
-    return string;
+    return out;
 }
 
 char* lexer_read_char_literal(Lexer* lexer, size_t* length) {

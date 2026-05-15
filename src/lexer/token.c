@@ -256,13 +256,15 @@ Token* token_new(TokenType type, const char* literal, size_t length, Position po
     token->length = length;
     token->pos = pos;
     
-    if (literal && length > 0) {
+    if (literal) {
         token->literal = malloc(length + 1);
         if (!token->literal) {
             free(token);
             return NULL;
         }
-        strncpy(token->literal, literal, length);
+        if (length > 0) {
+            memcpy(token->literal, literal, length);
+        }
         token->literal[length] = '\0';
     } else {
         token->literal = NULL;

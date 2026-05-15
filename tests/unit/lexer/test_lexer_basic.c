@@ -87,26 +87,115 @@ void test_number_literals() {
 // Test string literals
 void test_string_literals() {
     printf("Testing string literals...\n");
-    
+
     const char* source = "\"hello world\" \"escaped\\nstring\"";
     Lexer* lexer = lexer_new(source, "test.goo");
     assert(lexer != NULL);
-    
+
     // Test basic string
     Token* token = lexer_next_token(lexer);
     assert(token != NULL);
     assert(token->type == TOKEN_STRING);
     assert(strcmp(token->literal, "hello world") == 0);
     token_free(token);
-    
-    // Test escaped string
+
+    // Test escaped string — \n must be processed to a real newline byte
     token = lexer_next_token(lexer);
     assert(token != NULL);
     assert(token->type == TOKEN_STRING);
+    assert(token->literal != NULL);
+    assert(strcmp(token->literal, "escaped\nstring") == 0);
+    assert(token->length == strlen("escaped\nstring"));
     token_free(token);
-    
+
     lexer_free(lexer);
     printf("✓ String literals test passed\n");
+}
+
+// Regression: empty string "" used to SIGSEGV downstream because token_new
+// returned token->literal = NULL when length == 0.
+void test_empty_string_literal() {
+    printf("Testing empty string literal...\n");
+
+    Lexer* lexer = lexer_new("\"\"", "test.goo");
+    assert(lexer != NULL);
+
+    Token* token = lexer_next_token(lexer);
+    assert(token != NULL);
+    assert(token->type == TOKEN_STRING);
+    assert(token->literal != NULL);
+    assert(token->length == 0);
+    assert(token->literal[0] == '\0');
+    token_free(token);
+
+    lexer_free(lexer);
+    printf("✓ Empty string literal test passed\n");
+}
+
+// Regression: the string lexer used to copy the raw source bytes verbatim,
+// leaving backslashes in the literal instead of processing escapes.
+void test_string_escape_processing() {
+    printf("Testing string escape processing...\n");
+
+    // \" — embedded quote
+    {
+        Lexer* lexer = lexer_new("\"a\\\"b\"", "test.goo");
+        Token* token = lexer_next_token(lexer);
+        assert(token && token->type == TOKEN_STRING);
+        assert(strcmp(token->literal, "a\"b") == 0);
+        assert(token->length == 3);
+        token_free(token);
+        lexer_free(lexer);
+    }
+
+    // \\ — single backslash
+    {
+        Lexer* lexer = lexer_new("\"a\\\\b\"", "test.goo");
+        Token* token = lexer_next_token(lexer);
+        assert(token && token->type == TOKEN_STRING);
+        assert(strcmp(token->literal, "a\\b") == 0);
+        assert(token->length == 3);
+        token_free(token);
+        lexer_free(lexer);
+    }
+
+    // \t — tab
+    {
+        Lexer* lexer = lexer_new("\"a\\tb\"", "test.goo");
+        Token* token = lexer_next_token(lexer);
+        assert(token && token->type == TOKEN_STRING);
+        assert(strcmp(token->literal, "a\tb") == 0);
+        token_free(token);
+        lexer_free(lexer);
+    }
+
+    // \0 — embedded NUL (length must reflect the real byte count, not strlen)
+    {
+        Lexer* lexer = lexer_new("\"a\\0b\"", "test.goo");
+        Token* token = lexer_next_token(lexer);
+        assert(token && token->type == TOKEN_STRING);
+        assert(token->length == 3);
+        assert(token->literal[0] == 'a');
+        assert(token->literal[1] == '\0');
+        assert(token->literal[2] == 'b');
+        token_free(token);
+        lexer_free(lexer);
+    }
+
+    // "\\" — the whole literal is a single escaped backslash. Guards against
+    // a regression where a trailing backslash in the raw range gets emitted
+    // unescaped instead of being treated as the start of an escape pair.
+    {
+        Lexer* lexer = lexer_new("\"\\\\\"", "test.goo");
+        Token* token = lexer_next_token(lexer);
+        assert(token && token->type == TOKEN_STRING);
+        assert(token->length == 1);
+        assert(token->literal[0] == '\\');
+        token_free(token);
+        lexer_free(lexer);
+    }
+
+    printf("✓ String escape processing test passed\n");
 }
 
 // Test operators
@@ -165,6 +254,8 @@ int main() {
     test_basic_tokens();
     test_number_literals();
     test_string_literals();
+    test_empty_string_literal();
+    test_string_escape_processing();
     test_operators();
     test_keywords();
     
