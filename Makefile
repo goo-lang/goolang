@@ -300,6 +300,26 @@ comptime-probe: $(COMPILER) $(RUNTIME_LIB)
 	    exit 1; \
 	  fi
 
+# M11 comptime BLOCK probe: sibling to comptime-probe that exercises
+# the AST_COMPTIME_BLOCK dispatch path independently of the engine's
+# function-call capability (which comptime-probe needs and which is
+# blocked until M11-engine-recursion). This probe is the
+# immediately-achievable counterpart and is part of the standard
+# verification net per `verification_gates.md` (memory).
+comptime-block-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/comptime_block_probe examples/comptime_block_probe.goo
+	@actual="$$(./build/comptime_block_probe)"; \
+	  expected="comptime block ok"; \
+	  if [ "$$actual" = "$$expected" ]; then \
+	    echo "comptime-block-probe: PASS (AST_COMPTIME_BLOCK ships)"; \
+	  else \
+	    echo "comptime-block-probe: FAIL"; \
+	    echo "  expected: $$expected"; \
+	    echo "  got:      $$actual"; \
+	    exit 1; \
+	  fi
+
 # Unit tests
 test-lexer: $(OBJS)
 	@mkdir -p tests/unit/lexer

@@ -1,0 +1,34 @@
+// M11 comptime BLOCK probe (sibling to the aspirational comptime_probe.goo).
+//
+// The aspirational `comptime const FIB10 int = fib(10)` probe in
+// comptime_probe.goo stays in TDD red until M11-engine-recursion lands
+// (engine cannot yet evaluate user-defined function calls) AND M9-const-
+// ref-load is fixed (os.Exit-on-const fails module verification today).
+//
+// This sibling probe is the immediately-achievable counterpart: it
+// demonstrates that the AST_COMPTIME_BLOCK dispatch path (added in
+// M11-types-const-stub on the type-check side and M11-block-dispatch on
+// the codegen side) compiles end-to-end. The comptime block produces no
+// runtime code; the rest of main runs normally.
+//
+// PASS criterion: binary compiles and prints "comptime block ok"
+// with exit 0. Used by `make comptime-block-probe`.
+//
+// What this proves vs. what it doesn't:
+//   Proves: the parser, AST, type checker, AND codegen all accept
+//           AST_COMPTIME_BLOCK. The comptime keyword reaches the
+//           backend without an "unknown statement type" rejection.
+//   Doesn't prove: that anything inside the block is actually
+//           evaluated at compile time. That's the harder problem
+//           gated by the fib probe.
+
+package main
+
+import "fmt"
+
+func main() {
+    comptime {
+        x := 1 + 1
+    }
+    fmt.Println("comptime block ok")
+}
