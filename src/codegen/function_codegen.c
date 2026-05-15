@@ -222,8 +222,39 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         codegen_error(codegen, decl->pos, "Variable declaration has no type information");
         return 0;
     }
-    
-    // Generate code for each variable
+
+    // Multi-LHS short var decl `a, b := f()` — evaluate RHS once,
+    // destructure via ExtractValue. Per-name types come from the
+    // struct's fields. Codepath returns early after handling.
+    if (var_decl->name_count > 1 && var_type->kind == TYPE_STRUCT &&
+        var_decl->values && var_type->data.struct_type.field_count >= var_decl->name_count) {
+        ValueInfo* rhs = codegen_generate_expression(codegen, checker, var_decl->values);
+        if (!rhs) {
+            codegen_error(codegen, decl->pos, "Failed to generate multi-LHS RHS");
+            return 0;
+        }
+        for (size_t i = 0; i < var_decl->name_count; i++) {
+            const char* nm = var_decl->names[i];
+            Type* field_type = var_type->data.struct_type.fields[i].type;
+            LLVMTypeRef field_llvm = codegen_type_to_llvm(codegen, field_type);
+            LLVMValueRef field_val = LLVMBuildExtractValue(codegen->builder, rhs->llvm_value, (unsigned)i, nm);
+            LLVMValueRef field_alloca = codegen_create_entry_alloca(codegen, field_llvm, nm);
+            LLVMBuildStore(codegen->builder, field_val, field_alloca);
+            ValueInfo* vi = value_info_new(nm, field_alloca, field_type);
+            vi->is_lvalue = 1;
+            vi->is_initialized = 1;
+            codegen_add_value(codegen, vi);
+            Variable* tv = variable_new(nm, field_type, decl->pos);
+            if (tv) {
+                tv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, tv);
+            }
+        }
+        value_info_free(rhs);
+        return 1;
+    }
+
+    // Generate code for each variable (single-LHS path)
     for (size_t i = 0; i < var_decl->name_count; i++) {
         const char* var_name = var_decl->names[i];
         
@@ -716,29 +747,59 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     ReturnStmtNode* return_stmt = (ReturnStmtNode*)stmt;
     
     if (return_stmt->values) {
-        // Generate return value
+        // Multi-value return: `return a, b` parses as values=[a]->next=b.
+        // Detect 2+ values and build an anonymous struct via
+        // LLVMBuildInsertValue, then ret that struct. The function's
+        // declared return type is already a TYPE_STRUCT (anonymous,
+        // from the parser's multi_return_type_list rule).
+        if (return_stmt->values->next) {
+            Type* function_return_type =
+                codegen->current_function_info ? codegen->current_function_info->goo_type : NULL;
+            if (!function_return_type || function_return_type->kind != TYPE_STRUCT) {
+                codegen_error(codegen, stmt->pos,
+                              "Multi-value return but function return type is not a tuple");
+                return 0;
+            }
+            LLVMTypeRef ret_llvm = codegen_type_to_llvm(codegen, function_return_type);
+            LLVMValueRef agg = LLVMGetUndef(ret_llvm);
+            size_t i = 0;
+            for (ASTNode* v = return_stmt->values; v; v = v->next, i++) {
+                ValueInfo* vv = codegen_generate_expression(codegen, checker, v);
+                if (!vv) return 0;
+                LLVMValueRef raw = vv->llvm_value;
+                if (vv->is_lvalue && vv->goo_type) {
+                    LLVMTypeRef lt = codegen_type_to_llvm(codegen, vv->goo_type);
+                    if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "ret_load");
+                }
+                agg = LLVMBuildInsertValue(codegen->builder, agg, raw, (unsigned)i, "ret_field");
+                value_info_free(vv);
+            }
+            LLVMBuildRet(codegen->builder, agg);
+            return 1;
+        }
+
+        // Single value return — original path.
         ValueInfo* return_value = codegen_generate_expression(codegen, checker, return_stmt->values);
         if (!return_value) {
             return 0;
         }
-        
+
         // Get function return type for error union handling
         Type* function_return_type = NULL;
         if (codegen->current_function_info && codegen->current_function_info->goo_type) {
             function_return_type = codegen->current_function_info->goo_type;
         }
-        
+
         // Handle error union returns
 #if LLVM_AVAILABLE
         LLVMValueRef final_return_value = return_value->llvm_value;
         if (function_return_type) {
-            final_return_value = codegen_generate_error_return(codegen, return_value->llvm_value, 
+            final_return_value = codegen_generate_error_return(codegen, return_value->llvm_value,
                                                              return_value->goo_type, function_return_type);
         }
         LLVMBuildRet(codegen->builder, final_return_value);
 #else
-        // Stub implementation when LLVM is not available
-        codegen_generate_error_return(codegen, return_value->llvm_value, 
+        codegen_generate_error_return(codegen, return_value->llvm_value,
                                     return_value->goo_type, function_return_type);
 #endif
         value_info_free(return_value);
