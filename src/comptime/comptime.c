@@ -865,17 +865,12 @@ ComptimeResult* comptime_eval_function_call(ComptimeContext* ctx, ASTNode* call)
             
             return comptime_intrinsic_sizeof(ctx, arg_result->value);
         }
-        
-        // Look up user-defined function
-        ASTNode* func_node = comptime_context_lookup_func(ctx, func_ident->name);
-        if (!func_node) {
-            char error_msg[256];
-            snprintf(error_msg, sizeof(error_msg), "Undefined function in comptime context: %s", func_ident->name);
-            return comptime_result_new(NULL, comptime_error_new(error_msg, call->pos), NULL);
-        }
-        
-        // TODO: Implement user-defined function calls
-        return comptime_result_new(NULL, comptime_error_new("User-defined function calls not yet implemented", call->pos), NULL);
+
+        // Non-intrinsic names land in the fallback below. User-defined
+        // function calls dispatch through comptime_eval_function_call_enhanced
+        // (see comptime_eval_expression's AST_CALL_EXPR arm), so this branch
+        // only fires if the original handler is invoked directly with a
+        // non-@-prefixed name — an API misuse rather than a comptime error.
     }
     
     return comptime_result_new(NULL, comptime_error_new("Complex function calls not supported in comptime evaluation", call->pos), NULL);
@@ -1158,20 +1153,6 @@ ComptimeResult* execute_comptime_block(ASTNode* comptime_block, ComptimeContext*
 static ComptimeResult* comptime_eval_if_stmt(ComptimeContext* ctx, ASTNode* stmt);
 static ComptimeResult* comptime_eval_for_stmt(ComptimeContext* ctx, ASTNode* stmt);
 static ComptimeResult* comptime_eval_return_stmt(ComptimeContext* ctx, ASTNode* stmt);
-
-// Exception for early returns
-typedef struct {
-    ComptimeValue* return_value;
-    bool is_return;
-} ComptimeControlFlow;
-
-static ComptimeControlFlow comptime_control_flow_none(void) {
-    return (ComptimeControlFlow){NULL, false};
-}
-
-static ComptimeControlFlow comptime_control_flow_return(ComptimeValue* value) {
-    return (ComptimeControlFlow){value, true};
-}
 
 // Execute a user-defined function
 ComptimeResult* comptime_call_user_function(ComptimeContext* ctx, ASTNode* func_node, 
