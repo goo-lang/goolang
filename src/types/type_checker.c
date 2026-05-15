@@ -358,12 +358,29 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     
     // Store the type on the AST node for code generation
     var_decl->base.node_type = final_type;
-    
+
+    // Multi-LHS short var decl `a, b := f()` — RHS must produce a
+    // TYPE_STRUCT with at least name_count fields, and each name
+    // binds to the corresponding field's type. Codegen does the
+    // ExtractValue destructuring; the type checker just records
+    // each binding with the right per-field type.
+    Type** per_name_types = NULL;
+    if (var_decl->name_count > 1 && final_type && final_type->kind == TYPE_STRUCT) {
+        if (final_type->data.struct_type.field_count >= var_decl->name_count) {
+            per_name_types = malloc(sizeof(Type*) * var_decl->name_count);
+            for (size_t i = 0; i < var_decl->name_count; i++) {
+                per_name_types[i] = final_type->data.struct_type.fields[i].type;
+            }
+        }
+    }
+
     // Add variables to scope
     for (size_t i = 0; i < var_decl->name_count; i++) {
-        Variable* var = variable_new(var_decl->names[i], final_type, var_decl->base.pos);
+        Type* t = per_name_types ? per_name_types[i] : final_type;
+        Variable* var = variable_new(var_decl->names[i], t, var_decl->base.pos);
         if (!var) {
             type_error(checker, var_decl->base.pos, "Memory allocation failed");
+            free(per_name_types);
             return 0;
         }
         
