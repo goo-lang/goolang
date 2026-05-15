@@ -27,6 +27,16 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_try_expr(checker, expr);
         case AST_CATCH_EXPR:
             return type_check_catch_expr(checker, expr);
+        case AST_POSTFIX_EXPR: {
+            // `j++` / `j--` — type is the operand's type. Operand must
+            // be an integer-valued lvalue; codegen does the actual
+            // load/inc/store.
+            PostfixExprNode* p = (PostfixExprNode*)expr;
+            Type* t = type_check_expression(checker, p->operand);
+            if (!t) return NULL;
+            expr->node_type = t;
+            return t;
+        }
         case AST_PAREN_EXPR: {
             // MapLitNode — `map[K]V{ … }`. Type is just TYPE_MAP(K,V).
             MapLitNode* lit = (MapLitNode*)expr;

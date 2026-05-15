@@ -83,8 +83,8 @@ func main() {
         }
     }
 
-    // 5. for c-style (using j = j+1 — postfix ++ not in grammar yet)
-    for j := 0; j < 1; j = j + 1 {
+    // 5. for c-style (M8-postfix-incr now lets us write j++)
+    for j := 0; j < 1; j++ {
         fmt.Println("PASS: for c-style")
     }
 

@@ -46,6 +46,42 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_mmio_access(codegen, checker, expr);
         case AST_SLICE_EXPR:
             return codegen_generate_slice_lit(codegen, checker, expr);
+        case AST_POSTFIX_EXPR: {
+            // `j++` / `j--`: load operand, compute load ± 1, store back,
+            // return the LOADED (pre-modification) value. Postfix
+            // semantics. Operand must be an lvalue (identifier or
+            // selector). We don't auto-load the operand expression
+            // because we need the alloca, not the value.
+            PostfixExprNode* p = (PostfixExprNode*)expr;
+            ValueInfo* operand;
+            LLVMValueRef alloca_ref;
+            LLVMTypeRef elem_llvm;
+            LLVMValueRef loaded;
+            LLVMValueRef one;
+            LLVMValueRef updated;
+            if (p->operand->type != AST_IDENTIFIER) {
+                codegen_error(codegen, expr->pos, "postfix ++/-- requires a simple identifier (selector/index forms not yet supported)");
+                return NULL;
+            }
+            operand = codegen_lookup_value(codegen, ((IdentifierNode*)p->operand)->name);
+            if (!operand || !operand->is_lvalue) {
+                codegen_error(codegen, expr->pos, "postfix ++/-- operand must be an lvalue");
+                return NULL;
+            }
+            alloca_ref = operand->llvm_value;
+            elem_llvm = operand->goo_type
+                ? codegen_type_to_llvm(codegen, operand->goo_type)
+                : LLVMInt32TypeInContext(codegen->context);
+            loaded = LLVMBuildLoad2(codegen->builder, elem_llvm, alloca_ref, "postfix_load");
+            one = LLVMConstInt(elem_llvm, 1, 0);
+            if (p->operator == TOKEN_INCREMENT) {
+                updated = LLVMBuildAdd(codegen->builder, loaded, one, "postfix_inc");
+            } else {
+                updated = LLVMBuildSub(codegen->builder, loaded, one, "postfix_dec");
+            }
+            LLVMBuildStore(codegen->builder, updated, alloca_ref);
+            return value_info_new(NULL, loaded, operand->goo_type);
+        }
         case AST_PAREN_EXPR: {
             // MapLitNode — `map[K]V{ … }`. Lowers to:
             //   m = goo_map_new_si()

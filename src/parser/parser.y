@@ -987,6 +987,14 @@ postfix_expr:
         PostfixExprNode* postfix = ast_postfix_expr_new($1, NOT, get_current_position());
         $$ = (ASTNode*)postfix;
     }
+    | primary_expr INCREMENT {
+        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(INCREMENT), get_current_position());
+        $$ = (ASTNode*)postfix;
+    }
+    | primary_expr DECREMENT {
+        PostfixExprNode* postfix = ast_postfix_expr_new($1, bison_token_to_token_type(DECREMENT), get_current_position());
+        $$ = (ASTNode*)postfix;
+    }
     ;
 
 binary_expr:
@@ -2026,6 +2034,8 @@ static TokenType bison_token_to_token_type(int bison_token) {
         case LSHIFT: return TOKEN_LSHIFT;
         case RSHIFT: return TOKEN_RSHIFT;
         case ARROW: return TOKEN_ARROW;
+        case INCREMENT: return TOKEN_INCREMENT;
+        case DECREMENT: return TOKEN_DECREMENT;
         default: return TOKEN_UNKNOWN;
     }
 }
