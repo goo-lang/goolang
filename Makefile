@@ -305,9 +305,9 @@ comptime-probe: $(COMPILER) $(RUNTIME_LIB)
 # M10 struct-literal probe: compile + run examples/m10_probe.goo and
 # diff stdout against expected.txt (baseline-probe pattern). Covers
 # keyed/positional/partial-keyed/empty literals, rvalue field access,
-# and Go zero-value semantics for omitted keyed fields. Aspirational
-# red gate while M10-struct-literal-impl is in flight; joins `verify`
-# as M10-probe-gate-v2 once green.
+# and Go zero-value semantics for omitted keyed fields. Was the
+# aspirational red gate while M10-struct-literal-impl was in flight;
+# joined `verify` as M10-probe-gate-v2 once green (commit 1adab3c).
 m10-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	$(COMPILER) -o build/m10_probe examples/m10_probe.goo
@@ -320,13 +320,14 @@ m10-probe: $(COMPILER) $(RUNTIME_LIB)
 	fi
 
 # Aggregate verification net per `verification_gates.md`. Runs the
-# five green gates in sequence: baseline-probe, smoke-stdlib,
-# v2-bootstrap-pilot, comptime-block-probe, comptime-probe. Exits
-# non-zero on any failure. Use this on cross-cutting changes; use
-# individual targets when iterating on a specific area. comptime-probe
-# was the aspirational red gate during M11 and joined the net once
-# M11 closed (commits 605acaf, 47b5ca2, d7bc61c).
-verify: baseline-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe
+# six green gates in sequence: baseline-probe, smoke-stdlib,
+# v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe.
+# Exits non-zero on any failure. Use this on cross-cutting changes;
+# use individual targets when iterating on a specific area.
+# comptime-probe joined the net once M11 closed (commits 605acaf,
+# 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
+# struct literals shipped (commit 1adab3c) — same promotion pattern.
+verify: baseline-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
