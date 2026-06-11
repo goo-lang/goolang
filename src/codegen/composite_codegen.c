@@ -1,0 +1,400 @@
+#include "codegen.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+// Composite-data lowering: index expressions (array/slice/map),
+// struct field selectors, struct literals, and slice literals.
+// Split from expression_codegen.c (refactor, no behavior change).
+
+ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_INDEX_EXPR) return NULL;
+    
+    IndexExprNode* index_expr = (IndexExprNode*)expr;
+    
+    // Generate code for the base expression (array/slice/map)
+    ValueInfo* base_val = codegen_generate_expression(codegen, checker, index_expr->expr);
+    if (!base_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate base expression for index");
+        return NULL;
+    }
+    
+    // Generate code for the index expression
+    ValueInfo* index_val = codegen_generate_expression(codegen, checker, index_expr->index);
+    if (!index_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate index expression");
+        value_info_free(base_val);
+        return NULL;
+    }
+    
+    Type* base_type = base_val->goo_type;
+    Type* element_type = NULL;
+    LLVMValueRef result = NULL;
+
+    // Map indexing fast-path: lower `m[k]` to goo_map_get_si.
+    // The map runtime is the minimum-viable string→int variant.
+    if (base_type && base_type->kind == TYPE_MAP) {
+        LLVMValueRef get_fn = LLVMGetNamedFunction(codegen->module, "goo_map_get_si");
+        if (!get_fn) {
+            codegen_error(codegen, expr->pos, "goo_map_get_si missing");
+            value_info_free(base_val); value_info_free(index_val);
+            return NULL;
+        }
+        LLVMValueRef kp = index_val->llvm_value;
+        if (index_val->goo_type && index_val->goo_type->kind == TYPE_STRING) {
+            kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
+        }
+        LLVMValueRef args[2] = { base_val->llvm_value, kp };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
+                                get_fn, args, 2, "map_get");
+        value_info_free(base_val);
+        value_info_free(index_val);
+        return value_info_new(NULL, result, base_type->data.map.value_type);
+    }
+
+    // Handle different indexed types
+    switch (base_type->kind) {
+        case TYPE_ARRAY: {
+            element_type = base_type->data.array.element_type;
+            
+            // For arrays, generate GEP
+            LLVMValueRef indices[] = {
+                LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),  // Array base
+                index_val->llvm_value  // Array index
+            };
+            
+            if (base_val->is_lvalue) {
+                // Base is a pointer to array
+                result = LLVMBuildGEP2(codegen->builder,
+                                      codegen_type_to_llvm(codegen, base_type),
+                                      base_val->llvm_value, indices, 2, "array_elem");
+            } else {
+                // Base is array value, need to create alloca
+                LLVMValueRef array_alloca = codegen_create_alloca(codegen,
+                                                                 codegen_type_to_llvm(codegen, base_type),
+                                                                 "array_tmp");
+                LLVMBuildStore(codegen->builder, base_val->llvm_value, array_alloca);
+                result = LLVMBuildGEP2(codegen->builder,
+                                      codegen_type_to_llvm(codegen, base_type),
+                                      array_alloca, indices, 2, "array_elem");
+            }
+            break;
+        }
+        
+        case TYPE_SLICE: {
+            element_type = base_type->data.slice.element_type;
+            
+            // Slices are structs with { ptr, len }
+            // Extract the data pointer
+            LLVMValueRef slice_ptr;
+            if (base_val->is_lvalue) {
+                // Load the slice struct
+                LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder,
+                                                       codegen_type_to_llvm(codegen, base_type),
+                                                       base_val->llvm_value, "slice_load");
+                slice_ptr = LLVMBuildExtractValue(codegen->builder, slice_val, 0, "slice_ptr");
+            } else {
+                slice_ptr = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 0, "slice_ptr");
+            }
+            
+            // Generate bounds check if in safe mode
+            // TODO: Add runtime bounds checking
+            
+            // Index into the slice data
+            result = LLVMBuildGEP2(codegen->builder,
+                                  codegen_type_to_llvm(codegen, element_type),
+                                  slice_ptr, &index_val->llvm_value, 1, "slice_elem");
+            break;
+        }
+        
+        case TYPE_STRING: {
+            // Strings are like slices with byte elements
+            element_type = type_checker_get_builtin(checker, TYPE_UINT8);
+            
+            // Extract the data pointer from string struct
+            LLVMValueRef string_ptr;
+            if (base_val->is_lvalue) {
+                LLVMValueRef string_val = LLVMBuildLoad2(codegen->builder,
+                                                        codegen_type_to_llvm(codegen, base_type),
+                                                        base_val->llvm_value, "string_load");
+                string_ptr = LLVMBuildExtractValue(codegen->builder, string_val, 0, "string_ptr");
+            } else {
+                string_ptr = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 0, "string_ptr");
+            }
+            
+            // Index into the string data
+            result = LLVMBuildGEP2(codegen->builder,
+                                  LLVMInt8TypeInContext(codegen->context),
+                                  string_ptr, &index_val->llvm_value, 1, "string_char");
+            break;
+        }
+        
+        case TYPE_MAP: {
+            // TODO: Implement map indexing with runtime call
+            codegen_error(codegen, expr->pos, "Map indexing not yet implemented");
+            value_info_free(base_val);
+            value_info_free(index_val);
+            return NULL;
+        }
+        
+        case TYPE_POINTER: {
+            // Pointer indexing (pointer arithmetic)
+            element_type = base_type->data.pointer.pointee_type;
+            
+            LLVMValueRef ptr_val = base_val->llvm_value;
+            if (base_val->is_lvalue) {
+                ptr_val = LLVMBuildLoad2(codegen->builder,
+                                       codegen_type_to_llvm(codegen, base_type),
+                                       base_val->llvm_value, "ptr_load");
+            }
+            
+            result = LLVMBuildGEP2(codegen->builder,
+                                  codegen_type_to_llvm(codegen, element_type),
+                                  ptr_val, &index_val->llvm_value, 1, "ptr_elem");
+            break;
+        }
+        
+        default:
+            codegen_error(codegen, expr->pos, "Type cannot be indexed");
+            value_info_free(base_val);
+            value_info_free(index_val);
+            return NULL;
+    }
+    
+    // Create value info for the result
+    ValueInfo* result_val = value_info_new(NULL, result, element_type);
+    result_val->is_lvalue = 1;  // Indexing returns an lvalue
+    
+    value_info_free(base_val);
+    value_info_free(index_val);
+    
+    return result_val;
+#endif
+}
+ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
+    
+    SelectorExprNode* selector = (SelectorExprNode*)expr;
+    
+    // Generate code for the base expression
+    ValueInfo* base_val = codegen_generate_expression(codegen, checker, selector->expr);
+    if (!base_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate base expression for selector");
+        return NULL;
+    }
+    
+    // Get the type of the base expression
+    Type* base_type = base_val->goo_type;
+    
+    // Handle pointer to struct
+    if (base_type->kind == TYPE_POINTER && base_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+        base_type = base_type->data.pointer.pointee_type;
+        // Load through the pointer if needed
+        if (!base_val->is_lvalue) {
+            // If it's not an lvalue, we need to load it first
+            LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, 
+                                                codegen_type_to_llvm(codegen, base_type),
+                                                base_val->llvm_value, "ptr_load");
+            base_val->llvm_value = loaded;
+        }
+    }
+    
+    if (base_type->kind != TYPE_STRUCT) {
+        codegen_error(codegen, expr->pos, "Selector can only be applied to struct types");
+        value_info_free(base_val);
+        return NULL;
+    }
+    
+    // Find the field in the struct
+    int field_index = -1;
+    StructField* field = NULL;
+    for (size_t i = 0; i < base_type->data.struct_type.field_count; i++) {
+        if (strcmp(base_type->data.struct_type.fields[i].name, selector->selector) == 0) {
+            field_index = (int)i;
+            field = &base_type->data.struct_type.fields[i];
+            break;
+        }
+    }
+    
+    if (field_index == -1) {
+        codegen_error(codegen, expr->pos, "Field '%s' not found in struct", selector->selector);
+        value_info_free(base_val);
+        return NULL;
+    }
+    
+    // Generate GEP instruction to get pointer to field
+    LLVMValueRef indices[] = {
+        LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),  // Deref struct pointer
+        LLVMConstInt(LLVMInt32TypeInContext(codegen->context), field_index, 0)  // Field index
+    };
+    
+    LLVMValueRef field_ptr;
+    if (base_val->is_lvalue) {
+        // Base is already a pointer to the struct
+        field_ptr = LLVMBuildGEP2(codegen->builder, 
+                                 codegen_type_to_llvm(codegen, base_type),
+                                 base_val->llvm_value, indices, 2, selector->selector);
+    } else {
+        // Base is a struct value, need to create alloca first
+        LLVMValueRef struct_alloca = codegen_create_alloca(codegen, 
+                                                          codegen_type_to_llvm(codegen, base_type), 
+                                                          "struct_tmp");
+        LLVMBuildStore(codegen->builder, base_val->llvm_value, struct_alloca);
+        field_ptr = LLVMBuildGEP2(codegen->builder, 
+                                 codegen_type_to_llvm(codegen, base_type),
+                                 struct_alloca, indices, 2, selector->selector);
+    }
+    
+    // Create value info for the field
+    ValueInfo* field_val = value_info_new(selector->selector, field_ptr, field->type);
+    field_val->is_lvalue = 1;  // Field access returns an lvalue
+    
+    value_info_free(base_val);
+    return field_val;
+#endif
+}
+// `Point{x: 3, y: 4}` / `Point{3, 4}` — build the struct value as an
+// rvalue aggregate: start from the zero value (so omitted keyed fields
+// get Go zero-value semantics for free, matching the zero-initializing
+// alloca `var p Point` already gets) and InsertValue each provided
+// field at its declared index. Selector codegen already handles rvalue
+// struct bases by spilling to a temporary alloca.
+ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_STRUCT_LITERAL) return NULL;
+
+    StructLiteralNode* lit = (StructLiteralNode*)expr;
+    Type* struct_type = expr->node_type;
+    if (!struct_type || struct_type->kind != TYPE_STRUCT) {
+        codegen_error(codegen, expr->pos,
+                      "Struct literal '%s' missing type info from type check",
+                      lit->type_name);
+        return NULL;
+    }
+
+    LLVMTypeRef llvm_struct = codegen_type_to_llvm(codegen, struct_type);
+    if (!llvm_struct) {
+        codegen_error(codegen, expr->pos,
+                      "Failed to lower struct type '%s'", lit->type_name);
+        return NULL;
+    }
+
+    StructField* fields = struct_type->data.struct_type.fields;
+    size_t decl_count = struct_type->data.struct_type.field_count;
+
+    LLVMValueRef agg = LLVMConstNull(llvm_struct);
+    size_t i = 0;
+    for (ASTNode* v = lit->field_values; v; v = v->next, i++) {
+        // Declared index: positional inits map 1:1; keyed inits resolve
+        // by name (type check already guaranteed the name exists).
+        size_t field_index = i;
+        if (lit->is_keyed) {
+            for (field_index = 0; field_index < decl_count; field_index++) {
+                if (fields[field_index].name &&
+                    strcmp(fields[field_index].name, lit->field_names[i]) == 0) break;
+            }
+            if (field_index == decl_count) {
+                codegen_error(codegen, v->pos, "Field '%s' not found in struct '%s'",
+                              lit->field_names[i], lit->type_name);
+                return NULL;
+            }
+        }
+
+        ValueInfo* val = codegen_generate_expression(codegen, checker, v);
+        if (!val) {
+            codegen_error(codegen, v->pos, "Failed to generate struct literal field");
+            return NULL;
+        }
+        // Selector/index lvalues carry the field address — load the value.
+        // A NULL lowering here must fail loudly: skipping the load would
+        // InsertValue the address instead of the field value.
+        if (val->is_lvalue && val->goo_type) {
+            LLVMTypeRef vt = codegen_type_to_llvm(codegen, val->goo_type);
+            if (!vt) {
+                codegen_error(codegen, v->pos,
+                              "Failed to lower type of struct literal field value");
+                value_info_free(val);
+                return NULL;
+            }
+            val->llvm_value = LLVMBuildLoad2(codegen->builder, vt, val->llvm_value, "fieldval");
+            val->is_lvalue = 0;
+        }
+        agg = LLVMBuildInsertValue(codegen->builder, agg, val->llvm_value,
+                                   (unsigned)field_index,
+                                   fields[field_index].name ? fields[field_index].name : "field");
+        value_info_free(val);
+    }
+
+    return value_info_new(NULL, agg, struct_type);
+#endif
+}
+// codegen_generate_slice_lit lowers `[1, 2, 3]` to a slice struct
+// { ptr, i64 } pointing at a global constant array. Element type is
+// inferred from the type-check pass (goo_type on the AST node is
+// already TYPE_SLICE).
+ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_SLICE_EXPR) return NULL;
+
+    SliceLitNode* lit = (SliceLitNode*)expr;
+    Type* slice_type = expr->node_type;  // set by type checker
+    if (!slice_type || slice_type->kind != TYPE_SLICE) {
+        codegen_error(codegen, expr->pos, "Slice literal missing TYPE_SLICE node_type");
+        return NULL;
+    }
+    Type* elem_type = slice_type->data.slice.element_type;
+    LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
+    if (!llvm_elem) {
+        codegen_error(codegen, expr->pos, "Cannot lower slice element type");
+        return NULL;
+    }
+
+    // Count + evaluate elements.
+    size_t count = 0;
+    for (ASTNode* e = lit->elements; e; e = e->next) count++;
+
+    LLVMValueRef* elem_vals = count ? calloc(count, sizeof(LLVMValueRef)) : NULL;
+    size_t idx = 0;
+    for (ASTNode* e = lit->elements; e; e = e->next, idx++) {
+        ValueInfo* v = codegen_generate_expression(codegen, checker, e);
+        if (!v) { free(elem_vals); return NULL; }
+        elem_vals[idx] = v->llvm_value;
+        value_info_free(v);
+    }
+
+    // Build a constant array initializer. All elements must be LLVM
+    // constants for this path. For non-const elements we'd need to
+    // allocate a stack buffer and store each — defer to future work.
+    LLVMTypeRef arr_type = LLVMArrayType(llvm_elem, count);
+    LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
+    LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
+    LLVMSetInitializer(global, arr_const);
+    LLVMSetLinkage(global, LLVMPrivateLinkage);
+    LLVMSetGlobalConstant(global, 1);
+    free(elem_vals);
+
+    // Build the slice struct { ptr, i64 }.
+    LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
+    LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, global, 0, "slice_ptr");
+    LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 1, "slice_len");
+
+    return value_info_new(NULL, slice_val, slice_type);
+#endif
+}
+

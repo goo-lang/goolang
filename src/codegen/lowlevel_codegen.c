@@ -1,0 +1,379 @@
+#include "codegen.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+// Low-level lowering: channel send/receive and the unsafe/hardware
+// extensions (pointer arithmetic, dereference, address-of, port I/O,
+// MMIO). Split from expression_codegen.c (refactor, no behavior change).
+
+ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if LLVM_AVAILABLE
+    if (!codegen || !checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
+    
+    BinaryExprNode* binary = (BinaryExprNode*)expr;
+    
+    // Generate channel and value expressions
+    ValueInfo* channel_val = codegen_generate_expression(codegen, checker, binary->left);
+    if (!channel_val) return NULL;
+    
+    ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
+    if (!value_val) return NULL;
+    
+    // Get element size and create call to goo_chan_send
+    // For now, assume int type - this should be determined from the channel type
+    LLVMValueRef elem_size __attribute__((unused)) = LLVMConstInt(LLVMInt64Type(), sizeof(int), 0);
+    
+    // Cast value to void pointer
+    LLVMValueRef value_ptr = value_val->llvm_value;
+    if (!value_val->is_lvalue) {
+        // Need to store the value temporarily
+        LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder, 
+                                                   LLVMTypeOf(value_val->llvm_value), 
+                                                   "temp_send_value");
+        LLVMBuildStore(codegen->builder, value_val->llvm_value, temp_alloca);
+        value_ptr = temp_alloca;
+    }
+    
+    // Cast to void*
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+    value_ptr = LLVMBuildBitCast(codegen->builder, value_ptr, void_ptr_type, "value_as_void_ptr");
+    
+    // Get the goo_chan_send function
+    LLVMTypeRef param_types[] = {
+        void_ptr_type,  // goo_channel_t*
+        void_ptr_type   // void* data
+    };
+    LLVMTypeRef send_func_type = LLVMFunctionType(LLVMInt32Type(), param_types, 2, 0);
+    
+    LLVMValueRef send_func = LLVMGetNamedFunction(codegen->module, "goo_chan_send");
+    if (!send_func) {
+        // Declare goo_chan_send if not already declared
+        send_func = LLVMAddFunction(codegen->module, "goo_chan_send", send_func_type);
+    }
+    
+    // Call goo_chan_send(channel, value_ptr)
+    LLVMValueRef args[] = { channel_val->llvm_value, value_ptr };
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder, send_func_type, send_func, args, 2, "send_result");
+    
+    // Create result value info
+    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    result_info->name = NULL;
+    result_info->llvm_value = result;
+    result_info->goo_type = type_checker_get_builtin(checker, TYPE_INT32);  // Returns int (success/failure)
+    result_info->is_lvalue = 0;
+    result_info->is_moved = 0;
+    result_info->is_initialized = 1;
+    
+    return result_info;
+#else
+    codegen_error(codegen, expr->pos, "Channel send operations require LLVM");
+    return NULL;
+#endif
+}
+
+ValueInfo* codegen_generate_channel_recv(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if LLVM_AVAILABLE
+    if (!codegen || !checker || !expr || expr->type != AST_UNARY_EXPR) return NULL;
+    
+    UnaryExprNode* unary = (UnaryExprNode*)expr;
+    
+    // Generate channel expression
+    ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
+    if (!channel_val) return NULL;
+    
+    // For receive, we need to determine the element type from the channel type
+    // For now, assume int type - this should be determined from the channel type
+    LLVMTypeRef element_type = LLVMInt32Type();
+    
+    // Allocate space for the received value
+    LLVMValueRef result_alloca = LLVMBuildAlloca(codegen->builder, element_type, "recv_result");
+    
+    // Cast result alloca to void*
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+    LLVMValueRef result_ptr = LLVMBuildBitCast(codegen->builder, result_alloca, void_ptr_type, "result_as_void_ptr");
+    
+    // Get the goo_chan_recv function
+    LLVMTypeRef param_types_recv[] = {
+        void_ptr_type,  // goo_channel_t*
+        void_ptr_type   // void* data
+    };
+    LLVMTypeRef recv_func_type = LLVMFunctionType(LLVMInt32Type(), param_types_recv, 2, 0);
+    
+    LLVMValueRef recv_func = LLVMGetNamedFunction(codegen->module, "goo_chan_recv");
+    if (!recv_func) {
+        // Declare goo_chan_recv if not already declared
+        recv_func = LLVMAddFunction(codegen->module, "goo_chan_recv", recv_func_type);
+    }
+    
+    // Call goo_chan_recv(channel, result_ptr)
+    LLVMValueRef args[] = { channel_val->llvm_value, result_ptr };
+    LLVMValueRef success __attribute__((unused)) = LLVMBuildCall2(codegen->builder, recv_func_type, recv_func, args, 2, "recv_success");
+    
+    // For simplicity, assume the receive always succeeds and load the value
+    // In a complete implementation, we'd need to check the success flag
+    LLVMValueRef received_value = LLVMBuildLoad2(codegen->builder, element_type, result_alloca, "received_value");
+    
+    // Create result value info
+    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    result_info->name = NULL;
+    result_info->llvm_value = received_value;
+    result_info->goo_type = type_checker_get_builtin(checker, TYPE_INT32);  // Should match channel element type
+    result_info->is_lvalue = 0;
+    result_info->is_moved = 0;
+    result_info->is_initialized = 1;
+    
+    return result_info;
+#else
+    codegen_error(codegen, expr->pos, "Channel receive operations require LLVM");
+    return NULL;
+#endif
+}
+// Unsafe operation implementations
+
+ValueInfo* codegen_generate_ptr_arithmetic(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_PTR_ARITHMETIC) return NULL;
+    
+    PtrArithmeticNode* ptr_arith = (PtrArithmeticNode*)expr;
+    
+    // Generate pointer expression
+    ValueInfo* ptr_val = codegen_generate_expression(codegen, checker, ptr_arith->pointer);
+    if (!ptr_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate pointer expression");
+        return NULL;
+    }
+    
+    // Generate offset expression
+    ValueInfo* offset_val = codegen_generate_expression(codegen, checker, ptr_arith->offset);
+    if (!offset_val) {
+        value_info_free(ptr_val);
+        codegen_error(codegen, expr->pos, "Failed to generate offset expression");
+        return NULL;
+    }
+    
+    // Perform pointer arithmetic using GEP
+    LLVMValueRef result = LLVMBuildGEP2(codegen->builder,
+                                        LLVMInt8Type(),  // i8 for byte arithmetic
+                                        ptr_val->llvm_value,
+                                        &offset_val->llvm_value, 1,
+                                        "ptr_arith");
+    
+    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    result_info->name = NULL;
+    result_info->llvm_value = result;
+    result_info->goo_type = ptr_val->goo_type; // Same type as input pointer
+    result_info->is_lvalue = 0;
+    result_info->is_moved = 0;
+    result_info->is_initialized = 1;
+    
+    value_info_free(ptr_val);
+    value_info_free(offset_val);
+    
+    return result_info;
+#endif
+}
+
+ValueInfo* codegen_generate_ptr_deref(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_PTR_DEREF) return NULL;
+    
+    PtrDerefNode* ptr_deref = (PtrDerefNode*)expr;
+    
+    // Generate pointer expression
+    ValueInfo* ptr_val = codegen_generate_expression(codegen, checker, ptr_deref->pointer);
+    if (!ptr_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate pointer expression for dereference");
+        return NULL;
+    }
+    
+    // Load from the pointer
+    LLVMValueRef result = LLVMBuildLoad2(codegen->builder,
+                                         LLVMInt8Type(), // Load as i8 for now
+                                         ptr_val->llvm_value,
+                                         "ptr_deref");
+    
+    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    result_info->name = NULL;
+    result_info->llvm_value = result;
+    result_info->goo_type = NULL; // TODO: Determine pointee type
+    result_info->is_lvalue = 1; // Dereferenced pointer is an lvalue
+    result_info->is_moved = 0;
+    result_info->is_initialized = 1;
+    
+    value_info_free(ptr_val);
+    
+    return result_info;
+#endif
+}
+
+ValueInfo* codegen_generate_addr_of(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_ADDR_OF) return NULL;
+    
+    AddrOfNode* addr_of = (AddrOfNode*)expr;
+    
+    // Generate the operand expression - must be an lvalue
+    ValueInfo* operand_val = codegen_generate_expression(codegen, checker, addr_of->operand);
+    if (!operand_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate operand expression for address-of");
+        return NULL;
+    }
+    
+    if (!operand_val->is_lvalue) {
+        value_info_free(operand_val);
+        codegen_error(codegen, expr->pos, "Cannot take address of non-lvalue expression");
+        return NULL;
+    }
+    
+    // The address is the LLVM value itself (since lvalues store addresses)
+    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    result_info->name = NULL;
+    result_info->llvm_value = operand_val->llvm_value;
+    result_info->goo_type = NULL; // TODO: Create pointer type
+    result_info->is_lvalue = 0;
+    result_info->is_moved = 0;
+    result_info->is_initialized = 1;
+    
+    value_info_free(operand_val);
+    
+    return result_info;
+#endif
+}
+
+ValueInfo* codegen_generate_port_io(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_PORT_IO) return NULL;
+    
+    PortIONode* port_io = (PortIONode*)expr;
+    
+    // Generate port number expression
+    ValueInfo* port_val = codegen_generate_expression(codegen, checker, port_io->port);
+    if (!port_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate port number expression");
+        return NULL;
+    }
+    
+    LLVMValueRef result = NULL;
+    
+    if (port_io->is_input) {
+        // Port input - generate inline assembly for IN instruction
+        LLVMTypeRef port_type = LLVMInt16Type();
+        LLVMTypeRef func_type = LLVMFunctionType(LLVMInt8Type(), &port_type, 1, 0);
+        const char* asm_str = "inb $1, $0";
+        const char* constraints = "=a,Nd,~{dirflag},~{fpsr},~{flags}";
+        
+        LLVMValueRef inline_asm = LLVMGetInlineAsm(func_type, (char*)asm_str, strlen(asm_str),
+                                                   (char*)constraints, strlen(constraints),
+                                                   1, 0, LLVMInlineAsmDialectIntel, 0);
+        
+        result = LLVMBuildCall2(codegen->builder, func_type, inline_asm, &port_val->llvm_value, 1, "port_in");
+    } else {
+        // Port output - generate inline assembly for OUT instruction
+        ValueInfo* value_val = codegen_generate_expression(codegen, checker, port_io->value);
+        if (!value_val) {
+            value_info_free(port_val);
+            codegen_error(codegen, expr->pos, "Failed to generate value expression for port output");
+            return NULL;
+        }
+        
+        LLVMTypeRef func_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
+        const char* asm_str = "outb $1, $0";
+        const char* constraints = "Nd,a,~{dirflag},~{fpsr},~{flags}";
+        
+        LLVMValueRef inline_asm = LLVMGetInlineAsm(func_type, (char*)asm_str, strlen(asm_str),
+                                                   (char*)constraints, strlen(constraints),
+                                                   1, 1, LLVMInlineAsmDialectIntel, 0);
+        
+        LLVMValueRef args[] = { port_val->llvm_value, value_val->llvm_value };
+        result = LLVMBuildCall2(codegen->builder, func_type, inline_asm, args, 2, "port_out");
+        
+        value_info_free(value_val);
+    }
+    
+    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    result_info->name = NULL;
+    result_info->llvm_value = result;
+    result_info->goo_type = NULL; // TODO: Set appropriate type
+    result_info->is_lvalue = 0;
+    result_info->is_moved = 0;
+    result_info->is_initialized = 1;
+    
+    value_info_free(port_val);
+    
+    return result_info;
+#endif
+}
+
+ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_MMIO_ACCESS) return NULL;
+    
+    MMIOAccessNode* mmio = (MMIOAccessNode*)expr;
+    
+    // Generate address expression
+    ValueInfo* addr_val = codegen_generate_expression(codegen, checker, mmio->address);
+    if (!addr_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate address expression for MMIO");
+        return NULL;
+    }
+    
+    LLVMValueRef result = NULL;
+    
+    if (mmio->value == NULL) {
+        // MMIO read
+        LLVMTypeRef load_type = (mmio->size == 1) ? LLVMInt8Type() :
+                               (mmio->size == 2) ? LLVMInt16Type() :
+                               (mmio->size == 4) ? LLVMInt32Type() : LLVMInt64Type();
+        
+        result = LLVMBuildLoad2(codegen->builder, load_type, addr_val->llvm_value, "mmio_read");
+        
+        if (mmio->is_volatile) {
+            LLVMSetVolatile(result, 1);
+        }
+    } else {
+        // MMIO write
+        ValueInfo* value_val = codegen_generate_expression(codegen, checker, mmio->value);
+        if (!value_val) {
+            value_info_free(addr_val);
+            codegen_error(codegen, expr->pos, "Failed to generate value expression for MMIO write");
+            return NULL;
+        }
+        
+        result = LLVMBuildStore(codegen->builder, value_val->llvm_value, addr_val->llvm_value);
+        
+        if (mmio->is_volatile) {
+            LLVMSetVolatile(result, 1);
+        }
+        
+        value_info_free(value_val);
+    }
+    
+    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    result_info->name = NULL;
+    result_info->llvm_value = result;
+    result_info->goo_type = NULL; // TODO: Set appropriate type
+    result_info->is_lvalue = 0;
+    result_info->is_moved = 0;
+    result_info->is_initialized = 1;
+    
+    value_info_free(addr_val);
+    
+    return result_info;
+#endif
+}
