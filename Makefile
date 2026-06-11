@@ -56,7 +56,7 @@ IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/perform
 PACKAGE_SRCS =
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
-COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/hardware_aware.c $(SRCDIR)/comptime/code_specialization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
+COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/hardware_aware.c $(SRCDIR)/comptime/code_specialization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
 CURRENT_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(PACKAGE_SRCS) $(COMPTIME_SRCS)
 COMPILER_SRCS = $(COMPILERDIR)/goo.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
@@ -1004,30 +1004,30 @@ $(REACTIVE_PROGRAMMING_DEMO): examples/reactive_programming_demo.c $(REACTIVE_PR
 # `errors/error.c` defines goo_error_new and friends that types.c references.
 # `parser/parser_errors.c` defines parser_error which lexer.c calls via
 # the bridge; otherwise we'd see an undefined-symbol cascade.
-comptime_test: tests/test_comptime.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
+comptime_test: tests/test_comptime.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Compile-time types integration test
-comptime_types_test: tests/test_comptime_types.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+comptime_types_test: tests/test_comptime_types.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Optimization directives framework test
-optimization_test: tests/test_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+optimization_test: tests/test_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Profile-Guided Optimization test
-pgo_test: tests/test_pgo.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+pgo_test: tests/test_pgo.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Advanced Optimization Strategies test
-advanced_optimization_test: tests/test_advanced_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+advanced_optimization_test: tests/test_advanced_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-advanced_macro_test: tests/test_advanced_macro.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+advanced_macro_test: tests/test_advanced_macro.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-derive_macro_test: tests/test_derive_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+derive_macro_test: tests/test_derive_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-template_macro_test: tests/test_template_macros.c $(SRCDIR)/template_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/ast/ast.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
+template_macro_test: tests/test_template_macros.c $(SRCDIR)/template_macros.c $(SRCDIR)/derive_macros.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)

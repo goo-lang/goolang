@@ -129,6 +129,10 @@ ComptimeResult* comptime_eval_block(ComptimeContext* ctx, ASTNode* block);
 ComptimeResult* comptime_eval_expression(ComptimeContext* ctx, ASTNode* expr);
 ComptimeResult* comptime_eval_statement(ComptimeContext* ctx, ASTNode* stmt);
 ComptimeResult* comptime_eval_function_call(ComptimeContext* ctx, ASTNode* call);
+// Enhanced variants (M11 recursion engine) — used by the intrinsics
+// unit (comptime_eval_function_call_advanced delegates to enhanced).
+ComptimeResult* comptime_eval_statement_enhanced(ComptimeContext* ctx, ASTNode* stmt);
+ComptimeResult* comptime_eval_function_call_enhanced(ComptimeContext* ctx, ASTNode* call);
 
 // Compile-time intrinsics
 ComptimeResult* comptime_intrinsic_emit(ComptimeContext* ctx, ComptimeValue* code);
