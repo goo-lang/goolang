@@ -1293,12 +1293,28 @@ struct_lit:
         lit->type_name = strdup(type_ident->name);
         ast_node_free($1);
         ASTNode* head = $3;
-        lit->is_keyed = (head && head->node_type == (Type*)(intptr_t)1) ? 1 : 0;
-        if (head) head->node_type = NULL;
         lit->field_values = head;
-        lit->field_names = NULL;
         lit->field_count = 0;
         for (ASTNode* a = head; a; a = a->next) lit->field_count++;
+        /* Collect the field names struct_lit_init stashed on each init's
+           node_type (map_entry_list precedent). NULL entry = positional
+           init. is_keyed = any name present; a keyed literal with NULL
+           holes is the mixed form, rejected at type-check. */
+        lit->is_keyed = 0;
+        lit->field_names = NULL;
+        if (lit->field_count > 0) {
+            lit->field_names = calloc(lit->field_count, sizeof(char*));
+            size_t i = 0;
+            for (ASTNode* a = head; a; a = a->next, i++) {
+                lit->field_names[i] = (char*)a->node_type;
+                a->node_type = NULL;
+                if (lit->field_names[i]) lit->is_keyed = 1;
+            }
+            if (!lit->is_keyed) {
+                free(lit->field_names);
+                lit->field_names = NULL;
+            }
+        }
         $$ = (ASTNode*)lit;
     }
     | identifier LBRACE RBRACE {
@@ -1319,29 +1335,26 @@ struct_lit:
 struct_lit_inits:
     struct_lit_init { $$ = $1; }
     | struct_lit_inits COMMA struct_lit_init {
-        /* Propagate is_keyed flag (stashed on head->node_type low bit) when
-           the chain grows. The flag is read by struct_lit's reducer. */
-        Type* keyed = ((ASTNode*)$1)->node_type;
         ast_add_child($1, $3);
-        if ($3->node_type == (Type*)(intptr_t)1) keyed = (Type*)(intptr_t)1;
-        ((ASTNode*)$1)->node_type = keyed;
         $$ = $1;
     }
     ;
 
 struct_lit_init:
     expression {
-        /* Positional init. node_type=NULL signals "not keyed." */
+        /* Positional init. node_type=NULL signals "no field name." */
         $$ = $1;
         $$->node_type = NULL;
     }
     | identifier COLON expression {
-        /* Keyed init. The first M10-struct-literal-impl child will refine
-           the AST to preserve key names; the spike grammar discards them
-           with a TODO so type-check rejection is clean. */
-        ast_node_free($1);
+        /* Keyed init. Stash the owned field-name string on the init's
+           node_type slot (same parse-time piggyback map_entry_list uses
+           for its values chain); struct_lit's reducer moves it into
+           field_names[] and clears the slot before type-check runs. */
+        IdentifierNode* key = (IdentifierNode*)$1;
         $$ = $3;
-        $$->node_type = (Type*)(intptr_t)1;
+        $$->node_type = (Type*)strdup(key->name);
+        ast_node_free($1);
     }
     ;
 

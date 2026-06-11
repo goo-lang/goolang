@@ -189,6 +189,18 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(binary->right);
             break;
         }
+        case AST_STRUCT_LITERAL: {
+            StructLiteralNode* lit = (StructLiteralNode*)node;
+            free(lit->type_name);
+            if (lit->field_names) {
+                for (size_t i = 0; i < lit->field_count; i++) {
+                    free(lit->field_names[i]);
+                }
+                free(lit->field_names);
+            }
+            ast_node_free(lit->field_values);
+            break;
+        }
         case AST_UNARY_EXPR: {
             UnaryExprNode* unary = (UnaryExprNode*)node;
             ast_node_free(unary->operand);

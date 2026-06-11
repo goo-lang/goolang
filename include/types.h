@@ -407,6 +407,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNode* expr);
 Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr);
+Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr);
 Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr);
 

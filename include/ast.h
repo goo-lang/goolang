@@ -526,12 +526,13 @@ typedef struct {
 } MapLitNode;
 
 // Struct literal (M10): `Point{x: 3, y: 4}` or `Point{3, 4}`. Tagged
-// AST_STRUCT_LITERAL. type_name is the leading identifier; for keyed
-// form, `field_names[i]` corresponds to `field_values[i]`; for
-// positional form, field_names is NULL and only field_values is set
-// (in declared order). The keyed/positional choice is determined at
-// parse time by inspecting the first init; mixing the two forms in
-// one literal is rejected by type-check (when implemented).
+// AST_STRUCT_LITERAL. type_name is the leading identifier. Keyed form:
+// is_keyed=1 and `field_names[i]` (owned strings) pairs with the i-th
+// entry of the `field_values` chain. Positional form: is_keyed=0,
+// field_names is NULL, field_values is in declared-field order. A NULL
+// hole inside a keyed field_names array means the source mixed both
+// forms — type-check rejects that. Omitted keyed fields take their
+// zero value (Go semantics); positional form must cover every field.
 typedef struct {
     ASTNode base;
     char* type_name;

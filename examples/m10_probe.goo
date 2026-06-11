@@ -1,0 +1,56 @@
+// M10 struct-literal probe.
+//
+// Exercises `Type{...}` composite literals end-to-end: keyed form,
+// positional form, Go zero-value semantics for omitted keyed fields,
+// the empty literal, and a literal used as an rvalue expression.
+// `make m10-probe` builds + runs this and diffs against expected.txt.
+package main
+
+import "fmt"
+
+type Point struct {
+    x int
+    y int
+}
+
+type Mixed struct {
+    flag bool
+    ratio float64
+    count int
+}
+
+func main() {
+    // 1. keyed literal
+    p := Point{x: 3, y: 4}
+    fmt.Println(p.x)
+    fmt.Println(p.y)
+
+    // 2. positional literal (all fields required, declared order)
+    q := Point{30, 40}
+    fmt.Println(q.x)
+    fmt.Println(q.y)
+
+    // 3. partial keyed literal — omitted field is zero-valued (Go semantics)
+    r := Point{x: 7}
+    fmt.Println(r.x)
+    fmt.Println(r.y)
+
+    // 4. empty literal — all fields zero
+    e := Point{}
+    fmt.Println(e.x)
+
+    // 5. literal as rvalue — field access on a temporary
+    fmt.Println(Point{x: 11, y: 22}.y)
+
+    // 6. keyed literal with mixed field types, out of declared order
+    m := Mixed{count: 5, flag: true}
+    fmt.Println(m.flag)
+    fmt.Println(m.ratio)
+    fmt.Println(m.count)
+
+    // 7. literal field initialized from an expression
+    base := 10
+    s := Point{x: base + 1, y: base * 2}
+    fmt.Println(s.x)
+    fmt.Println(s.y)
+}

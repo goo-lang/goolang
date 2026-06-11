@@ -46,6 +46,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_mmio_access(codegen, checker, expr);
         case AST_SLICE_EXPR:
             return codegen_generate_slice_lit(codegen, checker, expr);
+        case AST_STRUCT_LITERAL:
+            return codegen_generate_struct_lit(codegen, checker, expr);
         case AST_POSTFIX_EXPR: {
             // `j++` / `j--`: load operand, compute load ± 1, store back,
             // return the LOADED (pre-modification) value. Postfix
@@ -971,6 +973,85 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
 #endif
 }
 
+// `Point{x: 3, y: 4}` / `Point{3, 4}` — build the struct value as an
+// rvalue aggregate: start from the zero value (so omitted keyed fields
+// get Go zero-value semantics for free, matching the zero-initializing
+// alloca `var p Point` already gets) and InsertValue each provided
+// field at its declared index. Selector codegen already handles rvalue
+// struct bases by spilling to a temporary alloca.
+ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_STRUCT_LITERAL) return NULL;
+
+    StructLiteralNode* lit = (StructLiteralNode*)expr;
+    Type* struct_type = expr->node_type;
+    if (!struct_type || struct_type->kind != TYPE_STRUCT) {
+        codegen_error(codegen, expr->pos,
+                      "Struct literal '%s' missing type info from type check",
+                      lit->type_name);
+        return NULL;
+    }
+
+    LLVMTypeRef llvm_struct = codegen_type_to_llvm(codegen, struct_type);
+    if (!llvm_struct) {
+        codegen_error(codegen, expr->pos,
+                      "Failed to lower struct type '%s'", lit->type_name);
+        return NULL;
+    }
+
+    StructField* fields = struct_type->data.struct_type.fields;
+    size_t decl_count = struct_type->data.struct_type.field_count;
+
+    LLVMValueRef agg = LLVMConstNull(llvm_struct);
+    size_t i = 0;
+    for (ASTNode* v = lit->field_values; v; v = v->next, i++) {
+        // Declared index: positional inits map 1:1; keyed inits resolve
+        // by name (type check already guaranteed the name exists).
+        size_t field_index = i;
+        if (lit->is_keyed) {
+            for (field_index = 0; field_index < decl_count; field_index++) {
+                if (fields[field_index].name &&
+                    strcmp(fields[field_index].name, lit->field_names[i]) == 0) break;
+            }
+            if (field_index == decl_count) {
+                codegen_error(codegen, v->pos, "Field '%s' not found in struct '%s'",
+                              lit->field_names[i], lit->type_name);
+                return NULL;
+            }
+        }
+
+        ValueInfo* val = codegen_generate_expression(codegen, checker, v);
+        if (!val) {
+            codegen_error(codegen, v->pos, "Failed to generate struct literal field");
+            return NULL;
+        }
+        // Selector/index lvalues carry the field address — load the value.
+        // A NULL lowering here must fail loudly: skipping the load would
+        // InsertValue the address instead of the field value.
+        if (val->is_lvalue && val->goo_type) {
+            LLVMTypeRef vt = codegen_type_to_llvm(codegen, val->goo_type);
+            if (!vt) {
+                codegen_error(codegen, v->pos,
+                              "Failed to lower type of struct literal field value");
+                value_info_free(val);
+                return NULL;
+            }
+            val->llvm_value = LLVMBuildLoad2(codegen->builder, vt, val->llvm_value, "fieldval");
+            val->is_lvalue = 0;
+        }
+        agg = LLVMBuildInsertValue(codegen->builder, agg, val->llvm_value,
+                                   (unsigned)field_index,
+                                   fields[field_index].name ? fields[field_index].name : "field");
+        value_info_free(val);
+    }
+
+    return value_info_new(NULL, agg, struct_type);
+#endif
+}
+
 // Goo extension expressions
 
 // Forward declarations for error union functions
@@ -1527,6 +1608,16 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
         if (!arg_val) {
             codegen_error(codegen, expr->pos, "Failed to generate argument for Println");
             return NULL;
+        }
+
+        // Selector/index args arrive as lvalues (field address) — load
+        // the value before width-dispatching, same as binary_expr does.
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "argval");
+                arg_val->is_lvalue = 0;
+            }
         }
 
         TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);

@@ -302,6 +302,23 @@ comptime-probe: $(COMPILER) $(RUNTIME_LIB)
 	    exit 1; \
 	  fi
 
+# M10 struct-literal probe: compile + run examples/m10_probe.goo and
+# diff stdout against expected.txt (baseline-probe pattern). Covers
+# keyed/positional/partial-keyed/empty literals, rvalue field access,
+# and Go zero-value semantics for omitted keyed fields. Aspirational
+# red gate while M10-struct-literal-impl is in flight; joins `verify`
+# as M10-probe-gate-v2 once green.
+m10-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/m10_probe examples/m10_probe.goo
+	@./build/m10_probe > build/m10_probe.actual.txt
+	@if diff -u examples/m10_probe.expected.txt build/m10_probe.actual.txt; then \
+	  echo "m10-probe: PASS (struct literals end-to-end)"; \
+	else \
+	  echo "m10-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # Aggregate verification net per `verification_gates.md`. Runs the
 # five green gates in sequence: baseline-probe, smoke-stdlib,
 # v2-bootstrap-pilot, comptime-block-probe, comptime-probe. Exits

@@ -81,10 +81,105 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = st;
             return st;
         }
+        case AST_STRUCT_LITERAL:
+            return type_check_struct_literal(checker, expr);
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;
     }
+}
+
+// `Point{x: 3, y: 4}` / `Point{3, 4}`. Omitted keyed fields take their
+// zero value (Go semantics — matches the zero-initializing alloca that
+// `var p Point` already gets in codegen); positional form must cover
+// every declared field.
+Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_STRUCT_LITERAL) return NULL;
+
+    StructLiteralNode* lit = (StructLiteralNode*)expr;
+
+    // Named types are registered in the variable scope by
+    // type_check_type_decl (the Variable's type IS the named Type).
+    Variable* named = type_checker_lookup_variable(checker, lit->type_name);
+    if (!named || !named->type) {
+        type_error(checker, expr->pos, "Unknown type '%s' in struct literal",
+                   lit->type_name);
+        return NULL;
+    }
+    Type* struct_type = named->type;
+    if (struct_type->kind != TYPE_STRUCT) {
+        type_error(checker, expr->pos,
+                   "'%s' is not a struct type, cannot use composite literal",
+                   lit->type_name);
+        return NULL;
+    }
+
+    size_t decl_count = struct_type->data.struct_type.field_count;
+    StructField* fields = struct_type->data.struct_type.fields;
+
+    if (lit->is_keyed) {
+        size_t i = 0;
+        for (ASTNode* v = lit->field_values; v; v = v->next, i++) {
+            const char* name = lit->field_names[i];
+            if (!name) {
+                type_error(checker, v->pos,
+                           "Cannot mix keyed and positional initializers in '%s' literal",
+                           lit->type_name);
+                return NULL;
+            }
+            StructField* field = NULL;
+            for (size_t j = 0; j < decl_count; j++) {
+                if (fields[j].name && strcmp(fields[j].name, name) == 0) {
+                    field = &fields[j];
+                    break;
+                }
+            }
+            if (!field) {
+                type_error(checker, v->pos, "Struct '%s' has no field '%s'",
+                           lit->type_name, name);
+                return NULL;
+            }
+            for (size_t j = 0; j < i; j++) {
+                if (lit->field_names[j] && strcmp(lit->field_names[j], name) == 0) {
+                    type_error(checker, v->pos,
+                               "Duplicate field '%s' in '%s' literal",
+                               name, lit->type_name);
+                    return NULL;
+                }
+            }
+            Type* vt = type_check_expression(checker, v);
+            if (!vt) return NULL;
+            if (!type_compatible(vt, field->type)) {
+                type_error(checker, v->pos,
+                           "Cannot use %s as field '%s' of type %s",
+                           type_to_string(vt), name, type_to_string(field->type));
+                return NULL;
+            }
+        }
+    } else if (lit->field_count > 0) {
+        if (lit->field_count != decl_count) {
+            type_error(checker, expr->pos,
+                       "Wrong number of initializers for '%s': got %zu, want %zu",
+                       lit->type_name, lit->field_count, decl_count);
+            return NULL;
+        }
+        size_t i = 0;
+        for (ASTNode* v = lit->field_values; v; v = v->next, i++) {
+            Type* vt = type_check_expression(checker, v);
+            if (!vt) return NULL;
+            if (!type_compatible(vt, fields[i].type)) {
+                type_error(checker, v->pos,
+                           "Cannot use %s as field '%s' of type %s",
+                           type_to_string(vt), fields[i].name,
+                           type_to_string(fields[i].type));
+                return NULL;
+            }
+        }
+    }
+    // Empty literal `Point{}` — all fields zero-valued, nothing to check.
+
+    expr->node_type = struct_type;
+    return struct_type;
 }
 
 Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
