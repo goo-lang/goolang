@@ -76,6 +76,19 @@ int goo_strings_contains(const char* haystack, const char* needle);
 goo_string_t goo_strings_to_upper(const char* s);
 goo_string_t goo_strings_to_lower(const char* s);
 goo_string_t goo_strings_trim_space(const char* s);
+
+// Slice-of-string ABI: this MUST stay the codegen TYPE_SLICE layout
+// ({T*, i64} — two fields, see src/codegen/type_mapping.c), NOT the
+// three-field goo_slice_t below, which carries a capacity field the
+// codegen layout doesn't have. Mixing them silently corrupts the
+// by-value register passing.
+typedef struct {
+    goo_string_t* data;
+    int64_t length;
+} goo_str_slice_t;
+
+goo_str_slice_t goo_strings_split(const char* s, const char* sep);
+goo_string_t goo_strings_join(goo_str_slice_t parts, const char* sep);
 double goo_math_sqrt(double x);
 double goo_math_pow(double x, double y);
 double goo_math_abs(double x);

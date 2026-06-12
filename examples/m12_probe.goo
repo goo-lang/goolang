@@ -38,4 +38,13 @@ func main() {
     fmt.Println(math.Pi)
     tau := math.Pi * 2.0
     fmt.Println(tau)
+
+    // 4. strings.Split / Join — []string end-to-end (len, index, range)
+    parts := strings.Split("a,b,c", ",")
+    fmt.Println(len(parts))
+    fmt.Println(parts[1])
+    fmt.Println(strings.Join(parts, "-"))
+    for i := range parts {
+        fmt.Println(parts[i])
+    }
 }

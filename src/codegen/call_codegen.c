@@ -106,6 +106,14 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_trim_space", TYPE_STRING, 0);
             }
+            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Split") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_strings_split", TYPE_SLICE, 0);
+            }
+            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_strings_join", TYPE_STRING, 0);
+            }
         }
     }
     
@@ -316,7 +324,14 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                          return_kind == TYPE_VOID ? "" : "stdlib_ret");
     free(args);
 
-    return value_info_new(NULL, result, type_checker_get_builtin(checker, return_kind));
+    // Non-builtin returns (e.g. []string from strings.Split) can't be
+    // expressed as a TypeKind — carry the type checker's resolved call
+    // type instead. Builtin returns keep the explicit kind so codegen
+    // doesn't depend on the checker having run a specific path.
+    Type* ret_type = (return_kind == TYPE_SLICE && expr->node_type)
+        ? expr->node_type
+        : type_checker_get_builtin(checker, return_kind);
+    return value_info_new(NULL, result, ret_type);
 #endif
 }
 

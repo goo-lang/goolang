@@ -61,8 +61,17 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
     LLVMTypeRef string_type = LLVMStructTypeInContext(codegen->context, string_types, 2, 0);
     
     // goo_slice_t type (struct { void* data, size_t length, size_t capacity })
+    // WARNING: this 3-field layout does NOT match codegen's TYPE_SLICE
+    // ({T*, i64} — see src/codegen/type_mapping.c). Slice values that
+    // flow between Goo code and the runtime must use the 2-field
+    // str_slice_type below (matches goo_str_slice_t in runtime.h).
     LLVMTypeRef slice_types[] = { ptr_type, size_type, size_type };
     LLVMTypeRef slice_type = LLVMStructTypeInContext(codegen->context, slice_types, 3, 0);
+
+    // goo_str_slice_t type (struct { goo_string_t* data, int64_t length })
+    // — the codegen TYPE_SLICE layout.
+    LLVMTypeRef str_slice_types[] = { ptr_type, size_type };
+    LLVMTypeRef str_slice_type = LLVMStructTypeInContext(codegen->context, str_slice_types, 2, 0);
     
     // Program initialization
     // void goo_init(int argc, char** argv)
@@ -204,6 +213,18 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_strings_to_upper", string_type, params, 1);
         add_runtime_function(codegen, "goo_strings_to_lower", string_type, params, 1);
         add_runtime_function(codegen, "goo_strings_trim_space", string_type, params, 1);
+    }
+
+    // goo_str_slice_t goo_strings_split(const char* s, const char* sep)
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_strings_split", str_slice_type, params, 2);
+    }
+
+    // goo_string_t goo_strings_join(goo_str_slice_t parts, const char* sep)
+    {
+        LLVMTypeRef params[] = { str_slice_type, ptr_type };
+        add_runtime_function(codegen, "goo_strings_join", string_type, params, 2);
     }
 
     // double goo_math_sqrt/abs(double), goo_math_pow/min/max(double, double)

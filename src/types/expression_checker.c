@@ -586,6 +586,18 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, string_t);
     }
 
+    // strings.Split(string, string) -> []string
+    if (strcmp(package, "strings") == 0 && strcmp(name, "Split") == 0) {
+        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+        return type_function(NULL, 0, type_slice(string_t));
+    }
+
+    // strings.Join([]string, string) -> string
+    if (strcmp(package, "strings") == 0 && strcmp(name, "Join") == 0) {
+        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+        return type_function(NULL, 0, string_t);
+    }
+
     return NULL;
 }
 
