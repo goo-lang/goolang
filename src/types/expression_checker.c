@@ -569,6 +569,14 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, bool_t);
     }
 
+    // strings.ToUpper/ToLower/TrimSpace(string) -> string
+    if (strcmp(package, "strings") == 0 &&
+        (strcmp(name, "ToUpper") == 0 || strcmp(name, "ToLower") == 0 ||
+         strcmp(name, "TrimSpace") == 0)) {
+        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+        return type_function(NULL, 0, string_t);
+    }
+
     return NULL;
 }
 

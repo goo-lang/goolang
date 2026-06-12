@@ -78,6 +78,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_contains", TYPE_BOOL, 1);
             }
+            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "ToUpper") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_strings_to_upper", TYPE_STRING, 0);
+            }
+            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "ToLower") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_strings_to_lower", TYPE_STRING, 0);
+            }
+            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "TrimSpace") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_strings_trim_space", TYPE_STRING, 0);
+            }
         }
     }
     
@@ -250,6 +262,15 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
             free(args);
             codegen_error(codegen, expr->pos, "Failed to generate arg %zu for %s", i, runtime_symbol);
             return NULL;
+        }
+        // Selector/index args arrive as lvalues (field address) — load
+        // the value before use, same as the Println arg loop does.
+        if (v->is_lvalue && v->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, v->goo_type);
+            if (at) {
+                v->llvm_value = LLVMBuildLoad2(codegen->builder, at, v->llvm_value, "argval");
+                v->is_lvalue = 0;
+            }
         }
         LLVMValueRef val = v->llvm_value;
         if (v->goo_type && v->goo_type->kind == TYPE_STRING) {

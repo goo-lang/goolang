@@ -1,0 +1,28 @@
+// M12 stdlib-breadth probe.
+//
+// Exercises the stdlib surface added by the M12-stdlib-* children.
+// Each child appends its numbered section + expected lines in the
+// same commit as the feature. `make m12-probe` builds + runs this
+// and diffs against m12_probe.expected.txt.
+package main
+
+import "fmt"
+import "strings"
+
+type Name struct {
+    val string
+}
+
+func main() {
+    // 1. strings.ToUpper / ToLower / TrimSpace — literal args
+    fmt.Println(strings.ToUpper("hello"))
+    fmt.Println(strings.ToLower("WoRLd"))
+    fmt.Println(strings.TrimSpace("  trimmed  "))
+
+    // 1b. variable + struct-field args (struct field arrives as an
+    // lvalue — pins the stdlib-call auto-load path)
+    s := "MixedCase"
+    fmt.Println(strings.ToUpper(s))
+    n := Name{val: "field"}
+    fmt.Println(strings.ToUpper(n.val))
+}

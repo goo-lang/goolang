@@ -198,6 +198,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
                              LLVMInt32TypeInContext(codegen->context), params, 2);
     }
 
+    // goo_string_t goo_strings_to_upper/to_lower/trim_space(const char* s)
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_strings_to_upper", string_type, params, 1);
+        add_runtime_function(codegen, "goo_strings_to_lower", string_type, params, 1);
+        add_runtime_function(codegen, "goo_strings_trim_space", string_type, params, 1);
+    }
+
     // double goo_math_sqrt(double x)
     {
         LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };

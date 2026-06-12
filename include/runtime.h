@@ -73,6 +73,9 @@ goo_string_t goo_string_concat(goo_string_t a, goo_string_t b);
 // Stdlib package backings (used by codegen to lower fmt.*, os.*,
 // strings.*, math.* calls into runtime symbols)
 int goo_strings_contains(const char* haystack, const char* needle);
+goo_string_t goo_strings_to_upper(const char* s);
+goo_string_t goo_strings_to_lower(const char* s);
+goo_string_t goo_strings_trim_space(const char* s);
 double goo_math_sqrt(double x);
 
 // Minimum-viable map for `map[string]int{...}` literals + indexing

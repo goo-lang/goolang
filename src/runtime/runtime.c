@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -232,6 +233,40 @@ goo_string_t goo_string_concat(goo_string_t a, goo_string_t b) {
 int goo_strings_contains(const char* haystack, const char* needle) {
     if (!haystack || !needle) return 0;
     return strstr(haystack, needle) != NULL;
+}
+
+// Case-mapping helper shared by ToUpper/ToLower. NULL input yields the
+// empty string rather than a NULL data pointer so downstream printing
+// never has to null-check.
+static goo_string_t goo_strings_map_case(const char* s, int (*mapper)(int)) {
+    size_t n = s ? strlen(s) : 0;
+    char* out = goo_alloc(n + 1);
+    for (size_t i = 0; i < n; i++) {
+        out[i] = (char)mapper((unsigned char)s[i]);
+    }
+    out[n] = '\0';
+    return (goo_string_t){out, n};
+}
+
+goo_string_t goo_strings_to_upper(const char* s) {
+    return goo_strings_map_case(s, toupper);
+}
+
+goo_string_t goo_strings_to_lower(const char* s) {
+    return goo_strings_map_case(s, tolower);
+}
+
+goo_string_t goo_strings_trim_space(const char* s) {
+    if (!s) return goo_strings_map_case(NULL, toupper);
+    const char* start = s;
+    while (*start && isspace((unsigned char)*start)) start++;
+    const char* end = s + strlen(s);
+    while (end > start && isspace((unsigned char)end[-1])) end--;
+    size_t n = (size_t)(end - start);
+    char* out = goo_alloc(n + 1);
+    memcpy(out, start, n);
+    out[n] = '\0';
+    return (goo_string_t){out, n};
 }
 
 double goo_math_sqrt(double x) {

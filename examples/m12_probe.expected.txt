@@ -1,0 +1,5 @@
+HELLO
+world
+trimmed
+MIXEDCASE
+FIELD

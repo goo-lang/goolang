@@ -319,6 +319,22 @@ m10-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M12 stdlib-breadth probe: compile + run examples/m12_probe.goo and
+# diff stdout against expected.txt (m10-probe pattern). Each
+# M12-stdlib-* child appends a numbered section + expected lines in
+# the same commit as its feature. Joins `verify` as gate 7 when the
+# M12 track closes (M12-probe-promotion).
+m12-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/m12_probe examples/m12_probe.goo
+	@./build/m12_probe > build/m12_probe.actual.txt
+	@if diff -u examples/m12_probe.expected.txt build/m12_probe.actual.txt; then \
+	  echo "m12-probe: PASS (stdlib breadth end-to-end)"; \
+	else \
+	  echo "m12-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # Aggregate verification net per `verification_gates.md`. Runs the
 # six green gates in sequence: baseline-probe, smoke-stdlib,
 # v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe.
