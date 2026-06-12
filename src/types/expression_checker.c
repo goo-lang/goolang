@@ -557,6 +557,12 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, void_t);
     }
 
+    // os.Getenv(string) -> string
+    if (strcmp(package, "os") == 0 && strcmp(name, "Getenv") == 0) {
+        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+        return type_function(NULL, 0, string_t);
+    }
+
     // math.Pi -> float64. A package VALUE member, not a call — the
     // returned type is the value's type, no type_function wrapper.
     if (strcmp(package, "math") == 0 && strcmp(name, "Pi") == 0) {

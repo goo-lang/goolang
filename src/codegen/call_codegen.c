@@ -70,6 +70,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_exit", TYPE_VOID, 0);
             }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Getenv") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_os_getenv", TYPE_STRING, 0);
+            }
             if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_sqrt", TYPE_FLOAT64, 0);

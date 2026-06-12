@@ -256,6 +256,12 @@ goo_string_t goo_strings_to_lower(const char* s) {
     return goo_strings_map_case(s, tolower);
 }
 
+goo_string_t goo_os_getenv(const char* name) {
+    // Go's Getenv contract: unset (and NULL-name) yields "".
+    const char* v = name ? getenv(name) : NULL;
+    return goo_string_new(v ? v : "");
+}
+
 goo_str_slice_t goo_strings_split(const char* s, const char* sep) {
     // MVP contract: empty/NULL sep yields the whole string as a single
     // element (Go's per-rune split for "" is future work).

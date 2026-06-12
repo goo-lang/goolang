@@ -89,6 +89,7 @@ typedef struct {
 
 goo_str_slice_t goo_strings_split(const char* s, const char* sep);
 goo_string_t goo_strings_join(goo_str_slice_t parts, const char* sep);
+goo_string_t goo_os_getenv(const char* name);
 double goo_math_sqrt(double x);
 double goo_math_pow(double x, double y);
 double goo_math_abs(double x);

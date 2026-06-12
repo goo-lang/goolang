@@ -327,7 +327,7 @@ m10-probe: $(COMPILER) $(RUNTIME_LIB)
 m12-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	$(COMPILER) -o build/m12_probe examples/m12_probe.goo
-	@./build/m12_probe > build/m12_probe.actual.txt
+	@M12_PROBE_VAR=hello ./build/m12_probe > build/m12_probe.actual.txt
 	@if diff -u examples/m12_probe.expected.txt build/m12_probe.actual.txt; then \
 	  echo "m12-probe: PASS (stdlib breadth end-to-end)"; \
 	else \

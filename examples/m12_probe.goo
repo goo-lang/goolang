@@ -9,6 +9,7 @@ package main
 import "fmt"
 import "strings"
 import "math"
+import "os"
 
 type Name struct {
     val string
@@ -47,4 +48,10 @@ func main() {
     for i := range parts {
         fmt.Println(parts[i])
     }
+
+    // 5. os.Getenv — the make recipe sets M12_PROBE_VAR=hello; unset
+    // vars yield "" (Go's documented Getenv contract — LookupEnv is
+    // the two-value API, out of MVP scope)
+    fmt.Println(os.Getenv("M12_PROBE_VAR"))
+    fmt.Println(os.Getenv("M12_UNSET_VAR"))
 }

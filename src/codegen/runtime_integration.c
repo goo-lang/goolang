@@ -227,6 +227,12 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_strings_join", string_type, params, 2);
     }
 
+    // goo_string_t goo_os_getenv(const char* name)
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_os_getenv", string_type, params, 1);
+    }
+
     // double goo_math_sqrt/abs(double), goo_math_pow/min/max(double, double)
     {
         LLVMTypeRef dbl = LLVMDoubleTypeInContext(codegen->context);
