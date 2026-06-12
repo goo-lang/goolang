@@ -183,7 +183,20 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     if (!codegen || !checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
     
     SelectorExprNode* selector = (SelectorExprNode*)expr;
-    
+
+    // Package value-members (math.Pi, later os.Args): the base is a bare
+    // package identifier, which has no value to generate — intercept
+    // before the general base-expression path.
+    if (selector->expr && selector->expr->type == AST_IDENTIFIER) {
+        IdentifierNode* pkg = (IdentifierNode*)selector->expr;
+        if (strcmp(pkg->name, "math") == 0 && strcmp(selector->selector, "Pi") == 0) {
+            LLVMValueRef pi = LLVMConstReal(LLVMDoubleTypeInContext(codegen->context),
+                                            3.14159265358979323846);
+            return value_info_new(NULL, pi,
+                                  type_checker_get_builtin(checker, TYPE_FLOAT64));
+        }
+    }
+
     // Generate code for the base expression
     ValueInfo* base_val = codegen_generate_expression(codegen, checker, selector->expr);
     if (!base_val) {

@@ -557,6 +557,12 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, void_t);
     }
 
+    // math.Pi -> float64. A package VALUE member, not a call — the
+    // returned type is the value's type, no type_function wrapper.
+    if (strcmp(package, "math") == 0 && strcmp(name, "Pi") == 0) {
+        return type_checker_get_builtin(checker, TYPE_FLOAT64);
+    }
+
     // math.Sqrt/Pow/Abs/Min/Max(float64...) -> float64
     if (strcmp(package, "math") == 0 &&
         (strcmp(name, "Sqrt") == 0 || strcmp(name, "Pow") == 0 ||

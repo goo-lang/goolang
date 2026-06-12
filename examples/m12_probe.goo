@@ -33,4 +33,9 @@ func main() {
     fmt.Println(math.Abs(-2.5))
     fmt.Println(math.Min(1.5, 9.0))
     fmt.Println(math.Max(1.5, 9.0))
+
+    // 3. math.Pi — package value-member (constant, not a call)
+    fmt.Println(math.Pi)
+    tau := math.Pi * 2.0
+    fmt.Println(tau)
 }
