@@ -206,11 +206,16 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_strings_trim_space", string_type, params, 1);
     }
 
-    // double goo_math_sqrt(double x)
+    // double goo_math_sqrt/abs(double), goo_math_pow/min/max(double, double)
     {
-        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
-        add_runtime_function(codegen, "goo_math_sqrt",
-                             LLVMDoubleTypeInContext(codegen->context), params, 1);
+        LLVMTypeRef dbl = LLVMDoubleTypeInContext(codegen->context);
+        LLVMTypeRef unary[] = { dbl };
+        LLVMTypeRef binary[] = { dbl, dbl };
+        add_runtime_function(codegen, "goo_math_sqrt", dbl, unary, 1);
+        add_runtime_function(codegen, "goo_math_abs", dbl, unary, 1);
+        add_runtime_function(codegen, "goo_math_pow", dbl, binary, 2);
+        add_runtime_function(codegen, "goo_math_min", dbl, binary, 2);
+        add_runtime_function(codegen, "goo_math_max", dbl, binary, 2);
     }
 
     // GooMapSI* goo_map_new_si(void)

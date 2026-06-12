@@ -77,6 +77,10 @@ goo_string_t goo_strings_to_upper(const char* s);
 goo_string_t goo_strings_to_lower(const char* s);
 goo_string_t goo_strings_trim_space(const char* s);
 double goo_math_sqrt(double x);
+double goo_math_pow(double x, double y);
+double goo_math_abs(double x);
+double goo_math_min(double x, double y);
+double goo_math_max(double x, double y);
 
 // Minimum-viable map for `map[string]int{...}` literals + indexing
 // (M8-map-literal). Linear-scan linked list — performance is not the

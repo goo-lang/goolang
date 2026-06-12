@@ -74,6 +74,22 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_sqrt", TYPE_FLOAT64, 0);
             }
+            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Pow") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_math_pow", TYPE_FLOAT64, 0);
+            }
+            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Abs") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_math_abs", TYPE_FLOAT64, 0);
+            }
+            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Min") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_math_min", TYPE_FLOAT64, 0);
+            }
+            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Max") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_math_max", TYPE_FLOAT64, 0);
+            }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Contains") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_contains", TYPE_BOOL, 1);
@@ -254,6 +270,15 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
     size_t arg_count = 0;
     for (ASTNode* a = call->args; a; a = a->next) arg_count++;
 
+    // Declared param types drive int→double coercion below: stdlib args
+    // are unchecked by the type checker (type_function(NULL, 0, ret)),
+    // so `math.Pow(2, 10)` would otherwise emit verifier-invalid IR.
+    LLVMTypeRef fn_type = LLVMGlobalGetValueType(func);
+    unsigned param_count = LLVMCountParamTypes(fn_type);
+    LLVMTypeRef param_types[8] = {0};
+    if (param_count > 8) param_count = 8;
+    if (param_count) LLVMGetParamTypes(fn_type, param_types);
+
     LLVMValueRef* args = arg_count ? malloc(sizeof(LLVMValueRef) * arg_count) : NULL;
     ASTNode* a = call->args;
     for (size_t i = 0; i < arg_count; i++, a = a->next) {
@@ -275,6 +300,11 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
         LLVMValueRef val = v->llvm_value;
         if (v->goo_type && v->goo_type->kind == TYPE_STRING) {
             val = LLVMBuildExtractValue(codegen->builder, val, 0, "str_ptr");
+        }
+        if (i < param_count &&
+            LLVMGetTypeKind(param_types[i]) == LLVMDoubleTypeKind &&
+            LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMIntegerTypeKind) {
+            val = LLVMBuildSIToFP(codegen->builder, val, param_types[i], "sitofp");
         }
         args[i] = val;
         value_info_free(v);

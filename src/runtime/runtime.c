@@ -273,6 +273,22 @@ double goo_math_sqrt(double x) {
     return sqrt(x);
 }
 
+double goo_math_pow(double x, double y) {
+    return pow(x, y);
+}
+
+double goo_math_abs(double x) {
+    return fabs(x);
+}
+
+double goo_math_min(double x, double y) {
+    return fmin(x, y);
+}
+
+double goo_math_max(double x, double y) {
+    return fmax(x, y);
+}
+
 // Map runtime: linked-list {string → int}. Linear scan.
 typedef struct GooMapEntrySI {
     const char* key;

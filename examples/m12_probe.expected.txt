@@ -3,3 +3,7 @@ world
 trimmed
 MIXEDCASE
 FIELD
+1024
+2.5
+1.5
+9

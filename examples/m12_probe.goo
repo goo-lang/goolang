@@ -8,6 +8,7 @@ package main
 
 import "fmt"
 import "strings"
+import "math"
 
 type Name struct {
     val string
@@ -25,4 +26,11 @@ func main() {
     fmt.Println(strings.ToUpper(s))
     n := Name{val: "field"}
     fmt.Println(strings.ToUpper(n.val))
+
+    // 2. math.Pow / Abs / Min / Max — int literal args exercise the
+    // SIToFP coercion (stdlib args are unchecked by the type checker)
+    fmt.Println(math.Pow(2, 10))
+    fmt.Println(math.Abs(-2.5))
+    fmt.Println(math.Min(1.5, 9.0))
+    fmt.Println(math.Max(1.5, 9.0))
 }

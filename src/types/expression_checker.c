@@ -557,8 +557,11 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, void_t);
     }
 
-    // math.Sqrt(float64) -> float64
-    if (strcmp(package, "math") == 0 && strcmp(name, "Sqrt") == 0) {
+    // math.Sqrt/Pow/Abs/Min/Max(float64...) -> float64
+    if (strcmp(package, "math") == 0 &&
+        (strcmp(name, "Sqrt") == 0 || strcmp(name, "Pow") == 0 ||
+         strcmp(name, "Abs") == 0 || strcmp(name, "Min") == 0 ||
+         strcmp(name, "Max") == 0)) {
         Type* float_t = type_checker_get_builtin(checker, TYPE_FLOAT64);
         return type_function(NULL, 0, float_t);
     }
