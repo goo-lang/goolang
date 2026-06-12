@@ -1,140 +1,742 @@
 {
-  "comment": "Goolang compiler milestones. Three layers: phase milestones M1–M6 (historical, done), production-readiness work under M7 (with M7-stdlib-expansion shipped 2026-05-14), and the usability track M8–M10. M8 Foundation Verification shipped 2026-05-14 with 12 baseline constructs landing end-to-end; the 8 deferred constructs are tracked as M8-* children, listed below in leverage order (highest leverage first): M8-struct, M8-slice-literal, M8-error-unions, M8-for-range, M8-multi-return, M8-nullable, M8-map-literal, M8-postfix-incr. M11 (added 2026-05-15) drives Zig-style comptime end-to-end to an MVP probe — the codebase has ~6,200 lines of comptime engine in src/comptime/ that is unreachable from the normal compile pipeline because src/types/ and src/codegen/ never dispatch on AST_COMPTIME_BLOCK or is_comptime. M11-* closes that gap with the smallest viable demo (comptime const arithmetic) and turns comptime from scaffolded to shipping. M11-engine-recursion (added 2026-05-15 after M11-types-const-spike's verdict) is the MVP unblocker: implement argument passing in comptime_call_user_function and remove the TODOs at src/comptime/comptime.c:867 (comptime_eval_function_call) and :1235 (comptime_eval_function_call_enhanced) — both currently short-circuit on user-defined function calls. Until engine-recursion lands, fib(10) cannot evaluate and comptime-probe stays in TDD red. Three bugs surfaced by M11 work were seeded into their natural milestone homes (added 2026-05-15): M9-fmt-println-int (fmt.Println(int_const) misprints as ASCII char — 42 -> '*', 65 -> 'A'; blocks any Println-of-int demo), M9-const-ref-load (os.Exit(X) and similar runtime calls receive 'ptr @X' instead of i32 for any int const, comptime or not; module-verify failure; blocks any const + runtime-call pattern), M7-test-makefile-cleanup (make test-lexer, test-units, and comptime_test all fail to link via missing source-file deps — test-framework include path wrong, comptime_test missing src/types/types.c; tests cannot run via the Makefile until fixed). status enum: pending|in-progress|blocked|done|deferred|cancelled. Coord seed is additive; statuses on already-existing tasks are NOT overwritten — re-running this file is safe.",
+  "comment": "Goolang compiler milestones. Three layers: phase milestones M1–M6 (historical, done), production-readiness work under M7 (with M7-stdlib-expansion shipped 2026-05-14), and the usability track M8–M10. M8 Foundation Verification shipped 2026-05-14 with 12 baseline constructs landing end-to-end; the 8 deferred constructs are tracked as M8-* children, listed below in leverage order (highest leverage first): M8-struct, M8-slice-literal, M8-error-unions, M8-for-range, M8-multi-return, M8-nullable, M8-map-literal, M8-postfix-incr. M11 (added 2026-05-15) drives Zig-style comptime end-to-end to an MVP probe — the codebase has ~6,200 lines of comptime engine in src/comptime/ that is unreachable from the normal compile pipeline because src/types/ and src/codegen/ never dispatch on AST_COMPTIME_BLOCK or is_comptime. M11-* closes that gap with the smallest viable demo (comptime const arithmetic) and turns comptime from scaffolded to shipping. M11-engine-recursion (added 2026-05-15 after M11-types-const-spike's verdict) is the MVP unblocker: implement argument passing in comptime_call_user_function and remove the TODOs at src/comptime/comptime.c:867 (comptime_eval_function_call) and :1235 (comptime_eval_function_call_enhanced) — both currently short-circuit on user-defined function calls. Until engine-recursion lands, fib(10) cannot evaluate and comptime-probe stays in TDD red. Three bugs surfaced by M11 work were seeded into their natural milestone homes (added 2026-05-15): M9-fmt-println-int (fmt.Println(int_const) misprints as ASCII char — 42 -> '*', 65 -> 'A'; blocks any Println-of-int demo), M9-const-ref-load (os.Exit(X) and similar runtime calls receive 'ptr @X' instead of i32 for any int const, comptime or not; module-verify failure; blocks any const + runtime-call pattern), M7-test-makefile-cleanup (make test-lexer, test-units, and comptime_test all fail to link via missing source-file deps — test-framework include path wrong, comptime_test missing src/types/types.c; tests cannot run via the Makefile until fixed). status enum: pending|in-progress|blocked|done|deferred|cancelled. Coord seed is additive; statuses on already-existing tasks are NOT overwritten — re-running this file is safe. RE-SCOPE 2026-06-12 (docs/M7_AUDIT.md): cancelled M7-pkg-mgmt/rust-interop/multi-lang-interop/security-design/security-analysis as aspirational PRD scope (rationale lessons on each); refiled M7-c-ffi-spike + M7-multifile-audit. Added M12 Stdlib Breadth track (10 children, m12-probe gate destined for make verify) and M13-slice-literal-expr backlog placeholder.",
   "tasks": [
-    {"id": "M1", "track": "M1", "status": "done"},
-    {"id": "M2", "track": "M2", "status": "done"},
-    {"id": "M3", "track": "M3", "status": "done"},
-    {"id": "M4", "track": "M4", "status": "done"},
-    {"id": "M5", "track": "M5", "status": "done"},
-    {"id": "M6", "track": "M6", "status": "done"},
-    {"id": "M7-pkg-mgmt", "track": "M7", "status": "pending"},
-    {"id": "M7-rust-interop", "track": "M7", "status": "pending"},
-    {"id": "M7-security-design", "track": "M7", "status": "in-progress"},
-    {"id": "M7-multi-lang-interop", "track": "M7", "status": "pending"},
-    {"id": "M7-security-analysis", "track": "M7", "status": "pending"},
-    {"id": "M7-stdlib-expansion", "track": "M7", "status": "in-progress"},
-    {"id": "M7-modern-errors", "track": "M7", "status": "pending"},
-    {"id": "M7-parser-cleanup", "track": "M7", "status": "pending"},
-    {"id": "M8", "track": "M8", "status": "pending"},
-    {"id": "M9", "track": "M9", "status": "pending"},
-    {"id": "M10", "track": "M10", "status": "pending"},
-    {"id": "M8-struct", "track": "M8", "status": "pending"},
-    {"id": "M8-slice-literal", "track": "M8", "status": "pending"},
-    {"id": "M8-error-unions", "track": "M8", "status": "pending"},
-    {"id": "M8-for-range", "track": "M8", "status": "pending"},
-    {"id": "M8-multi-return", "track": "M8", "status": "pending"},
-    {"id": "M8-nullable", "track": "M8", "status": "pending"},
-    {"id": "M8-map-literal", "track": "M8", "status": "pending"},
-    {"id": "M8-postfix-incr", "track": "M8", "status": "pending"},
-    {"id": "V1", "track": "V1", "status": "pending"},
-    {"id": "V1-ccomp-audit", "track": "V1", "status": "pending"},
-    {"id": "V1-ccomp-install", "track": "V1", "status": "pending"},
-    {"id": "V1-ccomp-validate", "track": "V1", "status": "pending"},
-    {"id": "V1-stdatomic-cleanup", "track": "V1", "status": "pending"},
-    {"id": "V1-c23-enum-cleanup", "track": "V1", "status": "pending"},
-    {"id": "V1-ccomp-link", "track": "V1", "status": "pending"},
-    {"id": "V2", "track": "V2", "status": "pending"},
-    {"id": "V2-bootstrap-pilot", "track": "V2", "status": "pending"},
-    {"id": "M11", "track": "M11", "status": "pending"},
-    {"id": "M11-audit", "track": "M11", "status": "pending"},
-    {"id": "M11-probe-gate", "track": "M11", "status": "pending"},
-    {"id": "M11-types-const", "track": "M11", "status": "pending"},
-    {"id": "M11-types-const-stub", "track": "M11", "status": "pending"},
-    {"id": "M11-types-const-spike", "track": "M11", "status": "pending"},
-    {"id": "M11-types-const-integrate", "track": "M11", "status": "pending"},
-    {"id": "M11-codegen-const", "track": "M11", "status": "pending"},
-    {"id": "M11-probe-strengthen", "track": "M11", "status": "pending"},
-    {"id": "M11-block-dispatch", "track": "M11", "status": "pending"},
-    {"id": "M11-verify-gate", "track": "M11", "status": "pending"},
-    {"id": "M11-engine-recursion", "track": "M11", "status": "pending"},
-    {"id": "M11-engine-recursion-audit", "track": "M11", "status": "pending"},
-    {"id": "M11-engine-recursion-spike", "track": "M11", "status": "pending"},
-    {"id": "M11-engine-recursion-impl", "track": "M11", "status": "pending"},
-    {"id": "M11-types-const-fn-bind", "track": "M11", "status": "pending"},
-    {"id": "M10-audit", "track": "M10", "status": "pending"},
-    {"id": "M10-variadic-println", "track": "M10", "status": "pending"},
-    {"id": "M10-range-two-var", "track": "M10", "status": "pending"},
-    {"id": "M10-struct-literal", "track": "M10", "status": "pending"},
-    {"id": "M10-collection-literal", "track": "M10", "status": "pending"},
-    {"id": "M10-probe-gate", "track": "M10", "status": "pending"},
-    {"id": "M10-composite-literal-spike", "track": "M10", "status": "pending"},
-    {"id": "M10-composite-literal-grammar", "track": "M10", "status": "pending"},
-    {"id": "M10-grammar-strategy", "track": "M10", "status": "pending"},
-    {"id": "M10-lexer-layer-impl", "track": "M10", "status": "pending"},
-    {"id": "M10-struct-literal-impl", "track": "M10", "status": "pending"},
-    {"id": "M10-probe-gate-v2", "track": "M10", "status": "pending"},
-    {"id": "M9-fmt-println-int", "track": "M9", "status": "pending"},
-    {"id": "M9-const-ref-load", "track": "M9", "status": "pending"},
-    {"id": "M7-test-makefile-cleanup", "track": "M7", "status": "pending"}
+    {
+      "id": "M1",
+      "track": "M1",
+      "status": "done"
+    },
+    {
+      "id": "M2",
+      "track": "M2",
+      "status": "done"
+    },
+    {
+      "id": "M3",
+      "track": "M3",
+      "status": "done"
+    },
+    {
+      "id": "M4",
+      "track": "M4",
+      "status": "done"
+    },
+    {
+      "id": "M5",
+      "track": "M5",
+      "status": "done"
+    },
+    {
+      "id": "M6",
+      "track": "M6",
+      "status": "done"
+    },
+    {
+      "id": "M7-pkg-mgmt",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M7-rust-interop",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M7-security-design",
+      "track": "M7",
+      "status": "in-progress"
+    },
+    {
+      "id": "M7-multi-lang-interop",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M7-security-analysis",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M7-stdlib-expansion",
+      "track": "M7",
+      "status": "in-progress"
+    },
+    {
+      "id": "M7-modern-errors",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M7-parser-cleanup",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M8",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M9",
+      "track": "M9",
+      "status": "pending"
+    },
+    {
+      "id": "M10",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M8-struct",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M8-slice-literal",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M8-error-unions",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M8-for-range",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M8-multi-return",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M8-nullable",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M8-map-literal",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "M8-postfix-incr",
+      "track": "M8",
+      "status": "pending"
+    },
+    {
+      "id": "V1",
+      "track": "V1",
+      "status": "pending"
+    },
+    {
+      "id": "V1-ccomp-audit",
+      "track": "V1",
+      "status": "pending"
+    },
+    {
+      "id": "V1-ccomp-install",
+      "track": "V1",
+      "status": "pending"
+    },
+    {
+      "id": "V1-ccomp-validate",
+      "track": "V1",
+      "status": "pending"
+    },
+    {
+      "id": "V1-stdatomic-cleanup",
+      "track": "V1",
+      "status": "pending"
+    },
+    {
+      "id": "V1-c23-enum-cleanup",
+      "track": "V1",
+      "status": "pending"
+    },
+    {
+      "id": "V1-ccomp-link",
+      "track": "V1",
+      "status": "pending"
+    },
+    {
+      "id": "V2",
+      "track": "V2",
+      "status": "pending"
+    },
+    {
+      "id": "V2-bootstrap-pilot",
+      "track": "V2",
+      "status": "pending"
+    },
+    {
+      "id": "M11",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-audit",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-probe-gate",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-types-const",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-types-const-stub",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-types-const-spike",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-types-const-integrate",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-codegen-const",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-probe-strengthen",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-block-dispatch",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-verify-gate",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-engine-recursion",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-engine-recursion-audit",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-engine-recursion-spike",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-engine-recursion-impl",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M11-types-const-fn-bind",
+      "track": "M11",
+      "status": "pending"
+    },
+    {
+      "id": "M10-audit",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-variadic-println",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-range-two-var",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-struct-literal",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-collection-literal",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-probe-gate",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-composite-literal-spike",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-composite-literal-grammar",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-grammar-strategy",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-lexer-layer-impl",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-struct-literal-impl",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M10-probe-gate-v2",
+      "track": "M10",
+      "status": "pending"
+    },
+    {
+      "id": "M9-fmt-println-int",
+      "track": "M9",
+      "status": "pending"
+    },
+    {
+      "id": "M9-const-ref-load",
+      "track": "M9",
+      "status": "pending"
+    },
+    {
+      "id": "M7-test-makefile-cleanup",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M7-c-ffi-spike",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M7-multifile-audit",
+      "track": "M7",
+      "status": "pending"
+    },
+    {
+      "id": "M12",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-strings-1",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-math-fns",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-math-pi",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-strings-2",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-os-getenv",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-os-args",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-os-files",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-fmt-printf",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-stdlib-fmt-sprintf",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M12-probe-promotion",
+      "track": "M12",
+      "status": "pending"
+    },
+    {
+      "id": "M13-slice-literal-expr",
+      "track": "M13",
+      "status": "pending"
+    }
   ],
   "deps": [
-    {"from": "M2", "to": "M1"},
-    {"from": "M3", "to": "M2"},
-    {"from": "M4", "to": "M3"},
-    {"from": "M5", "to": "M4"},
-    {"from": "M6", "to": "M5"},
-    {"from": "M7-pkg-mgmt", "to": "M6"},
-    {"from": "M7-rust-interop", "to": "M6"},
-    {"from": "M7-security-design", "to": "M6"},
-    {"from": "M7-multi-lang-interop", "to": "M7-rust-interop"},
-    {"from": "M7-security-analysis", "to": "M7-security-design"},
-    {"from": "M7-stdlib-expansion", "to": "M6"},
-    {"from": "M7-modern-errors", "to": "M6"},
-    {"from": "M7-parser-cleanup", "to": "M6"},
-    {"from": "M8", "to": "M7-stdlib-expansion"},
-    {"from": "M9", "to": "M8"},
-    {"from": "M10", "to": "M9"},
-    {"from": "M8-multi-return", "to": "M8"},
-    {"from": "M8-struct", "to": "M8"},
-    {"from": "M8-for-range", "to": "M8"},
-    {"from": "M8-slice-literal", "to": "M8"},
-    {"from": "M8-map-literal", "to": "M8"},
-    {"from": "M8-error-unions", "to": "M8"},
-    {"from": "M8-nullable", "to": "M8"},
-    {"from": "M8-postfix-incr", "to": "M8"},
-    {"from": "V1-ccomp-audit", "to": "V1"},
-    {"from": "V1-ccomp-install", "to": "V1"},
-    {"from": "V1-ccomp-validate", "to": "V1-ccomp-install"},
-    {"from": "V1-stdatomic-cleanup", "to": "V1-ccomp-validate"},
-    {"from": "V1-c23-enum-cleanup", "to": "V1-ccomp-validate"},
-    {"from": "V1-ccomp-link", "to": "V1-stdatomic-cleanup"},
-    {"from": "V1-ccomp-link", "to": "V1-c23-enum-cleanup"},
-    {"from": "V2", "to": "V1-ccomp-link"},
-    {"from": "V2-bootstrap-pilot", "to": "V2"},
-    {"from": "M11", "to": "M7-stdlib-expansion"},
-    {"from": "M11-audit", "to": "M11"},
-    {"from": "M11-probe-gate", "to": "M11-audit"},
-    {"from": "M11-types-const", "to": "M11-probe-gate"},
-    {"from": "M11-types-const-stub", "to": "M11-types-const"},
-    {"from": "M11-types-const-spike", "to": "M11-types-const-stub"},
-    {"from": "M11-types-const-integrate", "to": "M11-types-const-spike"},
-    {"from": "M11-codegen-const", "to": "M11-types-const-integrate"},
-    {"from": "M11-probe-strengthen", "to": "M11-codegen-const"},
-    {"from": "M11-block-dispatch", "to": "M11-codegen-const"},
-    {"from": "M11-verify-gate", "to": "M11-codegen-const"},
-    {"from": "M11-engine-recursion", "to": "M11-types-const-spike"},
-    {"from": "M11-engine-recursion-audit", "to": "M11-engine-recursion"},
-    {"from": "M11-engine-recursion-spike", "to": "M11-engine-recursion-audit"},
-    {"from": "M11-engine-recursion-impl", "to": "M11-engine-recursion-spike"},
-    {"from": "M11-types-const-fn-bind", "to": "M11-engine-recursion-impl"},
-    {"from": "M11-types-const-fn-bind", "to": "M9-const-ref-load"},
-    {"from": "M10-audit", "to": "M10"},
-    {"from": "M10-variadic-println", "to": "M10-audit"},
-    {"from": "M10-range-two-var", "to": "M10-audit"},
-    {"from": "M10-struct-literal", "to": "M10-audit"},
-    {"from": "M10-collection-literal", "to": "M10-struct-literal"},
-    {"from": "M10-probe-gate", "to": "M10-variadic-println"},
-    {"from": "M10-probe-gate", "to": "M10-range-two-var"},
-    {"from": "M10-probe-gate", "to": "M10-struct-literal"},
-    {"from": "M10-probe-gate", "to": "M10-collection-literal"},
-    {"from": "M10-composite-literal-spike", "to": "M10-audit"},
-    {"from": "M10-composite-literal-grammar", "to": "M10-composite-literal-spike"},
-    {"from": "M10-grammar-strategy", "to": "M10-composite-literal-spike"},
-    {"from": "M10-lexer-layer-impl", "to": "M10-grammar-strategy"},
-    {"from": "M10-struct-literal-impl", "to": "M10-lexer-layer-impl"},
-    {"from": "M10-probe-gate-v2", "to": "M10-struct-literal-impl"},
-    {"from": "M9-fmt-println-int", "to": "M9"},
-    {"from": "M9-const-ref-load", "to": "M9"},
-    {"from": "M7-test-makefile-cleanup", "to": "M6"}
+    {
+      "from": "M2",
+      "to": "M1"
+    },
+    {
+      "from": "M3",
+      "to": "M2"
+    },
+    {
+      "from": "M4",
+      "to": "M3"
+    },
+    {
+      "from": "M5",
+      "to": "M4"
+    },
+    {
+      "from": "M6",
+      "to": "M5"
+    },
+    {
+      "from": "M7-pkg-mgmt",
+      "to": "M6"
+    },
+    {
+      "from": "M7-rust-interop",
+      "to": "M6"
+    },
+    {
+      "from": "M7-security-design",
+      "to": "M6"
+    },
+    {
+      "from": "M7-multi-lang-interop",
+      "to": "M7-rust-interop"
+    },
+    {
+      "from": "M7-security-analysis",
+      "to": "M7-security-design"
+    },
+    {
+      "from": "M7-stdlib-expansion",
+      "to": "M6"
+    },
+    {
+      "from": "M7-modern-errors",
+      "to": "M6"
+    },
+    {
+      "from": "M7-parser-cleanup",
+      "to": "M6"
+    },
+    {
+      "from": "M8",
+      "to": "M7-stdlib-expansion"
+    },
+    {
+      "from": "M9",
+      "to": "M8"
+    },
+    {
+      "from": "M10",
+      "to": "M9"
+    },
+    {
+      "from": "M8-multi-return",
+      "to": "M8"
+    },
+    {
+      "from": "M8-struct",
+      "to": "M8"
+    },
+    {
+      "from": "M8-for-range",
+      "to": "M8"
+    },
+    {
+      "from": "M8-slice-literal",
+      "to": "M8"
+    },
+    {
+      "from": "M8-map-literal",
+      "to": "M8"
+    },
+    {
+      "from": "M8-error-unions",
+      "to": "M8"
+    },
+    {
+      "from": "M8-nullable",
+      "to": "M8"
+    },
+    {
+      "from": "M8-postfix-incr",
+      "to": "M8"
+    },
+    {
+      "from": "V1-ccomp-audit",
+      "to": "V1"
+    },
+    {
+      "from": "V1-ccomp-install",
+      "to": "V1"
+    },
+    {
+      "from": "V1-ccomp-validate",
+      "to": "V1-ccomp-install"
+    },
+    {
+      "from": "V1-stdatomic-cleanup",
+      "to": "V1-ccomp-validate"
+    },
+    {
+      "from": "V1-c23-enum-cleanup",
+      "to": "V1-ccomp-validate"
+    },
+    {
+      "from": "V1-ccomp-link",
+      "to": "V1-stdatomic-cleanup"
+    },
+    {
+      "from": "V1-ccomp-link",
+      "to": "V1-c23-enum-cleanup"
+    },
+    {
+      "from": "V2",
+      "to": "V1-ccomp-link"
+    },
+    {
+      "from": "V2-bootstrap-pilot",
+      "to": "V2"
+    },
+    {
+      "from": "M11",
+      "to": "M7-stdlib-expansion"
+    },
+    {
+      "from": "M11-audit",
+      "to": "M11"
+    },
+    {
+      "from": "M11-probe-gate",
+      "to": "M11-audit"
+    },
+    {
+      "from": "M11-types-const",
+      "to": "M11-probe-gate"
+    },
+    {
+      "from": "M11-types-const-stub",
+      "to": "M11-types-const"
+    },
+    {
+      "from": "M11-types-const-spike",
+      "to": "M11-types-const-stub"
+    },
+    {
+      "from": "M11-types-const-integrate",
+      "to": "M11-types-const-spike"
+    },
+    {
+      "from": "M11-codegen-const",
+      "to": "M11-types-const-integrate"
+    },
+    {
+      "from": "M11-probe-strengthen",
+      "to": "M11-codegen-const"
+    },
+    {
+      "from": "M11-block-dispatch",
+      "to": "M11-codegen-const"
+    },
+    {
+      "from": "M11-verify-gate",
+      "to": "M11-codegen-const"
+    },
+    {
+      "from": "M11-engine-recursion",
+      "to": "M11-types-const-spike"
+    },
+    {
+      "from": "M11-engine-recursion-audit",
+      "to": "M11-engine-recursion"
+    },
+    {
+      "from": "M11-engine-recursion-spike",
+      "to": "M11-engine-recursion-audit"
+    },
+    {
+      "from": "M11-engine-recursion-impl",
+      "to": "M11-engine-recursion-spike"
+    },
+    {
+      "from": "M11-types-const-fn-bind",
+      "to": "M11-engine-recursion-impl"
+    },
+    {
+      "from": "M11-types-const-fn-bind",
+      "to": "M9-const-ref-load"
+    },
+    {
+      "from": "M10-audit",
+      "to": "M10"
+    },
+    {
+      "from": "M10-variadic-println",
+      "to": "M10-audit"
+    },
+    {
+      "from": "M10-range-two-var",
+      "to": "M10-audit"
+    },
+    {
+      "from": "M10-struct-literal",
+      "to": "M10-audit"
+    },
+    {
+      "from": "M10-collection-literal",
+      "to": "M10-struct-literal"
+    },
+    {
+      "from": "M10-probe-gate",
+      "to": "M10-variadic-println"
+    },
+    {
+      "from": "M10-probe-gate",
+      "to": "M10-range-two-var"
+    },
+    {
+      "from": "M10-probe-gate",
+      "to": "M10-struct-literal"
+    },
+    {
+      "from": "M10-probe-gate",
+      "to": "M10-collection-literal"
+    },
+    {
+      "from": "M10-composite-literal-spike",
+      "to": "M10-audit"
+    },
+    {
+      "from": "M10-composite-literal-grammar",
+      "to": "M10-composite-literal-spike"
+    },
+    {
+      "from": "M10-grammar-strategy",
+      "to": "M10-composite-literal-spike"
+    },
+    {
+      "from": "M10-lexer-layer-impl",
+      "to": "M10-grammar-strategy"
+    },
+    {
+      "from": "M10-struct-literal-impl",
+      "to": "M10-lexer-layer-impl"
+    },
+    {
+      "from": "M10-probe-gate-v2",
+      "to": "M10-struct-literal-impl"
+    },
+    {
+      "from": "M9-fmt-println-int",
+      "to": "M9"
+    },
+    {
+      "from": "M9-const-ref-load",
+      "to": "M9"
+    },
+    {
+      "from": "M7-test-makefile-cleanup",
+      "to": "M6"
+    },
+    {
+      "from": "M7-c-ffi-spike",
+      "to": "M6"
+    },
+    {
+      "from": "M7-multifile-audit",
+      "to": "M6"
+    },
+    {
+      "from": "M12",
+      "to": "M10"
+    },
+    {
+      "from": "M12-stdlib-strings-1",
+      "to": "M12"
+    },
+    {
+      "from": "M12-stdlib-math-fns",
+      "to": "M12"
+    },
+    {
+      "from": "M12-stdlib-math-pi",
+      "to": "M12"
+    },
+    {
+      "from": "M12-stdlib-strings-2",
+      "to": "M12-stdlib-strings-1"
+    },
+    {
+      "from": "M12-stdlib-os-getenv",
+      "to": "M12-stdlib-strings-1"
+    },
+    {
+      "from": "M12-stdlib-os-args",
+      "to": "M12-stdlib-math-pi"
+    },
+    {
+      "from": "M12-stdlib-os-args",
+      "to": "M12-stdlib-strings-2"
+    },
+    {
+      "from": "M12-stdlib-os-files",
+      "to": "M12-stdlib-strings-1"
+    },
+    {
+      "from": "M12-stdlib-fmt-printf",
+      "to": "M12-stdlib-strings-1"
+    },
+    {
+      "from": "M12-stdlib-fmt-sprintf",
+      "to": "M12-stdlib-fmt-printf"
+    },
+    {
+      "from": "M12-probe-promotion",
+      "to": "M12-stdlib-fmt-sprintf"
+    },
+    {
+      "from": "M12-probe-promotion",
+      "to": "M12-stdlib-os-args"
+    },
+    {
+      "from": "M12-probe-promotion",
+      "to": "M12-stdlib-os-files"
+    },
+    {
+      "from": "M13-slice-literal-expr",
+      "to": "M10-struct-literal-impl"
+    }
   ]
 }
