@@ -89,6 +89,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> statement_list statement block simple_stmt
 %type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
+%type <node> switch_stmt case_clause_list case_clause
 %type <node> unsafe_stmt asm_stmt parallel_for_stmt
 %type <node> parallel_reduce_expr barrier_call atomic_expr thread_local_decl
 %type <node> expression primary_expr unary_expr postfix_expr binary_expr
@@ -728,6 +729,7 @@ statement:
     | defer_stmt SEMICOLON { $$ = $1; }
     | defer_stmt { $$ = $1; }  // Allow defer without semicolon
     | select_stmt { $$ = $1; }
+    | switch_stmt { $$ = $1; }
     | block { $$ = $1; }
     | comptime_block { $$ = $1; }  // Goo extension
     | unsafe_stmt { $$ = $1; }     // Goo extension
@@ -965,6 +967,41 @@ select_case:
     | DEFAULT COLON statement_list {
         SelectCaseNode* case_node = ast_select_case_new(NULL, $3, get_current_position());
         $$ = (ASTNode*)case_node;
+    }
+    ;
+
+switch_stmt:
+    /* SWITCH pushes a cond frame in the lexer bridge, so the `{` arrives as
+       LBRACE_BODY. The plain-LBRACE form is accepted as a fallback so a
+       bridge edge case can't break switch parsing (mirrors select_stmt). */
+    SWITCH expression LBRACE_BODY case_clause_list RBRACE {
+        $$ = (ASTNode*)ast_switch_stmt_new($2, $4, get_current_position());
+    }
+    | SWITCH expression LBRACE case_clause_list RBRACE {
+        $$ = (ASTNode*)ast_switch_stmt_new($2, $4, get_current_position());
+    }
+    ;
+
+case_clause_list:
+    case_clause {
+        $$ = $1;
+    }
+    | case_clause_list case_clause {
+        ASTNode* current = $1;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = $2;
+        $$ = $1;
+    }
+    ;
+
+case_clause:
+    CASE expression COLON statement_list {
+        $$ = (ASTNode*)ast_case_clause_new($2, $4, get_current_position());
+    }
+    | DEFAULT COLON statement_list {
+        $$ = (ASTNode*)ast_case_clause_new(NULL, $3, get_current_position());
     }
     ;
 

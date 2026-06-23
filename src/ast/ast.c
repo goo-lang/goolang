@@ -529,6 +529,18 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(dom_access->args);
             break;
         }
+        case AST_SWITCH_STMT: {
+            SwitchStmtNode* sw = (SwitchStmtNode*)node;
+            ast_node_free(sw->tag);
+            ast_node_free(sw->cases);
+            break;
+        }
+        case AST_CASE_CLAUSE: {
+            CaseClauseNode* clause = (CaseClauseNode*)node;
+            ast_node_free(clause->exprs);
+            ast_node_free(clause->body);
+            break;
+        }
         // Add more cases as needed
         default:
             break;

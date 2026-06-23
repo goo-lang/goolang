@@ -356,6 +356,20 @@ typedef struct {
     struct ASTNode* body;       // Case body
 } SelectCaseNode;
 
+// Switch statement (Go-style expression switch)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* tag;        // Switch expression; NULL = expression-less switch
+    struct ASTNode* cases;      // List of CaseClauseNode
+} SwitchStmtNode;
+
+// Case clause within a switch. exprs == NULL denotes the `default` clause.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* exprs;      // Case match expression(s), linked via next; NULL for default
+    struct ASTNode* body;       // Statement list for this clause
+} CaseClauseNode;
+
 // Defer statement  
 typedef struct {
     ASTNode base;
@@ -973,6 +987,8 @@ IfLetStmtNode* ast_if_let_stmt_new(const char* var_name, ASTNode* nullable_expr,
 GoStmtNode* ast_go_stmt_new(ASTNode* call, Position pos);
 SelectStmtNode* ast_select_stmt_new(Position pos);
 SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos);
+SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos);
+CaseClauseNode* ast_case_clause_new(ASTNode* exprs, ASTNode* body, Position pos);
 DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos);
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
