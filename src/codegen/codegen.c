@@ -621,16 +621,18 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     if (!target_triple) {
         target_triple = LLVMGetDefaultTargetTriple();
     }
-    snprintf(link_command, sizeof(link_command), 
-             "clang -target %s -o %s %s lib/libgoo_runtime.a",
+    snprintf(link_command, sizeof(link_command),
+             "clang -target %s -o %s %s lib/libgoo_runtime.a -lm -lpthread",
              target_triple, filename, object_filename);
     if (!codegen->target_triple) {
         LLVMDisposeMessage(target_triple);
     }
 #elif defined(__linux__)
-    // Linux linking with runtime library using gcc
+    // Linux linking with runtime library using gcc. -lm/-lpthread must follow
+    // the archive (the runtime uses libm and pthreads); newer binutils enforces
+    // this ordering and otherwise fails with undefined references.
     snprintf(link_command, sizeof(link_command),
-             "gcc -o %s %s lib/libgoo_runtime.a",
+             "gcc -o %s %s lib/libgoo_runtime.a -lm -lpthread",
              filename, object_filename);
 #elif defined(_WIN32)
     // Windows linking with runtime library
@@ -640,7 +642,7 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #else
     // Generic Unix linking with runtime library using gcc
     snprintf(link_command, sizeof(link_command),
-             "gcc -o %s %s lib/libgoo_runtime.a",
+             "gcc -o %s %s lib/libgoo_runtime.a -lm -lpthread",
              filename, object_filename);
 #endif
     
