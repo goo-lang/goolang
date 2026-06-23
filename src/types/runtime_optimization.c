@@ -6,8 +6,11 @@
 #include <string.h>
 #include <assert.h>
 
-// Platform-specific includes for hardware detection
-#ifdef __x86_64__
+// Platform-specific includes for hardware detection.
+// CompCert can't parse GCC's x86 intrinsic headers (__int128, multi-output asm);
+// the CPU-capability probe is a runtime perf feature, not part of the compiler's
+// verified translation path, so skip it under CompCert.
+#if defined(__x86_64__) && !defined(__COMPCERT__)
     #include <cpuid.h>
     #include <immintrin.h>
 #endif
@@ -112,7 +115,7 @@ int optimization_context_set_contracts(OptimizationContext* ctx, struct Contract
 HardwareCapabilities detect_hardware_capabilities(void) {
     HardwareCapabilities caps = HW_CAP_NONE;
     
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(__COMPCERT__)
     // Check for Intel features using CPUID
     unsigned int eax, ebx, ecx, edx;
     
