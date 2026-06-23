@@ -231,7 +231,12 @@ int compile_goo_file(const char* filename) {
     // Link to create executable using clang with runtime library
     printf("\n🔗 Executable Linking:\n");
     char link_command[1024];
-    snprintf(link_command, sizeof(link_command), "clang %s build/runtime/*.o -o %s -lm -lpthread", obj_filename, exe_filename);
+    // Link against the full runtime: build/runtime provides the core runtime,
+    // but error_severity_to_string and friends live in build/errors, and shared
+    // helpers in build/common. Omitting either left every program unlinkable.
+    snprintf(link_command, sizeof(link_command),
+             "clang %s build/runtime/*.o build/errors/*.o build/common/*.o -o %s -lm -lpthread",
+             obj_filename, exe_filename);
     
     int link_result = system(link_command);
     if (link_result != 0) {

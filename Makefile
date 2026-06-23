@@ -131,8 +131,12 @@ TEST_MACROS = $(BINDIR)/test_macros
 TEST_PKGMGR = $(BINDIR)/test_pkgmgr
 
 # Tests
-test: $(TEST_RUNNER)
+test: $(TEST_RUNNER) test-link-smoke
 	./$(TEST_RUNNER)
+
+# Link smoke test (P0-7): source -> compile -> link -> run, must exit 0.
+test-link-smoke: $(COMPILER)
+	@./scripts/test_link_smoke.sh
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)

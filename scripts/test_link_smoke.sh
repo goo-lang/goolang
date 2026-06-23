@@ -1,0 +1,49 @@
+#!/bin/bash
+# Link smoke test (roadmap P0-7): prove the compiler takes a trivial program
+# all the way to a *runnable* native executable.
+#
+# This is the end-to-end gate for Phase 0: source -> compile -> link -> run.
+# It must be run from the repository root (cwd-independent linking is P0-2).
+
+set -u
+
+COMPILER="./bin/goo"
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+SRC="$WORKDIR/smoke.goo"
+EXE="$WORKDIR/smoke"
+
+# Minimal valid program: an empty main. No statements, so this isolates the
+# link step from any parser/codegen feature work.
+printf 'package main\n\nfunc main() {\n}\n' > "$SRC"
+
+fail() {
+    echo "FAIL: $1"
+    exit 1
+}
+
+if [ ! -x "$COMPILER" ]; then
+    fail "compiler not found at $COMPILER (run 'make' first)"
+fi
+
+# Compile (and link) the program. We only care about the produced executable.
+if ! "$COMPILER" "$SRC" > "$WORKDIR/compile.log" 2>&1; then
+    sed 's/^/    /' "$WORKDIR/compile.log"
+    fail "compiler returned non-zero for an empty main"
+fi
+
+if [ ! -x "$EXE" ]; then
+    sed 's/^/    /' "$WORKDIR/compile.log"
+    fail "no runnable executable was produced at $EXE"
+fi
+
+# Run it. An empty main must exit 0.
+"$EXE"
+status=$?
+if [ "$status" -ne 0 ]; then
+    fail "executable exited with status $status (expected 0)"
+fi
+
+echo "PASS: empty main compiled, linked, and ran (exit 0)"
+exit 0
