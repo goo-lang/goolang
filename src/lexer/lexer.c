@@ -16,6 +16,10 @@ Lexer* lexer_new(const char* input, const char* filename) {
     lexer->ch = 0;
     lexer->filename = filename;
     lexer->type_names = NULL;  // Initialize empty type name list
+    // Start as if the previous token were a semicolon, so leading blank lines
+    // never trigger automatic semicolon insertion.
+    lexer->prev_token_type = TOKEN_SEMICOLON;
+    lexer->paren_depth = 0;
 
     // Initialize position
     lexer->pos.line = 1;
@@ -70,6 +74,33 @@ void lexer_skip_whitespace(Lexer* lexer) {
     }
 }
 
+// Whether a newline immediately following this token triggers automatic
+// semicolon insertion (Go's ASI rule). RBRACE and EOF are handled separately.
+static int asi_token_ends_statement(TokenType t) {
+    switch (t) {
+        case TOKEN_IDENT:
+        case TOKEN_TYPE_IDENT:
+        case TOKEN_INT:
+        case TOKEN_FLOAT:
+        case TOKEN_STRING:
+        case TOKEN_CHAR:
+        case TOKEN_TRUE:
+        case TOKEN_FALSE:
+        case TOKEN_NIL:
+        case TOKEN_RETURN:
+        case TOKEN_BREAK:
+        case TOKEN_CONTINUE:
+        case TOKEN_FALLTHROUGH:
+        case TOKEN_INCREMENT:
+        case TOKEN_DECREMENT:
+        case TOKEN_RPAREN:
+        case TOKEN_RBRACKET:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 Token* lexer_next_token(Lexer* lexer) {
     Token* token = NULL;
 
@@ -85,7 +116,14 @@ Token* lexer_next_token(Lexer* lexer) {
             break;
 
         case '\n':
-            // Skip newlines for now since they're not used in the grammar
+            // Automatic semicolon insertion (Go ASI): a newline following a
+            // token that can end a statement becomes a synthesized semicolon.
+            // Otherwise the newline is insignificant.
+            if (asi_token_ends_statement(lexer->prev_token_type)) {
+                token = token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
+                lexer_read_char(lexer);
+                break;
+            }
             lexer_read_char(lexer);
             continue; // Get next token iteratively
             
@@ -417,6 +455,12 @@ Token* lexer_next_token(Lexer* lexer) {
             break;
     }
 
+    // Record the token so the next newline can decide on ASI. Updating this for
+    // synthesized semicolons too means consecutive blank lines never produce
+    // consecutive semicolons.
+    if (token) {
+        lexer->prev_token_type = token->type;
+    }
     return token;
     } // end for(;;)
 }

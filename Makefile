@@ -142,12 +142,16 @@ TEST_MACROS = $(BINDIR)/test_macros
 TEST_PKGMGR = $(BINDIR)/test_pkgmgr
 
 # Tests
-test: $(TEST_RUNNER) test-link-smoke
+test: $(TEST_RUNNER) test-link-smoke test-asi
 	./$(TEST_RUNNER)
 
 # Link smoke test (P0-7): source -> compile -> link -> run, must exit 0.
 test-link-smoke: $(COMPILER)
 	@./scripts/test_link_smoke.sh
+
+# ASI test (Phase 1): semicolon-free source must reach the parse/typecheck stage.
+test-asi: $(COMPILER)
+	@./scripts/test_asi.sh
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)

@@ -21,6 +21,8 @@ typedef struct {
     Position pos;           // Current position info (line, column, etc.)
     const char* filename;   // Name of the file being lexed
     TypeNameNode* type_names; // Linked list of registered type names
+    TokenType prev_token_type; // Last token returned, for automatic semicolon insertion (ASI)
+    int paren_depth;          // Depth of open ()/[] for suppressing ASI in multi-line expressions
 } Lexer;
 
 // Lexer functions

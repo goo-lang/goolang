@@ -131,13 +131,21 @@ static TokenType bison_token_to_token_type(int bison_token);
 
 // Program structure
 program:
-    package_clause opt_import_decl_list opt_top_level_decl_list {
+    package_clause opt_semis opt_import_decl_list opt_top_level_decl_list {
         ProgramNode* prog = ast_program_new(get_current_position());
-        prog->imports = $2;
-        prog->decls = $3;
+        prog->imports = $3;
+        prog->decls = $4;
         ast_root = (ASTNode*)prog;
         $$ = (ASTNode*)prog;
     }
+    ;
+
+/* Zero or more semicolons. Automatic semicolon insertion (ASI) terminates the
+   package clause, each import, and each top-level declaration with a semicolon;
+   these productions absorb them (and any blank-line semicolons). */
+opt_semis:
+    /* empty */
+    | opt_semis SEMICOLON
     ;
 
 opt_import_decl_list:
@@ -160,10 +168,10 @@ package_clause:
     ;
 
 import_decl_list:
-    import_decl {
+    import_decl opt_semis {
         $$ = $1;
     }
-    | import_decl_list import_decl {
+    | import_decl_list import_decl opt_semis {
         ast_add_child($1, $2);
         $$ = $1;
     }
@@ -204,10 +212,10 @@ import_spec:
     ;
 
 top_level_decl_list:
-    top_level_decl {
+    top_level_decl opt_semis {
         $$ = $1;
     }
-    | top_level_decl_list top_level_decl {
+    | top_level_decl_list top_level_decl opt_semis {
         ast_add_child($1, $2);
         $$ = $1;
     }
