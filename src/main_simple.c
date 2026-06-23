@@ -265,26 +265,26 @@ int compile_goo_file(const char* filename) {
     // Link to create executable using clang with runtime library
     printf("\n🔗 Executable Linking:\n");
     const char* rt = goo_runtime_dir();
-    // Fail early with a clear message if the runtime is missing, instead of
-    // letting clang choke on an unexpanded glob.
-    char rt_probe[PATH_MAX];
-    snprintf(rt_probe, sizeof(rt_probe), "%s/runtime", rt);
-    if (access(rt_probe, F_OK) != 0) {
-        printf("❌ Runtime objects not found in '%s'.\n"
-               "   Build the runtime with `make`, or set GOO_RUNTIME_DIR to the build directory.\n", rt);
+    // Fail early with a clear message if the runtime archive is missing,
+    // instead of letting clang fail cryptically.
+    char rt_lib[PATH_MAX];
+    snprintf(rt_lib, sizeof(rt_lib), "%s/libgoort.a", rt);
+    if (access(rt_lib, F_OK) != 0) {
+        printf("❌ Runtime library not found at '%s'.\n"
+               "   Build it with `make`, or set GOO_RUNTIME_DIR to the build directory.\n", rt_lib);
         codegen_free(codegen);
         type_checker_free(type_checker);
         ast_node_free(ast_root);
         free(source);
         return 1;
     }
-    // Link against the full runtime: runtime/ provides the core runtime, but
-    // error_severity_to_string and friends live in errors/, and shared helpers
-    // in common/. Omitting either left every program unlinkable.
-    char link_command[4 * PATH_MAX];
+    // Link the whole runtime archive. --whole-archive keeps every member (the
+    // runtime relies on objects a trivial program never references directly),
+    // matching the old include-everything glob behaviour but as one file.
+    char link_command[2 * PATH_MAX];
     snprintf(link_command, sizeof(link_command),
-             "clang %s %s/runtime/*.o %s/errors/*.o %s/common/*.o -o %s -lm -lpthread",
-             obj_filename, rt, rt, rt, exe_filename);
+             "clang %s -Wl,--whole-archive %s -Wl,--no-whole-archive -o %s -lm -lpthread",
+             obj_filename, rt_lib, exe_filename);
     
     int link_result = system(link_command);
     if (link_result != 0) {

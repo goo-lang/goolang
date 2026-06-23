@@ -112,8 +112,17 @@ $(BUILDDIR)/common/%.o: $(SRCDIR)/common/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
-# Main compiler
-$(COMPILER): $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
+# Runtime archive (P0-3): one static lib of the runtime/errors/common objects,
+# linked into every compiled Goo program. Replaces a brittle three-glob link.
+RUNTIME_LIB = $(BUILDDIR)/libgoort.a
+RUNTIME_LIB_OBJS = $(filter $(BUILDDIR)/runtime/% $(BUILDDIR)/errors/% $(BUILDDIR)/common/%, $(OBJS))
+
+$(RUNTIME_LIB): $(RUNTIME_LIB_OBJS)
+	ar rcs $@ $(RUNTIME_LIB_OBJS)
+
+# Main compiler. Depends on the runtime archive (P0-4) so a clean `make` leaves
+# the very first `goo` invocation able to link without any manual pre-build.
+$(COMPILER): $(OBJS) $(RUNTIME_LIB) $(SRCDIR)/main_simple.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main_simple.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Test targets
