@@ -6,12 +6,18 @@
 #include <pthread.h>
 
 #ifdef __x86_64__
+// CompCert can't parse GCC's x86 intrinsic headers (__int128 in <immintrin.h>,
+// multi-output asm in <cpuid.h>). The CPU-capability probe below is a runtime
+// perf feature, irrelevant to the translation correctness the ccomp build
+// verifies, so skip these headers (and the probe body) under CompCert.
+#ifndef __COMPCERT__
 #include <cpuid.h>
 #include <immintrin.h>
 // GCC 16 renamed bit_RDRAND to bit_RDRND in <cpuid.h>. Keep building on both.
 #if !defined(bit_RDRAND) && defined(bit_RDRND)
 #define bit_RDRAND bit_RDRND
 #endif
+#endif // __COMPCERT__
 #endif
 
 #ifdef __aarch64__
@@ -52,6 +58,7 @@ static void initialize_global_hardware_context(void) {
 // CPU feature detection for x86_64
 #ifdef __x86_64__
 static void detect_x86_64_features(HardwareProfile* profile) {
+#ifndef __COMPCERT__
     unsigned int eax, ebx, ecx, edx;
     
     // Basic CPUID
@@ -90,6 +97,9 @@ static void detect_x86_64_features(HardwareProfile* profile) {
     } else if (strcmp(vendor, "AuthenticAMD") == 0) {
         profile->microarch = UARCH_AMD_ZEN3; // Simplified
     }
+#else
+    (void)profile; // CompCert build: no CPUID probing; default profile (no caps)
+#endif
 }
 #endif
 
