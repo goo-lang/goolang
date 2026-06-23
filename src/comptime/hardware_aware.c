@@ -8,6 +8,10 @@
 #ifdef __x86_64__
 #include <cpuid.h>
 #include <immintrin.h>
+// GCC 16 renamed bit_RDRAND to bit_RDRND in <cpuid.h>. Keep building on both.
+#if !defined(bit_RDRAND) && defined(bit_RDRND)
+#define bit_RDRAND bit_RDRND
+#endif
 #endif
 
 #ifdef __aarch64__
