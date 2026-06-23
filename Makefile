@@ -197,7 +197,7 @@ CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -f
 # resulting binary is the Goo compiler compiled through CompCert
 # (verified-C-compiler) end-to-end. LLVM, libpthread, libm, libcurl,
 # libjson-c, libz remain trusted external deps.
-CCOMP_LLVM_LIB := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --libdir 2>/dev/null || echo /opt/homebrew/lib)
+CCOMP_LLVM_LIB := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --libdir 2>/dev/null || llvm-config --libdir 2>/dev/null || echo /opt/homebrew/lib)
 CCOMP_LDLIBS = -lm -lpthread -ljson-c -lcurl -lz -L/opt/homebrew/lib -L$(CCOMP_LLVM_LIB) -lLLVM-22
 CCOMP_ESSENTIAL_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS) $(COMPILER_SRCS) $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
 
@@ -205,12 +205,15 @@ ccomp-build:
 	@command -v $(CCOMP) >/dev/null || (echo "ccomp not installed — see V1-ccomp-install" && exit 1)
 	@mkdir -p build/ccomp $(BINDIR)
 	@echo "Compiling Goo compiler under CompCert..."
+	@rm -rf build/ccomp/obj && mkdir -p build/ccomp/obj
 	@for f in $(CCOMP_ESSENTIAL_SRCS); do \
-	  obj=build/ccomp/`echo "$$f" | tr '/' '_' | sed 's/\.c$$/.o/'`; \
+	  obj=build/ccomp/obj/`echo "$$f" | tr '/' '_' | sed 's/\.c$$/.o/'`; \
 	  $(CCOMP) -c "$$f" $(CCOMP_CFLAGS) -o "$$obj" 2>/dev/null || (echo "ccomp compile failed: $$f" && exit 1); \
 	done
 	@echo "Linking bin/goo-ccomp..."
-	@$(CCOMP) build/ccomp/*.o -o $(BINDIR)/goo-ccomp $(CCOMP_LDLIBS)
+	@# Link only the essential objects (build/ccomp/obj), never the survey's
+	@# build/ccomp/*.o, which includes peripheral files that don't build here.
+	@$(CCOMP) build/ccomp/obj/*.o -o $(BINDIR)/goo-ccomp $(CCOMP_LDLIBS)
 	@echo "ccomp-build: $(BINDIR)/goo-ccomp built"
 
 # V1-ccomp-link gate: build goo-ccomp, run baseline_probe through it,
