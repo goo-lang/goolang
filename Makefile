@@ -343,9 +343,15 @@ m12-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe
+verify: baseline-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
+
+# M9: a Goo program is the C entry point and must exit 0 on normal completion
+# (not a garbage register value). Compiles + runs empty/no-return/bare-return
+# mains and asserts exit 0.
+exit-code-probe: $(COMPILER) $(RUNTIME_LIB)
+	@./scripts/exit_code_probe.sh
 
 # M11 comptime BLOCK probe: sibling to comptime-probe that exercises
 # the AST_COMPTIME_BLOCK dispatch path independently of the engine's
