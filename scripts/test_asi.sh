@@ -72,5 +72,56 @@ func main() {
 }
 GOO
 
+# A block statement is terminated by ASI after its closing brace, so a
+# following statement parses as a separate statement.
+check_parses block_then_stmt <<'GOO'
+package main
+
+func main() {
+    if true {
+        x := 1
+    }
+    y := 2
+    return
+}
+GOO
+
+check_parses if_else <<'GOO'
+package main
+
+func main() {
+    if true {
+        x := 1
+    } else {
+        x := 2
+    }
+    return
+}
+GOO
+
+check_parses nested_if <<'GOO'
+package main
+
+func main() {
+    if true {
+        if false {
+            x := 1
+        }
+    }
+    return
+}
+GOO
+
+# A trailing line comment must not prevent the newline's semicolon insertion.
+check_parses comment_eol <<'GOO'
+package main
+
+func main() {
+    x := 5 // a trailing comment
+    y := 6
+    return
+}
+GOO
+
 echo "PASS: semicolon-free source parses (ASI)"
 exit 0
