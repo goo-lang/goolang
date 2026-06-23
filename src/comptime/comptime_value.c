@@ -560,21 +560,21 @@ ASTNode* comptime_value_to_ast(const ComptimeValue* value) {
         case COMPTIME_VALUE_INT: {
             char buffer[32];
             snprintf(buffer, sizeof(buffer), "%lld", value->int_value);
-            return ast_literal_new(TOKEN_INT, buffer, pos);
+            return (ASTNode*)ast_literal_new(TOKEN_INT, buffer, pos);
         }
             
         case COMPTIME_VALUE_FLOAT: {
             char buffer[64];
             snprintf(buffer, sizeof(buffer), "%f", value->float_value);
-            return ast_literal_new(TOKEN_FLOAT, buffer, pos);
+            return (ASTNode*)ast_literal_new(TOKEN_FLOAT, buffer, pos);
         }
             
         case COMPTIME_VALUE_BOOL:
-            return ast_literal_new(TOKEN_IDENT,
+            return (ASTNode*)ast_literal_new(TOKEN_IDENT,
                                  value->bool_value ? "true" : "false", pos);
             
         case COMPTIME_VALUE_STRING:
-            return ast_literal_new(TOKEN_STRING,
+            return (ASTNode*)ast_literal_new(TOKEN_STRING,
                                  value->string_value, pos);
             
         default:
