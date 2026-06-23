@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <limits.h>
+#include <unistd.h>
 #include "lexer.h"
 #include "token.h"
 #include "parser.h"
@@ -9,6 +11,38 @@
 #include "types.h"
 #include "codegen.h"
 #include "runtime.h"
+
+// Resolve the directory holding the compiled runtime objects (the build dir,
+// containing runtime/, errors/, and common/ subdirectories). Precedence:
+//   1. $GOO_RUNTIME_DIR, if set, points directly at that directory.
+//   2. Derived from the compiler's own location: <root>/bin/goo -> <root>/build,
+//      so goo links correctly regardless of the caller's working directory.
+//   3. Relative "build" as a last resort (in-tree invocation from repo root).
+static const char* goo_runtime_dir(void) {
+    static char dir[PATH_MAX];
+    const char* env = getenv("GOO_RUNTIME_DIR");
+    if (env && env[0]) {
+        snprintf(dir, sizeof(dir), "%s", env);
+        return dir;
+    }
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        char* slash = strrchr(exe, '/');          // strip "/goo"
+        if (slash) {
+            *slash = '\0';                          // <root>/bin
+            slash = strrchr(exe, '/');              // strip "/bin"
+            if (slash) {
+                *slash = '\0';                      // <root>
+                snprintf(dir, sizeof(dir), "%s/build", exe);
+                return dir;
+            }
+        }
+    }
+    snprintf(dir, sizeof(dir), "build");
+    return dir;
+}
 
 void print_token(const Token* token) {
     printf("Token: %-15s | Literal: %-10s | Pos: %d:%d\n",
@@ -230,13 +264,27 @@ int compile_goo_file(const char* filename) {
     
     // Link to create executable using clang with runtime library
     printf("\n🔗 Executable Linking:\n");
-    char link_command[1024];
-    // Link against the full runtime: build/runtime provides the core runtime,
-    // but error_severity_to_string and friends live in build/errors, and shared
-    // helpers in build/common. Omitting either left every program unlinkable.
+    const char* rt = goo_runtime_dir();
+    // Fail early with a clear message if the runtime is missing, instead of
+    // letting clang choke on an unexpanded glob.
+    char rt_probe[PATH_MAX];
+    snprintf(rt_probe, sizeof(rt_probe), "%s/runtime", rt);
+    if (access(rt_probe, F_OK) != 0) {
+        printf("❌ Runtime objects not found in '%s'.\n"
+               "   Build the runtime with `make`, or set GOO_RUNTIME_DIR to the build directory.\n", rt);
+        codegen_free(codegen);
+        type_checker_free(type_checker);
+        ast_node_free(ast_root);
+        free(source);
+        return 1;
+    }
+    // Link against the full runtime: runtime/ provides the core runtime, but
+    // error_severity_to_string and friends live in errors/, and shared helpers
+    // in common/. Omitting either left every program unlinkable.
+    char link_command[4 * PATH_MAX];
     snprintf(link_command, sizeof(link_command),
-             "clang %s build/runtime/*.o build/errors/*.o build/common/*.o -o %s -lm -lpthread",
-             obj_filename, exe_filename);
+             "clang %s %s/runtime/*.o %s/errors/*.o %s/common/*.o -o %s -lm -lpthread",
+             obj_filename, rt, rt, rt, exe_filename);
     
     int link_result = system(link_command);
     if (link_result != 0) {

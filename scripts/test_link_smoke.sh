@@ -3,25 +3,32 @@
 # all the way to a *runnable* native executable.
 #
 # This is the end-to-end gate for Phase 0: source -> compile -> link -> run.
-# It must be run from the repository root (cwd-independent linking is P0-2).
+# It runs the compiler from an unrelated working directory to also guard
+# cwd-independent runtime location (P0-2).
 
 set -u
 
-COMPILER="./bin/goo"
+fail() {
+    echo "FAIL: $1"
+    exit 1
+}
+
+# Absolute compiler path so we can invoke it from an unrelated working
+# directory: a real `goo` must locate its runtime regardless of cwd (P0-2).
+COMPILER="$(cd "$(dirname "$0")/.." && pwd)/bin/goo"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 SRC="$WORKDIR/smoke.goo"
 EXE="$WORKDIR/smoke"
 
+# Run everything from the temp dir, NOT the repo root, to catch cwd-relative
+# object paths in the link step.
+cd "$WORKDIR" || fail "could not enter work dir"
+
 # Minimal valid program: an empty main. No statements, so this isolates the
 # link step from any parser/codegen feature work.
 printf 'package main\n\nfunc main() {\n}\n' > "$SRC"
-
-fail() {
-    echo "FAIL: $1"
-    exit 1
-}
 
 if [ ! -x "$COMPILER" ]; then
     fail "compiler not found at $COMPILER (run 'make' first)"
