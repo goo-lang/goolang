@@ -325,8 +325,10 @@ PerformanceMetric* performance_metric_new(PerformanceMetricType type) {
     metric->name = metric_names[type];
     metric->unit = metric_units[type];
     metric->is_enabled = true;
-    metric->min_value = __DBL_MAX__;
-    metric->max_value = -__DBL_MAX__;
+    // Explicit double literal rather than __DBL_MAX__: CompCert classifies the
+    // GCC builtin macro's expansion as a 'long double' constant (unsupported).
+    metric->min_value = 1.7976931348623157e308;
+    metric->max_value = -1.7976931348623157e308;
     
     return metric;
 }

@@ -7,8 +7,11 @@
 #include <assert.h>
 #include <unistd.h>
 
-// Platform-specific headers for hardware detection
-#ifdef __x86_64__
+// Platform-specific headers for hardware detection.
+// CompCert can't parse GCC's <cpuid.h> (multi-output asm) / <immintrin.h>;
+// the probe is a runtime perf feature, not part of the verified translation
+// path, so skip it under CompCert.
+#if defined(__x86_64__) && !defined(__COMPCERT__)
 #include <cpuid.h>
 #ifdef __AVX__
 #include <immintrin.h>
@@ -40,7 +43,7 @@ TargetInfo* target_info_detect(void) {
     memset(info, 0, sizeof(TargetInfo));
     
     // Detect architecture
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(__COMPCERT__)
     info->architecture = strdup("x86_64");
     
     // Detect x86 features using CPUID
