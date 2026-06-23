@@ -501,6 +501,74 @@ static TestStatus test_position_tracking(void* ctx) {
 }
 
 // =========================================================================
+// Test: Automatic semicolon insertion (ASI)
+// =========================================================================
+
+// Collect token types (excluding EOF) into out[], up to max. Returns count.
+static int collect_token_types(const char* input, TokenType* out, int max) {
+    Lexer* lexer = lexer_new(input, "test");
+    if (!lexer) return -1;
+
+    int n = 0;
+    for (;;) {
+        Token* tok = lexer_next_token(lexer);
+        if (!tok) break;
+        if (tok->type == TOKEN_EOF) { token_free(tok); break; }
+        if (n < max) out[n] = tok->type;
+        n++;
+        token_free(tok);
+    }
+    lexer_free(lexer);
+    return n;
+}
+
+static TestStatus test_asi(void* ctx) {
+    (void)ctx;
+
+    struct {
+        const char* name;
+        const char* input;
+        TokenType expected[8];
+        int n;
+    } cases[] = {
+        // A newline after a value-ending token inserts a semicolon.
+        {"after literal", "x := 5\n",
+         {TOKEN_IDENT, TOKEN_SHORT_ASSIGN, TOKEN_INT, TOKEN_SEMICOLON}, 4},
+        // Each statement line is terminated.
+        {"two statements", "a\nb\n",
+         {TOKEN_IDENT, TOKEN_SEMICOLON, TOKEN_IDENT, TOKEN_SEMICOLON}, 4},
+        // No insertion after an operator (the statement continues next line).
+        {"no insert after operator", "a +\nb\n",
+         {TOKEN_IDENT, TOKEN_PLUS, TOKEN_IDENT, TOKEN_SEMICOLON}, 4},
+        // Newlines inside parentheses are suppressed.
+        {"suppressed in parens", "(\na\n)\n",
+         {TOKEN_LPAREN, TOKEN_IDENT, TOKEN_RPAREN, TOKEN_SEMICOLON}, 4},
+        // Consecutive blank lines never produce consecutive semicolons.
+        {"no double semicolon", "a\n\n\nb\n",
+         {TOKEN_IDENT, TOKEN_SEMICOLON, TOKEN_IDENT, TOKEN_SEMICOLON}, 4},
+    };
+
+    int ok = 1;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        TokenType got[8];
+        int n = collect_token_types(cases[c].input, got, 8);
+        if (n != cases[c].n) {
+            ok = 0;
+            printf("  FAIL: %s: expected %d tokens, got %d\n", cases[c].name, cases[c].n, n);
+            continue;
+        }
+        for (int i = 0; i < n; i++) {
+            if (got[i] != cases[c].expected[i]) {
+                ok = 0;
+                printf("  FAIL: %s: token %d expected %d, got %d\n",
+                       cases[c].name, i, cases[c].expected[i], got[i]);
+            }
+        }
+    }
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+// =========================================================================
 // Main: register all tests
 // =========================================================================
 int main(int argc, char* argv[]) {
@@ -525,6 +593,7 @@ int main(int argc, char* argv[]) {
     register_test("lexer", "type_names",             test_type_names,           __FILE__, __LINE__);
     register_test("lexer", "token_sequence",         test_token_sequence,       __FILE__, __LINE__);
     register_test("lexer", "position_tracking",      test_position_tracking,    __FILE__, __LINE__);
+    register_test("lexer", "asi",                    test_asi,                  __FILE__, __LINE__);
 
     TestOptions opts = {0};
     opts.verbose = true;

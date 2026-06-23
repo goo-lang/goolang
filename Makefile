@@ -142,7 +142,7 @@ TEST_MACROS = $(BINDIR)/test_macros
 TEST_PKGMGR = $(BINDIR)/test_pkgmgr
 
 # Tests
-test: $(TEST_RUNNER) test-link-smoke test-asi
+test: $(TEST_RUNNER) test-lexer test-link-smoke test-asi
 	./$(TEST_RUNNER)
 
 # Link smoke test (P0-7): source -> compile -> link -> run, must exit 0.
