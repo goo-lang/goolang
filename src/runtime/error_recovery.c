@@ -751,6 +751,21 @@ void error_recovery_context_set_circuit_breaker(ErrorRecoveryContext* context,
 // Combined Recovery Patterns
 // =============================================================================
 
+// Packed arguments that let retry logic run inside a circuit breaker via a
+// file-scope wrapper instead of a nested-function trampoline. A trampoline
+// closes over locals on the stack, which forces an executable stack on the
+// whole translation unit (and a linker warning in every compiled program).
+typedef struct {
+    ErrorRecoveryContext* context;
+    RetryableFunction func;
+    void* args;
+} RetryWrapperArgs;
+
+static goo_error_union_t* retry_wrapper_fn(void* packed) {
+    RetryWrapperArgs* w = (RetryWrapperArgs*)packed;
+    return execute_with_retry(w->context->retry, w->func, w->args, w->context);
+}
+
 goo_error_union_t* execute_with_recovery_patterns(ErrorRecoveryContext* context,
                                                  RetryableFunction func,
                                                  void* args) {
@@ -765,20 +780,13 @@ goo_error_union_t* execute_with_recovery_patterns(ErrorRecoveryContext* context,
     goo_error_union_t* result = NULL;
     
     if (context->has_circuit_breaker && context->has_retry) {
-        // Both circuit breaker and retry - circuit breaker wraps retry
-        RetryableFunction circuit_wrapped_func = func;
-        
-        if (context->has_retry) {
-            // Create a wrapper that applies retry logic
-            // Note: Using nested function (GNU C extension) instead of blocks
-            goo_error_union_t* retry_wrapper(void* args) {
-                return execute_with_retry(context->retry, func, args, context);
-            }
-            circuit_wrapped_func = retry_wrapper;
-        }
-        
-        result = execute_with_circuit_breaker(context->circuit_breaker, 
-                                            circuit_wrapped_func, args, context);
+        // Both circuit breaker and retry - circuit breaker wraps retry.
+        // Pack the retry parameters so retry_wrapper_fn (file scope) can apply
+        // retry logic without a nested-function trampoline. The circuit breaker
+        // forwards these args verbatim to the wrapped function.
+        RetryWrapperArgs wrapper_args = { context, func, args };
+        result = execute_with_circuit_breaker(context->circuit_breaker,
+                                            retry_wrapper_fn, &wrapper_args, context);
     } else if (context->has_retry) {
         // Only retry
         result = execute_with_retry(context->retry, func, args, context);

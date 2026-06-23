@@ -1,5 +1,7 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c23 -g -Iinclude
+# -Wa,--noexecstack: mark the stack non-executable so the runtime objects do not
+# trigger "requires executable stack" linker warnings in compiled programs (P0-6).
+CFLAGS = -Wall -Wextra -std=c23 -g -Iinclude -Wa,--noexecstack
 LDFLAGS = -lm -pthread
 
 # Coverage flags

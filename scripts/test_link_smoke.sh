@@ -45,6 +45,12 @@ if [ ! -x "$EXE" ]; then
     fail "no runnable executable was produced at $EXE"
 fi
 
+# The link must be clean: no executable-stack warning from the runtime (P0-6).
+if grep -qi "executable stack" "$WORKDIR/compile.log"; then
+    grep -i "executable stack" "$WORKDIR/compile.log" | sed 's/^/    /'
+    fail "linker emitted an executable-stack warning"
+fi
+
 # Run it. An empty main must exit 0 and, by default, print NOTHING: a program's
 # stdout must be its own output only, so golden stdout diffing is possible (P0-5).
 "$EXE" > "$WORKDIR/run.out" 2>&1
