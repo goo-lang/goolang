@@ -12,6 +12,15 @@ static struct {
     int initialized;
 } goo_runtime = {0};
 
+int goo_runtime_verbose(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("GOO_DEBUG");
+        cached = (v && v[0] && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 // Program initialization and cleanup
 
 void goo_init(int argc, char** argv) {
@@ -142,13 +151,15 @@ void goo_memory_shutdown(void) {
     }
     free(goo_memory_state.rc_objects);
     
-    // Print final statistics
-    printf("Memory management statistics:\n");
-    printf("  Stack allocations: %zu\n", goo_memory_state.total_stack_allocations);
-    printf("  Heap allocations: %zu\n", goo_memory_state.total_heap_allocations);
-    printf("  Arena allocations: %zu\n", goo_memory_state.total_arena_allocations);
-    printf("  Move operations: %zu\n", goo_memory_state.total_moves);
-    printf("  Borrow operations: %zu\n", goo_memory_state.total_borrows);
+    // Print final statistics (diagnostic only)
+    if (goo_runtime_verbose()) {
+        printf("Memory management statistics:\n");
+        printf("  Stack allocations: %zu\n", goo_memory_state.total_stack_allocations);
+        printf("  Heap allocations: %zu\n", goo_memory_state.total_heap_allocations);
+        printf("  Arena allocations: %zu\n", goo_memory_state.total_arena_allocations);
+        printf("  Move operations: %zu\n", goo_memory_state.total_moves);
+        printf("  Borrow operations: %zu\n", goo_memory_state.total_borrows);
+    }
     
     // Cleanup concurrency runtime
     goo_scheduler_shutdown();

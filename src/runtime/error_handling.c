@@ -92,8 +92,10 @@ void goo_error_system_init(void) {
     g_error_state.null_access_prevented = 0;
     
     g_error_state.initialized = 1;
-    
-    printf("🛡️  Error handling system initialized\n");
+
+    if (goo_runtime_verbose()) {
+        printf("🛡️  Error handling system initialized\n");
+    }
 }
 
 void goo_error_system_shutdown(void) {
@@ -109,18 +111,20 @@ void goo_error_system_shutdown(void) {
     }
     free(g_error_state.registered_errors);
     
-    // Print statistics
-    printf("🛡️  Error handling system shutdown\n");
-    printf("📊 Error handling statistics:\n");
-    printf("   - Error unions created: %zu\n", g_error_state.error_unions_created);
-    printf("   - Error unions destroyed: %zu\n", g_error_state.error_unions_destroyed);
-    printf("   - Errors propagated: %zu\n", g_error_state.errors_propagated);
-    printf("   - Errors handled: %zu\n", g_error_state.errors_handled);
-    printf("   - Nullables created: %zu\n", g_error_state.nullables_created);
-    printf("   - Nullables destroyed: %zu\n", g_error_state.nullables_destroyed);
-    printf("   - Null checks performed: %zu\n", g_error_state.null_checks_performed);
-    printf("   - Null access prevented: %zu\n", g_error_state.null_access_prevented);
-    
+    // Print statistics (diagnostic only)
+    if (goo_runtime_verbose()) {
+        printf("🛡️  Error handling system shutdown\n");
+        printf("📊 Error handling statistics:\n");
+        printf("   - Error unions created: %zu\n", g_error_state.error_unions_created);
+        printf("   - Error unions destroyed: %zu\n", g_error_state.error_unions_destroyed);
+        printf("   - Errors propagated: %zu\n", g_error_state.errors_propagated);
+        printf("   - Errors handled: %zu\n", g_error_state.errors_handled);
+        printf("   - Nullables created: %zu\n", g_error_state.nullables_created);
+        printf("   - Nullables destroyed: %zu\n", g_error_state.nullables_destroyed);
+        printf("   - Null checks performed: %zu\n", g_error_state.null_checks_performed);
+        printf("   - Null access prevented: %zu\n", g_error_state.null_access_prevented);
+    }
+
     g_error_state.initialized = 0;
 }
 

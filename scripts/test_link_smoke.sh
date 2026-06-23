@@ -45,12 +45,24 @@ if [ ! -x "$EXE" ]; then
     fail "no runnable executable was produced at $EXE"
 fi
 
-# Run it. An empty main must exit 0.
-"$EXE"
+# Run it. An empty main must exit 0 and, by default, print NOTHING: a program's
+# stdout must be its own output only, so golden stdout diffing is possible (P0-5).
+"$EXE" > "$WORKDIR/run.out" 2>&1
 status=$?
 if [ "$status" -ne 0 ]; then
+    sed 's/^/    /' "$WORKDIR/run.out"
     fail "executable exited with status $status (expected 0)"
 fi
+if [ -s "$WORKDIR/run.out" ]; then
+    sed 's/^/    /' "$WORKDIR/run.out"
+    fail "empty main printed to stdout by default (expected silent runtime)"
+fi
 
-echo "PASS: empty main compiled, linked, and ran (exit 0)"
+# Under GOO_DEBUG the runtime banners must come back (opt-in diagnostics).
+GOO_DEBUG=1 "$EXE" > "$WORKDIR/run.dbg" 2>&1
+if [ ! -s "$WORKDIR/run.dbg" ]; then
+    fail "GOO_DEBUG=1 produced no runtime diagnostics (expected banners)"
+fi
+
+echo "PASS: empty main compiled, linked, ran (exit 0), silent by default, verbose under GOO_DEBUG"
 exit 0

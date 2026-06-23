@@ -401,8 +401,10 @@ void goo_arena_init_system(void) {
     g_arena_stack_depth = 0;
     g_next_scope_id = 1;
     memset(&g_arena_stats, 0, sizeof(g_arena_stats));
-    
-    printf("🏟️  Arena allocation system initialized\n");
+
+    if (goo_runtime_verbose()) {
+        printf("🏟️  Arena allocation system initialized\n");
+    }
 }
 
 void goo_arena_cleanup_system(void) {
@@ -411,9 +413,11 @@ void goo_arena_cleanup_system(void) {
         goo_arena_pop_scope();
     }
     
-    printf("🏟️  Arena allocation system cleaned up\n");
-    printf("📊 Final arena statistics:\n");
-    goo_arena_print_global_stats();
+    if (goo_runtime_verbose()) {
+        printf("🏟️  Arena allocation system cleaned up\n");
+        printf("📊 Final arena statistics:\n");
+        goo_arena_print_global_stats();
+    }
 }
 
 // =============================================================================

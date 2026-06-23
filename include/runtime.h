@@ -7,6 +7,11 @@
 #include <stdint.h>
 #include <setjmp.h>
 
+// Runtime verbosity: when GOO_DEBUG is set (and not "0"), the runtime prints
+// its init/teardown banners and statistics. Off by default, so a compiled
+// program's stdout is its own output only. Returns nonzero when verbose.
+int goo_runtime_verbose(void);
+
 // Forward declarations
 typedef struct goo_error goo_error_t;
 typedef struct goo_string goo_string_t;
