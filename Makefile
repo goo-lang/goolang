@@ -187,8 +187,11 @@ v2-bootstrap-pilot: ccomp-build
 # too) and report pass/fail counts. Requires ccomp installed via
 # `opam install coq-compcert`. Prints failing files for follow-up.
 CCOMP ?= ccomp
-CCOMP_LLVM_INC := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --includedir 2>/dev/null || echo /opt/homebrew/include)
-CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -fstruct-passing -include include/ccomp_shim.h -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+CCOMP_LLVM_INC := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --includedir 2>/dev/null || llvm-config --includedir 2>/dev/null || echo /opt/homebrew/include)
+# -D_POSIX_C_SOURCE: -std=c99 hides POSIX symbols (struct timespec, CLOCK_*),
+#   which the gcc build gets via _XOPEN_SOURCE in runtime.h; expose them here too.
+# -finline-asm: let CompCert accept the inline asm in <cpuid.h> (hardware probe).
+CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -fstruct-passing -include include/ccomp_shim.h -D_POSIX_C_SOURCE=200809L -finline-asm -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
 
 # V1-ccomp-link: build bin/goo-ccomp from CompCert .o files. The
 # resulting binary is the Goo compiler compiled through CompCert
