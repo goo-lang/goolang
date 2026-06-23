@@ -43,6 +43,15 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         codegen_error(codegen, decl->pos, "Failed to generate LLVM return type");
         return 0;
     }
+
+    // The Goo `main` is the C program entry point: lower a void main to
+    // `i32 @main` so it returns 0 on normal completion. Otherwise main emitted
+    // `ret void`, leaving the process exit code as a garbage register value.
+    int is_entry_main = (strcmp(func_decl->name, "main") == 0 &&
+                         return_type->kind == TYPE_VOID);
+    if (is_entry_main) {
+        llvm_return_type = LLVMInt32TypeInContext(codegen->context);
+    }
     
     // Get function type info from type checker
     Variable* func_var = type_checker_lookup_variable(checker, func_decl->name);

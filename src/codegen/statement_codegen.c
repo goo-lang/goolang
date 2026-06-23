@@ -458,8 +458,16 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 #endif
         value_info_free(return_value);
     } else {
-        // Void return
-        LLVMBuildRetVoid(codegen->builder);
+        // Bare return. If the enclosing function has a non-void LLVM signature
+        // (e.g. the entry-point main, lowered to `i32 @main`), return a zero of
+        // that type so the IR stays well-typed; otherwise a plain void return.
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+        LLVMTypeRef fn_ret = LLVMGetReturnType(LLVMGlobalGetValueType(cur_fn));
+        if (LLVMGetTypeKind(fn_ret) != LLVMVoidTypeKind) {
+            LLVMBuildRet(codegen->builder, LLVMConstNull(fn_ret));
+        } else {
+            LLVMBuildRetVoid(codegen->builder);
+        }
     }
     
     return 1;
