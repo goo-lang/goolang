@@ -119,7 +119,8 @@ Token* lexer_next_token(Lexer* lexer) {
             // Automatic semicolon insertion (Go ASI): a newline following a
             // token that can end a statement becomes a synthesized semicolon.
             // Otherwise the newline is insignificant.
-            if (asi_token_ends_statement(lexer->prev_token_type)) {
+            if (lexer->paren_depth == 0 &&
+                asi_token_ends_statement(lexer->prev_token_type)) {
                 token = token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
                 lexer_read_char(lexer);
                 break;
@@ -455,10 +456,17 @@ Token* lexer_next_token(Lexer* lexer) {
             break;
     }
 
-    // Record the token so the next newline can decide on ASI. Updating this for
-    // synthesized semicolons too means consecutive blank lines never produce
-    // consecutive semicolons.
+    // Track ()/[] nesting so ASI is suppressed inside multi-line expressions,
+    // and record the token so the next newline can decide on ASI. Updating
+    // prev for synthesized semicolons too means consecutive blank lines never
+    // produce consecutive semicolons.
     if (token) {
+        if (token->type == TOKEN_LPAREN || token->type == TOKEN_LBRACKET) {
+            lexer->paren_depth++;
+        } else if ((token->type == TOKEN_RPAREN || token->type == TOKEN_RBRACKET) &&
+                   lexer->paren_depth > 0) {
+            lexer->paren_depth--;
+        }
         lexer->prev_token_type = token->type;
     }
     return token;

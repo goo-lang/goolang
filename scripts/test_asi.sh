@@ -59,5 +59,18 @@ func main() {
 }
 GOO
 
+# Multi-line expression inside parentheses: a line ending on a value while
+# inside ( ) must NOT trigger ASI, or the expression is split mid-statement.
+check_parses multiline_paren <<'GOO'
+package main
+
+func main() {
+    x := (1 +
+        2
+    )
+    return
+}
+GOO
+
 echo "PASS: semicolon-free source parses (ASI)"
 exit 0
