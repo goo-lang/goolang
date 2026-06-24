@@ -745,8 +745,8 @@ runtime_optimization_demo_simple: $(TEST_DEMOS_DIR)/runtime_optimization_demo_si
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Contract programming framework tests
-contracts_test: $(TEST_UNIT_DIR)/contract/contracts_test.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/dependent_types.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+contracts_test: $(TEST_UNIT_DIR)/contract/contracts_test.c $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Contract proof integration test
 contract_proof_integration_test: $(TEST_UNIT_DIR)/contract/contract_proof_integration_test.c $(SRC_OBJS)
