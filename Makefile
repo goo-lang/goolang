@@ -717,12 +717,12 @@ coverage-clean:
 	rm -rf $(COVERAGE_DIR)
 
 # Proof generation test
-proof_generation_test: $(TEST_UNIT_DIR)/proof/proof_generation_test.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/dependent_types.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+proof_generation_test: $(TEST_UNIT_DIR)/proof/proof_generation_test.c $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Runtime optimization framework tests
-runtime_optimization_test: $(TEST_UNIT_DIR)/runtime/runtime_optimization_test.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/dependent_types.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+runtime_optimization_test: $(TEST_UNIT_DIR)/runtime/runtime_optimization_test.c $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 runtime_optimization_test_simple: $(TEST_UNIT_DIR)/runtime/runtime_optimization_test_simple.c $(SRCDIR)/types/runtime_optimization_simple.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
@@ -738,8 +738,8 @@ contracts_test: $(TEST_UNIT_DIR)/contract/contracts_test.c $(SRCDIR)/types/contr
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Contract proof integration test
-contract_proof_integration_test: $(TEST_UNIT_DIR)/contract/contract_proof_integration_test.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/dependent_types.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+contract_proof_integration_test: $(TEST_UNIT_DIR)/contract/contract_proof_integration_test.c $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Actor System Test
 ACTOR_SYSTEM_TEST = $(BINDIR)/actor_system_test
@@ -1050,16 +1050,16 @@ comptime_types_test: tests/test_comptime_types.c $(SRCDIR)/comptime/comptime.c $
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Optimization directives framework test
-optimization_test: tests/test_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+optimization_test: tests/test_optimization.c $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Profile-Guided Optimization test
-pgo_test: tests/test_pgo.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+pgo_test: tests/test_pgo.c $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Advanced Optimization Strategies test
-advanced_optimization_test: tests/test_advanced_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+advanced_optimization_test: tests/test_advanced_optimization.c $(SRC_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 advanced_macro_test: tests/test_advanced_macro.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c $(SRCDIR)/types/types.c $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
