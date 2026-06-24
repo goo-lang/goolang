@@ -102,7 +102,8 @@ Result_void_ptr fetch_data_async(void* args, AsyncContext* async_ctx) {
 }
 
 // Demo 1: Basic concurrent file processing
-void demo_basic_concurrent_processing(void) {
+// Returns Result_void_ptr because the CONCURRENT_* macros early-return on error.
+Result_void_ptr demo_basic_concurrent_processing(void) {
     printf("\n🚀 Demo 1: Basic Concurrent File Processing\n");
     printf("===========================================\n");
     
@@ -141,14 +142,15 @@ void demo_basic_concurrent_processing(void) {
     }
     
     printf("📊 Processing completed: %d/%d files successful\n", successful_files, 4);
-    
+
     // Cleanup
     structured_scheduler_shutdown(scheduler, 5000);
     structured_scheduler_destroy(scheduler);
+    return OK_PTR(NULL);
 }
 
 // Demo 2: Fail-fast error handling
-void demo_fail_fast_error_handling(void) {
+Result_void_ptr demo_fail_fast_error_handling(void) {
     printf("\n💥 Demo 2: Fail-Fast Error Handling\n");
     printf("===================================\n");
     
@@ -185,13 +187,14 @@ void demo_fail_fast_error_handling(void) {
     }
     
     concurrent_block_destroy(fail_fast_block);
-    
+
     // Cleanup
     structured_scheduler_shutdown(scheduler, 5000);
     structured_scheduler_destroy(scheduler);
+    return OK_PTR(NULL);
 }
 
-// Demo 3: Timeout and retry decorators
+// Demo 3: Timeout and retry decorators (no early-returning macros; stays void)
 void demo_timeout_and_retry(void) {
     printf("\n⏰ Demo 3: Timeout and Retry Decorators\n");
     printf("======================================\n");
@@ -242,7 +245,7 @@ void demo_timeout_and_retry(void) {
 }
 
 // Demo 4: CPU-intensive parallel processing
-void demo_cpu_intensive_processing(void) {
+Result_void_ptr demo_cpu_intensive_processing(void) {
     printf("\n🔥 Demo 4: CPU-Intensive Parallel Processing\n");
     printf("==========================================\n");
     
@@ -277,13 +280,13 @@ void demo_cpu_intensive_processing(void) {
         CONCURRENT_EXPR(cpu_block, compute_chunk, compute_data_async, &chunks[i]);
     }
     
-    uint64_t start_time = get_current_time_ns();
+    uint64_t start_time = async_get_timestamp_ns();
     
     // Execute parallel computation
     CONCURRENT_TRY(cpu_block);
     CONCURRENT_BLOCK_END(cpu_block);
     
-    uint64_t end_time = get_current_time_ns();
+    uint64_t end_time = async_get_timestamp_ns();
     double execution_time_ms = (end_time - start_time) / 1000000.0;
     
     // Calculate total result
@@ -300,40 +303,42 @@ void demo_cpu_intensive_processing(void) {
     // Cleanup
     structured_scheduler_shutdown(scheduler, 5000);
     structured_scheduler_destroy(scheduler);
+    return OK_PTR(NULL);
+}
+
+// Demo 5 helpers. C has no nested functions (a GCC-only extension clang rejects),
+// so the connection type and its open/close routines live at file scope.
+typedef struct DatabaseConnection {
+    int connection_id;
+    bool is_open;
+    char connection_string[256];
+} DatabaseConnection;
+
+static DatabaseConnection* create_db_connection(const char* conn_str) {
+    DatabaseConnection* conn = malloc(sizeof(DatabaseConnection));
+    conn->connection_id = rand() % 10000;
+    conn->is_open = true;
+    strncpy(conn->connection_string, conn_str, sizeof(conn->connection_string) - 1);
+    conn->connection_string[sizeof(conn->connection_string) - 1] = '\0';
+
+    printf("🔌 Database connection opened: ID=%d, %s\n", conn->connection_id, conn_str);
+    return conn;
+}
+
+static void close_db_connection(void* resource) {
+    DatabaseConnection* conn = (DatabaseConnection*)resource;
+    if (conn && conn->is_open) {
+        printf("🔌 Database connection closed: ID=%d\n", conn->connection_id);
+        conn->is_open = false;
+        free(conn);
+    }
 }
 
 // Demo 5: Resource management
-void demo_resource_management(void) {
+Result_void_ptr demo_resource_management(void) {
     printf("\n🛡️  Demo 5: Async Resource Management\n");
     printf("===================================\n");
-    
-    // Simulate database connection
-    typedef struct {
-        int connection_id;
-        bool is_open;
-        char connection_string[256];
-    } DatabaseConnection;
-    
-    DatabaseConnection* create_db_connection(const char* conn_str) {
-        DatabaseConnection* conn = malloc(sizeof(DatabaseConnection));
-        conn->connection_id = rand() % 10000;
-        conn->is_open = true;
-        strncpy(conn->connection_string, conn_str, sizeof(conn->connection_string) - 1);
-        conn->connection_string[sizeof(conn->connection_string) - 1] = '\0';
-        
-        printf("🔌 Database connection opened: ID=%d, %s\n", conn->connection_id, conn_str);
-        return conn;
-    }
-    
-    void close_db_connection(void* resource) {
-        DatabaseConnection* conn = (DatabaseConnection*)resource;
-        if (conn && conn->is_open) {
-            printf("🔌 Database connection closed: ID=%d\n", conn->connection_id);
-            conn->is_open = false;
-            free(conn);
-        }
-    }
-    
+
     // Use resource with automatic cleanup
     {
         DatabaseConnection* conn = create_db_connection("postgresql://localhost:5432/testdb");
@@ -349,9 +354,27 @@ void demo_resource_management(void) {
     }
     
     printf("✅ Resource management demo completed\n");
+    return OK_PTR(NULL);
 }
 
-// Demo 6: For-each parallel processing
+// Demo 6 per-item processor (file scope: C has no nested functions).
+static Result_void_ptr process_item(void* item, size_t index, void* context) {
+    int* value = (int*)item;
+    int* counter = (int*)context;
+
+    printf("  🔄 Processing item %zu: %d\n", index, *value);
+
+    // Simulate processing time
+    usleep(50000 + (rand() % 50000)); // 50-100ms
+
+    *value *= *value; // Square the value
+    (*counter)++;
+
+    printf("  ✅ Item %zu processed: %d\n", index, *value);
+    return OK_PTR(item);
+}
+
+// Demo 6: For-each parallel processing (no early-returning macros; stays void)
 void demo_for_each_parallel(void) {
     printf("\n🔄 Demo 6: For-Each Parallel Processing\n");
     printf("======================================\n");
@@ -374,34 +397,17 @@ void demo_for_each_parallel(void) {
     }
     
     int processed_count = 0;
-    
-    // For-each processing function
-    Result_void_ptr process_item(void* item, size_t index, void* context) {
-        int* value = (int*)item;
-        int* counter = (int*)context;
-        
-        printf("  🔄 Processing item %zu: %d\n", index, *value);
-        
-        // Simulate processing time
-        usleep(50000 + (rand() % 50000)); // 50-100ms
-        
-        *value *= *value; // Square the value
-        (*counter)++;
-        
-        printf("  ✅ Item %zu processed: %d\n", index, *value);
-        return OK_PTR(item);
-    }
-    
-    // Execute for-each parallel processing
+
+    // Execute for-each parallel processing (process_item is at file scope)
     ConcurrentBlockConfig config = concurrent_block_config_default();
     config.max_concurrent_tasks = 4;
     
-    uint64_t start_time = get_current_time_ns();
+    uint64_t start_time = async_get_timestamp_ns();
     
     Result_void_ptr result = concurrent_for_each(items, dataset_size, sizeof(int), 
                                                process_item, &processed_count, config);
     
-    uint64_t end_time = get_current_time_ns();
+    uint64_t end_time = async_get_timestamp_ns();
     double execution_time_ms = (end_time - start_time) / 1000000.0;
     
     if (!result.is_error) {
