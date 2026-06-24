@@ -133,6 +133,46 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         }
     }
     
+    // Method call: `recv.method(args)` where recv is a (pointer-to-)struct
+    // value. Lowered to a direct call to the mangled function "T__method"
+    // with the receiver prepended as the first argument. Non-method
+    // selectors (unmatched packages) leave fn NULL and fall through to the
+    // generic path below.
+    if (call->function->type == AST_SELECTOR_EXPR) {
+        SelectorExprNode* msel = (SelectorExprNode*)call->function;
+        Type* recv_type = type_check_expression(checker, msel->expr);
+        const char* tn = type_receiver_name(recv_type);
+        char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
+        LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
+        if (fn) {
+            // Receiver: codegen_generate_expression already loads lvalues, so
+            // recv->llvm_value is the struct value (matches arg handling).
+            ValueInfo* recv = codegen_generate_expression(codegen, checker, msel->expr);
+            if (!recv) { free(mangled); return NULL; }
+            size_t margc = 1;
+            for (ASTNode* a = call->args; a; a = a->next) margc++;
+            LLVMValueRef* margs = malloc(sizeof(LLVMValueRef) * margc);
+            if (!margs) { value_info_free(recv); free(mangled); return NULL; }
+            margs[0] = recv->llvm_value;
+            value_info_free(recv);
+            int ok = 1;
+            size_t i = 1;
+            for (ASTNode* a = call->args; a; a = a->next, i++) {
+                ValueInfo* av = codegen_generate_expression(codegen, checker, a);
+                if (!av) { ok = 0; break; }
+                margs[i] = av->llvm_value;
+                value_info_free(av);
+            }
+            if (!ok) { free(margs); free(mangled); return NULL; }
+            LLVMValueRef result = LLVMBuildCall2(codegen->builder,
+                LLVMGlobalGetValueType(fn), fn, margs, (unsigned)margc, "");
+            free(margs);
+            free(mangled);
+            return value_info_new(NULL, result, type_check_call_expr(checker, expr));
+        }
+        free(mangled);
+    }
+
     // Generate function expression
     ValueInfo* func_val = codegen_generate_expression(codegen, checker, call->function);
     if (!func_val) return NULL;

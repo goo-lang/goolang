@@ -705,6 +705,32 @@ int type_is_error_union(const Type* type) {
     return type->kind == TYPE_ERROR_UNION;
 }
 
+// Method name mangling: `func (T) m()` is lowered to an ordinary function
+// named "T__m". The declaration and every call site derive the same name
+// from the receiver's type, so a plain function/variable lookup resolves
+// methods without a separate method table. Returns a malloc'd string.
+char* type_method_mangled_name(const char* type_name, const char* method_name) {
+    if (!type_name || !method_name) return NULL;
+    size_t n = strlen(type_name) + 2 /* "__" */ + strlen(method_name) + 1;
+    char* buf = malloc(n);
+    if (!buf) return NULL;
+    snprintf(buf, n, "%s__%s", type_name, method_name);
+    return buf;
+}
+
+// Receiver type name for mangling: unwraps a pointer receiver (*T) to T and
+// returns the struct's declared name. Falls back to the base type name.
+const char* type_receiver_name(const Type* type) {
+    if (!type) return NULL;
+    if (type->kind == TYPE_POINTER && type->data.pointer.pointee_type) {
+        type = type->data.pointer.pointee_type;
+    }
+    if (type->kind == TYPE_STRUCT && type->data.struct_type.name) {
+        return type->data.struct_type.name;
+    }
+    return type->name;
+}
+
 // Variable management
 
 Variable* variable_new(const char* name, Type* type, Position pos) {

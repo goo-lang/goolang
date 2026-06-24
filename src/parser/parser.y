@@ -344,6 +344,55 @@ func_decl:
         ast_node_free($4);
         $$ = (ASTNode*)func;
     }
+    /* Methods: `func (p T) name(params) result { ... }`. The receiver
+       (a func_param: name + type) is spliced as the head of params, so
+       every params loop in typecheck/codegen handles it uniformly; the
+       receiver alias marks the decl as a method for name mangling
+       (Type__name). Four forms cover {params?}×{result?}. */
+    | FUNC LPAREN func_param RPAREN identifier LPAREN RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$5;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $8;
+        func->return_type = NULL;
+        ((ASTNode*)$3)->next = NULL;
+        func->params = $3;
+        func->receiver = $3;
+        ast_node_free($5);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC LPAREN func_param RPAREN identifier LPAREN func_params RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$5;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $9;
+        func->return_type = NULL;
+        ((ASTNode*)$3)->next = $7;
+        func->params = $3;
+        func->receiver = $3;
+        ast_node_free($5);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC LPAREN func_param RPAREN identifier LPAREN RPAREN func_result block {
+        IdentifierNode* ident = (IdentifierNode*)$5;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $9;
+        func->return_type = $8;
+        ((ASTNode*)$3)->next = NULL;
+        func->params = $3;
+        func->receiver = $3;
+        ast_node_free($5);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC LPAREN func_param RPAREN identifier LPAREN func_params RPAREN func_result block {
+        IdentifierNode* ident = (IdentifierNode*)$5;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        func->body = $10;
+        func->return_type = $9;
+        ((ASTNode*)$3)->next = $7;
+        func->params = $3;
+        func->receiver = $3;
+        ast_node_free($5);
+        $$ = (ASTNode*)func;
+    }
     ;
 
 func_signature:

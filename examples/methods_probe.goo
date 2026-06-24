@@ -1,0 +1,78 @@
+// Methods probe.
+//
+// Exercises value-receiver methods end-to-end (name-mangled static
+// dispatch: `func (p T) m()` → `T__m`, `p.m(args)` → `T__m(p, args)`)
+// together with the struct-field read path the dispatch depends on.
+// `make methods-probe` builds + runs this and diffs against expected.txt.
+//
+// Coverage:
+//   1. value-receiver method reading a single field
+//   2. value-receiver method with field arithmetic in a return  (the
+//      selector field-load fix: `return p.x + p.y` must load, not pass `ptr`)
+//   3. value-receiver method taking an argument and using a field
+//   4. a second receiver type with a same-named method (name-mangling
+//      keeps `T__m` and `U__m` distinct)
+//   5. method on a struct with mixed field types
+//   6. plain field arithmetic outside any method (`return p.x + p.y`)
+package main
+
+import "fmt"
+
+type Point struct {
+    x int
+    y int
+}
+
+type Box struct {
+    w int
+    h int
+}
+
+type Mixed struct {
+    flag bool
+    count int
+}
+
+// 1 + 2: single-field read and field arithmetic in a return
+func (p Point) getX() int {
+    return p.x
+}
+
+func (p Point) sum() int {
+    return p.x + p.y
+}
+
+// 3: method taking an argument, combining it with a field
+func (p Point) scaledX(k int) int {
+    return p.x * k
+}
+
+// 4: a same-named method on a different receiver type — distinct mangling
+func (b Box) sum() int {
+    return b.w + b.h
+}
+
+// 5: method on a struct with mixed field types
+func (m Mixed) describe() int {
+    return m.count
+}
+
+// 6: plain field arithmetic outside any method
+func sumField(p Point) int {
+    return p.x + p.y
+}
+
+func main() {
+    p := Point{x: 3, y: 4}
+    fmt.Println(p.getX())    // 3
+    fmt.Println(p.sum())     // 7
+    fmt.Println(p.scaledX(10)) // 30
+
+    b := Box{w: 5, h: 6}
+    fmt.Println(b.sum())     // 11
+
+    m := Mixed{flag: true, count: 9}
+    fmt.Println(m.describe()) // 9
+
+    fmt.Println(sumField(p)) // 7
+}

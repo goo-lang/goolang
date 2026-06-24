@@ -247,6 +247,10 @@ typedef struct {
     struct ASTNode* annotations; // List of annotations/attributes
     int is_comptime;           // Goo extension: comptime function
     int is_unsafe;             // Goo extension: unsafe function
+    // Method receiver (`func (p T) m()`). NULL for ordinary functions.
+    // Non-owning alias: the receiver is spliced as the head of `params`,
+    // so it is freed via the params chain — do not free it separately.
+    struct ASTNode* receiver;
 } FuncDeclNode;
 
 // Variable declaration

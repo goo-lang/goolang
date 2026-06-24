@@ -77,7 +77,8 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     node->annotations = NULL;
     node->is_comptime = 0;
     node->is_unsafe = 0;
-    
+    node->receiver = NULL;
+
     return node;
 }
 

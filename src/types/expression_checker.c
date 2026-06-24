@@ -658,7 +658,21 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
                 return f->type;
             }
         }
-        type_error(checker, expr->pos, "Struct has no field '%s'", selector->selector);
+        // Not a field — try a method `T__selector`. Methods are registered
+        // as ordinary functions under their mangled name, so a plain
+        // variable lookup resolves them. Returns the method's function type;
+        // the call expression then yields its return type.
+        const char* tn = type_receiver_name(struct_type);
+        if (tn) {
+            char* mangled = type_method_mangled_name(tn, selector->selector);
+            Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+            free(mangled);
+            if (m && m->type && m->type->kind == TYPE_FUNCTION) {
+                expr->node_type = m->type;
+                return m->type;
+            }
+        }
+        type_error(checker, expr->pos, "Struct has no field or method '%s'", selector->selector);
         return NULL;
     }
 

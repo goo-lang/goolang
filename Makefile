@@ -389,15 +389,33 @@ m12-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# Methods probe: compile + run examples/methods_probe.goo and diff
+# stdout against expected.txt (m10-probe pattern). Covers value-receiver
+# methods (name-mangled static dispatch) plus the struct-field read path
+# they depend on — field arithmetic in a return, methods with args, and
+# same-named methods on distinct receiver types. Joined `verify` as the
+# methods gate once value-receiver methods shipped.
+methods-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/methods_probe examples/methods_probe.goo
+	@./build/methods_probe > build/methods_probe.actual.txt
+	@if diff -u examples/methods_probe.expected.txt build/methods_probe.actual.txt; then \
+	  echo "methods-probe: PASS (value-receiver methods end-to-end)"; \
+	else \
+	  echo "methods-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # Aggregate verification net per `verification_gates.md`. Runs the
-# six green gates in sequence: baseline-probe, smoke-stdlib,
-# v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe.
+# green gates in sequence: baseline-probe, smoke-stdlib,
+# v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe,
+# exit-code-probe, methods-probe.
 # Exits non-zero on any failure. Use this on cross-cutting changes;
 # use individual targets when iterating on a specific area.
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe
+verify: baseline-probe lvalue-probe file-io-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

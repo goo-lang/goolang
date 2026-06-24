@@ -295,9 +295,25 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         ? type_from_ast(checker, func->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
 
-    // Add function to global scope first (for recursive calls and forward references)
+    // Add function to global scope first (for recursive calls and forward
+    // references). A method is registered under its mangled name "T__m" so
+    // that selector resolution (p.m) and the call site find it via a plain
+    // variable lookup. The receiver is params[0] (spliced by the parser), so
+    // func_type already carries it.
     Type* func_type = type_function(param_types, param_count, return_type);
-    Variable* func_var = variable_new(func->name, func_type, func->base.pos);
+    char* mangled = NULL;
+    const char* reg_name = func->name;
+    if (func->receiver) {
+        VarDeclNode* recv = (VarDeclNode*)func->receiver;
+        Type* recv_type = recv->type ? type_from_ast(checker, recv->type) : NULL;
+        const char* tn = type_receiver_name(recv_type);
+        if (tn) {
+            mangled = type_method_mangled_name(tn, func->name);
+            if (mangled) reg_name = mangled;
+        }
+    }
+    Variable* func_var = variable_new(reg_name, func_type, func->base.pos);
+    free(mangled);  // variable_new copied the name
     if (func_var) {
         func_var->is_initialized = 1;
         if (!scope_add_variable(checker->current_scope, func_var)) {
@@ -537,6 +553,13 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     if (!resolved) {
         type_error(checker, decl->pos, "Cannot resolve type for '%s'", td->name);
         return 0;
+    }
+
+    // Stamp the declared name onto a struct type so methods and call sites
+    // can recover it for name mangling (the resolved Type is shared via the
+    // registered variable below, so this propagates to every use).
+    if (resolved->kind == TYPE_STRUCT && !resolved->data.struct_type.name) {
+        resolved->data.struct_type.name = strdup(td->name);
     }
 
     // Register the named type by piggybacking on the variable scope:

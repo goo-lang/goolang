@@ -18,7 +18,24 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     if (!codegen || !checker || !decl || decl->type != AST_FUNC_DECL) return 0;
     
     FuncDeclNode* func_decl = (FuncDeclNode*)decl;
-    
+
+    // A method is emitted as an ordinary function under its mangled name
+    // "T__m" (matching the type checker's registration). The receiver is
+    // params[0] (spliced by the parser), so the param-binding loop below
+    // handles it with no special-casing. `emit_name` is the LLVM/symbol
+    // name; func_decl->name stays the bare method name for diagnostics.
+    char* mangled = NULL;
+    const char* emit_name = func_decl->name;
+    if (func_decl->receiver) {
+        VarDeclNode* recv = (VarDeclNode*)func_decl->receiver;
+        Type* recv_type = recv->type ? type_from_ast(checker, recv->type) : NULL;
+        const char* tn = type_receiver_name(recv_type);
+        if (tn) {
+            mangled = type_method_mangled_name(tn, func_decl->name);
+            if (mangled) emit_name = mangled;
+        }
+    }
+
     // Get function type from AST
     Type* return_type = NULL;
     if (func_decl->return_type) {
@@ -47,14 +64,15 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // The Goo `main` is the C program entry point: lower a void main to
     // `i32 @main` so it returns 0 on normal completion. Otherwise main emitted
     // `ret void`, leaving the process exit code as a garbage register value.
-    int is_entry_main = (strcmp(func_decl->name, "main") == 0 &&
+    int is_entry_main = (!func_decl->receiver &&
+                         strcmp(func_decl->name, "main") == 0 &&
                          return_type->kind == TYPE_VOID);
     if (is_entry_main) {
         llvm_return_type = LLVMInt32TypeInContext(codegen->context);
     }
     
     // Get function type info from type checker
-    Variable* func_var = type_checker_lookup_variable(checker, func_decl->name);
+    Variable* func_var = type_checker_lookup_variable(checker, emit_name);
     Type* func_type_info = NULL;
     if (func_var && func_var->type->kind == TYPE_FUNCTION) {
         func_type_info = func_var->type;
@@ -81,7 +99,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     LLVMTypeRef function_type = LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
     
     // Create the function
-    LLVMValueRef function = LLVMAddFunction(codegen->module, func_decl->name, function_type);
+    LLVMValueRef function = LLVMAddFunction(codegen->module, emit_name, function_type);
     
     // Handle WebAssembly exports/imports based on function attributes
     if (codegen_is_wasm_target(codegen)) {
@@ -109,7 +127,8 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     }
     
     // Create function info
-    FunctionInfo* func_info = function_info_new(func_decl->name, function, return_type);
+    FunctionInfo* func_info = function_info_new(emit_name, function, return_type);
+    free(mangled);  // emit_name was copied by LLVMAddFunction and function_info_new
     if (!func_info) {
         codegen_error(codegen, decl->pos, "Failed to create function info");
         if (param_types) free(param_types);
