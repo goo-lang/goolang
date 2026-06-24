@@ -386,14 +386,20 @@ Result_void_ptr task_scope_shutdown(TaskScope* scope, uint64_t timeout_ms) {
     return OK_PTR(NULL);
 }
 
-void task_scope_destroy(TaskScope* scope) {
+// Release every resource a scope owns WITHOUT freeing the scope struct itself.
+// task_scope_destroy uses this for heap-allocated scopes; owners that embed a
+// TaskScope by value (e.g. WorkStealingScope, whose base_scope is the first
+// member) call it directly and free the enclosing block themselves — calling
+// the full task_scope_destroy on an embedded scope would free(&base_scope),
+// i.e. the wrapper, and then the wrapper's own free() double-frees it.
+void task_scope_cleanup(TaskScope* scope) {
     if (!scope) return;
-    
+
     // Ensure scope is shut down
     if (scope->is_active) {
         task_scope_shutdown(scope, 5000);  // 5 second timeout
     }
-    
+
     // Clean up task groups
     if (scope->task_groups) {
         for (size_t i = 0; i < scope->group_count; i++) {
@@ -443,7 +449,11 @@ void task_scope_destroy(TaskScope* scope) {
     pthread_mutex_destroy(&scope->scope_mutex);
     pthread_cond_destroy(&scope->tasks_available);
     pthread_cond_destroy(&scope->scope_completed);
-    
+}
+
+void task_scope_destroy(TaskScope* scope) {
+    if (!scope) return;
+    task_scope_cleanup(scope);
     free(scope);
 }
 
@@ -1153,6 +1163,50 @@ void cancellation_token_cancel(CancellationToken* token) {
     }
     
     pthread_mutex_unlock(&token->token_mutex);
+}
+
+// Register a callback invoked (with `context`) when the token is cancelled.
+// The supporting arrays and the invocation loop in cancellation_token_cancel
+// already existed; only this registration function was missing.
+Result_void_ptr cancellation_token_add_callback(CancellationToken* token,
+                                                void (*callback)(void*), void* context) {
+    if (!token || !callback) {
+        return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION,
+                                    "Null cancellation token or callback"));
+    }
+
+    pthread_mutex_lock(&token->token_mutex);
+
+    if (token->callback_count >= token->callback_capacity) {
+        size_t new_capacity = token->callback_capacity ? token->callback_capacity * 2 : 8;
+        void (**new_cbs)(void*) = realloc(token->on_cancel_callbacks,
+                                          new_capacity * sizeof(*new_cbs));
+        void** new_ctxs = realloc(token->callback_contexts,
+                                  new_capacity * sizeof(*new_ctxs));
+        if (new_cbs) token->on_cancel_callbacks = new_cbs;
+        if (new_ctxs) token->callback_contexts = new_ctxs;
+        if (!new_cbs || !new_ctxs) {
+            pthread_mutex_unlock(&token->token_mutex);
+            return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY,
+                                        "Failed to grow cancellation callback list"));
+        }
+        token->callback_capacity = new_capacity;
+    }
+
+    token->on_cancel_callbacks[token->callback_count] = callback;
+    token->callback_contexts[token->callback_count] = context;
+    token->callback_count++;
+
+    // If cancellation already fired, run the callback now so a late registrant
+    // still observes it.
+    bool already_cancelled = atomic_load(&token->is_cancelled);
+    pthread_mutex_unlock(&token->token_mutex);
+
+    if (already_cancelled) {
+        callback(context);
+    }
+
+    return OK_PTR(NULL);
 }
 
 bool cancellation_token_is_cancelled(CancellationToken* token) {

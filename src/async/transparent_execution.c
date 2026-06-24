@@ -114,7 +114,11 @@ Result_void_ptr function_registry_register(FunctionRegistry* registry,
                                          void* original_function,
                                          void* async_wrapper,
                                          FunctionType type) {
-    if (!registry || !name || !original_function) {
+    // A registration needs a name and at least one callable. ASYNC_NATIVE functions
+    // supply only an async_wrapper (original_function is NULL); sync functions supply
+    // only original_function. Requiring original_function specifically wrongly rejects
+    // the former.
+    if (!registry || !name || (!original_function && !async_wrapper)) {
         Error* error = malloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
@@ -290,7 +294,9 @@ bool transparent_should_execute_async(TransparentFunction* func, void* args, siz
 
 // Execute a transparent function
 Result_void_ptr transparent_function_execute(TransparentFunction* func, void* args, size_t args_size) {
-    if (!func || !func->original_function) {
+    // ASYNC_NATIVE functions carry only an async_wrapper (original_function is NULL),
+    // so accept a function that has either callable, not original_function specifically.
+    if (!func || (!func->original_function && !func->async_wrapper)) {
         Error* error = malloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
@@ -309,89 +315,54 @@ Result_void_ptr transparent_function_execute(TransparentFunction* func, void* ar
     
     uint64_t start_time = async_get_timestamp_ns();
     
-    // Determine execution mode
+    // Determine execution mode (telemetry only — see ABI note below).
     bool should_async = transparent_should_execute_async(func, args, args_size);
-    
+
     Result_void_ptr result;
-    
-    if (should_async && func->async_wrapper) {
-        // Execute asynchronously
-        atomic_fetch_add(&g_registry->async_execution_count, 1);
-        
-        // Get or create runtime
-        AsyncRuntime* runtime = async_runtime_global();
-        if (!runtime) {
-            // Fallback to sync if no runtime available
-            goto sync_execution;
-        }
-        
-        // Create async task
-        AsyncTask* task = async_task_create((AsyncFunction)func->async_wrapper, args, args_size);
-        if (!task) {
-            goto sync_execution;
-        }
-        
-        // Create async context
-        AsyncContext* ctx = async_context_create(runtime, task);
-        if (!ctx) {
-            async_task_destroy(task);
-            goto sync_execution;
-        }
-        
-        // Set as current context
-        AsyncContext* prev_ctx = async_context_current();
-        async_context_set_current(ctx);
-        
-        // Submit task to runtime
-        AsyncFuture* future = async_runtime_submit(runtime, task);
-        if (!future) {
-            async_context_set_current(prev_ctx);
-            async_context_destroy(ctx);
-            async_task_destroy(task);
-            goto sync_execution;
-        }
-        
-        // Get result (this will block if needed)
-        result = async_future_get(future, UINT64_MAX);
-        
-        // Restore previous context
-        async_context_set_current(prev_ctx);
-        
-        // Clean up
-        async_future_destroy(future);
-        async_context_destroy(ctx);
-        
-    } else {
-sync_execution:
-        // Execute synchronously
+
+    // ABI note: the transparent_async runtime invokes tasks as AsyncFunction
+    // (void*, AsyncWaker*), but every wrapper registered here is a
+    // TransparentAsyncFunction (void*, AsyncContext*) — incompatible signatures.
+    // Dispatching through the runtime would pass a waker where the function expects a
+    // context and crash on the first ctx field access. The inline executor blocks the
+    // caller anyway, so we invoke the wrapper directly with a correct AsyncContext:
+    // ABI-safe and behaviorally equivalent to the (blocking) inline runtime path.
+    if (func->type == FUNC_TYPE_SYNC && func->original_function) {
+        // Plain synchronous function
         atomic_fetch_add(&g_registry->sync_execution_count, 1);
-        
-        // Call the original function
-        if (func->type == FUNC_TYPE_SYNC) {
-            // Direct call for sync functions
-            TransparentSyncFunction sync_fn = (TransparentSyncFunction)func->original_function;
-            void* sync_result = sync_fn(args);
-            result = OK_PTR(sync_result);
-        } else {
-            // Create minimal async context for hybrid functions
-            AsyncContext ctx = {
-                .runtime = NULL,
-                .current_task = NULL,
-                .waker = NULL,
-                .is_async_context = false,
-                .should_yield = false,
-                .yield_count = 0,
-                .parent = async_context_current()
-            };
-            
-            AsyncContext* prev_ctx = async_context_current();
-            async_context_set_current(&ctx);
-            
-            TransparentAsyncFunction async_fn = (TransparentAsyncFunction)func->original_function;
-            result = async_fn(args, &ctx);
-            
-            async_context_set_current(prev_ctx);
-        }
+        TransparentSyncFunction sync_fn = (TransparentSyncFunction)func->original_function;
+        void* sync_result = sync_fn(args);
+        result = OK_PTR(sync_result);
+    } else {
+        atomic_fetch_add(should_async ? &g_registry->async_execution_count
+                                      : &g_registry->sync_execution_count, 1);
+
+        // Cooperative-cancellation flag the function can poll via
+        // atomic_load(ctx->is_cancelled). No external canceller here, so it stays false.
+        atomic_bool cancel_flag;
+        atomic_init(&cancel_flag, false);
+
+        AsyncContext ctx = {
+            .runtime = NULL,
+            .current_task = NULL,
+            .waker = NULL,
+            .is_async_context = true,
+            .should_yield = false,
+            .yield_count = 0,
+            .is_cancelled = &cancel_flag,
+            .parent = async_context_current()
+        };
+
+        AsyncContext* prev_ctx = async_context_current();
+        async_context_set_current(&ctx);
+
+        // Prefer original_function; fall back to async_wrapper for ASYNC_NATIVE
+        // functions, which have no original_function to call.
+        TransparentAsyncFunction async_fn = (TransparentAsyncFunction)
+            (func->original_function ? func->original_function : func->async_wrapper);
+        result = async_fn(args, &ctx);
+
+        async_context_set_current(prev_ctx);
     }
     
     // Update function statistics

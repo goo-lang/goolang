@@ -290,8 +290,18 @@ Result_void_ptr memory_safe_work_stealing_parallel_for(
     ParallelForFunction function,
     void* context) {
     
-    // For now, delegate to regular work-stealing with safety wrapper
-    // In a full implementation, this would integrate more deeply with work-stealing
+    // For now, delegate to regular work-stealing with safety wrapper.
+    // In a full implementation, this would integrate more deeply with work-stealing.
+    //
+    // memory_safe_parallel_for submits tasks to the base task-scope and waits on
+    // them (task_wait with an infinite timeout). A freshly created work-stealing
+    // scope has NOT started that scope's worker pool, so without this the
+    // submitted tasks would sit QUEUED with no worker to run them and task_wait
+    // would hang forever. Start the base scope on demand.
+    if (!scope->base_scope.is_active) {
+        Result_void_ptr started = task_scope_start(&scope->base_scope);
+        if (started.is_error) return started;
+    }
     return memory_safe_parallel_for(&scope->base_scope, config, function, context);
 }
 

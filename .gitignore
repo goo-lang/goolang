@@ -20,6 +20,7 @@ output.ll
 test_*
 !test_*.goo
 !test_*.c
+!test_*.h
 
 # Logs
 logs

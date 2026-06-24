@@ -219,7 +219,7 @@ ConcurrentExpression* concurrent_expression_create(const char* name,
         .async_wrapper = (AsyncFunction)function,
         .is_io_bound = false,
         .avg_execution_time_ns = 1000000,  // 1ms default estimate
-        .execution_count = 0
+        .call_count = 0
     };
     
     expr->state = EXPR_STATE_CREATED;
@@ -269,8 +269,13 @@ void concurrent_expression_destroy(ConcurrentExpression* expr) {
     if (expr->cancel_token) {
         cancellation_token_destroy(expr->cancel_token);
     }
-    
-    free(expr->result);
+
+    // Ownership: the expression owns only its arguments (copied in
+    // concurrent_expression_create). The result is whatever the async function
+    // returned — it may alias the arguments (in-place transform), point at
+    // caller/stack/static memory, or be a heap value whose ownership transfers to the
+    // caller via block->results. The runtime cannot tell which, so it must NOT free
+    // it; freeing here corrupted the heap on functions that returned non-owned memory.
     free(expr);
 }
 
@@ -366,24 +371,31 @@ Result_void_ptr concurrent_block_add_expression(ConcurrentBlock* block, Concurre
     return OK_PTR(block);
 }
 
+// Cancellation callback: marks a task's context cancelled when its expression's
+// token fires. Must be a real C function — cancellation_token_cancel invokes
+// callbacks through a plain void(*)(void*) pointer, and a Blocks literal (^{...})
+// is a struct, not a function, so calling one that way jumps into data and crashes.
+static void propagate_cancel_to_task(void* ctx) {
+    TaskContext* task_ctx = (TaskContext*)ctx;
+    if (!task_ctx) return;
+    atomic_store(&task_ctx->is_cancelled, true);
+    atomic_store(&task_ctx->cancel_requested, true);
+}
+
 // Task wrapper for concurrent expressions with enhanced cancellation propagation
-static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, void* args) {
+static Result_void_ptr concurrent_expression_task_wrapper_inner(TaskContext* context, void* args) {
     ConcurrentExpression* expr = (ConcurrentExpression*)args;
-    
+
     if (!expr || !expr->function) {
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid expression"));
     }
-    
+
     // Set up cancellation propagation callback
     if (expr->cancel_token) {
-        cancellation_token_add_callback(expr->cancel_token, 
-            (void(*)(void*))^(void* ctx) {
-                TaskContext* task_ctx = (TaskContext*)ctx;
-                atomic_store(&task_ctx->is_cancelled, true);
-                atomic_store(&task_ctx->cancel_requested, true);
-            }, context);
+        cancellation_token_add_callback(expr->cancel_token,
+            propagate_cancel_to_task, context);
     }
-    
+
     // Check for cancellation before starting
     CHECK_CANCELLATION(context);
     
@@ -429,21 +441,17 @@ static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, 
     expr->state = EXPR_STATE_RUNNING;
     UPDATE_PROGRESS(context, 10, "Starting expression execution");
     
-    // Create async context with enhanced cancellation support
+    // expr->function->async_wrapper is a ConcurrentFunction:
+    //   Result_void_ptr (*)(void* args, AsyncContext* async_ctx)
+    // Build an AsyncContext pointing at this task's cancellation flag so the
+    // function can cooperatively poll atomic_load(async_ctx->is_cancelled).
     AsyncContext async_ctx = {
         .is_async_context = true,
-        .cancel_token = expr->cancel_token,
         .is_cancelled = &context->is_cancelled,
-        .runtime = async_runtime_global(),
-        .task_id = context->task_id,
-        .estimated_cpu_time_us = 1000,
-        .estimated_memory_bytes = expr->args_size,
-        .parent_context = context
     };
-    
-    // Call the async function with periodic cancellation checks
-    AsyncFunction async_fn = (AsyncFunction)expr->function->async_wrapper;
-    
+
+    ConcurrentFunction async_fn = (ConcurrentFunction)expr->function->async_wrapper;
+
     UPDATE_PROGRESS(context, 50, "Executing expression");
     Result_void_ptr result = async_fn(expr->arguments, &async_ctx);
     
@@ -464,11 +472,38 @@ static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, 
     } else {
         expr->state = EXPR_STATE_COMPLETED;
         expr->result = result.value;
-        expr->result_size = async_ctx.estimated_memory_bytes; // Approximate result size
+        expr->result_size = expr->args_size; // Approximate result size (no exact size from async_fn)
         UPDATE_PROGRESS(context, 100, "Expression completed successfully");
     }
     
     return result;
+}
+
+// Thin wrapper run as the task function. Whatever path the inner function takes
+// (completed, failed, cancelled, early return), it reaches a terminal expr->state
+// or the block's own cancellation flag — so afterward we wake any thread blocked
+// in concurrent_block_wait. Without this, expressions completed but the waiter
+// only ever woke on its timeout and then cancelled everything.
+static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, void* args) {
+    // args is a copy of the ConcurrentExpression* (see concurrent_block_execute):
+    // dereference once to recover the caller's original expression object.
+    ConcurrentExpression* expr = *(ConcurrentExpression**)args;
+    Result_void_ptr result = concurrent_expression_task_wrapper_inner(context, expr);
+
+    if (expr && expr->block) {
+        pthread_mutex_lock(&expr->block->block_mutex);
+        pthread_cond_broadcast(&expr->block->all_completed);
+        pthread_mutex_unlock(&expr->block->block_mutex);
+    }
+
+    // Ownership: the result value lives in expr->result (read by concurrent_block_wait
+    // and freed by concurrent_expression_destroy). Hand the task layer only the error
+    // status — never the value pointer — or task_destroy would free a buffer the
+    // expression also owns. Propagate the error so scheduler task accounting is correct.
+    if (result.is_error) {
+        return result;
+    }
+    return OK_PTR(NULL);
 }
 
 Result_void_ptr concurrent_block_execute(ConcurrentBlock* block) {
@@ -503,9 +538,16 @@ Result_void_ptr concurrent_block_execute(ConcurrentBlock* block) {
     size_t expr_index = 0;
     
     while (expr) {
-        // Create task for expression
-        ConcurrentTask* task = task_create(block->task_scope, 
-            concurrent_expression_task_wrapper, expr, sizeof(ConcurrentExpression), expr->name);
+        // Link the expression back to its block so the task wrapper can wake
+        // concurrent_block_wait when the expression finishes.
+        expr->block = block;
+
+        // Create task for expression. task_create() copies its args buffer, so we
+        // hand it the EXPRESSION POINTER by reference (copy 8 bytes, not the struct).
+        // Copying the struct would make the worker mutate a throwaway duplicate while
+        // concurrent_block_wait keeps polling this original's state — a deadlock.
+        ConcurrentTask* task = task_create(block->task_scope,
+            concurrent_expression_task_wrapper, &expr, sizeof(ConcurrentExpression*), expr->name);
         
         if (task) {
             task->priority = block->config.default_priority;
@@ -540,11 +582,38 @@ Result_void_ptr concurrent_block_execute(ConcurrentBlock* block) {
     return OK_PTR(block);
 }
 
+// Cancel a block's outstanding work. Caller MUST hold block->block_mutex — this is
+// the shared core of concurrent_block_cancel and the in-loop cancellation in
+// concurrent_block_wait, which already holds the lock (calling the public,
+// self-locking variant from there would deadlock on the non-recursive mutex).
+// Terminal expressions (already completed/failed) keep their state.
+static void concurrent_block_cancel_locked(ConcurrentBlock* block) {
+    block->is_cancelled = true;
+
+    if (block->block_cancel_token) {
+        cancellation_token_cancel(block->block_cancel_token);
+    }
+
+    ConcurrentExpression* expr = block->first_expression;
+    while (expr) {
+        if (expr->state != EXPR_STATE_COMPLETED &&
+            expr->state != EXPR_STATE_FAILED) {
+            if (expr->cancel_token) {
+                cancellation_token_cancel(expr->cancel_token);
+            }
+            expr->state = EXPR_STATE_CANCELLED;
+        }
+        expr = expr->next;
+    }
+
+    pthread_cond_broadcast(&block->all_completed);
+}
+
 Result_void_ptr concurrent_block_wait(ConcurrentBlock* block, uint64_t timeout_ms) {
     if (!block) {
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid block"));
     }
-    
+
     pthread_mutex_lock(&block->block_mutex);
     
     // Calculate deadline
@@ -593,54 +662,59 @@ Result_void_ptr concurrent_block_wait(ConcurrentBlock* block, uint64_t timeout_m
         }
         
         if (should_cancel_all) {
-            concurrent_block_cancel(block);
+            concurrent_block_cancel_locked(block);
             pthread_mutex_unlock(&block->block_mutex);
             return ERR_PTR(error_create(ERROR_OPERATION_FAILED, "Concurrent block timed out"));
         }
         
-        // Collect results and handle automatic error cancellation
-        if (block->config.collect_all_results) {
-            if (expr->state == EXPR_STATE_COMPLETED) {
+        // Inspect terminal state and apply fail-fast. Result/error STORAGE needs the
+        // arrays, which exist only when collect_all_results is set — but failure
+        // detection, counting, and fail-fast cancellation must run regardless (the
+        // fail_fast config intentionally disables collect_all_results).
+        if (expr->state == EXPR_STATE_COMPLETED) {
+            if (block->config.collect_all_results) {
                 block->results[expr_index] = expr->result;
                 block->result_sizes[expr_index] = expr->result_size;
-                block->completed_expressions++;
-                printf("Expression '%s' completed successfully\n", expr->name);
-            } else if (expr->state == EXPR_STATE_FAILED) {
-                block->errors[expr_index] = expr->error;
-                block->failed_expressions++;
-                printf("Expression '%s' failed: %s\n", expr->name, 
-                       expr->error ? expr->error->message : "Unknown error");
-                
-                if (first_error.is_error == false) {
-                    first_error = ERR_PTR(expr->error);
-                }
-                
-                // Automatic error cancellation for fail-fast mode
-                if (block->config.fail_fast) {
-                    printf("Fail-fast enabled - cancelling all remaining expressions due to failure in '%s'\n", 
-                           expr->name);
-                    
-                    // Cancel all remaining expressions
-                    ConcurrentExpression* cancel_expr = expr->next;
-                    while (cancel_expr) {
-                        if (cancel_expr->state != EXPR_STATE_COMPLETED && 
-                            cancel_expr->state != EXPR_STATE_FAILED) {
-                            
-                            cancellation_token_cancel(cancel_expr->cancel_token);
-                            cancel_expr->state = EXPR_STATE_CANCELLED;
-                            printf("Cancelled expression '%s' due to fail-fast\n", cancel_expr->name);
-                        }
-                        cancel_expr = cancel_expr->next;
-                    }
-                    
-                    // Cancel the block
-                    concurrent_block_cancel(block);
-                    break;
-                }
-            } else if (expr->state == EXPR_STATE_CANCELLED) {
-                printf("Expression '%s' was cancelled\n", expr->name);
-                block->failed_expressions++; // Count cancelled as failed
             }
+            block->completed_expressions++;
+            printf("Expression '%s' completed successfully\n", expr->name);
+        } else if (expr->state == EXPR_STATE_FAILED) {
+            if (block->config.collect_all_results) {
+                block->errors[expr_index] = expr->error;
+            }
+            block->failed_expressions++;
+            printf("Expression '%s' failed: %s\n", expr->name,
+                   expr->error ? expr->error->message : "Unknown error");
+
+            if (first_error.is_error == false) {
+                first_error = ERR_PTR(expr->error);
+            }
+
+            // Automatic error cancellation for fail-fast mode
+            if (block->config.fail_fast) {
+                printf("Fail-fast enabled - cancelling all remaining expressions due to failure in '%s'\n",
+                       expr->name);
+
+                // Cancel all remaining expressions
+                ConcurrentExpression* cancel_expr = expr->next;
+                while (cancel_expr) {
+                    if (cancel_expr->state != EXPR_STATE_COMPLETED &&
+                        cancel_expr->state != EXPR_STATE_FAILED) {
+
+                        cancellation_token_cancel(cancel_expr->cancel_token);
+                        cancel_expr->state = EXPR_STATE_CANCELLED;
+                        printf("Cancelled expression '%s' due to fail-fast\n", cancel_expr->name);
+                    }
+                    cancel_expr = cancel_expr->next;
+                }
+
+                // Cancel the block (we already hold block_mutex here)
+                concurrent_block_cancel_locked(block);
+                break;
+            }
+        } else if (expr->state == EXPR_STATE_CANCELLED) {
+            printf("Expression '%s' was cancelled\n", expr->name);
+            block->failed_expressions++; // Count cancelled as failed
         }
         
         expr = expr->next;
@@ -680,29 +754,9 @@ Result_void_ptr concurrent_block_cancel(ConcurrentBlock* block) {
     }
     
     pthread_mutex_lock(&block->block_mutex);
-    
-    block->is_cancelled = true;
-    
-    // Cancel the block's cancellation token
-    if (block->block_cancel_token) {
-        cancellation_token_cancel(block->block_cancel_token);
-    }
-    
-    // Cancel all expressions
-    ConcurrentExpression* expr = block->first_expression;
-    while (expr) {
-        if (expr->cancel_token) {
-            cancellation_token_cancel(expr->cancel_token);
-        }
-        expr->state = EXPR_STATE_CANCELLED;
-        expr = expr->next;
-    }
-    
-    // Wake up waiting threads
-    pthread_cond_broadcast(&block->all_completed);
-    
+    concurrent_block_cancel_locked(block);
     pthread_mutex_unlock(&block->block_mutex);
-    
+
     return OK_PTR(block);
 }
 
@@ -967,9 +1021,26 @@ void structured_concurrency_reset_stats(StructuredScheduler* scheduler) {
 }
 
 // For-each parallel execution
+// Per-item payload handed to each for-each expression.
+typedef struct {
+    void* item;
+    size_t index;
+    ForEachFunction function;
+    void* user_context;
+} ForEachArgs;
+
+// Expression wrapper for concurrent_for_each. Must be a real C function: the
+// expression invokes async_wrapper through a ConcurrentFunction pointer, and a Blocks
+// literal (^{...}) is a struct, not a function — calling one that way jumps into data.
+static Result_void_ptr for_each_item_wrapper(void* wrapper_args, AsyncContext* async_ctx) {
+    (void)async_ctx;
+    ForEachArgs* fe_args = (ForEachArgs*)wrapper_args;
+    return fe_args->function(fe_args->item, fe_args->index, fe_args->user_context);
+}
+
 Result_void_ptr concurrent_for_each(void** items, size_t item_count, size_t item_size,
     ForEachFunction function, void* context, ConcurrentBlockConfig config) {
-    
+
     if (!items || !function || item_count == 0) {
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid parameters"));
     }
@@ -982,31 +1053,19 @@ Result_void_ptr concurrent_for_each(void** items, size_t item_count, size_t item
     
     // Create expressions for each item
     for (size_t i = 0; i < item_count; i++) {
-        // Create wrapper function for each item
-        typedef struct {
-            void* item;
-            size_t index;
-            ForEachFunction function;
-            void* user_context;
-        } ForEachArgs;
-        
         ForEachArgs* args = malloc(sizeof(ForEachArgs));
         if (!args) {
             concurrent_block_destroy(block);
             return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate args"));
         }
-        
+
         args->item = items[i];
         args->index = i;
         args->function = function;
         args->user_context = context;
-        
-        // Wrapper function
-        ConcurrentFunction wrapper = (ConcurrentFunction)^Result_void_ptr(void* wrapper_args, AsyncContext* async_ctx) {
-            ForEachArgs* fe_args = (ForEachArgs*)wrapper_args;
-            return fe_args->function(fe_args->item, fe_args->index, fe_args->user_context);
-        };
-        
+
+        ConcurrentFunction wrapper = for_each_item_wrapper;
+
         char expr_name[64];
         snprintf(expr_name, sizeof(expr_name), "for_each_item_%zu", i);
         
