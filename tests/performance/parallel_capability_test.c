@@ -102,10 +102,16 @@ static void test_capability_token_management(void) {
     SecurityCapability* file_cap = security_capability_create(
         CAP_FILE_READ, SECURITY_LEVEL_PRIVILEGED, NULL, 0);
     
-    // Grant capabilities to tokens
+    // Grant capabilities to tokens. Each token OWNS the capabilities granted to
+    // it — capability_token_destroy frees them — so a single capability must not
+    // be shared across tokens. Granting standard_token's read_cap to
+    // restricted_token too made both destroys free read_cap (double free); give
+    // restricted_token its own read capability instead.
     capability_token_grant(standard_token, read_cap);
     capability_token_grant(standard_token, write_cap);
-    capability_token_grant(restricted_token, read_cap);
+    SecurityCapability* restricted_read_cap = security_capability_create(
+        CAP_MEMORY_READ, SECURITY_LEVEL_STANDARD, NULL, 0);
+    capability_token_grant(restricted_token, restricted_read_cap);
     
     // Test capability checking
     printf("\nCapability Tests:\n");

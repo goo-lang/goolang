@@ -82,9 +82,12 @@ void test_basic_capability_system(void) {
     printf("  FILE_WRITE: %s\n", capability_type_to_string(CAP_FILE_WRITE));
     printf("  NETWORK_READ: %s\n", capability_type_to_string(CAP_NETWORK_READ));
     
-    // Cleanup
+    // Cleanup. capability_token_grant transfers ownership of a capability to
+    // the token, and capability_token_destroy frees every granted capability —
+    // both read_cap and write_cap. Freeing write_cap again here was a double
+    // free (the old "read_cap is cleaned up by token" comment was half-right:
+    // BOTH granted capabilities are).
     capability_token_destroy(token);
-    security_capability_destroy(write_cap); // read_cap is cleaned up by token
     
     printf("✅ Basic capability system test completed\n");
 }
