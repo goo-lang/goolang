@@ -100,6 +100,32 @@ Result_void_ptr io_bound_function(void* args, AsyncContext* async_ctx) {
     return OK_PTR(ctx);
 }
 
+// The two callbacks below were originally GCC nested functions inside their
+// tests. clang — required for the blocks-using concurrency sources this test
+// links — does not support nested functions, so they live at file scope.
+// cleanup_function reported completion by capturing a local; it now uses a
+// file-scope flag instead.
+static bool g_cleanup_called = false;
+
+static void cleanup_function(void* resource) {
+    printf("Cleaning up resource with value: %d\n", *(int*)resource);
+    free(resource);
+    g_cleanup_called = true;
+}
+
+// for_each_func only uses its parameters (the counter comes via context), so it
+// needs no closure.
+static Result_void_ptr for_each_func(void* item, size_t index, void* context) {
+    int* value = (int*)item;
+    int* counter = (int*)context;
+
+    printf("  Processing item %zu with value: %d\n", index, *value);
+    (*value) *= 2; // Double the value
+    (*counter)++;
+
+    return OK_PTR(item);
+}
+
 // Test basic concurrent block execution
 void test_basic_concurrent_block(void) {
     printf("\n=== Testing Basic Concurrent Block Execution ===\n");
@@ -404,24 +430,17 @@ void test_resource_management(void) {
     // Create a test resource
     int* test_resource = malloc(sizeof(int));
     *test_resource = 42;
-    
-    bool cleanup_called = false;
-    
-    // Cleanup function
-    void cleanup_function(void* resource) {
-        printf("Cleaning up resource with value: %d\n", *(int*)resource);
-        free(resource);
-        cleanup_called = true;
-    }
-    
-    // Create concurrent resource
+
+    g_cleanup_called = false;
+
+    // Create concurrent resource (cleanup_function is defined at file scope)
     ConcurrentResource* resource = concurrent_resource_create(test_resource, cleanup_function);
     assert(resource != NULL);
     assert(resource->is_acquired == true);
     
     // Destroy resource (should call cleanup)
     concurrent_resource_destroy(resource);
-    assert(cleanup_called == true);
+    assert(g_cleanup_called == true);
     
     printf("✓ Resource management test passed\n");
 }
@@ -444,20 +463,8 @@ void test_for_each_parallel(void) {
     }
     
     int total_processed = 0;
-    
-    // For-each function
-    Result_void_ptr for_each_func(void* item, size_t index, void* context) {
-        int* value = (int*)item;
-        int* counter = (int*)context;
-        
-        printf("  Processing item %zu with value: %d\n", index, *value);
-        (*value) *= 2; // Double the value
-        (*counter)++;
-        
-        return OK_PTR(item);
-    }
-    
-    // Execute for-each
+
+    // Execute for-each (for_each_func is defined at file scope)
     ConcurrentBlockConfig config = concurrent_block_config_default();
     Result_void_ptr result = concurrent_for_each(items, 5, sizeof(int), for_each_func, &total_processed, config);
     assert(!result.is_error);

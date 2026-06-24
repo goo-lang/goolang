@@ -27,6 +27,11 @@ typedef struct AsyncContext {
     bool is_async_context;
     bool should_yield;
     uint32_t yield_count;
+
+    // Cooperative cancellation: points at the owning task/scope's cancellation
+    // flag so an async function can poll atomic_load(async_ctx->is_cancelled).
+    // NULL when the caller does not support cancellation.
+    atomic_bool* is_cancelled;
     
     // Continuation support
     jmp_buf* continuation_point;

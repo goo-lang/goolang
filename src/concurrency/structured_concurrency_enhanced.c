@@ -219,7 +219,7 @@ ConcurrentExpression* concurrent_expression_create(const char* name,
         .async_wrapper = (AsyncFunction)function,
         .is_io_bound = false,
         .avg_execution_time_ns = 1000000,  // 1ms default estimate
-        .execution_count = 0
+        .call_count = 0
     };
     
     expr->state = EXPR_STATE_CREATED;
@@ -367,9 +367,9 @@ Result_void_ptr concurrent_block_add_expression(ConcurrentBlock* block, Concurre
 }
 
 // Task wrapper for concurrent expressions with enhanced cancellation propagation
-static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, void* args) {
+static Result_void_ptr concurrent_expression_task_wrapper_inner(TaskContext* context, void* args) {
     ConcurrentExpression* expr = (ConcurrentExpression*)args;
-    
+
     if (!expr || !expr->function) {
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid expression"));
     }
@@ -429,21 +429,17 @@ static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, 
     expr->state = EXPR_STATE_RUNNING;
     UPDATE_PROGRESS(context, 10, "Starting expression execution");
     
-    // Create async context with enhanced cancellation support
+    // expr->function->async_wrapper is a ConcurrentFunction:
+    //   Result_void_ptr (*)(void* args, AsyncContext* async_ctx)
+    // Build an AsyncContext pointing at this task's cancellation flag so the
+    // function can cooperatively poll atomic_load(async_ctx->is_cancelled).
     AsyncContext async_ctx = {
         .is_async_context = true,
-        .cancel_token = expr->cancel_token,
         .is_cancelled = &context->is_cancelled,
-        .runtime = async_runtime_global(),
-        .task_id = context->task_id,
-        .estimated_cpu_time_us = 1000,
-        .estimated_memory_bytes = expr->args_size,
-        .parent_context = context
     };
-    
-    // Call the async function with periodic cancellation checks
-    AsyncFunction async_fn = (AsyncFunction)expr->function->async_wrapper;
-    
+
+    ConcurrentFunction async_fn = (ConcurrentFunction)expr->function->async_wrapper;
+
     UPDATE_PROGRESS(context, 50, "Executing expression");
     Result_void_ptr result = async_fn(expr->arguments, &async_ctx);
     
@@ -464,10 +460,27 @@ static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, 
     } else {
         expr->state = EXPR_STATE_COMPLETED;
         expr->result = result.value;
-        expr->result_size = async_ctx.estimated_memory_bytes; // Approximate result size
+        expr->result_size = expr->args_size; // Approximate result size (no exact size from async_fn)
         UPDATE_PROGRESS(context, 100, "Expression completed successfully");
     }
     
+    return result;
+}
+
+// Thin wrapper run as the task function. Whatever path the inner function takes
+// (completed, failed, cancelled, early return), it reaches a terminal expr->state
+// or the block's own cancellation flag — so afterward we wake any thread blocked
+// in concurrent_block_wait. Without this, expressions completed but the waiter
+// only ever woke on its timeout and then cancelled everything.
+static Result_void_ptr concurrent_expression_task_wrapper(TaskContext* context, void* args) {
+    Result_void_ptr result = concurrent_expression_task_wrapper_inner(context, args);
+
+    ConcurrentExpression* expr = (ConcurrentExpression*)args;
+    if (expr && expr->block) {
+        pthread_mutex_lock(&expr->block->block_mutex);
+        pthread_cond_broadcast(&expr->block->all_completed);
+        pthread_mutex_unlock(&expr->block->block_mutex);
+    }
     return result;
 }
 
@@ -503,8 +516,12 @@ Result_void_ptr concurrent_block_execute(ConcurrentBlock* block) {
     size_t expr_index = 0;
     
     while (expr) {
+        // Link the expression back to its block so the task wrapper can wake
+        // concurrent_block_wait when the expression finishes.
+        expr->block = block;
+
         // Create task for expression
-        ConcurrentTask* task = task_create(block->task_scope, 
+        ConcurrentTask* task = task_create(block->task_scope,
             concurrent_expression_task_wrapper, expr, sizeof(ConcurrentExpression), expr->name);
         
         if (task) {
