@@ -1,5 +1,10 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c23 -g -Iinclude -I/opt/homebrew/include
+# _GNU_SOURCE is a project-wide feature-test macro: it exposes mkstemp,
+# pthread_rwlock_t, popen, etc. used across the runtime/proof/concurrency
+# sources. It was only reaching the main build (via LLVM_CFLAGS); the many
+# bespoke test targets that compile with $(CFLAGS) alone missed it and broke
+# on "implicit declaration of mkstemp" / "unknown type pthread_rwlock_t".
+CFLAGS = -Wall -Wextra -std=c23 -g -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Coverage flags
