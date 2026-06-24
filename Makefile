@@ -639,7 +639,15 @@ $(PERFORMANCE_DASHBOARD_SERVER): $(SRCDIR)/ide/dashboard_main.c $(SRCDIR)/ide/pe
 
 # Async Streams Test
 ASYNC_STREAMS_TEST = $(BINDIR)/async_streams_test
-ASYNC_STREAMS_SOURCES = src/async/async_streams.c src/errors/error.c
+# async_streams.c calls into the structured-concurrency runtime (concurrent_block_*,
+# cancellation_token_*), which pulls in its transitive deps (transparent async,
+# ergonomic errors, actor system).
+ASYNC_STREAMS_SOURCES = src/async/async_streams.c \
+	src/concurrency/structured_concurrency_enhanced.c \
+	src/concurrency/structured_concurrency.c \
+	src/async/transparent_async.c src/async/transparent_execution.c \
+	src/errors/error.c src/errors/ergonomic_errors.c \
+	src/runtime/actor_system.c
 
 test-async-streams: $(ASYNC_STREAMS_TEST)
 	@echo "Running async streams system tests..."
