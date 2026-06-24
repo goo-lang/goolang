@@ -4,7 +4,11 @@ CC = gcc
 # sources. It was only reaching the main build (via LLVM_CFLAGS); the many
 # bespoke test targets that compile with $(CFLAGS) alone missed it and broke
 # on "implicit declaration of mkstemp" / "unknown type pthread_rwlock_t".
-CFLAGS = -Wall -Wextra -std=c23 -g -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE
+# -I. lets sources that spell includes as "include/foo.h" (many concurrency
+# and example tests do) resolve from the repo root; plain "foo.h" still
+# resolves via -Iinclude. Both forms are in use; keeping both on the path
+# avoids "fatal error: include/foo.h: No such file" in those targets.
+CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Coverage flags
