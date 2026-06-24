@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 // Forward declarations
+typedef struct ErrorContext ErrorContext;  // defined in errors/error.h
 typedef struct ErrorReportingContext ErrorReportingContext;
 typedef struct ErrorReport ErrorReport;
 typedef struct ErrorExplanation ErrorExplanation;
