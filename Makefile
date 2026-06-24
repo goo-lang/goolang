@@ -490,13 +490,14 @@ $(REPL_ENHANCED): $(SRCDIR)/ide/repl_enhanced_simple.c $(SRCDIR)/ide/repl_syntax
 
 # Development Workflow Tools
 PROJECT_WIZARD = $(BINDIR)/goo-wizard
-TEST_RUNNER_TOOL = $(BINDIR)/goo-test
 PROFILER_TOOL = $(BINDIR)/goo-profiler
 DOC_GENERATOR = $(BINDIR)/goo-docs
 HEALTH_DASHBOARD = $(BINDIR)/goo-health
 
 # Complete development workflow toolchain
-dev-tools: wizard test-tool profiler doc-generator health-dashboard
+# (test-tool removed: its source tools/test_runner/main.c was never created; the
+# maintained test runner is tests/test_runner.c, built by the test-pipeline target.)
+dev-tools: wizard profiler doc-generator health-dashboard
 
 # Project template wizard
 wizard: $(PROJECT_WIZARD)
@@ -504,13 +505,6 @@ wizard: $(PROJECT_WIZARD)
 $(PROJECT_WIZARD): tools/project_wizard/main.c
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $<
-
-# Enhanced test runner with visualization
-test-tool: $(TEST_RUNNER_TOOL)
-
-$(TEST_RUNNER_TOOL): tools/test_runner/main.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $< -lpthread
 
 # Integrated profiler
 profiler: $(PROFILER_TOOL)
