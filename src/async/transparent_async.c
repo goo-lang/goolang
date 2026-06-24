@@ -468,11 +468,20 @@ AsyncRuntime* async_runtime_create(AsyncRuntimeConfig config) {
 
 void async_runtime_destroy(AsyncRuntime* runtime) {
     if (!runtime) return;
-    
+
     if (runtime->is_running) {
         async_runtime_shutdown(runtime, 5000); // 5 second timeout
     }
-    
+
+    // If this runtime is the registered global, clear the reference so it doesn't
+    // dangle. Otherwise async_runtime_global() would hand out the freed pointer
+    // instead of lazily recreating a fresh, started runtime.
+    pthread_mutex_lock(&g_runtime_mutex);
+    if (g_global_runtime == runtime) {
+        g_global_runtime = NULL;
+    }
+    pthread_mutex_unlock(&g_runtime_mutex);
+
     // Destroy executors
     if (runtime->inline_executor) {
         free(runtime->inline_executor);
