@@ -541,7 +541,7 @@ test-taint-analysis: $(TAINT_ANALYSIS_TEST)
 	@echo "Running taint analysis system tests..."
 	./$(TAINT_ANALYSIS_TEST)
 
-$(TAINT_ANALYSIS_TEST): taint_analysis_test.c $(TAINT_ANALYSIS_SOURCES)
+$(TAINT_ANALYSIS_TEST): tests/security/taint_analysis_test.c $(TAINT_ANALYSIS_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
