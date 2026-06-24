@@ -11,6 +11,17 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
+# Apple-style blocks (^-syntax) build path. GCC cannot parse ^-blocks, but
+# clang can with -fblocks, linked against the BlocksRuntime. Exactly three
+# sources use blocks: src/async/async_streams.c,
+# src/concurrency/structured_concurrency.c and
+# src/concurrency/structured_concurrency_enhanced.c. Any test target that
+# compiles/links one of those must use these BLOCKS_* variables instead of
+# $(CC)/$(CFLAGS)/$(LDFLAGS) so it goes through clang -fblocks -lBlocksRuntime.
+BLOCKS_CC = clang
+BLOCKS_CFLAGS = $(CFLAGS) -fblocks
+BLOCKS_LDFLAGS = $(LDFLAGS) -lBlocksRuntime
+
 # Coverage flags
 COVERAGE_FLAGS = -fprofile-arcs -ftest-coverage
 COVERAGE_LIBS = -lgcov
@@ -636,7 +647,7 @@ test-async-streams: $(ASYNC_STREAMS_TEST)
 
 $(ASYNC_STREAMS_TEST): tests/concurrency/async_streams_test.c $(ASYNC_STREAMS_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS)
 
 test-repl: $(TEST_REPL)
 	./$(TEST_REPL)
@@ -759,7 +770,7 @@ shared_variables_test: tests/concurrency/shared_variables_test.c $(SRCDIR)/concu
 
 # Structured Concurrency Test (Task 21.3)
 structured_concurrency_test: tests/concurrency/structured_concurrency_test.c $(SRCDIR)/concurrency/structured_concurrency.c $(SRCDIR)/errors/ergonomic_errors.c $(SRCDIR)/errors/error.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS)
 
 # All optimization system tests
 .PHONY: test-optimization test-optimization-simple test-all-optimization clean-tests
@@ -786,7 +797,9 @@ clean-tests:
 	rm -f shared_variables_test structured_concurrency_test
 # Work-Stealing Test
 WORK_STEALING_TEST = $(BINDIR)/work_stealing_test
-WORK_STEALING_SOURCES = src/concurrency/work_stealing.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
+# work_stealing.c calls dynamic_chunking_create/_update_metrics, so
+# dynamic_chunking.c must be linked in too.
+WORK_STEALING_SOURCES = src/concurrency/work_stealing.c src/concurrency/dynamic_chunking.c src/concurrency/structured_concurrency.c src/errors/error.c src/errors/ergonomic_errors.c src/runtime/actor_system.c
 
 test-work-stealing: $(WORK_STEALING_TEST)
 	@echo "Running work-stealing tests..."
@@ -794,7 +807,7 @@ test-work-stealing: $(WORK_STEALING_TEST)
 
 $(WORK_STEALING_TEST): tests/concurrency/work_stealing_test.c $(WORK_STEALING_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Work-Stealing Demo
 WORK_STEALING_DEMO = $(BINDIR)/work_stealing_demo
@@ -805,7 +818,7 @@ demo-work-stealing: $(WORK_STEALING_DEMO)
 
 $(WORK_STEALING_DEMO): tests/examples/work_stealing_demo.c $(WORK_STEALING_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Dynamic Chunking Test
 DYNAMIC_CHUNKING_TEST = $(BINDIR)/dynamic_chunking_test
@@ -817,7 +830,7 @@ test-dynamic-chunking: $(DYNAMIC_CHUNKING_TEST)
 
 $(DYNAMIC_CHUNKING_TEST): tests/concurrency/dynamic_chunking_test.c $(DYNAMIC_CHUNKING_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Memory Safety Test
 MEMORY_SAFETY_TEST = $(BINDIR)/memory_safety_test
@@ -829,7 +842,7 @@ test-memory-safety: $(MEMORY_SAFETY_TEST)
 
 $(MEMORY_SAFETY_TEST): tests/performance/memory_safety_test.c $(MEMORY_SAFETY_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS)
 
 # Performance Monitoring Test
 PERFORMANCE_MONITORING_TEST = $(BINDIR)/performance_monitoring_test
@@ -841,7 +854,7 @@ test-performance-monitoring: $(PERFORMANCE_MONITORING_TEST)
 
 $(PERFORMANCE_MONITORING_TEST): tests/performance/performance_monitoring_test.c $(PERFORMANCE_MONITORING_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Simple Performance Monitoring Test
 SIMPLE_PERFORMANCE_TEST = $(BINDIR)/simple_performance_test
@@ -853,7 +866,7 @@ test-simple-performance: $(SIMPLE_PERFORMANCE_TEST)
 
 $(SIMPLE_PERFORMANCE_TEST): tests/performance/simple_performance_test.c $(SIMPLE_PERFORMANCE_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS)
 
 # Parallel Capability Security Test
 PARALLEL_CAPABILITY_TEST = $(BINDIR)/parallel_capability_test
@@ -865,7 +878,7 @@ test-parallel-capability: $(PARALLEL_CAPABILITY_TEST)
 
 $(PARALLEL_CAPABILITY_TEST): tests/performance/parallel_capability_test.c $(PARALLEL_CAPABILITY_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Simple Capability Security Test
 SIMPLE_CAPABILITY_TEST = $(BINDIR)/simple_capability_test
@@ -877,7 +890,7 @@ test-simple-capability: $(SIMPLE_CAPABILITY_TEST)
 
 $(SIMPLE_CAPABILITY_TEST): tests/security/simple_capability_test.c $(SIMPLE_CAPABILITY_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Minimal Capability Security Test
 MINIMAL_CAPABILITY_TEST = $(BINDIR)/minimal_capability_test
@@ -912,7 +925,7 @@ test-numa-scheduling: $(NUMA_SCHEDULING_TEST)
 
 $(NUMA_SCHEDULING_TEST): tests/concurrency/numa_scheduling_test.c $(NUMA_SCHEDULING_SOURCES)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS)
 
 # Task 21.4 Advanced Channels Demo
 TASK_21_4_DEMO = $(BINDIR)/task_21_4_advanced_channels_demo
@@ -973,7 +986,7 @@ test-structured-concurrency-enhanced: $(STRUCTURED_CONCURRENCY_ENHANCED_TEST)
 $(STRUCTURED_CONCURRENCY_ENHANCED_TEST): tests/concurrency/structured_concurrency_enhanced_test.c $(STRUCTURED_CONCURRENCY_ENHANCED_SOURCES)
 	@mkdir -p $(BINDIR)
 	@mkdir -p src/concurrency
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Enhanced Structured Concurrency Demo
 STRUCTURED_CONCURRENCY_DEMO = $(BINDIR)/structured_concurrency_demo
@@ -986,7 +999,7 @@ demo-structured-concurrency: $(STRUCTURED_CONCURRENCY_DEMO)
 $(STRUCTURED_CONCURRENCY_DEMO): tests/examples/structured_concurrency_demo.c $(STRUCTURED_CONCURRENCY_DEMO_SOURCES)
 	@mkdir -p $(BINDIR)
 	@mkdir -p src/concurrency
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS) -lm
 
 # Async Resource Management Test
 ASYNC_RESOURCE_TEST = $(BINDIR)/async_resource_test
