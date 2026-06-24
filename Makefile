@@ -542,7 +542,7 @@ test-capability-security: $(CAPABILITY_SECURITY_TEST)
 	@echo "Running capability security system tests..."
 	./$(CAPABILITY_SECURITY_TEST)
 
-$(CAPABILITY_SECURITY_TEST): capability_security_test.c $(CAPABILITY_SECURITY_SOURCES)
+$(CAPABILITY_SECURITY_TEST): tests/security/capability_security_test.c $(CAPABILITY_SECURITY_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -554,7 +554,7 @@ test-security-auditing: $(SECURITY_AUDITING_TEST)
 	@echo "Running security auditing system tests..."
 	./$(SECURITY_AUDITING_TEST)
 
-$(SECURITY_AUDITING_TEST): security_auditing_test.c $(SECURITY_AUDITING_SOURCES)
+$(SECURITY_AUDITING_TEST): tests/security/security_auditing_test.c $(SECURITY_AUDITING_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -566,7 +566,7 @@ test-crypto-security: $(CRYPTO_SECURITY_TEST)
 	@echo "Running cryptographic security system tests..."
 	./$(CRYPTO_SECURITY_TEST)
 
-$(CRYPTO_SECURITY_TEST): crypto_security_simple_test.c $(CRYPTO_SECURITY_SOURCES)
+$(CRYPTO_SECURITY_TEST): tests/security/crypto_security_simple_test.c $(CRYPTO_SECURITY_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -792,7 +792,7 @@ test-work-stealing: $(WORK_STEALING_TEST)
 	@echo "Running work-stealing tests..."
 	./$(WORK_STEALING_TEST)
 
-$(WORK_STEALING_TEST): work_stealing_test.c $(WORK_STEALING_SOURCES)
+$(WORK_STEALING_TEST): tests/concurrency/work_stealing_test.c $(WORK_STEALING_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -815,7 +815,7 @@ test-dynamic-chunking: $(DYNAMIC_CHUNKING_TEST)
 	@echo "Running dynamic chunking tests..."
 	./$(DYNAMIC_CHUNKING_TEST)
 
-$(DYNAMIC_CHUNKING_TEST): dynamic_chunking_test.c $(DYNAMIC_CHUNKING_SOURCES)
+$(DYNAMIC_CHUNKING_TEST): tests/concurrency/dynamic_chunking_test.c $(DYNAMIC_CHUNKING_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -827,7 +827,7 @@ test-memory-safety: $(MEMORY_SAFETY_TEST)
 	@echo "Running memory safety tests..."
 	./$(MEMORY_SAFETY_TEST)
 
-$(MEMORY_SAFETY_TEST): memory_safety_test.c $(MEMORY_SAFETY_SOURCES)
+$(MEMORY_SAFETY_TEST): tests/performance/memory_safety_test.c $(MEMORY_SAFETY_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -839,7 +839,7 @@ test-performance-monitoring: $(PERFORMANCE_MONITORING_TEST)
 	@echo "Running performance monitoring tests..."
 	./$(PERFORMANCE_MONITORING_TEST)
 
-$(PERFORMANCE_MONITORING_TEST): performance_monitoring_test.c $(PERFORMANCE_MONITORING_SOURCES)
+$(PERFORMANCE_MONITORING_TEST): tests/performance/performance_monitoring_test.c $(PERFORMANCE_MONITORING_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -851,7 +851,7 @@ test-simple-performance: $(SIMPLE_PERFORMANCE_TEST)
 	@echo "Running simple performance monitoring tests..."
 	./$(SIMPLE_PERFORMANCE_TEST)
 
-$(SIMPLE_PERFORMANCE_TEST): simple_performance_test.c $(SIMPLE_PERFORMANCE_SOURCES)
+$(SIMPLE_PERFORMANCE_TEST): tests/performance/simple_performance_test.c $(SIMPLE_PERFORMANCE_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -863,7 +863,7 @@ test-parallel-capability: $(PARALLEL_CAPABILITY_TEST)
 	@echo "Running parallel capability security tests..."
 	./$(PARALLEL_CAPABILITY_TEST)
 
-$(PARALLEL_CAPABILITY_TEST): parallel_capability_test.c $(PARALLEL_CAPABILITY_SOURCES)
+$(PARALLEL_CAPABILITY_TEST): tests/performance/parallel_capability_test.c $(PARALLEL_CAPABILITY_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -875,7 +875,7 @@ test-simple-capability: $(SIMPLE_CAPABILITY_TEST)
 	@echo "Running simple capability security tests..."
 	./$(SIMPLE_CAPABILITY_TEST)
 
-$(SIMPLE_CAPABILITY_TEST): simple_capability_test.c $(SIMPLE_CAPABILITY_SOURCES)
+$(SIMPLE_CAPABILITY_TEST): tests/security/simple_capability_test.c $(SIMPLE_CAPABILITY_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
@@ -887,7 +887,7 @@ test-minimal-capability: $(MINIMAL_CAPABILITY_TEST)
 	@echo "Running minimal capability security tests..."
 	./$(MINIMAL_CAPABILITY_TEST)
 
-$(MINIMAL_CAPABILITY_TEST): minimal_capability_test.c $(MINIMAL_CAPABILITY_SOURCES)
+$(MINIMAL_CAPABILITY_TEST): tests/security/minimal_capability_test.c $(MINIMAL_CAPABILITY_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -910,7 +910,7 @@ test-numa-scheduling: $(NUMA_SCHEDULING_TEST)
 	@echo "Running NUMA scheduling tests..."
 	./$(NUMA_SCHEDULING_TEST)
 
-$(NUMA_SCHEDULING_TEST): numa_scheduling_test.c $(NUMA_SCHEDULING_SOURCES)
+$(NUMA_SCHEDULING_TEST): tests/concurrency/numa_scheduling_test.c $(NUMA_SCHEDULING_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
