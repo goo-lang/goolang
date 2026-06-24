@@ -502,14 +502,20 @@ Result_void_ptr work_stealing_parallel_for(
 void work_stealing_scope_destroy(WorkStealingScope* ws_scope) {
     if (!ws_scope) return;
     
-    // Shutdown workers
-    ws_scope->base_scope.shutdown_requested = true;
-    
-    // Wait for workers to finish
-    for (size_t i = 0; i < ws_scope->worker_count; i++) {
-        pthread_join(ws_scope->base_scope.worker_threads[i], NULL);
-    }
-    
+    // Shut the workers down cleanly. task_scope_shutdown broadcasts
+    // tasks_available (waking any worker blocked in cond_wait), joins every
+    // worker thread exactly once, and marks the scope inactive. The old code
+    // here set shutdown_requested and joined directly, which had two bugs:
+    //   1. it never broadcast tasks_available, so workers asleep in cond_wait
+    //      were never woken and the join hung forever; and
+    //   2. task_scope_destroy() below ALSO joins the same threads, so every
+    //      worker got joined twice ("joining already joined thread" -> abort
+    //      or segfault, caught by AddressSanitizer).
+    // Because task_scope_shutdown sets is_active=false, the task_scope_destroy()
+    // call further down no longer re-shuts-down or re-joins.
+    task_scope_shutdown(&ws_scope->base_scope, 5000);
+
+    // Workers are stopped now, so it is safe to tear down their contexts.
     // Clean up worker contexts
     for (size_t i = 0; i < ws_scope->worker_count; i++) {
         work_stealing_deque_destroy(ws_scope->worker_contexts[i].local_deque);
@@ -520,9 +526,12 @@ void work_stealing_scope_destroy(WorkStealingScope* ws_scope) {
     free(ws_scope->overflow_queue);
     pthread_mutex_destroy(&ws_scope->overflow_mutex);
     
-    // Clean up base scope
-    task_scope_destroy(&ws_scope->base_scope);
-    
+    // Clean up the embedded base scope's resources, but do NOT free it — it
+    // lives inside the ws_scope allocation (base_scope is the first member), so
+    // task_scope_destroy would free the wrapper and then free(ws_scope) below
+    // would double-free. task_scope_cleanup frees the internals only.
+    task_scope_cleanup(&ws_scope->base_scope);
+
     free(ws_scope);
 }
 

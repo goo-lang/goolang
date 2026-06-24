@@ -386,14 +386,20 @@ Result_void_ptr task_scope_shutdown(TaskScope* scope, uint64_t timeout_ms) {
     return OK_PTR(NULL);
 }
 
-void task_scope_destroy(TaskScope* scope) {
+// Release every resource a scope owns WITHOUT freeing the scope struct itself.
+// task_scope_destroy uses this for heap-allocated scopes; owners that embed a
+// TaskScope by value (e.g. WorkStealingScope, whose base_scope is the first
+// member) call it directly and free the enclosing block themselves — calling
+// the full task_scope_destroy on an embedded scope would free(&base_scope),
+// i.e. the wrapper, and then the wrapper's own free() double-frees it.
+void task_scope_cleanup(TaskScope* scope) {
     if (!scope) return;
-    
+
     // Ensure scope is shut down
     if (scope->is_active) {
         task_scope_shutdown(scope, 5000);  // 5 second timeout
     }
-    
+
     // Clean up task groups
     if (scope->task_groups) {
         for (size_t i = 0; i < scope->group_count; i++) {
@@ -443,7 +449,11 @@ void task_scope_destroy(TaskScope* scope) {
     pthread_mutex_destroy(&scope->scope_mutex);
     pthread_cond_destroy(&scope->tasks_available);
     pthread_cond_destroy(&scope->scope_completed);
-    
+}
+
+void task_scope_destroy(TaskScope* scope) {
+    if (!scope) return;
+    task_scope_cleanup(scope);
     free(scope);
 }
 

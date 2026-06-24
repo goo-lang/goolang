@@ -333,6 +333,9 @@ typedef struct AsyncOperation {
 // Structured concurrency operations
 TaskScope* task_scope_create(TaskScopeConfig config, const char* name);
 void task_scope_destroy(TaskScope* scope);
+// Release a scope's owned resources without freeing the struct. For owners that
+// embed a TaskScope by value and free the enclosing allocation themselves.
+void task_scope_cleanup(TaskScope* scope);
 Result_void_ptr task_scope_start(TaskScope* scope);
 Result_void_ptr task_scope_shutdown(TaskScope* scope, uint64_t timeout_ms);
 
