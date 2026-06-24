@@ -259,14 +259,18 @@ Result_void_ptr numa_work_stealing_parallel_for(
         } \
     } while(0)
 
-// Platform-specific NUMA support
-#ifdef __linux__
+// Platform-specific NUMA support. Require the libnuma headers to actually be
+// present (libnuma-devel), not just Linux — otherwise this header fails to compile
+// on a box with only the runtime libnuma.so. The implementation uses software
+// fallbacks (regular malloc / sched affinity) and never calls libnuma symbols, so
+// NUMA_PLATFORM_SUPPORTED=0 is fully functional.
+#if defined(__linux__) && __has_include(<numa.h>) && __has_include(<numaif.h>)
 #include <numa.h>
 #include <numaif.h>
 #define NUMA_PLATFORM_SUPPORTED 1
 #else
 #define NUMA_PLATFORM_SUPPORTED 0
-// Provide stub implementations for non-Linux platforms
+// libnuma headers unavailable: software fallbacks are used throughout.
 #endif
 
 // Error codes for NUMA operations
