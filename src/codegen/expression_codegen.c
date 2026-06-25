@@ -673,33 +673,31 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
             break;
             
         case TOKEN_MULTIPLY:
-            // Dereference pointer
+            // Dereference pointer. operand_llvm is the pointer value; the
+            // pointee LLVM type comes from the goo type (LLVMGetElementType is
+            // unusable under opaque pointers).
             if (operand->goo_type->kind == TYPE_POINTER) {
-                result = LLVMBuildLoad2(codegen->builder, LLVMGetElementType(LLVMTypeOf(operand_llvm)), operand_llvm, "deref");
+                LLVMTypeRef pointee = codegen_type_to_llvm(codegen, operand->goo_type->data.pointer.pointee_type);
+                result = LLVMBuildLoad2(codegen->builder, pointee, operand_llvm, "deref");
             } else {
                 codegen_error(codegen, expr->pos, "Cannot dereference non-pointer type");
                 value_info_free(operand);
                 return NULL;
             }
             break;
-            
-        case TOKEN_AND: {
-            // Address-of operator - operand must be an lvalue
-            if (!operand->is_lvalue) {
+
+        case TOKEN_BIT_AND: {
+            // Address-of (`&x`). The generic operand above was loaded (an
+            // identifier auto-loads), so use the lvalue-address helper to get
+            // the operand's storage address rather than its value.
+            ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, unary->operand);
+            if (!addr || !addr->is_lvalue) {
                 codegen_error(codegen, expr->pos, "Cannot take address of non-lvalue");
                 value_info_free(operand);
                 return NULL;
             }
-            
-            // The operand is already a pointer to the value (lvalue)
-            result = operand->llvm_value;
-            
-            // Create pointer type
-            Type* ptr_type = type_new(TYPE_POINTER);
-            ptr_type->data.pointer.pointee_type = operand->goo_type;
-            ptr_type->size = 8;  // Assuming 64-bit pointers
-            ptr_type->align = 8;
-            result_type = ptr_type;
+            result = addr->llvm_value;
+            result_type = type_pointer(addr->goo_type);
             break;
         }
             

@@ -45,10 +45,10 @@ jobs:
 
       - name: Language probes
         # End-to-end .goo gates: compile and run real Goo programs through the
-        # actual compiler. Covers the M1 capabilities (lvalue assignment, file
-        # I/O) plus the baseline construct probe. Excludes the CompCert-gated
-        # bootstrap probe from `make verify`, which needs ccomp.
+        # actual compiler. Covers the baseline constructs plus the M1/M2/M3
+        # capabilities (lvalue assignment, file I/O, pointers, switch, methods).
+        # Excludes the CompCert-gated bootstrap probe from `make verify`.
         run: |
           LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
           make CC=gcc-14 LLVM_CONFIG="${LLVMCFG:-llvm-config}" \
-            baseline-probe lvalue-probe file-io-probe
+            baseline-probe lvalue-probe file-io-probe pointer-probe switch-probe methods-probe

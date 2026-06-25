@@ -381,7 +381,10 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
                     var->borrow_count++;
                 }
             }
-            result_type = type_reference(operand_type, 0);  // immutable reference by default
+            // Address-of yields a pointer. (A borrow/reference type has no LLVM
+            // mapping and the codegen + deref paths reason in TYPE_POINTER, so
+            // produce a pointer here to keep typecheck and codegen in agreement.)
+            result_type = type_pointer(operand_type);
             break;
             
         case TOKEN_MULTIPLY:  // * - dereference
