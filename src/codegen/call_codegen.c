@@ -74,6 +74,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_os_getenv", TYPE_STRING, 0);
             }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "WriteFile") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_sys_write_file", TYPE_INT32, 0);
+            }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadByte") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_sys_read_byte", TYPE_INT32, 0);
+            }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "FileSize") == 0) {
+                return codegen_generate_stdlib_call(codegen, checker, expr,
+                                                    "goo_sys_file_size", TYPE_INT32, 0);
+            }
             if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_sqrt", TYPE_FLOAT64, 0);

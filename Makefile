@@ -89,7 +89,7 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/deadlock.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o
 
 # Main targets
 COMPILER = $(BINDIR)/goo
@@ -306,6 +306,20 @@ lvalue-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M1 file-I/O gate: a Goo program writes a file, queries its size, and reads
+# bytes back via os.WriteFile/FileSize/ReadByte (lowered to the goo_sys_*
+# runtime). Reading source/writing output is a prerequisite for self-hosting.
+file-io-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/file_io_probe examples/file_io_probe.goo
+	@./build/file_io_probe > build/file_io_probe.actual.txt
+	@if diff -u examples/file_io_probe.expected.txt build/file_io_probe.actual.txt; then \
+	  echo "file-io-probe: PASS"; \
+	else \
+	  echo "file-io-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # M7-stdlib-expansion completion gate: compile + run the stdlib smoke
 # test, which exercises one function from each of fmt, strings, math, os
 # and exits 0. Used by `coord milestone-status M7-stdlib-expansion`.
@@ -383,7 +397,7 @@ m12-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe
+verify: baseline-probe lvalue-probe file-io-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

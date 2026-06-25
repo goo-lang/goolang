@@ -563,6 +563,18 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, string_t);
     }
 
+    // File I/O (M1): scalar signatures, all returning int (bytes written /
+    // byte value / size, or a negative value on error).
+    //   os.WriteFile(path string, data string) -> int
+    //   os.ReadByte(path string, offset int)   -> int
+    //   os.FileSize(path string)               -> int
+    if (strcmp(package, "os") == 0 &&
+        (strcmp(name, "WriteFile") == 0 || strcmp(name, "ReadByte") == 0 ||
+         strcmp(name, "FileSize") == 0)) {
+        Type* int_t = type_checker_get_builtin(checker, TYPE_INT32);
+        return type_function(NULL, 0, int_t);
+    }
+
     // math.Pi -> float64. A package VALUE member, not a call — the
     // returned type is the value's type, no type_function wrapper.
     if (strcmp(package, "math") == 0 && strcmp(name, "Pi") == 0) {

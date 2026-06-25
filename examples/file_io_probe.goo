@@ -1,0 +1,28 @@
+// file_io_probe: M1 file-I/O gate. Round-trips a file through the OS using the
+// os.WriteFile / os.FileSize / os.ReadByte builtins (lowered to goo_sys_* in the
+// runtime). Writes "hello", confirms the on-disk size, then reads bytes back and
+// checks their values ('h'==104, 'o'==111) — proving data flows Goo -> file ->
+// Goo. Prints a single PASS line; `./bin/goo examples/file_io_probe.goo` must
+// produce it.
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+    path := "/tmp/goo_file_io_probe.txt"
+
+    n := os.WriteFile(path, "hello")
+    if n == 5 {
+        sz := os.FileSize(path)
+        if sz == 5 {
+            b0 := os.ReadByte(path, 0)
+            b4 := os.ReadByte(path, 4)
+            if b0 == 104 {
+                if b4 == 111 {
+                    fmt.Println("PASS: file write/size/read round-trip")
+                }
+            }
+        }
+    }
+}

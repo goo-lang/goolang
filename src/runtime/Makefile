@@ -8,7 +8,7 @@ INCLUDE_DIR = ../../include
 BUILD_DIR = ../../build
 
 # Source files
-SOURCES = runtime.c platform.c concurrency.c channels.c sync.c
+SOURCES = runtime.c platform.c concurrency.c channels.c sync.c io.c
 OBJECTS = $(SOURCES:.c=.o)
 DEBUG_OBJECTS = $(SOURCES:.c=.debug.o)
 
