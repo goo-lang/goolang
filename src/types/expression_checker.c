@@ -856,6 +856,13 @@ Type* type_check_match_expr(TypeChecker* checker, ASTNode* expr) {
         scope_push(checker);
 
         if (p->pattern_type == PATTERN_WILDCARD) {
+            if (has_default) {
+                type_error(checker, c->pos,
+                    "duplicate default arm in match");
+                scope_pop(checker);
+                free(covered);
+                return NULL;
+            }
             has_default = 1;
         } else if (is_enum && p->pattern_type == PATTERN_DESTRUCTURE) {
             const char* vn = p->data.destructure.type_name;
