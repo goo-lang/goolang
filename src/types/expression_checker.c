@@ -106,7 +106,35 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
                    lit->type_name);
         return NULL;
     }
-    Type* struct_type = named->type;
+    Type* named_type = named->type;
+
+    // For enum variant construction (e.g. `Circle{radius: 5}` where Circle is
+    // a variant of enum Shape): resolve the variant and use its payload struct
+    // for the field-checking block below. The returned/stamped type is the ENUM,
+    // not the payload, so the literal is assignable to an enum-typed variable.
+    // Codegen recovers the variant by searching node_type->data.enum_type.variants
+    // for lit->type_name.
+    Type* enum_type = NULL;
+    if (named_type->kind == TYPE_ENUM) {
+        EnumVariant* variant = NULL;
+        for (size_t i = 0; i < named_type->data.enum_type.variant_count; i++) {
+            if (strcmp(named_type->data.enum_type.variants[i].name, lit->type_name) == 0) {
+                variant = &named_type->data.enum_type.variants[i];
+                break;
+            }
+        }
+        if (!variant) {
+            type_error(checker, expr->pos, "'%s' is not a variant of enum '%s'",
+                       lit->type_name, named_type->data.enum_type.name);
+            return NULL;
+        }
+        // Redirect struct_type to the variant's payload so the existing
+        // keyed/positional checking block runs against the payload fields.
+        enum_type = named_type;
+        named_type = variant->payload;
+    }
+
+    Type* struct_type = named_type;
     if (struct_type->kind != TYPE_STRUCT) {
         type_error(checker, expr->pos,
                    "'%s' is not a struct type, cannot use composite literal",
@@ -178,8 +206,11 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
     }
     // Empty literal `Point{}` — all fields zero-valued, nothing to check.
 
-    expr->node_type = struct_type;
-    return struct_type;
+    // For enum variants, stamp the ENUM type (not the payload) so the literal
+    // is assignable to an enum-typed variable. Plain struct path is unchanged.
+    Type* result_type = enum_type ? enum_type : struct_type;
+    expr->node_type = result_type;
+    return result_type;
 }
 
 Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
