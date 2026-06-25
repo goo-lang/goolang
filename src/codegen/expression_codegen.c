@@ -247,6 +247,119 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
 #endif
 }
 
+#if LLVM_AVAILABLE
+// Compute the ADDRESS of an assignable lvalue without loading its value.
+// codegen_generate_expression auto-loads identifiers (and a selector spills a
+// loaded struct base to a throwaway temp), which is correct for reads but loses
+// stores. This helper keeps everything as addresses so `x = v`, `s.field = v`,
+// and `a[i] = v` write to the real storage. Returns a ValueInfo whose
+// llvm_value is a pointer to the storage (is_lvalue == 1), or NULL if the
+// expression is not an addressable lvalue.
+static ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+    if (!expr) return NULL;
+
+    if (expr->type == AST_IDENTIFIER) {
+        IdentifierNode* ident = (IdentifierNode*)expr;
+        ValueInfo* v = codegen_lookup_value(codegen, ident->name);
+        if (!v || !v->is_lvalue) return NULL;
+        return v; // the variable's alloca
+    }
+
+    if (expr->type == AST_SELECTOR_EXPR) {
+        SelectorExprNode* sel = (SelectorExprNode*)expr;
+        ValueInfo* base = codegen_emit_lvalue_address(codegen, checker, sel->expr);
+        if (!base) return NULL;
+
+        // Resolve the struct's address. For a pointer-to-struct variable the
+        // base alloca holds the pointer, so load it to reach the struct.
+        Type* st = base->goo_type;
+        LLVMValueRef struct_addr = base->llvm_value;
+        if (st && st->kind == TYPE_POINTER && st->data.pointer.pointee_type &&
+            st->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+            struct_addr = LLVMBuildLoad2(codegen->builder,
+                                         LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                                         base->llvm_value, "struct_ptr");
+            st = st->data.pointer.pointee_type;
+        }
+        if (!st || st->kind != TYPE_STRUCT) return NULL;
+
+        int field_index = -1;
+        StructField* field = NULL;
+        for (size_t i = 0; i < st->data.struct_type.field_count; i++) {
+            if (strcmp(st->data.struct_type.fields[i].name, sel->selector) == 0) {
+                field_index = (int)i;
+                field = &st->data.struct_type.fields[i];
+                break;
+            }
+        }
+        if (field_index == -1) return NULL;
+
+        LLVMValueRef indices[] = {
+            LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
+            LLVMConstInt(LLVMInt32TypeInContext(codegen->context), field_index, 0)
+        };
+        LLVMValueRef field_ptr = LLVMBuildGEP2(codegen->builder,
+                                               codegen_type_to_llvm(codegen, st),
+                                               struct_addr, indices, 2, sel->selector);
+        ValueInfo* out = value_info_new(sel->selector, field_ptr, field->type);
+        out->is_lvalue = 1;
+        return out;
+    }
+
+    if (expr->type == AST_INDEX_EXPR) {
+        IndexExprNode* ix = (IndexExprNode*)expr;
+        ValueInfo* base = codegen_emit_lvalue_address(codegen, checker, ix->expr);
+        if (!base) return NULL;
+        Type* base_type = base->goo_type;
+        if (!base_type) return NULL;
+
+        ValueInfo* index_val = codegen_generate_expression(codegen, checker, ix->index);
+        if (!index_val) return NULL;
+        if (index_val->is_lvalue && index_val->goo_type) {
+            LLVMTypeRef it = codegen_type_to_llvm(codegen, index_val->goo_type);
+            if (it) {
+                index_val->llvm_value = LLVMBuildLoad2(codegen->builder, it, index_val->llvm_value, "idx");
+                index_val->is_lvalue = 0;
+            }
+        }
+
+        if (base_type->kind == TYPE_ARRAY) {
+            // base->llvm_value is a pointer to the array; GEP the element.
+            LLVMValueRef indices[] = {
+                LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
+                index_val->llvm_value
+            };
+            LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
+                                                  codegen_type_to_llvm(codegen, base_type),
+                                                  base->llvm_value, indices, 2, "array_elem");
+            ValueInfo* out = value_info_new(NULL, elem_ptr, base_type->data.array.element_type);
+            out->is_lvalue = 1;
+            return out;
+        }
+
+        if (base_type->kind == TYPE_SLICE) {
+            // base->llvm_value points to the slice struct { ptr, len }; load it,
+            // take the data pointer, and GEP into the backing buffer.
+            Type* elem_type = base_type->data.slice.element_type;
+            LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder,
+                                                    codegen_type_to_llvm(codegen, base_type),
+                                                    base->llvm_value, "slice_load");
+            LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, slice_val, 0, "slice_ptr");
+            LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
+                                                  codegen_type_to_llvm(codegen, elem_type),
+                                                  data_ptr, &index_val->llvm_value, 1, "slice_elem");
+            ValueInfo* out = value_info_new(NULL, elem_ptr, elem_type);
+            out->is_lvalue = 1;
+            return out;
+        }
+
+        return NULL; // maps / pointers: not an addressable element lvalue here
+    }
+
+    return NULL;
+}
+#endif
+
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -258,26 +371,38 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     
     // Special handling for assignment
     if (binary->operator == TOKEN_ASSIGN) {
-        // Left side must be an lvalue
-        if (binary->left->type != AST_IDENTIFIER) {
-            codegen_error(codegen, expr->pos, "Assignment target must be an identifier");
-            return NULL;
-        }
-        
-        IdentifierNode* ident = (IdentifierNode*)binary->left;
-        ValueInfo* target = codegen_lookup_value(codegen, ident->name);
+        // Resolve the assignment target's address. Three lvalue forms are
+        // supported; each yields a ValueInfo whose llvm_value is a pointer to
+        // the storage location (is_lvalue == 1):
+        //   - identifier  -> the variable's alloca (codegen_lookup_value)
+        //   - field s.x   -> a struct GEP (codegen_generate_selector_expr)
+        //   - index a[i]  -> an element GEP (codegen_generate_index_expr)
+        // The selector/index read paths already compute and return these GEPs
+        // unloaded, so assignment reuses them directly.
+        ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, binary->left);
         if (!target || !target->is_lvalue) {
-            codegen_error(codegen, expr->pos, "Invalid assignment target '%s'", ident->name);
+            codegen_error(codegen, expr->pos,
+                          "Assignment target must be an addressable lvalue "
+                          "(identifier, field, or index)");
             return NULL;
         }
-        
-        // Generate right side value
+
+        // Generate the right side value. If it is itself an lvalue (e.g.
+        // `a[i] = b[j]` or `x = s.y`), dereference it to the scalar value
+        // before storing — mirroring the auto-load consumers do elsewhere.
         ValueInfo* value = codegen_generate_expression(codegen, checker, binary->right);
         if (!value) return NULL;
-        
-        // Store the value
+        if (value->is_lvalue && value->goo_type) {
+            LLVMTypeRef vt = codegen_type_to_llvm(codegen, value->goo_type);
+            if (vt) {
+                value->llvm_value = LLVMBuildLoad2(codegen->builder, vt, value->llvm_value, "rval");
+                value->is_lvalue = 0;
+            }
+        }
+
+        // Store the value into the target's address.
         LLVMBuildStore(codegen->builder, value->llvm_value, target->llvm_value);
-        
+
         // Return the stored value
         return value;
     }

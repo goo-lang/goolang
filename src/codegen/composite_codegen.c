@@ -394,16 +394,34 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
     // allocate a stack buffer and store each — defer to future work.
     LLVMTypeRef arr_type = LLVMArrayType(llvm_elem, count);
     LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
-    LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
-    LLVMSetInitializer(global, arr_const);
-    LLVMSetLinkage(global, LLVMPrivateLinkage);
-    LLVMSetGlobalConstant(global, 1);
     free(elem_vals);
+
+    // Heap-allocate writable backing for the literal so the slice can be
+    // mutated (e.g. `sl[i] = v`) and stays valid if it escapes the current
+    // frame. A read-only global would segfault on store; a stack alloca would
+    // dangle on escape. The const array is stored once into the buffer. The
+    // backing is not reclaimed — consistent with the prototype's current
+    // allocate-and-leak memory model. Falls back to a read-only global (no
+    // mutation) only if the runtime allocator is unavailable.
+    LLVMValueRef data_ptr;
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+    if (alloc_fn && count > 0) {
+        LLVMValueRef size = LLVMSizeOf(arr_type);
+        data_ptr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
+                                  alloc_fn, &size, 1, "slice_backing");
+        LLVMBuildStore(codegen->builder, arr_const, data_ptr);
+    } else {
+        LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
+        LLVMSetInitializer(global, arr_const);
+        LLVMSetLinkage(global, LLVMPrivateLinkage);
+        LLVMSetGlobalConstant(global, 1);
+        data_ptr = global;
+    }
 
     // Build the slice struct { ptr, i64 }.
     LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
     LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
-    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, global, 0, "slice_ptr");
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, data_ptr, 0, "slice_ptr");
     LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
     slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 1, "slice_len");
 
