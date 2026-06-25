@@ -1,0 +1,55 @@
+name: demos
+
+# Minimal gate: build and run the demo targets so build/link/runtime bit-rot
+# is caught automatically. Intentionally scoped to the demos (fast, focused);
+# extend with the broader `make test` suite later if desired.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  demos:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        # gcc-14: the Makefile uses -std=c23, which gcc-13 (the distro default)
+        # does not accept. clang + libblocksruntime-dev: three concurrency
+        # targets compile with `clang -fblocks` linked against -lBlocksRuntime.
+        # json-c / curl / zlib: LDFLAGS links -ljson-c -lcurl -lz.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make gcc-14 clang libblocksruntime-dev \
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Compiler versions
+        run: |
+          gcc-14 --version | head -1
+          clang --version | head -1
+
+      - name: Build and run demos
+        # Each demo-* target builds AND runs (non-zero exit fails the job).
+        # CC=gcc-14 overrides the Makefile's hardcoded `CC = gcc`; BLOCKS_CC
+        # stays clang. A demo crash or non-zero exit is a real failure here.
+        run: |
+          make CC=gcc-14 demo-work-stealing
+          make CC=gcc-14 demo-structured-concurrency
+          make CC=gcc-14 demo-async-resource
+          make CC=gcc-14 demo-reactive-programming
+          make CC=gcc-14 runtime_optimization_demo
+          ./runtime_optimization_demo
+
+      - name: AddressSanitizer check (async resource)
+        # Guards the NULL-deref / handle-leak class of bug that fix #9 addressed.
+        # detect_leaks=0 isolates memory-safety faults from pre-existing,
+        # unrelated shutdown-accounting leaks in the demo.
+        run: |
+          clang -std=c23 -g -D_GNU_SOURCE -fsanitize=address -Iinclude \
+            -o async_resource_demo_asan \
+            examples/async_resource_demo.c src/async/async_resource.c src/errors/error.c \
+            -lpthread
+          ASAN_OPTIONS=detect_leaks=0 ./async_resource_demo_asan
