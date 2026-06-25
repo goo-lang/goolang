@@ -11,6 +11,25 @@ Methodology note: this codebase has a documented history of claims outrunning re
 we just repaired was "implemented" but bit-rotted). Findings below were verified by reading source and
 inspecting the runtime build, not by trusting comments/docs.
 
+## Status update (2026-06-25) — M1 mostly delivered
+
+Execution has begun. **M1's two foundational items are done and merged**, and one roadmap assumption
+was proven false along the way:
+
+- **Lvalue assignment** — done (PR #12). `s.field = v`, `a[i] = v`, and slice-element stores now work
+  via a new `codegen_emit_lvalue_address` (an address path that doesn't auto-load); slice literals are
+  now heap-backed instead of read-only globals.
+- **File I/O** — done (PR #13), but **not via `extern`**. The spike found the `extern`/FFI mechanism is
+  non-functional end-to-end (see the correction to strategic decision #3 below), so `os.WriteFile` /
+  `os.ReadByte` / `os.FileSize` were delivered as **builtins lowered to `goo_sys_*` runtime functions**
+  (`src/runtime/io.c`), mirroring how `strings.*` already works.
+- **Portability fixes** the work surfaced: emitted binaries now link on Ubuntu/PIE-default distros
+  (`-no-pie`), and CI selects the newest `llvm-config` (codegen segfaults on LLVM 16).
+- **CI now compiles and runs real `.goo` programs** (`baseline-probe`, `lvalue-probe`, `file-io-probe`)
+  — previously CI only exercised the compiler's C internals.
+
+**Remaining in M1:** heap allocation / `new` / real pointer semantics. M2+ unchanged.
+
 ## Assessment: No — and not close
 
 Goo today compiles a **toy subset** end-to-end (lex → parse → typecheck → LLVM IR → object → link →
@@ -24,8 +43,8 @@ But self-hosting needs foundational capabilities that are **missing or broken**,
 
 | Blocker | Status (verified) | Why fatal for a compiler |
 |---|---|---|
-| **File I/O** | `extern _sys_open/_sys_read/...` declared in `stdlib/os/os.goo:610+`; the runtime archive `lib/libgoo_runtime.a` (`RUNTIME_LIB`, `Makefile:87`) is a **build artifact** assembled from **concurrency-only** sources (`runtime.c platform.c concurrency.c channels.c sync.c`, `src/runtime/Makefile`) — **no I/O object**, so the `_sys_*` symbols have no backing | Can't read source input |
-| **Lvalue assignment** (`s.x=`, `a[i]=`) | rejected at `src/codegen/expression_codegen.c:263` — any non-`AST_IDENTIFIER` target is "Assignment target must be an identifier" | Can't mutate symbol tables / grow AST arrays |
+| **File I/O** | ~~no runtime backing~~ **RESOLVED (PR #13)** via builtins (`os.WriteFile/ReadByte/FileSize` → `goo_sys_*` in `src/runtime/io.c`), not `extern` — the originally-assumed `extern` path was non-functional (see decision #3) | Can't read source input |
+| **Lvalue assignment** (`s.x=`, `a[i]=`) | ~~rejected at `expression_codegen.c:263`~~ **RESOLVED (PR #12)** via `codegen_emit_lvalue_address`; struct fields, array + slice elements now store correctly | Can't mutate symbol tables / grow AST arrays |
 | **Enums / tagged unions** | no grammar rule in `src/parser/parser.y` | Can't represent AST nodes idiomatically |
 | **Methods / receivers** | `func_decl` (`parser.y:247`) matches only `FUNC identifier LPAREN …`; no receiver form `func (r T) M()` | No idiomatic compiler structure |
 | **First-class fns / closures** | only incidental func-pointer plumbing (`expression_codegen.c:165`, `statement_codegen.c:538`); no closure path | No visitor/dispatch tables |
@@ -51,8 +70,17 @@ Scale for context: the C compiler is ~95k lines (`types` 23k, `codegen` 6k, `par
    Goo *it is itself written in*. Deliberately write stage-1 in a minimal, conservative subset so
    Milestones 2–3 don't have to implement every language feature — only what the compiler's own source
    uses.
-3. **Reuse the C runtime via `extern`.** Memory, file I/O, and syscalls can be C functions the Goo
-   compiler calls through `extern` (already supported), rather than reimplemented in Goo.
+3. **Reuse the C runtime via compiler builtins.** Memory, file I/O, and syscalls are C functions the
+   Goo compiler calls into, rather than reimplemented in Goo.
+   **Correction (2026-06-25):** the original claim — "reuse the C runtime via `extern` (already
+   supported)" — is **false**. `extern`/FFI is non-functional end-to-end: `AST_EXTERN_DECL` is handled
+   in *neither* the type checker nor codegen, so an extern decl never emits an LLVM `declare` and calls
+   can't link; `stdlib/os/os.goo` doesn't even parse. The working mechanism is **builtins lowered to
+   runtime symbols** — add the `package.func` to the dispatch tables in
+   `src/types/expression_checker.c` (typecheck) and `src/codegen/call_codegen.c` (lowering), declare the
+   symbol in `src/codegen/runtime_integration.c`, and implement it in C under `src/runtime/`. This is
+   how `fmt`/`strings`/`math`/`os.*` work, and how M1 file I/O was delivered. Building a general
+   `extern` FFI remains possible but is a separate, larger effort, not a precondition.
 
 ## Roadmap shape (dependency order)
 
@@ -71,16 +99,17 @@ flowchart LR
 ## Roadmap (staged; each milestone independently testable)
 
 ### M1 — I/O & mutation foundations *(unblocks writing any real program)*
-- Implement real file-I/O runtime backing (`_sys_open/_sys_read/_sys_write/_sys_close`) as new C in
-  `src/runtime/`. The runtime archive is assembled by `src/runtime/Makefile` and wired into the build
-  via `RUNTIME_LIB` (`Makefile:87`); add the new sources to that `SOURCES` list and export the
-  symbols, then let `stdlib/os/os.goo` reach them through its existing `extern` declarations. Add
-  stdin/stdout and `os.Args`/argv exposure.
-- Fix lvalue assignment in `src/codegen/expression_codegen.c:263` so `s.field = v` and `arr[i] = v`
-  generate stores (GEP + store), not just identifier stores.
-- Working heap allocation + pointer/reference semantics (`&x`, deref, a `new`/alloc path).
-- Gate: a `.goo` program that opens a file, reads it, mutates a struct/array, writes output — compiles
-  and runs.
+- ✅ **File I/O — done (PR #13).** Delivered as builtins (`os.WriteFile/ReadByte/FileSize`) lowered to
+  scalar-ABI `goo_sys_*` functions in `src/runtime/io.c`, wired into `RUNTIME_OBJS` (`Makefile:92`).
+  *Not* via `extern` (non-functional — see decision #3). Gate: `examples/file_io_probe.goo`.
+  Still to extend: stdin/stdout, `os.Args`/argv, and richer reads (whole-file, `[]byte` buffers) once
+  M2/M3 land slice-typed params.
+- ✅ **Lvalue assignment — done (PR #12).** `s.field = v`, `a[i] = v`, slice elements, via
+  `codegen_emit_lvalue_address`. Gate: `examples/lvalue_probe.goo`.
+- ⬜ **Heap allocation + pointer/reference semantics** (`&x`, deref, a `new`/alloc path) — the
+  remaining M1 item; `&x`/deref are currently buggy in the type checker.
+- Gate (overall): a `.goo` program that opens a file, reads it, mutates a struct/array, writes output —
+  the file-I/O + lvalue halves of this are now demonstrated by the probes above.
 
 ### M2 — Data modeling for an AST
 - Enums / tagged unions: grammar (`parser.y`) + typecheck (`src/types`) + codegen (discriminant +
@@ -127,8 +156,8 @@ self-hosting; pursue only if a verified trusted base is a goal. Keep out of the 
 ## Effort & sequencing
 - M1–M4 are the bulk (language/runtime completeness) and are **multi-month**; the optimistic
   "10–15% away" framing does not survive the evidence above — these are load-bearing, not polish.
-- M1 is the highest-leverage, most-isolated starting point (file I/O + lvalue assignment) and is the
-  natural first milestone if/when execution begins.
+- M1's file-I/O + lvalue-assignment halves are **done** (PRs #12, #13); heap/pointers remain. It was
+  the highest-leverage, most-isolated starting point, as expected.
 - Dependencies are roughly linear M1→M2→M3→M4→M5→M6; within M2/M3 several items can parallelize.
 
 ## Verification (how we'll know it's achieved)
