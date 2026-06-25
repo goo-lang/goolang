@@ -981,3 +981,26 @@ DOMAccessNode* ast_dom_access_new(const char* api_name, const char* method_name,
 
 // Utility functions
 
+EnumTypeNode* ast_enum_type_new(ASTNode* variants, Position pos) {
+    EnumTypeNode* n = (EnumTypeNode*)calloc(1, sizeof(EnumTypeNode));
+    if (!n) return NULL;
+    n->base.type = AST_ENUM_TYPE;
+    n->base.pos = pos;
+    n->base.node_type = NULL;
+    n->base.next = NULL;
+    n->variants = variants;
+    return n;
+}
+
+EnumVariantNode* ast_enum_variant_new(const char* name, ASTNode* fields, Position pos) {
+    EnumVariantNode* n = (EnumVariantNode*)calloc(1, sizeof(EnumVariantNode));
+    if (!n) return NULL;
+    n->base.type = AST_ENUM_VARIANT;
+    n->base.pos = pos;
+    n->base.node_type = NULL;
+    n->base.next = NULL;
+    n->name = name ? strdup(name) : NULL;
+    n->fields = fields;
+    return n;
+}
+

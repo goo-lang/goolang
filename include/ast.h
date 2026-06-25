@@ -123,6 +123,8 @@ typedef enum {
     // values of pre-existing enum entries — those values are baked into
     // switch-by-int dispatches across the codebase.
     AST_STRUCT_LITERAL,    // Point{x: 3, y: 4} and Point{3, 4}
+    AST_ENUM_TYPE,         // type X enum { Variant{...} ... }
+    AST_ENUM_VARIANT,      // a single enum variant: Name{ field: T ... }
 
     AST_NODE_COUNT
 } ASTNodeType;
@@ -519,6 +521,21 @@ typedef struct {
     ASTNode base;
     struct ASTNode* fields;
 } StructTypeNode;
+
+// Enum (tagged union) type: `enum { Circle{radius int}  Rect{w int; h int} }`.
+// `variants` is a next-chained list of EnumVariantNode.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* variants;
+} EnumTypeNode;
+
+// A single enum variant. `fields` is a next-chained list of VarDeclNode
+// (same shape as struct fields), or NULL for a payloadless variant.
+typedef struct {
+    ASTNode base;
+    char* name;
+    struct ASTNode* fields;
+} EnumVariantNode;
 
 // Slice literal: `[1, 2, 3]`. Elements are a `next`-chained list of
 // expression nodes. The element type is inferred from the first
@@ -981,6 +998,8 @@ ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Positio
 FuncDeclNode* ast_func_decl_new(const char* name, Position pos);
 ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos);
 VarDeclNode* ast_var_decl_new(Position pos);
+EnumTypeNode* ast_enum_type_new(struct ASTNode* variants, Position pos);
+EnumVariantNode* ast_enum_variant_new(const char* name, struct ASTNode* fields, Position pos);
 IdentifierNode* ast_identifier_new(const char* name, Position pos);
 LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos);
 BinaryExprNode* ast_binary_expr_new(ASTNode* left, TokenType op, ASTNode* right, Position pos);
