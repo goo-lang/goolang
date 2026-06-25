@@ -274,34 +274,15 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     return field_val;
 #endif
 }
-// `Point{x: 3, y: 4}` / `Point{3, 4}` — build the struct value as an
-// rvalue aggregate: start from the zero value (so omitted keyed fields
-// get Go zero-value semantics for free, matching the zero-initializing
-// alloca `var p Point` already gets) and InsertValue each provided
-// field at its declared index. Selector codegen already handles rvalue
-// struct bases by spilling to a temporary alloca.
-ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
-#if !LLVM_AVAILABLE
-    codegen_error(codegen, expr->pos, "LLVM support not available");
-    return NULL;
-#else
-    if (!codegen || !checker || !expr || expr->type != AST_STRUCT_LITERAL) return NULL;
-
-    StructLiteralNode* lit = (StructLiteralNode*)expr;
-    Type* struct_type = expr->node_type;
-    if (!struct_type || struct_type->kind != TYPE_STRUCT) {
-        codegen_error(codegen, expr->pos,
-                      "Struct literal '%s' missing type info from type check",
-                      lit->type_name);
-        return NULL;
-    }
-
+// codegen_build_struct_value builds an aggregate LLVMValueRef for a struct
+// literal, inserting each field into the zero struct value via InsertValue.
+// Extracted from codegen_generate_struct_lit so both the plain struct path
+// and the enum-variant payload path can reuse it (DRY).
+// Returns the aggregate on success, NULL on error.
+static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeChecker* checker,
+                                               StructLiteralNode* lit, Type* struct_type) {
     LLVMTypeRef llvm_struct = codegen_type_to_llvm(codegen, struct_type);
-    if (!llvm_struct) {
-        codegen_error(codegen, expr->pos,
-                      "Failed to lower struct type '%s'", lit->type_name);
-        return NULL;
-    }
+    if (!llvm_struct) return NULL;
 
     StructField* fields = struct_type->data.struct_type.fields;
     size_t decl_count = struct_type->data.struct_type.field_count;
@@ -348,6 +329,103 @@ ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* chec
                                    fields[field_index].name ? fields[field_index].name : "field");
         value_info_free(val);
     }
+
+    return agg;
+}
+
+// `Point{x: 3, y: 4}` / `Point{3, 4}` — build the struct value as an
+// rvalue aggregate: start from the zero value (so omitted keyed fields
+// get Go zero-value semantics for free, matching the zero-initializing
+// alloca `var p Point` already gets) and InsertValue each provided
+// field at its declared index. Selector codegen already handles rvalue
+// struct bases by spilling to a temporary alloca.
+//
+// Also handles enum variant construction: `Circle{radius: 5}` when the
+// declared type is a TYPE_ENUM. Builds the payload aggregate against the
+// variant's payload TYPE_STRUCT, then stores {tag, payload} through a
+// stack alloca and loads the whole enum value.
+ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_STRUCT_LITERAL) return NULL;
+
+    StructLiteralNode* lit = (StructLiteralNode*)expr;
+    Type* struct_type = expr->node_type;
+    if (!struct_type) {
+        codegen_error(codegen, expr->pos,
+                      "Struct literal '%s' missing type info from type check",
+                      lit->type_name);
+        return NULL;
+    }
+
+    // Enum variant construction: `Circle{radius: 5}` where the declared type
+    // is a TYPE_ENUM. Find the matching variant, build its payload, then
+    // write {tag, payload} into an alloca and load the resulting enum value.
+    if (struct_type->kind == TYPE_ENUM) {
+        EnumVariant* variant = NULL;
+        for (size_t i = 0; i < struct_type->data.enum_type.variant_count; i++) {
+            if (strcmp(struct_type->data.enum_type.variants[i].name, lit->type_name) == 0) {
+                variant = &struct_type->data.enum_type.variants[i];
+                break;
+            }
+        }
+        if (!variant) {
+            codegen_error(codegen, expr->pos, "No variant '%s' in enum", lit->type_name);
+            return NULL;
+        }
+
+        LLVMTypeRef enum_ty = codegen_type_to_llvm(codegen, struct_type);
+        LLVMTypeRef payload_ty = codegen_type_to_llvm(codegen, variant->payload);
+        if (!enum_ty || !payload_ty) {
+            codegen_error(codegen, expr->pos,
+                          "Failed to lower enum or payload type for variant '%s'",
+                          lit->type_name);
+            return NULL;
+        }
+
+        // Build the payload aggregate via the shared helper.
+        LLVMValueRef payload_val =
+            codegen_build_struct_value(codegen, checker, lit, variant->payload);
+        if (!payload_val) return NULL;
+
+        // alloca the whole enum; store tag into field 0; bitcast field-1
+        // slot to payload-struct-pointer; store payload; load the enum.
+        LLVMValueRef tmp = codegen_create_alloca(codegen, enum_ty, "enum_tmp");
+        LLVMValueRef tag_ptr =
+            LLVMBuildStructGEP2(codegen->builder, enum_ty, tmp, 0, "tag_ptr");
+        LLVMBuildStore(codegen->builder,
+            LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                         (unsigned long long)variant->tag, 0),
+            tag_ptr);
+        LLVMValueRef pslot =
+            LLVMBuildStructGEP2(codegen->builder, enum_ty, tmp, 1, "payload_slot");
+        LLVMValueRef pcast =
+            LLVMBuildBitCast(codegen->builder, pslot,
+                             LLVMPointerType(payload_ty, 0), "payload_cast");
+        LLVMBuildStore(codegen->builder, payload_val, pcast);
+        LLVMValueRef loaded =
+            LLVMBuildLoad2(codegen->builder, enum_ty, tmp, "enum_val");
+        return value_info_new(NULL, loaded, struct_type);
+    }
+
+    if (struct_type->kind != TYPE_STRUCT) {
+        codegen_error(codegen, expr->pos,
+                      "Struct literal '%s' missing type info from type check",
+                      lit->type_name);
+        return NULL;
+    }
+
+    LLVMTypeRef llvm_struct = codegen_type_to_llvm(codegen, struct_type);
+    if (!llvm_struct) {
+        codegen_error(codegen, expr->pos,
+                      "Failed to lower struct type '%s'", lit->type_name);
+        return NULL;
+    }
+
+    LLVMValueRef agg = codegen_build_struct_value(codegen, checker, lit, struct_type);
+    if (!agg) return NULL;
 
     return value_info_new(NULL, agg, struct_type);
 #endif

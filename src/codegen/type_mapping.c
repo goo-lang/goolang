@@ -64,6 +64,9 @@ LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type) {
             
         case TYPE_STRUCT:
             return codegen_get_struct_type(codegen, type);
+
+        case TYPE_ENUM:
+            return codegen_get_enum_type(codegen, type);
             
         case TYPE_INTERFACE:
             // Interface is represented as { vtable*, data* }
@@ -166,6 +169,18 @@ LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type) {
     
     free(field_types);
     return struct_type;
+}
+
+LLVMTypeRef codegen_get_enum_type(CodeGenerator* codegen, const Type* type) {
+    if (!codegen || !type || type->kind != TYPE_ENUM) return NULL;
+    // { i32 tag, [N x i8] payload } where N covers the largest variant.
+    size_t tag_slot = (type->align > 4) ? type->align : 4;
+    size_t payload_bytes = (type->size > tag_slot) ? (type->size - tag_slot) : 0;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(codegen->context);
+    LLVMTypeRef payload = LLVMArrayType(i8, (unsigned)payload_bytes);
+    LLVMTypeRef members[2] = { i32, payload };
+    return LLVMStructTypeInContext(codegen->context, members, 2, 0);
 }
 
 LLVMTypeRef codegen_get_function_type(CodeGenerator* codegen, const Type* type) {

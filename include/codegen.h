@@ -196,6 +196,7 @@ LLVMTypeRef codegen_get_function_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_pointer_type(CodeGenerator* codegen, const Type* type);
 
 // Special Goo type mappings
+LLVMTypeRef codegen_get_enum_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_error_union_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_nullable_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_channel_type(CodeGenerator* codegen, const Type* type);
