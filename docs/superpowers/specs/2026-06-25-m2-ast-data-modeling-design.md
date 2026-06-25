@@ -180,3 +180,41 @@ PRs 3 and 4 may proceed in parallel with 1–2 (disjoint files: slices/maps touc
 - Generic/parameterized enums.
 - A general `extern`/FFI mechanism (M2 continues the builtins-to-runtime
   pattern from M1).
+
+## Known limitations (post-implementation, enums + match PR)
+
+These were surfaced by the whole-branch review. None affect the M2 gate or any
+current probe; each is dormant on the exercised paths (x86-64, LLVM 22) and is
+recorded so a later PR does not mistake the dormant assumptions for supported
+behavior.
+
+- **Enum payload layout is not alignment-rigorous.** Variant payload size is an
+  *unpadded* sum of field sizes, and the enum lowers to `{ i32 tag, [N x i8] }`
+  with the payload slot at offset 4. For a variant mixing field alignments
+  (e.g. `Tag{a: int8, b: int64}`) the slot can be mis-sized, and the payload
+  store/load is under-aligned (payload at a 4-aligned address). Harmless on
+  x86-64 (tolerant of unaligned access) and for all current payloads (int /
+  pointer, 8-byte, no padding); would produce wrong/under-aligned IR for
+  mixed-alignment payloads or strict-alignment targets. Also the type-checker's
+  enum `Type.size` can diverge from the emitted LLVM type size (consumed only by
+  `codegen_get_enum_type`, so no conflict today). **Fix when tackled:** derive
+  payload size/align from `LLVMABISizeOfType`/`LLVMABIAlignmentOfType` (or lower
+  the payload as the real largest-variant struct type) so the two sizes agree by
+  construction.
+- **`match` guards are typechecked but not lowered.** A `case X{..} if cond:`
+  arm typechecks `cond` but codegen ignores it (the arm runs unconditionally).
+  Guards are not an M2 deliverable; close this typecheck/codegen asymmetry before
+  relying on guards.
+- **Payloadless variant patterns and empty arm bodies don't parse.**
+  `case Red{}:` (empty binding list) and a `case` with an empty body are rejected
+  by the existing match grammar (`destructure` needs a non-empty binding list;
+  `statement_list` needs ≥1 statement). Gate variants carry payloads and
+  non-empty bodies, so this is unexercised; revisit when payloadless variants are
+  needed.
+- **Struct field syntax was widened.** Because enum variant bodies reuse the
+  `struct_field` production, plain `struct` fields now also accept colon-form
+  (`x: int`) and comma separators in addition to Go-style `x int`. Purely
+  additive (existing `x int` unaffected). Tighten with a dedicated
+  variant-field production if struct/variant field syntaxes should diverge.
+- **Anonymous LLVM structs share the name "anon"** (LLVM auto-suffixes;
+  dormant since all declared types are named).
