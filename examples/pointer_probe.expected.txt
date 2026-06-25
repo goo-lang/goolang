@@ -1,0 +1,2 @@
+PASS: addr-of + deref read
+PASS: deref in arithmetic

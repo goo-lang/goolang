@@ -1,0 +1,29 @@
+// pointer_probe: address-of and pointer dereference (read path).
+//
+// Before this, `&x` typechecked to a reference type with no LLVM mapping
+// ("Failed to convert type for variable"), the codegen address-of branch was
+// dead (matched TOKEN_AND `&&` instead of TOKEN_BIT_AND), and deref used
+// LLVMGetElementType which is unusable under LLVM opaque pointers. This probe
+// exercises taking an address and reading through it, including in arithmetic.
+//
+// NOTE: deref-assignment (`*p = v`) and heap allocation (`new`) are deliberately
+// out of scope here — the former needs a grammar fix for the `*p = v` ambiguity,
+// the latter a type-argument builtin. Both are tracked as follow-ups.
+package main
+
+import "fmt"
+
+func main() {
+    x := 5
+    p := &x
+    if *p == 5 {
+        fmt.Println("PASS: addr-of + deref read")
+    }
+
+    // deref participates in arithmetic (both operands loaded correctly)
+    y := 7
+    q := &y
+    if *p + *q == 12 {
+        fmt.Println("PASS: deref in arithmetic")
+    }
+}
