@@ -453,6 +453,19 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         if (strcmp(func_ident->name, "make_chan") == 0) {
             return type_check_make_chan_call(checker, call, expr);
         }
+        // new(T) -> *T. The sole argument is a type name (e.g. `new(int)`),
+        // resolved as a type rather than typechecked as a value expression.
+        if (strcmp(func_ident->name, "new") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "new expects exactly one type argument");
+                return NULL;
+            }
+            Type* elem = type_from_ast(checker, call->args);
+            if (!elem) return NULL; // type_from_ast reports the error
+            Type* ptr = type_pointer(elem);
+            expr->node_type = ptr;
+            return ptr;
+        }
     }
     
     // Check function expression

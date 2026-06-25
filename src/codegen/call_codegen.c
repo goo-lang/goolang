@@ -27,6 +27,28 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         if (strcmp(func_name->name, "make_chan") == 0) {
             return codegen_generate_make_chan_call(codegen, checker, expr);
         }
+        if (strcmp(func_name->name, "new") == 0) {
+            // new(T) -> heap-allocated *T. The type checker stored the result
+            // type (*T) on the node; allocate sizeof(T) via goo_alloc and
+            // return the raw pointer typed as *T. The buffer is zeroed by
+            // goo_alloc and never freed (the prototype's allocate-and-leak
+            // model, consistent with slice literals).
+            Type* ptr_type = expr->node_type;
+            if (!ptr_type || ptr_type->kind != TYPE_POINTER) {
+                codegen_error(codegen, expr->pos, "new: missing resolved pointer type");
+                return NULL;
+            }
+            LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+            if (!alloc_fn) {
+                codegen_error(codegen, expr->pos, "new: goo_alloc unavailable");
+                return NULL;
+            }
+            LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, ptr_type->data.pointer.pointee_type);
+            LLVMValueRef size = LLVMSizeOf(elem_llvm);
+            LLVMValueRef p = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
+                                            alloc_fn, &size, 1, "new");
+            return value_info_new(NULL, p, ptr_type);
+        }
         if (strcmp(func_name->name, "println") == 0) {
             return codegen_generate_println_call(codegen, checker, expr);
         }
