@@ -1,0 +1,30 @@
+// pointer_write_probe: mutation through a pointer (`*p = v`), written
+// idiomatically with no semicolons.
+//
+// This exercises two coupled pieces:
+//   1. Targeted automatic semicolon insertion (ASI) in the lexer: without it,
+//      `p := &x` <newline> `*p = v` parses as the multiplication `&x * p`.
+//      ASI inserts a statement-terminating semicolon at the newline because the
+//      next line begins with `*` after a value-ending token.
+//   2. Deref-assignment codegen: `*p = v` stores v through the pointer.
+package main
+
+import "fmt"
+
+func main() {
+    x := 5
+    p := &x
+    *p = 9
+    if *p == 9 {
+        if x == 9 {
+            fmt.Println("PASS: deref write visible through pointer and var")
+        }
+    }
+
+    y := 1
+    q := &y
+    *q = 42
+    if y == 42 {
+        fmt.Println("PASS: second deref write")
+    }
+}

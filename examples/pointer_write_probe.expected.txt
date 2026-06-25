@@ -1,0 +1,2 @@
+PASS: deref write visible through pointer and var
+PASS: second deref write

@@ -356,6 +356,22 @@ static ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecke
         return NULL; // maps / pointers: not an addressable element lvalue here
     }
 
+    if (expr->type == AST_UNARY_EXPR) {
+        // Deref lvalue: `*p = v`. The store address is the pointer value
+        // itself, so generate the operand (loading p to its pointer value) and
+        // return that as the address. Element type is the pointee.
+        UnaryExprNode* un = (UnaryExprNode*)expr;
+        if (un->operator == TOKEN_MULTIPLY) {
+            ValueInfo* ptr = codegen_generate_expression(codegen, checker, un->operand);
+            if (!ptr || !ptr->goo_type || ptr->goo_type->kind != TYPE_POINTER) return NULL;
+            ValueInfo* out = value_info_new(NULL, ptr->llvm_value,
+                                            ptr->goo_type->data.pointer.pointee_type);
+            out->is_lvalue = 1;
+            return out;
+        }
+        return NULL;
+    }
+
     return NULL;
 }
 #endif
