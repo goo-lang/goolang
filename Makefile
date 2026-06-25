@@ -397,9 +397,24 @@ m12-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe
+verify: baseline-probe lvalue-probe file-io-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
+
+# Switch-statement probe: compile + run examples/switch_probe.goo and diff
+# stdout against expected.txt (m10-probe pattern). Covers first/middle case
+# matches, default fallthrough, and multi-statement bodies with no implicit
+# fallthrough. Joined `verify` when expression switch shipped.
+switch-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/switch_probe examples/switch_probe.goo
+	@./build/switch_probe > build/switch_probe.actual.txt
+	@if diff -u examples/switch_probe.expected.txt build/switch_probe.actual.txt; then \
+	  echo "switch-probe: PASS (expression switch end-to-end)"; \
+	else \
+	  echo "switch-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
 
 # M9: a Goo program is the C entry point and must exit 0 on normal completion
 # (not a garbage register value). Compiles + runs empty/no-return/bare-return

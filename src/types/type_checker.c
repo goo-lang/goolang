@@ -619,6 +619,28 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_go_stmt(checker, stmt);
         case AST_SELECT_STMT:
             return type_check_select_stmt(checker, stmt);
+        case AST_SWITCH_STMT: {
+            // Expression switch: type-check the tag, then every case
+            // expression and clause body. Case bodies are raw statement
+            // lists (linked via next), so they are walked here rather than
+            // dispatched as blocks. Each clause gets its own scope, matching
+            // Go's per-clause scoping.
+            SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
+            int ok = 1;
+            if (sw->tag && !type_check_expression(checker, sw->tag)) ok = 0;
+            for (ASTNode* c = sw->cases; c; c = c->next) {
+                CaseClauseNode* clause = (CaseClauseNode*)c;
+                for (ASTNode* e = clause->exprs; e; e = e->next) {
+                    if (!type_check_expression(checker, e)) ok = 0;
+                }
+                scope_push(checker);
+                for (ASTNode* s = clause->body; s; s = s->next) {
+                    if (!type_check_statement(checker, s)) ok = 0;
+                }
+                scope_pop(checker);
+            }
+            return ok;
+        }
         case AST_COMPTIME_BLOCK: {
             // M11-types-const-stub: minimum dispatch — treat the body as
             // ordinary statements. Engine engagement (real comptime

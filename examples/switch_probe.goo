@@ -1,0 +1,49 @@
+package main
+
+// Switch-statement probe: exercises expression-switch end-to-end —
+// first-case match, middle-case match, default fallthrough when no case
+// matches, and a multi-statement case body with no implicit fallthrough
+// (Go semantics). Diffed against switch_probe.expected.txt by `make
+// switch-probe`.
+func main() {
+	a := 1
+	switch a {
+	case 1:
+		println("first")
+	case 2:
+		println("second")
+	default:
+		println("none")
+	}
+
+	b := 2
+	switch b {
+	case 1:
+		println("first")
+	case 2:
+		println("second")
+	default:
+		println("none")
+	}
+
+	c := 9
+	switch c {
+	case 1:
+		println("first")
+	default:
+		println("default-taken")
+	}
+
+	// Multi-statement body must emit both lines; control must not fall
+	// through into the next clause.
+	d := 2
+	switch d {
+	case 1:
+		println("x")
+	case 2:
+		println("a")
+		println("b")
+	}
+
+	println("end")
+}

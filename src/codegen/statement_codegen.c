@@ -94,6 +94,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_defer_stmt(codegen, checker, stmt);
         case AST_SELECT_STMT:
             return codegen_generate_select_stmt(codegen, checker, stmt);
+        case AST_SWITCH_STMT:
+            return codegen_generate_switch_stmt(codegen, checker, stmt);
         case AST_UNSAFE_STMT:
             return codegen_generate_unsafe_stmt(codegen, checker, stmt);
         case AST_ASM_STMT:
@@ -213,6 +215,98 @@ int codegen_generate_if_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     // Continue with merge block
     codegen_set_insert_point(codegen, merge_block);
     
+    return 1;
+#endif
+}
+
+#if LLVM_AVAILABLE
+// Load an rvalue from a ValueInfo, dereferencing if it is an lvalue. Mirrors
+// the load logic used by the if-let lowering so switch tags and case
+// expressions that resolve to variables compare by value, not by address.
+static LLVMValueRef switch_rvalue(CodeGenerator* codegen, ValueInfo* vi) {
+    LLVMValueRef v = vi->llvm_value;
+    if (vi->is_lvalue && vi->goo_type) {
+        LLVMTypeRef lt = codegen_type_to_llvm(codegen, vi->goo_type);
+        if (lt) v = LLVMBuildLoad2(codegen->builder, lt, v, "switch.load");
+    }
+    return v;
+}
+#endif
+
+// Expression switch lowering. A Go switch has no implicit fallthrough, so it
+// lowers to a chain of equality comparisons: each case expression is compared
+// against the tag, branching to that clause's body on a match or to the next
+// test otherwise. If no case matches, control flows to the default clause (if
+// present) or to the merge block. Each clause body branches to merge.
+int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available for switch statements");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_SWITCH_STMT) return 0;
+
+    SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
+
+    // Evaluate the tag once, up front.
+    ValueInfo* tag_vi = codegen_generate_expression(codegen, checker, sw->tag);
+    if (!tag_vi) return 0;
+    LLVMValueRef tag_val = switch_rvalue(codegen, tag_vi);
+    value_info_free(tag_vi);
+
+    LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "switch.merge");
+
+    size_t clause_count = 0;
+    for (ASTNode* c = sw->cases; c; c = c->next) clause_count++;
+    if (clause_count == 0) {
+        LLVMBuildBr(codegen->builder, merge_block);
+        codegen_set_insert_point(codegen, merge_block);
+        return 1;
+    }
+
+    // One body block per clause; remember the default clause's body if any.
+    LLVMBasicBlockRef* body_blocks = malloc(sizeof(LLVMBasicBlockRef) * clause_count);
+    if (!body_blocks) return 0;
+    LLVMBasicBlockRef default_body = NULL;
+    size_t i = 0;
+    for (ASTNode* c = sw->cases; c; c = c->next, i++) {
+        body_blocks[i] = codegen_create_block(codegen, "switch.case");
+        if (((CaseClauseNode*)c)->exprs == NULL) default_body = body_blocks[i];
+    }
+
+    // Comparison chain: test each non-default clause's expressions in order.
+    i = 0;
+    for (ASTNode* c = sw->cases; c; c = c->next, i++) {
+        CaseClauseNode* clause = (CaseClauseNode*)c;
+        if (clause->exprs == NULL) continue;  // default tested last
+        for (ASTNode* e = clause->exprs; e; e = e->next) {
+            ValueInfo* ev = codegen_generate_expression(codegen, checker, e);
+            if (!ev) { free(body_blocks); return 0; }
+            LLVMValueRef cmp = LLVMBuildICmp(codegen->builder, LLVMIntEQ,
+                                             tag_val, switch_rvalue(codegen, ev), "switch.cmp");
+            value_info_free(ev);
+            LLVMBasicBlockRef next_test = codegen_create_block(codegen, "switch.test");
+            LLVMBuildCondBr(codegen->builder, cmp, body_blocks[i], next_test);
+            codegen_set_insert_point(codegen, next_test);
+        }
+    }
+    // Fell through every test: go to default body, else merge.
+    LLVMBuildBr(codegen->builder, default_body ? default_body : merge_block);
+
+    // Emit clause bodies. No implicit fallthrough: each body ends at merge.
+    i = 0;
+    for (ASTNode* c = sw->cases; c; c = c->next, i++) {
+        CaseClauseNode* clause = (CaseClauseNode*)c;
+        codegen_set_insert_point(codegen, body_blocks[i]);
+        for (ASTNode* s = clause->body; s; s = s->next) {
+            if (!codegen_generate_statement(codegen, checker, s)) { free(body_blocks); return 0; }
+        }
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            LLVMBuildBr(codegen->builder, merge_block);
+        }
+    }
+
+    codegen_set_insert_point(codegen, merge_block);
+    free(body_blocks);
     return 1;
 #endif
 }
