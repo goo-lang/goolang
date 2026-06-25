@@ -1,0 +1,2 @@
+PASS: new(int) + deref write
+PASS: new(struct) + field writes

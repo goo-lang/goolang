@@ -1,0 +1,32 @@
+// new_probe: heap allocation via `new(T)`, the last M1 pointer/heap piece.
+//
+// `new(T)` allocates zeroed storage for a T on the heap (goo_alloc) and returns
+// a *T. Together with deref-assignment and pointer field writes, this is the
+// foundation for mutable linked/recursive structures a compiler needs.
+package main
+
+import "fmt"
+
+type Point struct {
+    x int
+    y int
+}
+
+func main() {
+    // new(builtin): heap int, mutate through the pointer
+    p := new(int)
+    *p = 42
+    if *p == 42 {
+        fmt.Println("PASS: new(int) + deref write")
+    }
+
+    // new(struct): heap Point, write fields through the pointer, read back
+    pt := new(Point)
+    pt.x = 3
+    pt.y = 4
+    if pt.x == 3 {
+        if pt.y == 4 {
+            fmt.Println("PASS: new(struct) + field writes")
+        }
+    }
+}
