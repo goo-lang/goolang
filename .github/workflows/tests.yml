@@ -1,0 +1,44 @@
+name: tests
+
+# Full unit-test suite: builds and runs the unified test_runner (`make test`),
+# which links all compiler objects and exercises the type-system / constraint /
+# concept / HKT tests. Complements the demos workflow (build+run smoke of the
+# example programs).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        # gcc-14: the Makefile uses -std=c23 (gcc-13, the distro default, rejects it).
+        # llvm-dev: the test runner links all objects incl. codegen, which needs
+        #   llvm-config (-DLLVM_AVAILABLE) to match the local build configuration.
+        # json-c / curl / zlib: LDFLAGS links -ljson-c -lcurl -lz.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make gcc-14 llvm-dev \
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Tool versions
+        run: |
+          gcc-14 --version | head -1
+          (ls /usr/bin/llvm-config-* 2>/dev/null | head -1 | xargs -r -I{} {} --version) || echo "no llvm-config"
+
+      - name: Build and run unit-test suite
+        # Pin LLVM_CONFIG to whatever versioned binary llvm-dev provides (e.g.
+        # llvm-config-18 on ubuntu-24.04), since the Makefile probes llvm-config-20
+        # / unversioned llvm-config first. A make-var assignment overrides the
+        # Makefile's `LLVM_CONFIG = ...`. The runner exits non-zero on any failure;
+        # skipped tests (documented, deferred) keep it green.
+        run: |
+          LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | head -1)"
+          echo "Using LLVM_CONFIG=${LLVMCFG:-llvm-config}"
+          make CC=gcc-14 LLVM_CONFIG="${LLVMCFG:-llvm-config}" test
