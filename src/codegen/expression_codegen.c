@@ -41,6 +41,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_slice_lit(codegen, checker, expr);
         case AST_STRUCT_LITERAL:
             return codegen_generate_struct_lit(codegen, checker, expr);
+        case AST_MATCH_EXPR:
+            return codegen_generate_match(codegen, checker, expr);
         case AST_POSTFIX_EXPR: {
             // `j++` / `j--`: load operand, compute load ± 1, store back,
             // return the LOADED (pre-modification) value. Postfix
