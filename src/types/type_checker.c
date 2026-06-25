@@ -903,8 +903,18 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(ident->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(ident->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(ident->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
-            
-            // TODO: Handle user-defined types
+
+            // User-defined named type (e.g. `new(Point)`): `type Foo ...` is
+            // registered as a Variable whose `type` field is the named Type
+            // (see the AST_BASIC_TYPE branch below). Exclude package/function
+            // names, which are not user types.
+            Variable* named = type_checker_lookup_variable(checker, ident->name);
+            if (named && named->type &&
+                named->type->kind != TYPE_PACKAGE &&
+                named->type->kind != TYPE_FUNCTION) {
+                return named->type;
+            }
+
             type_error(checker, type_node->pos, "Unknown type '%s'", ident->name);
             return NULL;
         }
