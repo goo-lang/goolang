@@ -562,6 +562,27 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
         resolved->data.struct_type.name = strdup(td->name);
     }
 
+    // Stamp the declared name onto an enum type, then register each variant
+    // constructor name in scope so variant literals can resolve their parent enum.
+    if (resolved->kind == TYPE_ENUM) {
+        if (!resolved->data.enum_type.name)
+            resolved->data.enum_type.name = strdup(td->name);
+        for (size_t i = 0; i < resolved->data.enum_type.variant_count; i++) {
+            const char* vname = resolved->data.enum_type.variants[i].name;
+            Variable* ctor = variable_new(vname, resolved, decl->pos);
+            if (!ctor) return 0;
+            ctor->is_initialized = 1;
+            ctor->is_builtin = 1;
+            if (!scope_add_variable(checker->current_scope, ctor)) {
+                // A duplicate variant name across enums is a conflict; report.
+                type_error(checker, decl->pos,
+                           "Enum variant '%s' already declared", vname);
+                variable_free(ctor);
+                return 0;
+            }
+        }
+    }
+
     // Register the named type by piggybacking on the variable scope:
     // a Variable whose `type` IS the named Type. AST_BASIC_TYPE lookup
     // in type_from_ast will recover it. This is a pragmatic shortcut
@@ -1013,7 +1034,66 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             result->align = max_align;
             return result;
         }
-        
+
+        case AST_ENUM_TYPE: {
+            EnumTypeNode* en = (EnumTypeNode*)type_node;
+            size_t vcount = 0;
+            for (ASTNode* v = en->variants; v; v = v->next)
+                if (v->type == AST_ENUM_VARIANT) vcount++;
+
+            Type* result = type_new(TYPE_ENUM);
+            if (!result) return NULL;
+            result->data.enum_type.variant_count = vcount;
+            result->data.enum_type.variants =
+                vcount ? calloc(vcount, sizeof(EnumVariant)) : NULL;
+
+            size_t max_payload = 0, max_align = 4;
+            size_t idx = 0;
+            for (ASTNode* v = en->variants; v; v = v->next) {
+                if (v->type != AST_ENUM_VARIANT) continue;
+                EnumVariantNode* vn = (EnumVariantNode*)v;
+
+                // Build the payload TYPE_STRUCT from vn->fields (same walk
+                // as the AST_STRUCT_TYPE case above).
+                size_t fcount = 0;
+                for (ASTNode* f = vn->fields; f; f = f->next)
+                    if (f->type == AST_VAR_DECL) fcount++;
+                Type* payload = type_new(TYPE_STRUCT);
+                payload->data.struct_type.field_count = fcount;
+                payload->data.struct_type.fields =
+                    fcount ? calloc(fcount, sizeof(StructField)) : NULL;
+                payload->data.struct_type.name = strdup(vn->name);
+                size_t off = 0, palign = 1, fidx = 0;
+                for (ASTNode* f = vn->fields; f; f = f->next) {
+                    if (f->type != AST_VAR_DECL) continue;
+                    VarDeclNode* fd = (VarDeclNode*)f;
+                    if (fd->name_count == 0) continue;
+                    Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
+                    if (!ft) { free(result); return NULL; }
+                    payload->data.struct_type.fields[fidx].name = strdup(fd->names[0]);
+                    payload->data.struct_type.fields[fidx].type = ft;
+                    payload->data.struct_type.fields[fidx].offset = off;
+                    off += ft->size ? ft->size : 8;
+                    if (ft->align > palign) palign = ft->align;
+                    fidx++;
+                }
+                payload->size = off;
+                payload->align = palign;
+
+                result->data.enum_type.variants[idx].name = strdup(vn->name);
+                result->data.enum_type.variants[idx].payload = payload;
+                result->data.enum_type.variants[idx].tag = (int)idx;
+                if (off > max_payload) max_payload = off;
+                if (palign > max_align) max_align = palign;
+                idx++;
+            }
+            // Layout: { i32 tag, [max_payload x i8] }. Pad tag to payload align.
+            size_t tag_slot = (max_align > 4) ? max_align : 4;
+            result->size = tag_slot + max_payload;
+            result->align = max_align;
+            return result;
+        }
+
         case AST_MAP_TYPE: {
             MapTypeNode* map = (MapTypeNode*)type_node;
             Type* key_type = type_from_ast(checker, map->key_type);
