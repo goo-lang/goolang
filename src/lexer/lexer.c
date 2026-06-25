@@ -21,7 +21,8 @@ Lexer* lexer_new(const char* input, const char* filename) {
     lexer->pos.column = 1;
     lexer->pos.offset = 0;
     lexer->pos.filename = filename;
-    
+    lexer->prev_token_type = TOKEN_SEMICOLON; // as if after a separator
+
     // Read first character
     lexer_read_char(lexer);
     
@@ -67,6 +68,37 @@ void lexer_skip_whitespace(Lexer* lexer) {
     }
 }
 
+// True if a token can end a statement/expression (so a following newline may
+// terminate the statement). Used for targeted automatic semicolon insertion.
+static int token_ends_value(TokenType t) {
+    switch (t) {
+        case TOKEN_IDENT:
+        case TOKEN_INT:
+        case TOKEN_FLOAT:
+        case TOKEN_STRING:
+        case TOKEN_CHAR:
+        case TOKEN_TRUE:
+        case TOKEN_FALSE:
+        case TOKEN_RPAREN:
+        case TOKEN_RBRACKET:
+        case TOKEN_RBRACE:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// True if a character begins a binary operator that could continue the
+// previous expression across a newline (`*`, `+`, `-`, `/`, `%`, `&`, `|`,
+// `^`). When the next line starts with one of these after a value-ending
+// token, ASI inserts a semicolon so e.g. `p := &x` <nl> `*p = v` is two
+// statements, not the multiplication `&x * p`. Mirrors Go's rule: a line may
+// only be continued by leaving the operator at the END of the line.
+static int char_starts_continuation_op(char c) {
+    return c == '*' || c == '+' || c == '-' || c == '/' ||
+           c == '%' || c == '&' || c == '|' || c == '^';
+}
+
 Token* lexer_next_token(Lexer* lexer) {
     Token* token = NULL;
     Position current_pos = lexer->pos;
@@ -80,9 +112,27 @@ Token* lexer_next_token(Lexer* lexer) {
             break;
             
         case '\n':
-            // Skip newlines for now since they're not used in the grammar
-            lexer_read_char(lexer);
-            return lexer_next_token(lexer); // Get next token
+            // Targeted automatic semicolon insertion. Newlines are normally
+            // skipped (the grammar tolerates statements without semicolons when
+            // the next token can't continue the previous one). But when the
+            // previous token ends a value AND the next line begins with a
+            // binary-operator char, the parser would greedily join them
+            // (e.g. `p := &x` <nl> `*p = v` -> `&x * p`). Insert a semicolon in
+            // exactly that case so the statement terminates at the newline.
+            lexer_read_char(lexer); // consume '\n'
+            while (lexer->ch == ' ' || lexer->ch == '\t' || lexer->ch == '\r') {
+                lexer_read_char(lexer);
+            }
+            // A leading `/` that starts a comment (`//` or `/*`) is not a
+            // continuation operator — don't let it trigger insertion.
+            if (token_ends_value(lexer->prev_token_type) &&
+                char_starts_continuation_op(lexer->ch) &&
+                !(lexer->ch == '/' &&
+                  (lexer_peek_char(lexer) == '/' || lexer_peek_char(lexer) == '*'))) {
+                lexer->prev_token_type = TOKEN_SEMICOLON;
+                return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
+            }
+            return lexer_next_token(lexer); // otherwise just get the next token
             
         // Single character tokens
         case '(':
@@ -405,7 +455,8 @@ Token* lexer_next_token(Lexer* lexer) {
             }
             break;
     }
-    
+
+    if (token) lexer->prev_token_type = token->type; // for newline-driven ASI
     return token;
 }
 
