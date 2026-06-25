@@ -1059,6 +1059,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 for (ASTNode* f = vn->fields; f; f = f->next)
                     if (f->type == AST_VAR_DECL) fcount++;
                 Type* payload = type_new(TYPE_STRUCT);
+                if (!payload) { free(result->data.enum_type.variants); free(result); return NULL; }
                 payload->data.struct_type.field_count = fcount;
                 payload->data.struct_type.fields =
                     fcount ? calloc(fcount, sizeof(StructField)) : NULL;
@@ -1069,7 +1070,14 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                     VarDeclNode* fd = (VarDeclNode*)f;
                     if (fd->name_count == 0) continue;
                     Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
-                    if (!ft) { free(result); return NULL; }
+                    if (!ft) {
+                        free(payload->data.struct_type.name);
+                        free(payload->data.struct_type.fields);
+                        free(payload);
+                        free(result->data.enum_type.variants);
+                        free(result);
+                        return NULL;
+                    }
                     payload->data.struct_type.fields[fidx].name = strdup(fd->names[0]);
                     payload->data.struct_type.fields[fidx].type = ft;
                     payload->data.struct_type.fields[fidx].offset = off;
