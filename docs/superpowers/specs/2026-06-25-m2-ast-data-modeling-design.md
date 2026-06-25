@@ -53,16 +53,20 @@ symbol-table use case requires).
 
 ### 1. Tagged unions / enums
 
-**Surface syntax**
+**Surface syntax** — mirrors how Goo declares every named type (`type Point
+struct {...}`); there is no top-level `struct`/`enum` keyword, so an enum is the
+RHS of a `type` declaration:
 ```goo
-enum Expr {
+type Expr enum {
     Num{value: int}
     Add{lhs: *Expr, rhs: *Expr}
 }
 ```
 
-**Grammar** (`src/parser/parser.y`): new `enum_decl` production under the
-top-level/type-declaration alternatives. Each variant body reuses the existing
+**Grammar** (`src/parser/parser.y`): a new `enum_type` type-expression
+production (sibling of `struct_type`, added to the `type` production) that rides
+the existing `type_decl` → `type` chain — no new top-level rule. Each variant
+declares a name plus a brace-enclosed field list reusing the existing
 `struct_field_list` production, so a variant is syntactically a named struct.
 
 **AST** (`include/ast.h`, `src/ast`): `EnumDeclNode { char* name; ASTNode*
