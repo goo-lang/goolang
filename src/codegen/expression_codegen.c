@@ -435,7 +435,18 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         value_info_free(left_val);
         return NULL;
     }
-    
+
+    // Auto-load the right operand too: a selector/index lvalue (e.g. the `p.y`
+    // in `p.x + p.y`) returns the field address, so it must be dereferenced to
+    // the scalar value before the binary op — mirroring the left operand above.
+    if (right_val->is_lvalue && right_val->goo_type) {
+        LLVMTypeRef rt = codegen_type_to_llvm(codegen, right_val->goo_type);
+        if (rt) {
+            right_val->llvm_value = LLVMBuildLoad2(codegen->builder, rt, right_val->llvm_value, "rval");
+            right_val->is_lvalue = 0;
+        }
+    }
+
     // Get the result type from the type checker
     Type* result_type = type_check_binary_expr(checker, expr);
     if (!result_type) {

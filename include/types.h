@@ -347,6 +347,12 @@ const char* type_to_string(const Type* type);
 size_t type_size(const Type* type);
 size_t type_align(const Type* type);
 
+// Method support: a method `func (T) m()` lowers to an ordinary function
+// named "T__m" (see type_method_mangled_name). type_receiver_name extracts
+// the receiver's struct name (unwrapping a *T pointer receiver) for mangling.
+char* type_method_mangled_name(const char* type_name, const char* method_name);
+const char* type_receiver_name(const Type* type);
+
 // Type checking utilities
 int type_is_integer(const Type* type);
 int type_is_float(const Type* type);
