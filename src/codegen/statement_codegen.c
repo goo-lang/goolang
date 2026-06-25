@@ -532,6 +532,19 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             return 0;
         }
 
+        // Auto-load an lvalue result (e.g. `return p.x`): a selector/index
+        // returns the field address, which must be dereferenced to the scalar
+        // value before being returned, or the function emits `ret ptr`.
+#if LLVM_AVAILABLE
+        if (return_value->is_lvalue && return_value->goo_type) {
+            LLVMTypeRef rvt = codegen_type_to_llvm(codegen, return_value->goo_type);
+            if (rvt) {
+                return_value->llvm_value = LLVMBuildLoad2(codegen->builder, rvt, return_value->llvm_value, "retval");
+                return_value->is_lvalue = 0;
+            }
+        }
+#endif
+
         // Get function return type for error union handling
         Type* function_return_type = NULL;
         if (codegen->current_function_info && codegen->current_function_info->goo_type) {
