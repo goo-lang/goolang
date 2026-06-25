@@ -56,6 +56,15 @@ struct CodeGenerator {
     LLVMTypeRef* type_cache;
     size_t type_cache_size;
     size_t type_cache_capacity;
+
+    // Struct-type cache: maps Goo Type* -> LLVMTypeRef for named struct
+    // types. Pre-populated with an opaque struct before resolving fields so
+    // that recursive pointer fields (`next *Node`) can reference the opaque
+    // type without infinite recursion in codegen_get_struct_type.
+    const Type** struct_cache_keys;
+    LLVMTypeRef* struct_cache_vals;
+    size_t struct_cache_size;
+    size_t struct_cache_cap;
     
     // Error reporting
     char* current_file;

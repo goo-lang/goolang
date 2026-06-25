@@ -548,11 +548,51 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     TypeDeclNode* td = (TypeDeclNode*)decl;
     if (!td->name || !td->type) return 1;  // tolerate malformed
 
+    // Forward-declare a shell for struct/enum bodies so that self-referential
+    // pointer fields (e.g. `next *Node` inside `type Node struct{...}`) can
+    // resolve the name during type_from_ast. Plain aliases keep the old flow.
+    ASTNodeType body_kind = td->type->type;
+    Type* shell = NULL;
+    if (body_kind == AST_STRUCT_TYPE || body_kind == AST_ENUM_TYPE) {
+        shell = type_new(body_kind == AST_ENUM_TYPE ? TYPE_ENUM : TYPE_STRUCT);
+        if (!shell) return 0;
+        // Do NOT set shell->...name here; the existing tail stamping (below)
+        // runs after the tie-the-knot copy and sets the name on resolved(=shell).
+        // Setting it now would cause a double-free: *shell=*resolved overwrites
+        // the pointer with resolved's (possibly NULL) name, leaking our strdup.
+        Variable* fwd = variable_new(td->name, shell, decl->pos);
+        if (!fwd) return 0;
+        fwd->is_initialized = 1;
+        fwd->is_builtin = 1;
+        if (!scope_add_variable(checker->current_scope, fwd)) {
+            type_error(checker, decl->pos, "Type '%s' already declared", td->name);
+            variable_free(fwd);
+            return 0;
+        }
+    }
+
     // Resolve the right-hand-side type expression to a concrete Type.
+    // Self-referential pointers built inside type_from_ast will point to
+    // shell (already in scope); after the tie-the-knot copy below, those
+    // pointers will see the complete definition.
     Type* resolved = type_from_ast(checker, td->type);
     if (!resolved) {
         type_error(checker, decl->pos, "Cannot resolve type for '%s'", td->name);
         return 0;
+    }
+
+    if (shell) {
+        // Tie the knot: copy the complete definition into the shell, preserving
+        // the shell's address (already captured by self-referential pointers).
+        // free() releases only the Type box wrapper; nested allocations now
+        // belong to the shell. The name field is intentionally NOT set on shell
+        // before this copy to avoid leaking a strdup'd pointer: *shell=*resolved
+        // overwrites whatever was in shell, and the tail stamping below will
+        // set the name on resolved(=shell) via the existing `if (!...name)`
+        // guards, which handle the case where type_from_ast left name NULL.
+        *shell = *resolved;
+        free(resolved);
+        resolved = shell;
     }
 
     // Stamp the declared name onto a struct type so methods and call sites
@@ -583,18 +623,23 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
         }
     }
 
-    // Register the named type by piggybacking on the variable scope:
-    // a Variable whose `type` IS the named Type. AST_BASIC_TYPE lookup
-    // in type_from_ast will recover it. This is a pragmatic shortcut
-    // until a proper named-types table exists.
-    Variable* alias = variable_new(td->name, resolved, decl->pos);
-    if (!alias) return 0;
-    alias->is_initialized = 1;
-    alias->is_builtin = 1;  // not a real variable for use-tracking purposes
-    if (!scope_add_variable(checker->current_scope, alias)) {
-        type_error(checker, decl->pos, "Type '%s' already declared", td->name);
-        variable_free(alias);
-        return 0;
+    // Register the named type alias only when we did NOT forward-declare a
+    // shell (shell == NULL). When a shell was pre-registered above, td->name
+    // is already bound in scope to resolved(=shell); re-registering would
+    // conflict. For plain aliases (AST_BASIC_TYPE etc.), register as before.
+    if (shell == NULL) {
+        // a Variable whose `type` IS the named Type. AST_BASIC_TYPE lookup
+        // in type_from_ast will recover it. This is a pragmatic shortcut
+        // until a proper named-types table exists.
+        Variable* alias = variable_new(td->name, resolved, decl->pos);
+        if (!alias) return 0;
+        alias->is_initialized = 1;
+        alias->is_builtin = 1;  // not a real variable for use-tracking purposes
+        if (!scope_add_variable(checker->current_scope, alias)) {
+            type_error(checker, decl->pos, "Type '%s' already declared", td->name);
+            variable_free(alias);
+            return 0;
+        }
     }
     return 1;
 }
