@@ -14,6 +14,8 @@ typedef struct {
     char ch;                // Current character under examination
     Position pos;           // Current position info (line, column, etc.)
     const char* filename;   // Name of the file being lexed
+    TokenType prev_token_type; // Last significant token, for newline -> ';'
+                               // insertion (targeted ASI; see lexer.c).
 } Lexer;
 
 // Lexer functions

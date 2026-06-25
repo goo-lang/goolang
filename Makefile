@@ -321,7 +321,7 @@ file-io-probe: $(COMPILER) $(RUNTIME_LIB)
 	fi
 
 # M1 pointer gate: address-of (`&x`) and dereference read (`*p`), including
-# deref in arithmetic. (Deref-assignment `*p = v` and heap `new` are follow-ups.)
+# deref in arithmetic. (Heap `new` is a follow-up.)
 pointer-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	$(COMPILER) -o build/pointer_probe examples/pointer_probe.goo
@@ -330,6 +330,19 @@ pointer-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "pointer-probe: PASS"; \
 	else \
 	  echo "pointer-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# M1 pointer-write gate: mutation through a pointer (`*p = v`) written
+# idiomatically (no semicolons), exercising targeted ASI + deref-assignment.
+pointer-write-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/pointer_write_probe examples/pointer_write_probe.goo
+	@./build/pointer_write_probe > build/pointer_write_probe.actual.txt
+	@if diff -u examples/pointer_write_probe.expected.txt build/pointer_write_probe.actual.txt; then \
+	  echo "pointer-write-probe: PASS"; \
+	else \
+	  echo "pointer-write-probe: FAIL (see diff above)"; \
 	  exit 1; \
 	fi
 
@@ -428,7 +441,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
