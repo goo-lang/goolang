@@ -19,10 +19,12 @@ jobs:
         # gcc-14: the Makefile uses -std=c23, which gcc-13 (the distro default)
         # does not accept. clang + libblocksruntime-dev: three concurrency
         # targets compile with `clang -fblocks` linked against -lBlocksRuntime.
+        # json-c / curl / zlib: LDFLAGS links -ljson-c -lcurl -lz.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            make gcc-14 clang libblocksruntime-dev
+            make gcc-14 clang libblocksruntime-dev \
+            libjson-c-dev libcurl4-openssl-dev zlib1g-dev
 
       - name: Compiler versions
         run: |
