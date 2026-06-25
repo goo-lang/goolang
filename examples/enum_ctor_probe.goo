@@ -1,0 +1,23 @@
+// enum_ctor_probe: exercises enum declaration + variant construction only
+// (no match yet). Proves: type Expr enum {...} parses, a variant literal
+// constructs, and the program compiles+links+runs. Each construct prints a
+// PASS line.
+package main
+
+import "fmt"
+
+type Shape enum {
+    Circle{radius: int}
+    Rect{w: int, h: int}
+}
+
+func main() {
+    var c Shape = Circle{radius: 5}
+    var r Shape = Rect{w: 3, h: 4}
+    // We cannot inspect payloads without match yet; constructing and
+    // assigning to an enum-typed variable is the observable behavior.
+    _ = c
+    _ = r
+    fmt.Println("PASS: enum declared")
+    fmt.Println("PASS: variants constructed")
+}
