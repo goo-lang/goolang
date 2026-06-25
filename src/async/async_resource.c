@@ -251,6 +251,16 @@ Result_void_ptr async_resource_acquire(AsyncResource* resource, uint64_t timeout
         
         printf("❌ Failed to acquire resource: %s (ID: %llu)\n", resource->name, resource->id);
     } else {
+        // Store the handle produced by the acquire function (e.g. the malloc'd
+        // buffer or the opened FILE*) so resource_data is valid for callers and
+        // for cleanup_fn, which frees/closes resource_data. Without this
+        // write-back resource_data stays NULL while state is ACQUIRED, causing
+        // NULL dereferences in users and silent leaks of the handle. Guarded on
+        // acquire_fn so resources with no acquire function (acquire_result
+        // defaults to {.value = resource}) are not handed a bogus self-pointer.
+        if (resource->acquire_fn) {
+            resource->resource_data = acquire_result.value;
+        }
         resource->state = RESOURCE_STATE_ACQUIRED;
         resource->acquired_time_ns = get_current_time_ns();
         resource->successful_acquisitions++;
@@ -293,9 +303,10 @@ Result_void_ptr async_resource_release(AsyncResource* resource) {
     // Call cleanup function
     if (resource->cleanup_fn && resource->resource_data) {
         resource->cleanup_fn(resource->resource_data, resource->context);
+        resource->resource_data = NULL; // cleanup_fn freed/closed it; don't leave a dangling handle
         resource->cleanup_count++;
     }
-    
+
     pthread_mutex_lock(&resource->resource_mutex);
     resource->state = RESOURCE_STATE_RELEASED;
     
@@ -339,6 +350,7 @@ Result_void_ptr async_resource_cancel(AsyncResource* resource) {
         pthread_mutex_unlock(&resource->resource_mutex);
         resource->cleanup_fn(resource->resource_data, resource->context);
         pthread_mutex_lock(&resource->resource_mutex);
+        resource->resource_data = NULL; // cleanup_fn freed/closed it; don't leave a dangling handle
         resource->cleanup_count++;
     }
     
