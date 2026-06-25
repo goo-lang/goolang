@@ -561,7 +561,7 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
         // Setting it now would cause a double-free: *shell=*resolved overwrites
         // the pointer with resolved's (possibly NULL) name, leaking our strdup.
         Variable* fwd = variable_new(td->name, shell, decl->pos);
-        if (!fwd) return 0;
+        if (!fwd) { free(shell); return 0; }
         fwd->is_initialized = 1;
         fwd->is_builtin = 1;
         if (!scope_add_variable(checker->current_scope, fwd)) {

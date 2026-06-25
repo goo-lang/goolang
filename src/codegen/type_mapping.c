@@ -163,9 +163,10 @@ LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type) {
     if (codegen->struct_cache_size == codegen->struct_cache_cap) {
         size_t new_cap = codegen->struct_cache_cap ? codegen->struct_cache_cap * 2 : 8;
         const Type** new_keys = realloc(codegen->struct_cache_keys, new_cap * sizeof(const Type*));
-        LLVMTypeRef* new_vals = realloc(codegen->struct_cache_vals, new_cap * sizeof(LLVMTypeRef));
-        if (!new_keys || !new_vals) { free(new_keys); free(new_vals); return NULL; }
+        if (!new_keys) return NULL;
         codegen->struct_cache_keys = new_keys;
+        LLVMTypeRef* new_vals = realloc(codegen->struct_cache_vals, new_cap * sizeof(LLVMTypeRef));
+        if (!new_vals) return NULL;
         codegen->struct_cache_vals = new_vals;
         codegen->struct_cache_cap = new_cap;
     }
