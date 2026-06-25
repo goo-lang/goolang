@@ -1,0 +1,36 @@
+// lvalue_probe: exercises assignment to non-identifier lvalues — struct
+// fields (`s.x = v`) and slice elements (`a[i] = v`). Before M1 these were
+// rejected at codegen ("Assignment target must be an identifier"); the read
+// side already computes the GEP address, so assignment reuses it.
+//
+// Each construct prints a distinct PASS line. `./bin/goo examples/lvalue_probe.goo
+// -o /tmp/lv && /tmp/lv` must print both PASS lines.
+package main
+
+import "fmt"
+
+type Point struct {
+    x int
+    y int
+}
+
+func main() {
+    // 1. struct field assignment: write then read back
+    var p Point
+    p.x = 7
+    p.y = 11
+    if p.x == 7 {
+        if p.y == 11 {
+            fmt.Println("PASS: struct field assignment")
+        }
+    }
+
+    // 2. slice element assignment: mutate an element then read it back
+    sl := [10, 20, 30]
+    sl[1] = 99
+    if sl[1] == 99 {
+        if sl[0] == 10 {
+            fmt.Println("PASS: slice element assignment")
+        }
+    }
+}

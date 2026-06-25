@@ -7,25 +7,17 @@
 #include "../include/types.h"
 #include "../include/token.h"
 
-// Mock types and functions for testing
-struct Type {
-    int id;
-    char* name;
-};
-
-struct TypeContext {
-    int dummy;
-};
-
-struct ErrorContext {
-    int error_count;
-};
+// Type, TypeContext and ErrorContext are now provided by the included headers
+// (types.h / errors). The local mock definitions that used to live here were
+// removed because they conflict with the real struct definitions.
 
 // Helper function to create a simple boolean literal AST node
 ASTNode* create_bool_literal(int value) {
-    ASTNode* node = malloc(sizeof(ASTNode));
+    // calloc so every field (notably pos.filename, which contracts.c strdup's)
+    // is zero-initialised — malloc left it as garbage and crashed strdup.
+    ASTNode* node = calloc(1, sizeof(ASTNode));
     if (!node) return NULL;
-    
+
     node->type = AST_LITERAL;
     node->pos.line = 1;
     node->pos.column = 1;
@@ -40,10 +32,11 @@ ASTNode* create_bool_literal(int value) {
 
 // Helper function to create a simple variable AST node
 ASTNode* create_variable(const char* name) {
-    ASTNode* node = malloc(sizeof(ASTNode));
+    // calloc so pos.filename (strdup'd by contracts.c) is NULL, not garbage.
+    ASTNode* node = calloc(1, sizeof(ASTNode));
     if (!node) return NULL;
-    
-    node->type = AST_VARIABLE;
+
+    node->type = AST_IDENTIFIER;
     node->pos.line = 1;
     node->pos.column = 1;
     node->node_type = NULL;
@@ -184,9 +177,10 @@ void test_contract_verification() {
         "Always true"
     );
     
-    struct TypeContext type_ctx = {0};
+    // verify_contract_expression takes a DependentTypeContext*; pass NULL —
+    // this test only checks the call returns info and doesn't crash.
     ContractVerificationInfo* info = verify_contract_expression(
-        true_expr, &type_ctx, NULL
+        true_expr, NULL, NULL
     );
     
     assert(info != NULL);
@@ -266,17 +260,17 @@ void test_contract_validation() {
 void test_dependent_type_integration() {
     printf("Testing dependent type integration...\n");
     
-    struct Type base_type = {1, "int"};
     ASTNode* condition = create_variable("x");
     ContractExpression* expr = contract_expression_create(
         CONTRACT_PRECONDITION,
         condition,
         "x > 0"
     );
-    
-    // This would normally integrate with the dependent type system
-    // For now, we just test that the functions don't crash
-    DependentType* dep_type = contract_to_dependent_constraint(expr, &base_type);
+
+    // This would normally integrate with the dependent type system. Pass a
+    // NULL base Type (the real struct Type is opaque here) — we just test that
+    // the function doesn't crash.
+    DependentType* dep_type = contract_to_dependent_constraint(expr, NULL);
     
     contract_expression_free(expr);
     free(condition);

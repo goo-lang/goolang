@@ -66,7 +66,11 @@ typedef struct ConcurrentExpression {
     
     // Cancellation
     CancellationToken* cancel_token;
-    
+
+    // Owning block — so the task wrapper can wake concurrent_block_wait
+    // (block->all_completed) when this expression reaches a terminal state.
+    struct ConcurrentBlock* block;
+
     struct ConcurrentExpression* next;
 } ConcurrentExpression;
 

@@ -43,7 +43,7 @@ void test_lexer(const char* input, const char* test_name) {
     printf("\n");
 }
 
-int compile_goo_file(const char* filename) {
+int compile_goo_file(const char* filename, bool show_tokens) {
     FILE* file = fopen(filename, "r");
     if (!file) {
         printf("Error: Could not open file '%s'\n", filename);
@@ -67,8 +67,8 @@ int compile_goo_file(const char* filename) {
     fclose(file);
     
     printf("🚀 Compiling Goo file: %s\n", filename);
-    printf("=" * 40);
-    printf("\n");
+    for (int i = 0; i < 40; i++) putchar('=');  // C has no Python "=" * 40
+    putchar('\n');
     
     // Lexical analysis
     printf("📝 Lexical Analysis:\n");
@@ -84,7 +84,7 @@ int compile_goo_file(const char* filename) {
     do {
         token = lexer_next_token(lexer);
         if (token) {
-            if (token_count < 10) {  // Show first 10 tokens
+            if (show_tokens || token_count < 10) {  // all tokens with --tokens, else first 10
                 print_token(token);
             }
             token_count++;
@@ -102,47 +102,51 @@ int compile_goo_file(const char* filename) {
     lexer_free(lexer);
     lexer = lexer_new(source, filename);
     
-    // Parsing
+    // Parsing. The current parser is driven through global state (matching the
+    // real compiler entry in src/compiler/goo.c): point current_lexer at our lexer,
+    // call parse_input, then read the result from ast_root.
     printf("🔍 Parsing:\n");
-    Parser* parser = parser_new(lexer);
-    if (!parser) {
-        printf("❌ Failed to create parser\n");
+    extern Lexer* current_lexer;
+    current_lexer = lexer;
+
+    if (parse_input(source, filename) != 0) {
+        printf("❌ Parsing failed\n");
         lexer_free(lexer);
         free(source);
         return 1;
     }
-    
-    ASTNode* ast = parser_parse_program(parser);
+
+    extern ASTNode* ast_root;
+    ASTNode* ast = ast_root;
     if (!ast) {
-        printf("❌ Parsing failed\n");
-        parser_free(parser);
+        printf("❌ Parsing failed: no AST generated\n");
+        lexer_free(lexer);
         free(source);
         return 1;
     }
-    
+
     printf("✅ Parsing complete: AST generated\n\n");
     
     // Type checking
     printf("🔬 Type Checking:\n");
-    TypeContext* type_ctx = type_context_new();
-    if (!type_ctx) {
-        printf("❌ Failed to create type context\n");
+    TypeChecker* type_checker = type_checker_new();
+    if (!type_checker) {
+        printf("❌ Failed to create type checker\n");
         ast_node_free(ast);
-        parser_free(parser);
+        lexer_free(lexer);
         free(source);
         return 1;
     }
-    
-    bool type_check_result = type_check_program(type_ctx, ast);
-    if (!type_check_result) {
+
+    if (!type_check_program(type_checker, ast)) {
         printf("❌ Type checking failed\n");
-        type_context_free(type_ctx);
+        type_checker_free(type_checker);
         ast_node_free(ast);
-        parser_free(parser);
+        lexer_free(lexer);
         free(source);
         return 1;
     }
-    
+
     printf("✅ Type checking complete\n\n");
     
     printf("🎉 Compilation successful!\n");
@@ -152,11 +156,11 @@ int compile_goo_file(const char* filename) {
     printf("✅ Types: Verified\n");
     
     // Cleanup
-    type_context_free(type_ctx);
+    type_checker_free(type_checker);
     ast_node_free(ast);
-    parser_free(parser);
+    lexer_free(lexer);
     free(source);
-    
+
     return 0;
 }
 
@@ -195,7 +199,7 @@ int main(int argc, char* argv[]) {
     }
     
     // Compile the file
-    int result = compile_goo_file(filename);
+    int result = compile_goo_file(filename, show_tokens);
     
     if (result == 0) {
         printf("\n🎊 Success! Your Goo program compiled without errors.\n");

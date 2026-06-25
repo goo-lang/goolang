@@ -812,12 +812,16 @@ void stream_pipeline_destroy(StreamPipeline* pipeline) {
     // Stop pipeline if running
     stream_pipeline_stop(pipeline, 5000);
     
-    // Clean up operations
+    // Clean up operations. Buffer ownership: each operation owns its output_buffer.
+    // Non-first operations' input_buffer ALIASES the previous operation's
+    // output_buffer (set up in the add-operation builders to chain the pipeline), so
+    // only the first operation owns its input_buffer. Freeing every input_buffer here
+    // would double-free the shared buffers.
     StreamOperation* op = pipeline->first_operation;
     while (op) {
         StreamOperation* next = op->next;
-        
-        if (op->input_buffer) {
+
+        if (op == pipeline->first_operation && op->input_buffer) {
             stream_buffer_destroy(op->input_buffer);
         }
         if (op->output_buffer) {
@@ -826,7 +830,7 @@ void stream_pipeline_destroy(StreamPipeline* pipeline) {
         if (op->execution_block) {
             concurrent_block_destroy(op->execution_block);
         }
-        
+
         free(op);
         op = next;
     }
@@ -978,6 +982,54 @@ static Result_void_ptr stream_operation_worker(void* args, AsyncContext* async_c
     return OK_PTR(operation);
 }
 
+// Source worker for a stream pipeline: pulls items from the source iterator and
+// feeds the first operation's input buffer. Must be a real C function — the
+// concurrent expression invokes async_wrapper through a ConcurrentFunction pointer,
+// and a Blocks literal (^{...}) is a struct, not a function (calling one that way
+// jumps into data and crashes). It captures nothing beyond its args parameter.
+static Result_void_ptr stream_source_worker(void* args, AsyncContext* async_ctx) {
+    (void)async_ctx;
+    StreamPipeline* p = (StreamPipeline*)args;
+    printf("🎯 Starting source worker for pipeline: %s\n", p->name);
+
+    while (true) {
+        StreamItem* item = NULL;
+        Result_void_ptr next_result = async_iterator_next(p->source_iterator, &item);
+
+        if (next_result.is_error) {
+            printf("❌ Source iterator error: %s\n", next_result.error->message);
+            // Create error item and send to first operation
+            StreamItem* error_item = stream_item_error(next_result.error);
+            stream_buffer_put(p->first_operation->input_buffer, error_item, UINT64_MAX);
+            stream_item_unref(error_item);
+            break;
+        }
+
+        if (!item) continue;
+
+        // Send item to first operation
+        Result_void_ptr put_result = stream_buffer_put(p->first_operation->input_buffer, item, UINT64_MAX);
+        if (put_result.is_error) {
+            printf("❌ Error feeding first operation: %s\n", put_result.error->message);
+            stream_item_unref(item);
+            break;
+        }
+
+        bool was_end_marker = item->is_end_marker;
+        stream_item_unref(item);
+
+        // Stop after forwarding the end marker
+        if (was_end_marker) {
+            break;
+        }
+
+        p->total_items_processed++;
+    }
+
+    printf("✅ Source worker completed for pipeline: %s\n", p->name);
+    return OK_PTR(p);
+}
+
 Result_void_ptr stream_pipeline_start(StreamPipeline* pipeline) {
     if (!pipeline) {
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid pipeline"));
@@ -1015,54 +1067,8 @@ Result_void_ptr stream_pipeline_start(StreamPipeline* pipeline) {
     
     // Create source worker that feeds the first operation
     if (pipeline->first_operation) {
-        // Source worker function
-        ConcurrentFunction source_worker = (ConcurrentFunction)^Result_void_ptr(void* args, AsyncContext* async_ctx) {
-            StreamPipeline* p = (StreamPipeline*)args;
-            printf("🎯 Starting source worker for pipeline: %s\n", p->name);
-            
-            while (true) {
-                // if (async_ctx && atomic_load(async_ctx->is_cancelled)) {
-                //     break;
-                // }
-                
-                StreamItem* item = NULL;
-                Result_void_ptr next_result = async_iterator_next(p->source_iterator, &item);
-                
-                if (next_result.is_error) {
-                    printf("❌ Source iterator error: %s\n", next_result.error->message);
-                    // Create error item and send to first operation
-                    StreamItem* error_item = stream_item_error(next_result.error);
-                    stream_buffer_put(p->first_operation->input_buffer, error_item, UINT64_MAX);
-                    stream_item_unref(error_item);
-                    break;
-                }
-                
-                if (!item) continue;
-                
-                // Send item to first operation
-                Result_void_ptr put_result = stream_buffer_put(p->first_operation->input_buffer, item, UINT64_MAX);
-                if (put_result.is_error) {
-                    printf("❌ Error feeding first operation: %s\n", put_result.error->message);
-                    stream_item_unref(item);
-                    break;
-                }
-                
-                stream_item_unref(item);
-                
-                // Check if item was end marker
-                if (item && item->is_end_marker) {
-                    break;
-                }
-                
-                p->total_items_processed++;
-            }
-            
-            printf("✅ Source worker completed for pipeline: %s\n", p->name);
-            return OK_PTR(p);
-        };
-        
-        ConcurrentExpression* source_expr = concurrent_expression_create("source_worker", 
-            source_worker, pipeline, sizeof(StreamPipeline));
+        ConcurrentExpression* source_expr = concurrent_expression_create("source_worker",
+            stream_source_worker, pipeline, sizeof(StreamPipeline));
         if (!source_expr) {
             pipeline->state = PIPELINE_ERROR;
             pthread_mutex_unlock(&pipeline->pipeline_mutex);

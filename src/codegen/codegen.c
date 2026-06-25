@@ -631,8 +631,12 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // Linux linking with runtime library using gcc. -lm/-lpthread must follow
     // the archive (the runtime uses libm and pthreads); newer binutils enforces
     // this ordering and otherwise fails with undefined references.
+    // -no-pie: the LLVM backend emits non-PIC objects (R_X86_64_32S relocs),
+    // but distros like Ubuntu default gcc to -pie, which rejects them with
+    // "relocation ... can not be used when making a PIE object". Force a
+    // non-PIE link to match the object model.
     snprintf(link_command, sizeof(link_command),
-             "gcc -o %s %s lib/libgoo_runtime.a -lm -lpthread",
+             "gcc -no-pie -o %s %s lib/libgoo_runtime.a -lm -lpthread",
              filename, object_filename);
 #elif defined(_WIN32)
     // Windows linking with runtime library
@@ -640,9 +644,9 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
              "link.exe /OUT:%s %s lib\\libgoo_runtime.a /ENTRY:main /SUBSYSTEM:CONSOLE",
              filename, object_filename);
 #else
-    // Generic Unix linking with runtime library using gcc
+    // Generic Unix linking with runtime library using gcc (see -no-pie note above)
     snprintf(link_command, sizeof(link_command),
-             "gcc -o %s %s lib/libgoo_runtime.a -lm -lpthread",
+             "gcc -no-pie -o %s %s lib/libgoo_runtime.a -lm -lpthread",
              filename, object_filename);
 #endif
     

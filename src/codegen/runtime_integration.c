@@ -98,6 +98,24 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, size_type };
         add_runtime_function(codegen, "goo_realloc", ptr_type, params, 2);
     }
+
+    // File I/O backing for os.WriteFile / os.ReadByte / os.FileSize.
+    // Scalar signatures only (char*/int) so they cross the Goo<->C ABI cleanly.
+    // int goo_sys_write_file(const char* path, const char* data)
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_sys_write_file", i32_type, params, 2);
+    }
+    // int goo_sys_read_byte(const char* path, int offset)
+    {
+        LLVMTypeRef params[] = { ptr_type, i32_type };
+        add_runtime_function(codegen, "goo_sys_read_byte", i32_type, params, 2);
+    }
+    // int goo_sys_file_size(const char* path)
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_sys_file_size", i32_type, params, 1);
+    }
     
     // void goo_free(void* ptr)
     {
