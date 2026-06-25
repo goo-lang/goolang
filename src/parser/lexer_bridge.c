@@ -118,6 +118,9 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_SWITCH:
             m10_push_frame(M10_FRAME_KIND_SWITCH);
             return SWITCH;
+        case TOKEN_MATCH:
+            m10_push_frame(M10_FRAME_KIND_MATCH);
+            return MATCH;
         case TOKEN_TYPE: return TYPE;
         case TOKEN_VAR: return VAR;
         
