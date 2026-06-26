@@ -218,3 +218,29 @@ behavior.
   variant-field production if struct/variant field syntaxes should diverge.
 - **Anonymous LLVM structs share the name "anon"** (LLVM auto-suffixes;
   dormant since all declared types are named).
+
+## Known limitations (post-implementation, slices PR)
+
+Surfaced by the adversarial review of the 3-field migration + `append`/`cap`.
+None affect a current probe; recorded so a later PR doesn't mistake them for
+supported behavior.
+
+- **`append` is single-element only.** `append(s, x)` appends exactly one
+  element; the Go variadic forms `append(s, a, b, c)` and spread
+  `append(s, other...)` are not parsed/lowered. The type checker requires
+  exactly two arguments.
+- **`append` follows Go value semantics and must be assigned.** Lowering
+  copies the slice header to a temp, grows *that* via `goo_slice_append`, and
+  returns it — so a bare `append(s, x)` statement (result discarded) does not
+  update `s`. Always write `s = append(s, x)`. (There is no
+  unused-value/expression-statement check yet to flag the bare form.)
+- **Dead by-value slice runtime fns.** `goo_slice_new`/`free`/`get` are
+  declared (not called) passing/returning `goo_slice_t` by value. A 3-field
+  slice is 24 bytes (SysV class MEMORY), which hand-emitted IR can't pass by
+  value the way the C ABI does; the live boundary fns (`Split`/`Join`/
+  `append`) were converted to by-pointer, but these dormant decls must be
+  converted before any is wired into codegen. Guarded with a warning comment.
+- **Slice-literal element types aren't strictly checked** (pre-existing, not
+  introduced here): `[1, "two"]` infers `[]int` from the first element and
+  accepts the rest loosely. `append` *does* now check element compatibility;
+  the literal path still defers, matching the map-literal posture.
