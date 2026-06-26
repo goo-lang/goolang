@@ -1,0 +1,3 @@
+PASS: literal cap equals len
+PASS: cap grows 2x on realloc
+PASS: len tracks separately from cap

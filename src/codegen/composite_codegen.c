@@ -88,8 +88,8 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         case TYPE_SLICE: {
             element_type = base_type->data.slice.element_type;
             
-            // Slices are structs with { ptr, len }
-            // Extract the data pointer
+            // Slices are structs with { ptr, len, cap }
+            // Extract the data pointer (field 0)
             LLVMValueRef slice_ptr;
             if (base_val->is_lvalue) {
                 // Load the slice struct
@@ -663,12 +663,15 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
         data_ptr = global;
     }
 
-    // Build the slice struct { ptr, i64 }.
+    // Build the slice struct { ptr, i64 len, i64 cap }. A fresh literal's
+    // capacity equals its length — the backing buffer is sized exactly to
+    // `count`, so append() will grow on the first insert past the end.
     LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
     LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
     slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, data_ptr, 0, "slice_ptr");
     LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
     slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 1, "slice_len");
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 2, "slice_cap");
 
     return value_info_new(NULL, slice_val, slice_type);
 #endif

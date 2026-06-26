@@ -77,18 +77,15 @@ goo_string_t goo_strings_to_upper(const char* s);
 goo_string_t goo_strings_to_lower(const char* s);
 goo_string_t goo_strings_trim_space(const char* s);
 
-// Slice-of-string ABI: this MUST stay the codegen TYPE_SLICE layout
-// ({T*, i64} — two fields, see src/codegen/type_mapping.c), NOT the
-// three-field goo_slice_t below, which carries a capacity field the
-// codegen layout doesn't have. Mixing them silently corrupts the
-// by-value register passing.
-typedef struct {
-    goo_string_t* data;
-    int64_t length;
-} goo_str_slice_t;
-
-goo_str_slice_t goo_strings_split(const char* s, const char* sep);
-goo_string_t goo_strings_join(goo_str_slice_t parts, const char* sep);
+// strings.Split / Join speak the canonical 3-field goo_slice_t (a
+// []string whose `data` points at a goo_string_t array). The slice
+// crosses the C<->codegen boundary BY POINTER, never by value: a
+// 24-byte aggregate is SysV class MEMORY, and hand-emitted LLVM IR does
+// not reproduce gcc's sret/byval lowering for it (by-value passing
+// silently corrupts — only <=16-byte structs survive in registers).
+// Split writes its result through `out`; Join reads `parts` in place.
+void goo_strings_split(goo_slice_t* out, const char* s, const char* sep);
+goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep);
 goo_string_t goo_os_getenv(const char* name);
 double goo_math_sqrt(double x);
 double goo_math_pow(double x, double y);

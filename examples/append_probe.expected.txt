@@ -1,0 +1,5 @@
+PASS: len grows after append
+PASS: appended element readable
+PASS: existing elements survive realloc
+PASS: repeated appends grow length
+PASS: last appended element correct

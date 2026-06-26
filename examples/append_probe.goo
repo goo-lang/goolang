@@ -1,0 +1,36 @@
+// append_probe: the append() builtin — grow a slice past its capacity.
+//
+// append(slice, elem) returns the (possibly reallocated) slice header; the
+// caller stores it back via `s = append(s, x)`. Backed by goo_slice_append,
+// which grows capacity amortized 2x. This exercises the 3-field slice layout
+// end-to-end: a literal (cap == len) forces a realloc on the first append,
+// so it also proves existing elements survive the move.
+package main
+
+import "fmt"
+
+func main() {
+    nums := [10, 20, 30]
+
+    // Literal has cap == len == 3, so this append reallocates.
+    nums = append(nums, 40)
+    if len(nums) == 4 {
+        fmt.Println("PASS: len grows after append")
+    }
+    if nums[3] == 40 {
+        fmt.Println("PASS: appended element readable")
+    }
+    if nums[0] == 10 {
+        fmt.Println("PASS: existing elements survive realloc")
+    }
+
+    // Repeated appends exercise amortized growth.
+    nums = append(nums, 50)
+    nums = append(nums, 60)
+    if len(nums) == 6 {
+        fmt.Println("PASS: repeated appends grow length")
+    }
+    if nums[5] == 60 {
+        fmt.Println("PASS: last appended element correct")
+    }
+}

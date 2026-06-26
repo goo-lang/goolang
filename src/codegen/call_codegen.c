@@ -12,6 +12,27 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                                ASTNode* expr, const char* runtime_symbol,
                                                TypeKind return_kind, int unused_extra);
 
+#if LLVM_AVAILABLE
+// Materialize a call argument as a C string pointer (char*): evaluate it,
+// load through any lvalue, then extract the data pointer (field 0) of a
+// goo_string value. Used by the strings.* lowerings whose runtime symbols
+// take `const char*`. Returns NULL on failure.
+static LLVMValueRef codegen_arg_as_cstr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* arg) {
+    ValueInfo* v = codegen_generate_expression(codegen, checker, arg);
+    if (!v) return NULL;
+    LLVMValueRef val = v->llvm_value;
+    if (v->is_lvalue && v->goo_type) {
+        LLVMTypeRef at = codegen_type_to_llvm(codegen, v->goo_type);
+        if (at) val = LLVMBuildLoad2(codegen->builder, at, val, "argval");
+    }
+    if (v->goo_type && v->goo_type->kind == TYPE_STRING) {
+        val = LLVMBuildExtractValue(codegen->builder, val, 0, "str_ptr");
+    }
+    value_info_free(v);
+    return val;
+}
+#endif
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -69,6 +90,65 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                                                 LLVMInt32TypeInContext(codegen->context), "len_i32");
             value_info_free(arg);
             return value_info_new(NULL, len32, type_checker_get_builtin(checker, TYPE_INT32));
+        }
+        if (strcmp(func_name->name, "cap") == 0 && call->args) {
+            // cap(slice) — extract field 2 (capacity) from the 3-field slice
+            // header. Mirrors len() but reads field 2 instead of field 1.
+            ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!arg) return NULL;
+            LLVMValueRef raw = arg->llvm_value;
+            if (arg->is_lvalue && arg->goo_type) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
+                if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "cap_load");
+            }
+            LLVMValueRef cap64 = LLVMBuildExtractValue(codegen->builder, raw, 2, "cap");
+            LLVMValueRef cap32 = LLVMBuildTrunc(codegen->builder, cap64,
+                                                LLVMInt32TypeInContext(codegen->context), "cap_i32");
+            value_info_free(arg);
+            return value_info_new(NULL, cap32, type_checker_get_builtin(checker, TYPE_INT32));
+        }
+        if (strcmp(func_name->name, "append") == 0 && call->args && call->args->next) {
+            // append(slice, elem) -> slice. goo_slice_append grows the slice
+            // in place (amortized 2x) and rewrites {data,len,cap}. It takes
+            // the slice and element BY POINTER, so we spill both to slots,
+            // call, then load and return the (possibly moved) header. Go value
+            // semantics: the caller stores it back via `s = append(s, x)`.
+            Type* slice_t = expr->node_type;  // resolved by the type checker
+            if (!slice_t || slice_t->kind != TYPE_SLICE) {
+                codegen_error(codegen, expr->pos, "append: missing resolved slice type");
+                return NULL;
+            }
+            LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_slice_append");
+            if (!fn) { codegen_error(codegen, expr->pos, "goo_slice_append not found in module"); return NULL; }
+
+            ValueInfo* sv = codegen_generate_expression(codegen, checker, call->args);
+            if (!sv) return NULL;
+            LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_t);
+            LLVMValueRef slice_val = sv->llvm_value;
+            if (sv->is_lvalue) slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, slice_val, "append_slice");
+            value_info_free(sv);
+
+            ValueInfo* ev = codegen_generate_expression(codegen, checker, call->args->next);
+            if (!ev) return NULL;
+            LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, slice_t->data.slice.element_type);
+            LLVMValueRef elem_val = ev->llvm_value;
+            if (ev->is_lvalue) {
+                LLVMTypeRef et = ev->goo_type ? codegen_type_to_llvm(codegen, ev->goo_type) : elem_llvm;
+                elem_val = LLVMBuildLoad2(codegen->builder, et, elem_val, "append_elem");
+            }
+            value_info_free(ev);
+
+            LLVMValueRef slice_slot = codegen_create_entry_alloca(codegen, slice_llvm, "append_slice_slot");
+            LLVMBuildStore(codegen->builder, slice_val, slice_slot);
+            LLVMValueRef elem_slot = codegen_create_entry_alloca(codegen, elem_llvm, "append_elem_slot");
+            LLVMBuildStore(codegen->builder, elem_val, elem_slot);
+
+            LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
+            LLVMValueRef args[] = { slice_slot, elem_slot, elem_size };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 3, "");
+
+            LLVMValueRef result = LLVMBuildLoad2(codegen->builder, slice_llvm, slice_slot, "append_result");
+            return value_info_new(NULL, result, slice_t);
         }
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);
@@ -145,12 +225,51 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                                                     "goo_strings_trim_space", TYPE_STRING, 0);
             }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Split") == 0) {
-                return codegen_generate_stdlib_call(codegen, checker, expr,
-                                                    "goo_strings_split", TYPE_SLICE, 0);
+                // void goo_strings_split(goo_slice_t* out, const char* s, const char* sep)
+                // The []string result returns through an out-pointer: a 3-field
+                // slice can't cross the C ABI by value from hand-emitted IR.
+                // Spill a result slot, call, then load the populated slice.
+                Type* ret_type = expr->node_type;
+                if (!ret_type || ret_type->kind != TYPE_SLICE || !call->args || !call->args->next) {
+                    codegen_error(codegen, expr->pos, "strings.Split: expected (string, string) -> []string");
+                    return NULL;
+                }
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_strings_split");
+                if (!fn) { codegen_error(codegen, expr->pos, "goo_strings_split not found in module"); return NULL; }
+                LLVMValueRef s_ptr = codegen_arg_as_cstr(codegen, checker, call->args);
+                LLVMValueRef sep_ptr = codegen_arg_as_cstr(codegen, checker, call->args->next);
+                if (!s_ptr || !sep_ptr) return NULL;
+                LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, ret_type);
+                LLVMValueRef out = codegen_create_entry_alloca(codegen, slice_llvm, "split_out");
+                LLVMValueRef args[] = { out, s_ptr, sep_ptr };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 3, "");
+                LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, out, "split_slice");
+                return value_info_new(NULL, slice_val, ret_type);
             }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
-                return codegen_generate_stdlib_call(codegen, checker, expr,
-                                                    "goo_strings_join", TYPE_STRING, 0);
+                // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
+                // Spill the []string value to a slot and pass its address — a
+                // 3-field slice can't cross the C ABI by value from hand-emitted IR.
+                if (!call->args || !call->args->next) {
+                    codegen_error(codegen, expr->pos, "strings.Join: expected ([]string, string) -> string");
+                    return NULL;
+                }
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_strings_join");
+                if (!fn) { codegen_error(codegen, expr->pos, "goo_strings_join not found in module"); return NULL; }
+                ValueInfo* parts = codegen_generate_expression(codegen, checker, call->args);
+                if (!parts) return NULL;
+                LLVMValueRef parts_val = parts->llvm_value;
+                LLVMTypeRef slice_llvm = parts->goo_type ? codegen_type_to_llvm(codegen, parts->goo_type) : NULL;
+                if (!slice_llvm) { value_info_free(parts); codegen_error(codegen, expr->pos, "strings.Join: bad []string arg"); return NULL; }
+                if (parts->is_lvalue) parts_val = LLVMBuildLoad2(codegen->builder, slice_llvm, parts_val, "parts_val");
+                LLVMValueRef slot = codegen_create_entry_alloca(codegen, slice_llvm, "join_parts");
+                LLVMBuildStore(codegen->builder, parts_val, slot);
+                value_info_free(parts);
+                LLVMValueRef sep_ptr = codegen_arg_as_cstr(codegen, checker, call->args->next);
+                if (!sep_ptr) return NULL;
+                LLVMValueRef args[] = { slot, sep_ptr };
+                LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "join");
+                return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
             }
         }
     }

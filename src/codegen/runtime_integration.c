@@ -60,19 +60,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
     LLVMTypeRef string_types[] = { ptr_type, size_type };
     LLVMTypeRef string_type = LLVMStructTypeInContext(codegen->context, string_types, 2, 0);
     
-    // goo_slice_t type (struct { void* data, size_t length, size_t capacity })
-    // WARNING: this 3-field layout does NOT match codegen's TYPE_SLICE
-    // ({T*, i64} — see src/codegen/type_mapping.c). Slice values that
-    // flow between Goo code and the runtime must use the 2-field
-    // str_slice_type below (matches goo_str_slice_t in runtime.h).
+    // goo_slice_t type (struct { void* data, size_t length, size_t capacity }).
+    // This now matches codegen's TYPE_SLICE layout exactly (see
+    // src/codegen/type_mapping.c), so slice values flow between Goo code and
+    // the runtime — including []string from strings.Split/Join — with no
+    // conversion.
     LLVMTypeRef slice_types[] = { ptr_type, size_type, size_type };
     LLVMTypeRef slice_type = LLVMStructTypeInContext(codegen->context, slice_types, 3, 0);
 
-    // goo_str_slice_t type (struct { goo_string_t* data, int64_t length })
-    // — the codegen TYPE_SLICE layout.
-    LLVMTypeRef str_slice_types[] = { ptr_type, size_type };
-    LLVMTypeRef str_slice_type = LLVMStructTypeInContext(codegen->context, str_slice_types, 2, 0);
-    
     // Program initialization
     // void goo_init(int argc, char** argv)
     {
@@ -233,15 +228,17 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_strings_trim_space", string_type, params, 1);
     }
 
-    // goo_str_slice_t goo_strings_split(const char* s, const char* sep)
+    // void goo_strings_split(goo_slice_t* out, const char* s, const char* sep)
+    // The []string result crosses by pointer (out-param); see the ABI note
+    // on goo_strings_split in include/runtime.h.
     {
-        LLVMTypeRef params[] = { ptr_type, ptr_type };
-        add_runtime_function(codegen, "goo_strings_split", str_slice_type, params, 2);
+        LLVMTypeRef params[] = { LLVMPointerType(slice_type, 0), ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_strings_split", void_type, params, 3);
     }
 
-    // goo_string_t goo_strings_join(goo_str_slice_t parts, const char* sep)
+    // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
     {
-        LLVMTypeRef params[] = { str_slice_type, ptr_type };
+        LLVMTypeRef params[] = { LLVMPointerType(slice_type, 0), ptr_type };
         add_runtime_function(codegen, "goo_strings_join", string_type, params, 2);
     }
 
@@ -279,7 +276,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
                              LLVMInt32TypeInContext(codegen->context), params, 2);
     }
 
-    // Slice operations
+    // Slice operations.
+    // WARNING: goo_slice_new/free/get below pass/return goo_slice_t BY VALUE.
+    // That is sound only because they are currently DEAD — no codegen path
+    // emits a call (slices are made via literals, freed by leak-it-all, and
+    // indexed inline). A 3-field slice is 24 bytes (SysV class MEMORY), which
+    // hand-emitted IR cannot pass by value the way the C ABI does. Before
+    // wiring any of these into codegen, convert it to BY POINTER like
+    // goo_slice_append, or it will silently corrupt.
     // goo_slice_t goo_slice_new(size_t element_size, size_t capacity)
     {
         LLVMTypeRef params[] = { size_type, size_type };
@@ -297,7 +301,17 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { slice_type, size_type, size_type };
         add_runtime_function(codegen, "goo_slice_get", ptr_type, params, 3);
     }
-    
+
+    // int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size)
+    // Takes the slice BY POINTER so the in-place amortized 2x growth (new
+    // data/len/cap) is visible to the caller. append() lowering spills the
+    // slice value to a temp alloca and passes its address here.
+    {
+        LLVMTypeRef params[] = { LLVMPointerType(slice_type, 0), ptr_type, size_type };
+        add_runtime_function(codegen, "goo_slice_append",
+                             LLVMInt32TypeInContext(codegen->context), params, 3);
+    }
+
     // Bounds checking
     // void goo_bounds_check(size_t index, size_t length, const char* file, int line)
     {
