@@ -409,8 +409,30 @@ void codegen_exit_function(CodeGenerator* codegen) {
 // Helper functions
 LLVMValueRef codegen_create_alloca(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {
     if (!codegen || !type) return NULL;
-    
+
     return LLVMBuildAlloca(codegen->builder, type, name);
+}
+
+LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef value, Type* value_type) {
+    if (!codegen || !value || !value_type) return NULL;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+    // A pointer reinterprets to the slot; an integer/bool/char zero-extends
+    // (or is already i64). Zero-extension round-trips: the read truncates
+    // back to V's width, recovering the exact low bits regardless of sign.
+    if (value_type->kind == TYPE_POINTER) {
+        return LLVMBuildPtrToInt(codegen->builder, value, i64, "map_slot");
+    }
+    return LLVMBuildIntCast2(codegen->builder, value, i64, /*isSigned=*/0, "map_slot");
+}
+
+LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot, Type* value_type) {
+    if (!codegen || !slot || !value_type) return NULL;
+    LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_type);
+    if (!vt) return NULL;
+    if (value_type->kind == TYPE_POINTER) {
+        return LLVMBuildIntToPtr(codegen->builder, slot, vt, "map_val");
+    }
+    return LLVMBuildIntCast2(codegen->builder, slot, vt, /*isSigned=*/0, "map_val");
 }
 
 LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {

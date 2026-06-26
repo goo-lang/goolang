@@ -260,20 +260,22 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_math_max", dbl, binary, 2);
     }
 
-    // GooMapSI* goo_map_new_si(void)
+    // GooMapSV* goo_map_new_sv(void)
     {
-        add_runtime_function(codegen, "goo_map_new_si", ptr_type, NULL, 0);
+        add_runtime_function(codegen, "goo_map_new_sv", ptr_type, NULL, 0);
     }
-    // void goo_map_set_si(GooMapSI*, const char*, int)
+    // void goo_map_set_sv(GooMapSV*, const char*, int64_t)  — value is the
+    // 8-byte slot; codegen casts the declared V to i64 before the call.
     {
-        LLVMTypeRef params[] = { ptr_type, ptr_type, LLVMInt32TypeInContext(codegen->context) };
-        add_runtime_function(codegen, "goo_map_set_si", void_type, params, 3);
+        LLVMTypeRef params[] = { ptr_type, ptr_type, LLVMInt64TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_map_set_sv", void_type, params, 3);
     }
-    // int goo_map_get_si(GooMapSI*, const char*)
+    // int64_t goo_map_get_sv(GooMapSV*, const char*)  — returns the slot;
+    // codegen casts it back to the declared V.
     {
         LLVMTypeRef params[] = { ptr_type, ptr_type };
-        add_runtime_function(codegen, "goo_map_get_si",
-                             LLVMInt32TypeInContext(codegen->context), params, 2);
+        add_runtime_function(codegen, "goo_map_get_sv",
+                             LLVMInt64TypeInContext(codegen->context), params, 2);
     }
 
     // Slice operations.

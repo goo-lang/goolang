@@ -226,6 +226,13 @@ void codegen_exit_function(CodeGenerator* codegen);
 // Helper functions
 LLVMValueRef codegen_create_alloca(CodeGenerator* codegen, LLVMTypeRef type, const char* name);
 LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef type, const char* name);
+
+// Map values ride an 8-byte runtime slot (i64). Convert a value of the
+// declared map value-type V to the slot (ptrtoint / zext-or-trunc) and back
+// (inttoptr / trunc-or-ext). The type checker guarantees V fits the slot
+// (integer/bool/char/pointer).
+LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef value, Type* value_type);
+LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot, Type* value_type);
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
 
