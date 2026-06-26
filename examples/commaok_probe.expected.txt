@@ -1,0 +1,5 @@
+PASS: present key ok=true
+30
+0
+PASS: present zero value ok=true
+0

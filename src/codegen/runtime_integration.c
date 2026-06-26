@@ -277,6 +277,13 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_map_get_sv",
                              LLVMInt64TypeInContext(codegen->context), params, 2);
     }
+    // void goo_map_get_sv_ok(GooMapSV*, const char*, int64_t*, int*)
+    // Writes the 8-byte slot to *out; sets *found=1 if key present, 0 if absent.
+    // Used by comma-ok map reads: `v, ok := m[k]`.
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type, ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_map_get_sv_ok", void_type, params, 4);
+    }
 
     // Slice operations.
     // WARNING: goo_slice_new/free/get below pass/return goo_slice_t BY VALUE.

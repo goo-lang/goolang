@@ -105,6 +105,9 @@ typedef struct GooMapSV {
 GooMapSV* goo_map_new_sv(void);
 void goo_map_set_sv(GooMapSV* m, const char* k, int64_t v);
 int64_t goo_map_get_sv(GooMapSV* m, const char* k);
+// Presence-returning read: *found=1 and *out=value if k is present, else
+// *found=0 and *out=0. Backs comma-ok map reads (v, ok := m[k]).
+void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found);
 
 // Slice operations
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity);

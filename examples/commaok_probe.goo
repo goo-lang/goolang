@@ -1,0 +1,28 @@
+// commaok_probe: `v, ok := m[k]` distinguishes a present key from an absent
+// one, so the zero value and a missing key are no longer ambiguous.
+package main
+
+import "fmt"
+
+func main() {
+    ages := map[string]int{"alice": 30}
+
+    v, ok := ages["alice"]
+    if ok {
+        fmt.Println("PASS: present key ok=true")
+    }
+    fmt.Println(v)
+
+    z, ok2 := ages["missing"]
+    if ok2 {
+        fmt.Println("FAIL: absent key reported present")
+    }
+    fmt.Println(z)
+
+    ages["zero"] = 0
+    zz, okz := ages["zero"]
+    if okz {
+        fmt.Println("PASS: present zero value ok=true")
+    }
+    fmt.Println(zz)
+}

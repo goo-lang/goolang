@@ -257,7 +257,82 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     // struct's fields. Codepath returns early after handling.
     if (var_decl->name_count > 1 && var_type->kind == TYPE_STRUCT &&
         var_decl->values && var_type->data.struct_type.field_count >= var_decl->name_count) {
-        ValueInfo* rhs = codegen_generate_expression(codegen, checker, var_decl->values);
+        ValueInfo* rhs = NULL;
+
+        // comma-ok map read: `v, ok := m[k]` — call goo_map_get_sv_ok to
+        // get both the value slot and a found flag, then pack them into a
+        // {V, i1} aggregate so the generic ExtractValue loop below can bind
+        // name0→V and name1→ok without any special per-name logic.
+        if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+            var_decl->values->type == AST_INDEX_EXPR) {
+            IndexExprNode* idx_expr = (IndexExprNode*)var_decl->values;
+            if (idx_expr->expr && idx_expr->expr->node_type &&
+                idx_expr->expr->node_type->kind == TYPE_MAP) {
+                Type* val_type = idx_expr->expr->node_type->data.map.value_type;
+
+                // Evaluate the map pointer and the key expression.
+                ValueInfo* map_val = codegen_generate_expression(codegen, checker, idx_expr->expr);
+                ValueInfo* key_val = codegen_generate_expression(codegen, checker, idx_expr->index);
+                if (!map_val || !key_val) {
+                    codegen_error(codegen, decl->pos, "Failed to evaluate comma-ok map operands");
+                    value_info_free(map_val);
+                    value_info_free(key_val);
+                    return 0;
+                }
+
+                // Obtain goo_map_get_sv_ok; it is pre-declared by runtime_integration.c.
+                LLVMValueRef ok_fn = LLVMGetNamedFunction(codegen->module, "goo_map_get_sv_ok");
+                if (!ok_fn) {
+                    codegen_error(codegen, decl->pos, "goo_map_get_sv_ok missing from module");
+                    value_info_free(map_val);
+                    value_info_free(key_val);
+                    return 0;
+                }
+
+                // Alloca output slots in the entry block (mem2reg-friendly).
+                LLVMTypeRef i64t = LLVMInt64TypeInContext(codegen->context);
+                LLVMTypeRef i32t = LLVMInt32TypeInContext(codegen->context);
+                LLVMValueRef out_slot   = codegen_create_entry_alloca(codegen, i64t, "commaok_out");
+                LLVMValueRef found_slot = codegen_create_entry_alloca(codegen, i32t, "commaok_found");
+
+                // String key: extract the raw char* from the {i8*, i64} struct.
+                LLVMValueRef kp = key_val->llvm_value;
+                if (key_val->goo_type && key_val->goo_type->kind == TYPE_STRING) {
+                    kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
+                }
+
+                // Call goo_map_get_sv_ok(map, key, &out, &found).
+                LLVMValueRef call_args[4] = { map_val->llvm_value, kp, out_slot, found_slot };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(ok_fn),
+                               ok_fn, call_args, 4, "");
+
+                // Load the raw i64 slot and convert to V (handles sign/zero-ext).
+                LLVMValueRef raw_slot = LLVMBuildLoad2(codegen->builder, i64t, out_slot, "commaok_slot");
+                LLVMValueRef val = codegen_map_slot_to_value(codegen, raw_slot, val_type);
+
+                // Load found (i32) and truncate to i1 for the bool field.
+                LLVMValueRef found_i32 = LLVMBuildLoad2(codegen->builder, i32t, found_slot, "commaok_fi");
+                LLVMTypeRef  i1t       = LLVMInt1TypeInContext(codegen->context);
+                LLVMValueRef ok_bit    = LLVMBuildTrunc(codegen->builder, found_i32, i1t, "commaok_ok");
+
+                // Pack into {V, i1} struct; ExtractValue loop below will unpack.
+                LLVMTypeRef val_llvm = codegen_type_to_llvm(codegen, val_type);
+                LLVMTypeRef agg_fields[2] = { val_llvm, i1t };
+                LLVMTypeRef agg_type = LLVMStructTypeInContext(codegen->context, agg_fields, 2, 0);
+                LLVMValueRef agg = LLVMGetUndef(agg_type);
+                agg = LLVMBuildInsertValue(codegen->builder, agg, val,    0, "commaok_v");
+                agg = LLVMBuildInsertValue(codegen->builder, agg, ok_bit, 1, "commaok_agg");
+
+                value_info_free(map_val);
+                value_info_free(key_val);
+                rhs = value_info_new(NULL, agg, var_type);
+            }
+        }
+
+        // Non-map-ok path: generic struct-return destructure (e.g. `a, b := f()`).
+        if (!rhs) {
+            rhs = codegen_generate_expression(codegen, checker, var_decl->values);
+        }
         if (!rhs) {
             codegen_error(codegen, decl->pos, "Failed to generate multi-LHS RHS");
             return 0;

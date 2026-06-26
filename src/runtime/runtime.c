@@ -390,6 +390,21 @@ int64_t goo_map_get_sv(GooMapSV* m, const char* k) {
     return 0;  // zero-value default (no comma-ok presence signal yet)
 }
 
+void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found) {
+    *out = 0;
+    *found = 0;
+    if (!m || !k) return;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
+    while (e) {
+        if (strcmp(e->key, k) == 0) {
+            *out = e->value;
+            *found = 1;
+            return;
+        }
+        e = e->next;
+    }
+}
+
 // Slice operations
 
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {
