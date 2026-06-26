@@ -548,11 +548,51 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     TypeDeclNode* td = (TypeDeclNode*)decl;
     if (!td->name || !td->type) return 1;  // tolerate malformed
 
+    // Forward-declare a shell for struct/enum bodies so that self-referential
+    // pointer fields (e.g. `next *Node` inside `type Node struct{...}`) can
+    // resolve the name during type_from_ast. Plain aliases keep the old flow.
+    ASTNodeType body_kind = td->type->type;
+    Type* shell = NULL;
+    if (body_kind == AST_STRUCT_TYPE || body_kind == AST_ENUM_TYPE) {
+        shell = type_new(body_kind == AST_ENUM_TYPE ? TYPE_ENUM : TYPE_STRUCT);
+        if (!shell) return 0;
+        // Do NOT set shell->...name here; the existing tail stamping (below)
+        // runs after the tie-the-knot copy and sets the name on resolved(=shell).
+        // Setting it now would cause a double-free: *shell=*resolved overwrites
+        // the pointer with resolved's (possibly NULL) name, leaking our strdup.
+        Variable* fwd = variable_new(td->name, shell, decl->pos);
+        if (!fwd) { free(shell); return 0; }
+        fwd->is_initialized = 1;
+        fwd->is_builtin = 1;
+        if (!scope_add_variable(checker->current_scope, fwd)) {
+            type_error(checker, decl->pos, "Type '%s' already declared", td->name);
+            variable_free(fwd);
+            return 0;
+        }
+    }
+
     // Resolve the right-hand-side type expression to a concrete Type.
+    // Self-referential pointers built inside type_from_ast will point to
+    // shell (already in scope); after the tie-the-knot copy below, those
+    // pointers will see the complete definition.
     Type* resolved = type_from_ast(checker, td->type);
     if (!resolved) {
         type_error(checker, decl->pos, "Cannot resolve type for '%s'", td->name);
         return 0;
+    }
+
+    if (shell) {
+        // Tie the knot: copy the complete definition into the shell, preserving
+        // the shell's address (already captured by self-referential pointers).
+        // free() releases only the Type box wrapper; nested allocations now
+        // belong to the shell. The name field is intentionally NOT set on shell
+        // before this copy to avoid leaking a strdup'd pointer: *shell=*resolved
+        // overwrites whatever was in shell, and the tail stamping below will
+        // set the name on resolved(=shell) via the existing `if (!...name)`
+        // guards, which handle the case where type_from_ast left name NULL.
+        *shell = *resolved;
+        free(resolved);
+        resolved = shell;
     }
 
     // Stamp the declared name onto a struct type so methods and call sites
@@ -562,18 +602,44 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
         resolved->data.struct_type.name = strdup(td->name);
     }
 
-    // Register the named type by piggybacking on the variable scope:
-    // a Variable whose `type` IS the named Type. AST_BASIC_TYPE lookup
-    // in type_from_ast will recover it. This is a pragmatic shortcut
-    // until a proper named-types table exists.
-    Variable* alias = variable_new(td->name, resolved, decl->pos);
-    if (!alias) return 0;
-    alias->is_initialized = 1;
-    alias->is_builtin = 1;  // not a real variable for use-tracking purposes
-    if (!scope_add_variable(checker->current_scope, alias)) {
-        type_error(checker, decl->pos, "Type '%s' already declared", td->name);
-        variable_free(alias);
-        return 0;
+    // Stamp the declared name onto an enum type, then register each variant
+    // constructor name in scope so variant literals can resolve their parent enum.
+    if (resolved->kind == TYPE_ENUM) {
+        if (!resolved->data.enum_type.name)
+            resolved->data.enum_type.name = strdup(td->name);
+        for (size_t i = 0; i < resolved->data.enum_type.variant_count; i++) {
+            const char* vname = resolved->data.enum_type.variants[i].name;
+            Variable* ctor = variable_new(vname, resolved, decl->pos);
+            if (!ctor) return 0;
+            ctor->is_initialized = 1;
+            ctor->is_builtin = 1;
+            if (!scope_add_variable(checker->current_scope, ctor)) {
+                // A duplicate variant name across enums is a conflict; report.
+                type_error(checker, decl->pos,
+                           "Enum variant '%s' already declared", vname);
+                variable_free(ctor);
+                return 0;
+            }
+        }
+    }
+
+    // Register the named type alias only when we did NOT forward-declare a
+    // shell (shell == NULL). When a shell was pre-registered above, td->name
+    // is already bound in scope to resolved(=shell); re-registering would
+    // conflict. For plain aliases (AST_BASIC_TYPE etc.), register as before.
+    if (shell == NULL) {
+        // a Variable whose `type` IS the named Type. AST_BASIC_TYPE lookup
+        // in type_from_ast will recover it. This is a pragmatic shortcut
+        // until a proper named-types table exists.
+        Variable* alias = variable_new(td->name, resolved, decl->pos);
+        if (!alias) return 0;
+        alias->is_initialized = 1;
+        alias->is_builtin = 1;  // not a real variable for use-tracking purposes
+        if (!scope_add_variable(checker->current_scope, alias)) {
+            type_error(checker, decl->pos, "Type '%s' already declared", td->name);
+            variable_free(alias);
+            return 0;
+        }
     }
     return 1;
 }
@@ -1013,7 +1079,74 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             result->align = max_align;
             return result;
         }
-        
+
+        case AST_ENUM_TYPE: {
+            EnumTypeNode* en = (EnumTypeNode*)type_node;
+            size_t vcount = 0;
+            for (ASTNode* v = en->variants; v; v = v->next)
+                if (v->type == AST_ENUM_VARIANT) vcount++;
+
+            Type* result = type_new(TYPE_ENUM);
+            if (!result) return NULL;
+            result->data.enum_type.variant_count = vcount;
+            result->data.enum_type.variants =
+                vcount ? calloc(vcount, sizeof(EnumVariant)) : NULL;
+
+            size_t max_payload = 0, max_align = 4;
+            size_t idx = 0;
+            for (ASTNode* v = en->variants; v; v = v->next) {
+                if (v->type != AST_ENUM_VARIANT) continue;
+                EnumVariantNode* vn = (EnumVariantNode*)v;
+
+                // Build the payload TYPE_STRUCT from vn->fields (same walk
+                // as the AST_STRUCT_TYPE case above).
+                size_t fcount = 0;
+                for (ASTNode* f = vn->fields; f; f = f->next)
+                    if (f->type == AST_VAR_DECL) fcount++;
+                Type* payload = type_new(TYPE_STRUCT);
+                if (!payload) { free(result->data.enum_type.variants); free(result); return NULL; }
+                payload->data.struct_type.field_count = fcount;
+                payload->data.struct_type.fields =
+                    fcount ? calloc(fcount, sizeof(StructField)) : NULL;
+                payload->data.struct_type.name = strdup(vn->name);
+                size_t off = 0, palign = 1, fidx = 0;
+                for (ASTNode* f = vn->fields; f; f = f->next) {
+                    if (f->type != AST_VAR_DECL) continue;
+                    VarDeclNode* fd = (VarDeclNode*)f;
+                    if (fd->name_count == 0) continue;
+                    Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
+                    if (!ft) {
+                        free(payload->data.struct_type.name);
+                        free(payload->data.struct_type.fields);
+                        free(payload);
+                        free(result->data.enum_type.variants);
+                        free(result);
+                        return NULL;
+                    }
+                    payload->data.struct_type.fields[fidx].name = strdup(fd->names[0]);
+                    payload->data.struct_type.fields[fidx].type = ft;
+                    payload->data.struct_type.fields[fidx].offset = off;
+                    off += ft->size ? ft->size : 8;
+                    if (ft->align > palign) palign = ft->align;
+                    fidx++;
+                }
+                payload->size = off;
+                payload->align = palign;
+
+                result->data.enum_type.variants[idx].name = strdup(vn->name);
+                result->data.enum_type.variants[idx].payload = payload;
+                result->data.enum_type.variants[idx].tag = (int)idx;
+                if (off > max_payload) max_payload = off;
+                if (palign > max_align) max_align = palign;
+                idx++;
+            }
+            // Layout: { i32 tag, [max_payload x i8] }. Pad tag to payload align.
+            size_t tag_slot = (max_align > 4) ? max_align : 4;
+            result->size = tag_slot + max_payload;
+            result->align = max_align;
+            return result;
+        }
+
         case AST_MAP_TYPE: {
             MapTypeNode* map = (MapTypeNode*)type_node;
             Type* key_type = type_from_ast(checker, map->key_type);

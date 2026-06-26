@@ -83,6 +83,8 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
         }
         case AST_STRUCT_LITERAL:
             return type_check_struct_literal(checker, expr);
+        case AST_MATCH_EXPR:
+            return type_check_match_expr(checker, expr);
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;
@@ -106,7 +108,35 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
                    lit->type_name);
         return NULL;
     }
-    Type* struct_type = named->type;
+    Type* named_type = named->type;
+
+    // For enum variant construction (e.g. `Circle{radius: 5}` where Circle is
+    // a variant of enum Shape): resolve the variant and use its payload struct
+    // for the field-checking block below. The returned/stamped type is the ENUM,
+    // not the payload, so the literal is assignable to an enum-typed variable.
+    // Codegen recovers the variant by searching node_type->data.enum_type.variants
+    // for lit->type_name.
+    Type* enum_type = NULL;
+    if (named_type->kind == TYPE_ENUM) {
+        EnumVariant* variant = NULL;
+        for (size_t i = 0; i < named_type->data.enum_type.variant_count; i++) {
+            if (strcmp(named_type->data.enum_type.variants[i].name, lit->type_name) == 0) {
+                variant = &named_type->data.enum_type.variants[i];
+                break;
+            }
+        }
+        if (!variant) {
+            type_error(checker, expr->pos, "'%s' is not a variant of enum '%s'",
+                       lit->type_name, named_type->data.enum_type.name);
+            return NULL;
+        }
+        // Redirect struct_type to the variant's payload so the existing
+        // keyed/positional checking block runs against the payload fields.
+        enum_type = named_type;
+        named_type = variant->payload;
+    }
+
+    Type* struct_type = named_type;
     if (struct_type->kind != TYPE_STRUCT) {
         type_error(checker, expr->pos,
                    "'%s' is not a struct type, cannot use composite literal",
@@ -178,8 +208,11 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
     }
     // Empty literal `Point{}` — all fields zero-valued, nothing to check.
 
-    expr->node_type = struct_type;
-    return struct_type;
+    // For enum variants, stamp the ENUM type (not the payload) so the literal
+    // is assignable to an enum-typed variable. Plain struct path is unchanged.
+    Type* result_type = enum_type ? enum_type : struct_type;
+    expr->node_type = result_type;
+    return result_type;
 }
 
 Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
@@ -786,14 +819,137 @@ Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type*
 
 Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Position pos) {
     if (!checker || !channel_type) return NULL;
-    
+
     // Operand must be a channel
     if (channel_type->kind != TYPE_CHANNEL) {
         type_error(checker, pos, "Cannot receive from non-channel type %s", type_to_string(channel_type));
         return NULL;
     }
-    
+
     // Channel receive operation returns the element type
     return channel_type->data.channel.element_type;
+}
+
+// Typecheck a match expression (statement-style, yields void).
+// For each arm: open a per-arm scope, bind positional payload names to
+// variant field types (PATTERN_DESTRUCTURE over TYPE_ENUM), typecheck
+// the guard and body, close the scope.  Enforces exhaustiveness when
+// the scrutinee is a TYPE_ENUM and no wildcard arm is present.
+Type* type_check_match_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr) return NULL;
+
+    MatchExprNode* m = (MatchExprNode*)expr;
+    Type* scrut = type_check_expression(checker, m->expr);
+    if (!scrut) return NULL;
+
+    int is_enum = (scrut->kind == TYPE_ENUM);
+    size_t vcount = is_enum ? scrut->data.enum_type.variant_count : 0;
+    // covered[i] tracks whether variant i has an arm; calloc zeroes it.
+    int* covered = vcount ? calloc(vcount, sizeof(int)) : NULL;
+    int has_default = 0;
+
+    for (ASTNode* c = m->cases; c; c = c->next) {
+        MatchCaseNode* mc = (MatchCaseNode*)c;
+        PatternNode* p = (PatternNode*)mc->pattern;
+
+        // Per-arm scope so payload bindings don't leak to siblings or caller.
+        scope_push(checker);
+
+        if (p->pattern_type == PATTERN_WILDCARD) {
+            if (has_default) {
+                type_error(checker, c->pos,
+                    "duplicate default arm in match");
+                scope_pop(checker);
+                free(covered);
+                return NULL;
+            }
+            has_default = 1;
+        } else if (is_enum && p->pattern_type == PATTERN_DESTRUCTURE) {
+            const char* vn = p->data.destructure.type_name;
+            EnumVariant* variant = NULL;
+            int vidx = -1;
+            for (size_t i = 0; i < vcount; i++) {
+                if (strcmp(scrut->data.enum_type.variants[i].name, vn) == 0) {
+                    variant = &scrut->data.enum_type.variants[i];
+                    vidx = (int)i;
+                    break;
+                }
+            }
+            if (!variant) {
+                type_error(checker, c->pos,
+                    "'%s' is not a variant of enum '%s'",
+                    vn, scrut->data.enum_type.name);
+                scope_pop(checker);
+                free(covered);
+                return NULL;
+            }
+            if (covered[vidx]) {
+                type_error(checker, c->pos,
+                    "Duplicate match arm for variant '%s'", vn);
+                scope_pop(checker);
+                free(covered);
+                return NULL;
+            }
+            covered[vidx] = 1;
+
+            // Bind each positional identifier in data.destructure.fields to
+            // the corresponding variant payload field type.
+            Type* payload = variant->payload;
+            size_t field_count = payload ? payload->data.struct_type.field_count : 0;
+            size_t fi = 0;
+            for (ASTNode* b = p->data.destructure.fields; b; b = b->next, fi++) {
+                if (fi >= field_count) {
+                    type_error(checker, c->pos,
+                        "Too many bindings for variant '%s' (has %zu field(s))",
+                        vn, field_count);
+                    scope_pop(checker);
+                    free(covered);
+                    return NULL;
+                }
+                // Only bind AST_IDENTIFIER nodes; ignore wildcards named `_`.
+                if (b->type != AST_IDENTIFIER) continue;
+                IdentifierNode* bind = (IdentifierNode*)b;
+                if (strcmp(bind->name, "_") == 0) continue;
+                Variable* var = variable_new(bind->name,
+                    payload->data.struct_type.fields[fi].type, c->pos);
+                if (var) {
+                    var->is_initialized = 1;
+                    scope_add_variable(checker->current_scope, var);
+                }
+            }
+        }
+        // Non-enum destructure / literal / identifier patterns: no enum-specific
+        // bookkeeping; existing value-match semantics apply.
+
+        // Typecheck the optional guard in the arm's scope.
+        if (mc->guard) {
+            type_check_expression(checker,
+                ((GuardConditionNode*)mc->guard)->condition);
+        }
+
+        // Typecheck body statements in the arm's scope.
+        for (ASTNode* s = mc->body; s; s = s->next)
+            type_check_statement(checker, s);
+
+        scope_pop(checker);
+    }
+
+    // Exhaustiveness: every variant must be covered when there is no default.
+    if (is_enum && !has_default) {
+        for (size_t i = 0; i < vcount; i++) {
+            if (!covered[i]) {
+                type_error(checker, expr->pos,
+                    "Non-exhaustive match: variant '%s' not handled "
+                    "(add a case or `default:`)",
+                    scrut->data.enum_type.variants[i].name);
+                free(covered);
+                return NULL;
+            }
+        }
+    }
+
+    free(covered);
+    expr->node_type = type_checker_get_builtin(checker, TYPE_VOID);
+    return expr->node_type;
 }
 

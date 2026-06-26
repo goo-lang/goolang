@@ -37,7 +37,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 // Go Keywords
 %token BREAK CASE CHAN CONST CONTINUE DEFAULT DEFER ELSE FALLTHROUGH
 %token FOR FUNC GO GOTO IF IMPORT INTERFACE MAP PACKAGE RANGE RETURN
-%token SELECT STRUCT SWITCH TYPE VAR
+%token SELECT STRUCT SWITCH TYPE VAR ENUM
 %token TRUE FALSE NIL
 
 // Goo Extension Keywords
@@ -97,6 +97,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field
+%type <node> enum_type enum_variant_list enum_variant
 %type <node> slice_lit
 %type <node> multi_return_type_list
 %type <node> map_lit map_entry_list map_entry
@@ -1274,6 +1275,7 @@ type:
     | error_union_type { $$ = $1; }   // Goo extension
     | nullable_type { $$ = $1; }      // Goo extension
     | struct_type { $$ = $1; }
+    | enum_type { $$ = $1; }
     ;
 
 struct_type:
@@ -1297,10 +1299,45 @@ struct_type:
     }
     ;
 
+enum_type:
+    ENUM LBRACE enum_variant_list RBRACE {
+        $$ = (ASTNode*)ast_enum_type_new($3, get_current_position());
+    }
+    | ENUM LBRACE RBRACE {
+        $$ = (ASTNode*)ast_enum_type_new(NULL, get_current_position());
+    }
+    ;
+
+enum_variant_list:
+    enum_variant { $$ = $1; }
+    | enum_variant_list enum_variant {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+enum_variant:
+    identifier LBRACE struct_field_list RBRACE {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        $$ = (ASTNode*)ast_enum_variant_new(ident->name, $3, get_current_position());
+        ast_node_free($1);
+    }
+    | identifier LBRACE RBRACE {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        $$ = (ASTNode*)ast_enum_variant_new(ident->name, NULL, get_current_position());
+        ast_node_free($1);
+    }
+    ;
+
 struct_field_list:
     struct_field { $$ = $1; }
     | struct_field_list struct_field {
         ast_add_child($1, $2);
+        $$ = $1;
+    }
+    | struct_field_list COMMA struct_field {
+        // Comma-separated field syntax: `w: int, h: int`
+        ast_add_child($1, $3);
         $$ = $1;
     }
     ;
@@ -1320,6 +1357,19 @@ struct_field:
         ast_node_free($1);
         $$ = (ASTNode*)field;
     }
+    | identifier COLON type {
+        // Colon-separated field syntax: `name: type` (Goo extension).
+        // Used in enum variant bodies: `Circle{radius: int}`.
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* field = ast_var_decl_new(get_current_position());
+        field->names = malloc(sizeof(char*));
+        field->names[0] = strdup(ident->name);
+        field->name_count = 1;
+        field->type = $3;
+        field->values = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)field;
+    }
     | identifier type SEMICOLON {
         IdentifierNode* ident = (IdentifierNode*)$1;
         VarDeclNode* field = ast_var_decl_new(get_current_position());
@@ -1327,6 +1377,18 @@ struct_field:
         field->names[0] = strdup(ident->name);
         field->name_count = 1;
         field->type = $2;
+        field->values = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)field;
+    }
+    | identifier COLON type SEMICOLON {
+        // Colon-separated field with semicolon terminator.
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* field = ast_var_decl_new(get_current_position());
+        field->names = malloc(sizeof(char*));
+        field->names[0] = strdup(ident->name);
+        field->name_count = 1;
+        field->type = $3;
         field->values = NULL;
         ast_node_free($1);
         $$ = (ASTNode*)field;

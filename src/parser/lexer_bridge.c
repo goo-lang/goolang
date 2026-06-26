@@ -118,6 +118,9 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_SWITCH:
             m10_push_frame(M10_FRAME_KIND_SWITCH);
             return SWITCH;
+        case TOKEN_MATCH:
+            m10_push_frame(M10_FRAME_KIND_MATCH);
+            return MATCH;
         case TOKEN_TYPE: return TYPE;
         case TOKEN_VAR: return VAR;
         
@@ -137,7 +140,8 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_BORROWED: return BORROWED;
         case TOKEN_SHARED: return SHARED;
         case TOKEN_LET: return LET;
-        
+        case TOKEN_ENUM: return ENUM;
+
         // Operators
         case TOKEN_PLUS: return PLUS;
         case TOKEN_MINUS: return MINUS;
@@ -263,12 +267,12 @@ int yylex(void) {
     }
     
     token_free(token);
-    
+
     if (bison_token == -1) {
         // Skip unknown tokens
         return yylex();
     }
-    
+
     return bison_token;
 }
 

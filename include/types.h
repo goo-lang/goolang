@@ -36,6 +36,7 @@ typedef enum {
     TYPE_POINTER,
     TYPE_REFERENCE,
     TYPE_STRUCT,
+    TYPE_ENUM,
     TYPE_INTERFACE,
     
     // Goo extensions
@@ -131,7 +132,14 @@ struct Type {
             size_t field_count;
             char* name;
         } struct_type;
-        
+
+        // Enum (tagged union) type
+        struct {
+            char* name;
+            struct EnumVariant* variants;
+            size_t variant_count;
+        } enum_type;
+
         // Interface type
         struct {
             struct InterfaceMethod* methods;
@@ -209,6 +217,13 @@ typedef struct StructField {
     OwnershipKind ownership;
     MutabilityKind mutability;
 } StructField;
+
+// One variant of a tagged union: a named payload struct + its discriminant.
+typedef struct EnumVariant {
+    char* name;
+    Type* payload;   // a TYPE_STRUCT (0+ fields)
+    int tag;         // discriminant index, 0-based in declaration order
+} EnumVariant;
 
 // Interface method
 typedef struct InterfaceMethod {
@@ -414,6 +429,7 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
 Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr);
+Type* type_check_match_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr);
 

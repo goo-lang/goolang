@@ -1,0 +1,40 @@
+// match_probe: the M2 gate. Build a small Expr AST (a tagged union) and
+// evaluate it by walking the tree with `match` over the tag, recursing
+// through *Expr payloads. Statement-style match; positional payload binding.
+package main
+
+import "fmt"
+
+type Expr enum {
+    Num{value: int}
+    Add{lhs: *Expr, rhs: *Expr}
+}
+
+func eval(e *Expr) int {
+    var result int
+    match *e {
+    case Num{v}:
+        result = v
+    case Add{l, r}:
+        result = eval(l) + eval(r)
+    }
+    return result
+}
+
+func main() {
+    // Build  Add(Num(2), Add(Num(3), Num(4)))  == 9
+    n2 := new(Expr)
+    *n2 = Num{value: 2}
+    n3 := new(Expr)
+    *n3 = Num{value: 3}
+    n4 := new(Expr)
+    *n4 = Num{value: 4}
+    inner := new(Expr)
+    *inner = Add{lhs: n3, rhs: n4}
+    root := new(Expr)
+    *root = Add{lhs: n2, rhs: inner}
+
+    if eval(root) == 9 {
+        fmt.Println("PASS: match evaluates tagged-union AST")
+    }
+}

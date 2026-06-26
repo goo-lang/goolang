@@ -41,6 +41,7 @@ typedef enum {
     TOKEN_RETURN,       // return
     TOKEN_SELECT,       // select
     TOKEN_STRUCT,       // struct
+    TOKEN_ENUM,         // enum
     TOKEN_SWITCH,       // switch
     TOKEN_TYPE,         // type
     TOKEN_VAR,          // var

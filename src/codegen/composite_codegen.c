@@ -274,34 +274,15 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     return field_val;
 #endif
 }
-// `Point{x: 3, y: 4}` / `Point{3, 4}` — build the struct value as an
-// rvalue aggregate: start from the zero value (so omitted keyed fields
-// get Go zero-value semantics for free, matching the zero-initializing
-// alloca `var p Point` already gets) and InsertValue each provided
-// field at its declared index. Selector codegen already handles rvalue
-// struct bases by spilling to a temporary alloca.
-ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
-#if !LLVM_AVAILABLE
-    codegen_error(codegen, expr->pos, "LLVM support not available");
-    return NULL;
-#else
-    if (!codegen || !checker || !expr || expr->type != AST_STRUCT_LITERAL) return NULL;
-
-    StructLiteralNode* lit = (StructLiteralNode*)expr;
-    Type* struct_type = expr->node_type;
-    if (!struct_type || struct_type->kind != TYPE_STRUCT) {
-        codegen_error(codegen, expr->pos,
-                      "Struct literal '%s' missing type info from type check",
-                      lit->type_name);
-        return NULL;
-    }
-
+// codegen_build_struct_value builds an aggregate LLVMValueRef for a struct
+// literal, inserting each field into the zero struct value via InsertValue.
+// Extracted from codegen_generate_struct_lit so both the plain struct path
+// and the enum-variant payload path can reuse it (DRY).
+// Returns the aggregate on success, NULL on error.
+static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeChecker* checker,
+                                               StructLiteralNode* lit, Type* struct_type) {
     LLVMTypeRef llvm_struct = codegen_type_to_llvm(codegen, struct_type);
-    if (!llvm_struct) {
-        codegen_error(codegen, expr->pos,
-                      "Failed to lower struct type '%s'", lit->type_name);
-        return NULL;
-    }
+    if (!llvm_struct) return NULL;
 
     StructField* fields = struct_type->data.struct_type.fields;
     size_t decl_count = struct_type->data.struct_type.field_count;
@@ -349,9 +330,273 @@ ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* chec
         value_info_free(val);
     }
 
+    return agg;
+}
+
+// `Point{x: 3, y: 4}` / `Point{3, 4}` — build the struct value as an
+// rvalue aggregate: start from the zero value (so omitted keyed fields
+// get Go zero-value semantics for free, matching the zero-initializing
+// alloca `var p Point` already gets) and InsertValue each provided
+// field at its declared index. Selector codegen already handles rvalue
+// struct bases by spilling to a temporary alloca.
+//
+// Also handles enum variant construction: `Circle{radius: 5}` when the
+// declared type is a TYPE_ENUM. Builds the payload aggregate against the
+// variant's payload TYPE_STRUCT, then stores {tag, payload} through a
+// stack alloca and loads the whole enum value.
+ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_STRUCT_LITERAL) return NULL;
+
+    StructLiteralNode* lit = (StructLiteralNode*)expr;
+    Type* struct_type = expr->node_type;
+    if (!struct_type) {
+        codegen_error(codegen, expr->pos,
+                      "Struct literal '%s' missing type info from type check",
+                      lit->type_name);
+        return NULL;
+    }
+
+    // Enum variant construction: `Circle{radius: 5}` where the declared type
+    // is a TYPE_ENUM. Find the matching variant, build its payload, then
+    // write {tag, payload} into an alloca and load the resulting enum value.
+    if (struct_type->kind == TYPE_ENUM) {
+        EnumVariant* variant = NULL;
+        for (size_t i = 0; i < struct_type->data.enum_type.variant_count; i++) {
+            if (strcmp(struct_type->data.enum_type.variants[i].name, lit->type_name) == 0) {
+                variant = &struct_type->data.enum_type.variants[i];
+                break;
+            }
+        }
+        if (!variant) {
+            codegen_error(codegen, expr->pos, "No variant '%s' in enum", lit->type_name);
+            return NULL;
+        }
+
+        LLVMTypeRef enum_ty = codegen_type_to_llvm(codegen, struct_type);
+        LLVMTypeRef payload_ty = codegen_type_to_llvm(codegen, variant->payload);
+        if (!enum_ty || !payload_ty) {
+            codegen_error(codegen, expr->pos,
+                          "Failed to lower enum or payload type for variant '%s'",
+                          lit->type_name);
+            return NULL;
+        }
+
+        // Build the payload aggregate via the shared helper.
+        LLVMValueRef payload_val =
+            codegen_build_struct_value(codegen, checker, lit, variant->payload);
+        if (!payload_val) return NULL;
+
+        // alloca the whole enum; store tag into field 0; bitcast field-1
+        // slot to payload-struct-pointer; store payload; load the enum.
+        LLVMValueRef tmp = codegen_create_alloca(codegen, enum_ty, "enum_tmp");
+        LLVMValueRef tag_ptr =
+            LLVMBuildStructGEP2(codegen->builder, enum_ty, tmp, 0, "tag_ptr");
+        LLVMBuildStore(codegen->builder,
+            LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                         (unsigned long long)variant->tag, 0),
+            tag_ptr);
+        LLVMValueRef pslot =
+            LLVMBuildStructGEP2(codegen->builder, enum_ty, tmp, 1, "payload_slot");
+        LLVMValueRef pcast =
+            LLVMBuildBitCast(codegen->builder, pslot,
+                             LLVMPointerType(payload_ty, 0), "payload_cast");
+        LLVMBuildStore(codegen->builder, payload_val, pcast);
+        LLVMValueRef loaded =
+            LLVMBuildLoad2(codegen->builder, enum_ty, tmp, "enum_val");
+        return value_info_new(NULL, loaded, struct_type);
+    }
+
+    if (struct_type->kind != TYPE_STRUCT) {
+        codegen_error(codegen, expr->pos,
+                      "Struct literal '%s' missing type info from type check",
+                      lit->type_name);
+        return NULL;
+    }
+
+    LLVMTypeRef llvm_struct = codegen_type_to_llvm(codegen, struct_type);
+    if (!llvm_struct) {
+        codegen_error(codegen, expr->pos,
+                      "Failed to lower struct type '%s'", lit->type_name);
+        return NULL;
+    }
+
+    LLVMValueRef agg = codegen_build_struct_value(codegen, checker, lit, struct_type);
+    if (!agg) return NULL;
+
     return value_info_new(NULL, agg, struct_type);
 #endif
 }
+// codegen_generate_match lowers a `match expr { case Variant{fields}: body }` to
+// LLVM IR: load the discriminant tag, switch on it, in each arm bind the
+// positional payload fields as named locals, emit the body, and branch to a
+// merge block. Statement-style: no result value is returned.
+//
+// Scope notes:
+//   - The type-checker already ran scope_push/pop per arm during type-check.
+//     During codegen we replicate that so any re-entrant type-checking (e.g.
+//     from binary-expr lowering) can resolve arm-local names.
+//   - We also snapshot value_table_size before each arm and truncate after,
+//     so a binding from arm N is not visible during arm N+1.
+ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_MATCH_EXPR) return NULL;
+
+    MatchExprNode* m = (MatchExprNode*)expr;
+
+    // Generate the scrutinee. `match *e` yields a loaded value (not a pointer).
+    // We need the enum in memory to GEP into the tag and payload slots.
+    ValueInfo* scrut = codegen_generate_expression(codegen, checker, m->expr);
+    if (!scrut) return NULL;
+
+    Type* enum_type = scrut->goo_type;
+    if (!enum_type || enum_type->kind != TYPE_ENUM) {
+        codegen_error(codegen, expr->pos, "match scrutinee is not an enum");
+        value_info_free(scrut);
+        return NULL;
+    }
+
+    LLVMTypeRef enum_ty = codegen_type_to_llvm(codegen, enum_type);
+    LLVMValueRef scrut_ptr;
+    if (scrut->is_lvalue) {
+        // Scrutinee is already a pointer (lvalue) — use it directly.
+        scrut_ptr = scrut->llvm_value;
+    } else {
+        // Scrutinee is a value (e.g. result of a pointer deref). Spill to
+        // a temporary alloca so we can GEP into the tag and payload fields.
+        scrut_ptr = codegen_create_alloca(codegen, enum_ty, "match_scrut");
+        LLVMBuildStore(codegen->builder, scrut->llvm_value, scrut_ptr);
+    }
+    value_info_free(scrut);
+
+    // Load the tag (field 0) for the switch dispatch.
+    LLVMValueRef tag_ptr = LLVMBuildStructGEP2(codegen->builder, enum_ty,
+                                               scrut_ptr, 0, "tag_ptr");
+    LLVMValueRef tag = LLVMBuildLoad2(codegen->builder,
+                                      LLVMInt32TypeInContext(codegen->context),
+                                      tag_ptr, "tag");
+
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+    LLVMBasicBlockRef merge = LLVMAppendBasicBlockInContext(codegen->context, fn, "match_end");
+
+    // Pre-count non-wildcard arms and detect the wildcard arm.
+    unsigned narms = 0;
+    LLVMBasicBlockRef default_bb = merge;  // switch falls to merge if no wildcard
+    for (ASTNode* c = m->cases; c; c = c->next) {
+        PatternNode* p = (PatternNode*)((MatchCaseNode*)c)->pattern;
+        if (p->pattern_type == PATTERN_WILDCARD) {
+            default_bb = LLVMAppendBasicBlockInContext(codegen->context, fn, "match_default");
+        } else {
+            narms++;
+        }
+    }
+
+    LLVMValueRef sw = LLVMBuildSwitch(codegen->builder, tag, default_bb, narms);
+
+    for (ASTNode* c = m->cases; c; c = c->next) {
+        MatchCaseNode* mc = (MatchCaseNode*)c;
+        PatternNode* p = (PatternNode*)mc->pattern;
+
+        // Snapshot value-table depth so arm-local bindings don't escape.
+        size_t pre_arm_vt_size = codegen->value_table_size;
+        scope_push(checker);
+
+        LLVMBasicBlockRef arm;
+        if (p->pattern_type == PATTERN_WILDCARD) {
+            arm = default_bb;
+        } else {
+            // Resolve the variant by name and get its tag.
+            const char* vn = p->data.destructure.type_name;
+            EnumVariant* variant = NULL;
+            for (size_t i = 0; i < enum_type->data.enum_type.variant_count; i++) {
+                if (strcmp(enum_type->data.enum_type.variants[i].name, vn) == 0) {
+                    variant = &enum_type->data.enum_type.variants[i];
+                    break;
+                }
+            }
+            if (!variant) {
+                codegen_error(codegen, c->pos,
+                    "match: variant '%s' not found in enum", vn);
+                scope_pop(checker);
+                return NULL;
+            }
+
+            arm = LLVMAppendBasicBlockInContext(codegen->context, fn, vn);
+            LLVMAddCase(sw,
+                LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                             (unsigned long long)variant->tag, 0),
+                arm);
+            LLVMPositionBuilderAtEnd(codegen->builder, arm);
+
+            // Bind positional payload fields as arm locals.
+            // Payload is stored in field 1 of the enum, bitcast to the
+            // variant's struct type pointer so individual fields are accessible.
+            if (variant->payload && p->data.destructure.fields) {
+                LLVMTypeRef payload_ty = codegen_type_to_llvm(codegen, variant->payload);
+                LLVMValueRef pslot = LLVMBuildStructGEP2(codegen->builder, enum_ty,
+                                                          scrut_ptr, 1, "pslot");
+                LLVMValueRef pptr = LLVMBuildBitCast(codegen->builder, pslot,
+                                                      LLVMPointerType(payload_ty, 0), "pptr");
+                size_t fi = 0;
+                for (ASTNode* b = p->data.destructure.fields; b; b = b->next, fi++) {
+                    if (b->type != AST_IDENTIFIER) continue;
+                    IdentifierNode* bind = (IdentifierNode*)b;
+                    if (strcmp(bind->name, "_") == 0) continue;
+
+                    StructField* f = &variant->payload->data.struct_type.fields[fi];
+                    LLVMTypeRef field_ty = codegen_type_to_llvm(codegen, f->type);
+                    LLVMValueRef fptr = LLVMBuildStructGEP2(codegen->builder, payload_ty,
+                                                             pptr, (unsigned)fi, bind->name);
+                    // Load the field value and expose it as an lvalue alloca so
+                    // that assignments to it in the arm body work correctly.
+                    LLVMValueRef fval = LLVMBuildLoad2(codegen->builder,
+                                                        field_ty, fptr, bind->name);
+                    LLVMValueRef slot = codegen_create_entry_alloca(codegen, field_ty, bind->name);
+                    LLVMBuildStore(codegen->builder, fval, slot);
+
+                    ValueInfo* vi = value_info_new(bind->name, slot, f->type);
+                    vi->is_lvalue = 1;
+                    vi->is_initialized = 1;
+                    codegen_add_value(codegen, vi);
+
+                    // Mirror into the type-checker scope so any re-entrant
+                    // type_check_* calls inside the arm body can resolve the name.
+                    Variable* tv = variable_new(bind->name, f->type, c->pos);
+                    if (tv) {
+                        tv->is_initialized = 1;
+                        scope_add_variable(checker->current_scope, tv);
+                    }
+                }
+            }
+        }
+
+        // Position the builder into the arm block (wildcard uses default_bb).
+        LLVMPositionBuilderAtEnd(codegen->builder, arm);
+
+        // Emit arm body statements.
+        for (ASTNode* s = mc->body; s; s = s->next)
+            codegen_generate_statement(codegen, checker, s);
+
+        // Fall through to merge unless the arm already terminated (e.g. return).
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+            LLVMBuildBr(codegen->builder, merge);
+
+        // Restore type-checker scope and codegen value table.
+        scope_pop(checker);
+        codegen->value_table_size = pre_arm_vt_size;
+    }
+
+    LLVMPositionBuilderAtEnd(codegen->builder, merge);
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+#endif
+}
+
 // codegen_generate_slice_lit lowers `[1, 2, 3]` to a slice struct
 // { ptr, i64 } pointing at a global constant array. Element type is
 // inferred from the type-check pass (goo_type on the AST node is

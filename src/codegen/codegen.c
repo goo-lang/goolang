@@ -42,6 +42,11 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->type_cache = NULL;
     codegen->type_cache_size = 0;
     codegen->type_cache_capacity = 0;
+
+    codegen->struct_cache_keys = NULL;
+    codegen->struct_cache_vals = NULL;
+    codegen->struct_cache_size = 0;
+    codegen->struct_cache_cap = 0;
     
     // Error reporting
     codegen->current_file = NULL;
@@ -111,7 +116,10 @@ void codegen_free(CodeGenerator* codegen) {
     if (codegen->type_cache) {
         free(codegen->type_cache);
     }
-    
+
+    free(codegen->struct_cache_keys);
+    free(codegen->struct_cache_vals);
+
     free(codegen->current_file);
     free(codegen->target_triple);
     free(codegen->target_cpu);

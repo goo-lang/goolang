@@ -56,6 +56,15 @@ struct CodeGenerator {
     LLVMTypeRef* type_cache;
     size_t type_cache_size;
     size_t type_cache_capacity;
+
+    // Struct-type cache: maps Goo Type* -> LLVMTypeRef for named struct
+    // types. Pre-populated with an opaque struct before resolving fields so
+    // that recursive pointer fields (`next *Node`) can reference the opaque
+    // type without infinite recursion in codegen_get_struct_type.
+    const Type** struct_cache_keys;
+    LLVMTypeRef* struct_cache_vals;
+    size_t struct_cache_size;
+    size_t struct_cache_cap;
     
     // Error reporting
     char* current_file;
@@ -172,6 +181,7 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
 ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
@@ -196,6 +206,7 @@ LLVMTypeRef codegen_get_function_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_pointer_type(CodeGenerator* codegen, const Type* type);
 
 // Special Goo type mappings
+LLVMTypeRef codegen_get_enum_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_error_union_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_nullable_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_channel_type(CodeGenerator* codegen, const Type* type);

@@ -64,6 +64,9 @@ LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type) {
             
         case TYPE_STRUCT:
             return codegen_get_struct_type(codegen, type);
+
+        case TYPE_ENUM:
+            return codegen_get_enum_type(codegen, type);
             
         case TYPE_INTERFACE:
             // Interface is represented as { vtable*, data* }
@@ -138,19 +141,49 @@ LLVMTypeRef codegen_get_array_type(CodeGenerator* codegen, const Type* type) {
 
 LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type) {
     if (!codegen || !type || type->kind != TYPE_STRUCT) return NULL;
-    
-    // Check if we already have this struct type cached
-    // For now, we'll generate it each time
-    
-    if (type->data.struct_type.field_count == 0) {
-        // Empty struct
-        return LLVMStructTypeInContext(codegen->context, NULL, 0, 0);
+
+    // Consult the struct cache first. The cache stores (Type* -> LLVMTypeRef)
+    // pairs. For recursive struct types (e.g. `type Node struct { next *Node }`)
+    // the cache entry is inserted BEFORE resolving the field types, so that
+    // when codegen_type_to_llvm is called recursively for `*Node` it finds the
+    // opaque named struct in the cache and returns it immediately instead of
+    // recursing infinitely.
+    for (size_t i = 0; i < codegen->struct_cache_size; i++) {
+        if (codegen->struct_cache_keys[i] == type)
+            return codegen->struct_cache_vals[i];
     }
-    
-    // Create array of field types
+
+    // Create an opaque named struct and insert it into the cache BEFORE
+    // resolving the body. This breaks potential cycles.
+    const char* name = type->data.struct_type.name ? type->data.struct_type.name : "anon";
+    LLVMTypeRef opaque = LLVMStructCreateNamed(codegen->context, name);
+    if (!opaque) return NULL;
+
+    // Grow the cache if needed.
+    if (codegen->struct_cache_size == codegen->struct_cache_cap) {
+        size_t new_cap = codegen->struct_cache_cap ? codegen->struct_cache_cap * 2 : 8;
+        const Type** new_keys = realloc(codegen->struct_cache_keys, new_cap * sizeof(const Type*));
+        if (!new_keys) return NULL;
+        codegen->struct_cache_keys = new_keys;
+        LLVMTypeRef* new_vals = realloc(codegen->struct_cache_vals, new_cap * sizeof(LLVMTypeRef));
+        if (!new_vals) return NULL;
+        codegen->struct_cache_vals = new_vals;
+        codegen->struct_cache_cap = new_cap;
+    }
+    codegen->struct_cache_keys[codegen->struct_cache_size] = type;
+    codegen->struct_cache_vals[codegen->struct_cache_size] = opaque;
+    codegen->struct_cache_size++;
+
+    if (type->data.struct_type.field_count == 0) {
+        // Empty struct: leave the named struct body-less (zero fields).
+        LLVMStructSetBody(opaque, NULL, 0, 0);
+        return opaque;
+    }
+
+    // Resolve field types now that the opaque entry is in the cache.
     LLVMTypeRef* field_types = malloc(sizeof(LLVMTypeRef) * type->data.struct_type.field_count);
     if (!field_types) return NULL;
-    
+
     for (size_t i = 0; i < type->data.struct_type.field_count; i++) {
         StructField* field = &type->data.struct_type.fields[i];
         field_types[i] = codegen_type_to_llvm(codegen, field->type);
@@ -159,13 +192,23 @@ LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type) {
             return NULL;
         }
     }
-    
-    // Create the struct type
-    LLVMTypeRef struct_type = LLVMStructTypeInContext(codegen->context, field_types, 
-                                                      (unsigned)type->data.struct_type.field_count, 0);
-    
+
+    // Populate the opaque struct body.
+    LLVMStructSetBody(opaque, field_types, (unsigned)type->data.struct_type.field_count, 0);
     free(field_types);
-    return struct_type;
+    return opaque;
+}
+
+LLVMTypeRef codegen_get_enum_type(CodeGenerator* codegen, const Type* type) {
+    if (!codegen || !type || type->kind != TYPE_ENUM) return NULL;
+    // { i32 tag, [N x i8] payload } where N covers the largest variant.
+    size_t tag_slot = (type->align > 4) ? type->align : 4;
+    size_t payload_bytes = (type->size > tag_slot) ? (type->size - tag_slot) : 0;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(codegen->context);
+    LLVMTypeRef payload = LLVMArrayType(i8, (unsigned)payload_bytes);
+    LLVMTypeRef members[2] = { i32, payload };
+    return LLVMStructTypeInContext(codegen->context, members, 2, 0);
 }
 
 LLVMTypeRef codegen_get_function_type(CodeGenerator* codegen, const Type* type) {
