@@ -452,11 +452,13 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                     commaok_struct->data.struct_type.fields[0].ownership = OWNERSHIP_NONE;
                     commaok_struct->data.struct_type.fields[0].mutability = MUTABILITY_MUTABLE;
                     commaok_struct->data.struct_type.fields[1].name = strdup("ok");
-                    commaok_struct->data.struct_type.fields[1].type = type_bool();
+                    commaok_struct->data.struct_type.fields[1].type = type_checker_get_builtin(checker, TYPE_BOOL);
                     commaok_struct->data.struct_type.fields[1].offset = 0;
                     commaok_struct->data.struct_type.fields[1].ownership = OWNERSHIP_NONE;
                     commaok_struct->data.struct_type.fields[1].mutability = MUTABILITY_MUTABLE;
                     final_type = commaok_struct;
+                } else {
+                    type_free(commaok_struct);
                 }
             }
         }
