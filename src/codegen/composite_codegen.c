@@ -88,8 +88,8 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         case TYPE_SLICE: {
             element_type = base_type->data.slice.element_type;
             
-            // Slices are structs with { ptr, len }
-            // Extract the data pointer
+            // Slices are structs with { ptr, len, cap }
+            // Extract the data pointer (field 0)
             LLVMValueRef slice_ptr;
             if (base_val->is_lvalue) {
                 // Load the slice struct

@@ -276,7 +276,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
                              LLVMInt32TypeInContext(codegen->context), params, 2);
     }
 
-    // Slice operations
+    // Slice operations.
+    // WARNING: goo_slice_new/free/get below pass/return goo_slice_t BY VALUE.
+    // That is sound only because they are currently DEAD — no codegen path
+    // emits a call (slices are made via literals, freed by leak-it-all, and
+    // indexed inline). A 3-field slice is 24 bytes (SysV class MEMORY), which
+    // hand-emitted IR cannot pass by value the way the C ABI does. Before
+    // wiring any of these into codegen, convert it to BY POINTER like
+    // goo_slice_append, or it will silently corrupt.
     // goo_slice_t goo_slice_new(size_t element_size, size_t capacity)
     {
         LLVMTypeRef params[] = { size_type, size_type };

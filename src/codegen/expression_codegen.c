@@ -340,8 +340,8 @@ static ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecke
         }
 
         if (base_type->kind == TYPE_SLICE) {
-            // base->llvm_value points to the slice struct { ptr, len }; load it,
-            // take the data pointer, and GEP into the backing buffer.
+            // base->llvm_value points to the slice struct { ptr, len, cap }; load
+            // it, take the data pointer (field 0), and GEP into the backing buffer.
             Type* elem_type = base_type->data.slice.element_type;
             LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder,
                                                     codegen_type_to_llvm(codegen, base_type),

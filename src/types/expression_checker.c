@@ -516,8 +516,15 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* elem_t = type_check_expression(checker, call->args->next);
             if (!elem_t) return NULL;
-            // Element/slice-element compatibility is enforced loosely for the
-            // MVP — codegen sizes the copy from the slice's element type.
+            // The element must be assignable to the slice's element type:
+            // codegen sizes the copy from the slice element type, so a
+            // mismatch (e.g. append([]int, "s")) would otherwise miscompile.
+            if (!type_compatible(elem_t, slice_t->data.slice.element_type)) {
+                type_error(checker, expr->pos,
+                           "append: cannot use %s as element of %s",
+                           type_to_string(elem_t), type_to_string(slice_t));
+                return NULL;
+            }
             expr->node_type = slice_t;
             return slice_t;
         }
