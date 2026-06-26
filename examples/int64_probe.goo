@@ -21,4 +21,10 @@ func main() {
     if deltas["d"] == -1 {
         fmt.Println("PASS: int64 map value compares to int literal")
     }
+
+    var s32 int32 = -5
+    var w int64 = s32
+    if w == -5 {
+        fmt.Println("PASS: negative int32 widens into int64")
+    }
 }

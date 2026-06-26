@@ -337,12 +337,15 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 init_value->goo_type = var_type;
             }
 
-            // M3: widen a signed integer initializer that is narrower than the
-            // declared variable's type. Integer literals are always emitted as
-            // i32 (TYPE_INT32), so `var d int64 = -1` would otherwise store
-            // only 4 bytes into the 8-byte alloca, leaving the upper half as
-            // zero (yielding 4294967295 instead of -1 when read back as i64).
-            // We sign-extend because Goo int literals are signed.
+            // Widen a narrower integer initializer to the declared target type.
+            // Intentionally NOT gated to literals: Goo's type checker permits
+            // cross-width assignments (e.g. `var y int64 = x`, x an int32),
+            // and SExt is the correct lowering for both literal and variable
+            // initializers — gating to literals-only would miscompile a negative
+            // variable initializer (the upper bits would stay zero, turning -5
+            // into 4294967291 when read back as i64). Narrowing (from > to) is
+            // not handled here because wider→narrower is not reached for the
+            // supported integer types.
             {
                 LLVMTypeRef init_ty = LLVMTypeOf(init_value->llvm_value);
                 if (LLVMGetTypeKind(init_ty) == LLVMIntegerTypeKind &&
