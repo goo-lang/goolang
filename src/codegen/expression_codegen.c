@@ -386,6 +386,65 @@ static ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecke
 }
 #endif
 
+// Widen (sign-extend) or truncate an integer value to a target LLVM type.
+// Signed: Goo int literals are signed, so widening sign-extends.
+static LLVMValueRef int_widen_or_trunc(CodeGenerator* codegen, LLVMValueRef v,
+                                       LLVMTypeRef to_ty,
+                                       unsigned from_bits, unsigned to_bits) {
+    if (from_bits < to_bits)
+        return LLVMBuildSExt(codegen->builder, v, to_ty, "litsext");
+    if (from_bits > to_bits)
+        return LLVMBuildTrunc(codegen->builder, v, to_ty, "littrunc");
+    return v;
+}
+
+// Returns non-zero if `node` is a compile-time integer constant: either a
+// bare AST_LITERAL or a unary minus applied to an AST_LITERAL (i.e. `-1`).
+// The parser represents `-1` as AST_UNARY_EXPR(TOKEN_MINUS, AST_LITERAL),
+// so both forms must be recognised as "untyped literal" for coercion.
+static int is_int_literal_node(ASTNode* node) {
+    if (!node) return 0;
+    if (node->type == AST_LITERAL) return 1;
+    if (node->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)node;
+        if (u->operator == TOKEN_MINUS && u->operand &&
+            u->operand->type == AST_LITERAL)
+            return 1;
+    }
+    return 0;
+}
+
+// If exactly one operand is an integer LITERAL and the operand widths differ,
+// coerce the literal to the other operand's integer type. Go-faithful: only
+// untyped literals adapt; two mismatched typed variables are left alone (that
+// mismatch is a type error surfaced earlier, not silently coerced here).
+static void coerce_int_literal_operand(CodeGenerator* codegen,
+                                       ASTNode* left_ast, ValueInfo* left,
+                                       ASTNode* right_ast, ValueInfo* right) {
+    if (!left || !right || !left->goo_type || !right->goo_type) return;
+    if (!type_is_integer(left->goo_type) || !type_is_integer(right->goo_type))
+        return;
+    LLVMTypeRef lt = LLVMTypeOf(left->llvm_value);
+    LLVMTypeRef rt = LLVMTypeOf(right->llvm_value);
+    if (LLVMGetTypeKind(lt) != LLVMIntegerTypeKind ||
+        LLVMGetTypeKind(rt) != LLVMIntegerTypeKind) return;
+    unsigned lw = LLVMGetIntTypeWidth(lt);
+    unsigned rw = LLVMGetIntTypeWidth(rt);
+    if (lw == rw) return;
+
+    int left_lit  = is_int_literal_node(left_ast);
+    int right_lit = is_int_literal_node(right_ast);
+    if (left_lit == right_lit) return;  // neither, or both — leave alone
+
+    if (left_lit) {
+        left->llvm_value = int_widen_or_trunc(codegen, left->llvm_value, rt, lw, rw);
+        left->goo_type   = right->goo_type;
+    } else {
+        right->llvm_value = int_widen_or_trunc(codegen, right->llvm_value, lt, rw, lw);
+        right->goo_type   = left->goo_type;
+    }
+}
+
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -511,6 +570,11 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             right_val->is_lvalue = 0;
         }
     }
+
+    // M3: reconcile an int literal operand's width to the other operand's
+    // type so e.g. `int64_var == -1` compares i64-to-i64, not i64-to-i32.
+    coerce_int_literal_operand(codegen, binary->left, left_val,
+                               binary->right, right_val);
 
     // Get the result type from the type checker
     Type* result_type = type_check_binary_expr(checker, expr);

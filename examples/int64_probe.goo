@@ -1,0 +1,24 @@
+// int64_probe: integer literals must coerce to the other operand's width so
+// int64 values compare and compute without an i64-vs-i32 module-verify
+// failure. Closes the gap noted in examples/map_probe.goo.
+package main
+
+import "fmt"
+
+func main() {
+    var d int64 = -1
+    if d == -1 {
+        fmt.Println("PASS: int64 var compares to int literal")
+    }
+
+    var n int64 = 1000000
+    if n + 1 == 1000001 {
+        fmt.Println("PASS: int64 arithmetic with int literal")
+    }
+
+    deltas := map[string]int64{}
+    deltas["d"] = -1
+    if deltas["d"] == -1 {
+        fmt.Println("PASS: int64 map value compares to int literal")
+    }
+}

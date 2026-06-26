@@ -337,6 +337,24 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 init_value->goo_type = var_type;
             }
 
+            // M3: widen a signed integer initializer that is narrower than the
+            // declared variable's type. Integer literals are always emitted as
+            // i32 (TYPE_INT32), so `var d int64 = -1` would otherwise store
+            // only 4 bytes into the 8-byte alloca, leaving the upper half as
+            // zero (yielding 4294967295 instead of -1 when read back as i64).
+            // We sign-extend because Goo int literals are signed.
+            {
+                LLVMTypeRef init_ty = LLVMTypeOf(init_value->llvm_value);
+                if (LLVMGetTypeKind(init_ty) == LLVMIntegerTypeKind &&
+                    LLVMGetTypeKind(llvm_type) == LLVMIntegerTypeKind) {
+                    unsigned from_bits = LLVMGetIntTypeWidth(init_ty);
+                    unsigned to_bits   = LLVMGetIntTypeWidth(llvm_type);
+                    if (from_bits < to_bits)
+                        init_value->llvm_value = LLVMBuildSExt(
+                            codegen->builder, init_value->llvm_value, llvm_type, "init_sext");
+                }
+            }
+
             // Store the initial value
             if (codegen->current_function) {
                 LLVMBuildStore(codegen->builder, init_value->llvm_value, alloca_inst);
