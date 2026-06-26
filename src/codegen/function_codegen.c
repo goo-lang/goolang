@@ -337,6 +337,27 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 init_value->goo_type = var_type;
             }
 
+            // Widen a narrower integer initializer to the declared target type.
+            // Intentionally NOT gated to literals: Goo's type checker permits
+            // cross-width assignments (e.g. `var y int64 = x`, x an int32),
+            // and SExt is the correct lowering for both literal and variable
+            // initializers — gating to literals-only would miscompile a negative
+            // variable initializer (the upper bits would stay zero, turning -5
+            // into 4294967291 when read back as i64). Narrowing (from > to) is
+            // not handled here because wider→narrower is not reached for the
+            // supported integer types.
+            {
+                LLVMTypeRef init_ty = LLVMTypeOf(init_value->llvm_value);
+                if (LLVMGetTypeKind(init_ty) == LLVMIntegerTypeKind &&
+                    LLVMGetTypeKind(llvm_type) == LLVMIntegerTypeKind) {
+                    unsigned from_bits = LLVMGetIntTypeWidth(init_ty);
+                    unsigned to_bits   = LLVMGetIntTypeWidth(llvm_type);
+                    if (from_bits < to_bits)
+                        init_value->llvm_value = LLVMBuildSExt(
+                            codegen->builder, init_value->llvm_value, llvm_type, "init_sext");
+                }
+            }
+
             // Store the initial value
             if (codegen->current_function) {
                 LLVMBuildStore(codegen->builder, init_value->llvm_value, alloca_inst);

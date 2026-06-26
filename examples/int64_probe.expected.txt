@@ -1,0 +1,4 @@
+PASS: int64 var compares to int literal
+PASS: int64 arithmetic with int literal
+PASS: int64 map value compares to int literal
+PASS: negative int32 widens into int64
