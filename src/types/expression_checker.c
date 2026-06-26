@@ -43,8 +43,9 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             Type* mt = type_from_ast(checker, lit->map_type);
             if (!mt) return NULL;
             // Type-check each key + value, but don't strict-check —
-            // M8-map-literal only formally validates the declared
-            // map type. Runtime is string→int specifically.
+            // only the declared map type is formally validated (and its
+            // key=string / value=scalar constraint is enforced in
+            // type_from_ast). Element/value mismatches surface in codegen.
             for (ASTNode* k = lit->keys; k; k = k->next) {
                 if (!type_check_expression(checker, k)) return NULL;
             }

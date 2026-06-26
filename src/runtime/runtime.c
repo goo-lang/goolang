@@ -350,42 +350,44 @@ double goo_math_max(double x, double y) {
     return fmax(x, y);
 }
 
-// Map runtime: linked-list {string → int}. Linear scan.
-typedef struct GooMapEntrySI {
+// Map runtime: linked-list {string → int64_t value slot}. Linear scan.
+// The slot holds an integer or any pointer; codegen casts per the
+// declared map value type V.
+typedef struct GooMapEntrySV {
     const char* key;
-    int value;
-    struct GooMapEntrySI* next;
-} GooMapEntrySI;
+    int64_t value;
+    struct GooMapEntrySV* next;
+} GooMapEntrySV;
 
-GooMapSI* goo_map_new_si(void) {
-    GooMapSI* m = goo_alloc(sizeof(GooMapSI));
+GooMapSV* goo_map_new_sv(void) {
+    GooMapSV* m = goo_alloc(sizeof(GooMapSV));
     if (m) m->head = NULL;
     return m;
 }
 
-void goo_map_set_si(GooMapSI* m, const char* k, int v) {
+void goo_map_set_sv(GooMapSV* m, const char* k, int64_t v) {
     if (!m || !k) return;
-    GooMapEntrySI* e = (GooMapEntrySI*)m->head;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         if (strcmp(e->key, k) == 0) { e->value = v; return; }
         e = e->next;
     }
-    e = goo_alloc(sizeof(GooMapEntrySI));
+    e = goo_alloc(sizeof(GooMapEntrySV));
     if (!e) return;
     e->key = k;
     e->value = v;
-    e->next = (GooMapEntrySI*)m->head;
+    e->next = (GooMapEntrySV*)m->head;
     m->head = e;
 }
 
-int goo_map_get_si(GooMapSI* m, const char* k) {
+int64_t goo_map_get_sv(GooMapSV* m, const char* k) {
     if (!m || !k) return 0;
-    GooMapEntrySI* e = (GooMapEntrySI*)m->head;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         if (strcmp(e->key, k) == 0) return e->value;
         e = e->next;
     }
-    return 0;  // zero-value default
+    return 0;  // zero-value default (no comma-ok presence signal yet)
 }
 
 // Slice operations

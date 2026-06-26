@@ -1,0 +1,6 @@
+PASS: map[string]int literal read
+PASS: missing key yields zero value
+PASS: insert via m[k]=v
+PASS: overwrite via m[k]=v
+-1
+PASS: map[string]*T stores and reads a pointer

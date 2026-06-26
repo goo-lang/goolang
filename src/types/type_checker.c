@@ -1171,6 +1171,23 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             Type* key_type = type_from_ast(checker, map->key_type);
             Type* value_type = type_from_ast(checker, map->value_type);
             if (!key_type || !value_type) return NULL;
+            // The runtime keys on strings only.
+            if (key_type->kind != TYPE_STRING) {
+                type_error(checker, type_node->pos,
+                           "map key type must be string, got %s", type_to_string(key_type));
+                return NULL;
+            }
+            // The value rides an 8-byte runtime slot, so V must be a scalar
+            // that fits: an integer, bool, char, or pointer. Aggregates
+            // (string, slice, struct, another map) don't fit and are rejected.
+            if (!(type_is_integer(value_type) || value_type->kind == TYPE_POINTER
+                  || value_type->kind == TYPE_BOOL || value_type->kind == TYPE_CHAR)) {
+                type_error(checker, type_node->pos,
+                           "map value type %s is not supported yet "
+                           "(must be an integer, bool, char, or pointer)",
+                           type_to_string(value_type));
+                return NULL;
+            }
             return type_map(key_type, value_type);
         }
         

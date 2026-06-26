@@ -35,12 +35,13 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
     Type* element_type = NULL;
     LLVMValueRef result = NULL;
 
-    // Map indexing fast-path: lower `m[k]` to goo_map_get_si.
-    // The map runtime is the minimum-viable string→int variant.
+    // Map indexing fast-path: lower `m[k]` to goo_map_get_sv, then cast the
+    // 8-byte i64 slot back to the declared value type V. On a missing key the
+    // runtime returns 0 (V's zero value); comma-ok presence is future work.
     if (base_type && base_type->kind == TYPE_MAP) {
-        LLVMValueRef get_fn = LLVMGetNamedFunction(codegen->module, "goo_map_get_si");
+        LLVMValueRef get_fn = LLVMGetNamedFunction(codegen->module, "goo_map_get_sv");
         if (!get_fn) {
-            codegen_error(codegen, expr->pos, "goo_map_get_si missing");
+            codegen_error(codegen, expr->pos, "goo_map_get_sv missing");
             value_info_free(base_val); value_info_free(index_val);
             return NULL;
         }
@@ -49,11 +50,13 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
         }
         LLVMValueRef args[2] = { base_val->llvm_value, kp };
-        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
-                                get_fn, args, 2, "map_get");
+        LLVMValueRef slot = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
+                                           get_fn, args, 2, "map_get");
+        Type* val_type = base_type->data.map.value_type;
+        result = codegen_map_slot_to_value(codegen, slot, val_type);
         value_info_free(base_val);
         value_info_free(index_val);
-        return value_info_new(NULL, result, base_type->data.map.value_type);
+        return value_info_new(NULL, result, val_type);
     }
 
     // Handle different indexed types
@@ -134,8 +137,9 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         }
         
         case TYPE_MAP: {
-            // TODO: Implement map indexing with runtime call
-            codegen_error(codegen, expr->pos, "Map indexing not yet implemented");
+            // Unreachable: the map fast-path at the top of this function
+            // handles all TYPE_MAP indexing and returns before the switch.
+            codegen_error(codegen, expr->pos, "internal: map index reached switch fallthrough");
             value_info_free(base_val);
             value_info_free(index_val);
             return NULL;

@@ -80,13 +80,20 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return value_info_new(NULL, loaded, operand->goo_type);
         }
         case AST_PAREN_EXPR: {
-            // MapLitNode — `map[K]V{ … }`. Lowers to:
-            //   m = goo_map_new_si()
-            //   for each (k,v): goo_map_set_si(m, k_ptr, v)
-            // Returns the GooMapSI* as a raw ptr-typed value.
+            // MapLitNode — `map[string]V{ … }`. Lowers to:
+            //   m = goo_map_new_sv()
+            //   for each (k,v): goo_map_set_sv(m, k_ptr, slot(v))
+            // where slot(v) casts the declared V into the 8-byte i64 slot.
+            // Returns the GooMapSV* as a raw ptr-typed value.
             MapLitNode* lit = (MapLitNode*)expr;
-            LLVMValueRef new_fn = LLVMGetNamedFunction(codegen->module, "goo_map_new_si");
-            LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, "goo_map_set_si");
+            Type* val_type = (expr->node_type && expr->node_type->kind == TYPE_MAP)
+                ? expr->node_type->data.map.value_type : NULL;
+            if (!val_type) {
+                codegen_error(codegen, expr->pos, "map literal missing resolved value type");
+                return NULL;
+            }
+            LLVMValueRef new_fn = LLVMGetNamedFunction(codegen->module, "goo_map_new_sv");
+            LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, "goo_map_set_sv");
             if (!new_fn || !set_fn) {
                 codegen_error(codegen, expr->pos, "map runtime symbols missing");
                 return NULL;
@@ -103,7 +110,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 if (kv->goo_type && kv->goo_type->kind == TYPE_STRING) {
                     kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
                 }
-                LLVMValueRef args[3] = { m, kp, vv->llvm_value };
+                LLVMValueRef slot = codegen_map_value_to_slot(codegen, vv->llvm_value, val_type);
+                LLVMValueRef args[3] = { m, kp, slot };
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn),
                               set_fn, args, 3, "");
                 value_info_free(kv);
@@ -389,6 +397,45 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     
     // Special handling for assignment
     if (binary->operator == TOKEN_ASSIGN) {
+        // Map element assignment `m[k] = v` has no addressable lvalue — it
+        // lowers to a goo_map_set_sv call. Intercept before lvalue resolution
+        // (which rejects map index targets). Only the map case is handled
+        // here; array/slice index assignment falls through to the GEP path.
+        if (binary->left->type == AST_INDEX_EXPR) {
+            IndexExprNode* idx = (IndexExprNode*)binary->left;
+            Type* base_t = type_check_expression(checker, idx->expr);
+            if (base_t && base_t->kind == TYPE_MAP) {
+                Type* val_type = base_t->data.map.value_type;
+                LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, "goo_map_set_sv");
+                if (!set_fn) {
+                    codegen_error(codegen, expr->pos, "goo_map_set_sv missing");
+                    return NULL;
+                }
+                ValueInfo* mv = codegen_generate_expression(codegen, checker, idx->expr);
+                ValueInfo* kv = codegen_generate_expression(codegen, checker, idx->index);
+                if (!mv || !kv) { value_info_free(mv); value_info_free(kv); return NULL; }
+                LLVMValueRef kp = kv->llvm_value;
+                if (kv->goo_type && kv->goo_type->kind == TYPE_STRING) {
+                    kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
+                }
+                ValueInfo* vv = codegen_generate_expression(codegen, checker, binary->right);
+                if (!vv) { value_info_free(mv); value_info_free(kv); return NULL; }
+                if (vv->is_lvalue && vv->goo_type) {
+                    LLVMTypeRef vt = codegen_type_to_llvm(codegen, vv->goo_type);
+                    if (vt) {
+                        vv->llvm_value = LLVMBuildLoad2(codegen->builder, vt, vv->llvm_value, "rval");
+                        vv->is_lvalue = 0;
+                    }
+                }
+                LLVMValueRef slot = codegen_map_value_to_slot(codegen, vv->llvm_value, val_type);
+                LLVMValueRef args[3] = { mv->llvm_value, kp, slot };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn), set_fn, args, 3, "");
+                value_info_free(mv);
+                value_info_free(kv);
+                return vv;  // assignment evaluates to the stored value
+            }
+        }
+
         // Resolve the assignment target's address. Three lvalue forms are
         // supported; each yields a ValueInfo whose llvm_value is a pointer to
         // the storage location (is_lvalue == 1):

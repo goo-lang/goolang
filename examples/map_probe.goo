@@ -1,0 +1,51 @@
+// map_probe: general map[string]V on an 8-byte value slot.
+//
+// Exercises the value-type generalization (int and pointer values), the
+// m[k]=v assignment path (insert + overwrite), and the missing-key zero
+// value. map[string]*Sym is the symbol-table shape a compiler needs.
+package main
+
+import "fmt"
+
+type Sym struct {
+    id int
+}
+
+func main() {
+    // map[string]int literal + read
+    ages := map[string]int{"alice": 30, "bob": 25}
+    if ages["alice"] == 30 {
+        fmt.Println("PASS: map[string]int literal read")
+    }
+    if ages["missing"] == 0 {
+        fmt.Println("PASS: missing key yields zero value")
+    }
+
+    // m[k] = v: insert a new key, then overwrite an existing one.
+    ages["carol"] = 40
+    if ages["carol"] == 40 {
+        fmt.Println("PASS: insert via m[k]=v")
+    }
+    ages["alice"] = 31
+    if ages["alice"] == 31 {
+        fmt.Println("PASS: overwrite via m[k]=v")
+    }
+
+    // map[string]int64: a negative value must survive the widening into the
+    // 8-byte slot. We print it (an int64-vs-int-literal comparison is a
+    // separate pre-existing gap): the sign-extension bug would print
+    // 4294967295 instead of -1.
+    deltas := map[string]int64{}
+    deltas["d"] = -1
+    fmt.Println(deltas["d"])
+
+    // map[string]*Sym: pointer values (the symbol-table case).
+    syms := map[string]*Sym{}
+    a := new(Sym)
+    a.id = 7
+    syms["a"] = a
+    got := syms["a"]
+    if got.id == 7 {
+        fmt.Println("PASS: map[string]*T stores and reads a pointer")
+    }
+}
