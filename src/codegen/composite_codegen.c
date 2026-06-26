@@ -503,6 +503,11 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 
     LLVMValueRef sw = LLVMBuildSwitch(codegen->builder, tag, default_bb, narms);
 
+    // A failed guard branches here: the wildcard arm if present, else the merge
+    // block (which exits the match).  Resolved once, before the per-arm loop, so
+    // every arm sees the same target regardless of iteration order.
+    LLVMBasicBlockRef guard_fallback_bb = default_bb;
+
     for (ASTNode* c = m->cases; c; c = c->next) {
         MatchCaseNode* mc = (MatchCaseNode*)c;
         PatternNode* p = (PatternNode*)mc->pattern;
@@ -582,6 +587,33 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 
         // Position the builder into the arm block (wildcard uses default_bb).
         LLVMPositionBuilderAtEnd(codegen->builder, arm);
+
+        // M3: evaluate the guard; on false, branch to the fallback block
+        // (the wildcard arm, or the merge block when there is none).
+        // Payload fields are already in scope above, so the guard expression
+        // can reference bound names like `n`.  Guardless arms are unchanged.
+        if (mc->guard) {
+            ValueInfo* g = codegen_generate_expression(
+                codegen, checker, ((GuardConditionNode*)mc->guard)->condition);
+            if (g && g->llvm_value) {
+                // For the wildcard arm, a false guard must fall to merge (not
+                // back to itself via default_bb, which would loop infinitely).
+                LLVMBasicBlockRef arm_fallback =
+                    (p->pattern_type == PATTERN_WILDCARD) ? merge : guard_fallback_bb;
+                LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+                    codegen->context, fn, "guard_body");
+                LLVMBuildCondBr(codegen->builder, g->llvm_value,
+                                body_bb, arm_fallback);
+                LLVMPositionBuilderAtEnd(codegen->builder, body_bb);
+                value_info_free(g);
+            } else {
+                if (g) value_info_free(g);
+                codegen_error(codegen, mc->guard->pos,
+                    "match guard condition failed to generate");
+                scope_pop(checker);
+                return NULL;
+            }
+        }
 
         // Emit arm body statements.
         for (ASTNode* s = mc->body; s; s = s->next)

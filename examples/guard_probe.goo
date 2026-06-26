@@ -1,0 +1,29 @@
+// guard_probe: a match-arm guard (`case V{x} if cond:`) gates the arm. When the
+// guard is false, control falls through to the default arm.
+package main
+
+import "fmt"
+
+type Box enum {
+    Val{n: int}
+}
+
+func main() {
+    p := new(Box)
+    *p = Val{n: 5}
+    match *p {
+    case Val{n} if n > 0:
+        fmt.Println("positive")
+    default:
+        fmt.Println("not-positive")
+    }
+
+    q := new(Box)
+    *q = Val{n: -3}
+    match *q {
+    case Val{n} if n > 0:
+        fmt.Println("positive")
+    default:
+        fmt.Println("not-positive")
+    }
+}
