@@ -425,11 +425,43 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     }
     
     if (!final_type) {
-        type_error(checker, var_decl->base.pos, 
+        type_error(checker, var_decl->base.pos,
                   "Variable declaration must have either type or initializer");
         return 0;
     }
-    
+
+    // comma-ok map read: `v, ok := m[k]` — synthesize {V, bool} so the
+    // multi-LHS loop below binds name0→V and name1→bool. The single-LHS
+    // path `v := m[k]` (name_count==1) is untouched and still yields bare V.
+    if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+        var_decl->values && var_decl->values->type == AST_INDEX_EXPR) {
+        // The base expression was already type-checked above; read back the
+        // resolved type from the AST node instead of re-checking.
+        ASTNode* base_expr = ((IndexExprNode*)var_decl->values)->expr;
+        Type* base_type = base_expr->node_type;
+        if (base_type && base_type->kind == TYPE_MAP) {
+            Type* commaok_struct = type_new(TYPE_STRUCT);
+            if (commaok_struct) {
+                commaok_struct->data.struct_type.fields = malloc(sizeof(StructField) * 2);
+                if (commaok_struct->data.struct_type.fields) {
+                    commaok_struct->data.struct_type.field_count = 2;
+                    commaok_struct->data.struct_type.name = NULL;
+                    commaok_struct->data.struct_type.fields[0].name = strdup("v");
+                    commaok_struct->data.struct_type.fields[0].type = base_type->data.map.value_type;
+                    commaok_struct->data.struct_type.fields[0].offset = 0;
+                    commaok_struct->data.struct_type.fields[0].ownership = OWNERSHIP_NONE;
+                    commaok_struct->data.struct_type.fields[0].mutability = MUTABILITY_MUTABLE;
+                    commaok_struct->data.struct_type.fields[1].name = strdup("ok");
+                    commaok_struct->data.struct_type.fields[1].type = type_bool();
+                    commaok_struct->data.struct_type.fields[1].offset = 0;
+                    commaok_struct->data.struct_type.fields[1].ownership = OWNERSHIP_NONE;
+                    commaok_struct->data.struct_type.fields[1].mutability = MUTABILITY_MUTABLE;
+                    final_type = commaok_struct;
+                }
+            }
+        }
+    }
+
     // Store the type on the AST node for code generation
     var_decl->base.node_type = final_type;
 
