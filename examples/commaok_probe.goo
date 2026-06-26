@@ -18,4 +18,11 @@ func main() {
         fmt.Println("FAIL: absent key reported present")
     }
     fmt.Println(z)
+
+    ages["zero"] = 0
+    zz, okz := ages["zero"]
+    if okz {
+        fmt.Println("PASS: present zero value ok=true")
+    }
+    fmt.Println(zz)
 }
