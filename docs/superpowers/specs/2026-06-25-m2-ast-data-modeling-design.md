@@ -244,3 +244,25 @@ supported behavior.
   introduced here): `[1, "two"]` infers `[]int` from the first element and
   accepts the rest loosely. `append` *does* now check element compatibility;
   the literal path still defers, matching the map-literal posture.
+
+## Known limitations (post-implementation, maps PR)
+
+Surfaced by the adversarial review of the general-`map[string]V` change.
+
+- **Comma-ok reads aren't implemented.** `v, ok := m[k]` does not parse/lower.
+  A missing key reads back the zero value (0 / null), indistinguishable from a
+  key stored with that zero value. Adding comma-ok needs parser + typecheck +
+  codegen plus a presence-returning runtime variant (e.g. `goo_map_get_sv_ok`).
+- **Value type V must fit the 8-byte slot.** Only an integer, bool, char, or
+  pointer is allowed; `map[string]string`, `map[string]struct{...}`, and
+  `map[string][]T` are rejected in `type_from_ast` (the slot can't hold a
+  16-byte string or a larger aggregate). Keys must be `string`.
+- **int64 values store correctly but can't be compared to an int literal.**
+  The slot sign-extends signed integers, so a `map[string]int64` round-trips
+  negatives (verified by printing). But `m[k] == -1` fails module verification
+  — a *pre-existing* gap where an `int64` operand and an `i32` int literal
+  aren't unified (`var d int64 = -1; if d == -1` fails identically). Unrelated
+  to maps; blocks ergonomic int64-map use until literal coercion is added.
+- **String keys are stored by pointer.** The runtime keeps the `const char*`
+  key (no copy), so literal keys are fine but a computed/temporary key string
+  must outlive the map. Pre-existing `_si` behavior, carried to `_sv`.

@@ -350,7 +350,9 @@ double goo_math_max(double x, double y) {
     return fmax(x, y);
 }
 
-// Map runtime: linked-list {string → int}. Linear scan.
+// Map runtime: linked-list {string → int64_t value slot}. Linear scan.
+// The slot holds an integer or any pointer; codegen casts per the
+// declared map value type V.
 typedef struct GooMapEntrySV {
     const char* key;
     int64_t value;

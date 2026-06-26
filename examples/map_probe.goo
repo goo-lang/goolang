@@ -31,6 +31,14 @@ func main() {
         fmt.Println("PASS: overwrite via m[k]=v")
     }
 
+    // map[string]int64: a negative value must survive the widening into the
+    // 8-byte slot. We print it (an int64-vs-int-literal comparison is a
+    // separate pre-existing gap): the sign-extension bug would print
+    // 4294967295 instead of -1.
+    deltas := map[string]int64{}
+    deltas["d"] = -1
+    fmt.Println(deltas["d"])
+
     // map[string]*Sym: pointer values (the symbol-table case).
     syms := map[string]*Sym{}
     a := new(Sym)

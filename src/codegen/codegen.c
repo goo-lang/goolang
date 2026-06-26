@@ -416,13 +416,16 @@ LLVMValueRef codegen_create_alloca(CodeGenerator* codegen, LLVMTypeRef type, con
 LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef value, Type* value_type) {
     if (!codegen || !value || !value_type) return NULL;
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
-    // A pointer reinterprets to the slot; an integer/bool/char zero-extends
-    // (or is already i64). Zero-extension round-trips: the read truncates
-    // back to V's width, recovering the exact low bits regardless of sign.
     if (value_type->kind == TYPE_POINTER) {
         return LLVMBuildPtrToInt(codegen->builder, value, i64, "map_slot");
     }
-    return LLVMBuildIntCast2(codegen->builder, value, i64, /*isSigned=*/0, "map_slot");
+    // Sign-extend a SIGNED integer when widening into the slot, so a negative
+    // value narrower than the slot keeps its sign (e.g. the i32 literal -1
+    // into a map[string]int64 must read back as -1, not 4294967295). Integer
+    // literals are always emitted i32, so this widening is real. Unsigned,
+    // bool, and char zero-extend. The read truncates back to V's width.
+    LLVMBool is_signed = (value_type->kind >= TYPE_INT8 && value_type->kind <= TYPE_INT64);
+    return LLVMBuildIntCast2(codegen->builder, value, i64, is_signed, "map_slot");
 }
 
 LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot, Type* value_type) {
