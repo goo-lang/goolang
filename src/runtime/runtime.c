@@ -262,45 +262,53 @@ goo_string_t goo_os_getenv(const char* name) {
     return goo_string_new(v ? v : "");
 }
 
-goo_str_slice_t goo_strings_split(const char* s, const char* sep) {
+void goo_strings_split(goo_slice_t* out, const char* s, const char* sep) {
     // MVP contract: empty/NULL sep yields the whole string as a single
-    // element (Go's per-rune split for "" is future work).
+    // element (Go's per-rune split for "" is future work). Result is a
+    // []string: a 3-field goo_slice_t whose `data` points at a goo_string_t
+    // array, with capacity == length (Split allocates exactly `count`).
+    // Written through `out` (by pointer) to avoid by-value 24-byte ABI.
+    if (!out) return;
     if (!s) s = "";
     size_t sep_len = sep ? strlen(sep) : 0;
     if (sep_len == 0) {
         goo_string_t* one = goo_alloc(sizeof(goo_string_t));
         one[0] = goo_string_new(s);
-        return (goo_str_slice_t){one, 1};
+        *out = (goo_slice_t){one, 1, 1};
+        return;
     }
 
-    int64_t count = 1;
+    size_t count = 1;
     for (const char* p = strstr(s, sep); p; p = strstr(p + sep_len, sep)) count++;
 
-    goo_string_t* out = goo_alloc(sizeof(goo_string_t) * (size_t)count);
-    int64_t i = 0;
+    goo_string_t* parts = goo_alloc(sizeof(goo_string_t) * count);
+    size_t i = 0;
     const char* start = s;
     for (const char* p = strstr(start, sep); p; p = strstr(start, sep)) {
-        out[i++] = goo_string_new_with_length(start, (size_t)(p - start));
+        parts[i++] = goo_string_new_with_length(start, (size_t)(p - start));
         start = p + sep_len;
     }
-    out[i] = goo_string_new(start);
-    return (goo_str_slice_t){out, count};
+    parts[i] = goo_string_new(start);
+    *out = (goo_slice_t){parts, count, count};
 }
 
-goo_string_t goo_strings_join(goo_str_slice_t parts, const char* sep) {
-    if (parts.length <= 0 || !parts.data) return goo_string_new("");
+goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep) {
+    // parts is a []string (by pointer): data points at a goo_string_t array.
+    if (!parts) return goo_string_new("");
+    goo_string_t* elems = (goo_string_t*)parts->data;
+    if (parts->length == 0 || !elems) return goo_string_new("");
     size_t sep_len = sep ? strlen(sep) : 0;
 
     size_t total = 0;
-    for (int64_t i = 0; i < parts.length; i++) total += parts.data[i].length;
-    total += sep_len * (size_t)(parts.length - 1);
+    for (size_t i = 0; i < parts->length; i++) total += elems[i].length;
+    total += sep_len * (parts->length - 1);
 
     char* out = goo_alloc(total + 1);
     char* w = out;
-    for (int64_t i = 0; i < parts.length; i++) {
-        memcpy(w, parts.data[i].data, parts.data[i].length);
-        w += parts.data[i].length;
-        if (sep_len && i + 1 < parts.length) {
+    for (size_t i = 0; i < parts->length; i++) {
+        memcpy(w, elems[i].data, elems[i].length);
+        w += elems[i].length;
+        if (sep_len && i + 1 < parts->length) {
             memcpy(w, sep, sep_len);
             w += sep_len;
         }
