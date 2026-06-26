@@ -149,6 +149,25 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, len_var);
     }
 
+    // cap(slice) -> int and append(slice, elem) -> slice. Both are
+    // special-cased in type_check_call_expr (cap returns int; append's
+    // result type is the first arg's slice type); registered here so the
+    // bare identifiers resolve consistently with len.
+    Type* cap_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT32]);
+    Variable* cap_var = variable_new("cap", cap_type, (Position){0, 0, 0, "builtin"});
+    if (cap_var) {
+        cap_var->is_builtin = 1;
+        cap_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, cap_var);
+    }
+    Type* append_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* append_var = variable_new("append", append_type, (Position){0, 0, 0, "builtin"});
+    if (append_var) {
+        append_var->is_builtin = 1;
+        append_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, append_var);
+    }
+
     // Stdlib package identifiers. Registered globally for now (matching the
     // pattern above) — the type checker is lenient about whether `import`
     // was actually written. Selector access (e.g. fmt.Println) resolves

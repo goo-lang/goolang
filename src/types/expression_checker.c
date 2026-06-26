@@ -499,6 +499,44 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = ptr;
             return ptr;
         }
+        // append(slice, elem) -> slice. The result type is the first arg's
+        // slice type (dynamic), so it can't ride the generic builtin path;
+        // codegen lowers it to goo_slice_append (in-place amortized grow).
+        if (strcmp(func_ident->name, "append") == 0) {
+            if (!call->args || !call->args->next || call->args->next->next) {
+                type_error(checker, expr->pos, "append expects exactly two arguments (slice, element)");
+                return NULL;
+            }
+            Type* slice_t = type_check_expression(checker, call->args);
+            if (!slice_t) return NULL;
+            if (slice_t->kind != TYPE_SLICE) {
+                type_error(checker, expr->pos,
+                           "append: first argument must be a slice, got %s", type_to_string(slice_t));
+                return NULL;
+            }
+            Type* elem_t = type_check_expression(checker, call->args->next);
+            if (!elem_t) return NULL;
+            // Element/slice-element compatibility is enforced loosely for the
+            // MVP — codegen sizes the copy from the slice's element type.
+            expr->node_type = slice_t;
+            return slice_t;
+        }
+        // cap(slice) -> int. The slice's capacity (header field 2).
+        if (strcmp(func_ident->name, "cap") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "cap expects exactly one argument");
+                return NULL;
+            }
+            Type* slice_t = type_check_expression(checker, call->args);
+            if (!slice_t) return NULL;
+            if (slice_t->kind != TYPE_SLICE) {
+                type_error(checker, expr->pos,
+                           "cap: argument must be a slice, got %s", type_to_string(slice_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_INT32];
+            return checker->builtin_types[TYPE_INT32];
+        }
     }
     
     // Check function expression

@@ -1,0 +1,23 @@
+// cap_probe: the cap() builtin — a slice's capacity (header field 2),
+// distinct from its length. A fresh literal has cap == len; appending past
+// capacity reallocates and grows cap amortized 2x, while len tracks the
+// number of live elements.
+package main
+
+import "fmt"
+
+func main() {
+    nums := [10, 20, 30]
+    if cap(nums) == 3 {
+        fmt.Println("PASS: literal cap equals len")
+    }
+
+    // Appending past capacity (3) reallocates to cap 6 (2x growth).
+    nums = append(nums, 40)
+    if cap(nums) == 6 {
+        fmt.Println("PASS: cap grows 2x on realloc")
+    }
+    if len(nums) == 4 {
+        fmt.Println("PASS: len tracks separately from cap")
+    }
+}

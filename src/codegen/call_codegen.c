@@ -91,6 +91,65 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(arg);
             return value_info_new(NULL, len32, type_checker_get_builtin(checker, TYPE_INT32));
         }
+        if (strcmp(func_name->name, "cap") == 0 && call->args) {
+            // cap(slice) — extract field 2 (capacity) from the 3-field slice
+            // header. Mirrors len() but reads field 2 instead of field 1.
+            ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!arg) return NULL;
+            LLVMValueRef raw = arg->llvm_value;
+            if (arg->is_lvalue && arg->goo_type) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
+                if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "cap_load");
+            }
+            LLVMValueRef cap64 = LLVMBuildExtractValue(codegen->builder, raw, 2, "cap");
+            LLVMValueRef cap32 = LLVMBuildTrunc(codegen->builder, cap64,
+                                                LLVMInt32TypeInContext(codegen->context), "cap_i32");
+            value_info_free(arg);
+            return value_info_new(NULL, cap32, type_checker_get_builtin(checker, TYPE_INT32));
+        }
+        if (strcmp(func_name->name, "append") == 0 && call->args && call->args->next) {
+            // append(slice, elem) -> slice. goo_slice_append grows the slice
+            // in place (amortized 2x) and rewrites {data,len,cap}. It takes
+            // the slice and element BY POINTER, so we spill both to slots,
+            // call, then load and return the (possibly moved) header. Go value
+            // semantics: the caller stores it back via `s = append(s, x)`.
+            Type* slice_t = expr->node_type;  // resolved by the type checker
+            if (!slice_t || slice_t->kind != TYPE_SLICE) {
+                codegen_error(codegen, expr->pos, "append: missing resolved slice type");
+                return NULL;
+            }
+            LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_slice_append");
+            if (!fn) { codegen_error(codegen, expr->pos, "goo_slice_append not found in module"); return NULL; }
+
+            ValueInfo* sv = codegen_generate_expression(codegen, checker, call->args);
+            if (!sv) return NULL;
+            LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_t);
+            LLVMValueRef slice_val = sv->llvm_value;
+            if (sv->is_lvalue) slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, slice_val, "append_slice");
+            value_info_free(sv);
+
+            ValueInfo* ev = codegen_generate_expression(codegen, checker, call->args->next);
+            if (!ev) return NULL;
+            LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, slice_t->data.slice.element_type);
+            LLVMValueRef elem_val = ev->llvm_value;
+            if (ev->is_lvalue) {
+                LLVMTypeRef et = ev->goo_type ? codegen_type_to_llvm(codegen, ev->goo_type) : elem_llvm;
+                elem_val = LLVMBuildLoad2(codegen->builder, et, elem_val, "append_elem");
+            }
+            value_info_free(ev);
+
+            LLVMValueRef slice_slot = codegen_create_entry_alloca(codegen, slice_llvm, "append_slice_slot");
+            LLVMBuildStore(codegen->builder, slice_val, slice_slot);
+            LLVMValueRef elem_slot = codegen_create_entry_alloca(codegen, elem_llvm, "append_elem_slot");
+            LLVMBuildStore(codegen->builder, elem_val, elem_slot);
+
+            LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
+            LLVMValueRef args[] = { slice_slot, elem_slot, elem_size };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 3, "");
+
+            LLVMValueRef result = LLVMBuildLoad2(codegen->builder, slice_llvm, slice_slot, "append_result");
+            return value_info_new(NULL, result, slice_t);
+        }
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);
         }

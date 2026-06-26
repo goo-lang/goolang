@@ -384,6 +384,33 @@ match-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M2-slices gate: the append() builtin grows a slice past its capacity via
+# goo_slice_append (amortized 2x), proving the 3-field {ptr,len,cap} layout
+# end-to-end (literal realloc + element survival).
+append-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/append_probe examples/append_probe.goo
+	@./build/append_probe > build/append_probe.actual.txt
+	@if diff -u examples/append_probe.expected.txt build/append_probe.actual.txt; then \
+	  echo "append-probe: PASS"; \
+	else \
+	  echo "append-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# M2-slices gate: the cap() builtin reads a slice's capacity (header field 2),
+# distinct from len, and tracks amortized 2x growth across an append.
+cap-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/cap_probe examples/cap_probe.goo
+	@./build/cap_probe > build/cap_probe.actual.txt
+	@if diff -u examples/cap_probe.expected.txt build/cap_probe.actual.txt; then \
+	  echo "cap-probe: PASS"; \
+	else \
+	  echo "cap-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # M7-stdlib-expansion completion gate: compile + run the stdlib smoke
 # test, which exercises one function from each of fmt, strings, math, os
 # and exits 0. Used by `coord milestone-status M7-stdlib-expansion`.
@@ -479,7 +506,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
