@@ -596,12 +596,22 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
             ValueInfo* g = codegen_generate_expression(
                 codegen, checker, ((GuardConditionNode*)mc->guard)->condition);
             if (g && g->llvm_value) {
-                LLVMBasicBlockRef body_bb = LLVMAppendBasicBlock(
-                    codegen->current_function, "guard_body");
+                // For the wildcard arm, a false guard must fall to merge (not
+                // back to itself via default_bb, which would loop infinitely).
+                LLVMBasicBlockRef arm_fallback =
+                    (p->pattern_type == PATTERN_WILDCARD) ? merge : guard_fallback_bb;
+                LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+                    codegen->context, fn, "guard_body");
                 LLVMBuildCondBr(codegen->builder, g->llvm_value,
-                                body_bb, guard_fallback_bb);
+                                body_bb, arm_fallback);
                 LLVMPositionBuilderAtEnd(codegen->builder, body_bb);
                 value_info_free(g);
+            } else {
+                if (g) value_info_free(g);
+                codegen_error(codegen, mc->guard->pos,
+                    "match guard condition failed to generate");
+                scope_pop(checker);
+                return NULL;
             }
         }
 
