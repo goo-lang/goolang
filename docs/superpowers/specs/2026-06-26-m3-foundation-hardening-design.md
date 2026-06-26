@@ -2,7 +2,8 @@
 
 Date: 2026-06-26
 Milestone: M3 of the self-hosting roadmap (`docs/SELF_HOSTING_ASSESSMENT.md`)
-Status: approved design; precedes the implementation plan.
+Status: IMPLEMENTED — shipped to `main` 2026-06-26 (PRs #20 int64 coercion,
+#21 comma-ok maps, #22 match guards). See "As-built status" at the end.
 
 ## Goal
 
@@ -223,3 +224,37 @@ its own probe + CI entry.
   (tag-`switch` dispatch; LLVM rejects duplicate switch cases). True same-tag
   sequential guard fallthrough needs a dispatch restructure, deferred as a
   follow-up.
+
+## As-built status (M3 shipped 2026-06-26)
+
+All three features merged to `main` @ `f71393f`; 16 probes green end-to-end.
+Gates `int64-probe`, `commaok-probe`, `guard-probe` added to `make verify` + CI.
+
+Deltas and discoveries vs. the design (all reviewed and verified):
+
+- **F1 — scope grew (correctly):** the literal-coercion at the binary/comparison
+  site was necessary but not sufficient. `var d int64 = -1` also stored an `i32`
+  into an `i64` alloca (read back as `4294967295`), so a **sign-extending widen in
+  the var-decl store path** (`function_codegen.c`) was added. That var-decl widen
+  is **intentionally not literal-gated**: Goo's type checker is lenient — it
+  permits cross-width typed assignment `var y int64 = x` (x int32) — so `SExt` is
+  the correct lowering for both literal and variable initialisers; gating to
+  literals-only would *miscompile* a negative variable init. Decision #3's
+  "literals only" therefore governs the **binary/comparison path** (the bug-hiding
+  case); the var-decl widen is deliberately broader. A regression probe locks this
+  in. Optional strict-mode follow-up: have the type checker reject cross-width
+  typed assignments for full Go-faithfulness (not done — superset behaviour, fits
+  "C++ to Go's C").
+- **F2 — as designed.** `goo_map_get_sv_ok` + typecheck `{V,bool}` synthesis +
+  codegen aggregate, reusing the existing multi-LHS destructure. Probe also proves
+  the headline claim (a key mapped to `0` returns `ok=true` — present-zero ≠ absent).
+  Two struct-synthesis leaks were caught in review and fixed (use the cached
+  `TYPE_BOOL` builtin; free on the fields-`malloc` failure path).
+- **F3 — as designed, with a review-caught miscompile fixed.** A guarded
+  **wildcard** catch-all (`case _ if cond:`) self-looped on a false guard
+  (`arm == fallback` → infinite loop). Fixed: a guarded wildcard arm's false-guard
+  falls to the **merge** block, not the default block. Also hardened: in-context
+  block API, guard `ValueInfo` freed on all paths, and a no-value guard now errors
+  instead of emitting an ungated body. The same-tag-guard limitation above stands.
+
+Full per-task record, findings, and review verdicts: `.superpowers/sdd/progress.md`.
