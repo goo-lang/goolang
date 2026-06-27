@@ -710,7 +710,7 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         CallExprNode* call = (CallExprNode*)go_stmt->call;
         
         // Create promise wrapper function
-        LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
         LLVMValueRef create_promise_func = codegen_get_runtime_function(codegen, "js_create_promise");
         
         if (create_promise_func) {
