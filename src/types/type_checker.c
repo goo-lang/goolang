@@ -988,7 +988,10 @@ int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
                 return 0;
             }
             if (argc == 1) {
-                Type* at = type_check_expression(checker, call->args);
+                /* call->args->node_type was populated by the
+                 * type_check_expression(checker, go_stmt->call) call above;
+                 * reading it avoids a second traversal of the argument subtree. */
+                Type* at = call->args->node_type;
                 if (at && at->kind != TYPE_CHANNEL && at->kind != TYPE_POINTER) {
                     type_error(checker, stmt->pos,
                         "goroutine argument must be a single pointer-sized value "
