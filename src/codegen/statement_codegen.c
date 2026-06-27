@@ -139,17 +139,22 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     return 0;
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_BLOCK_STMT) return 0;
-    
+
     BlockStmtNode* block = (BlockStmtNode*)stmt;
-    
-    // Generate code for each statement in the block
+
+    // Block scope: bindings declared inside this block must not outlive it.
+    // Snapshot the value-table high-water mark and truncate back to it on the
+    // way out, so an inner `x := ...` cannot leak past the block (Go scoping).
+    // Mirrors the match-arm teardown in composite_codegen.c. We reset the size
+    // without freeing the truncated ValueInfo* (matching existing behavior;
+    // the leak is a separate follow-up).
+    size_t pre_block_vt_size = codegen->value_table_size;
+
     ASTNode* current = block->statements;
     while (current) {
-        // Skip emission once the current block already has a terminator. An
-        // if-let where both branches return leaves the builder at an
-        // `unreachable` exit_bb; appending later statements there would put a
-        // terminator mid-block ("Terminator found in the middle of a basic
-        // block"). Such statements are unreachable anyway, so skipping is safe.
+        // Skip emission once the current block already has a terminator (e.g.
+        // an if-let whose branches both return left an `unreachable` exit_bb);
+        // appending later statements would put a terminator mid-block.
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
             break;
         if (!codegen_generate_statement(codegen, checker, current)) {
@@ -157,7 +162,9 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
         }
         current = current->next;
     }
-    
+
+    // Restore on the normal-end and early-break paths.
+    codegen->value_table_size = pre_block_vt_size;
     return 1;
 #endif
 }
