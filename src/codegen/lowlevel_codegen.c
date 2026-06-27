@@ -26,11 +26,41 @@ ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* ch
     // Cast value to void pointer
     LLVMValueRef value_ptr = value_val->llvm_value;
     if (!value_val->is_lvalue) {
-        // Need to store the value temporarily
-        LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder,
-                                                   LLVMTypeOf(value_val->llvm_value),
-                                                   "temp_send_value");
-        LLVMBuildStore(codegen->builder, value_val->llvm_value, temp_alloca);
+        // Determine the alloca type from the channel's declared element type.
+        // Using LLVMTypeOf(value_val->llvm_value) is wrong: a literal 42 may
+        // arrive as i32 while the channel's element type is i64.
+        // goo_chan_send memcpys elem_size bytes from the pointer; if the
+        // alloca is narrower, that is a stack-overread (UB).  Use the
+        // channel's element LLVM type instead and sign-extend integer values
+        // if needed (Goo integers are signed), mirroring what recv does with
+        // elem_goo and what composite_codegen does for struct fields.
+        Type* chan_goo_s = channel_val->goo_type;
+        Type* elem_goo_s = (chan_goo_s && chan_goo_s->kind == TYPE_CHANNEL)
+                           ? chan_goo_s->data.channel.element_type : NULL;
+        LLVMTypeRef elem_llvm_s = elem_goo_s
+            ? codegen_type_to_llvm(codegen, elem_goo_s)
+            : LLVMTypeOf(value_val->llvm_value);  // fallback: keep value's own type
+
+        // Widen (or truncate) integer values to match the channel's element width.
+        LLVMValueRef send_value = value_val->llvm_value;
+        {
+            LLVMTypeRef actual_ty   = LLVMTypeOf(send_value);
+            LLVMTypeRef expected_ty = elem_llvm_s;
+            if (LLVMGetTypeKind(actual_ty)   == LLVMIntegerTypeKind &&
+                LLVMGetTypeKind(expected_ty) == LLVMIntegerTypeKind) {
+                unsigned from_bits = LLVMGetIntTypeWidth(actual_ty);
+                unsigned to_bits   = LLVMGetIntTypeWidth(expected_ty);
+                if (from_bits < to_bits)
+                    send_value = LLVMBuildSExt(codegen->builder, send_value,
+                                               expected_ty, "send_sext");
+                else if (from_bits > to_bits)
+                    send_value = LLVMBuildTrunc(codegen->builder, send_value,
+                                                expected_ty, "send_trunc");
+            }
+        }
+
+        LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder, elem_llvm_s, "temp_send_value");
+        LLVMBuildStore(codegen->builder, send_value, temp_alloca);
         value_ptr = temp_alloca;
     }
 
