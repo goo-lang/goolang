@@ -167,37 +167,73 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     // Branch based on error status
     LLVMBuildCondBr(codegen->builder, is_error, error_block, success_block);
     
-    // Error block: execute catch body
+    // --- Error block ---
+    // The catch body is always an AST_BLOCK_STMT (grammar: `expr CATCH id block`).
+    // Generate it as a statement so block-level constructs (e.g. `return`) work.
     codegen_set_insert_point(codegen, error_block);
-    
-    // If there's an error variable name, create a binding for it
+
+    // Bind the error variable in the codegen value table so that uses of it
+    // inside the catch body (e.g. `fmt.Println(e)`) resolve correctly.
+    // The raw error slot in the error-union data is an i8* (C string pointer);
+    // wrap it into a goo_string_t {i8*, i64} so the identifier has the right
+    // LLVM type for type-safe IR — the length is 0 as a placeholder for Task 1
+    // (actual string length wiring is Task 2 work).
     if (catch_expr->error_var) {
-        LLVMValueRef error_value __attribute__((unused)) = codegen_error_union_get_error(codegen, operand_info->llvm_value);
-        
-        // TODO: Add error variable to scope
-        // For now, we'll just generate the catch body without the error binding
+        LLVMValueRef error_raw = codegen_error_union_get_error(codegen, operand_info->llvm_value);
+        Type* error_type = operand_info->goo_type->data.error_union.error_type;
+        if (!error_type) {
+            error_type = type_checker_get_builtin(checker, TYPE_STRING);
+        }
+        if (error_raw && error_type) {
+            LLVMTypeRef error_llvm = codegen_type_to_llvm(codegen, error_type);
+            if (error_llvm) {
+                LLVMValueRef str_val = LLVMGetUndef(error_llvm);
+                // Insert the raw i8* pointer into field 0 of the string struct.
+                str_val = LLVMBuildInsertValue(codegen->builder, str_val,
+                                               error_raw, 0, "err_str_ptr");
+                // Insert a zero length into field 1 (placeholder — Task 2 fills this).
+                LLVMValueRef zero_len = LLVMConstInt(
+                    LLVMInt64TypeInContext(codegen->context), 0, 0);
+                str_val = LLVMBuildInsertValue(codegen->builder, str_val,
+                                               zero_len, 1, "err_str_len");
+                LLVMValueRef error_alloca = codegen_create_entry_alloca(
+                    codegen, error_llvm, catch_expr->error_var);
+                LLVMBuildStore(codegen->builder, str_val, error_alloca);
+                ValueInfo* error_vi = value_info_new(catch_expr->error_var,
+                                                     error_alloca, error_type);
+                error_vi->is_lvalue = 1;
+                error_vi->is_initialized = 1;
+                codegen_add_value(codegen, error_vi);
+            }
+        }
     }
-    
-    // Generate the catch body
-    ValueInfo* catch_result = NULL;
+
+    // Generate the catch body as a statement (always a block).
+    // Track whether it emits a terminator (e.g. `return`) so we only add a
+    // PHI incoming from the error side when the block falls through.
+    LLVMValueRef catch_value = NULL;
+    LLVMBasicBlockRef error_exit_block = NULL;
+
     if (catch_expr->catch_body) {
-        catch_result = codegen_generate_expression(codegen, checker, catch_expr->catch_body);
+        codegen_generate_statement(codegen, checker, catch_expr->catch_body);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            // Block fell through — produce a zero default and branch to merge.
+            Type* vtype = operand_info->goo_type->data.error_union.value_type;
+            LLVMTypeRef vllvm = codegen_type_to_llvm(codegen, vtype);
+            catch_value = LLVMConstNull(vllvm);
+            LLVMBuildBr(codegen->builder, merge_block);
+            error_exit_block = LLVMGetInsertBlock(codegen->builder);
+        }
+        // else: block already terminated (e.g. `return`) — no br needed,
+        // and no incoming to add to the PHI from the error side.
     } else {
-        // Default catch behavior: return a default value
-        Type* value_type = operand_info->goo_type->data.error_union.value_type;
-        LLVMTypeRef value_llvm_type = codegen_type_to_llvm(codegen, value_type);
-        LLVMValueRef default_value = LLVMConstNull(value_llvm_type);
-        catch_result = value_info_new(NULL, default_value, value_type);
+        // No catch body: zero default, fall through to merge.
+        Type* vtype = operand_info->goo_type->data.error_union.value_type;
+        LLVMTypeRef vllvm = codegen_type_to_llvm(codegen, vtype);
+        catch_value = LLVMConstNull(vllvm);
+        LLVMBuildBr(codegen->builder, merge_block);
+        error_exit_block = LLVMGetInsertBlock(codegen->builder);
     }
-    
-    if (!catch_result) {
-        value_info_free(operand_info);
-        return NULL;
-    }
-    
-    LLVMValueRef catch_value = catch_result->llvm_value;
-    LLVMBuildBr(codegen->builder, merge_block);
-    LLVMBasicBlockRef error_exit_block = LLVMGetInsertBlock(codegen->builder);
     
     // Success block: extract and use the success value
     codegen_set_insert_point(codegen, success_block);
@@ -205,23 +241,22 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     LLVMBuildBr(codegen->builder, merge_block);
     LLVMBasicBlockRef success_exit_block = LLVMGetInsertBlock(codegen->builder);
     
-    // Merge block: use PHI to select the result
+    // --- Merge block ---
     codegen_set_insert_point(codegen, merge_block);
-    
-    // Get the value type (unwrapped from error union)
+
+    // Get the value type (unwrapped from error union).
     Type* value_type = operand_info->goo_type->data.error_union.value_type;
     LLVMTypeRef value_llvm_type = codegen_type_to_llvm(codegen, value_type);
-    
-    // Create PHI node to merge the two possible values
+
+    // PHI to select the result.  Only add the error-side incoming when the
+    // error block had a fall-through (error_exit_block != NULL).
     LLVMValueRef phi = LLVMBuildPhi(codegen->builder, value_llvm_type, "catch_result");
-    
-    // Add incoming values to PHI
-    LLVMValueRef incoming_values[] = { catch_value, success_value };
-    LLVMBasicBlockRef incoming_blocks[] = { error_exit_block, success_exit_block };
-    LLVMAddIncoming(phi, incoming_values, incoming_blocks, 2);
-    
+    LLVMAddIncoming(phi, &success_value, &success_exit_block, 1);
+    if (error_exit_block && catch_value) {
+        LLVMAddIncoming(phi, &catch_value, &error_exit_block, 1);
+    }
+
     value_info_free(operand_info);
-    value_info_free(catch_result);
     return value_info_new(NULL, phi, value_type);
 }
 

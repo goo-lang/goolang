@@ -813,25 +813,27 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         return NULL;
     }
     
-    // TODO: Add error variable to scope and check catch body
-    Type* catch_body_type __attribute__((unused)) = NULL;
+    // Type-check the catch body as a STATEMENT (the grammar always produces a
+    // block: `expression CATCH identifier block`). Calling type_check_expression
+    // on an AST_BLOCK_STMT hits the default "Unknown expression type" error.
     if (catch_expr->catch_body) {
         scope_push(checker);
-        
-        // Add error variable to scope
+
+        // Add error variable to scope so the catch body can reference it.
         if (catch_expr->error_var) {
             Type* error_type = expr_type->data.error_union.error_type;
             if (!error_type) {
-                error_type = type_checker_get_builtin(checker, TYPE_STRING);  // Default error type
+                error_type = type_checker_get_builtin(checker, TYPE_STRING);
             }
-            
+
             Variable* error_var = variable_new(catch_expr->error_var, error_type, expr->pos);
             if (error_var) {
+                error_var->is_initialized = 1;
                 scope_add_variable(checker->current_scope, error_var);
             }
         }
-        
-        catch_body_type = type_check_expression(checker, catch_expr->catch_body);
+
+        type_check_statement(checker, catch_expr->catch_body);
         scope_pop(checker);
     }
     

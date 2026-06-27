@@ -1,0 +1,18 @@
+// erru_catch_probe: !int declare + success construct (return v) observed via
+// `catch` (ok path yields the unwrapped value). Foundational: an !T cannot be
+// observed without catch. (error path is Task 2.)
+package main
+
+import "fmt"
+
+func alwaysOk() !int {
+    return 42
+}
+
+func main() {
+    x := alwaysOk() catch e {
+        fmt.Println("FAIL: ok value took catch", e)
+        return
+    }
+    fmt.Println(x)
+}
