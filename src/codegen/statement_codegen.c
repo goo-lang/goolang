@@ -86,6 +86,14 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 LLVMBuildBr(codegen->builder, exit_bb);
 
             codegen_set_insert_point(codegen, exit_bb);
+            // If both branches terminated (e.g. both `return`), exit_bb has no
+            // predecessors — no br instructions jump to it.  Emit `unreachable`
+            // so the block is well-formed for the LLVM verifier.  The normal
+            // fall-through case (at least one branch without a terminator) adds
+            // a `br exit_bb`, giving exit_bb a predecessor, so this guard is a
+            // no-op in that case.
+            if (!LLVMGetFirstUse(LLVMBasicBlockAsValue(exit_bb)))
+                LLVMBuildUnreachable(codegen->builder);
             value_info_free(nv);
             return then_ok && else_ok;
         }
@@ -595,6 +603,29 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             return_value->goo_type && return_value->goo_type->kind != TYPE_NULLABLE) {
             LLVMTypeRef nullable_llvm = codegen_type_to_llvm(codegen, function_return_type);
             if (nullable_llvm) {
+                // Widen the inner value to match the nullable's element type BEFORE
+                // InsertValue — prevents an i32→i64 slot mismatch when the declared
+                // return type is ?int64 but the returned literal is a narrow i32.
+                // This mirrors the SExt guard below, but must apply to the INNER type
+                // (not the struct wrapper) because after InsertValue the value is a
+                // struct and the integer-kind checks below will no-op.
+                {
+                    Type* inner_t = function_return_type->data.nullable.base_type;
+                    if (inner_t) {
+                        LLVMTypeRef inner_llvm = codegen_type_to_llvm(codegen, inner_t);
+                        LLVMTypeRef val_ty = LLVMTypeOf(final_return_value);
+                        if (inner_llvm &&
+                            LLVMGetTypeKind(val_ty) == LLVMIntegerTypeKind &&
+                            LLVMGetTypeKind(inner_llvm) == LLVMIntegerTypeKind) {
+                            unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
+                            unsigned to_bits   = LLVMGetIntTypeWidth(inner_llvm);
+                            if (from_bits < to_bits)
+                                final_return_value = LLVMBuildSExt(
+                                    codegen->builder, final_return_value,
+                                    inner_llvm, "inner_sext");
+                        }
+                    }
+                }
                 LLVMValueRef agg = LLVMGetUndef(nullable_llvm);
                 LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
                 agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "ret_null_tag");
