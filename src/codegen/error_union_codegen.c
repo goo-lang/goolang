@@ -179,6 +179,11 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     // LLVM type for type-safe IR — the length is 0 as a placeholder for Task 1
     // (actual string length wiring is Task 2 work).
     if (catch_expr->error_var) {
+        // Extract the error value from the error union's data slot.
+        // After the type_mapping.c change, the default error type (NULL) maps
+        // to goo_string_t {i8*, i64}, so error_raw IS already the full string
+        // struct — no InsertValue wrapping needed. An explicitly typed error_type
+        // that is also TYPE_STRING follows the same direct path.
         LLVMValueRef error_raw = codegen_error_union_get_error(codegen, operand_info->llvm_value);
         Type* error_type = operand_info->goo_type->data.error_union.error_type;
         if (!error_type) {
@@ -187,18 +192,11 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
         if (error_raw && error_type) {
             LLVMTypeRef error_llvm = codegen_type_to_llvm(codegen, error_type);
             if (error_llvm) {
-                LLVMValueRef str_val = LLVMGetUndef(error_llvm);
-                // Insert the raw i8* pointer into field 0 of the string struct.
-                str_val = LLVMBuildInsertValue(codegen->builder, str_val,
-                                               error_raw, 0, "err_str_ptr");
-                // Insert a zero length into field 1 (placeholder — Task 2 fills this).
-                LLVMValueRef zero_len = LLVMConstInt(
-                    LLVMInt64TypeInContext(codegen->context), 0, 0);
-                str_val = LLVMBuildInsertValue(codegen->builder, str_val,
-                                               zero_len, 1, "err_str_len");
+                // error_raw is already of type error_llvm (goo_string_t when
+                // error_type is TYPE_STRING or the default NULL). Use it directly.
                 LLVMValueRef error_alloca = codegen_create_entry_alloca(
                     codegen, error_llvm, catch_expr->error_var);
-                LLVMBuildStore(codegen->builder, str_val, error_alloca);
+                LLVMBuildStore(codegen->builder, error_raw, error_alloca);
                 ValueInfo* error_vi = value_info_new(catch_expr->error_var,
                                                      error_alloca, error_type);
                 error_vi->is_lvalue = 1;
@@ -215,7 +213,11 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     LLVMBasicBlockRef error_exit_block = NULL;
 
     if (catch_expr->catch_body) {
-        codegen_generate_statement(codegen, checker, catch_expr->catch_body);
+        int body_ok = codegen_generate_statement(codegen, checker, catch_expr->catch_body);
+        if (!body_ok) {
+            value_info_free(operand_info);
+            return NULL;
+        }
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
             // Block fell through — produce a zero default and branch to merge.
             Type* vtype = operand_info->goo_type->data.error_union.value_type;
@@ -383,11 +385,24 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
         result = codegen_generate_statement(codegen, checker, func_decl->body);
     }
     
-    // Add default return if missing (return error)
+    // Add default return if missing (return error with goo_string_t payload).
+    // The error slot is now goo_string_t {i8*, i64} by default (type_mapping.c),
+    // so we must build the full struct rather than a bare i8*.
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
-        // Create a default error value
-        LLVMValueRef error_str = LLVMBuildGlobalStringPtr(codegen->builder, "function did not return", "default_error");
-        LLVMValueRef error_union = codegen_create_error_union_error(codegen, error_union_type, error_str);
+        const char* default_msg = "function did not return";
+        LLVMValueRef msg_ptr = LLVMBuildGlobalStringPtr(
+            codegen->builder, default_msg, "default_error_ptr");
+        LLVMTypeRef str_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+        LLVMValueRef str_val = LLVMGetUndef(str_llvm);
+        str_val = LLVMBuildInsertValue(codegen->builder, str_val,
+                                       msg_ptr, 0, "default_err_ptr");
+        LLVMValueRef msg_len = LLVMConstInt(
+            LLVMInt64TypeInContext(codegen->context),
+            (unsigned long long)strlen(default_msg), 0);
+        str_val = LLVMBuildInsertValue(codegen->builder, str_val,
+                                       msg_len, 1, "default_err_len");
+        LLVMValueRef error_union = codegen_create_error_union_error(
+            codegen, error_union_type, str_val);
         LLVMBuildRet(codegen->builder, error_union);
     }
     

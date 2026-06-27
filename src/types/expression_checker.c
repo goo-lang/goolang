@@ -545,6 +545,31 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = checker->builtin_types[TYPE_INT32];
             return checker->builtin_types[TYPE_INT32];
         }
+        // error(msg) -> !T. Constructs the error case of the enclosing function's
+        // return type. The argument must be a string; the call is only valid inside
+        // a function whose return type is an error union (!T).
+        if (strcmp(func_ident->name, "error") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "error expects exactly one string argument");
+                return NULL;
+            }
+            Type* arg_t = type_check_expression(checker, call->args);
+            if (!arg_t) return NULL;
+            if (arg_t->kind != TYPE_STRING) {
+                type_error(checker, expr->pos,
+                           "error: argument must be a string, got %s",
+                           type_to_string(arg_t));
+                return NULL;
+            }
+            Type* ret = checker->current_return_type;
+            if (!ret || !type_is_error_union(ret)) {
+                type_error(checker, expr->pos,
+                           "error() can only be used inside a function returning !T");
+                return NULL;
+            }
+            expr->node_type = ret;
+            return ret;
+        }
     }
     
     // Check function expression

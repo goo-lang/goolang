@@ -344,7 +344,12 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     
     // Create new scope for function
     scope_push(checker);
-    
+
+    // Track the return type so context-sensitive builtins (e.g. error()) can
+    // look it up without walking the AST upward.
+    Type* saved_return_type = checker->current_return_type;
+    checker->current_return_type = return_type;
+
     // Add function parameters to the function scope
     if (func->params) {
         ASTNode* param = func->params;
@@ -379,7 +384,8 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     if (func->body) {
         result = type_check_statement(checker, func->body);
     }
-    
+
+    checker->current_return_type = saved_return_type;
     scope_pop(checker);
     return result;
 }

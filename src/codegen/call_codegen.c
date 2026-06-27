@@ -153,6 +153,40 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);
         }
+        // error("msg") -> !T error union (error case).
+        // The resolved !T is in expr->node_type (set by the type checker).
+        // Fall back to the current function's return type if needed.
+        if (strcmp(func_name->name, "error") == 0 && call->args && !call->args->next) {
+            Type* result_type = expr->node_type;
+            if (!result_type || !type_is_error_union(result_type)) {
+                result_type = codegen->current_function_info
+                              ? codegen->current_function_info->goo_type : NULL;
+            }
+            if (!result_type || !type_is_error_union(result_type)) {
+                codegen_error(codegen, expr->pos,
+                              "error(): no !T context available (not inside !T function)");
+                return NULL;
+            }
+            LLVMTypeRef union_llvm = codegen_type_to_llvm(codegen, result_type);
+            if (!union_llvm) return NULL;
+
+            // Evaluate the message argument — produces a goo_string_t {i8*, i64}.
+            ValueInfo* msg_vi = codegen_generate_expression(codegen, checker, call->args);
+            if (!msg_vi) return NULL;
+            LLVMValueRef msg_val = msg_vi->llvm_value;
+            if (msg_vi->is_lvalue && msg_vi->goo_type) {
+                LLVMTypeRef mt = codegen_type_to_llvm(codegen, msg_vi->goo_type);
+                if (mt) msg_val = LLVMBuildLoad2(codegen->builder, mt, msg_val, "err_msg_load");
+            }
+            value_info_free(msg_vi);
+
+            // Build the error case. codegen_create_error_union_error inserts
+            // msg_val into field 1 of the data union, which is goo_string_t
+            // (the default error type after the type_mapping.c change).
+            LLVMValueRef error_val = codegen_create_error_union_error(codegen, union_llvm, msg_val);
+            if (!error_val) return NULL;
+            return value_info_new(NULL, error_val, result_type);
+        }
     }
 
     // Stdlib package calls. The type checker resolves these against a

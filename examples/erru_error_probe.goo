@@ -1,0 +1,27 @@
+// erru_error_probe: error("msg") builtin + catch error path (bind e, print it,
+// yield a fallback) and a catch-with-return divergence case.
+package main
+
+import "fmt"
+
+func mightFail(bad bool) !int {
+    if bad {
+        return error("boom")
+    }
+    return 7
+}
+
+func main() {
+    // error path: catch falls through to merge — e is bound, fallback value is zero
+    b := mightFail(true) catch e {
+        fmt.Println("recovering from:", e)
+    }
+    fmt.Println("fallback:", b)
+
+    // error path: catch diverges via return — e is bound, main exits after printing
+    a := mightFail(true) catch e {
+        fmt.Println("caught:", e)
+        return
+    }
+    fmt.Println("unreachable", a)
+}

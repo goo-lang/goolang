@@ -555,6 +555,21 @@ erru-catch-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M5 Task 2 gate: error("msg") builtin + catch error-var binding.
+# Exercises the error case of !T — error construction, e binding with real
+# string (pointer + length), falling-through catch, and diverging catch.
+erru-error-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== erru-error-probe: error(\"msg\") builtin + catch error-var binding ==="
+	$(COMPILER) -o build/erru_error_probe examples/erru_error_probe.goo
+	@./build/erru_error_probe > build/erru_error_probe.actual.txt
+	@if diff -u examples/erru_error_probe.expected.txt build/erru_error_probe.actual.txt; then \
+	  echo "erru-error-probe: PASS"; \
+	else \
+	  echo "erru-error-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # M7-stdlib-expansion completion gate: compile + run the stdlib smoke
 # test, which exercises one function from each of fmt, strings, math, os
 # and exits 0. Used by `coord milestone-status M7-stdlib-expansion`.
@@ -650,7 +665,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
