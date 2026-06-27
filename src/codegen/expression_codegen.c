@@ -242,7 +242,14 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             goo_type = type_checker_get_builtin(checker, TYPE_CHAR);
             break;
         }
-        
+
+        case TOKEN_NIL:
+            // nil literal: the var-decl initialiser path intercepts this before
+            // reaching here when the declared type is ?T (see function_codegen.c).
+            // For any other context fall back to a generic null i8* so the module
+            // stays well-formed.
+            return codegen_generate_null_literal(codegen, checker, NULL);
+
         default:
             codegen_error(codegen, expr->pos, "Unknown literal type");
             return NULL;

@@ -393,7 +393,20 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         
         // Generate initializer if present
         if (var_decl->values) {
-            ValueInfo* init_value = codegen_generate_expression(codegen, checker, var_decl->values);
+            ValueInfo* init_value;
+
+            // `var b ?T = nil` — intercept here so codegen_generate_null_literal
+            // receives the declared ?T type and emits {is_null=1, zero_value}.
+            // Without this intercept the generic nil fallback (a void* null pointer)
+            // lands in the auto-wrap block below and causes an LLVM type mismatch.
+            if (var_type && var_type->kind == TYPE_NULLABLE &&
+                var_decl->values->type == AST_LITERAL &&
+                ((LiteralNode*)var_decl->values)->literal_type == TOKEN_NIL) {
+                init_value = codegen_generate_null_literal(codegen, checker, var_type);
+            } else {
+                init_value = codegen_generate_expression(codegen, checker, var_decl->values);
+            }
+
             if (!init_value) {
                 codegen_error(codegen, decl->pos, "Failed to generate initializer for variable '%s'", var_name);
                 return 0;

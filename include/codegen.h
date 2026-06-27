@@ -247,11 +247,14 @@ LLVMValueRef codegen_create_error_union_value(CodeGenerator* codegen, LLVMTypeRe
 LLVMValueRef codegen_extract_error_union_value(CodeGenerator* codegen, LLVMValueRef union_value, int get_error);
 LLVMValueRef codegen_check_error_union(CodeGenerator* codegen, LLVMValueRef union_value);
 
-// Nullable type helpers  
-LLVMValueRef codegen_create_nullable_value(CodeGenerator* codegen, LLVMTypeRef nullable_type, 
+// Nullable type helpers
+LLVMValueRef codegen_create_nullable_value(CodeGenerator* codegen, LLVMTypeRef nullable_type,
                                          LLVMValueRef value, int is_null);
 LLVMValueRef codegen_extract_nullable_value(CodeGenerator* codegen, LLVMValueRef nullable_value);
 LLVMValueRef codegen_check_nullable_null(CodeGenerator* codegen, LLVMValueRef nullable_value);
+
+// Nullable codegen — used across expression_codegen.c and function_codegen.c
+ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, TypeChecker* checker, Type* expected_type);
 
 // Error union helpers
 LLVMValueRef codegen_create_error_union_success(CodeGenerator* codegen, LLVMTypeRef union_type, 

@@ -1,0 +1,22 @@
+// nullable_iflet_probe: ?int safe core — declare, assign a value, assign nil,
+// and observe both via `if let` (the value path binds; the nil path takes else).
+// Establishes the construction + observation primitives the rest of M4 builds on.
+package main
+
+import "fmt"
+
+func main() {
+    var a ?int = 42
+    if let v = a {
+        fmt.Println(v)
+    } else {
+        fmt.Println("FAIL: value took else")
+    }
+
+    var b ?int = nil
+    if let v = b {
+        fmt.Println(v)
+    } else {
+        fmt.Println("PASS: nil took else")
+    }
+}
