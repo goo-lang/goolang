@@ -738,31 +738,51 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     }
     
     CallExprNode* call = (CallExprNode*)go_stmt->call;
-    
-    // Generate the function address
+
+    // Build all LLVM types in the module context (not the global context) to
+    // avoid "Function context does not match Module context" from verifyModule.
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+
+    // Goroutine function value (e.g. `produce`) — a void(i8*) function pointer.
     ValueInfo* func_val = codegen_generate_expression(codegen, checker, call->function);
     if (!func_val) return 0;
-    
-    // For simplicity, we'll use NULL as the argument for now
-    // In a complete implementation, we'd need to package the arguments properly
-    LLVMValueRef null_arg = LLVMConstNull(LLVMPointerType(LLVMInt8Type(), 0));
-    
-    // Get the goo_go function
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
-    LLVMTypeRef func_ptr_type = LLVMPointerType(LLVMFunctionType(LLVMVoidType(), &void_ptr_type, 1, 0), 0);
+
+    // Argument: pass the single call argument (a channel = i8*) straight through
+    // as goo_go's void* arg. Channels lower to i8* which is goo_goroutine_func_t's
+    // parameter type, so no marshaling struct is needed.
+    // Niladic `go f()` passes NULL.
+    LLVMValueRef arg_ptr = LLVMConstNull(void_ptr_type);
+    if (call->args) {
+        ValueInfo* a = codegen_generate_expression(codegen, checker, call->args);
+        if (!a) { value_info_free(func_val); return 0; }
+        arg_ptr = a->llvm_value;
+        // Bitcast to i8* if needed (e.g. channel is already i8*, pointer types may differ)
+        if (LLVMTypeOf(arg_ptr) != void_ptr_type) {
+            arg_ptr = LLVMBuildBitCast(codegen->builder, arg_ptr, void_ptr_type, "go_arg");
+        }
+        value_info_free(a);
+    }
+
+    // Declare goo_go in-context: void* goo_go(void(*)(void*), void*)
+    LLVMTypeRef func_ptr_type = LLVMPointerType(
+        LLVMFunctionType(LLVMVoidTypeInContext(ctx), &void_ptr_type, 1, 0), 0);
     LLVMTypeRef param_types[] = { func_ptr_type, void_ptr_type };
     LLVMTypeRef goo_go_type = LLVMFunctionType(void_ptr_type, param_types, 2, 0);
-    
     LLVMValueRef goo_go_func = LLVMGetNamedFunction(codegen->module, "goo_go");
     if (!goo_go_func) {
-        // Declare goo_go if not already declared
         goo_go_func = LLVMAddFunction(codegen->module, "goo_go", goo_go_type);
     }
-    
-    // Call goo_go(func, arg)
-    LLVMValueRef args[] = { func_val->llvm_value, null_arg };
-    LLVMBuildCall2(codegen->builder, goo_go_type, goo_go_func, args, 2, "");
-    
+
+    // Bitcast the goroutine function pointer to the expected goo_goroutine_func_t type.
+    LLVMValueRef func_as_ptr = func_val->llvm_value;
+    if (LLVMTypeOf(func_as_ptr) != func_ptr_type) {
+        func_as_ptr = LLVMBuildBitCast(codegen->builder, func_as_ptr, func_ptr_type, "go_func");
+    }
+
+    LLVMValueRef go_args[] = { func_as_ptr, arg_ptr };
+    LLVMBuildCall2(codegen->builder, goo_go_type, goo_go_func, go_args, 2, "");
+
     value_info_free(func_val);
     return 1;
 #endif

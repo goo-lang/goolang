@@ -1,0 +1,24 @@
+// go_probe: `go f(ch)` spawns a goroutine that runs and delivers a value over a
+// buffered channel; main receives it (the receive is the deterministic join).
+package main
+
+import "fmt"
+
+func produce(ch chan int) {
+    ch <- 7
+}
+
+func produce9(ch chan int) {
+    ch <- 9
+}
+
+func main() {
+    c := make_chan(int, 1)
+    go produce(c)
+    x := <-c
+    fmt.Println(x)
+
+    d := make_chan(int, 1)
+    go produce9(d)
+    fmt.Println(<-d)
+}

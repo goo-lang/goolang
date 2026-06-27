@@ -966,17 +966,40 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
 
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_GO_STMT) return 0;
-    
+
     GoStmtNode* go_stmt = (GoStmtNode*)stmt;
-    
+
     // Type check the function call expression
     if (go_stmt->call) {
         Type* call_type = type_check_expression(checker, go_stmt->call);
         if (!call_type) return 0;
-        
-        // TODO: Validate that the expression is a function call
+
+        // Reject out-of-scope go forms at compile time (M8 scope: single pointer-sized arg).
+        // Multi-arg goroutines and value-typed args require a marshaling struct (deferred).
+        if (go_stmt->call->type == AST_CALL_EXPR) {
+            CallExprNode* call = (CallExprNode*)go_stmt->call;
+            size_t argc = 0;
+            for (ASTNode* a = call->args; a; a = a->next) argc++;
+            if (argc > 1) {
+                type_error(checker, stmt->pos,
+                    "goroutines with more than one argument are not supported yet; "
+                    "pass a single pointer-sized value such as a channel "
+                    "(multi-arg goroutines are deferred)");
+                return 0;
+            }
+            if (argc == 1) {
+                Type* at = type_check_expression(checker, call->args);
+                if (at && at->kind != TYPE_CHANNEL && at->kind != TYPE_POINTER) {
+                    type_error(checker, stmt->pos,
+                        "goroutine argument must be a single pointer-sized value "
+                        "(a channel or pointer); passing values by goroutine argument "
+                        "is deferred");
+                    return 0;
+                }
+            }
+        }
     }
-    
+
     return 1;
 }
 
