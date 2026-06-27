@@ -253,8 +253,15 @@ LLVMValueRef codegen_create_nullable_value(CodeGenerator* codegen, LLVMTypeRef n
 LLVMValueRef codegen_extract_nullable_value(CodeGenerator* codegen, LLVMValueRef nullable_value);
 LLVMValueRef codegen_check_nullable_null(CodeGenerator* codegen, LLVMValueRef nullable_value);
 
-// Nullable codegen — used across expression_codegen.c and function_codegen.c
+// Nullable codegen — used across expression_codegen.c, function_codegen.c,
+// and call_codegen.c (default-nil locals/globals, reassignment, ?T arg wrap).
 ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, TypeChecker* checker, Type* expected_type);
+LLVMValueRef codegen_create_nullable_null(CodeGenerator* codegen, LLVMTypeRef nullable_type, Type* base_type);
+LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMTypeRef nullable_type,
+                                               LLVMValueRef value, Type* value_type);
+int codegen_generate_nullable_assignment(CodeGenerator* codegen, TypeChecker* checker,
+                                        LLVMValueRef nullable_target, LLVMValueRef source_value,
+                                        Type* target_type, Type* source_type, Position pos);
 
 // Error union helpers
 LLVMValueRef codegen_create_error_union_success(CodeGenerator* codegen, LLVMTypeRef union_type, 

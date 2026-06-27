@@ -378,12 +378,39 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             // from the stack.
             alloca_inst = codegen_create_entry_alloca(codegen, llvm_type, var_name);
             if (alloca_inst && !var_decl->values) {
-                LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_type), alloca_inst);
+                // For a `?T` local with no initializer, the Go-style zero value
+                // must be nil ({is_null=1, ...}). LLVMConstNull would set the
+                // is_null tag to 0, which reads as PRESENT — wrong. Route to the
+                // shared null-nullable builder. Falls back to ConstNull if it
+                // cannot be built (defensive; should not happen for valid ?T).
+                if (var_type && var_type->kind == TYPE_NULLABLE) {
+                    LLVMValueRef null_init = codegen_create_nullable_null(
+                        codegen, llvm_type, var_type->data.nullable.base_type);
+                    if (null_init)
+                        LLVMBuildStore(codegen->builder, null_init, alloca_inst);
+                    else
+                        LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_type), alloca_inst);
+                } else {
+                    LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_type), alloca_inst);
+                }
             }
         } else {
             // Global variable
             alloca_inst = LLVMAddGlobal(codegen->module, llvm_type, var_name);
-            LLVMSetInitializer(alloca_inst, LLVMConstNull(llvm_type));
+            // Same nil-default rule as locals, but globals need a *constant*
+            // initializer, so build {i1 true, zero_of_base} directly.
+            if (var_type && var_type->kind == TYPE_NULLABLE) {
+                Type* base_type = var_type->data.nullable.base_type;
+                LLVMTypeRef base_llvm = base_type ? codegen_type_to_llvm(codegen, base_type) : NULL;
+                LLVMValueRef fields[2];
+                fields[0] = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 1, 0);
+                fields[1] = base_llvm ? LLVMConstNull(base_llvm)
+                                      : LLVMConstNull(LLVMInt32TypeInContext(codegen->context));
+                LLVMSetInitializer(alloca_inst,
+                                   LLVMConstStructInContext(codegen->context, fields, 2, 0));
+            } else {
+                LLVMSetInitializer(alloca_inst, LLVMConstNull(llvm_type));
+            }
         }
 
         if (!alloca_inst) {
