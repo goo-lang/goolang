@@ -482,7 +482,11 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
             elem_bytes = elem_t->size;
         } else {
             // Fall back to LLVM data layout when Type.size is not computed.
-            LLVMTargetDataRef td = LLVMCreateTargetDataLayout(codegen->target_machine);
+            // target_machine is NULL during the codegen phase (it is only
+            // populated inside codegen_emit_to_file), so guard before use.
+            LLVMTargetDataRef td = codegen->target_machine
+                ? LLVMCreateTargetDataLayout(codegen->target_machine)
+                : NULL;
             LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_t);
             if (td && llvm_elem)
                 elem_bytes = (size_t)LLVMABISizeOfType(td, llvm_elem);

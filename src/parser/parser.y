@@ -20,6 +20,12 @@ static TokenType bison_token_to_token_type(int bison_token);
 %}
 
 // Union type for semantic values
+// NOTE: `integer` is `long long` (not `int`) so that integer literals larger
+// than INT32_MAX (e.g. 9000000000 used by the int64-channel probe) survive the
+// lexer→parser boundary without truncation.  The lexer sets this field via
+// strtoll(); the literal action uses %lld.  This is a companion requirement of
+// the M7 int64-channel codegen work and is safe for all existing source files
+// whose literals are within [INT64_MIN, INT64_MAX].
 %union {
     struct ASTNode* node;
     char* string;
