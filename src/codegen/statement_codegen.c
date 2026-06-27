@@ -145,6 +145,13 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // Generate code for each statement in the block
     ASTNode* current = block->statements;
     while (current) {
+        // Skip emission once the current block already has a terminator. An
+        // if-let where both branches return leaves the builder at an
+        // `unreachable` exit_bb; appending later statements there would put a
+        // terminator mid-block ("Terminator found in the middle of a basic
+        // block"). Such statements are unreachable anyway, so skipping is safe.
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+            break;
         if (!codegen_generate_statement(codegen, checker, current)) {
             return 0;
         }
