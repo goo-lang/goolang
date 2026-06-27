@@ -51,4 +51,4 @@ jobs:
         run: |
           LLVMCFG="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)"
           make CC=gcc-14 LLVM_CONFIG="${LLVMCFG:-llvm-config}" \
-            baseline-probe lvalue-probe file-io-probe pointer-probe pointer-write-probe switch-probe methods-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe
+            baseline-probe lvalue-probe file-io-probe pointer-probe pointer-write-probe switch-probe methods-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe
