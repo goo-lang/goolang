@@ -542,7 +542,68 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     if (binary->operator == TOKEN_ARROW) {
         return codegen_generate_channel_send(codegen, checker, expr);
     }
-    
+
+    // Special handling for nullable == nil / nil == nullable.
+    // We must NOT evaluate the nil side: codegen_generate_null_literal
+    // without a context type emits an i8* null, which is the wrong LLVM
+    // type to compare against a { i1, T } nullable struct. Instead, detect
+    // the pattern here, evaluate ONLY the nullable operand, then read its
+    // is_null flag directly.
+    if (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE) {
+        ASTNode* nullable_node = NULL;
+
+        // Determine which side is the nil literal and which is nullable.
+        bool right_is_nil = (binary->right->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL);
+        bool left_is_nil  = (binary->left->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->left)->literal_type == TOKEN_NIL);
+
+        if (right_is_nil) {
+            // Run the type checker on the left to confirm it is ?T.
+            Type* lt = type_check_expression(checker, binary->left);
+            if (lt && type_is_nullable(lt)) {
+                nullable_node = binary->left;
+            }
+        } else if (left_is_nil) {
+            // nil == ?T form
+            Type* rt = type_check_expression(checker, binary->right);
+            if (rt && type_is_nullable(rt)) {
+                nullable_node = binary->right;
+            }
+        }
+
+        if (nullable_node) {
+            // Evaluate only the nullable operand.
+            ValueInfo* nv = codegen_generate_expression(codegen, checker, nullable_node);
+            if (!nv) return NULL;
+
+            // Auto-load if the result is an lvalue (e.g. identifier/selector).
+            if (nv->is_lvalue && nv->goo_type) {
+                LLVMTypeRef nt = codegen_type_to_llvm(codegen, nv->goo_type);
+                if (nt) {
+                    nv->llvm_value = LLVMBuildLoad2(codegen->builder, nt, nv->llvm_value, "nullable_load");
+                    nv->is_lvalue = 0;
+                }
+            }
+
+            // Read the is_null flag (struct index 0) via the header-declared helper.
+            LLVMValueRef is_null = codegen_check_nullable_null(codegen, nv->llvm_value);
+            LLVMValueRef result;
+
+            if (binary->operator == TOKEN_EQ) {
+                // a == nil  →  is_null
+                result = is_null;
+            } else {
+                // a != nil  →  !is_null
+                result = LLVMBuildNot(codegen->builder, is_null, "is_not_null");
+            }
+
+            Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+            value_info_free(nv);
+            return value_info_new(NULL, result, bool_type);
+        }
+    }
+
     // Generate left and right operands
     ValueInfo* left_val = codegen_generate_expression(codegen, checker, binary->left);
     if (!left_val) return NULL;
