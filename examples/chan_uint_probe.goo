@@ -1,0 +1,19 @@
+// chan_uint_probe: unsigned integer widening through a buffered channel must
+// use ZExt, not SExt.  A uint8 value with the high bit set (200 = 0xC8)
+// sent to an int64 channel and received must preserve the unsigned magnitude.
+//
+// Before the fix (LLVMBuildSExt unconditional): value_val->goo_type was
+// ignored, so uint8 200 (i8 -56 as signed) was sign-extended to -56 as
+// int64.  The fix checks type_is_signed(value_val->goo_type) and routes
+// unsigned values through LLVMBuildZExt, giving the correct 200.
+package main
+
+import "fmt"
+
+func main() {
+    var x uint8 = 200        // bit pattern 0xC8; signed i8 = -56, unsigned = 200
+    c := make_chan(int64, 1) // wider element: widening extension required
+    c <- x
+    y := <-c
+    fmt.Println(y)           // must print 200 (ZExt), not -56 (SExt)
+}
