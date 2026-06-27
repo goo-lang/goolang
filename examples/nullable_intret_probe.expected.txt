@@ -1,0 +1,4 @@
+5
+PASS: pick(false) is nil
+42
+-1

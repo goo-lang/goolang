@@ -1,0 +1,3 @@
+PASS: ?int64 reassign
+PASS: ?int64 arg auto-wrap
+PASS: ?int64 nil arg

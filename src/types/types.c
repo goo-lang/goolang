@@ -642,6 +642,8 @@ int type_compatible(const Type* from, const Type* to) {
     
     // Handle nullable types
     if (to->kind == TYPE_NULLABLE) {
+        // nil literal (TYPE_UNKNOWN) is assignable to any nullable type.
+        if (from->kind == TYPE_UNKNOWN) return 1;
         return type_compatible(from, to->data.nullable.base_type);
     }
     

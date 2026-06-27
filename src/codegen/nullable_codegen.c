@@ -19,6 +19,28 @@ LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMType
     LLVMValueRef is_null_false = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
     nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val, is_null_false, 0, "nullable.is_null");
     
+    // Widen or narrow the value to match the expected element type of slot 1
+    // before inserting.  Without this, an i32 literal wrapped into a ?int64
+    // struct (whose slot 1 is i64) yields an "insertvalue operand type
+    // mismatch" that fails `opt --passes=verify`.  Gate to integer-kind
+    // mismatches only; structs and already-matching widths are left alone.
+    // Goo integers are signed, so widening uses SExt.
+    {
+        LLVMTypeRef elems[2];
+        LLVMGetStructElementTypes(nullable_type, elems);
+        LLVMTypeRef slot_type = elems[1];
+        LLVMTypeRef val_ty    = LLVMTypeOf(value);
+        if (LLVMGetTypeKind(val_ty)    == LLVMIntegerTypeKind &&
+            LLVMGetTypeKind(slot_type) == LLVMIntegerTypeKind) {
+            unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
+            unsigned to_bits   = LLVMGetIntTypeWidth(slot_type);
+            if (from_bits < to_bits)
+                value = LLVMBuildSExt(codegen->builder, value, slot_type, "nullable_sext");
+            else if (from_bits > to_bits)
+                value = LLVMBuildTrunc(codegen->builder, value, slot_type, "nullable_trunc");
+        }
+    }
+
     // Insert the value into slot 1
     nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val, value, 1, "nullable.value");
     

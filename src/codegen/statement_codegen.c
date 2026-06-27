@@ -74,13 +74,26 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             }
             then_ok = il->then_stmt ? codegen_generate_statement(codegen, checker, il->then_stmt) : 1;
             scope_pop(checker);
-            LLVMBuildBr(codegen->builder, exit_bb);
+            // Only add the branch if the then block didn't already emit a
+            // terminator (e.g. `return` inside `if let q = p { return ... }`
+            // adds a ret, and a second br would be "terminator in middle of BB").
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+                LLVMBuildBr(codegen->builder, exit_bb);
 
             codegen_set_insert_point(codegen, else_bb);
             else_ok = il->else_stmt ? codegen_generate_statement(codegen, checker, il->else_stmt) : 1;
-            LLVMBuildBr(codegen->builder, exit_bb);
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+                LLVMBuildBr(codegen->builder, exit_bb);
 
             codegen_set_insert_point(codegen, exit_bb);
+            // If both branches terminated (e.g. both `return`), exit_bb has no
+            // predecessors — no br instructions jump to it.  Emit `unreachable`
+            // so the block is well-formed for the LLVM verifier.  The normal
+            // fall-through case (at least one branch without a terminator) adds
+            // a `br exit_bb`, giving exit_bb a predecessor, so this guard is a
+            // no-op in that case.
+            if (!LLVMGetFirstUse(LLVMBasicBlockAsValue(exit_bb)))
+                LLVMBuildUnreachable(codegen->builder);
             value_info_free(nv);
             return then_ok && else_ok;
         }
@@ -132,6 +145,13 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // Generate code for each statement in the block
     ASTNode* current = block->statements;
     while (current) {
+        // Skip emission once the current block already has a terminator. An
+        // if-let where both branches return leaves the builder at an
+        // `unreachable` exit_bb; appending later statements there would put a
+        // terminator mid-block ("Terminator found in the middle of a basic
+        // block"). Such statements are unreachable anyway, so skipping is safe.
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+            break;
         if (!codegen_generate_statement(codegen, checker, current)) {
             return 0;
         }
@@ -526,6 +546,31 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             return 1;
         }
 
+        // Get function return type early — needed for nullable nil-return
+        // intercept below (before the expression is evaluated).
+        Type* function_return_type = NULL;
+        if (codegen->current_function_info && codegen->current_function_info->goo_type) {
+            function_return_type = codegen->current_function_info->goo_type;
+        }
+
+        // Nullable nil-return intercept: `return nil` inside a `?T` function.
+        // Without this, codegen_generate_null_literal produces a void* null
+        // pointer (no expected-type context), which mismatches the `{i1, T}`
+        // nullable return type and fails module verification. Intercept here,
+        // generate the correct {is_null=1, zero_value} struct, and return it
+        // directly — same pattern as var_decl's `var b ?T = nil` fix.
+#if LLVM_AVAILABLE
+        if (function_return_type && function_return_type->kind == TYPE_NULLABLE &&
+            return_stmt->values->type == AST_LITERAL &&
+            ((LiteralNode*)return_stmt->values)->literal_type == TOKEN_NIL) {
+            ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, function_return_type);
+            if (!nil_vi) return 0;
+            LLVMBuildRet(codegen->builder, nil_vi->llvm_value);
+            value_info_free(nil_vi);
+            return 1;
+        }
+#endif
+
         // Single value return — original path.
         ValueInfo* return_value = codegen_generate_expression(codegen, checker, return_stmt->values);
         if (!return_value) {
@@ -545,12 +590,6 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         }
 #endif
 
-        // Get function return type for error union handling
-        Type* function_return_type = NULL;
-        if (codegen->current_function_info && codegen->current_function_info->goo_type) {
-            function_return_type = codegen->current_function_info->goo_type;
-        }
-
         // Handle error union returns
 #if LLVM_AVAILABLE
         LLVMValueRef final_return_value = return_value->llvm_value;
@@ -558,6 +597,67 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             final_return_value = codegen_generate_error_return(codegen, return_value->llvm_value,
                                                              return_value->goo_type, function_return_type);
         }
+
+        // Nullable auto-wrap: `return Point{...}` inside a `?Point` function.
+        // When the function's declared return type is ?T (TYPE_NULLABLE) and the
+        // actual return value has the inner type T (not already nullable), wrap it
+        // in an {is_null=0, value} aggregate — same InsertValue pattern used in
+        // var_decl for `var hit ?int = 42`. This is the core ABI fix for M4 Task 3:
+        // the {i1, BigStruct} wrapper struct is what LLVM's backend sees as the
+        // "large" return type (>16 bytes on x86-64), so fixing the wrapper here
+        // makes the by-pointer return convention apply to the correct aggregate.
+        if (function_return_type && function_return_type->kind == TYPE_NULLABLE &&
+            return_value->goo_type && return_value->goo_type->kind != TYPE_NULLABLE) {
+            LLVMTypeRef nullable_llvm = codegen_type_to_llvm(codegen, function_return_type);
+            if (nullable_llvm) {
+                // Widen the inner value to match the nullable's element type BEFORE
+                // InsertValue — prevents an i32→i64 slot mismatch when the declared
+                // return type is ?int64 but the returned literal is a narrow i32.
+                // This mirrors the SExt guard below, but must apply to the INNER type
+                // (not the struct wrapper) because after InsertValue the value is a
+                // struct and the integer-kind checks below will no-op.
+                {
+                    Type* inner_t = function_return_type->data.nullable.base_type;
+                    if (inner_t) {
+                        LLVMTypeRef inner_llvm = codegen_type_to_llvm(codegen, inner_t);
+                        LLVMTypeRef val_ty = LLVMTypeOf(final_return_value);
+                        if (inner_llvm &&
+                            LLVMGetTypeKind(val_ty) == LLVMIntegerTypeKind &&
+                            LLVMGetTypeKind(inner_llvm) == LLVMIntegerTypeKind) {
+                            unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
+                            unsigned to_bits   = LLVMGetIntTypeWidth(inner_llvm);
+                            if (from_bits < to_bits)
+                                final_return_value = LLVMBuildSExt(
+                                    codegen->builder, final_return_value,
+                                    inner_llvm, "inner_sext");
+                        }
+                    }
+                }
+                LLVMValueRef agg = LLVMGetUndef(nullable_llvm);
+                LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+                agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "ret_null_tag");
+                agg = LLVMBuildInsertValue(codegen->builder, agg, final_return_value, 1, "ret_null_val");
+                final_return_value = agg;
+            }
+        }
+
+        // Integer widening: widen the return value to match the function's
+        // declared LLVM return type (e.g. `return 0` as i32 from an i64
+        // function). Mirrors the same SExt guard in var_decl.
+        {
+            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+            LLVMTypeRef fn_ret = LLVMGetReturnType(LLVMGlobalGetValueType(cur_fn));
+            LLVMTypeRef val_ty = LLVMTypeOf(final_return_value);
+            if (LLVMGetTypeKind(val_ty) == LLVMIntegerTypeKind &&
+                LLVMGetTypeKind(fn_ret) == LLVMIntegerTypeKind) {
+                unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
+                unsigned to_bits   = LLVMGetIntTypeWidth(fn_ret);
+                if (from_bits < to_bits)
+                    final_return_value = LLVMBuildSExt(codegen->builder, final_return_value,
+                                                       fn_ret, "ret_sext");
+            }
+        }
+
         LLVMBuildRet(codegen->builder, final_return_value);
 #else
         codegen_generate_error_return(codegen, return_value->llvm_value,

@@ -1,0 +1,54 @@
+// nullable_intret_probe: regression guard for two M4 review findings:
+//   1. Integer widening must precede nullable auto-wrap — a ?int64-returning
+//      function that returns a narrow literal (i32) must SExt the value to i64
+//      BEFORE the InsertValue, not after; otherwise LLVM sees an i32 in the i64
+//      slot and the IR verifier rejects the module.
+//   2. if-let where both branches terminate (both `return`) must leave exit_bb
+//      well-formed even when that block has no predecessors; otherwise the LLVM
+//      verifier rejects a basic block without a terminator.
+package main
+
+import "fmt"
+
+// Finding 1: ?int64 return with narrow literal operand (5 is i32 by default)
+func pick(b bool) ?int64 {
+    if b {
+        return 5
+    }
+    return nil
+}
+
+// Finding 2: if-let with BOTH branches terminating (both `return`)
+func classify(x ?int) int {
+    if let v = x {
+        return v
+    } else {
+        return -1
+    }
+}
+
+func main() {
+    // Finding 1: value path
+    p := pick(true)
+    if let v = p {
+        fmt.Println(v)
+    } else {
+        fmt.Println("FAIL: pick(true) took nil path")
+    }
+
+    // Finding 1: nil path
+    q := pick(false)
+    if q == nil {
+        fmt.Println("PASS: pick(false) is nil")
+    } else {
+        fmt.Println("FAIL: pick(false) not nil")
+    }
+
+    // Finding 2: present value
+    var xval ?int = 42
+    fmt.Println(classify(xval))
+
+    // Finding 2: nil value
+    var xnil ?int = nil
+    fmt.Println(classify(xnil))
+}

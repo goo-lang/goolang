@@ -32,17 +32,25 @@ Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* righ
 
 Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op __attribute__((unused)), Position pos) {
     if (!checker || !left_type || !right_type) return NULL;
-    
+
     // Comparison operations return boolean
     Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
-    
+
+    // ?T == nil / nil == ?T: nil (TYPE_UNKNOWN) is always comparable to
+    // any nullable type. Codegen reads the is_null flag directly — no
+    // struct-to-nil LLVM comparison is emitted.
+    if ((type_is_nullable(left_type) && right_type->kind == TYPE_UNKNOWN) ||
+        (left_type->kind == TYPE_UNKNOWN && type_is_nullable(right_type))) {
+        return bool_type;
+    }
+
     // Check if types are compatible for comparison
     if (!type_compatible(left_type, right_type)) {
         type_error(checker, pos, "Cannot compare incompatible types %s and %s",
                   type_to_string(left_type), type_to_string(right_type));
         return NULL;
     }
-    
+
     return bool_type;
 }
 

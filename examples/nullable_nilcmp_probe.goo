@@ -1,0 +1,26 @@
+// nullable_nilcmp_probe: ?int compared against nil yields bool by reading the
+// is_null flag — in an if-condition and assigned to a bool, both operands.
+package main
+
+import "fmt"
+
+func main() {
+    var a ?int = 7
+    if a != nil {
+        fmt.Println("PASS: value != nil")
+    }
+    if a == nil {
+        fmt.Println("FAIL: value == nil")
+    }
+
+    var b ?int = nil
+    if b == nil {
+        fmt.Println("PASS: nil == nil")
+    }
+
+    present := a != nil
+    missing := b == nil
+    if present && missing {
+        fmt.Println("PASS: nil-compare as bool values")
+    }
+}

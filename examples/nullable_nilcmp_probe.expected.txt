@@ -1,0 +1,3 @@
+PASS: value != nil
+PASS: nil == nil
+PASS: nil-compare as bool values

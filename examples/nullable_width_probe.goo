@@ -1,0 +1,52 @@
+// nullable_width_probe: regression guard for the integer-width mismatch in
+// codegen_create_nullable_with_value when wrapping a narrow literal (i32)
+// into a wide nullable slot (?int64, slot 1 is i64).
+//
+// The return path already guards this via an SExt before InsertValue
+// (statement_codegen.c:619-635), but the reassignment (C2) and argument
+// auto-wrap (I1) paths call codegen_create_nullable_with_value which did NOT
+// adjust widths — yielding an "insertvalue operand type mismatch" that fails
+// `opt --passes=verify`.  The fix centralises the adjustment inside
+// codegen_create_nullable_with_value so every future wrap site is safe.
+package main
+
+import "fmt"
+
+// I1 path: bare int literal auto-wrapped into ?int64 parameter
+func takesWide(p ?int64) int64 {
+    if let v = p {
+        return v
+    }
+    return -1
+}
+
+func main() {
+    // C2 path: reassign bare int literal to ?int64 lvalue
+    var x ?int64 = nil
+    x = 5
+    if let v = x {
+        if v == 5 {
+            fmt.Println("PASS: ?int64 reassign")
+        } else {
+            fmt.Println("FAIL: ?int64 reassign wrong value")
+        }
+    } else {
+        fmt.Println("FAIL: ?int64 reassign still nil")
+    }
+
+    // I1 path: pass bare int literal to ?int64 param
+    r1 := takesWide(7)
+    if r1 == 7 {
+        fmt.Println("PASS: ?int64 arg auto-wrap")
+    } else {
+        fmt.Println("FAIL: ?int64 arg auto-wrap")
+    }
+
+    // nil path through ?int64 param (no width issue, but guards correctness)
+    r2 := takesWide(nil)
+    if r2 == -1 {
+        fmt.Println("PASS: ?int64 nil arg")
+    } else {
+        fmt.Println("FAIL: ?int64 nil arg")
+    }
+}
