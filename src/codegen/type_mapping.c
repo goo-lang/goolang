@@ -262,15 +262,18 @@ LLVMTypeRef codegen_get_error_union_type(CodeGenerator* codegen, const Type* typ
     // Error union is represented as { i1, value_type } where i1 indicates if it's an error
     LLVMTypeRef value_type = codegen_type_to_llvm(codegen, type->data.error_union.value_type);
     if (!value_type) return NULL;
-    
+
     // We need to handle both the value and error cases
     // For simplicity, we'll use a tagged union: { i1 is_error, union { value, error } }
-    
-    LLVMTypeRef error_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0); // Generic error pointer
+
+    // Default error type is goo_string_t {i8*, i64} so the error message carries
+    // both pointer and length. This allows the catch error-var binding to use the
+    // value directly without an extra strlen call. Explicit error types override.
+    LLVMTypeRef error_type = codegen_get_basic_type(codegen, TYPE_STRING);
     if (type->data.error_union.error_type) {
-        error_type = codegen_type_to_llvm(codegen, type->data.error_union.error_type);
-        if (!error_type) {
-            error_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+        LLVMTypeRef explicit_type = codegen_type_to_llvm(codegen, type->data.error_union.error_type);
+        if (explicit_type) {
+            error_type = explicit_type;
         }
     }
     

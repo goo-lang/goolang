@@ -322,6 +322,10 @@ struct TypeChecker {
     
     // Compile-time type computation support
     ComptimeTypeContext* comptime_type_ctx;
+
+    // Return type of the enclosing function — set when entering a function body
+    // so that context-sensitive builtins (e.g. error()) can look it up.
+    Type* current_return_type;
 };
 
 // Type creation functions

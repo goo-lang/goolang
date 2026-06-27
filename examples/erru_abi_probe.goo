@@ -1,0 +1,45 @@
+// erru_abi_probe: error-union of a >16-byte struct across function boundaries,
+// plus !int64 value-slot width (i64, not i32). Observed via catch.
+package main
+
+import "fmt"
+
+type Point struct {
+    X int64
+    Y int64
+    Z int64
+}
+
+func makePoint(bad bool) !Point {
+    if bad {
+        return error("no point")
+    }
+    return Point{X: 1, Y: 2, Z: 3}
+}
+
+func wide(bad bool) !int64 {
+    if bad {
+        return error("no wide")
+    }
+    return 5
+}
+
+func main() {
+    p := makePoint(false) catch e {
+        fmt.Println("FAIL point:", e)
+        return
+    }
+    fmt.Println(p.X + p.Y + p.Z)
+
+    w := wide(false) catch e {
+        fmt.Println("FAIL wide:", e)
+        return
+    }
+    fmt.Println(w)
+
+    bad := makePoint(true) catch e {
+        fmt.Println("caught:", e)
+        return
+    }
+    fmt.Println("unreachable", bad.X)
+}
