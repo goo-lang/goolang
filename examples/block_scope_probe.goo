@@ -1,0 +1,37 @@
+// block_scope_probe: inner-block variable redeclarations must not leak past
+// their scope (Go semantics). Reproduces the pre-existing flat-value-table
+// miscompile that M5's LIFO lookup surfaced. Includes nested blocks, a loop
+// body, and an if-let regression guard.
+package main
+
+import "fmt"
+
+func main() {
+    x := 1
+    if x == 1 {
+        x := 2
+        fmt.Println(x)
+    }
+    fmt.Println(x)
+
+    y := 10
+    if y == 10 {
+        y := 20
+        if y == 20 {
+            y := 30
+            fmt.Println(y)
+        }
+        fmt.Println(y)
+    }
+    fmt.Println(y)
+
+    for i := 0; i < 2; i = i + 1 {
+        z := i * 5
+        fmt.Println(z)
+    }
+
+    var n ?int = 5
+    if let v = n {
+        fmt.Println(v)
+    }
+}
