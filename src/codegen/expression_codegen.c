@@ -191,10 +191,19 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
     
     switch (literal->literal_type) {
         case TOKEN_INT: {
-            // Parse integer value from string
+            // Parse integer value from string. Auto-promote to i64 when the
+            // value overflows signed int32 — untyped integer constants must
+            // preserve their full magnitude (e.g. 9000000000 > INT32_MAX).
             long long value = atoll(literal->value);
-            llvm_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), value, 1);
-            goo_type = type_checker_get_builtin(checker, TYPE_INT32);
+            if (value > 2147483647LL || value < -2147483648LL) {
+                llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                         (unsigned long long)value, 1);
+                goo_type = type_checker_get_builtin(checker, TYPE_INT64);
+            } else {
+                llvm_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                         (unsigned long long)value, 1);
+                goo_type = type_checker_get_builtin(checker, TYPE_INT32);
+            }
             break;
         }
         

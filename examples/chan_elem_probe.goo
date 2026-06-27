@@ -1,0 +1,22 @@
+// chan_elem_probe: channels of a non-int element must not truncate. int64 and a
+// small struct round-trip through a buffered channel with exact values.
+package main
+
+import "fmt"
+
+type Pair struct {
+    A int64
+    B int64
+}
+
+func main() {
+    c := make_chan(int64, 1)
+    c <- 9000000000        // > 2^32, would truncate if elem size were 4 bytes
+    n := <-c
+    fmt.Println(n)
+
+    p := make_chan(Pair, 1)
+    p <- Pair{A: 1, B: 2}
+    q := <-p
+    fmt.Println(q.A + q.B)
+}

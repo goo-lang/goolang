@@ -23,7 +23,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %union {
     struct ASTNode* node;
     char* string;
-    int integer;
+    long long integer;
     double real;
     int token;
 }
@@ -1875,7 +1875,7 @@ identifier:
 literal:
     INT_LITERAL {
         char int_str[32];
-        snprintf(int_str, sizeof(int_str), "%d", $1);
+        snprintf(int_str, sizeof(int_str), "%lld", $1);
         LiteralNode* lit = ast_literal_new(TOKEN_INT, int_str, get_current_position());
         $$ = (ASTNode*)lit;
     }

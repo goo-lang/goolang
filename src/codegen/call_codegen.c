@@ -472,8 +472,24 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
 
-    // For now, elem_size is sizeof(int); Task 2 generalizes from the channel type
-    LLVMValueRef elem_size = LLVMConstInt(i64, sizeof(int), 0);
+    // Derive elem_size from the channel's element type (Task 2).
+    // Fall back to sizeof(int) if the channel type is unresolved.
+    size_t elem_bytes = sizeof(int);
+    if (expr->node_type && expr->node_type->kind == TYPE_CHANNEL &&
+        expr->node_type->data.channel.element_type) {
+        Type* elem_t = expr->node_type->data.channel.element_type;
+        if (elem_t->size > 0) {
+            elem_bytes = elem_t->size;
+        } else {
+            // Fall back to LLVM data layout when Type.size is not computed.
+            LLVMTargetDataRef td = LLVMCreateTargetDataLayout(codegen->target_machine);
+            LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_t);
+            if (td && llvm_elem)
+                elem_bytes = (size_t)LLVMABISizeOfType(td, llvm_elem);
+            if (td) LLVMDisposeTargetData(td);
+        }
+    }
+    LLVMValueRef elem_size = LLVMConstInt(i64, elem_bytes, 0);
 
     // Get buffer size (default to 0 for unbuffered channel)
     LLVMValueRef buffer_size = LLVMConstInt(i64, 0, 0);

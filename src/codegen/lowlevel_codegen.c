@@ -81,9 +81,14 @@ ValueInfo* codegen_generate_channel_recv(CodeGenerator* codegen, TypeChecker* ch
     if (!channel_val) return NULL;
     
     LLVMContextRef ctx = codegen->context;
-    // For receive, we need to determine the element type from the channel type
-    // Task 2 generalizes this; for now use i32 (in-context)
-    LLVMTypeRef element_type = LLVMInt32TypeInContext(ctx);
+    // Derive the receive element type from the channel's goo_type (Task 2).
+    // Falls back to i32 if the channel value has no type annotation.
+    Type* chan_goo = channel_val->goo_type;
+    Type* elem_goo = (chan_goo && chan_goo->kind == TYPE_CHANNEL)
+                     ? chan_goo->data.channel.element_type : NULL;
+    LLVMTypeRef element_type = elem_goo
+        ? codegen_type_to_llvm(codegen, elem_goo)
+        : LLVMInt32TypeInContext(ctx);   // fallback
 
     // Allocate space for the received value
     LLVMValueRef result_alloca = LLVMBuildAlloca(codegen->builder, element_type, "recv_result");
@@ -117,7 +122,8 @@ ValueInfo* codegen_generate_channel_recv(CodeGenerator* codegen, TypeChecker* ch
     ValueInfo* result_info = malloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = received_value;
-    result_info->goo_type = type_checker_get_builtin(checker, TYPE_INT32);  // Should match channel element type
+    result_info->goo_type = elem_goo
+        ? elem_goo : type_checker_get_builtin(checker, TYPE_INT32);
     result_info->is_lvalue = 0;
     result_info->is_moved = 0;
     result_info->is_initialized = 1;
