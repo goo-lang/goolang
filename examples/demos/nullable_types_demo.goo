@@ -1,3 +1,6 @@
+// M5-TARGET (NOT M4): uses force-unwrap `x!` and presence-test `x?`, which are
+// deferred to M5. Does not compile under M4's safe-only nullable core.
+//
 // nullable_types_demo.goo - Demonstrates Goo's nullable type features
 package main
 

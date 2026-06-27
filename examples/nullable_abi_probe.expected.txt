@@ -1,0 +1,4 @@
+PASS: ?Point value != nil
+6
+PASS: ?Point nil == nil
+0

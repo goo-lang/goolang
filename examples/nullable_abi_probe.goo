@@ -1,0 +1,40 @@
+// nullable_abi_probe: a nullable of a >16-byte struct must cross function-call
+// boundaries by pointer, not by value (slice/m12 ABI precedent). Exercises
+// return ?Point and pass ?Point, observed via if-let and == nil.
+package main
+
+import "fmt"
+
+type Point struct {
+    X int64
+    Y int64
+    Z int64
+}
+
+func makePoint(present bool) ?Point {
+    if present {
+        return Point{X: 1, Y: 2, Z: 3}
+    }
+    return nil
+}
+
+func sumOrZero(p ?Point) int64 {
+    if let q = p {
+        return q.X + q.Y + q.Z
+    }
+    return 0
+}
+
+func main() {
+    a := makePoint(true)
+    if a != nil {
+        fmt.Println("PASS: ?Point value != nil")
+    }
+    fmt.Println(sumOrZero(a))
+
+    b := makePoint(false)
+    if b == nil {
+        fmt.Println("PASS: ?Point nil == nil")
+    }
+    fmt.Println(sumOrZero(b))
+}
