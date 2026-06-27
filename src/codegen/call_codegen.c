@@ -469,52 +469,52 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
         return NULL;
     }
     
-    // For now, assume element size of int (4 bytes) - this should be determined from the type argument
-    LLVMValueRef elem_size = LLVMConstInt(LLVMInt64Type(), sizeof(int), 0);
-    
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+
+    // For now, elem_size is sizeof(int); Task 2 generalizes from the channel type
+    LLVMValueRef elem_size = LLVMConstInt(i64, sizeof(int), 0);
+
     // Get buffer size (default to 0 for unbuffered channel)
-    LLVMValueRef buffer_size = LLVMConstInt(LLVMInt64Type(), 0, 0);
+    LLVMValueRef buffer_size = LLVMConstInt(i64, 0, 0);
     if (arg_count == 2) {
         // Generate the buffer size argument
         ASTNode* size_arg = call->args->next;  // Second argument
         ValueInfo* size_val = codegen_generate_expression(codegen, checker, size_arg);
         if (!size_val) return NULL;
-        
+
         // Convert to size_t if needed
         buffer_size = size_val->llvm_value;
-        if (LLVMTypeOf(buffer_size) != LLVMInt64Type()) {
-            buffer_size = LLVMBuildZExt(codegen->builder, buffer_size, LLVMInt64Type(), "buffer_size_ext");
+        if (LLVMTypeOf(buffer_size) != i64) {
+            buffer_size = LLVMBuildZExt(codegen->builder, buffer_size, i64, "buffer_size_ext");
         }
         value_info_free(size_val);
     }
-    
-    // Get the goo_make_chan function
-    LLVMTypeRef param_types[] = {
-        LLVMInt64Type(),  // size_t elem_size
-        LLVMInt64Type()   // size_t buffer_size
-    };
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+
+    // Get the goo_make_chan function — build all types in codegen->context
+    LLVMTypeRef param_types[] = { i64, i64 };
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMTypeRef make_chan_func_type = LLVMFunctionType(void_ptr_type, param_types, 2, 0);
-    
+
     LLVMValueRef make_chan_func = LLVMGetNamedFunction(codegen->module, "goo_make_chan");
     if (!make_chan_func) {
         // Declare goo_make_chan if not already declared
         make_chan_func = LLVMAddFunction(codegen->module, "goo_make_chan", make_chan_func_type);
     }
-    
+
     // Call goo_make_chan(elem_size, buffer_size)
     LLVMValueRef args[] = { elem_size, buffer_size };
     LLVMValueRef channel = LLVMBuildCall2(codegen->builder, make_chan_func_type, make_chan_func, args, 2, "new_channel");
-    
+
     // Create result value info
     ValueInfo* result_info = malloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = channel;
-    result_info->goo_type = NULL;  // Should be a channel type
+    result_info->goo_type = expr->node_type;  // resolved TYPE_CHANNEL from type checker (Task 2 uses this)
     result_info->is_lvalue = 0;
     result_info->is_moved = 0;
     result_info->is_initialized = 1;
-    
+
     return result_info;
 #else
     codegen_error(codegen, expr->pos, "Channel creation requires LLVM");

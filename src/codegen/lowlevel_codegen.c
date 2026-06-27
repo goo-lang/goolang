@@ -20,31 +20,29 @@ ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* ch
     ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
     if (!value_val) return NULL;
     
-    // Get element size and create call to goo_chan_send
-    // For now, assume int type - this should be determined from the channel type
-    LLVMValueRef elem_size __attribute__((unused)) = LLVMConstInt(LLVMInt64Type(), sizeof(int), 0);
-    
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+
     // Cast value to void pointer
     LLVMValueRef value_ptr = value_val->llvm_value;
     if (!value_val->is_lvalue) {
         // Need to store the value temporarily
-        LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder, 
-                                                   LLVMTypeOf(value_val->llvm_value), 
+        LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder,
+                                                   LLVMTypeOf(value_val->llvm_value),
                                                    "temp_send_value");
         LLVMBuildStore(codegen->builder, value_val->llvm_value, temp_alloca);
         value_ptr = temp_alloca;
     }
-    
+
     // Cast to void*
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
     value_ptr = LLVMBuildBitCast(codegen->builder, value_ptr, void_ptr_type, "value_as_void_ptr");
-    
+
     // Get the goo_chan_send function
     LLVMTypeRef param_types[] = {
         void_ptr_type,  // goo_channel_t*
         void_ptr_type   // void* data
     };
-    LLVMTypeRef send_func_type = LLVMFunctionType(LLVMInt32Type(), param_types, 2, 0);
+    LLVMTypeRef send_func_type = LLVMFunctionType(LLVMInt32TypeInContext(ctx), param_types, 2, 0);
     
     LLVMValueRef send_func = LLVMGetNamedFunction(codegen->module, "goo_chan_send");
     if (!send_func) {
@@ -82,23 +80,24 @@ ValueInfo* codegen_generate_channel_recv(CodeGenerator* codegen, TypeChecker* ch
     ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
     if (!channel_val) return NULL;
     
+    LLVMContextRef ctx = codegen->context;
     // For receive, we need to determine the element type from the channel type
-    // For now, assume int type - this should be determined from the channel type
-    LLVMTypeRef element_type = LLVMInt32Type();
-    
+    // Task 2 generalizes this; for now use i32 (in-context)
+    LLVMTypeRef element_type = LLVMInt32TypeInContext(ctx);
+
     // Allocate space for the received value
     LLVMValueRef result_alloca = LLVMBuildAlloca(codegen->builder, element_type, "recv_result");
-    
+
     // Cast result alloca to void*
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMValueRef result_ptr = LLVMBuildBitCast(codegen->builder, result_alloca, void_ptr_type, "result_as_void_ptr");
-    
+
     // Get the goo_chan_recv function
     LLVMTypeRef param_types_recv[] = {
         void_ptr_type,  // goo_channel_t*
         void_ptr_type   // void* data
     };
-    LLVMTypeRef recv_func_type = LLVMFunctionType(LLVMInt32Type(), param_types_recv, 2, 0);
+    LLVMTypeRef recv_func_type = LLVMFunctionType(LLVMInt32TypeInContext(ctx), param_types_recv, 2, 0);
     
     LLVMValueRef recv_func = LLVMGetNamedFunction(codegen->module, "goo_chan_recv");
     if (!recv_func) {
