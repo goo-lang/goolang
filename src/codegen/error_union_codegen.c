@@ -174,10 +174,6 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
 
     // Bind the error variable in the codegen value table so that uses of it
     // inside the catch body (e.g. `fmt.Println(e)`) resolve correctly.
-    // The raw error slot in the error-union data is an i8* (C string pointer);
-    // wrap it into a goo_string_t {i8*, i64} so the identifier has the right
-    // LLVM type for type-safe IR — the length is 0 as a placeholder for Task 1
-    // (actual string length wiring is Task 2 work).
     if (catch_expr->error_var) {
         // Extract the error value from the error union's data slot.
         // After the type_mapping.c change, the default error type (NULL) maps
