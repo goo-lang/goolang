@@ -312,14 +312,19 @@ void value_info_free(ValueInfo* info) {
 
 ValueInfo* codegen_lookup_value(CodeGenerator* codegen, const char* name) {
     if (!codegen || !name) return NULL;
-    
-    for (size_t i = 0; i < codegen->value_table_size; i++) {
-        ValueInfo* info = codegen->value_table[i];
+
+    // Search from the end so the most-recently added binding shadows earlier
+    // ones.  This gives correct LIFO (innermost-scope-wins) semantics without
+    // a full scope stack.  It also fixes the multiple-catch-block bug where
+    // each `catch e {}` adds a new entry for `e`; FIFO would always return the
+    // first entry (wrong alloca), whereas LIFO correctly returns the latest.
+    for (size_t i = codegen->value_table_size; i > 0; i--) {
+        ValueInfo* info = codegen->value_table[i - 1];
         if (info && info->name && strcmp(info->name, name) == 0) {
             return info;
         }
     }
-    
+
     return NULL;
 }
 

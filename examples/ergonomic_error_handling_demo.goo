@@ -1,3 +1,5 @@
+// M6+-TARGET (NOT M5): uses `try` propagation, custom error enums, and
+// @error_hierarchy — all deferred. Does not compile under M5's string-error core.
 package main
 
 import (

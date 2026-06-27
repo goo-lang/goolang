@@ -22,7 +22,27 @@ LLVMValueRef codegen_create_error_union_success(CodeGenerator* codegen, LLVMType
     // Get the data union type (index 1 in the error union struct)
     LLVMTypeRef data_union_type = LLVMStructGetTypeAtIndex(union_type, 1);
     LLVMValueRef data_union = LLVMGetUndef(data_union_type);
-    
+
+    // Widen or narrow the value to match the slot-0 element type before
+    // inserting.  Without this, a narrow integer (e.g. i32 literal `5`)
+    // wrapped into a !int64 function (whose value slot is i64) yields an
+    // "insertvalue operand type mismatch" that fails `opt --passes=verify`.
+    // Mirrors M4's fix in codegen_create_nullable_with_value.  Gate to
+    // integer-kind mismatches only; structs and matching widths are untouched.
+    {
+        LLVMTypeRef value_slot_type = LLVMStructGetTypeAtIndex(data_union_type, 0);
+        LLVMTypeRef val_ty          = LLVMTypeOf(value);
+        if (LLVMGetTypeKind(val_ty)          == LLVMIntegerTypeKind &&
+            LLVMGetTypeKind(value_slot_type) == LLVMIntegerTypeKind) {
+            unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
+            unsigned to_bits   = LLVMGetIntTypeWidth(value_slot_type);
+            if (from_bits < to_bits)
+                value = LLVMBuildSExt(codegen->builder, value, value_slot_type, "erru_sext");
+            else if (from_bits > to_bits)
+                value = LLVMBuildTrunc(codegen->builder, value, value_slot_type, "erru_trunc");
+        }
+    }
+
     // Insert the value into slot 0 of the data union (success value)
     data_union = LLVMBuildInsertValue(codegen->builder, data_union, value, 0, "data_union.value");
     

@@ -570,6 +570,18 @@ erru-error-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+erru-abi-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== erru-abi-probe: !BigStruct ABI + !int64 width across functions ==="
+	$(COMPILER) -o build/erru_abi_probe examples/erru_abi_probe.goo
+	@./build/erru_abi_probe > build/erru_abi_probe.actual.txt
+	@if diff -u examples/erru_abi_probe.expected.txt build/erru_abi_probe.actual.txt; then \
+	  echo "erru-abi-probe: PASS"; \
+	else \
+	  echo "erru-abi-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # M7-stdlib-expansion completion gate: compile + run the stdlib smoke
 # test, which exercises one function from each of fmt, strings, math, os
 # and exits 0. Used by `coord milestone-status M7-stdlib-expansion`.
@@ -665,7 +677,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

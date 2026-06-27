@@ -328,6 +328,28 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
             val->llvm_value = LLVMBuildLoad2(codegen->builder, vt, val->llvm_value, "fieldval");
             val->is_lvalue = 0;
         }
+        // Widen or narrow the field value to match the declared LLVM field
+        // type before InsertValue.  Without this, an i32 integer literal (the
+        // compiler's default width) stored into an int64 struct field produces
+        // an "insertvalue operand type mismatch" that fails `opt --passes=verify`.
+        // Mirrors M4's fix in codegen_create_nullable_with_value.  Gate to
+        // integer-kind mismatches only; structs and matching widths are
+        // untouched.  Goo integers are signed, so widening uses SExt.
+        {
+            LLVMTypeRef expected_ty = LLVMStructGetTypeAtIndex(llvm_struct, (unsigned)field_index);
+            LLVMTypeRef actual_ty   = LLVMTypeOf(val->llvm_value);
+            if (LLVMGetTypeKind(actual_ty)   == LLVMIntegerTypeKind &&
+                LLVMGetTypeKind(expected_ty) == LLVMIntegerTypeKind) {
+                unsigned from_bits = LLVMGetIntTypeWidth(actual_ty);
+                unsigned to_bits   = LLVMGetIntTypeWidth(expected_ty);
+                if (from_bits < to_bits)
+                    val->llvm_value = LLVMBuildSExt(codegen->builder, val->llvm_value,
+                                                    expected_ty, "field_sext");
+                else if (from_bits > to_bits)
+                    val->llvm_value = LLVMBuildTrunc(codegen->builder, val->llvm_value,
+                                                     expected_ty, "field_trunc");
+            }
+        }
         agg = LLVMBuildInsertValue(codegen->builder, agg, val->llvm_value,
                                    (unsigned)field_index,
                                    fields[field_index].name ? fields[field_index].name : "field");
