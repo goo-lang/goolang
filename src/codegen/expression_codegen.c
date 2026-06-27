@@ -518,6 +518,43 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             return NULL;
         }
 
+        // Reassignment to a `?T` lvalue (e.g. `b = nil`, `c = 7`). The raw
+        // store path below would write an i8* null (for nil) or a bare scalar
+        // (for a value) into the {i1,T} nullable slot, corrupting the tag.
+        // Route both cases through the shared nullable helpers instead.
+        if (target->goo_type && target->goo_type->kind == TYPE_NULLABLE) {
+            // nil literal: intercept BEFORE evaluating the RHS, since the
+            // generic nil path emits an i8* null of the wrong LLVM type.
+            // NOTE: for an identifier target, `target` is the live value-table
+            // entry (codegen_emit_lvalue_address returns it directly), so it
+            // must NOT be freed here — mirroring the non-nullable store path
+            // below, which also never frees `target`.
+            if (binary->right->type == AST_LITERAL &&
+                ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL) {
+                ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, target->goo_type);
+                if (!nil_val) return NULL;
+                LLVMBuildStore(codegen->builder, nil_val->llvm_value, target->llvm_value);
+                ValueInfo* ret = value_info_new(NULL, nil_val->llvm_value, target->goo_type);
+                value_info_free(nil_val);
+                return ret;
+            }
+            // Non-nil RHS: evaluate, load if lvalue, then auto-wrap to the
+            // target's nullable type via the shared assignment helper.
+            ValueInfo* value = codegen_generate_expression(codegen, checker, binary->right);
+            if (!value) return NULL;
+            if (value->is_lvalue && value->goo_type) {
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, value->goo_type);
+                if (vt) {
+                    value->llvm_value = LLVMBuildLoad2(codegen->builder, vt, value->llvm_value, "rval");
+                    value->is_lvalue = 0;
+                }
+            }
+            codegen_generate_nullable_assignment(codegen, checker, target->llvm_value,
+                                                 value->llvm_value, target->goo_type,
+                                                 value->goo_type, expr->pos);
+            return value;
+        }
+
         // Generate the right side value. If it is itself an lvalue (e.g.
         // `a[i] = b[j]` or `x = s.y`), dereference it to the scalar value
         // before storing — mirroring the auto-load consumers do elsewhere.
