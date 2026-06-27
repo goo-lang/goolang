@@ -1,0 +1,20 @@
+// chan_padded_probe: channel element size must use LLVM ABI size (padded),
+// not the Goo sequential field sum (unpadded). A struct {int8, int64} has
+// Goo size=9 but LLVM ABI size=16 (7 bytes of padding after int8 so int64
+// is 8-byte aligned). Before the fix, goo_make_chan would allocate 9-byte
+// ring slots and memcpy would silently truncate the int64 field.
+package main
+
+import "fmt"
+
+type Mixed struct {
+    Tag int8
+    Val int64
+}
+
+func main() {
+    c := make_chan(Mixed, 1)
+    c <- Mixed{Tag: 7, Val: 9000000000}
+    m := <-c
+    fmt.Println(m.Val)
+}

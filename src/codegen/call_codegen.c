@@ -473,24 +473,62 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
 
     // Derive elem_size from the channel's element type (Task 2).
-    // Fall back to sizeof(int) if the channel type is unresolved.
+    // We must use the LLVM ABI size (with alignment padding) rather than
+    // Type.size (a sequential field sum that ignores padding). For a struct
+    // like {int8, int64} Goo computes Type.size=9 while the LLVM ABI size
+    // is 16 (7 bytes of padding follow the int8 field so int64 is aligned).
+    // Using Type.size would make goo_make_chan allocate 9-byte ring slots,
+    // causing goo_chan_send/recv to memcpy only 9 of the 16 bytes and silently
+    // truncate the int64 field.
+    //
+    // target_machine is NULL here — it is only set inside codegen_emit_to_file,
+    // which runs after all expression lowering. The previous fallback via
+    // codegen->target_machine was therefore permanently dead code.
+    //
+    // Instead: the module's target triple is set by codegen_initialize_target
+    // before any expression lowering, so we can derive the correct ABI layout
+    // by spinning up a temporary TargetMachine from that triple.
     size_t elem_bytes = sizeof(int);
     if (expr->node_type && expr->node_type->kind == TYPE_CHANNEL &&
         expr->node_type->data.channel.element_type) {
         Type* elem_t = expr->node_type->data.channel.element_type;
-        if (elem_t->size > 0) {
+        LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_t);
+        int got_abi_size = 0;
+        if (llvm_elem) {
+            // Build a throw-away TargetMachine purely to get the ABI data
+            // layout for this platform.  The module triple is always non-empty
+            // at this point (codegen_initialize_target guarantees it).
+            const char* mod_triple = LLVMGetTarget(codegen->module);
+            if (mod_triple && *mod_triple) {
+                LLVMTargetRef tgt = NULL;
+                char* err = NULL;
+                if (!LLVMGetTargetFromTriple(mod_triple, &tgt, &err)) {
+                    LLVMTargetMachineRef tmp_tm = LLVMCreateTargetMachine(
+                        tgt, mod_triple, "generic", "",
+                        LLVMCodeGenLevelNone, LLVMRelocDefault,
+                        LLVMCodeModelDefault);
+                    if (tmp_tm) {
+                        LLVMTargetDataRef td = LLVMCreateTargetDataLayout(tmp_tm);
+                        if (td) {
+                            uint64_t abi_sz = LLVMABISizeOfType(td, llvm_elem);
+                            if (abi_sz > 0) {
+                                elem_bytes = (size_t)abi_sz;
+                                got_abi_size = 1;
+                            }
+                            LLVMDisposeTargetData(td);
+                        }
+                        LLVMDisposeTargetMachine(tmp_tm);
+                    }
+                } else {
+                    if (err) LLVMDisposeMessage(err);
+                }
+            }
+        }
+        if (!got_abi_size && elem_t->size > 0) {
+            // LLVM path unavailable (no registered target for the triple).
+            // Type.size is correct for primitives and aligned structs; it
+            // under-counts padded structs, but there is no better option here.
             elem_bytes = elem_t->size;
-        } else {
-            // Fall back to LLVM data layout when Type.size is not computed.
-            // target_machine is NULL during the codegen phase (it is only
-            // populated inside codegen_emit_to_file), so guard before use.
-            LLVMTargetDataRef td = codegen->target_machine
-                ? LLVMCreateTargetDataLayout(codegen->target_machine)
-                : NULL;
-            LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_t);
-            if (td && llvm_elem)
-                elem_bytes = (size_t)LLVMABISizeOfType(td, llvm_elem);
-            if (td) LLVMDisposeTargetData(td);
         }
     }
     LLVMValueRef elem_size = LLVMConstInt(i64, elem_bytes, 0);
