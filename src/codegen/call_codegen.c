@@ -334,17 +334,62 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             return NULL;
         }
         
+        // The callee's declared parameter types drive nullable auto-wrapping:
+        // a bare `T` or the nil literal passed to a `?T` parameter must be
+        // lowered to the {i1,T} nullable struct, not stored raw.
+        Type* func_goo_type = func_val->goo_type;
+
         arg = call->args;
         for (size_t i = 0; i < arg_count; i++) {
+            Type* param_type = NULL;
+            if (func_goo_type && func_goo_type->kind == TYPE_FUNCTION &&
+                i < func_goo_type->data.function.param_count) {
+                param_type = func_goo_type->data.function.param_types[i];
+            }
+
+            if (param_type && param_type->kind == TYPE_NULLABLE &&
+                arg->type == AST_LITERAL &&
+                ((LiteralNode*)arg)->literal_type == TOKEN_NIL) {
+                // nil literal → build the param's null-nullable directly.
+                ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, param_type);
+                if (!nil_val) {
+                    free(args);
+                    value_info_free(func_val);
+                    return NULL;
+                }
+                args[i] = nil_val->llvm_value;
+                value_info_free(nil_val);
+                arg = arg->next;
+                continue;
+            }
+
             ValueInfo* arg_val = codegen_generate_expression(codegen, checker, arg);
             if (!arg_val) {
-                for (size_t j = 0; j < i; j++) {
-                    // Note: We should free the ValueInfo structures too, but we don't have them here
-                }
                 free(args);
                 value_info_free(func_val);
                 return NULL;
             }
+
+            // Auto-wrap a bare value into the param's nullable type. If the
+            // argument is already nullable (e.g. passing a `?int` variable),
+            // no wrapping is needed.
+            if (param_type && param_type->kind == TYPE_NULLABLE &&
+                arg_val->goo_type && arg_val->goo_type->kind != TYPE_NULLABLE) {
+                if (arg_val->is_lvalue && arg_val->goo_type) {
+                    LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+                    if (at) {
+                        arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "argld");
+                        arg_val->is_lvalue = 0;
+                    }
+                }
+                LLVMTypeRef nullable_llvm = codegen_type_to_llvm(codegen, param_type);
+                if (nullable_llvm) {
+                    arg_val->llvm_value = codegen_create_nullable_with_value(
+                        codegen, nullable_llvm, arg_val->llvm_value, arg_val->goo_type);
+                    arg_val->goo_type = param_type;
+                }
+            }
+
             args[i] = arg_val->llvm_value;
             value_info_free(arg_val);
             arg = arg->next;
