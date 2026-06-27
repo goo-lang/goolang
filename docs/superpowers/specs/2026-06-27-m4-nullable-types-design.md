@@ -146,6 +146,15 @@ construction path) but each leaves the tree green.
 
 - **M5 candidates:** force-unwrap `x!`, presence-test `x?`, coalesce `x ?? default`,
   error-unions `!T`, `try`/propagation.
+- **Struct-field default-nil — DEFERRED to M5 (as-built amendment).** The default-nil
+  guarantee in §4/§5 is delivered for **scalar** nullable storage: a bare `var x ?T`
+  (local or global) and `?T` function parameters/returns default to `nil`. A `?T`
+  field of a struct that is created via its **zero value** (`var u U` / `U{}` without
+  setting the field) is **not** yet defaulted to `nil` — it reads as present
+  (`{is_null=false, 0}`). Making struct zero-init recurse into nullable fields needs a
+  zero-value builder in the composite-init path and is deferred. Until then, set
+  nullable struct fields explicitly at construction. This was surfaced by the final
+  whole-branch review and consciously scoped out rather than shipped as a silent bug.
 - `examples/demos/nullable_types_demo.goo` uses the deferred `x!`/`x?` surface — it
   stays **aspirational**; annotate it as an M5 target so it is not mistaken for a
   regression when it fails to compile.
