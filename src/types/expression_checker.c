@@ -452,7 +452,7 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
         type_error(checker, expr->pos, "make_chan requires type and capacity arguments");
         return NULL;
     }
-    
+
     // First argument should be a type
     ASTNode* type_arg = call->args;
     Type* element_type = type_from_ast(checker, type_arg);
@@ -460,16 +460,36 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
         type_error(checker, type_arg->pos, "Invalid type in make_chan");
         return NULL;
     }
-    
-    // Second argument should be capacity (optional)
-    if (type_arg->next) {
-        Type* capacity_type = type_check_expression(checker, type_arg->next);
-        if (!capacity_type || !type_is_integer(capacity_type)) {
-            type_error(checker, type_arg->next->pos, "Channel capacity must be an integer");
+
+    // Second argument should be capacity (required in M7: unbuffered channels
+    // silently miscompile — send finds no buffer slot and recv loads zero.
+    // Rendezvous channels are deferred to M8).
+    if (!type_arg->next) {
+        type_error(checker, expr->pos,
+            "unbuffered channels (1-argument make_chan) are not supported yet; "
+            "use make_chan(T, n) with n >= 1 (rendezvous channels are deferred to M8)");
+        return NULL;
+    }
+
+    Type* capacity_type = type_check_expression(checker, type_arg->next);
+    if (!capacity_type || !type_is_integer(capacity_type)) {
+        type_error(checker, type_arg->next->pos, "Channel capacity must be an integer");
+        return NULL;
+    }
+
+    // Reject the literal-0 capacity at compile time. Only the literal 0 is
+    // caught here; a non-literal runtime-zero value is not detectable until M8.
+    if (type_arg->next->type == AST_LITERAL) {
+        LiteralNode* cap_lit = (LiteralNode*)type_arg->next;
+        if (cap_lit->literal_type == TOKEN_INT &&
+            cap_lit->value && strcmp(cap_lit->value, "0") == 0) {
+            type_error(checker, type_arg->next->pos,
+                "unbuffered channels (capacity 0) are not supported yet; "
+                "use make_chan(T, n) with n >= 1 (rendezvous channels are deferred to M8)");
             return NULL;
         }
     }
-    
+
     // Create and return channel type
     Type* chan_type = type_channel(element_type, CHAN_PATTERN_BASIC);
     expr->node_type = chan_type;

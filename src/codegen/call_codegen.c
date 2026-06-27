@@ -469,52 +469,110 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
         return NULL;
     }
     
-    // For now, assume element size of int (4 bytes) - this should be determined from the type argument
-    LLVMValueRef elem_size = LLVMConstInt(LLVMInt64Type(), sizeof(int), 0);
-    
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+
+    // Derive elem_size from the channel's element type (Task 2).
+    // We must use the LLVM ABI size (with alignment padding) rather than
+    // Type.size (a sequential field sum that ignores padding). For a struct
+    // like {int8, int64} Goo computes Type.size=9 while the LLVM ABI size
+    // is 16 (7 bytes of padding follow the int8 field so int64 is aligned).
+    // Using Type.size would make goo_make_chan allocate 9-byte ring slots,
+    // causing goo_chan_send/recv to memcpy only 9 of the 16 bytes and silently
+    // truncate the int64 field.
+    //
+    // target_machine is NULL here — it is only set inside codegen_emit_to_file,
+    // which runs after all expression lowering. The previous fallback via
+    // codegen->target_machine was therefore permanently dead code.
+    //
+    // Instead: the module's target triple is set by codegen_initialize_target
+    // before any expression lowering, so we can derive the correct ABI layout
+    // by spinning up a temporary TargetMachine from that triple.
+    size_t elem_bytes = sizeof(int);
+    if (expr->node_type && expr->node_type->kind == TYPE_CHANNEL &&
+        expr->node_type->data.channel.element_type) {
+        Type* elem_t = expr->node_type->data.channel.element_type;
+        LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_t);
+        int got_abi_size = 0;
+        if (llvm_elem) {
+            // Build a throw-away TargetMachine purely to get the ABI data
+            // layout for this platform.  The module triple is always non-empty
+            // at this point (codegen_initialize_target guarantees it).
+            const char* mod_triple = LLVMGetTarget(codegen->module);
+            if (mod_triple && *mod_triple) {
+                LLVMTargetRef tgt = NULL;
+                char* err = NULL;
+                if (!LLVMGetTargetFromTriple(mod_triple, &tgt, &err)) {
+                    LLVMTargetMachineRef tmp_tm = LLVMCreateTargetMachine(
+                        tgt, mod_triple, "generic", "",
+                        LLVMCodeGenLevelNone, LLVMRelocDefault,
+                        LLVMCodeModelDefault);
+                    if (tmp_tm) {
+                        LLVMTargetDataRef td = LLVMCreateTargetDataLayout(tmp_tm);
+                        if (td) {
+                            uint64_t abi_sz = LLVMABISizeOfType(td, llvm_elem);
+                            if (abi_sz > 0) {
+                                elem_bytes = (size_t)abi_sz;
+                                got_abi_size = 1;
+                            }
+                            LLVMDisposeTargetData(td);
+                        }
+                        LLVMDisposeTargetMachine(tmp_tm);
+                    }
+                } else {
+                    if (err) LLVMDisposeMessage(err);
+                }
+            }
+        }
+        if (!got_abi_size && elem_t->size > 0) {
+            // LLVM path unavailable (no registered target for the triple).
+            // Type.size is correct for primitives and aligned structs; it
+            // under-counts padded structs, but there is no better option here.
+            elem_bytes = elem_t->size;
+        }
+    }
+    LLVMValueRef elem_size = LLVMConstInt(i64, elem_bytes, 0);
+
     // Get buffer size (default to 0 for unbuffered channel)
-    LLVMValueRef buffer_size = LLVMConstInt(LLVMInt64Type(), 0, 0);
+    LLVMValueRef buffer_size = LLVMConstInt(i64, 0, 0);
     if (arg_count == 2) {
         // Generate the buffer size argument
         ASTNode* size_arg = call->args->next;  // Second argument
         ValueInfo* size_val = codegen_generate_expression(codegen, checker, size_arg);
         if (!size_val) return NULL;
-        
+
         // Convert to size_t if needed
         buffer_size = size_val->llvm_value;
-        if (LLVMTypeOf(buffer_size) != LLVMInt64Type()) {
-            buffer_size = LLVMBuildZExt(codegen->builder, buffer_size, LLVMInt64Type(), "buffer_size_ext");
+        if (LLVMTypeOf(buffer_size) != i64) {
+            buffer_size = LLVMBuildZExt(codegen->builder, buffer_size, i64, "buffer_size_ext");
         }
         value_info_free(size_val);
     }
-    
-    // Get the goo_make_chan function
-    LLVMTypeRef param_types[] = {
-        LLVMInt64Type(),  // size_t elem_size
-        LLVMInt64Type()   // size_t buffer_size
-    };
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+
+    // Get the goo_make_chan function — build all types in codegen->context
+    LLVMTypeRef param_types[] = { i64, i64 };
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMTypeRef make_chan_func_type = LLVMFunctionType(void_ptr_type, param_types, 2, 0);
-    
+
     LLVMValueRef make_chan_func = LLVMGetNamedFunction(codegen->module, "goo_make_chan");
     if (!make_chan_func) {
         // Declare goo_make_chan if not already declared
         make_chan_func = LLVMAddFunction(codegen->module, "goo_make_chan", make_chan_func_type);
     }
-    
+
     // Call goo_make_chan(elem_size, buffer_size)
     LLVMValueRef args[] = { elem_size, buffer_size };
     LLVMValueRef channel = LLVMBuildCall2(codegen->builder, make_chan_func_type, make_chan_func, args, 2, "new_channel");
-    
+
     // Create result value info
     ValueInfo* result_info = malloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = channel;
-    result_info->goo_type = NULL;  // Should be a channel type
+    result_info->goo_type = expr->node_type;  // resolved TYPE_CHANNEL from type checker (Task 2 uses this)
     result_info->is_lvalue = 0;
     result_info->is_moved = 0;
     result_info->is_initialized = 1;
-    
+
     return result_info;
 #else
     codegen_error(codegen, expr->pos, "Channel creation requires LLVM");

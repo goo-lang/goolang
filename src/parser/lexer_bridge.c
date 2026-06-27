@@ -256,7 +256,9 @@ int yylex(void) {
             yylval.string = strdup(token->literal);
             break;
         case TOKEN_INT:
-            yylval.integer = atoi(token->literal);
+            // Use strtoll so that values > INT32_MAX (e.g. 9000000000) are
+            // preserved without truncation into the long-long union field.
+            yylval.integer = strtoll(token->literal, NULL, 10);
             break;
         case TOKEN_FLOAT:
             yylval.real = atof(token->literal);

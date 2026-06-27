@@ -1,0 +1,21 @@
+// chan_probe: basic in-process buffered channel value path (int) — make_chan,
+// send (<-), receive (<-), single goroutine. Reproduces the LLVM-context bug.
+package main
+
+import "fmt"
+
+func main() {
+    ch := make_chan(int, 1)
+    ch <- 42
+    x := <-ch
+    fmt.Println(x)
+
+    // buffered FIFO order, capacity 2
+    q := make_chan(int, 2)
+    q <- 1
+    q <- 2
+    a := <-q
+    b := <-q
+    fmt.Println(a)
+    fmt.Println(b)
+}

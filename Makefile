@@ -582,6 +582,57 @@ erru-abi-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M7 Task 1: in-process buffered int channel make/send/recv round-trip + FIFO order.
+# Reproduces and guards against the LLVM-context mismatch bug where channel
+# codegen built types in the global context instead of codegen->context.
+chan-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== chan-probe: in-process buffered int channel round-trip + FIFO ==="
+	$(COMPILER) -o build/chan_probe examples/chan_probe.goo
+	@./build/chan_probe > build/chan_probe.actual.txt
+	@if diff -u examples/chan_probe.expected.txt build/chan_probe.actual.txt; then \
+	  echo "chan-probe: PASS"; \
+	else \
+	  echo "chan-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+chan-elem-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== chan-elem-probe: non-int channel elements (int64, struct) no truncation ==="
+	$(COMPILER) -o build/chan_elem_probe examples/chan_elem_probe.goo
+	@./build/chan_elem_probe > build/chan_elem_probe.actual.txt
+	@if diff -u examples/chan_elem_probe.expected.txt build/chan_elem_probe.actual.txt; then \
+	  echo "chan-elem-probe: PASS"; \
+	else \
+	  echo "chan-elem-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+chan-padded-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== chan-padded-probe: ABI-padded struct {int8,int64} channel no truncation ==="
+	$(COMPILER) -o build/chan_padded_probe examples/chan_padded_probe.goo
+	@./build/chan_padded_probe > build/chan_padded_probe.actual.txt
+	@if diff -u examples/chan_padded_probe.expected.txt build/chan_padded_probe.actual.txt; then \
+	  echo "chan-padded-probe: PASS"; \
+	else \
+	  echo "chan-padded-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+chan-uint-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== chan-uint-probe: unsigned integer widening uses ZExt not SExt ==="
+	$(COMPILER) -o build/chan_uint_probe examples/chan_uint_probe.goo
+	@./build/chan_uint_probe > build/chan_uint_probe.actual.txt
+	@if diff -u examples/chan_uint_probe.expected.txt build/chan_uint_probe.actual.txt; then \
+	  echo "chan-uint-probe: PASS"; \
+	else \
+	  echo "chan-uint-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 block-scope-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== block-scope-probe: inner-block redeclarations do not leak ==="
@@ -689,7 +740,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe block-scope-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe block-scope-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
