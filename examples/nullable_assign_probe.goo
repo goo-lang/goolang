@@ -1,0 +1,47 @@
+package main
+
+import "fmt"
+
+func use(p ?int) int {
+    if let v = p {
+        return v
+    } else {
+        return -1
+    }
+}
+
+func main() {
+    // Case 1: var a ?int (no initializer) → must be nil
+    var a ?int
+    if a == nil {
+        fmt.Println("PASS: default nil")
+    } else {
+        fmt.Println("FAIL: default nil")
+    }
+
+    // Case 2: assign nil to existing nullable (b = nil after b = 99)
+    var b ?int = 99
+    b = nil
+    if b == nil {
+        fmt.Println("PASS: reassign nil")
+    } else {
+        fmt.Println("FAIL: reassign nil")
+    }
+
+    // Case 3: assign value to existing nullable (c = 7 after c = nil)
+    var c ?int = nil
+    c = 7
+    if let v = c {
+        fmt.Println(v)
+    } else {
+        fmt.Println("FAIL: reassign value")
+    }
+
+    // Case 4: pass bare value to ?int param → use(42) must return 42
+    r1 := use(42)
+    fmt.Println(r1)
+
+    // Case 5: pass nil to ?int param → use(nil) must return -1
+    r2 := use(nil)
+    fmt.Println(r2)
+}

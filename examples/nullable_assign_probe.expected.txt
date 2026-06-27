@@ -1,0 +1,5 @@
+PASS: default nil
+PASS: reassign nil
+7
+42
+-1
