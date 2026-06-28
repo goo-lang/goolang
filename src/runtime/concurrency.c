@@ -56,6 +56,30 @@ static void goroutine_wrapper(void);
 static goo_goroutine_t* scheduler_get_next_goroutine(void);
 static void scheduler_add_goroutine(goo_goroutine_t* goroutine);
 
+// Resolve the default OS-thread count for lazy scheduler init.
+// Policy (Go-faithful): GOMAXPROCS env if it parses to an integer >= 1 (honored
+// even above NCPU), else the online CPU count; clamped to [1, GOO_MAX_OS_THREADS].
+// Side-effect-free. Exposed (non-static) so the resolver is unit-testable.
+int goo_default_thread_count(void) {
+    const char* env = getenv("GOMAXPROCS");
+    if (env && env[0] != '\0') {
+        char* end = NULL;
+        long n = strtol(env, &end, 10);
+        // Whole string must be a valid integer >= 1; otherwise fall through.
+        if (end != env && *end == '\0' && n >= 1) {
+            return (n > GOO_MAX_OS_THREADS) ? GOO_MAX_OS_THREADS : (int)n;
+        }
+        // invalid / < 1 -> NCPU (Go ignores an invalid GOMAXPROCS)
+    }
+#ifdef GOO_PLATFORM_UNIX
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    if (ncpu < 1) ncpu = 1;                 // sysconf failure -> safe floor
+    return (ncpu > GOO_MAX_OS_THREADS) ? GOO_MAX_OS_THREADS : (int)ncpu;
+#else
+    return 1;
+#endif
+}
+
 // Scheduler initialization
 void goo_scheduler_init(int num_threads) {
     if (g_scheduler) {
@@ -172,7 +196,7 @@ void goo_scheduler_wait(void) {
 // Goroutine creation
 goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     if (!g_scheduler) {
-        goo_scheduler_init(1);  // Initialize with default settings
+        goo_scheduler_init(goo_default_thread_count());  // Use GOMAXPROCS/NCPU worker count
     }
     
     goo_goroutine_t* goroutine = goo_alloc(sizeof(goo_goroutine_t));

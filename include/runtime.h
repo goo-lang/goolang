@@ -166,6 +166,7 @@ void goo_null_check(void* ptr, const char* file, int line);
 typedef void (*goo_goroutine_func_t)(void* arg);
 
 // Goroutine creation and management
+int goo_default_thread_count(void);
 void goo_scheduler_init(int num_threads);
 void goo_scheduler_shutdown(void);
 // Block the caller (typically generated main) until every spawned goroutine has

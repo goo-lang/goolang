@@ -649,6 +649,14 @@ go-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# Default-thread-count resolver: GOMAXPROCS/NCPU policy, clamped to [1,16].
+default-thread-count-test: $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== default-thread-count-test: GOMAXPROCS/NCPU resolution ==="
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/default_thread_count_test.c $(RUNTIME_LIB) -lpthread -lm -o build/default_thread_count_test
+	@timeout 10 ./build/default_thread_count_test; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "default-thread-count-test: PASS"; else echo "default-thread-count-test: FAIL (exit $$rc)"; exit 1; fi
+
 # M8c: M:N scheduler correctness under real multi-threading (num_threads=4).
 mt-scheduler-stress: $(RUNTIME_LIB)
 	@mkdir -p build
@@ -691,6 +699,35 @@ deadlock-goroutine-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 124 ]; then echo "deadlock-goroutine-probe: FAIL (hang — no detection)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
 	if [ $$rc -ne 2 ]; then echo "deadlock-goroutine-probe: FAIL (exit $$rc, expected 2)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
 	if grep -q "all goroutines are asleep - deadlock!" build/deadlock_goroutine_probe.err; then echo "deadlock-goroutine-probe: PASS"; else echo "deadlock-goroutine-probe: FAIL (missing message)"; cat build/deadlock_goroutine_probe.err; exit 1; fi
+
+# Soak iteration count for the parallel probes (override: make ... PARALLEL_SOAK_ITERS=200).
+PARALLEL_SOAK_ITERS ?= 50
+
+# parallel-soak-probe: 64-goroutine channel fan-in, deterministic sum=64,
+# run PARALLEL_SOAK_ITERS times under the default multi-threaded scheduler.
+parallel-soak-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== parallel-soak-probe: 64-goroutine fan-in x $(PARALLEL_SOAK_ITERS) (default parallelism) ==="
+	$(COMPILER) -o build/parallel_soak_probe examples/parallel_soak_probe.goo
+	@for i in $$(seq 1 $(PARALLEL_SOAK_ITERS)); do \
+	  out=$$(timeout 10 ./build/parallel_soak_probe); rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "parallel-soak-probe: FAIL (iter $$i exit $$rc)"; exit 1; fi; \
+	  if [ "$$out" != "64" ]; then echo "parallel-soak-probe: FAIL (iter $$i got '$$out' want 64)"; exit 1; fi; \
+	done; \
+	echo "parallel-soak-probe: PASS ($(PARALLEL_SOAK_ITERS) iters, sum=64)"
+
+# parallel-select-soak-probe: 32+32 goroutines feeding two channels; main runs
+# 64 blocking selects, deterministic count=64, looped PARALLEL_SOAK_ITERS times.
+parallel-select-soak-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== parallel-select-soak-probe: 64 selects over 2 channels x $(PARALLEL_SOAK_ITERS) (default parallelism) ==="
+	$(COMPILER) -o build/parallel_select_soak_probe examples/parallel_select_soak_probe.goo
+	@for i in $$(seq 1 $(PARALLEL_SOAK_ITERS)); do \
+	  out=$$(timeout 10 ./build/parallel_select_soak_probe); rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "parallel-select-soak-probe: FAIL (iter $$i exit $$rc)"; exit 1; fi; \
+	  if [ "$$out" != "64" ]; then echo "parallel-select-soak-probe: FAIL (iter $$i got '$$out' want 64)"; exit 1; fi; \
+	done; \
+	echo "parallel-select-soak-probe: PASS ($(PARALLEL_SOAK_ITERS) iters, count=64)"
 
 # M8b escape-probe: a local whose address escapes into a goroutine spawned from
 # a non-main frame survives after that frame returns (heap-promotion).
@@ -859,7 +896,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
