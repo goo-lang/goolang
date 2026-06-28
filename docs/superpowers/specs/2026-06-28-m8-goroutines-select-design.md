@@ -43,7 +43,8 @@ into `make verify` and `.github/workflows/tests.yml`.
   generated `main` returns (`src/codegen/function_codegen.c`), so goroutine side
   effects are observable before exit. The scheduler is lazily created by the
   first `goo_go()`; the barrier is a no-op when no goroutine ran, so
-  non-concurrent programs are unaffected.
+  non-concurrent programs are unaffected. See "Main-exit semantics" below — this
+  barrier is an intentional Goo superset behavior, not an accidental divergence.
 - **8b/8c — `go f(args)` (`go-probe`).** `codegen_generate_go_stmt` heap-boxes
   the evaluated arguments and generates a per-call-site thunk
   (`void __goo_thunk_N(i8*)`) that unboxes, calls the real function, and frees
@@ -60,6 +61,26 @@ into `make verify` and `.github/workflows/tests.yml`.
   context fixes, a corrected per-slot element GEP, `is_send` stored as i32, recv
   scratch sized from the channel element type, and NULL-channel default slots so
   the runtime index aligns with the case blocks.
+
+### Main-exit semantics (intentional Goo superset of Go)
+Goo is a **superset of Go**, and `main` exit is one place it deliberately adds
+behavior. In Go, `main` returning terminates the process and abandons any still-
+running goroutines (the classic "fire-and-forget may never run" gotcha). Goo
+instead gives `main` an **implicit structured-concurrency join**: the emitted
+`goo_scheduler_wait()` makes `main` wait for all spawned goroutines to finish
+before exiting, so a fire-and-forget `go f()` is observable by default. This is
+the additive, ergonomic-by-default choice, consistent with Goo's other safety/
+ergonomics extensions — not a bug.
+
+The cost is the dual of Go's: a goroutine that never terminates (an infinite
+loop, or a block on a channel that is never satisfied) keeps the program alive,
+exactly as waiting on a `sync.WaitGroup` that never reaches zero would in Go.
+That is the accepted trade-off of the implicit join.
+
+Known limitation (tracked, not yet uniform): the join is emitted before `main`'s
+*implicit* fall-off-the-end return. A `main` that exits via an *explicit*
+`return` statement currently bypasses it. Making the join uniform across all exit
+paths from `main` is a small follow-up.
 
 ### Scheduler-model decision
 Kept the existing **pthread + ucontext** runtime (so OpenMP-style speedup stays
