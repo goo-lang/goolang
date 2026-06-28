@@ -135,6 +135,17 @@ static void escape_walk(ASTNode* n) {
             case AST_UNSAFE_STMT: escape_walk(((UnsafeStmtNode*)n)->body); break;
             // slice literal [e1, e2, …]: recurse into element list
             case AST_SLICE_EXPR: escape_walk(((SliceLitNode*)n)->elements); break;
+            // struct literal: recurse into field value expressions so &x inside
+            // Box{p: &x} is detected and x is promoted.
+            case AST_STRUCT_LITERAL: escape_walk(((StructLiteralNode*)n)->field_values); break;
+            // defensive: parser currently emits AST_UNARY_EXPR for & but guard
+            // against a future AST_ADDR_OF path reaching here.
+            case AST_ADDR_OF: {
+                AddrOfNode* a = (AddrOfNode*)n;
+                escape_add(escape_root_local(a->operand));
+                escape_walk(a->operand);
+                break;
+            }
             default: break;  // leaves (identifier, literal, types): nothing to recurse
         }
     }
@@ -158,7 +169,7 @@ static int escape_is_promoted(const char* name) {
 // goroutine-escape-promoted, else a stack entry alloca. Under opaque pointers
 // both return `ptr`, so all downstream loads/stores (which carry explicit types)
 // are unchanged.
-static LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {
+LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {
     if (!escape_is_promoted(name))
         return codegen_create_entry_alloca(codegen, type, name);
 
@@ -539,7 +550,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             Type* field_type = var_type->data.struct_type.fields[i].type;
             LLVMTypeRef field_llvm = codegen_type_to_llvm(codegen, field_type);
             LLVMValueRef field_val = LLVMBuildExtractValue(codegen->builder, rhs->llvm_value, (unsigned)i, nm);
-            LLVMValueRef field_alloca = codegen_create_entry_alloca(codegen, field_llvm, nm);
+            LLVMValueRef field_alloca = codegen_alloc_local(codegen, field_llvm, nm);
             LLVMBuildStore(codegen->builder, field_val, field_alloca);
             ValueInfo* vi = value_info_new(nm, field_alloca, field_type);
             vi->is_lvalue = 1;

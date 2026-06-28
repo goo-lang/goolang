@@ -62,7 +62,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             if (il->var_name && inner_type) {
                 LLVMTypeRef inner_llvm = codegen_type_to_llvm(codegen, inner_type);
                 LLVMValueRef val = LLVMBuildExtractValue(codegen->builder, raw, 1, il->var_name);
-                LLVMValueRef alloca_v = codegen_create_entry_alloca(codegen, inner_llvm, il->var_name);
+                LLVMValueRef alloca_v = codegen_alloc_local(codegen, inner_llvm, il->var_name);
                 LLVMBuildStore(codegen->builder, val, alloca_v);
                 ValueInfo* vi = value_info_new(il->var_name, alloca_v, inner_type);
                 vi->is_lvalue = 1; vi->is_initialized = 1;
@@ -373,8 +373,8 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
         // Allocate index var; register it in scope under key_name.
         LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
-        LLVMValueRef idx_alloca = codegen_create_entry_alloca(codegen, i32,
-                                                              for_stmt->key_name ? for_stmt->key_name : "range_i");
+        LLVMValueRef idx_alloca = codegen_alloc_local(codegen, i32,
+                                                     for_stmt->key_name ? for_stmt->key_name : "range_i");
         LLVMBuildStore(codegen->builder, LLVMConstInt(i32, 0, 0), idx_alloca);
         if (for_stmt->key_name) {
             ValueInfo* kv = value_info_new(for_stmt->key_name, idx_alloca,
@@ -388,7 +388,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // scope below.
         LLVMValueRef val_alloca = NULL;
         if (for_stmt->value_name && llvm_elem && elem_type) {
-            val_alloca = codegen_create_entry_alloca(codegen, llvm_elem, for_stmt->value_name);
+            val_alloca = codegen_alloc_local(codegen, llvm_elem, for_stmt->value_name);
             ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, elem_type);
             vv->is_lvalue = 1;
             vv->is_initialized = 1;
