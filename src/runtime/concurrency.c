@@ -31,13 +31,16 @@ goo_scheduler_t* g_scheduler = NULL;
 // to avoid a header change). Sharing those single fields across N workers was
 // the multi-thread corruption (stomped return context / wrong current).
 //
-// t_reap carries the disposition decision back to the worker WITHOUT
-// dereferencing the goroutine after the swap: a goroutine that EXITS sets
-// t_reap to itself (it is never re-enqueued, so only this worker references it,
-// so this worker frees it); a goroutine that YIELDS leaves t_reap NULL (it
-// re-enqueued itself and may already be running/freed on another worker, so
-// this worker must not touch it). ucontext keeps the same OS thread across the
-// switch, so the goroutine and its worker share these thread-locals.
+// The worker decides a goroutine's disposition after the swap WITHOUT
+// dereferencing it, via two mutually-exclusive thread-locals: a goroutine that
+// EXITS sets t_reap to itself (it is never re-enqueued, so only this worker
+// references it → this worker frees it); a goroutine that YIELDS sets t_requeue
+// to itself and leaves t_reap NULL (the worker re-enqueues it below, AFTER the
+// swap has saved its context — never before, or another worker could swap into
+// a half-saved context). Either way the worker must not touch goroutine->* after
+// the swap until the t_reap/t_requeue branches run. ucontext keeps the same OS
+// thread across the switch, so the goroutine and its worker share these
+// thread-locals.
 static _Thread_local ucontext_t       t_sched_ctx;
 static _Thread_local goo_goroutine_t* t_current = NULL;
 static _Thread_local goo_goroutine_t* t_reap = NULL;
@@ -279,9 +282,8 @@ static void* scheduler_main_loop(void* arg) {
 #endif
 
             // Back on this worker's own stack. Reap ONLY via t_reap, which the
-            // goroutine set (to itself) iff it EXITED. Do NOT read goroutine->*
-            // here: if it yielded, it re-enqueued itself and another worker may
-            // already have run and freed it — dereferencing it would be a UAF.
+            // goroutine set (to itself) iff it EXITED; a yielded goroutine set
+            // t_requeue instead (handled just below) and leaves t_reap NULL.
             // A DONE goroutine is never re-enqueued, so t_reap is ours alone.
             if (t_reap) {
                 goo_free(t_reap->stack);
