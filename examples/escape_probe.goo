@@ -1,0 +1,33 @@
+// escape-probe: a local whose address escapes into a goroutine spawned from a
+// NON-main frame must survive after that frame returns. main-spawned locals are
+// already safe via the #29 run-to-completion barrier, so the spawn MUST be in a
+// helper. Two cases: direct `&x` and aliased `p := &x`. The channel receive is
+// the deterministic join.
+package main
+
+import "fmt"
+
+func reader(p *int, done chan int) {
+    done <- *p
+}
+
+func spawnDirect(done chan int) {
+    x := 7
+    go reader(&x, done)
+}
+
+func spawnAliased(done chan int) {
+    y := 9
+    p := &y
+    go reader(p, done)
+}
+
+func main() {
+    d1 := make_chan(int, 1)
+    spawnDirect(d1)
+    fmt.Println(<-d1)
+
+    d2 := make_chan(int, 1)
+    spawnAliased(d2)
+    fmt.Println(<-d2)
+}

@@ -649,6 +649,36 @@ go-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M8b escape-probe: a local whose address escapes into a goroutine spawned from
+# a non-main frame survives after that frame returns (heap-promotion).
+escape-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== escape-probe: &local escaping into go from a non-main frame is heap-promoted ==="
+	$(COMPILER) -o build/escape_probe examples/escape_probe.goo
+	@timeout 10 ./build/escape_probe > build/escape_probe.actual.txt; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "escape-probe: FAIL (exit $$rc — hang or crash)"; exit 1; fi
+	@if diff -u examples/escape_probe.expected.txt build/escape_probe.actual.txt; then \
+	  echo "escape-probe: PASS"; \
+	else \
+	  echo "escape-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# M8b escape-range-probe: value var from for-range is heap-promoted when its
+# address escapes into a goroutine, so goroutines read the correct value.
+escape-range-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== escape-range-probe: for-range value var heap-promoted when &v escapes into go ==="
+	$(COMPILER) -o build/escape_range_probe examples/escape_range_probe.goo
+	@timeout 10 ./build/escape_range_probe > build/escape_range_probe.actual.txt; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "escape-range-probe: FAIL (exit $$rc — hang or crash)"; exit 1; fi
+	@if diff -u examples/escape_range_probe.expected.txt build/escape_range_probe.actual.txt; then \
+	  echo "escape-range-probe: PASS"; \
+	else \
+	  echo "escape-range-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # M8 unbuffered channels. unbuffered-probe: make_chan(T) with no capacity is a
 # rendezvous channel — send blocks until a receiver takes the value. A goroutine
 # sends two values; main receives both (second send exercises slot reuse).
@@ -786,7 +816,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

@@ -588,7 +588,7 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
                     // that assignments to it in the arm body work correctly.
                     LLVMValueRef fval = LLVMBuildLoad2(codegen->builder,
                                                         field_ty, fptr, bind->name);
-                    LLVMValueRef slot = codegen_create_entry_alloca(codegen, field_ty, bind->name);
+                    LLVMValueRef slot = codegen_alloc_local(codegen, field_ty, bind->name);
                     LLVMBuildStore(codegen->builder, fval, slot);
 
                     ValueInfo* vi = value_info_new(bind->name, slot, f->type);

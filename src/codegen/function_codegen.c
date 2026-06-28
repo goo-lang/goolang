@@ -6,6 +6,197 @@
 
 // Function and declaration code generation
 
+// ---- M8b: goroutine-escape pre-pass (file-static; function codegen is
+// non-reentrant and Goo has no nested function decls) --------------------------
+
+#define ESCAPE_MAX_NAMES 256
+static const char* g_escape_names[ESCAPE_MAX_NAMES];
+static size_t g_escape_count;
+static int g_escape_has_go;
+
+// Root local name of an lvalue whose address is taken: descend through selector
+// (`x.f`) and index (`x[i]`) to the underlying identifier. (Parens are folded
+// away by the parser — there is no paren-expr node — and AST_PAREN_EXPR is a
+// repurposed slot for map literals, which are not addressable lvalues.)
+static const char* escape_root_local(ASTNode* lv) {
+    while (lv) {
+        switch (lv->type) {
+            case AST_IDENTIFIER: return ((IdentifierNode*)lv)->name;
+            case AST_SELECTOR_EXPR: lv = ((SelectorExprNode*)lv)->expr; break;
+            case AST_INDEX_EXPR:    lv = ((IndexExprNode*)lv)->expr; break;
+            default: return NULL;
+        }
+    }
+    return NULL;
+}
+
+static void escape_add(const char* name) {
+    if (!name) return;
+    for (size_t i = 0; i < g_escape_count; i++)
+        if (strcmp(g_escape_names[i], name) == 0) return;  // dedup
+    if (g_escape_count < ESCAPE_MAX_NAMES)
+        g_escape_names[g_escape_count++] = name;
+}
+
+// Recursively visit a node and its `next`-chained siblings, recording any `&`
+// address-of root local and noting whether a `go` statement appears.
+static void escape_walk(ASTNode* n) {
+    for (; n; n = n->next) {
+        switch (n->type) {
+            case AST_GO_STMT: {
+                g_escape_has_go = 1;
+                escape_walk(((GoStmtNode*)n)->call);
+                break;
+            }
+            case AST_UNARY_EXPR: {
+                UnaryExprNode* u = (UnaryExprNode*)n;
+                if (u->operator == TOKEN_BIT_AND)
+                    escape_add(escape_root_local(u->operand));
+                escape_walk(u->operand);
+                break;
+            }
+            case AST_BLOCK_STMT: escape_walk(((BlockStmtNode*)n)->statements); break;
+            case AST_EXPR_STMT:  escape_walk(((ExprStmtNode*)n)->expr); break;
+            case AST_IF_STMT: {
+                IfStmtNode* s = (IfStmtNode*)n;
+                escape_walk(s->condition); escape_walk(s->then_stmt); escape_walk(s->else_stmt);
+                break;
+            }
+            case AST_IF_LET_STMT: {
+                IfLetStmtNode* s = (IfLetStmtNode*)n;
+                escape_walk(s->nullable_expr); escape_walk(s->then_stmt); escape_walk(s->else_stmt);
+                break;
+            }
+            case AST_FOR_STMT: {
+                ForStmtNode* s = (ForStmtNode*)n;
+                escape_walk(s->init); escape_walk(s->condition); escape_walk(s->post);
+                escape_walk(s->range_expr); escape_walk(s->body);
+                break;
+            }
+            case AST_RETURN_STMT: escape_walk(((ReturnStmtNode*)n)->values); break;
+            case AST_VAR_DECL:    escape_walk(((VarDeclNode*)n)->values); break;
+            case AST_DEFER_STMT:  escape_walk(((DeferStmtNode*)n)->call); break;
+            case AST_BINARY_EXPR: {
+                BinaryExprNode* b = (BinaryExprNode*)n;
+                escape_walk(b->left); escape_walk(b->right);
+                break;
+            }
+            case AST_POSTFIX_EXPR: escape_walk(((PostfixExprNode*)n)->operand); break;
+            // (AST_PAREN_EXPR is a repurposed map-literal slot, not a wrapper —
+            // a map-literal value position holding `&x` is rare; left to the
+            // default no-op, which only ever under-promotes, never wrongly.)
+            case AST_CALL_EXPR: {
+                CallExprNode* c = (CallExprNode*)n;
+                escape_walk(c->function); escape_walk(c->args);
+                break;
+            }
+            case AST_INDEX_EXPR: {
+                IndexExprNode* ix = (IndexExprNode*)n;
+                escape_walk(ix->expr); escape_walk(ix->index);
+                break;
+            }
+            case AST_SELECTOR_EXPR: escape_walk(((SelectorExprNode*)n)->expr); break;
+            case AST_SWITCH_STMT: {
+                SwitchStmtNode* s = (SwitchStmtNode*)n;
+                escape_walk(s->tag); escape_walk(s->cases);
+                break;
+            }
+            case AST_CASE_CLAUSE: {
+                CaseClauseNode* c = (CaseClauseNode*)n;
+                escape_walk(c->exprs); escape_walk(c->body);
+                break;
+            }
+            case AST_SELECT_STMT: escape_walk(((SelectStmtNode*)n)->cases); break;
+            case AST_SELECT_CASE: {
+                SelectCaseNode* c = (SelectCaseNode*)n;
+                escape_walk(c->comm); escape_walk(c->body);
+                break;
+            }
+            // match expression: scrutinee + list of MatchCaseNode siblings
+            case AST_MATCH_EXPR: {
+                MatchExprNode* m = (MatchExprNode*)n;
+                escape_walk(m->expr); escape_walk(m->cases);
+                break;
+            }
+            // match case: pattern, optional guard, body
+            case AST_MATCH_CASE: {
+                MatchCaseNode* mc = (MatchCaseNode*)n;
+                escape_walk(mc->pattern); escape_walk(mc->guard); escape_walk(mc->body);
+                break;
+            }
+            // try/catch: walk the inner expression and, for catch, the catch body
+            case AST_TRY_EXPR:  escape_walk(((TryExprNode*)n)->expr); break;
+            case AST_CATCH_EXPR: {
+                CatchExprNode* ce = (CatchExprNode*)n;
+                escape_walk(ce->expr); escape_walk(ce->catch_body);
+                break;
+            }
+            // unsafe block: recurse into its body
+            case AST_UNSAFE_STMT: escape_walk(((UnsafeStmtNode*)n)->body); break;
+            // slice literal [e1, e2, …]: recurse into element list
+            case AST_SLICE_EXPR: escape_walk(((SliceLitNode*)n)->elements); break;
+            // struct literal: recurse into field value expressions so &x inside
+            // Box{p: &x} is detected and x is promoted.
+            case AST_STRUCT_LITERAL: escape_walk(((StructLiteralNode*)n)->field_values); break;
+            // defensive: parser currently emits AST_UNARY_EXPR for & but guard
+            // against a future AST_ADDR_OF path reaching here.
+            case AST_ADDR_OF: {
+                AddrOfNode* a = (AddrOfNode*)n;
+                escape_add(escape_root_local(a->operand));
+                escape_walk(a->operand);
+                break;
+            }
+            default: break;  // leaves (identifier, literal, types): nothing to recurse
+        }
+    }
+}
+
+static void escape_prepass_compute(ASTNode* body) {
+    g_escape_count = 0;
+    g_escape_has_go = 0;
+    escape_walk(body);
+    if (!g_escape_has_go) g_escape_count = 0;  // promote only in go-containing functions
+}
+
+static int escape_is_promoted(const char* name) {
+    if (!name) return 0;
+    for (size_t i = 0; i < g_escape_count; i++)
+        if (strcmp(g_escape_names[i], name) == 0) return 1;
+    return 0;
+}
+
+// Allocate storage for a named local: heap (goo_alloc, leaked) if the local is
+// goroutine-escape-promoted, else a stack entry alloca. Under opaque pointers
+// both return `ptr`, so all downstream loads/stores (which carry explicit types)
+// are unchanged.
+LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {
+    if (!escape_is_promoted(name))
+        return codegen_create_entry_alloca(codegen, type, name);
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef vp = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef alloc_ty = LLVMFunctionType(vp, &i64t, 1, 0);
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+    if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
+
+    // Emit the goo_alloc in the entry block (like an alloca) so it dominates all
+    // uses and runs once per call. Save/restore the builder position.
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = codegen->current_function_info
+        ? codegen->current_function_info->entry_block
+        : LLVMGetEntryBasicBlock(codegen->current_function);
+    LLVMValueRef first = entry ? LLVMGetFirstInstruction(entry) : NULL;
+    if (first) LLVMPositionBuilderBefore(codegen->builder, first);
+    else       LLVMPositionBuilderAtEnd(codegen->builder, entry);
+
+    LLVMValueRef size = LLVMSizeOf(type);
+    LLVMValueRef p = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1,
+                                    name ? name : "go_escape_local");
+    if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);
+    return p;
+}
+
 // Forward declaration for error union function generation
 int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* checker, 
                                          FuncDeclNode* func_decl, Type* return_type);
@@ -142,6 +333,9 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
 
+    // M8b: compute which locals escape into a goroutine and must be heap-promoted.
+    escape_prepass_compute(func_decl->body);
+
     // Mirror the type-checker scope so re-invocations of type_check_*
     // from inside codegen (e.g. type_check_binary_expr at
     // expression_codegen.c:208) can resolve `a` and `b` inside the
@@ -191,7 +385,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             if (param_name) {
                 LLVMValueRef param_value = LLVMGetParam(function, param_index);
 
-                LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_name);
+                LLVMValueRef param_alloca = codegen_alloc_local(codegen, param_types[param_index], param_name);
                 LLVMBuildStore(codegen->builder, param_value, param_alloca);
 
                 ValueInfo* param_info = value_info_new(param_name, param_alloca,
@@ -356,7 +550,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             Type* field_type = var_type->data.struct_type.fields[i].type;
             LLVMTypeRef field_llvm = codegen_type_to_llvm(codegen, field_type);
             LLVMValueRef field_val = LLVMBuildExtractValue(codegen->builder, rhs->llvm_value, (unsigned)i, nm);
-            LLVMValueRef field_alloca = codegen_create_entry_alloca(codegen, field_llvm, nm);
+            LLVMValueRef field_alloca = codegen_alloc_local(codegen, field_llvm, nm);
             LLVMBuildStore(codegen->builder, field_val, field_alloca);
             ValueInfo* vi = value_info_new(nm, field_alloca, field_type);
             vi->is_lvalue = 1;
@@ -390,7 +584,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             // (no explicit initializer) behaves like Go's zero value
             // semantics. Without this, struct fields read as garbage
             // from the stack.
-            alloca_inst = codegen_create_entry_alloca(codegen, llvm_type, var_name);
+            alloca_inst = codegen_alloc_local(codegen, llvm_type, var_name);
             if (alloca_inst && !var_decl->values) {
                 // For a `?T` local with no initializer, the Go-style zero value
                 // must be nil ({is_null=1, ...}). LLVMConstNull would set the
