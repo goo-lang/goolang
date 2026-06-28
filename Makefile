@@ -649,6 +649,14 @@ go-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# Default-thread-count resolver: GOMAXPROCS/NCPU policy, clamped to [1,16].
+default-thread-count-test: $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== default-thread-count-test: GOMAXPROCS/NCPU resolution ==="
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/default_thread_count_test.c $(RUNTIME_LIB) -lpthread -lm -o build/default_thread_count_test
+	@timeout 10 ./build/default_thread_count_test; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "default-thread-count-test: PASS"; else echo "default-thread-count-test: FAIL (exit $$rc)"; exit 1; fi
+
 # M8c: M:N scheduler correctness under real multi-threading (num_threads=4).
 mt-scheduler-stress: $(RUNTIME_LIB)
 	@mkdir -p build
