@@ -1,0 +1,11 @@
+// deadlock-probe: main receives on an empty buffered channel with no sender.
+// Today: hangs forever. After M9: prints the deadlock message and exits 2.
+package main
+
+import "fmt"
+
+func main() {
+    c := make_chan(int, 1)
+    v := <-c          // no sender — every participant is asleep
+    fmt.Println(v)    // never reached
+}

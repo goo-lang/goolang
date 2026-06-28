@@ -215,14 +215,18 @@ typedef struct goo_deadlock_detector {
     uint64_t last_check_time;
     uint64_t check_interval_ns;
     int detected_deadlock;
+    int blocked_goroutines;   // M9: goroutines currently parked in a channel cond_wait
+    int main_in_wait;         // M9: main has entered goo_scheduler_wait (body done)
 } goo_deadlock_detector_t;
 
 // Deadlock detection functions
 int goo_deadlock_init(void);
 void goo_deadlock_shutdown(void);
-int goo_deadlock_check(void);
 void goo_deadlock_enable(int enable);
 int goo_deadlock_detected(void);
+void goo_sched_block_begin(void);
+void goo_sched_block_end(void);
+void goo_deadlock_abort(void) __attribute__((noreturn));
 
 // Channel pattern operations
 int goo_chan_subscribe(goo_channel_t* publisher, goo_channel_t* subscriber);

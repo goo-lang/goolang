@@ -673,6 +673,25 @@ chan-mt-stress: $(RUNTIME_LIB)
 	@timeout 60 ./build/chan_mt_stress; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "chan-mt-stress: PASS"; else echo "chan-mt-stress: FAIL (exit $$rc)"; exit 1; fi
 
+# M9: a fully-deadlocked program aborts with Go's message + exit 2 (not a hang).
+deadlock-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== deadlock-probe: main blocked on empty channel aborts (exit 2) ==="
+	$(COMPILER) -o build/deadlock_probe examples/deadlock_probe.goo
+	@timeout 10 ./build/deadlock_probe 2>build/deadlock_probe.err; rc=$$?; \
+	if [ $$rc -eq 124 ]; then echo "deadlock-probe: FAIL (hang — no detection)"; cat build/deadlock_probe.err; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "deadlock-probe: FAIL (exit $$rc, expected 2)"; cat build/deadlock_probe.err; exit 1; fi; \
+	if grep -q "all goroutines are asleep - deadlock!" build/deadlock_probe.err; then echo "deadlock-probe: PASS"; else echo "deadlock-probe: FAIL (missing message)"; cat build/deadlock_probe.err; exit 1; fi
+
+deadlock-goroutine-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== deadlock-goroutine-probe: blocked goroutine + idle main aborts (exit 2) ==="
+	$(COMPILER) -o build/deadlock_goroutine_probe examples/deadlock_goroutine_probe.goo
+	@timeout 10 ./build/deadlock_goroutine_probe 2>build/deadlock_goroutine_probe.err; rc=$$?; \
+	if [ $$rc -eq 124 ]; then echo "deadlock-goroutine-probe: FAIL (hang — no detection)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "deadlock-goroutine-probe: FAIL (exit $$rc, expected 2)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
+	if grep -q "all goroutines are asleep - deadlock!" build/deadlock_goroutine_probe.err; then echo "deadlock-goroutine-probe: PASS"; else echo "deadlock-goroutine-probe: FAIL (missing message)"; cat build/deadlock_goroutine_probe.err; exit 1; fi
+
 # M8b escape-probe: a local whose address escapes into a goroutine spawned from
 # a non-main frame survives after that frame returns (heap-promotion).
 escape-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -840,7 +859,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

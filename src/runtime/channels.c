@@ -251,7 +251,9 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
             }
 
 #ifdef GOO_PLATFORM_UNIX
+            goo_sched_block_begin();
             pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+            goo_sched_block_end();
 #endif
 
             // Clear waiting state when unblocked.
@@ -261,12 +263,12 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
                 self->state = GOO_GOROUTINE_RUNNING;
             }
         }
-        
+
         if (ch->closed) {
             goo_mutex_unlock(ch->mutex);
             return 0;
         }
-        
+
         // Copy data to buffer
         void* dest = (char*)ch->buffer + (ch->tail * ch->elem_size);
         memcpy(dest, data, ch->elem_size);
@@ -288,7 +290,9 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
 #ifdef GOO_PLATFORM_UNIX
         // Wait until the slot is free (a previous sender's value was consumed).
         while (ch->rv_full && !ch->closed) {
+            goo_sched_block_begin();
             pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+            goo_sched_block_end();
         }
         if (ch->closed) {
             goo_mutex_unlock(ch->mutex);
@@ -306,7 +310,9 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
 
         // Block until the receiver has copied the value out.
         while (ch->rv_full && !ch->closed) {
+            goo_sched_block_begin();
             pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+            goo_sched_block_end();
         }
 
         // If the channel was closed before the value was taken, the send failed.
@@ -369,7 +375,9 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
             }
 
 #ifdef GOO_PLATFORM_UNIX
+            goo_sched_block_begin();
             pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
+            goo_sched_block_end();
 #endif
 
             // Clear waiting state when unblocked.
@@ -404,7 +412,9 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         // parked a value, copy it out, clear the slot, and wake the sender.
 #ifdef GOO_PLATFORM_UNIX
         while (!ch->rv_full && !ch->closed) {
+            goo_sched_block_begin();
             pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
+            goo_sched_block_end();
         }
         if (!ch->rv_full && ch->closed) {
             goo_mutex_unlock(ch->mutex);

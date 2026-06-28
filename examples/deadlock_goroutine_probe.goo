@@ -1,0 +1,17 @@
+// deadlock-goroutine-probe: a spawned goroutine receives on an empty channel;
+// main spawns it and ends (falls through to goo_scheduler_wait) without sending.
+// Exercises the goroutine path + the scheduler-wait poll-loop check.
+package main
+
+import "fmt"
+
+func consume(c chan int) {
+    v := <-c
+    fmt.Println(v)    // never reached
+}
+
+func main() {
+    c := make_chan(int, 1)
+    go consume(c)
+    // main never sends; the goroutine is stuck forever
+}
