@@ -700,6 +700,22 @@ deadlock-goroutine-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -ne 2 ]; then echo "deadlock-goroutine-probe: FAIL (exit $$rc, expected 2)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
 	if grep -q "all goroutines are asleep - deadlock!" build/deadlock_goroutine_probe.err; then echo "deadlock-goroutine-probe: PASS"; else echo "deadlock-goroutine-probe: FAIL (missing message)"; cat build/deadlock_goroutine_probe.err; exit 1; fi
 
+# Soak iteration count for the parallel probes (override: make ... PARALLEL_SOAK_ITERS=200).
+PARALLEL_SOAK_ITERS ?= 50
+
+# parallel-soak-probe: 64-goroutine channel fan-in, deterministic sum=64,
+# run PARALLEL_SOAK_ITERS times under the default multi-threaded scheduler.
+parallel-soak-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== parallel-soak-probe: 64-goroutine fan-in x $(PARALLEL_SOAK_ITERS) (default parallelism) ==="
+	$(COMPILER) -o build/parallel_soak_probe examples/parallel_soak_probe.goo
+	@for i in $$(seq 1 $(PARALLEL_SOAK_ITERS)); do \
+	  out=$$(timeout 10 ./build/parallel_soak_probe); rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "parallel-soak-probe: FAIL (iter $$i exit $$rc)"; exit 1; fi; \
+	  if [ "$$out" != "64" ]; then echo "parallel-soak-probe: FAIL (iter $$i got '$$out' want 64)"; exit 1; fi; \
+	done; \
+	echo "parallel-soak-probe: PASS ($(PARALLEL_SOAK_ITERS) iters, sum=64)"
+
 # M8b escape-probe: a local whose address escapes into a goroutine spawned from
 # a non-main frame survives after that frame returns (heap-promotion).
 escape-probe: $(COMPILER) $(RUNTIME_LIB)
