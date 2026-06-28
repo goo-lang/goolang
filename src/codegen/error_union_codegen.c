@@ -210,7 +210,7 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
             if (error_llvm) {
                 // error_raw is already of type error_llvm (goo_string_t when
                 // error_type is TYPE_STRING or the default NULL). Use it directly.
-                LLVMValueRef error_alloca = codegen_create_entry_alloca(
+                LLVMValueRef error_alloca = codegen_alloc_local(
                     codegen, error_llvm, catch_expr->error_var);
                 LLVMBuildStore(codegen->builder, error_raw, error_alloca);
                 ValueInfo* error_vi = value_info_new(catch_expr->error_var,
@@ -378,7 +378,7 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
             if (param_name) {
                 LLVMValueRef param_value = LLVMGetParam(function, param_index);
 
-                LLVMValueRef param_alloca = codegen_create_entry_alloca(codegen, param_types[param_index], param_name);
+                LLVMValueRef param_alloca = codegen_alloc_local(codegen, param_types[param_index], param_name);
                 LLVMBuildStore(codegen->builder, param_value, param_alloca);
 
                 ValueInfo* param_info = value_info_new(param_name, param_alloca,
