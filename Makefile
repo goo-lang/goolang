@@ -716,6 +716,19 @@ parallel-soak-probe: $(COMPILER) $(RUNTIME_LIB)
 	done; \
 	echo "parallel-soak-probe: PASS ($(PARALLEL_SOAK_ITERS) iters, sum=64)"
 
+# parallel-select-soak-probe: 32+32 goroutines feeding two channels; main runs
+# 64 blocking selects, deterministic count=64, looped PARALLEL_SOAK_ITERS times.
+parallel-select-soak-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== parallel-select-soak-probe: 64 selects over 2 channels x $(PARALLEL_SOAK_ITERS) (default parallelism) ==="
+	$(COMPILER) -o build/parallel_select_soak_probe examples/parallel_select_soak_probe.goo
+	@for i in $$(seq 1 $(PARALLEL_SOAK_ITERS)); do \
+	  out=$$(timeout 10 ./build/parallel_select_soak_probe); rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "parallel-select-soak-probe: FAIL (iter $$i exit $$rc)"; exit 1; fi; \
+	  if [ "$$out" != "64" ]; then echo "parallel-select-soak-probe: FAIL (iter $$i got '$$out' want 64)"; exit 1; fi; \
+	done; \
+	echo "parallel-select-soak-probe: PASS ($(PARALLEL_SOAK_ITERS) iters, count=64)"
+
 # M8b escape-probe: a local whose address escapes into a goroutine spawned from
 # a non-main frame survives after that frame returns (heap-promotion).
 escape-probe: $(COMPILER) $(RUNTIME_LIB)
