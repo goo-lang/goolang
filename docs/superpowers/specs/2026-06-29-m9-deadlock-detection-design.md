@@ -41,15 +41,14 @@ Mirrors Go's `checkdead`: the deadlock is observed at the instant the last runna
 (`stats.num_goroutines` — live goroutines — already exists. `g_scheduler->ready_queue` — runnable goroutines — already exists.)
 
 ### 3.3 Predicates (evaluated under the locks, at each block point)
-A participant about to block on a channel:
-- **goroutine path** (`goo_current_goroutine() != NULL`): after `blocked_goroutines++`, deadlock iff
-  `blocked_goroutines == num_goroutines` AND `ready_queue == NULL` AND `main_in_wait`.
-  (Every live goroutine is now asleep, none runnable, and `main` can no longer act.)
-- **main path** (`goo_current_goroutine() == NULL`): deadlock iff
-  `blocked_goroutines == num_goroutines` AND `ready_queue == NULL`.
-  (Every goroutine is asleep and `main` itself is now blocking — the last participant sleeps.)
+There are **two evaluation sites** for the same predicate (`blocked_goroutines == num_goroutines` AND `ready_queue == NULL`, with `num_goroutines > 0` for the goroutine case):
 
-Rationale for the `main_in_wait` guard: until `main` reaches `goo_scheduler_wait`, it may still send/recv and rescue a blocked goroutine, so a goroutine blocking while `main`'s body runs is **never** a deadlock. This is what prevents false positives in the common `go producer(c); x := <-c` shape.
+- **At a channel block point (`goo_sched_block_begin`):**
+  - **goroutine path** (`goo_current_goroutine() != NULL`): after `blocked_goroutines++`, deadlock iff the predicate holds AND `main_in_wait`. (Prompt detection when `main` is already waiting.)
+  - **main path** (`goo_current_goroutine() == NULL`): deadlock iff the predicate holds (no `main_in_wait` guard — `main` itself blocking *is* the last-participant event).
+- **In `goo_scheduler_wait`'s poll loop:** each iteration, deadlock iff `blocked_goroutines == num_goroutines` AND `num_goroutines > 0` AND `ready_queue == NULL`. This loop runs only after `main`'s body is done (so `main` can no longer act), and it **closes the timing race**: if the last goroutine blocked *before* `main` reached `goo_scheduler_wait`, `block_begin` saw `main_in_wait==false` and did not abort — the poll loop catches it (within one 0.5ms tick).
+
+Rationale for the `main_in_wait` guard on the goroutine block path: until `main` reaches `goo_scheduler_wait`, it may still send/recv and rescue a blocked goroutine, so a goroutine blocking while `main`'s body runs is **never** declared a deadlock at `block_begin`. This (together with the poll-loop check only running post-`main`-body) is what prevents false positives in the common `go producer(c); x := <-c` shape.
 
 ### 3.4 On detection
 Write exactly `fatal error: all goroutines are asleep - deadlock!\n` to **stderr** and terminate with **exit code 2** (Go's behavior). No core dump, no cycle dump.
@@ -63,7 +62,7 @@ Block points already hold `ch->mutex`. The helpers take `scheduler_mutex` intern
 
 | Unit | File | Change |
 |---|---|---|
-| accounting helpers + state | `src/runtime/concurrency.c` | `void goo_sched_block_begin(void)` (goroutine-vs-main via `goo_current_goroutine()`; `scheduler_mutex`; update `blocked_goroutines`; evaluate §3.3; on deadlock call the abort); `void goo_sched_block_end(void)` (decrement for the goroutine path). Set `main_in_wait` at the top of `goo_scheduler_wait` (`:119`). Remove the vestigial `goo_deadlock_check` call from the idle branch (`:303`). |
+| accounting helpers + state | `src/runtime/concurrency.c` | `void goo_sched_block_begin(void)` (goroutine-vs-main via `goo_current_goroutine()`; `scheduler_mutex`; update `blocked_goroutines`; evaluate the §3.3 block-point predicate; on deadlock call the abort); `void goo_sched_block_end(void)` (decrement for the goroutine path). In `goo_scheduler_wait` (`:119`): set `main_in_wait` at the top, AND in the poll loop evaluate the §3.3 poll-loop predicate and abort on deadlock (closes the timing race). Remove the vestigial `goo_deadlock_check` call from the idle branch (`:303`). |
 | block-point bracketing | `src/runtime/channels.c` | bracket each of the 5 `pthread_cond_wait` block points (`:254`, `:291`, `:309`, `:372`, `:407`) with `goo_sched_block_begin()` before the wait and `goo_sched_block_end()` after. |
 | state fields | `include/runtime.h:213` | add `blocked_goroutines`, `main_in_wait` to `goo_deadlock_detector_t` (header change ⇒ `make clean`). |
 | strip dead detector | `src/runtime/deadlock.c` | remove `detect_deadlock`/`detect_cycle_dfs`/`goroutine_depends_on` + all `DEBUG`/`FATAL`/`WARNING` printfs; provide the minimal `goo_deadlock_abort()` (message + `exit(2)`) the helpers call; keep/trim the enable/flag API as needed. |
