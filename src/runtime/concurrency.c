@@ -41,6 +41,11 @@ goo_scheduler_t* g_scheduler = NULL;
 static _Thread_local ucontext_t       t_sched_ctx;
 static _Thread_local goo_goroutine_t* t_current = NULL;
 static _Thread_local goo_goroutine_t* t_reap = NULL;
+// M8d: a yielding goroutine hands itself here; the scheduler re-enqueues it
+// AFTER swapcontext has saved its context (mirrors t_reap). Re-enqueuing from
+// inside goo_yield (before the swap) would publish the goroutine to other
+// workers before its context is written → race. Mutually exclusive with t_reap.
+static _Thread_local goo_goroutine_t* t_requeue = NULL;
 
 // Forward declarations
 static void* scheduler_main_loop(void* arg);
@@ -190,7 +195,7 @@ void goo_yield(void) {
     }
 
     current->state = GOO_GOROUTINE_READY;
-    scheduler_add_goroutine(current);   // re-enqueue self before switching away
+    t_requeue = current;   // scheduler re-enqueues AFTER the swap saves our context
 
 #ifdef GOO_PLATFORM_UNIX
 #pragma clang diagnostic push
@@ -250,6 +255,7 @@ static void* scheduler_main_loop(void* arg) {
         if (goroutine) {
             t_current = goroutine;
             t_reap = NULL;                 // cleared each run; the goroutine sets it on exit
+            t_requeue = NULL;              // cleared each run; the goroutine sets it on yield
             goroutine->state = GOO_GOROUTINE_RUNNING;
 
             goo_mutex_lock(g_scheduler->scheduler_mutex);
@@ -277,6 +283,13 @@ static void* scheduler_main_loop(void* arg) {
                 goo_free(t_reap->stack);
                 goo_free(t_reap);
                 t_reap = NULL;
+            }
+            // A yielded goroutine is published to the ready queue ONLY here —
+            // after swapcontext has fully saved its context — so no other worker
+            // can swap into a half-saved context.
+            if (t_requeue) {
+                scheduler_add_goroutine(t_requeue);
+                t_requeue = NULL;
             }
             t_current = NULL;
         } else {
