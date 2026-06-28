@@ -5,10 +5,14 @@ name: tests
 # concept / HKT tests. Complements the demos workflow (build+run smoke of the
 # example programs).
 
+# Auto-run DISABLED: this repo does not pay for GitHub Actions, so push/PR runs
+# only ever show a billing-block red (jobs abort in seconds with no logs). The
+# authoritative test gate is now local git hooks (.githooks/, installed via
+# `make hooks`): pre-commit runs `make test`, pre-push runs `make verify` +
+# `make test`. This workflow is kept for reference and can be triggered manually
+# from the Actions tab if paid CI is ever re-enabled.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   unit-tests:

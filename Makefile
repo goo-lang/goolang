@@ -953,6 +953,17 @@ test-hot-reload: $(OBJS) $(TEST_INTEGRATION_DIR)/hot_reload_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_INTEGRATION_DIR)/hot_reload_test.c $(OBJS) -o $(BINDIR)/test_hot_reload $(LDFLAGS) $(LLVM_LDFLAGS) -ldl
 	./$(BINDIR)/test_hot_reload
 
+# Install local git hooks (one-time, per clone). Points core.hooksPath at the
+# tracked .githooks/ dir so the scripts are version-controlled and shared.
+#   pre-commit -> make test (~1s)   pre-push -> make verify + make test (~10s)
+# These replace GitHub Actions as the test gate (this repo doesn't pay for CI).
+# Bypass any hook in an emergency with `git commit/push --no-verify`.
+.PHONY: hooks
+hooks:
+	@chmod +x .githooks/pre-commit .githooks/pre-push
+	@git config core.hooksPath .githooks
+	@echo "git hooks installed: core.hooksPath=.githooks (pre-commit: make test, pre-push: make verify + test)"
+
 # Clean
 clean:
 	rm -rf $(BUILDDIR) $(BINDIR)
