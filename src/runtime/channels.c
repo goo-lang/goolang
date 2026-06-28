@@ -526,33 +526,55 @@ int goo_chan_recv_timeout(goo_channel_t* ch, void* data, uint64_t timeout_ns) {
     return goo_chan_try_recv(ch, data);
 }
 
-// Select operation (simplified implementation)
+// Select operation.
+//
+// Scans the cases (skipping inactive slots whose channel is NULL — these are
+// placeholders for the `default` case) and returns the index of the first ready
+// case, or -1 if none. The timeout_ns argument encodes the blocking policy:
+//   timeout_ns == 0  : non-blocking (a `default` case is present) — try once and
+//                       return -1 if nothing is ready so the default fires.
+//   timeout_ns <  0  : block until some case becomes ready (no default).
+//   timeout_ns >  0  : block until a case is ready or the deadline passes (-1).
+//
+// Blocking is implemented by polling, matching the scheduler's existing
+// sleep-based idiom. A condvar-based wakeup is a future optimization (M9).
 int goo_select(goo_select_case_t* cases, size_t num_cases, int64_t timeout_ns) {
     if (!cases || num_cases == 0) {
-        return -1;  // No cases
+        return -1;  // Only a default (or nothing) — caller fires the default.
     }
-    
-    // Simple implementation: try each case once
-    for (size_t i = 0; i < num_cases; i++) {
-        goo_select_case_t* case_ptr = &cases[i];
-        case_ptr->ready = 0;
-        
-        if (case_ptr->is_send) {
-            if (goo_chan_try_send(case_ptr->channel, case_ptr->data)) {
-                case_ptr->ready = 1;
-                return (int)i;  // Return index of ready case
+
+    uint64_t deadline = 0;
+    if (timeout_ns > 0) {
+        deadline = goo_platform_time_ns() + (uint64_t)timeout_ns;
+    }
+
+    for (;;) {
+        for (size_t i = 0; i < num_cases; i++) {
+            goo_select_case_t* case_ptr = &cases[i];
+            case_ptr->ready = 0;
+
+            if (!case_ptr->channel) {
+                continue;  // Inactive slot (default placeholder).
             }
-        } else {
-            if (goo_chan_try_recv(case_ptr->channel, case_ptr->data)) {
+
+            int ok = case_ptr->is_send
+                         ? goo_chan_try_send(case_ptr->channel, case_ptr->data)
+                         : goo_chan_try_recv(case_ptr->channel, case_ptr->data);
+            if (ok) {
                 case_ptr->ready = 1;
-                return (int)i;  // Return index of ready case
+                return (int)i;
             }
         }
+
+        if (timeout_ns == 0) {
+            return -1;  // Non-blocking: nothing ready, fire the default.
+        }
+        if (timeout_ns > 0 && goo_platform_time_ns() >= deadline) {
+            return -1;  // Timed out.
+        }
+
+        goo_platform_sleep_ns(200000);  // 0.2ms between polls.
     }
-    
-    // TODO: Implement proper select with blocking and timeout
-    (void)timeout_ns;
-    return -1;  // No case ready
 }
 
 // Channel pattern management functions

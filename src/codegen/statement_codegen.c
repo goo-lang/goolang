@@ -892,9 +892,10 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     return 0;
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_SELECT_STMT) return 0;
-    
+
+    LLVMContextRef ctx = codegen->context;
     SelectStmtNode* select_stmt = (SelectStmtNode*)stmt;
-    
+
     // Count the number of cases
     size_t case_count = 0;
     ASTNode* case_node = select_stmt->cases;
@@ -902,22 +903,24 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         case_count++;
         case_node = case_node->next;
     }
-    
+
     if (case_count == 0) {
         codegen_error(codegen, stmt->pos, "Select statement must have at least one case");
         return 0;
     }
-    
-    // Create array of select cases
+
+    // Create array of select cases (one slot per case; the default case's slot
+    // is marked inactive with a NULL channel so the runtime skips it). All types
+    // are built in codegen->context — the same fix M7 applied to channels.
     LLVMTypeRef select_case_type = codegen_get_select_case_type(codegen);
-    LLVMValueRef cases_array = LLVMBuildArrayAlloca(codegen->builder, select_case_type, 
-                                                   LLVMConstInt(LLVMInt64Type(), case_count, 0), 
+    LLVMValueRef cases_array = LLVMBuildArrayAlloca(codegen->builder, select_case_type,
+                                                   LLVMConstInt(LLVMInt64TypeInContext(ctx), case_count, 0),
                                                    "select_cases");
-    
+
     // Create basic blocks for each case and the end
     LLVMBasicBlockRef* case_blocks = malloc(sizeof(LLVMBasicBlockRef) * case_count);
     LLVMBasicBlockRef default_block = NULL;
-    LLVMBasicBlockRef end_block = LLVMAppendBasicBlock(codegen->current_function, "select_end");
+    LLVMBasicBlockRef end_block = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, "select_end");
     
     // Generate case blocks
     case_node = select_stmt->cases;
@@ -935,14 +938,24 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 return 0;
             }
             has_default = 1;
-            default_block = LLVMAppendBasicBlock(codegen->current_function, "select_default");
+            default_block = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, "select_default");
             case_blocks[case_index] = default_block;
+
+            // Mark this slot inactive: goo_select skips cases whose channel is
+            // NULL, so the default never counts as "ready" during polling.
+            LLVMValueRef d_idx = LLVMConstInt(LLVMInt64TypeInContext(ctx), case_index, 0);
+            LLVMValueRef d_slot = LLVMBuildGEP2(codegen->builder, select_case_type, cases_array,
+                                                &d_idx, 1, "default_slot");
+            LLVMValueRef d_chan = LLVMBuildStructGEP2(codegen->builder, select_case_type, d_slot, 0,
+                                                      "default_chan_field");
+            LLVMBuildStore(codegen->builder,
+                           LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(ctx), 0)), d_chan);
         } else {
             // Regular case
             char case_name[32];
             snprintf(case_name, sizeof(case_name), "select_case_%zu", case_index);
-            case_blocks[case_index] = LLVMAppendBasicBlock(codegen->current_function, case_name);
-            
+            case_blocks[case_index] = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, case_name);
+
             // Setup select case data
             if (!codegen_setup_select_case(codegen, checker, cases_array, case_index, select_case)) {
                 free(case_blocks);
@@ -954,39 +967,46 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         case_index++;
     }
     
-    // Call goo_select to determine which case is ready
+    // Call goo_select to determine which case is ready. We pass the FULL case
+    // count (the default's slot is skipped at runtime via its NULL channel) so
+    // the returned index lines up with case_blocks[]. timeout encodes blocking
+    // policy: 0 => non-blocking because a default is present (fire it if nothing
+    // is ready); -1 => block until a case becomes ready.
     LLVMValueRef select_func = codegen_get_select_function(codegen);
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i64_ty = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef param_types[] = {
         void_ptr_type,   // goo_select_case_t* cases
-        LLVMInt64Type(), // size_t num_cases
-        LLVMInt64Type()  // int64_t timeout_ns
+        i64_ty,          // size_t num_cases
+        i64_ty           // int64_t timeout_ns
     };
-    LLVMTypeRef func_type = LLVMFunctionType(LLVMInt32Type(), param_types, 3, 0);
-    
-    LLVMValueRef case_count_val = LLVMConstInt(LLVMInt64Type(), case_count - (has_default ? 1 : 0), 0);
-    LLVMValueRef timeout_val = LLVMConstInt(LLVMInt64Type(), -1, 0); // No timeout
-    
+    LLVMTypeRef func_type = LLVMFunctionType(LLVMInt32TypeInContext(ctx), param_types, 3, 0);
+
+    LLVMValueRef case_count_val = LLVMConstInt(i64_ty, case_count, 0);
+    LLVMValueRef timeout_val = LLVMConstInt(i64_ty,
+                                            has_default ? 0ULL : (unsigned long long)(-1LL), 0);
+
     LLVMValueRef args[] = { cases_array, case_count_val, timeout_val };
     LLVMValueRef selected_case = LLVMBuildCall2(codegen->builder, func_type, select_func, args, 3, "selected_case");
-    
-    // Create switch based on the result
-    LLVMValueRef switch_inst = LLVMBuildSwitch(codegen->builder, selected_case, 
-                                               has_default ? default_block : end_block, 
-                                               (unsigned)(case_count - (has_default ? 1 : 0)));
-    
+
+    // Create switch based on the result. -1 (nothing ready, default present) and
+    // any unmatched value fall through to the default (or end) block.
+    LLVMValueRef switch_inst = LLVMBuildSwitch(codegen->builder, selected_case,
+                                               has_default ? default_block : end_block,
+                                               (unsigned)case_count);
+
     // Add cases to switch
     case_index = 0;
     case_node = select_stmt->cases;
     while (case_node && case_index < case_count) {
         SelectCaseNode* select_case = (SelectCaseNode*)case_node;
-        
+
         if (select_case->comm != NULL) {
-            // Regular case - add to switch
-            LLVMValueRef case_val = LLVMConstInt(LLVMInt32Type(), case_index, 0);
+            // Regular case - add to switch (full-list index matches the runtime).
+            LLVMValueRef case_val = LLVMConstInt(LLVMInt32TypeInContext(ctx), case_index, 0);
             LLVMAddCase(switch_inst, case_val, case_blocks[case_index]);
         }
-        
+
         case_node = case_node->next;
         case_index++;
     }
@@ -1006,10 +1026,12 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 return 0;
             }
         }
-        
-        // Branch to end
-        LLVMBuildBr(codegen->builder, end_block);
-        
+
+        // Branch to end, unless the body already terminated (e.g. return/break).
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            LLVMBuildBr(codegen->builder, end_block);
+        }
+
         case_node = case_node->next;
         case_index++;
     }
@@ -1023,17 +1045,19 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 }
 
 #if LLVM_AVAILABLE
-// Helper function to get select case type
-LLVMTypeRef codegen_get_select_case_type(CodeGenerator* codegen __attribute__((unused))) {
-    // Create struct type for goo_select_case_t
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+// Helper function to get select case type. Layout must match goo_select_case_t
+// in runtime.h exactly: { goo_channel_t*, void*, int is_send, int ready }.
+LLVMTypeRef codegen_get_select_case_type(CodeGenerator* codegen) {
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
     LLVMTypeRef field_types[] = {
         void_ptr_type,  // goo_channel_t* channel
         void_ptr_type,  // void* data
-        LLVMInt32Type(), // int is_send
-        LLVMInt32Type()  // int ready
+        i32,            // int is_send
+        i32             // int ready
     };
-    return LLVMStructType(field_types, 4, 0);
+    return LLVMStructTypeInContext(ctx, field_types, 4, 0);
 }
 #endif
 
@@ -1043,13 +1067,15 @@ LLVMValueRef codegen_get_select_function(CodeGenerator* codegen) {
     LLVMValueRef select_func = LLVMGetNamedFunction(codegen->module, "goo_select");
     if (!select_func) {
         // Declare goo_select if not already declared
-        LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMContextRef ctx = codegen->context;
+        LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
         LLVMTypeRef param_types[] = {
             void_ptr_type,   // goo_select_case_t* cases
-            LLVMInt64Type(), // size_t num_cases
-            LLVMInt64Type()  // int64_t timeout_ns
+            i64,             // size_t num_cases
+            i64              // int64_t timeout_ns
         };
-        LLVMTypeRef func_type = LLVMFunctionType(LLVMInt32Type(), param_types, 3, 0);
+        LLVMTypeRef func_type = LLVMFunctionType(LLVMInt32TypeInContext(ctx), param_types, 3, 0);
         select_func = LLVMAddFunction(codegen->module, "goo_select", func_type);
     }
     return select_func;
@@ -1061,13 +1087,15 @@ LLVMValueRef codegen_get_select_function(CodeGenerator* codegen) {
 int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker, 
                               LLVMValueRef cases_array, size_t case_index, 
                               SelectCaseNode* select_case) {
-    // Get pointer to the case struct in the array
+    // Get pointer to the case struct in the array. cases_array is a pointer to
+    // the first select_case_type element (from LLVMBuildArrayAlloca), so the
+    // i-th case is a single-index GEP — NOT a two-index [0, i] which would
+    // wrongly select field i of element 0.
+    LLVMContextRef ctx = codegen->context;
     LLVMTypeRef select_case_type = codegen_get_select_case_type(codegen);
-    LLVMValueRef indices[] = {
-        LLVMConstInt(LLVMInt32Type(), 0, 0),           // Array index
-        LLVMConstInt(LLVMInt32Type(), case_index, 0)   // Case index
-    };
-    LLVMValueRef case_ptr = LLVMBuildGEP2(codegen->builder, select_case_type, cases_array, indices, 2, "case_ptr");
+    LLVMValueRef elem_index = LLVMConstInt(LLVMInt64TypeInContext(ctx), case_index, 0);
+    LLVMValueRef case_ptr = LLVMBuildGEP2(codegen->builder, select_case_type, cases_array,
+                                          &elem_index, 1, "case_ptr");
     
     // Parse the communication operation
     if (!select_case->comm) return 0;
@@ -1116,10 +1144,18 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
             ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
             if (!channel_val) return 0;
             channel = channel_val->llvm_value;
-            
-            // Allocate space for received value
-            data_ptr = LLVMBuildAlloca(codegen->builder, LLVMInt32Type(), "recv_space");
-            
+
+            // Allocate space for the received value sized to the channel's
+            // element type (not a hardcoded i32, which truncates int64/structs).
+            LLVMTypeRef recv_ty = LLVMInt32TypeInContext(ctx);  // fallback
+            Type* chan_goo = channel_val->goo_type;
+            if (chan_goo && chan_goo->kind == TYPE_CHANNEL &&
+                chan_goo->data.channel.element_type) {
+                LLVMTypeRef et = codegen_type_to_llvm(codegen, chan_goo->data.channel.element_type);
+                if (et) recv_ty = et;
+            }
+            data_ptr = LLVMBuildAlloca(codegen->builder, recv_ty, "recv_space");
+
             value_info_free(channel_val);
         }
     }
@@ -1130,7 +1166,7 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
     }
     
     // Cast pointers to void*
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     channel = LLVMBuildBitCast(codegen->builder, channel, void_ptr_type, "channel_void_ptr");
     data_ptr = LLVMBuildBitCast(codegen->builder, data_ptr, void_ptr_type, "data_void_ptr");
     
@@ -1143,9 +1179,12 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
     LLVMValueRef data_field_ptr = LLVMBuildStructGEP2(codegen->builder, select_case_type, case_ptr, 1, "data_field");
     LLVMBuildStore(codegen->builder, data_ptr, data_field_ptr);
     
-    // case_ptr->is_send = is_send
+    // case_ptr->is_send = is_send. The struct field is i32 (matching C `int`),
+    // so the constant must be i32 — storing an i1 here would write only one byte
+    // and leave the upper three bytes as uninitialized garbage, which the
+    // runtime would read as a nonzero (and wrong) is_send.
     LLVMValueRef is_send_field_ptr = LLVMBuildStructGEP2(codegen->builder, select_case_type, case_ptr, 2, "is_send_field");
-    LLVMValueRef is_send_val = LLVMConstInt(LLVMInt1Type(), is_send, 0);
+    LLVMValueRef is_send_val = LLVMConstInt(LLVMInt32TypeInContext(ctx), is_send, 0);
     LLVMBuildStore(codegen->builder, is_send_val, is_send_field_ptr);
     
     return 1;

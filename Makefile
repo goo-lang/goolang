@@ -664,6 +664,21 @@ unbuffered-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M8 select. select-probe: blocking select over channels — picks a ready case
+# (at a non-zero index), fires the default when nothing is ready, and blocks
+# until a goroutine makes a case ready.
+select-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== select-probe: blocking select (ready case / default / blocking) ==="
+	$(COMPILER) -o build/select_probe examples/select_probe.goo
+	@./build/select_probe > build/select_probe.actual.txt
+	@if diff -u examples/select_probe.expected.txt build/select_probe.actual.txt; then \
+	  echo "select-probe: PASS"; \
+	else \
+	  echo "select-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 block-scope-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== block-scope-probe: inner-block redeclarations do not leak ==="
@@ -771,7 +786,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe block-scope-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

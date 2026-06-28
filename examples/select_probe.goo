@@ -1,0 +1,41 @@
+// select_probe: blocking select over channels.
+//   (1) picks the ready case when it is NOT index 0 (catches index alignment);
+//   (2) fires the default when nothing is ready (non-blocking select);
+//   (3) blocks until a goroutine makes a case ready.
+// Output is deterministic.
+package main
+
+import "fmt"
+
+func sender(ch chan int) {
+    ch <- 7
+}
+
+func main() {
+    a := make_chan(int, 1)
+    b := make_chan(int, 1)
+
+    // (1) Only b is ready; the ready case is index 1, not 0.
+    b <- 2
+    select {
+    case <-a:
+        fmt.Println(10)
+    case <-b:
+        fmt.Println(20)
+    }
+
+    // (2) Nothing ready -> the default case fires.
+    select {
+    case <-a:
+        fmt.Println(40)
+    default:
+        fmt.Println(30)
+    }
+
+    // (3) Blocking select: wakes when the goroutine sends on a.
+    go sender(a)
+    select {
+    case <-a:
+        fmt.Println(50)
+    }
+}
