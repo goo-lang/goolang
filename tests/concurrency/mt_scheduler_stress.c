@@ -17,7 +17,7 @@ static void worker(void* arg) {
 }
 
 int main(void) {
-    goo_scheduler_init(4);                    // force real multi-threading (default is 1)
+    goo_scheduler_init(4);                    // explicit 4 workers; bypasses the lazy NCPU/GOMAXPROCS default
     const int BATCHES = 100;
     const int PER = 16;
     for (int b = 0; b < BATCHES; b++) {
