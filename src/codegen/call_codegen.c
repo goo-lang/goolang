@@ -433,19 +433,23 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     // Generate call. LLVMGetElementType doesn't work with LLVM 22 opaque
     // pointers — use LLVMGlobalGetValueType which returns the underlying
     // function type directly for any global value (functions are globals).
-    LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(func_val->llvm_value), func_val->llvm_value, args, (unsigned)arg_count, "call");
+    // Use an empty result name for void functions (invalid to name a void value).
+    LLVMTypeRef func_llvm_type = LLVMGlobalGetValueType(func_val->llvm_value);
+    const char* result_name = (LLVMGetTypeKind(LLVMGetReturnType(func_llvm_type)) == LLVMVoidTypeKind)
+                              ? "" : "call";
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder, func_llvm_type, func_val->llvm_value, args, (unsigned)arg_count, result_name);
 
 
     free(args);
-    
+
     // Get return type
     Type* return_type = type_check_call_expr(checker, expr);
     value_info_free(func_val);
-    
+
     if (!return_type) {
         return NULL;
     }
-    
+
     return value_info_new(NULL, result, return_type);
 #endif
 }
