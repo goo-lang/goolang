@@ -1,0 +1,20 @@
+// unbuffered_probe: an unbuffered channel (make_chan with no capacity) blocks
+// the sender until a receiver takes each value — a true rendezvous. A goroutine
+// sends two values; main receives both. The second send exercises slot reuse.
+// Output is deterministic: sender sends 7 then 35, main receives in that order.
+package main
+
+import "fmt"
+
+func sender(ch chan int) {
+    ch <- 7
+    ch <- 35
+}
+
+func main() {
+    ch := make_chan(int)   // unbuffered (capacity 0)
+    go sender(ch)
+    a := <-ch
+    b := <-ch
+    fmt.Println(a + b)
+}

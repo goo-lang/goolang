@@ -337,9 +337,15 @@ struct goo_channel {
     
     int closed;
     uint64_t id;
-    
+
     struct goo_goroutine* send_waiters;
     struct goo_goroutine* recv_waiters;
+
+    // Unbuffered (capacity == 0) rendezvous handoff: a sender parks one value in
+    // rv_slot (rv_full = 1) and blocks until a receiver copies it out and clears
+    // rv_full. Reuses not_empty (receivers wait) and not_full (senders wait).
+    void* rv_slot;
+    int rv_full;
     
     // Pattern-specific data
     union {

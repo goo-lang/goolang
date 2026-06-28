@@ -99,7 +99,11 @@ void goo_chan_free(goo_channel_t* ch) {
     if (ch->buffer) {
         goo_free(ch->buffer);
     }
-    
+
+    if (ch->rv_slot) {
+        goo_free(ch->rv_slot);
+    }
+
     if (ch->endpoint) {
         goo_free(ch->endpoint);
     }
@@ -272,11 +276,41 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         goo_mutex_unlock(ch->mutex);
         return 1;  // Success
     } else {
-        // Unbuffered channel - need direct handoff
-        // TODO: Implement direct goroutine handoff
-        // For now, just fail
+        // Unbuffered channel: rendezvous handoff. Park the value in the 1-slot
+        // buffer, wake a receiver, then block until the receiver consumes it so
+        // send returns only after the value has been delivered (Go semantics).
+#ifdef GOO_PLATFORM_UNIX
+        // Wait until the slot is free (a previous sender's value was consumed).
+        while (ch->rv_full && !ch->closed) {
+            pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+        }
+        if (ch->closed) {
+            goo_mutex_unlock(ch->mutex);
+            return 0;
+        }
+
+        if (!ch->rv_slot) {
+            ch->rv_slot = goo_alloc(ch->elem_size);
+        }
+        memcpy(ch->rv_slot, data, ch->elem_size);
+        ch->rv_full = 1;
+
+        // Wake a waiting receiver.
+        pthread_cond_signal(&ch->not_empty->cond);
+
+        // Block until the receiver has copied the value out.
+        while (ch->rv_full && !ch->closed) {
+            pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
+        }
+
+        // If the channel was closed before the value was taken, the send failed.
+        int delivered = !ch->rv_full;
+        goo_mutex_unlock(ch->mutex);
+        return delivered ? 1 : 0;
+#else
         goo_mutex_unlock(ch->mutex);
         return 0;
+#endif
     }
 }
 
@@ -359,11 +393,30 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         goo_mutex_unlock(ch->mutex);
         return 1;  // Success
     } else {
-        // Unbuffered channel - need direct handoff
-        // TODO: Implement direct goroutine handoff
-        // For now, just fail
+        // Unbuffered channel: rendezvous handoff. Block until a sender has
+        // parked a value, copy it out, clear the slot, and wake the sender.
+#ifdef GOO_PLATFORM_UNIX
+        while (!ch->rv_full && !ch->closed) {
+            pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
+        }
+        if (!ch->rv_full && ch->closed) {
+            goo_mutex_unlock(ch->mutex);
+            return 0;  // Closed with no value parked.
+        }
+
+        memcpy(data, ch->rv_slot, ch->elem_size);
+        ch->rv_full = 0;
+
+        // Release the sender (its "wait until consumed" loop) and any sender
+        // waiting for the slot to free up.
+        pthread_cond_signal(&ch->not_full->cond);
+
+        goo_mutex_unlock(ch->mutex);
+        return 1;
+#else
         goo_mutex_unlock(ch->mutex);
         return 0;
+#endif
     }
 }
 
