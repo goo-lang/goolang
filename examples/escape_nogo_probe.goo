@@ -1,0 +1,14 @@
+// Control for M8b scope: `&local` in a function with NO `go` must NOT be
+// promoted — the local stays a stack alloca. (Compile + IR check only.)
+package main
+
+import "fmt"
+
+func usePtr(p *int) int {
+    return *p
+}
+
+func main() {
+    n := 5
+    fmt.Println(usePtr(&n))   // &n taken, but main() has no `go` → no promotion
+}
