@@ -48,7 +48,7 @@
 - Consumes: M7 channels (`make_chan`, `<-`), runtime `goo_go`, `codegen_get_channel_type`, `codegen->context`.
 - Produces: working `go f(ch)` spawning. No new public signatures.
 
-- [ ] **Step 1: Write the failing test (probe + expected)**
+- [x] **Step 1: Write the failing test (probe + expected)**
 
 Create `examples/go_probe.goo`:
 
@@ -86,7 +86,7 @@ Create `examples/go_probe.expected.txt`:
 9
 ```
 
-- [ ] **Step 2: Build and run to confirm it fails**
+- [x] **Step 2: Build and run to confirm it fails**
 
 ```bash
 make goo lib/libgoo_runtime.a
@@ -96,11 +96,11 @@ bin/goo -o build/go_probe examples/go_probe.goo
 
 Expected: **FAIL** — LLVM `verifyModule` error ("Function context does not match Module context" / call-param mismatch on `goo_go`, the global-context bug), or — if it compiles — a hang/garbage because the goroutine got `NULL` instead of the channel. Capture as RED. (If it produces a binary, run `timeout 10 ./build/go_probe` and capture the wrong/garbled output or hang.)
 
-- [ ] **Step 3: Discovery spike — scheduler lifecycle + confirm mechanism**
+- [x] **Step 3: Discovery spike — scheduler lifecycle + confirm mechanism**
 
 Confirm (a) the failure is the global-context bug and/or the dropped `NULL` arg in `codegen_generate_go_stmt` (native path, ~lines 740-768); (b) read `src/runtime/concurrency.c` `goo_go`/`goo_scheduler_init` and determine whether the program **exits cleanly (rc 0)** once `main` returns with a live scheduler thread, or whether it hangs at teardown. Record the finding in the PR description. If a teardown hang is found, the minimal fix (detached threads, or shutdown on main-return) is in scope; note it. No code change in this step.
 
-- [ ] **Step 4: Fix the go-stmt codegen (context + argument)**
+- [x] **Step 4: Fix the go-stmt codegen (context + argument)**
 
 In `src/codegen/statement_codegen.c` `codegen_generate_go_stmt` (native path), replace the global-context builders and the `NULL` argument. Use `codegen->context`, and pass the call's single argument (bitcast to `i8*`) as `goo_go`'s `arg`:
 
@@ -145,7 +145,7 @@ In `src/codegen/statement_codegen.c` `codegen_generate_go_stmt` (native path), r
 
 (Leave the WASM branch above it unchanged. Confirm during the spike whether the existing code already binds `func_val`/`call` exactly so — adapt variable names to the actual code, keeping the in-context types and the real-argument pass-through.)
 
-- [ ] **Step 5: Add the typecheck rejection for out-of-scope forms**
+- [x] **Step 5: Add the typecheck rejection for out-of-scope forms**
 
 In `src/types/type_checker.c` `type_check_go_stmt` (line 967), after type-checking the call, reject multi-arg and non-pointer-arg forms. Count `call->args`; if more than one, or if the single arg's type is not pointer-sized (a channel or pointer), error:
 
@@ -174,7 +174,7 @@ In `src/types/type_checker.c` `type_check_go_stmt` (line 967), after type-checki
 
 (Use the actual `TYPE_CHANNEL`/`TYPE_POINTER` enum names from `include/types.h`; if a `type_is_pointer`-style helper exists, prefer it. Adapt to the real `CallExprNode`/`type_error` signatures.) If a header changed, `make clean && make goo`; otherwise `make goo lib/libgoo_runtime.a`.
 
-- [ ] **Step 6: Run to verify the probe passes**
+- [x] **Step 6: Run to verify the probe passes**
 
 ```bash
 make goo lib/libgoo_runtime.a
@@ -186,7 +186,7 @@ bin/goo --emit-llvm examples/go_probe.goo && opt --passes=verify -disable-output
 
 Expected: no diff, exit 0 (not 124/timeout), IR verify clean. (Use `opt-22` if `opt` is absent.)
 
-- [ ] **Step 7: Verify the rejections (manual, no probe — negative cases)**
+- [x] **Step 7: Verify the rejections (manual, no probe — negative cases)**
 
 ```bash
 printf 'package main\nfunc w(a chan int, b chan int){}\nfunc main(){ c := make_chan(int,1)\n go w(c, c) }\n' > /tmp/go_multi.goo
@@ -197,7 +197,7 @@ bin/goo -o /tmp/go_val /tmp/go_val.goo 2>&1 | head -2       # expect the non-poi
 
 Expected: both produce the M8-scope compile errors (capture for the report). No probe is added for negative cases (the diff harness can't assert a compile failure).
 
-- [ ] **Step 8: Add the Makefile probe target (under timeout) + CI**
+- [x] **Step 8: Add the Makefile probe target (under timeout) + CI**
 
 Add to `Makefile`:
 
@@ -218,11 +218,11 @@ go-probe: $(COMPILER) $(RUNTIME_LIB)
 
 Append `go-probe` to the `verify:` dependency list and to the probe list on `.github/workflows/tests.yml:54`.
 
-- [ ] **Step 9: Verify the whole gate + unit suite**
+- [x] **Step 9: Verify the whole gate + unit suite**
 
 Run the full CI probe list (read from `tests.yml:54`, now incl. `go-probe`) plus `make test`. Expected: every probe `PASS`, exit 0; `make test` no new failures. (The channel probes — `chan-probe` etc. — are the key regression guard, since `go` builds on them.)
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add examples/go_probe.goo examples/go_probe.expected.txt \
@@ -235,11 +235,13 @@ git commit --no-gpg-sign -m "feat(concurrency): go f(ch) spawns a goroutine with
 
 ## Final verification
 
-- [ ] `go-probe` green under timeout (exit 0, output `7`/`9`); `opt --passes=verify` clean.
-- [ ] Multi-arg and non-pointer-arg `go` forms rejected at compile time (Step 7 evidence).
-- [ ] Full CI probe gate + `make test` green — no regressions (esp. channel probes).
-- [ ] Clean program exit with a live scheduler confirmed (Step 3 spike).
-- [ ] Spec §10 success criteria met.
+- [x] `go-probe` green under timeout (exit 0, output `7`/`9`); `opt --passes=verify` clean.
+- [x] Multi-arg and non-pointer-arg `go` forms rejected at compile time (Step 7 evidence).
+- [x] Full CI probe gate + `make test` green — no regressions (esp. channel probes). `make test`: 76 passed, 1 skipped, 0 failed.
+- [x] Clean program exit with a live scheduler confirmed (Step 3 spike): `go-probe` exits 0 under `timeout 10` with a live scheduler thread.
+- [x] Spec §10 success criteria met.
+
+**Status: COMPLETE.** Shipped in [PR #28](https://github.com/dd0wney/goolang/pull/28). Local gate fully green (authoritative); GitHub Actions red is the known dd0wney billing block (jobs never start — "recent account payments have failed"), not a real failure.
 
 ## Spec coverage self-check
 
