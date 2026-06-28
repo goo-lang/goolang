@@ -649,6 +649,14 @@ go-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# M8c: M:N scheduler correctness under real multi-threading (num_threads=4).
+mt-scheduler-stress: $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== mt-scheduler-stress: M:N scheduler correct under num_threads=4 ==="
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/mt_scheduler_stress.c $(RUNTIME_LIB) -lpthread -lm -o build/mt_scheduler_stress
+	@timeout 60 ./build/mt_scheduler_stress; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "mt-scheduler-stress: PASS"; else echo "mt-scheduler-stress: FAIL (exit $$rc — crash/hang/wrong count)"; exit 1; fi
+
 # M8b escape-probe: a local whose address escapes into a goroutine spawned from
 # a non-main frame survives after that frame returns (heap-promotion).
 escape-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -816,7 +824,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

@@ -25,6 +25,23 @@
 // Global scheduler instance
 goo_scheduler_t* g_scheduler = NULL;
 
+// M8c: per-worker scheduler state. Each OS worker thread has its own scheduler
+// return context and "currently running goroutine". These supersede the shared
+// g_scheduler->main_context / ->current_goroutine fields (which are left unused
+// to avoid a header change). Sharing those single fields across N workers was
+// the multi-thread corruption (stomped return context / wrong current).
+//
+// t_reap carries the disposition decision back to the worker WITHOUT
+// dereferencing the goroutine after the swap: a goroutine that EXITS sets
+// t_reap to itself (it is never re-enqueued, so only this worker references it,
+// so this worker frees it); a goroutine that YIELDS leaves t_reap NULL (it
+// re-enqueued itself and may already be running/freed on another worker, so
+// this worker must not touch it). ucontext keeps the same OS thread across the
+// switch, so the goroutine and its worker share these thread-locals.
+static _Thread_local ucontext_t       t_sched_ctx;
+static _Thread_local goo_goroutine_t* t_current = NULL;
+static _Thread_local goo_goroutine_t* t_reap = NULL;
+
 // Forward declarations
 static void* scheduler_main_loop(void* arg);
 static void goroutine_wrapper(void);
@@ -154,7 +171,7 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     
     goroutine->context.uc_stack.ss_sp = goroutine->stack;
     goroutine->context.uc_stack.ss_size = goroutine->stack_size;
-    goroutine->context.uc_link = &g_scheduler->main_context;
+    goroutine->context.uc_link = NULL;  // overridden by scheduler_main_loop before each swap
     
     makecontext(&goroutine->context, goroutine_wrapper, 0);
 #pragma clang diagnostic pop
@@ -167,21 +184,18 @@ goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
 }
 
 void goo_yield(void) {
-    if (!g_scheduler || !g_scheduler->current_goroutine) {
+    goo_goroutine_t* current = t_current;
+    if (!g_scheduler || !current) {
         return;
     }
-    
-    goo_goroutine_t* current = g_scheduler->current_goroutine;
+
     current->state = GOO_GOROUTINE_READY;
-    
-    // Add back to ready queue
-    scheduler_add_goroutine(current);
-    
-    // Switch to scheduler
+    scheduler_add_goroutine(current);   // re-enqueue self before switching away
+
 #ifdef GOO_PLATFORM_UNIX
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    if (swapcontext(&current->context, &g_scheduler->main_context) == -1) {
+    if (swapcontext(&current->context, &t_sched_ctx) == -1) {
         goo_panic("Failed to yield goroutine");
     }
 #pragma clang diagnostic pop
@@ -189,35 +203,36 @@ void goo_yield(void) {
 }
 
 void goo_goroutine_exit(void) {
-    if (!g_scheduler || !g_scheduler->current_goroutine) {
+    goo_goroutine_t* current = t_current;
+    if (!g_scheduler || !current) {
         return;
     }
-    
-    goo_goroutine_t* current = g_scheduler->current_goroutine;
+
     current->state = GOO_GOROUTINE_DONE;
-    
+
     goo_mutex_lock(g_scheduler->scheduler_mutex);
     g_scheduler->stats.num_goroutines--;
     goo_mutex_unlock(g_scheduler->scheduler_mutex);
-    
-    // Free goroutine resources
-    goo_free(current->stack);
-    goo_free(current);
-    
-    g_scheduler->current_goroutine = NULL;
-    
-    // Return to scheduler
+
+    // Hand this goroutine to the worker for reaping. Do NOT free current->stack
+    // or current here: this code is executing ON current->stack. Setting t_reap
+    // (this OS thread's thread-local) tells the worker — after swapcontext
+    // returns onto its own stack — to free us. A yielding goroutine leaves
+    // t_reap NULL, so it is never freed from under another worker.
+    t_reap = current;
+
+    // Return control to this worker's scheduler context.
 #ifdef GOO_PLATFORM_UNIX
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    setcontext(&g_scheduler->main_context);
+    setcontext(&t_sched_ctx);
 #pragma clang diagnostic pop
 #endif
 }
 
 // Goroutine wrapper function
 static void goroutine_wrapper(void) {
-    goo_goroutine_t* current = g_scheduler->current_goroutine;
+    goo_goroutine_t* current = t_current;
     if (current && current->function) {
         current->function(current->arg);
     }
@@ -233,21 +248,37 @@ static void* scheduler_main_loop(void* arg) {
         goo_goroutine_t* goroutine = scheduler_get_next_goroutine();
         
         if (goroutine) {
-            g_scheduler->current_goroutine = goroutine;
+            t_current = goroutine;
+            t_reap = NULL;                 // cleared each run; the goroutine sets it on exit
             goroutine->state = GOO_GOROUTINE_RUNNING;
-            
+
             goo_mutex_lock(g_scheduler->scheduler_mutex);
             g_scheduler->stats.context_switches++;
             goo_mutex_unlock(g_scheduler->scheduler_mutex);
-            
+
 #ifdef GOO_PLATFORM_UNIX
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            if (swapcontext(&g_scheduler->main_context, &goroutine->context) == -1) {
+            // Return to THIS worker's scheduler context when the goroutine
+            // exits or yields.
+            goroutine->context.uc_link = &t_sched_ctx;
+            if (swapcontext(&t_sched_ctx, &goroutine->context) == -1) {
                 goo_panic("Failed to switch to goroutine");
             }
 #pragma clang diagnostic pop
 #endif
+
+            // Back on this worker's own stack. Reap ONLY via t_reap, which the
+            // goroutine set (to itself) iff it EXITED. Do NOT read goroutine->*
+            // here: if it yielded, it re-enqueued itself and another worker may
+            // already have run and freed it — dereferencing it would be a UAF.
+            // A DONE goroutine is never re-enqueued, so t_reap is ours alone.
+            if (t_reap) {
+                goo_free(t_reap->stack);
+                goo_free(t_reap);
+                t_reap = NULL;
+            }
+            t_current = NULL;
         } else {
             // No goroutines ready, check for deadlock
             if (goo_deadlock_check()) {
