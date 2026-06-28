@@ -1,8 +1,6 @@
 #include "runtime.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <time.h>
 
 extern goo_scheduler_t* g_scheduler;
 
