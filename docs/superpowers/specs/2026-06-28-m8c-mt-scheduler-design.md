@@ -45,7 +45,7 @@ static _Thread_local goo_goroutine_t* t_current;    // goroutine currently runni
 static _Thread_local goo_goroutine_t* t_reap;       // goroutine to free after swap (set on EXIT only)
 ```
 
-(Use the actual context type used by the goroutine `context` field — `ucontext_t`. The `goo_scheduler_t` struct's `main_context`/`current_goroutine` fields are left in place but unused, to avoid a header change. ucontext keeps the same OS thread across a switch, so a goroutine and the worker running it share these thread-locals.)
+(Use the actual context type used by the goroutine `context` field — `ucontext_t`. The `goo_scheduler_t` struct's `main_context`/`current_goroutine` fields are left in place to avoid a header change. `main_context` becomes genuinely unused. **`current_goroutine` is NOT unused:** `src/runtime/channels.c` still reads/writes it for channel-wait bookkeeping (marking a goroutine `BLOCKED` / `waiting_on_channel`). After this change the scheduler no longer writes it, so it stays NULL and that bookkeeping becomes inert — a **known, tracked regression** of the best-effort deadlock detector, see §8a. It is non-fatal: channel block/wake is condvar-based and independent of this field, and the detector (which walks `ready_queue`) could not observe cond_wait-blocked goroutines even before this change. ucontext keeps the same OS thread across a switch, so a goroutine and the worker running it share these thread-locals.)
 
 ### 4.2 Deferred stack-free (reap from the scheduler, via a thread-local)
 - `goo_goroutine_exit`: set `state = GOO_GOROUTINE_DONE`, decrement `stats.num_goroutines` under the mutex, set `t_reap = current`, then `setcontext(&t_sched_ctx)`. **Remove** `goo_free(current->stack)` and `goo_free(current)`.
@@ -75,19 +75,19 @@ static _Thread_local goo_goroutine_t* t_reap;       // goroutine to free after s
 
 | Unit | File | Change |
 |---|---|---|
-| Worker thread-local state | `src/runtime/concurrency.c` | add `_Thread_local t_sched_ctx`, `t_current`; stop using `g_scheduler->{main_context,current_goroutine}` |
-| `goo_goroutine_exit` | `src/runtime/concurrency.c:191` | mark DONE + dec stats + `setcontext(&t_sched_ctx)`; no self-free |
-| `scheduler_main_loop` | `src/runtime/concurrency.c:228` | set `uc_link`/`t_current` per iteration; reap DONE after `swapcontext` |
+| Worker thread-local state | `src/runtime/concurrency.c` | add `_Thread_local t_sched_ctx`, `t_current`, `t_reap`; stop using `g_scheduler->{main_context,current_goroutine}` in the swap/exit/reap logic |
+| `goo_goroutine_exit` | `src/runtime/concurrency.c:191` | mark DONE + dec stats + set `t_reap` + `setcontext(&t_sched_ctx)`; no self-free |
+| `scheduler_main_loop` | `src/runtime/concurrency.c:228` | set `uc_link`/`t_current`/`t_reap=NULL` per iteration; reap via `t_reap` after `swapcontext` |
 | `goo_yield` | `src/runtime/concurrency.c:169` | use thread-local context |
-| (optional) struct cleanup | `include/runtime.h` / `goo_scheduler_t` | remove now-unused `main_context`/`current_goroutine` fields if they live there (header edit ⇒ `make clean`) |
+| struct fields | `include/runtime.h` / `goo_scheduler_t` | **left in place, header untouched.** `main_context` becomes dead; `current_goroutine` is still referenced by `channels.c` (now always NULL) — see §8a follow-up. No `make clean` needed. |
 
-No new files. No public API change.
+No new files. No public API change. No header change.
 
 ---
 
 ## 6. Testing / CI gates
 
-- **`mt-scheduler-stress` (RED→GREEN acceptance):** a C test linking `lib/libgoo_runtime.a` that calls `goo_scheduler_init(4)`, spawns many goroutines (each does bounded work and delivers a value over a buffered channel), `goo_scheduler_wait()`, and checks the aggregated result. Run in a **loop (≥50 iterations)** under `timeout`. Must FAIL before the fix (crash/hang/ wrong-sum in a meaningful fraction of iterations) and PASS after (0 crashes, 0 hangs, correct result, every iteration). A `.goo` probe cannot request N threads, so this acceptance test is C-level by necessity — stated explicitly.
+- **`mt-scheduler-stress` (RED→GREEN acceptance):** a C test linking `lib/libgoo_runtime.a` that calls `goo_scheduler_init(4)`, spawns goroutines in batches (each does bounded work and increments a shared C11 `atomic_int`), `goo_scheduler_wait()`, and checks the per-batch count. Run as an **internal loop (≥50 batches)** under `timeout`. Must FAIL before the fix (crash/hang/wrong-count in a meaningful fraction) and PASS after (0 crashes, 0 hangs, correct count, every batch). A `.goo` probe cannot request N threads, so this acceptance test is C-level by necessity — stated explicitly. NOTE: it deliberately does **not** use channels or `goo_yield`; it targets the exit/reap/per-thread-context defects that were the actual bug. Channel-under-N=4 coverage is a tracked follow-up (§8a).
 - Added as a Makefile target and wired into BOTH `verify:` and `.github/workflows/tests.yml`.
 - **Regression:** the default is unchanged (1 worker), so the full pre-existing probe suite + `make test` (76 passed / 1 skipped) must stay green — the guard that single-threaded behavior is untouched.
 - `make test` (unit suite) shows no new failures.
@@ -108,8 +108,15 @@ No new files. No public API change.
 ## 8. Known risks
 
 - **ucontext + threads is subtle.** Each worker must only ever `swap`/`set` its own `t_sched_ctx`; the design keeps all context state thread-local to enforce this.
-- **Latent races elsewhere stay dormant** because the default is single-worker; they will surface when the default is flipped (tracked, §7). The stress test exercises channels under true N=4 parallelism, so channel-level races (if any) are caught here.
-- **Deadlock detector under MT** (`goo_deadlock_check`, `:253`) is exercised by the stress test; if it misfires under N>1 it will show as a HANG/early-stop and must be addressed within this work.
+- **Latent races elsewhere stay dormant** because the default is single-worker; they will surface when the default is flipped (tracked, §8a). The stress test exercises the **exit/reap/per-thread-context** paths under true N=4 parallelism — exactly what was broken. It does **not** exercise channels or `goo_yield`; channel-under-true-parallelism coverage is a tracked follow-up (§8a).
+
+## 8a. Tracked pre-default-flip follow-up (must all hold before N>1 becomes the default)
+
+These were surfaced by the final whole-branch review. None block M8c (default stays 1) but all gate the eventual default-flip:
+
+1. **Deadlock-detector / `current_goroutine` regression.** `channels.c` marks channel-blocked goroutines via `g_scheduler->current_goroutine`, which M8c leaves NULL. Restore detector visibility (e.g. a `goo_current_goroutine()` accessor returning `t_current`, or sync the field, or delete the dead bookkeeping and document). Non-fatal today (condvar-based block/wake; detector already ineffective for channel deadlocks).
+2. **`goo_yield` save-before-publish race.** `goo_yield` re-enqueues `current` before `swapcontext` writes `current->context`; at N>1 another worker could swap into it first. Currently **unreachable** (no caller — channels use cond_wait). Must be fixed before any `goo_yield` caller is added *and* before the default-flip (swap-then-handoff).
+3. **Channel-using N=4 stress variant.** Add a stress test that drives channel send/recv across workers under N=4 (the current test does not).
 
 ---
 
@@ -118,7 +125,7 @@ No new files. No public API change.
 M8c is complete when:
 1. `mt-scheduler-stress` is RED before the fix and GREEN after — ≥50 iterations at N=4 with 0 crashes, 0 hangs, correct aggregated result.
 2. `goo_goroutine_exit` no longer frees the stack it runs on; the scheduler reaps DONE goroutines.
-3. `main_context`/`current_goroutine` are per-worker (thread-local); no shared scheduler-context field remains in use.
+3. The scheduler's swap/exit/reap logic uses only per-worker thread-local context (`t_sched_ctx`/`t_current`/`t_reap`); the scheduler no longer writes the shared `main_context`/`current_goroutine` fields. (The `current_goroutine` field is still read by `channels.c` — now inert; restoring that is the §8a follow-up.)
 4. Default behavior unchanged (`num_threads=1` lazy init); full pre-existing probe suite + `make test` stay green.
 5. Wired into `verify:` + `tests.yml`.
 6. Verified locally (CI may be billing-blocked).
