@@ -216,6 +216,20 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     
     // Add return if missing
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        if (is_entry_main) {
+            // Implicit structured-concurrency join (intentional Goo superset of
+            // Go): block until every goroutine spawned via `go` has finished, so
+            // fire-and-forget side effects are observable before the process
+            // exits — unlike Go, where main-return abandons running goroutines.
+            // The scheduler is lazily created by the first goo_go();
+            // goo_scheduler_wait() is a no-op when none ran. (A `main` that exits
+            // via an explicit `return` currently bypasses this; making the join
+            // uniform across all exit paths is a tracked follow-up.)
+            LLVMTypeRef wait_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), NULL, 0, 0);
+            LLVMValueRef wait_fn = LLVMGetNamedFunction(codegen->module, "goo_scheduler_wait");
+            if (!wait_fn) wait_fn = LLVMAddFunction(codegen->module, "goo_scheduler_wait", wait_ty);
+            LLVMBuildCall2(codegen->builder, wait_ty, wait_fn, NULL, 0, "");
+        }
         if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
             LLVMBuildRetVoid(codegen->builder);
         } else {

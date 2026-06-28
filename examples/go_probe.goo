@@ -1,0 +1,24 @@
+// go_probe: `go` actually spawns goroutines that run and are observable.
+// Three goroutines each send 1 into a buffered channel; main sums the three
+// receives. Output is order-independent on purpose (the scheduler interleaves
+// goroutines nondeterministically) — the sum is deterministic.
+package main
+
+import "fmt"
+
+func worker(done chan int) {
+    done <- 1
+}
+
+func main() {
+    done := make_chan(int, 3)
+    go worker(done)
+    go worker(done)
+    go worker(done)
+
+    sum := 0
+    for i := 0; i < 3; i = i + 1 {
+        sum = sum + <-done
+    }
+    fmt.Println(sum)
+}

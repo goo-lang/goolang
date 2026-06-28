@@ -168,6 +168,9 @@ typedef void (*goo_goroutine_func_t)(void* arg);
 // Goroutine creation and management
 void goo_scheduler_init(int num_threads);
 void goo_scheduler_shutdown(void);
+// Block the caller (typically generated main) until every spawned goroutine has
+// finished, so goroutine side effects are observable before the program exits.
+void goo_scheduler_wait(void);
 goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg);
 void goo_yield(void);
 void goo_goroutine_exit(void);
@@ -334,9 +337,15 @@ struct goo_channel {
     
     int closed;
     uint64_t id;
-    
+
     struct goo_goroutine* send_waiters;
     struct goo_goroutine* recv_waiters;
+
+    // Unbuffered (capacity == 0) rendezvous handoff: a sender parks one value in
+    // rv_slot (rv_full = 1) and blocks until a receiver copies it out and clears
+    // rv_full. Reuses not_empty (receivers wait) and not_full (senders wait).
+    void* rv_slot;
+    int rv_full;
     
     // Pattern-specific data
     union {

@@ -85,6 +85,32 @@ void goo_scheduler_shutdown(void) {
     g_scheduler = NULL;
 }
 
+// Run-to-completion barrier: block the calling thread until all spawned
+// goroutines have finished. Generated main() calls this before returning so
+// goroutine side effects are observable. Polls under the scheduler mutex,
+// matching the scheduler loop's existing sleep-based idiom. Returns immediately
+// if no scheduler exists (no goroutine was ever spawned), and bails out if the
+// scheduler has stopped (e.g. deadlock detector tripped) to avoid hanging.
+void goo_scheduler_wait(void) {
+    if (!g_scheduler) {
+        return;  // No goroutines were ever started.
+    }
+
+    for (;;) {
+        goo_mutex_lock(g_scheduler->scheduler_mutex);
+        int done = (g_scheduler->stats.num_goroutines == 0 &&
+                    g_scheduler->ready_queue == NULL);
+        int stopped = !g_scheduler->running;
+        goo_mutex_unlock(g_scheduler->scheduler_mutex);
+
+        if (done || stopped) {
+            break;
+        }
+
+        goo_platform_sleep_ns(500000);  // 0.5ms
+    }
+}
+
 // Goroutine creation
 goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     if (!g_scheduler) {
