@@ -42,26 +42,28 @@ Replace the shared `g_scheduler->main_context` and `g_scheduler->current_gorouti
 ```c
 static _Thread_local ucontext_t       t_sched_ctx;  // this worker's scheduler-return context
 static _Thread_local goo_goroutine_t* t_current;    // goroutine currently running on this worker
+static _Thread_local goo_goroutine_t* t_reap;       // goroutine to free after swap (set on EXIT only)
 ```
 
-(Use the actual context type used by the goroutine `context` field. The `goo_scheduler_t` struct's `main_context`/`current_goroutine` fields are removed or left unused.)
+(Use the actual context type used by the goroutine `context` field — `ucontext_t`. The `goo_scheduler_t` struct's `main_context`/`current_goroutine` fields are left in place but unused, to avoid a header change. ucontext keeps the same OS thread across a switch, so a goroutine and the worker running it share these thread-locals.)
 
-### 4.2 Deferred stack-free (reap from the scheduler)
-- `goo_goroutine_exit`: set `state = GOO_GOROUTINE_DONE`, decrement `stats.num_goroutines` under the mutex, then `setcontext(&t_sched_ctx)`. **Remove** `goo_free(current->stack)` and `goo_free(current)`.
-- `scheduler_main_loop`, immediately after `swapcontext(&t_sched_ctx, &g->context)` returns:
+### 4.2 Deferred stack-free (reap from the scheduler, via a thread-local)
+- `goo_goroutine_exit`: set `state = GOO_GOROUTINE_DONE`, decrement `stats.num_goroutines` under the mutex, set `t_reap = current`, then `setcontext(&t_sched_ctx)`. **Remove** `goo_free(current->stack)` and `goo_free(current)`.
+- `scheduler_main_loop`: set `t_reap = NULL` before each `swapcontext(&t_sched_ctx, &g->context)`; immediately after it returns:
   ```c
-  if (t_current && t_current->state == GOO_GOROUTINE_DONE) {
-      goo_free(t_current->stack);
-      goo_free(t_current);
+  if (t_reap) {                 // set iff the goroutine EXITED (not yielded)
+      goo_free(t_reap->stack);
+      goo_free(t_reap);
+      t_reap = NULL;
   }
   t_current = NULL;
   ```
-  Safe: the scheduler runs on the worker's own stack, never the goroutine's.
+  Safe: the scheduler runs on the worker's own stack, never the goroutine's, and it never dereferences the goroutine after the swap.
 
-### 4.3 Race-free ownership (why the reap rule is correct)
-- A **DONE** goroutine never re-enqueues itself (exit does not call `scheduler_add_goroutine`), so the only reference is the running worker's `t_current` → that worker reaps it; no other worker can see it.
-- A **yielded** goroutine (`goo_yield`, `:174-178`) sets `state = READY` and re-enqueues itself *before* swapping, so it is owned by the queue (and may already be running on another worker) → the scheduler's `DONE`-only reap rule does not touch it.
-- These two sets are disjoint, so reap-on-DONE is race-free.
+### 4.3 Race-free ownership (why reaping via `t_reap` is correct)
+- The worker must **not** read `g->state` (or any `g->*`) after the swap returns: a **yielded** goroutine (`goo_yield`, `:174-178`) sets `state = READY` and re-enqueues itself *before* swapping, so by the time the worker resumes, another worker may have already dequeued, run, finished, and freed it — reading `g->state` would itself be a use-after-free.
+- The disposition is therefore carried by `t_reap` (a thread-local set on the same OS thread before the switch back): **exit** sets `t_reap = current`; **yield** leaves it `NULL`.
+- A goroutine that set `t_reap` is **DONE** and is never re-enqueued, so the running worker holds the sole reference and frees it safely. A yielded goroutine leaves `t_reap` NULL, so the worker never touches it. The two paths are disjoint → race-free.
 
 ### 4.4 Per-running-thread `uc_link` and yield
 - Before each `swapcontext` in the loop, set `g->context.uc_link = &t_sched_ctx` so a goroutine that returns normally (backstop) goes to the worker that ran it.
