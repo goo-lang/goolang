@@ -121,18 +121,41 @@ void goo_scheduler_wait(void) {
         return;  // No goroutines were ever started.
     }
 
+    goo_mutex_lock(g_scheduler->scheduler_mutex);
+    g_scheduler->deadlock_detector.main_in_wait = 1;  // main's body is done
+    goo_mutex_unlock(g_scheduler->scheduler_mutex);
+
     for (;;) {
+        // Sleep first so any goroutine that was *signaled* just before main_in_wait
+        // was set has time to call goo_sched_block_end (decrement blocked_goroutines)
+        // before we inspect the count.  Without this, the poll loop can race with a
+        // goroutine that is in the process of waking (signaled but hasn't yet
+        // re-acquired ch->mutex to run goo_sched_block_end) and produce a false
+        // "all goroutines are asleep" abort on a live program.  0.5ms is orders of
+        // magnitude longer than a mutex-acquire + counter-decrement on any real
+        // system, so truly deadlocked goroutines (not signaled) will still be seen
+        // as blocked after the sleep.
+        goo_platform_sleep_ns(500000);  // 0.5ms
+
         goo_mutex_lock(g_scheduler->scheduler_mutex);
         int done = (g_scheduler->stats.num_goroutines == 0 &&
                     g_scheduler->ready_queue == NULL);
         int stopped = !g_scheduler->running;
+        // All live goroutines asleep, none runnable, and main is here (can't act)
+        // → deadlock. Closes the race where the last goroutine blocked before
+        // main_in_wait was set (so goo_sched_block_begin did not fire).
+        int deadlock = (g_scheduler->stats.num_goroutines > 0) &&
+                       (g_scheduler->deadlock_detector.blocked_goroutines ==
+                        (int)g_scheduler->stats.num_goroutines) &&
+                       (g_scheduler->ready_queue == NULL);
         goo_mutex_unlock(g_scheduler->scheduler_mutex);
 
+        if (deadlock) {
+            goo_deadlock_abort();
+        }
         if (done || stopped) {
             break;
         }
-
-        goo_platform_sleep_ns(500000);  // 0.5ms
     }
 }
 
@@ -212,6 +235,53 @@ void goo_yield(void) {
 
 goo_goroutine_t* goo_current_goroutine(void) {
     return t_current;
+}
+
+// M9: called by a participant immediately before it blocks on a channel
+// (cond_wait), while holding that channel's mutex. Accounts the block and, if
+// this makes every participant asleep, aborts with the deadlock message.
+void goo_sched_block_begin(void) {
+    if (!g_scheduler) {
+        // No scheduler means no goroutines were ever spawned.  If we reach
+        // here, main itself is blocking on a channel with nobody to wake it.
+        goo_deadlock_abort();
+    }
+    int is_goroutine = (goo_current_goroutine() != NULL);
+
+    goo_mutex_lock(g_scheduler->scheduler_mutex);
+    if (is_goroutine) {
+        g_scheduler->deadlock_detector.blocked_goroutines++;
+    }
+    int all_asleep = (g_scheduler->deadlock_detector.blocked_goroutines ==
+                      (int)g_scheduler->stats.num_goroutines) &&
+                     (g_scheduler->ready_queue == NULL);
+    // Goroutine path: only a deadlock if main can no longer act (it's in
+    // goo_scheduler_wait). Main path: only a deadlock if there are literally no
+    // goroutines left that could wake us.  We deliberately do NOT use all_asleep
+    // here: blocked_goroutines still counts goroutines that have been
+    // pthread_cond_signal()ed but haven't yet re-acquired the channel mutex to
+    // run goo_sched_block_end, so (blocked == num) can be transiently true for
+    // a live program and would produce a false positive.
+    int deadlock = is_goroutine
+        ? (all_asleep && g_scheduler->deadlock_detector.main_in_wait)
+        : (g_scheduler->stats.num_goroutines == 0 &&
+           g_scheduler->ready_queue == NULL);
+    goo_mutex_unlock(g_scheduler->scheduler_mutex);
+
+    if (deadlock) {
+        goo_deadlock_abort();
+    }
+}
+
+// M9: called by a goroutine immediately after it wakes from a channel cond_wait.
+void goo_sched_block_end(void) {
+    if (!g_scheduler) return;
+    if (goo_current_goroutine() == NULL) return;  // main is not counted
+    goo_mutex_lock(g_scheduler->scheduler_mutex);
+    if (g_scheduler->deadlock_detector.blocked_goroutines > 0) {
+        g_scheduler->deadlock_detector.blocked_goroutines--;
+    }
+    goo_mutex_unlock(g_scheduler->scheduler_mutex);
 }
 
 void goo_goroutine_exit(void) {
@@ -299,13 +369,8 @@ static void* scheduler_main_loop(void* arg) {
             }
             t_current = NULL;
         } else {
-            // No goroutines ready, check for deadlock
-            if (goo_deadlock_check()) {
-                // Deadlock detected, stop scheduler
-                break;
-            }
-            
-            // Sleep briefly
+            // No goroutine ready; idle briefly. (Deadlock detection happens at
+            // channel block points and in goo_scheduler_wait, not here.)
             goo_platform_sleep_ns(1000000);  // 1ms
         }
         
