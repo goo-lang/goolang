@@ -657,6 +657,22 @@ mt-scheduler-stress: $(RUNTIME_LIB)
 	@timeout 60 ./build/mt_scheduler_stress; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "mt-scheduler-stress: PASS"; else echo "mt-scheduler-stress: FAIL (exit $$rc — crash/hang/wrong count)"; exit 1; fi
 
+# M8d: goo_yield correctness under real multi-threading.
+yield-stress: $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== yield-stress: goo_yield safe under num_threads=4 ==="
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/yield_stress.c $(RUNTIME_LIB) -lpthread -lm -o build/yield_stress
+	@timeout 60 ./build/yield_stress; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "yield-stress: PASS"; else echo "yield-stress: FAIL (exit $$rc)"; exit 1; fi
+
+# M8d: channel send/recv correctness under real multi-threading.
+chan-mt-stress: $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== chan-mt-stress: channel send/recv correct under num_threads=4 ==="
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/chan_mt_stress.c $(RUNTIME_LIB) -lpthread -lm -o build/chan_mt_stress
+	@timeout 60 ./build/chan_mt_stress; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "chan-mt-stress: PASS"; else echo "chan-mt-stress: FAIL (exit $$rc)"; exit 1; fi
+
 # M8b escape-probe: a local whose address escapes into a goroutine spawned from
 # a non-main frame survives after that frame returns (heap-promotion).
 escape-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -824,7 +840,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
