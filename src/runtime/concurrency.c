@@ -196,7 +196,7 @@ void goo_scheduler_wait(void) {
 // Goroutine creation
 goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg) {
     if (!g_scheduler) {
-        goo_scheduler_init(1);  // Initialize with default settings
+        goo_scheduler_init(goo_default_thread_count());  // Use GOMAXPROCS/NCPU worker count
     }
     
     goo_goroutine_t* goroutine = goo_alloc(sizeof(goo_goroutine_t));
