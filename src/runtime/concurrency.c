@@ -207,6 +207,10 @@ void goo_yield(void) {
 #endif
 }
 
+goo_goroutine_t* goo_current_goroutine(void) {
+    return t_current;
+}
+
 void goo_goroutine_exit(void) {
     goo_goroutine_t* current = t_current;
     if (!g_scheduler || !current) {

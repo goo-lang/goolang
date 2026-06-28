@@ -174,6 +174,10 @@ void goo_scheduler_wait(void);
 goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg);
 void goo_yield(void);
 void goo_goroutine_exit(void);
+// Returns the goroutine currently running on the calling worker thread, or NULL
+// if the caller is not inside a goroutine. (Per-thread; supersedes the old
+// shared g_scheduler->current_goroutine field for channel-wait bookkeeping.)
+goo_goroutine_t* goo_current_goroutine(void);
 
 // Channel operations
 goo_channel_t* goo_make_chan(size_t elem_size, size_t buffer_size);

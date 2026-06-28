@@ -237,22 +237,28 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
     if (ch->capacity > 0) {
         // Wait for space in buffer
         while (ch->length >= ch->capacity && !ch->closed) {
-            // Mark current goroutine as waiting for send
-            if (g_scheduler && g_scheduler->current_goroutine) {
-                g_scheduler->current_goroutine->waiting_on_channel = ch;
-                g_scheduler->current_goroutine->waiting_for_send = 1;
-                g_scheduler->current_goroutine->state = GOO_GOROUTINE_BLOCKED;
+            // Mark the running goroutine as waiting for send. NOTE: this
+            // bookkeeping is per-thread-correct but the deadlock detector still
+            // cannot observe it — a channel-blocked goroutine parks in the
+            // pthread_cond_wait below, not in g_scheduler->ready_queue (which is
+            // all the detector walks). Working channel-deadlock detection needs
+            // a separate blocked-set and is a future milestone.
+            goo_goroutine_t* self = goo_current_goroutine();
+            if (self) {
+                self->waiting_on_channel = ch;
+                self->waiting_for_send = 1;
+                self->state = GOO_GOROUTINE_BLOCKED;
             }
-            
+
 #ifdef GOO_PLATFORM_UNIX
             pthread_cond_wait(&ch->not_full->cond, &ch->mutex->mutex);
 #endif
 
-            // Clear waiting state when unblocked
-            if (g_scheduler && g_scheduler->current_goroutine) {
-                g_scheduler->current_goroutine->waiting_on_channel = NULL;
-                g_scheduler->current_goroutine->waiting_for_send = 0;
-                g_scheduler->current_goroutine->state = GOO_GOROUTINE_RUNNING;
+            // Clear waiting state when unblocked.
+            if (self) {
+                self->waiting_on_channel = NULL;
+                self->waiting_for_send = 0;
+                self->state = GOO_GOROUTINE_RUNNING;
             }
         }
         
@@ -354,22 +360,23 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
     if (ch->capacity > 0) {
         // Wait for data in buffer
         while (ch->length == 0 && !ch->closed) {
-            // Mark current goroutine as waiting for receive
-            if (g_scheduler && g_scheduler->current_goroutine) {
-                g_scheduler->current_goroutine->waiting_on_channel = ch;
-                g_scheduler->current_goroutine->waiting_for_send = 0;
-                g_scheduler->current_goroutine->state = GOO_GOROUTINE_BLOCKED;
+            // See the send-wait note above re: deadlock-detector visibility.
+            goo_goroutine_t* self = goo_current_goroutine();
+            if (self) {
+                self->waiting_on_channel = ch;
+                self->waiting_for_send = 0;
+                self->state = GOO_GOROUTINE_BLOCKED;
             }
-            
+
 #ifdef GOO_PLATFORM_UNIX
             pthread_cond_wait(&ch->not_empty->cond, &ch->mutex->mutex);
 #endif
 
-            // Clear waiting state when unblocked
-            if (g_scheduler && g_scheduler->current_goroutine) {
-                g_scheduler->current_goroutine->waiting_on_channel = NULL;
-                g_scheduler->current_goroutine->waiting_for_send = 0;
-                g_scheduler->current_goroutine->state = GOO_GOROUTINE_RUNNING;
+            // Clear waiting state when unblocked.
+            if (self) {
+                self->waiting_on_channel = NULL;
+                self->waiting_for_send = 0;
+                self->state = GOO_GOROUTINE_RUNNING;
             }
         }
         
