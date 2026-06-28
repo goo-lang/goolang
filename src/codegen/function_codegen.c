@@ -112,6 +112,29 @@ static void escape_walk(ASTNode* n) {
                 escape_walk(c->comm); escape_walk(c->body);
                 break;
             }
+            // match expression: scrutinee + list of MatchCaseNode siblings
+            case AST_MATCH_EXPR: {
+                MatchExprNode* m = (MatchExprNode*)n;
+                escape_walk(m->expr); escape_walk(m->cases);
+                break;
+            }
+            // match case: pattern, optional guard, body
+            case AST_MATCH_CASE: {
+                MatchCaseNode* mc = (MatchCaseNode*)n;
+                escape_walk(mc->pattern); escape_walk(mc->guard); escape_walk(mc->body);
+                break;
+            }
+            // try/catch: walk the inner expression and, for catch, the catch body
+            case AST_TRY_EXPR:  escape_walk(((TryExprNode*)n)->expr); break;
+            case AST_CATCH_EXPR: {
+                CatchExprNode* ce = (CatchExprNode*)n;
+                escape_walk(ce->expr); escape_walk(ce->catch_body);
+                break;
+            }
+            // unsafe block: recurse into its body
+            case AST_UNSAFE_STMT: escape_walk(((UnsafeStmtNode*)n)->body); break;
+            // slice literal [e1, e2, …]: recurse into element list
+            case AST_SLICE_EXPR: escape_walk(((SliceLitNode*)n)->elements); break;
             default: break;  // leaves (identifier, literal, types): nothing to recurse
         }
     }
