@@ -728,41 +728,138 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         }
     }
     
-    // Standard goroutine implementation for native targets
-    // For go statements, we need to call goo_go with the function and arguments
-    // This is a simplified implementation that assumes the call is a simple function call
-    
+    // Standard goroutine implementation for native targets.
+    //
+    // `go f(a, b)` lowers to: heap-box the evaluated arguments into an anonymous
+    // struct, generate a per-call-site thunk `void __goo_thunk_N(i8*)` that
+    // unboxes the args, calls the real function, frees the box, and returns; then
+    // spawn the goroutine with goo_go(thunk, box). The runtime goo_go demands a
+    // uniform void(*)(void*) entry, so the thunk adapts the user function's
+    // arbitrary signature. All LLVM types are built in codegen->context (the
+    // same context fix M7 applied to channels) so the module verifies.
+    LLVMContextRef ctx = codegen->context;
+
     if (go_stmt->call->type != AST_CALL_EXPR) {
         codegen_error(codegen, stmt->pos, "Go statement must contain a function call");
         return 0;
     }
-    
+
     CallExprNode* call = (CallExprNode*)go_stmt->call;
-    
-    // Generate the function address
+
+    // Resolve the target function value and its type.
     ValueInfo* func_val = codegen_generate_expression(codegen, checker, call->function);
     if (!func_val) return 0;
-    
-    // For simplicity, we'll use NULL as the argument for now
-    // In a complete implementation, we'd need to package the arguments properly
-    LLVMValueRef null_arg = LLVMConstNull(LLVMPointerType(LLVMInt8Type(), 0));
-    
-    // Get the goo_go function
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8Type(), 0);
-    LLVMTypeRef func_ptr_type = LLVMPointerType(LLVMFunctionType(LLVMVoidType(), &void_ptr_type, 1, 0), 0);
-    LLVMTypeRef param_types[] = { func_ptr_type, void_ptr_type };
-    LLVMTypeRef goo_go_type = LLVMFunctionType(void_ptr_type, param_types, 2, 0);
-    
-    LLVMValueRef goo_go_func = LLVMGetNamedFunction(codegen->module, "goo_go");
-    if (!goo_go_func) {
-        // Declare goo_go if not already declared
-        goo_go_func = LLVMAddFunction(codegen->module, "goo_go", goo_go_type);
+    LLVMValueRef callee = func_val->llvm_value;
+
+    // M8 restriction: only direct top-level function targets. A closure or bound
+    // method carries an environment we don't box yet — reject with a clear error
+    // rather than spawn a goroutine that calls garbage.
+    if (!callee || !LLVMIsAFunction(callee)) {
+        codegen_error(codegen, stmt->pos,
+                      "go: only direct function calls are supported "
+                      "(closures and methods are not yet supported)");
+        value_info_free(func_val);
+        return 0;
     }
-    
-    // Call goo_go(func, arg)
-    LLVMValueRef args[] = { func_val->llvm_value, null_arg };
-    LLVMBuildCall2(codegen->builder, goo_go_type, goo_go_func, args, 2, "");
-    
+    LLVMTypeRef callee_ty = LLVMGlobalGetValueType(callee);
+
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx);
+
+    // Count + evaluate the call arguments (in the caller's block).
+    size_t arg_count = 0;
+    for (ASTNode* a = call->args; a; a = a->next) arg_count++;
+
+    LLVMValueRef* arg_vals = NULL;
+    LLVMTypeRef* arg_types = NULL;
+    if (arg_count > 0) {
+        arg_vals = malloc(sizeof(LLVMValueRef) * arg_count);
+        arg_types = malloc(sizeof(LLVMTypeRef) * arg_count);
+        ASTNode* a = call->args;
+        for (size_t i = 0; i < arg_count; i++, a = a->next) {
+            ValueInfo* av = codegen_generate_expression(codegen, checker, a);
+            if (!av) {
+                free(arg_vals);
+                free(arg_types);
+                value_info_free(func_val);
+                return 0;
+            }
+            arg_vals[i] = av->llvm_value;
+            arg_types[i] = LLVMTypeOf(av->llvm_value);
+            value_info_free(av);
+        }
+    }
+
+    // Heap-box the arguments. boxed stays null for zero-arg calls.
+    LLVMValueRef boxed = LLVMConstNull(void_ptr_type);
+    LLVMTypeRef box_struct = NULL;
+    if (arg_count > 0) {
+        box_struct = LLVMStructTypeInContext(ctx, arg_types, (unsigned)arg_count, 0);
+
+        LLVMTypeRef alloc_ty = LLVMFunctionType(void_ptr_type, &i64_type, 1, 0);
+        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+        if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
+
+        LLVMValueRef box_size = LLVMSizeOf(box_struct);  // i64 target-size constant
+        boxed = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &box_size, 1, "go_box");
+
+        for (size_t i = 0; i < arg_count; i++) {
+            LLVMValueRef field = LLVMBuildStructGEP2(codegen->builder, box_struct, boxed,
+                                                     (unsigned)i, "go_arg_ptr");
+            LLVMBuildStore(codegen->builder, arg_vals[i], field);
+        }
+    }
+    free(arg_vals);
+    free(arg_types);
+
+    // Emit the per-call-site thunk in its own function, saving/restoring the
+    // shared builder's insert position so the caller's IR stream is untouched.
+    static unsigned thunk_counter = 0;
+    char thunk_name[32];
+    snprintf(thunk_name, sizeof(thunk_name), "__goo_thunk_%u", thunk_counter++);
+
+    LLVMTypeRef thunk_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &void_ptr_type, 1, 0);
+    LLVMValueRef thunk_fn = LLVMAddFunction(codegen->module, thunk_name, thunk_ty);
+    LLVMSetLinkage(thunk_fn, LLVMInternalLinkage);
+
+    LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef thunk_entry = LLVMAppendBasicBlockInContext(ctx, thunk_fn, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, thunk_entry);
+
+    LLVMValueRef box_param = LLVMGetParam(thunk_fn, 0);  // i8*
+    LLVMValueRef* call_args = NULL;
+    if (arg_count > 0) {
+        call_args = malloc(sizeof(LLVMValueRef) * arg_count);
+        for (size_t i = 0; i < arg_count; i++) {
+            LLVMValueRef field = LLVMBuildStructGEP2(codegen->builder, box_struct, box_param,
+                                                     (unsigned)i, "ld_arg_ptr");
+            LLVMTypeRef fty = LLVMStructGetTypeAtIndex(box_struct, (unsigned)i);
+            call_args[i] = LLVMBuildLoad2(codegen->builder, fty, field, "ld_arg");
+        }
+    }
+    // Call the real function; any return value is discarded (Go semantics).
+    LLVMBuildCall2(codegen->builder, callee_ty, callee, call_args, (unsigned)arg_count, "");
+    free(call_args);
+
+    if (arg_count > 0) {
+        LLVMTypeRef free_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &void_ptr_type, 1, 0);
+        LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_free");
+        if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_free", free_ty);
+        LLVMBuildCall2(codegen->builder, free_ty, free_fn, &box_param, 1, "");
+    }
+    LLVMBuildRetVoid(codegen->builder);
+
+    // Back to the caller's block to emit the spawn.
+    LLVMPositionBuilderAtEnd(codegen->builder, saved_block);
+
+    LLVMTypeRef goo_go_params[] = { LLVMPointerType(thunk_ty, 0), void_ptr_type };
+    LLVMTypeRef goo_go_type = LLVMFunctionType(void_ptr_type, goo_go_params, 2, 0);
+    LLVMValueRef goo_go_func = LLVMGetNamedFunction(codegen->module, "goo_go");
+    if (!goo_go_func) goo_go_func = LLVMAddFunction(codegen->module, "goo_go", goo_go_type);
+
+    LLVMValueRef spawn_args[] = { thunk_fn, boxed };
+    LLVMBuildCall2(codegen->builder, goo_go_type, goo_go_func, spawn_args, 2, "");
+
     value_info_free(func_val);
     return 1;
 #endif

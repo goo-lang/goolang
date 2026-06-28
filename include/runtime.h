@@ -168,6 +168,9 @@ typedef void (*goo_goroutine_func_t)(void* arg);
 // Goroutine creation and management
 void goo_scheduler_init(int num_threads);
 void goo_scheduler_shutdown(void);
+// Block the caller (typically generated main) until every spawned goroutine has
+// finished, so goroutine side effects are observable before the program exits.
+void goo_scheduler_wait(void);
 goo_goroutine_t* goo_go(goo_goroutine_func_t func, void* arg);
 void goo_yield(void);
 void goo_goroutine_exit(void);
