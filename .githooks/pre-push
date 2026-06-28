@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# pre-push — full authoritative gate before code leaves this machine. This is
+# what GitHub Actions used to run: every probe (`make verify`, ~10s, includes the
+# multi-threaded scheduler + soak gates) plus the unit-test suite (`make test`).
+#
+# Emergency bypass (use sparingly): git push --no-verify
+set -e
+
+# CompCert ccomp + runtime libs live in the opam `default` switch; verify's
+# bootstrap probe needs ccomp. Source it best-effort — if it's missing, `make
+# verify` fails loudly with "ccomp not installed", which is the correct signal.
+eval "$(opam env --switch=default 2>/dev/null)" || true
+
+echo "[pre-push] make verify"
+make verify
+echo "[pre-push] make test"
+make test

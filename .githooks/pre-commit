@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+# pre-commit — fast local gate: the unified unit-test suite (`make test`, ~1s).
+#
+# Why this and not the full suite: commits should stay cheap so atomic commits
+# aren't discouraged. The heavier probe suite runs at push time (see pre-push).
+#
+# Emergency bypass (use sparingly): git commit --no-verify
+set -e
+
+# CompCert ccomp + the runtime libs live in the opam `default` switch. Source it
+# best-effort; if opam is absent the make target itself is the real gate and will
+# fail loudly rather than be silently skipped.
+eval "$(opam env --switch=default 2>/dev/null)" || true
+
+echo "[pre-commit] make test"
+make test
