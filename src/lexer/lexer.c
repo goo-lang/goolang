@@ -5,7 +5,18 @@
 #include <ctype.h>
 #include <stdio.h>
 
+// Count of lexical errors (TOKEN_ERROR) produced while lexing the current
+// input. The Bison bridge (src/parser/lexer_bridge.c) maps TOKEN_ERROR to an
+// unknown token and silently skips it, so a malformed token can vanish and the
+// surrounding program parse + compile to a running binary with no diagnostic.
+// The type checker gates on this count (see type_check_program) and refuses to
+// emit code when it is non-zero, turning the silent drop into a clean rejection.
+// Reset at the start of each lex run in lexer_new so a long-lived host (REPL/
+// LSP) does not carry a stale count between parses.
+int goo_lexer_error_count = 0;
+
 Lexer* lexer_new(const char* input, const char* filename) {
+    goo_lexer_error_count = 0;
     Lexer* lexer = malloc(sizeof(Lexer));
     if (!lexer) return NULL;
     
@@ -467,6 +478,19 @@ Token* lexer_next_token(Lexer* lexer) {
             break;
     }
 
+    // Surface lexical errors so the Bison bridge's silent skip of TOKEN_ERROR
+    // cannot drop a malformed token (e.g. '', '\z', an unterminated 'a) and let
+    // the surrounding program compile to a running binary. We record the error
+    // (and print a positioned diagnostic); the type checker refuses to emit code
+    // while the count is non-zero, which is the actual "rejected cleanly" gate.
+    if (token && token->type == TOKEN_ERROR) {
+        goo_lexer_error_count++;
+        fprintf(stderr, "%s:%d:%d: error: %s\n",
+                token->pos.filename ? token->pos.filename : "<input>",
+                token->pos.line, token->pos.column,
+                token->literal ? token->literal : "lexical error");
+    }
+
     if (token) lexer->prev_token_type = token->type; // for newline-driven ASI
     return token;
 }
@@ -593,8 +617,12 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
 // Decode a char-literal body (the raw text between the quotes, escapes still
 // in source form) into its integer rune value. Returns 1 and writes *out on
 // success, 0 if the body is empty, an unknown escape, or a multi-byte (UTF-8)
-// rune — all of which are deferred / rejected cleanly in v1. Note: '\0' decodes
-// to value 0, which is why success is signalled separately from the value.
+// rune — all of which are deferred in v1. On a 0 return the caller emits
+// TOKEN_ERROR, which goo_lexer_error_count records and the type checker gates on
+// (type_check_program), so these forms are genuinely rejected (positioned
+// diagnostic + non-zero exit, no binary) rather than silently dropped by the
+// Bison bridge. Note: '\0' decodes to value 0, which is why success is signalled
+// separately from the value.
 int lexer_decode_char_value(const char* body, size_t len, long* out) {
     if (!body || !out || len == 0) return 0;
     if (body[0] != '\\') {

@@ -254,7 +254,18 @@ void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type
 
 int type_check_program(TypeChecker* checker, ASTNode* program) {
     if (!checker || !program) return 0;
-    
+
+    // A lexical error (e.g. a malformed char literal '', '\z', or an
+    // unterminated 'a) is mapped to an unknown token and SILENTLY SKIPPED by the
+    // Bison bridge, so the parse can succeed with the bad token simply gone and
+    // the program would otherwise compile to a running binary. Refuse to emit
+    // code when the lexer flagged any such error — this is the clean rejection.
+    // The lexer already printed a positioned diagnostic for each one.
+    extern int goo_lexer_error_count;
+    if (goo_lexer_error_count > 0) {
+        return 0;
+    }
+
     if (program->type != AST_PROGRAM) {
         type_error(checker, program->pos, "Expected program node");
         return 0;

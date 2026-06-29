@@ -442,6 +442,30 @@ charlit-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# F3 negative gate: a MALFORMED char literal must be rejected cleanly, NOT
+# silently dropped. The lexer emits TOKEN_ERROR for ''/'\z'/unterminated 'a),
+# which the Bison bridge maps to an unknown token and skips — so before the fix
+# the literal vanished and the surrounding program compiled to a running binary
+# with exit 0 and no diagnostic. Each case below must now: (a) fail to compile
+# (rc != 0, no binary emitted), and (b) print a positioned lexer diagnostic.
+# Guards the "rejected cleanly" claim the plan (Step 3) and commit asserted.
+charlit-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== charlit-reject-probe: malformed char literals must reject, not silently drop ==="
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tfmt.Println('\'''\'')\n}\n' > build/charlit_reject_empty.goo
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tfmt.Println('\''\\z'\'')\n}\n' > build/charlit_reject_badescape.goo
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tfmt.Println('\''a)\n}\n' > build/charlit_reject_unterminated.goo
+	@for name in empty badescape unterminated; do \
+	  rm -f build/charlit_reject_$$name; \
+	  $(COMPILER) -o build/charlit_reject_$$name build/charlit_reject_$$name.goo > build/charlit_reject_$$name.out 2> build/charlit_reject_$$name.err; \
+	  rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "charlit-reject-probe: FAIL ($$name compiled rc=0 — malformed literal silently accepted)"; cat build/charlit_reject_$$name.err; exit 1; fi; \
+	  if [ -x build/charlit_reject_$$name ]; then echo "charlit-reject-probe: FAIL ($$name emitted a binary despite the error)"; exit 1; fi; \
+	  if ! grep -qiE "error:" build/charlit_reject_$$name.err; then echo "charlit-reject-probe: FAIL ($$name produced no diagnostic)"; cat build/charlit_reject_$$name.err; exit 1; fi; \
+	  echo "charlit-reject-probe: $$name rejected (rc=$$rc)"; \
+	done
+	@echo "charlit-reject-probe: PASS"
+
 # F2 boundary gate for `T(x)` conversions: the SOUNDNESS + clean-rejection
 # properties that conv-probe (positive numeric cases) does NOT guard.
 #  1. Function-shadowing soundness (the fix in 6d69e2a): a user `func int`
@@ -1000,7 +1024,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
