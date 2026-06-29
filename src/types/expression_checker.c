@@ -627,6 +627,31 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // points at the offending argument rather than the LLVM verifier.
         if (check_signature && arg_count < param_count && param_types) {
             Type* param_type = param_types[arg_count];
+
+            // type_compatible() permits ANY numeric->numeric pair (it allows
+            // implicit conversions), but call_codegen passes each argument to
+            // the callee with NO trunc/ext/fptosi inserted (unlike the return
+            // path, codegen never coerces a numeric arg). So a numeric arg
+            // whose machine representation differs from the declared parameter
+            // — a wider/narrower integer (int64 into an int param) or a float
+            // into an integer (e.g. `add(1.5, 2)`) — slips past type_compatible
+            // and crashes the LLVM verifier with "Call parameter type does not
+            // match function signature!". Reject those here, mirroring P2-1's
+            // return guard. No int-constant-widen exemption applies: codegen
+            // does not widen arguments, so even an untyped literal into a wider
+            // param would reach the verifier as invalid IR.
+            if (param_type && type_is_numeric(arg_type) && type_is_numeric(param_type)) {
+                int same_kind  = (type_is_float(arg_type) == type_is_float(param_type));
+                int same_width = (type_size(arg_type) == type_size(param_type));
+                if (!same_kind || !same_width) {
+                    type_error(checker, arg->pos,
+                               "argument %zu: cannot use %s as %s",
+                               arg_count + 1,
+                               type_to_string(arg_type), type_to_string(param_type));
+                    return NULL;
+                }
+            }
+
             if (param_type && !type_compatible(arg_type, param_type)) {
                 type_error(checker, arg->pos,
                            "argument %zu: cannot use %s as %s",
