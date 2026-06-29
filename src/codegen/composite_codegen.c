@@ -665,6 +665,13 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 // `[]int{1, 2, 3}`. The P3-1 parser routes both to AST_SLICE_EXPR /
 // SliceLitNode, so index, range, len, and append over a `[]T{}` literal
 // reuse this lowering unchanged — no separate codegen is needed.
+//
+// Elements may be constants OR runtime values: `[]int{a, b, 30}` (the
+// common Go form) lowers by allocating the backing buffer and storing each
+// element individually, so a non-constant element no longer crashes the
+// LLVM verifier. (The element WIDTH is still bounded by the type-checker's
+// P3-1 guard to int32/string, which match their natural codegen repr; wider
+// declared widths are rejected at type-check, not here.)
 ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -698,34 +705,56 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
         value_info_free(v);
     }
 
-    // Build a constant array initializer. All elements must be LLVM
-    // constants for this path. For non-const elements we'd need to
-    // allocate a stack buffer and store each — defer to future work.
+    // Are all elements LLVM constants? Variable elements (e.g.
+    // `[]int{a, b, 30}`, the common Go form) produce non-constant loads;
+    // LLVMConstArray would embed those illegally and crash the verifier
+    // ("Use of instruction is not an instruction!"). So the const path is
+    // valid only when every element is constant.
+    int all_const = 1;
+    for (size_t i = 0; i < count; i++) {
+        if (!LLVMIsConstant(elem_vals[i])) { all_const = 0; break; }
+    }
+
     LLVMTypeRef arr_type = LLVMArrayType(llvm_elem, count);
-    LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
-    free(elem_vals);
 
     // Heap-allocate writable backing for the literal so the slice can be
     // mutated (e.g. `sl[i] = v`) and stays valid if it escapes the current
     // frame. A read-only global would segfault on store; a stack alloca would
-    // dangle on escape. The const array is stored once into the buffer. The
-    // backing is not reclaimed — consistent with the prototype's current
-    // allocate-and-leak memory model. Falls back to a read-only global (no
-    // mutation) only if the runtime allocator is unavailable.
+    // dangle on escape. Each element is stored individually via GEP — this
+    // serves BOTH constant and VARIABLE elements (a runtime load can't go in a
+    // const array). The backing is not reclaimed — consistent with the
+    // prototype's current allocate-and-leak memory model. Falls back to a
+    // read-only global only when the runtime allocator is unavailable, which
+    // requires all-constant elements.
     LLVMValueRef data_ptr;
     LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
     if (alloc_fn && count > 0) {
         LLVMValueRef size = LLVMSizeOf(arr_type);
         data_ptr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
                                   alloc_fn, &size, 1, "slice_backing");
-        LLVMBuildStore(codegen->builder, arr_const, data_ptr);
-    } else {
+        LLVMTypeRef i32ty = LLVMInt32TypeInContext(codegen->context);
+        LLVMValueRef zero = LLVMConstInt(i32ty, 0, 0);
+        for (size_t i = 0; i < count; i++) {
+            LLVMValueRef indices[2] = { zero, LLVMConstInt(i32ty, i, 0) };
+            LLVMValueRef ep = LLVMBuildGEP2(codegen->builder, arr_type, data_ptr,
+                                            indices, 2, "slice_elem");
+            LLVMBuildStore(codegen->builder, elem_vals[i], ep);
+        }
+    } else if (all_const) {
+        LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
         LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
         LLVMSetInitializer(global, arr_const);
         LLVMSetLinkage(global, LLVMPrivateLinkage);
         LLVMSetGlobalConstant(global, 1);
         data_ptr = global;
+    } else {
+        free(elem_vals);
+        codegen_error(codegen, expr->pos,
+            "slice literal with non-constant elements requires the runtime "
+            "allocator (goo_alloc), which is unavailable in this build");
+        return NULL;
     }
+    free(elem_vals);
 
     // Build the slice struct { ptr, i64 len, i64 cap }. A fresh literal's
     // capacity equals its length — the backing buffer is sized exactly to
