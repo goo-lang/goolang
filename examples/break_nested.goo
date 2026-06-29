@@ -1,6 +1,11 @@
-// break_nested: a break in the inner loop exits ONLY the inner loop;
-// the outer loop must keep iterating. Inner prints 0 1 then breaks at
-// j==2; after each inner loop the outer prints its index i.
+// break_nested: regression coverage for break scoping.
+// (1) A break in the inner loop exits ONLY the inner loop; the outer loop
+//     keeps iterating. Inner prints 0 1 then breaks at j==2; after each inner
+//     loop the outer prints its index i.
+// (2) A break inside a switch terminates the SWITCH (Go semantics), not the
+//     enclosing loop: every iteration still prints i (0 1 2 3).
+// (3) A break in a top-level switch (no enclosing loop) is legal and ends the
+//     switch; the code after the switch still runs (prints 7).
 package main
 import "fmt"
 func main() {
@@ -11,4 +16,17 @@ func main() {
         }
         fmt.Println(i)
     }
+    for i := 0; i < 4; i = i + 1 {
+        switch i {
+        case 1:
+            break
+        }
+        fmt.Println(i)
+    }
+    x := 1
+    switch x {
+    case 1:
+        break
+    }
+    fmt.Println(7)
 }

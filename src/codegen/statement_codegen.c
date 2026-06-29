@@ -22,6 +22,23 @@ static int codegen_push_loop(CodeGenerator* cg, LLVMBasicBlockRef brk, LLVMBasic
     return 1;
 }
 static void codegen_pop_loop(CodeGenerator* cg) { if (cg->loop_depth > 0) cg->loop_depth--; }
+
+// Push a break-only scope for switch/select clause bodies. In Go/Goo a `break`
+// inside a switch or select terminates that construct (not the enclosing loop),
+// while `continue` is NOT bound by switch/select and must thread through to the
+// nearest enclosing loop. We model this by reusing the loop-context stack:
+// `break` targets `brk` (the construct's merge/end block) and `continue`
+// inherits the enclosing loop's continue target (NULL when there is no
+// enclosing loop, which makes `continue` here a clean "continue outside loop").
+static int codegen_push_break_scope(CodeGenerator* cg, LLVMBasicBlockRef brk) {
+    if (cg->loop_depth >= 32) return 0;       // too deep — caller emits codegen_error
+    LLVMBasicBlockRef inherited_continue =
+        cg->loop_depth > 0 ? cg->loop_continue_bb[cg->loop_depth - 1] : NULL;
+    cg->loop_break_bb[cg->loop_depth] = brk;
+    cg->loop_continue_bb[cg->loop_depth] = inherited_continue;
+    cg->loop_depth++;
+    return 1;
+}
 #endif
 
 int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
@@ -135,7 +152,12 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
             return 1;
         case AST_CONTINUE_STMT:
-            if (codegen->loop_depth == 0) { codegen_error(codegen, stmt->pos, "continue outside loop"); return 0; }
+            // A NULL continue target means the innermost scope is a break-only
+            // switch/select with no enclosing loop — `continue` is illegal there.
+            if (codegen->loop_depth == 0 ||
+                codegen->loop_continue_bb[codegen->loop_depth - 1] == NULL) {
+                codegen_error(codegen, stmt->pos, "continue outside loop"); return 0;
+            }
             LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[codegen->loop_depth - 1]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
@@ -341,18 +363,28 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     // Fell through every test: go to default body, else merge.
     LLVMBuildBr(codegen->builder, default_body ? default_body : merge_block);
 
+    // `break` inside a case must terminate the SWITCH (Go semantics), not the
+    // enclosing loop. Push a break-only scope targeting merge_block; `continue`
+    // still threads through to the enclosing loop (or errors if none).
+    if (!codegen_push_break_scope(codegen, merge_block)) {
+        codegen_error(codegen, stmt->pos, "switch nested too deeply for break handling");
+        free(body_blocks);
+        return 0;
+    }
+
     // Emit clause bodies. No implicit fallthrough: each body ends at merge.
     i = 0;
     for (ASTNode* c = sw->cases; c; c = c->next, i++) {
         CaseClauseNode* clause = (CaseClauseNode*)c;
         codegen_set_insert_point(codegen, body_blocks[i]);
         for (ASTNode* s = clause->body; s; s = s->next) {
-            if (!codegen_generate_statement(codegen, checker, s)) { free(body_blocks); return 0; }
+            if (!codegen_generate_statement(codegen, checker, s)) { codegen_pop_loop(codegen); free(body_blocks); return 0; }
         }
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
             LLVMBuildBr(codegen->builder, merge_block);
         }
     }
+    codegen_pop_loop(codegen);
 
     codegen_set_insert_point(codegen, merge_block);
     free(body_blocks);
@@ -1057,17 +1089,27 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         case_index++;
     }
     
+    // `break` inside a select case must terminate the SELECT (Go semantics),
+    // not the enclosing loop. Push a break-only scope targeting end_block;
+    // `continue` still threads through to the enclosing loop (or errors if none).
+    if (!codegen_push_break_scope(codegen, end_block)) {
+        codegen_error(codegen, stmt->pos, "select nested too deeply for break handling");
+        free(case_blocks);
+        return 0;
+    }
+
     // Generate code for each case block
     case_index = 0;
     case_node = select_stmt->cases;
     while (case_node && case_index < case_count) {
         SelectCaseNode* select_case = (SelectCaseNode*)case_node;
-        
+
         LLVMPositionBuilderAtEnd(codegen->builder, case_blocks[case_index]);
-        
+
         // Generate case body
         if (select_case->body) {
             if (!codegen_generate_statement(codegen, checker, select_case->body)) {
+                codegen_pop_loop(codegen);
                 free(case_blocks);
                 return 0;
             }
@@ -1081,7 +1123,8 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         case_node = case_node->next;
         case_index++;
     }
-    
+    codegen_pop_loop(codegen);
+
     // Position builder at end block
     LLVMPositionBuilderAtEnd(codegen->builder, end_block);
     
