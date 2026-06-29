@@ -411,6 +411,21 @@ cap-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# F2 gate: builtin numeric type conversions `T(x)`. Non-vacuous w.r.t. the cast
+# semantics — exercises ZExt vs SExt (int(byte(200))==200, not -56), a SExt
+# contrast (int(int8(200))==-56), and a value-dropping Trunc (int(byte(300))==44),
+# so a regression to SExt-for-unsigned or a botched truncation fails here.
+conv-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/conv_probe examples/conv_probe.goo
+	@./build/conv_probe > build/conv_probe.actual.txt
+	@if diff -u examples/conv_probe.expected.txt build/conv_probe.actual.txt; then \
+	  echo "conv-probe: PASS"; \
+	else \
+	  echo "conv-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # M2-maps gate: general map[string]V on an 8-byte value slot. Covers int and
 # pointer value types, m[k]=v insert/overwrite, and missing-key zero value.
 map-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -933,7 +948,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

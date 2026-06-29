@@ -116,7 +116,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         // already validated the single numeric/char argument and stamped the
         // target type on expr->node_type. Evaluate the operand and emit the
         // appropriate cast.
-        if (is_builtin_conv_name(func_name->name) && call->args && !call->args->next) {
+        //
+        // Mirror the checker's shadowing gate: Go permits a user symbol to
+        // shadow a predeclared type name, so `func int(n int) int` makes
+        // `int(5)` a CALL, not a conversion. The name alone is not enough to
+        // decide — consult the symbol table. At codegen time every top-level
+        // function lives in the (persisted) global scope regardless of source
+        // order, so a non-NULL lookup means the name is shadowed: fall through
+        // to the ordinary call path instead of silently converting. Without
+        // this, `int(5)` printed 5 (conversion) rather than 105 (the user's
+        // function) — a silent miscompile of code that is legal in Go.
+        if (is_builtin_conv_name(func_name->name) && call->args && !call->args->next
+            && !type_checker_lookup_variable(checker, func_name->name)) {
             Type* target = expr->node_type;
             if (!target) {
                 codegen_error(codegen, expr->pos, "conversion: missing resolved target type");

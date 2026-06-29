@@ -1,4 +1,5 @@
 #include "types.h"
+#include "comptime.h"  // comptime_context_lookup_func: order-independent func registry
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -573,6 +574,33 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
 // produce; `string`/`bool` conversions are intentionally NOT here (string
 // conversions need byte/rune lowering — deferred — and bool has no numeric
 // conversion in Go), so those names fall through to ordinary resolution.
+// Does a user-declared symbol shadow the predeclared type `name`? Go permits
+// shadowing predeclared identifiers, so a value or function named `int`/`byte`
+// makes `int(x)` an ordinary reference/call, not a conversion. Two sources:
+//   1. scope_lookup_variable — a variable, or a top-level function declared
+//      *before* this use (functions are registered in scope as decls are
+//      processed in order).
+//   2. comptime_context_lookup_func — every top-level function, bound in the
+//      program pre-pass regardless of source order, so a *forward*-declared
+//      `func int(...)` is honored too. Methods (receiver != NULL) belong to a
+//      type's method set and do NOT shadow the conversion, so they are
+//      excluded — otherwise a method coincidentally named `int` would
+//      over-reject legitimate `int(x)` conversions.
+// Codegen mirrors this via type_checker_lookup_variable so the two stages agree
+// (avoids the silent miscompile where the checker calls through but codegen
+// still converts).
+static int name_is_user_shadowed(TypeChecker* checker, const char* name) {
+    if (!checker || !name) return 0;
+    if (scope_lookup_variable(checker->current_scope, name)) return 1;
+    if (checker->comptime_type_ctx && checker->comptime_type_ctx->comptime_ctx) {
+        ASTNode* fn = comptime_context_lookup_func(
+            checker->comptime_type_ctx->comptime_ctx, name);
+        if (fn && fn->type == AST_FUNC_DECL && !((FuncDeclNode*)fn)->receiver)
+            return 1;
+    }
+    return 0;
+}
+
 static Type* builtin_conversion_target(TypeChecker* checker, const char* name) {
     if (!name) return NULL;
     if (strcmp(name, "int") == 0)     return type_checker_get_builtin(checker, TYPE_INT32);
@@ -604,14 +632,14 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         }
         // Builtin type conversion `T(x)` (F2): a call whose callee names a
         // builtin numeric type is a conversion, not a function call. Gate on
-        // the name NOT resolving to a real variable so a user value that
-        // shadows the type name (Go permits this) still calls through. The
-        // type names are not registered in scope, so the lookup normally
-        // fails and the conversion path is taken.
+        // the name NOT being shadowed by a user variable OR function (Go
+        // permits shadowing predeclared identifiers), so a user `func int` /
+        // `var int` still calls/references through. Type names are not
+        // registered in scope, so an unshadowed name takes the conversion path.
         {
             Type* conv_target = builtin_conversion_target(checker, func_ident->name);
             if (conv_target &&
-                !scope_lookup_variable(checker->current_scope, func_ident->name)) {
+                !name_is_user_shadowed(checker, func_ident->name)) {
                 if (!call->args || call->args->next) {
                     type_error(checker, expr->pos,
                                "conversion %s() expects exactly one argument",
