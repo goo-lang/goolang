@@ -754,11 +754,14 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
             LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
                           float_fn, args, 1, "");
         } else {
-            // Fallback: pass through to goo_print. Will surface at the
-            // verifier if the type's wrong rather than crashing here.
-            LLVMValueRef args[] = { arg_val->llvm_value };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
-                          print_func, args, 1, "");
+            // P0-3: an unsupported argument type is a clean source-located
+            // codegen error, not a type-mismatched goo_print call that only
+            // surfaces (as invalid IR) at the LLVM verifier.
+            codegen_error(codegen, a->pos,
+                          "fmt.Println: unsupported argument type (only string, integer, "
+                          "bool, and float are supported in v1)");
+            value_info_free(arg_val);
+            return NULL;
         }
         value_info_free(arg_val);
 
