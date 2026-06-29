@@ -592,21 +592,62 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         return NULL;
     }
     
+    // Decide whether to validate arity/arg types against the callee's
+    // declared parameter list. We only do so for ordinary *user* functions
+    // called by their bare name:
+    //   - Builtins (println/print/len/cap/append/error/make_chan/new) carry
+    //     param_types=NULL/param_count=0 and are variadic or special-cased,
+    //     so checking them against their stub signature would false-reject
+    //     (e.g. len("x")). They are flagged is_builtin — skip them.
+    //   - Method calls resolve through a selector, not an identifier, and
+    //     their func_type's params[0] is the spliced receiver while the
+    //     call's arg list omits it. Restricting to AST_IDENTIFIER skips
+    //     methods (and package functions like fmt.Println) cleanly.
+    //   - Variadic user functions have no fixed arity to check.
+    int check_signature = 0;
+    if (call->function && call->function->type == AST_IDENTIFIER
+        && !func_type->data.function.is_variadic) {
+        IdentifierNode* callee_ident = (IdentifierNode*)call->function;
+        Variable* callee = type_checker_lookup_variable(checker, callee_ident->name);
+        if (callee && !callee->is_builtin) {
+            check_signature = 1;
+        }
+    }
+
     // Check arguments
     ASTNode* arg = call->args;
-    size_t arg_count __attribute__((unused)) = 0;
+    size_t arg_count = 0;
+    size_t param_count = func_type->data.function.param_count;
+    Type** param_types = func_type->data.function.param_types;
     while (arg) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
-        
-        // TODO: Check argument type compatibility with function parameters
-        
+
+        // Argument type compatibility: position-named so the diagnostic
+        // points at the offending argument rather than the LLVM verifier.
+        if (check_signature && arg_count < param_count && param_types) {
+            Type* param_type = param_types[arg_count];
+            if (param_type && !type_compatible(arg_type, param_type)) {
+                type_error(checker, arg->pos,
+                           "argument %zu: cannot use %s as %s",
+                           arg_count + 1,
+                           type_to_string(arg_type), type_to_string(param_type));
+                return NULL;
+            }
+        }
+
         arg_count++;
         arg = arg->next;
     }
-    
-    // TODO: Check argument count against function parameters
-    
+
+    // Argument count against the declared parameter list.
+    if (check_signature && arg_count != param_count) {
+        type_error(checker, expr->pos,
+                   "call to %s: wrong number of arguments (have %zu, want %zu)",
+                   ((IdentifierNode*)call->function)->name, arg_count, param_count);
+        return NULL;
+    }
+
     expr->node_type = func_type->data.function.return_type;
     return func_type->data.function.return_type;
 }

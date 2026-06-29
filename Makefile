@@ -915,7 +915,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe call-arity-probe call-argtype-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1095,6 +1095,52 @@ return-mismatch-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/rt_mm_ok.goo -o build/rt_mm_ok.out 2>build/rt_mm_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "return-mismatch-probe: FAIL (valid scalar/string/nullable/multi returns rejected)"; cat build/rt_mm_ok.err; exit 1; fi
 	@echo "return-mismatch-probe: PASS"
+
+# P2-2: a user-function call with the wrong number of arguments must be
+# rejected at type-check with a clean source-located diagnostic, NOT reach
+# the LLVM verifier ("Incorrect number of arguments passed to called
+# function!"). Covers too-few and too-many; the OK fixture (correct arity,
+# a method call, and variadic builtins) must still compile so we don't
+# over-reject.
+call-arity-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== call-arity-probe: user-function call arity type-checked ==="
+	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add(1) }\n' > build/ca_few.goo
+	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add(1, 2, 3) }\n' > build/ca_many.goo
+	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c Counter) get() int { return c.n }\nfunc add(a int, b int) int { return a + b }\nfunc main() { var c Counter = Counter{n: 7}; fmt.Println(add(1, 2)); fmt.Println(c.get()) }\n' > build/ca_ok.goo
+	@"$(COMPILER)" build/ca_few.goo -o build/ca_few.out 2>build/ca_few.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (add(1) with too few args compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_few.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for too-few)"; cat build/ca_few.err; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/ca_few.err; then echo "call-arity-probe: FAIL (no clean arity diagnostic for too-few)"; cat build/ca_few.err; exit 1; fi
+	@"$(COMPILER)" build/ca_many.goo -o build/ca_many.out 2>build/ca_many.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (add(1,2,3) with too many args compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_many.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for too-many)"; cat build/ca_many.err; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/ca_many.err; then echo "call-arity-probe: FAIL (no clean arity diagnostic for too-many)"; cat build/ca_many.err; exit 1; fi
+	@"$(COMPILER)" build/ca_ok.goo -o build/ca_ok.out 2>build/ca_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "call-arity-probe: FAIL (valid call/method/builtin rejected)"; cat build/ca_ok.err; exit 1; fi
+	@echo "call-arity-probe: PASS"
+
+# P2-2: a user-function call whose argument type is incompatible with the
+# declared parameter must be rejected at type-check with a clean,
+# position-named diagnostic, NOT reach the LLVM verifier ("Call parameter
+# type does not match function signature!").
+call-argtype-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== call-argtype-probe: user-function call arg types type-checked ==="
+	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add("x", 2) }\n' > build/cat_str.goo
+	@printf 'package main\nfunc greet(s string) string { return s }\nfunc main() { greet(42) }\n' > build/cat_int.goo
+	@printf 'package main\nimport "fmt"\nfunc add(a int, b int) int { return a + b }\nfunc greet(s string) string { return s }\nfunc main() { fmt.Println(add(1, 2)); fmt.Println(greet("hi")) }\n' > build/cat_ok.goo
+	@"$(COMPILER)" build/cat_str.goo -o build/cat_str.out 2>build/cat_str.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (add(\"x\", 2) string-as-int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_str.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for string-as-int)"; cat build/cat_str.err; exit 1; fi; \
+	  if ! grep -qiE "cannot use string as int" build/cat_str.err; then echo "call-argtype-probe: FAIL (no clean arg-type diagnostic for string-as-int)"; cat build/cat_str.err; exit 1; fi
+	@"$(COMPILER)" build/cat_int.goo -o build/cat_int.out 2>build/cat_int.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (greet(42) int-as-string compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_int.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for int-as-string)"; cat build/cat_int.err; exit 1; fi; \
+	  if ! grep -qiE "cannot use .* as string" build/cat_int.err; then echo "call-argtype-probe: FAIL (no clean arg-type diagnostic for int-as-string)"; cat build/cat_int.err; exit 1; fi
+	@"$(COMPILER)" build/cat_ok.goo -o build/cat_ok.out 2>build/cat_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "call-argtype-probe: FAIL (valid typed calls rejected)"; cat build/cat_ok.err; exit 1; fi
+	@echo "call-argtype-probe: PASS"
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
