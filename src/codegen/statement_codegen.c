@@ -767,13 +767,18 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // expects (the struct return type built by the parser/type checker).
         FunctionInfo* fi = codegen->current_function_info;
         if (fi && fi->named_result_count > 0) {
-            // Single named result `func f() (r int)` has a SCALAR return ABI
-            // (the parser's result tuple was collapsed to its field type in
-            // type_from_ast). Load the one named local and return it directly —
-            // an aggregate InsertValue would be invalid IR on a non-struct
-            // return type. The >=2 named-result case keeps the struct path.
-            if (fi->named_result_count == 1 &&
-                LLVMGetTypeKind(fn_ret) != LLVMStructTypeKind) {
+            // A SINGLE named result `func f() (r T)` returns T DIRECTLY: the
+            // parser's 1-field result tuple was collapsed to its field type in
+            // type_from_ast, so the function's return ABI *is* T — whether T is
+            // a scalar (i32) or an LLVM aggregate (string `{ptr,i64}`, slice
+            // `{ptr,i64,i64}`, struct). Load the one named local and return it
+            // as-is. The discriminator MUST be arity (count == 1), NOT the LLVM
+            // type kind: an aggregate-typed single result has a StructTypeKind
+            // return type, but it is still a one-value return, so the multi-
+            // result InsertValue path below would emit invalid IR for it
+            // (`insertvalue {ptr,i64} undef, {ptr,i64} %r, 0`). The >=2 named-
+            // result case keeps the struct-aggregate path.
+            if (fi->named_result_count == 1) {
                 ValueInfo* rv = codegen_lookup_value(codegen, fi->named_result_names[0]);
                 if (!rv) {
                     codegen_error(codegen, stmt->pos,

@@ -11,6 +11,20 @@
 // compile to a SCALAR return ABI — usable directly in arithmetic and passed
 // to fmt.Println — NOT a 1-field struct. Both the bare-return form (inc) and
 // an explicit `return expr` overriding the bound local (dbl) are exercised.
+//
+// AGGREGATE single named result (regression guard for the codegen bare-return
+// collapse): a single named result whose type lowers to an LLVM aggregate —
+// `string` is `{ptr,i64}`, `[]int` is `{ptr,i64,i64}` — must ALSO collapse to
+// a direct return of that value. The collapse must key on result ARITY
+// (count == 1), not on the LLVM type kind: an aggregate-typed single result
+// has a StructTypeKind return type, and routing it through the multi-result
+// InsertValue path emits invalid IR (`insertvalue {ptr,i64} undef, {ptr,i64}
+// %r, 0`) that fails the module verifier. `greets` (string) and `firstTwo`
+// (slice) cover that class.
+//
+// GROUPED named results (regression guard): Go's `(x, y int)` shorthand for
+// `(x int, y int)` — the leading idents share the trailing type. `gsplit`
+// exercises it.
 package main
 
 import "fmt"
@@ -30,6 +44,22 @@ func dbl(n int) (r int) {
     return n + n
 }
 
+func greets() (s string) {
+    s = "hi"
+    return
+}
+
+func firstTwo() (xs []int) {
+    xs = [7, 8, 9]
+    return
+}
+
+func gsplit(sum int) (x, y int) {
+    x = sum - 1
+    y = 2
+    return
+}
+
 func main() {
     a, b := split(17)
     fmt.Println(a)
@@ -41,4 +71,14 @@ func main() {
     fmt.Println(y)
 
     fmt.Println(dbl(21))
+
+    fmt.Println(greets())
+
+    xs := firstTwo()
+    fmt.Println(xs[0])
+    fmt.Println(xs[1])
+
+    gx, gy := gsplit(10)
+    fmt.Println(gx)
+    fmt.Println(gy)
 }

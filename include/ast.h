@@ -990,6 +990,9 @@ typedef struct {
 ASTNode* ast_node_new(ASTNodeType type, Position pos);
 void ast_node_free(ASTNode* node);
 ASTNode* ast_node_copy(const ASTNode* node);
+// Deep-clone a type-expression AST node (see ast.c). Returns NULL for type
+// kinds the grouped-name expansion path does not duplicate.
+ASTNode* ast_type_clone(const ASTNode* node);
 
 // Contract constructors
 ContractClauseNode* ast_contract_clause_new(ASTNode* condition, const char* description, Position pos);

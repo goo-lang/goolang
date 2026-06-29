@@ -554,6 +554,93 @@ void ast_node_free(ASTNode* node) {
     free(node);
 }
 
+// Deep-clone a *type* AST node (the type-expression node kinds only).
+//
+// Used by the parser to expand a grouped named result list `(x, y int)` into
+// one VarDecl per name: each name needs its OWN copy of the shared type node so
+// AST teardown (ast_node_free walks each VarDecl's ->type) frees it exactly
+// once. Sharing a single type pointer across VarDecls would double-free.
+//
+// Covers the type kinds reachable as a grouped-result element type; returns
+// NULL for kinds the grouped-name path does not need to duplicate (array — its
+// length is an expression; struct/enum/func types), letting the caller fall
+// back to the prior behavior for those rare shapes rather than mis-cloning.
+ASTNode* ast_type_clone(const ASTNode* node) {
+    if (!node) return NULL;
+    switch (node->type) {
+        case AST_BASIC_TYPE: {
+            const BasicTypeNode* s = (const BasicTypeNode*)node;
+            BasicTypeNode* c = (BasicTypeNode*)calloc(1, sizeof(BasicTypeNode));
+            c->base.type = AST_BASIC_TYPE; c->base.pos = node->pos;
+            c->name = s->name ? strdup(s->name) : NULL;
+            return (ASTNode*)c;
+        }
+        case AST_SLICE_TYPE: {
+            const SliceTypeNode* s = (const SliceTypeNode*)node;
+            SliceTypeNode* c = (SliceTypeNode*)calloc(1, sizeof(SliceTypeNode));
+            c->base.type = AST_SLICE_TYPE; c->base.pos = node->pos;
+            c->element_type = ast_type_clone(s->element_type);
+            return (ASTNode*)c;
+        }
+        case AST_MAP_TYPE: {
+            const MapTypeNode* s = (const MapTypeNode*)node;
+            MapTypeNode* c = (MapTypeNode*)calloc(1, sizeof(MapTypeNode));
+            c->base.type = AST_MAP_TYPE; c->base.pos = node->pos;
+            c->key_type = ast_type_clone(s->key_type);
+            c->value_type = ast_type_clone(s->value_type);
+            return (ASTNode*)c;
+        }
+        case AST_CHAN_TYPE: {
+            const ChanTypeNode* s = (const ChanTypeNode*)node;
+            ChanTypeNode* c = (ChanTypeNode*)calloc(1, sizeof(ChanTypeNode));
+            c->base.type = AST_CHAN_TYPE; c->base.pos = node->pos;
+            c->element_type = ast_type_clone(s->element_type);
+            c->pattern = s->pattern;
+            c->endpoint = s->endpoint ? strdup(s->endpoint) : NULL;
+            return (ASTNode*)c;
+        }
+        case AST_POINTER_TYPE: {
+            const PointerTypeNode* s = (const PointerTypeNode*)node;
+            PointerTypeNode* c = (PointerTypeNode*)calloc(1, sizeof(PointerTypeNode));
+            c->base.type = AST_POINTER_TYPE; c->base.pos = node->pos;
+            c->element_type = ast_type_clone(s->element_type);
+            return (ASTNode*)c;
+        }
+        case AST_REFERENCE_TYPE: {
+            const ReferenceTypeNode* s = (const ReferenceTypeNode*)node;
+            ReferenceTypeNode* c = (ReferenceTypeNode*)calloc(1, sizeof(ReferenceTypeNode));
+            c->base.type = AST_REFERENCE_TYPE; c->base.pos = node->pos;
+            c->element_type = ast_type_clone(s->element_type);
+            c->is_mutable = s->is_mutable;
+            return (ASTNode*)c;
+        }
+        case AST_UNSAFE_PTR_TYPE: {
+            const UnsafePtrTypeNode* s = (const UnsafePtrTypeNode*)node;
+            UnsafePtrTypeNode* c = (UnsafePtrTypeNode*)calloc(1, sizeof(UnsafePtrTypeNode));
+            c->base.type = AST_UNSAFE_PTR_TYPE; c->base.pos = node->pos;
+            c->element_type = ast_type_clone(s->element_type);
+            return (ASTNode*)c;
+        }
+        case AST_NULLABLE_TYPE: {
+            const NullableTypeNode* s = (const NullableTypeNode*)node;
+            NullableTypeNode* c = (NullableTypeNode*)calloc(1, sizeof(NullableTypeNode));
+            c->base.type = AST_NULLABLE_TYPE; c->base.pos = node->pos;
+            c->base_type = ast_type_clone(s->base_type);
+            return (ASTNode*)c;
+        }
+        case AST_ERROR_UNION_TYPE: {
+            const ErrorUnionTypeNode* s = (const ErrorUnionTypeNode*)node;
+            ErrorUnionTypeNode* c = (ErrorUnionTypeNode*)calloc(1, sizeof(ErrorUnionTypeNode));
+            c->base.type = AST_ERROR_UNION_TYPE; c->base.pos = node->pos;
+            c->value_type = ast_type_clone(s->value_type);
+            c->error_type = ast_type_clone(s->error_type);
+            return (ASTNode*)c;
+        }
+        default:
+            return NULL;
+    }
+}
+
 // Specific node constructors
 void ast_add_child(ASTNode* parent, ASTNode* child) {
     if (!parent || !child) return;
