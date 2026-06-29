@@ -906,9 +906,45 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
+
+# P0-2: break/continue codegen via a loop-context stack. break must exit the
+# loop; continue must re-run the post/increment then re-test the condition.
+break-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/break_probe examples/break_probe.goo
+	@./build/break_probe > build/break_probe.actual.txt
+	@if diff -u examples/break_probe.expected.txt build/break_probe.actual.txt; then \
+	  echo "break-probe: PASS (break exits the loop)"; \
+	else \
+	  echo "break-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+continue-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/continue_probe examples/continue_probe.goo
+	@./build/continue_probe > build/continue_probe.actual.txt
+	@if diff -u examples/continue_probe.expected.txt build/continue_probe.actual.txt; then \
+	  echo "continue-probe: PASS (continue skips to the increment)"; \
+	else \
+	  echo "continue-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# Nested-loop sanity: a break in the inner loop must exit ONLY the inner loop.
+break-nested-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/break_nested examples/break_nested.goo
+	@./build/break_nested > build/break_nested.actual.txt
+	@if diff -u examples/break_nested.expected.txt build/break_nested.actual.txt; then \
+	  echo "break-nested-probe: PASS (inner break leaves outer loop running)"; \
+	else \
+	  echo "break-nested-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
 
 # Switch-statement probe: compile + run examples/switch_probe.goo and diff
 # stdout against expected.txt (m10-probe pattern). Covers first/middle case

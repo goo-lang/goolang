@@ -49,7 +49,10 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->struct_cache_vals = NULL;
     codegen->struct_cache_size = 0;
     codegen->struct_cache_cap = 0;
-    
+
+    // Loop-context stack (break/continue targets) starts empty.
+    codegen->loop_depth = 0;
+
     // Error reporting
     codegen->current_file = NULL;
     codegen->error_count = 0;

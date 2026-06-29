@@ -1,0 +1,14 @@
+// break_nested: a break in the inner loop exits ONLY the inner loop;
+// the outer loop must keep iterating. Inner prints 0 1 then breaks at
+// j==2; after each inner loop the outer prints its index i.
+package main
+import "fmt"
+func main() {
+    for i := 0; i < 3; i = i + 1 {
+        for j := 0; j < 10; j = j + 1 {
+            if j == 2 { break }
+            fmt.Println(j)
+        }
+        fmt.Println(i)
+    }
+}

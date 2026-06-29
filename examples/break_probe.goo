@@ -1,0 +1,9 @@
+// break_probe: a loop that breaks at i==3 prints only 0 1 2.
+package main
+import "fmt"
+func main() {
+    for i := 0; i < 10; i = i + 1 {
+        if i == 3 { break }
+        fmt.Println(i)
+    }
+}

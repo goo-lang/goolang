@@ -10,6 +10,20 @@
 // change) — declarations (func/var/const) stay there.
 
 
+#if LLVM_AVAILABLE
+// Loop-context stack: break/continue target blocks for the innermost loop.
+// Pushed on entry to a for-loop body, popped on exit. break branches to the
+// top break block, continue to the top continue block.
+static int codegen_push_loop(CodeGenerator* cg, LLVMBasicBlockRef brk, LLVMBasicBlockRef cont) {
+    if (cg->loop_depth >= 32) return 0;       // too deep — caller emits codegen_error
+    cg->loop_break_bb[cg->loop_depth] = brk;
+    cg->loop_continue_bb[cg->loop_depth] = cont;
+    cg->loop_depth++;
+    return 1;
+}
+static void codegen_pop_loop(CodeGenerator* cg) { if (cg->loop_depth > 0) cg->loop_depth--; }
+#endif
+
 int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
     if (!codegen || !checker || !stmt) return 0;
     
@@ -114,8 +128,16 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
         case AST_ASM_STMT:
             return codegen_generate_asm_stmt(codegen, checker, stmt);
         case AST_BREAK_STMT:
+            if (codegen->loop_depth == 0) { codegen_error(codegen, stmt->pos, "break outside loop"); return 0; }
+            LLVMBuildBr(codegen->builder, codegen->loop_break_bb[codegen->loop_depth - 1]);
+            // Subsequent statements in this block are unreachable; start a fresh
+            // block so later codegen has a valid (dead) insertion point.
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
+            return 1;
         case AST_CONTINUE_STMT:
-            // TODO: Implement break/continue
+            if (codegen->loop_depth == 0) { codegen_error(codegen, stmt->pos, "continue outside loop"); return 0; }
+            LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[codegen->loop_depth - 1]);
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
         case AST_COMPTIME_BLOCK: {
             // M11-block-dispatch: `comptime { ... }` blocks produce no
@@ -409,6 +431,10 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
         LLVMBasicBlockRef rcond = codegen_create_block(codegen, "range.cond");
         LLVMBasicBlockRef rbody = codegen_create_block(codegen, "range.body");
+        // Dedicated increment block so `continue` re-runs the index bump before
+        // re-testing the condition (branching straight to rcond would skip the
+        // increment and loop forever).
+        LLVMBasicBlockRef rpost = codegen_create_block(codegen, "range.post");
         LLVMBasicBlockRef rexit = codegen_create_block(codegen, "range.exit");
 
         LLVMBuildBr(codegen->builder, rcond);
@@ -430,11 +456,22 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "elem");
             LLVMBuildStore(codegen->builder, elem_val, val_alloca);
         }
+        // break exits to rexit; continue jumps to rpost (the increment block).
+        if (!codegen_push_loop(codegen, rexit, rpost)) {
+            codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
+            scope_pop(checker);
+            value_info_free(range_val);
+            return 0;
+        }
         int body_ok = 1;
         if (for_stmt->body) {
             body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
         }
-        // i = i + 1
+        codegen_pop_loop(codegen);
+        LLVMBuildBr(codegen->builder, rpost);
+
+        // post: i = i + 1, then back to the condition.
+        codegen_set_insert_point(codegen, rpost);
         LLVMValueRef i_now = LLVMBuildLoad2(codegen->builder, i32, idx_alloca, "i_inc");
         LLVMValueRef i_next = LLVMBuildAdd(codegen->builder, i_now,
                                            LLVMConstInt(i32, 1, 0), "i_next");
@@ -481,13 +518,22 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         LLVMBuildBr(codegen->builder, body_block);
     }
     
-    // Generate body block
+    // Generate body block. Push the loop context so break/continue inside the
+    // body resolve to this loop's exit (break) and post/increment (continue)
+    // blocks. continue targets post_block so the increment runs before the
+    // condition is re-tested.
     codegen_set_insert_point(codegen, body_block);
+    if (!codegen_push_loop(codegen, exit_block, post_block)) {
+        codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
+        return 0;
+    }
     if (for_stmt->body) {
         if (!codegen_generate_statement(codegen, checker, for_stmt->body)) {
+            codegen_pop_loop(codegen);
             return 0;
         }
     }
+    codegen_pop_loop(codegen);
     LLVMBuildBr(codegen->builder, post_block);
     
     // Generate post block
