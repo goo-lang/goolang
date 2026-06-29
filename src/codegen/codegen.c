@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 // Code generator initialization and cleanup
 
@@ -576,6 +578,32 @@ int codegen_emit_object_file(CodeGenerator* codegen, const char* filename) {
 #endif
 }
 
+// Resolve the runtime archive path independent of cwd so the compiler works
+// when invoked from any directory. Order: $GOO_RUNTIME -> <exe-dir>/../lib ->
+// cwd-relative fallback. Returns a pointer into a static buffer (single-threaded
+// codegen; not reentrant — acceptable here).
+static const char* goo_runtime_archive_path(void) {
+    static char buf[4096];
+    const char* env = getenv("GOO_RUNTIME");
+    if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s", env); return buf; }
+#ifdef __linux__
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        char* slash = strrchr(exe, '/');        // dir-of-exe
+        if (slash) {
+            *slash = '\0';
+            snprintf(buf, sizeof(buf), "%s/../lib/libgoo_runtime.a", exe);
+            struct stat st;
+            if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+        }
+    }
+#endif
+    snprintf(buf, sizeof(buf), "lib/libgoo_runtime.a");  // fallback (repo-root cwd)
+    return buf;
+}
+
 int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #if LLVM_AVAILABLE
     if (!codegen || !filename) return 0;
@@ -660,8 +688,8 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         target_triple = LLVMGetDefaultTargetTriple();
     }
     snprintf(link_command, sizeof(link_command),
-             "clang -target %s -o %s %s lib/libgoo_runtime.a -lm -lpthread",
-             target_triple, filename, object_filename);
+             "clang -target %s -o %s %s %s -lm -lpthread",
+             target_triple, filename, object_filename, goo_runtime_archive_path());
     if (!codegen->target_triple) {
         LLVMDisposeMessage(target_triple);
     }
@@ -674,18 +702,18 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     // "relocation ... can not be used when making a PIE object". Force a
     // non-PIE link to match the object model.
     snprintf(link_command, sizeof(link_command),
-             "gcc -no-pie -o %s %s lib/libgoo_runtime.a -lm -lpthread",
-             filename, object_filename);
+             "gcc -no-pie -o %s %s %s -lm -lpthread",
+             filename, object_filename, goo_runtime_archive_path());
 #elif defined(_WIN32)
     // Windows linking with runtime library
     snprintf(link_command, sizeof(link_command),
-             "link.exe /OUT:%s %s lib\\libgoo_runtime.a /ENTRY:main /SUBSYSTEM:CONSOLE",
-             filename, object_filename);
+             "link.exe /OUT:%s %s %s /ENTRY:main /SUBSYSTEM:CONSOLE",
+             filename, object_filename, goo_runtime_archive_path());
 #else
     // Generic Unix linking with runtime library using gcc (see -no-pie note above)
     snprintf(link_command, sizeof(link_command),
-             "gcc -no-pie -o %s %s lib/libgoo_runtime.a -lm -lpthread",
-             filename, object_filename);
+             "gcc -no-pie -o %s %s %s -lm -lpthread",
+             filename, object_filename, goo_runtime_archive_path());
 #endif
     
     int link_result = system(link_command);

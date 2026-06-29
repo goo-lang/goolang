@@ -854,6 +854,16 @@ m10-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# P0-1: the compiler must link from ANY cwd, not just the repo root. Invoked
+# from /tmp (no lib/ present) with GOO_RUNTIME unset, the compiler must still
+# resolve libgoo_runtime.a relative to its own binary, link, and run.
+cwd-link-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== cwd-link-probe: compile+run from a non-repo-root cwd ==="
+	@cd /tmp && GOO_RUNTIME="" "$(abspath $(COMPILER))" "$(abspath examples/cwd_link_probe.goo)" -o /tmp/cwd_link_probe.out 2>/tmp/cwd_link_probe.err; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat /tmp/cwd_link_probe.err; exit 1; fi
+	@out=$$(/tmp/cwd_link_probe.out); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
+
 # M12 stdlib-breadth probe: compile + run examples/m12_probe.goo and
 # diff stdout against expected.txt (m10-probe pattern). Each
 # M12-stdlib-* child appends a numbered section + expected lines in
