@@ -1,0 +1,3 @@
+recovered: bad input
+a*2: 0
+b*2: 42

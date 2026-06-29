@@ -915,7 +915,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -964,6 +964,96 @@ println-badtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "println-badtype-probe: FAIL (compiled an unsupported print — expected error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/println_bad.err; then echo "println-badtype-probe: FAIL (invalid IR reached verifier)"; cat build/println_bad.err; exit 1; fi; \
 	  if grep -qiE "unsupported|cannot print|Println" build/println_bad.err; then echo "println-badtype-probe: PASS"; else echo "println-badtype-probe: FAIL (no clean diagnostic)"; cat build/println_bad.err; exit 1; fi
+
+# P1-1: error(msg) builtin — recognition + string-arg type-check. The bad forms
+# error() (wrong arity) and error(5) (non-string arg) must each be rejected by
+# the type checker's `error` special-case with its OWN diagnostic, and must NOT
+# reach the LLVM verifier (no invalid-IR crash).
+#
+# The assertions key on the special-case's specific messages ("expects exactly
+# one string argument" / "argument must be a string"), not just the substring
+# "error". This is deliberate: that special-case only fires when the predeclared
+# `error` builtin resolves in scope (registered in type_checker.c). If the
+# registration is removed, `error(...)` instead falls through to ordinary
+# identifier resolution and fails with "Undefined variable 'error'" — which would
+# NOT match these patterns, turning this probe RED. So the probe genuinely
+# exercises the builtin registration, not just the pre-existing name match.
+error-arity-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== error-arity-probe: error()/error(5) fail cleanly in type check ==="
+	@printf 'package main\nfunc f() !int { return error() }\nfunc main() {}\n' > build/error_arity_noargs.goo
+	@printf 'package main\nfunc g() !int { return error(5) }\nfunc main() {}\n' > build/error_arity_intarg.goo
+	@"$(COMPILER)" build/error_arity_noargs.goo -o build/error_arity_noargs.out 2>build/error_arity_noargs.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "error-arity-probe: FAIL (error() compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/error_arity_noargs.err; then echo "error-arity-probe: FAIL (invalid IR reached verifier for error())"; cat build/error_arity_noargs.err; exit 1; fi; \
+	  if ! grep -qiE "error expects exactly one string argument" build/error_arity_noargs.err; then echo "error-arity-probe: FAIL (error() not rejected by the error builtin special-case)"; cat build/error_arity_noargs.err; exit 1; fi
+	@"$(COMPILER)" build/error_arity_intarg.goo -o build/error_arity_intarg.out 2>build/error_arity_intarg.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "error-arity-probe: FAIL (error(5) compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/error_arity_intarg.err; then echo "error-arity-probe: FAIL (invalid IR reached verifier for error(5))"; cat build/error_arity_intarg.err; exit 1; fi; \
+	  if ! grep -qiE "argument must be a string" build/error_arity_intarg.err; then echo "error-arity-probe: FAIL (error(5) not rejected by the error builtin special-case)"; cat build/error_arity_intarg.err; exit 1; fi
+	@echo "error-arity-probe: PASS"
+
+# P1-3: type-check `return` against the declared !T value type. Inside a function
+# returning !T, a `return <expr>` is valid iff <expr> is an error(...) construction
+# (or the SAME !T forwarded whole) OR its type is compatible with T. A plain value
+# of an incompatible type — e.g. `return "str"` from an !int function — must be a
+# clean type error, NOT silently accepted (today the return stub accepts anything)
+# and NOT an LLVM-verifier crash. A MISMATCHED error union forwarded whole — e.g.
+# `return s()` where s() is !string inside an !int function — must likewise be a
+# clean type error, not an "any error union accepted" pass that crashes the
+# verifier with a return-operand type mismatch. The probe also guards against
+# over-rejection: `return 42` and `return error("x")` from an !int function, and a
+# matching !int forwarded whole, must all still compile.
+return-type-erru-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== return-type-erru-probe: return type-checked against !T value type ==="
+	@printf 'package main\nfunc f() !int { return "str" }\nfunc main() {}\n' > build/rt_erru_bad.goo
+	@printf 'package main\nfunc f() !int { return }\nfunc main() {}\n' > build/rt_erru_bare.goo
+	@printf 'package main\nfunc s() !string { return error("x") }\nfunc f() !int { return s() }\nfunc main() {}\n' > build/rt_erru_xfwd.goo
+	@printf 'package main\nimport "fmt"\nfunc okval() !int { return 42 }\nfunc okerr() !int { return error("x") }\nfunc fwd() !int { return okval() }\nfunc main() { fmt.Println("ok") }\n' > build/rt_erru_ok.goo
+	@"$(COMPILER)" build/rt_erru_bad.goo -o build/rt_erru_bad.out 2>build/rt_erru_bad.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (return \"str\" from !int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_bad.err; then echo "return-type-erru-probe: FAIL (invalid IR reached verifier)"; cat build/rt_erru_bad.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_erru_bad.err; then echo "return-type-erru-probe: FAIL (no clean return-type diagnostic)"; cat build/rt_erru_bad.err; exit 1; fi
+	@"$(COMPILER)" build/rt_erru_bare.goo -o build/rt_erru_bare.out 2>build/rt_erru_bare.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (bare return from !int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_bare.err; then echo "return-type-erru-probe: FAIL (bare return reached verifier)"; cat build/rt_erru_bare.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_erru_bare.err; then echo "return-type-erru-probe: FAIL (no clean diagnostic for bare return)"; cat build/rt_erru_bare.err; exit 1; fi
+	@"$(COMPILER)" build/rt_erru_xfwd.goo -o build/rt_erru_xfwd.out 2>build/rt_erru_xfwd.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (mismatched !string forwarded from !int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_xfwd.err; then echo "return-type-erru-probe: FAIL (mismatched forward reached verifier)"; cat build/rt_erru_xfwd.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_erru_xfwd.err; then echo "return-type-erru-probe: FAIL (no clean diagnostic for mismatched forward)"; cat build/rt_erru_xfwd.err; exit 1; fi
+	@"$(COMPILER)" build/rt_erru_ok.goo -o build/rt_erru_ok.out 2>build/rt_erru_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "return-type-erru-probe: FAIL (valid !T returns rejected)"; cat build/rt_erru_ok.err; exit 1; fi
+	@echo "return-type-erru-probe: PASS"
+
+# P1-5: `try` propagates the real error in an !T function; reject `try` whose
+# enclosing function does NOT return an error union. Before Phase 1 a `try` in a
+# non-!T function silently emitted `unreachable` (no diagnostic, garbage IR);
+# now the type checker rejects it with a clean diagnostic, NOT an LLVM-verifier
+# crash. The probe also guards against over-rejection: a `try` inside an !T
+# function (the legitimate propagation form) must still compile.
+try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== try-nonerru-probe: try rejected outside !T; allowed inside !T (incl. cross-value-type) ==="
+	@printf 'package main\nfunc mightFail() !int { return error("x") }\nfunc f() int { v := try mightFail(); return v }\nfunc main() {}\n' > build/try_nonerru_int.goo
+	@printf 'package main\nfunc mightFail() !int { return error("x") }\nfunc f() { v := try mightFail(); _ = v }\nfunc main() {}\n' > build/try_nonerru_void.goo
+	@printf 'package main\nfunc mightFailStr() !string { return error("x") }\nfunc f() !int { v := try mightFailStr(); return len(v) }\nfunc main() {}\n' > build/try_crossval.goo
+	@printf 'package main\nimport "fmt"\nfunc mightFail() !int { return 5 }\nfunc f() !int { v := try mightFail(); return v + 1 }\nfunc main() { fmt.Println("ok") }\n' > build/try_erru_ok.goo
+	@"$(COMPILER)" build/try_nonerru_int.goo -o build/try_nonerru_int.out 2>build/try_nonerru_int.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in !int->int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (invalid IR reached verifier)"; cat build/try_nonerru_int.err; exit 1; fi; \
+	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (no clean try-context diagnostic)"; cat build/try_nonerru_int.err; exit 1; fi
+	@"$(COMPILER)" build/try_nonerru_void.goo -o build/try_nonerru_void.out 2>build/try_nonerru_void.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in void func compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (void-func try reached verifier)"; cat build/try_nonerru_void.err; exit 1; fi; \
+	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for void-func try)"; cat build/try_nonerru_void.err; exit 1; fi
+	@"$(COMPILER)" build/try_crossval.goo -o build/try_crossval.out 2>build/try_crossval.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (cross-value-type try !string-in-!int rejected — error should re-wrap into the enclosing !int)"; cat build/try_crossval.err; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_crossval.err; then echo "try-nonerru-probe: FAIL (cross-value-type try reached verifier)"; cat build/try_crossval.err; exit 1; fi
+	@"$(COMPILER)" build/try_erru_ok.goo -o build/try_erru_ok.out 2>build/try_erru_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (legitimate try inside !T rejected)"; cat build/try_erru_ok.err; exit 1; fi
+	@echo "try-nonerru-probe: PASS"
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).

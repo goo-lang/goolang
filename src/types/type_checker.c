@@ -168,6 +168,19 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, append_var);
     }
 
+    // error(msg) -> !T: constructs the error case of the enclosing function's
+    // error-union return type. Registered here so the bare identifier resolves
+    // like len/cap/append; the call itself is special-cased in
+    // type_check_call_expr (requires exactly one string arg, only valid inside
+    // a function returning !T).
+    Type* error_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* error_var = variable_new("error", error_type, (Position){0, 0, 0, "builtin"});
+    if (error_var) {
+        error_var->is_builtin = 1;
+        error_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, error_var);
+    }
+
     // Stdlib package identifiers. Registered globally for now (matching the
     // pattern above) — the type checker is lenient about whether `import`
     // was actually written. Selector access (e.g. fmt.Println) resolves
@@ -952,15 +965,76 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_RETURN_STMT) return 0;
     
     ReturnStmtNode* ret_stmt = (ReturnStmtNode*)stmt;
-    
+
+    // A value-less `return` from a function declared to return an error union
+    // (!T) supplies neither an error(...) construction nor a value of T, so it
+    // cannot satisfy the declared type. Reject it here rather than letting
+    // codegen synthesize a zeroed error union (which a caller's catch would
+    // never fire on, leaving the value half as garbage).
+    if (!ret_stmt->values) {
+        Type* expected = checker->current_return_type;
+        if (expected && type_is_error_union(expected)) {
+            Type* vt = expected->data.error_union.value_type;
+            // `!void` (error-only, the Go `func() error` shape) is not yet
+            // supported end-to-end — the success-variant codegen can't build a
+            // void-valued union (invalid IR). Reject it cleanly until the
+            // void-union codegen lands, rather than crash the verifier or
+            // (worse) emit a zeroed union a caller's catch never fires on.
+            if (vt && vt->kind == TYPE_VOID) {
+                type_error(checker, stmt->pos,
+                           "!void (error-only) functions are not yet supported "
+                           "in v1; use !T with a value type for now");
+                return 0;
+            }
+            // `!T` with a real value type: a bare return supplies neither an
+            // error(...) construction nor a value of T.
+            type_error(checker, stmt->pos,
+                       "return type mismatch: bare return from a function "
+                       "returning %s (expected a value of %s or an error(...) "
+                       "construction)",
+                       type_to_string(expected),
+                       type_to_string(vt));
+            return 0;
+        }
+        return 1;
+    }
+
     // Check return value if present
-    if (ret_stmt->values) {
+    {
         Type* return_type = type_check_expression(checker, ret_stmt->values);
         if (!return_type) return 0;
-        
-        // TODO: Check against function return type
+
+        // When the enclosing function returns an error union (!T), the returned
+        // expression is valid iff it is an error(...) construction / another !T
+        // forwarded whole (its resolved type is THE SAME error union) OR its
+        // type is compatible with the union's value type T. A plain value of an
+        // incompatible type (e.g. `return "str"` from an !int function) is a
+        // clean type error here, before it can reach codegen / the verifier.
+        //
+        // The forward case must require type_equals against the enclosing union,
+        // not merely type_is_error_union: a mismatched !T (e.g. forwarding an
+        // !string out of an !int function) is otherwise waved through here and
+        // then crashes the LLVM verifier with a return-operand type mismatch.
+        // error(...) resolves to exactly current_return_type (see
+        // expression_checker.c), so type_equals also accepts genuine
+        // error(...) constructions.
+        Type* expected = checker->current_return_type;
+        if (expected && type_is_error_union(expected)) {
+            Type* value_type = expected->data.error_union.value_type;
+            int is_error_or_forward = type_equals(return_type, expected);
+            int is_value = value_type && type_compatible(return_type, value_type);
+            if (!is_error_or_forward && !is_value) {
+                type_error(checker, stmt->pos,
+                           "return type mismatch: cannot return %s from a function "
+                           "returning %s (expected %s or an error(...) construction)",
+                           type_to_string(return_type),
+                           type_to_string(expected),
+                           type_to_string(value_type));
+                return 0;
+            }
+        }
     }
-    
+
     return 1;
 }
 

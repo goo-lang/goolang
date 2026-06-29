@@ -551,7 +551,14 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // error(msg) -> !T. Constructs the error case of the enclosing function's
         // return type. The argument must be a string; the call is only valid inside
         // a function whose return type is an error union (!T).
-        if (strcmp(func_ident->name, "error") == 0) {
+        //
+        // Gate on the predeclared `error` builtin actually resolving in scope (it
+        // is registered in type_checker.c alongside len/cap/append). This makes the
+        // registration load-bearing and keeps `error` Go-faithfully shadowable: a
+        // user-declared local `error` (is_builtin == 0, or absent from scope) falls
+        // through to ordinary identifier resolution instead of being hijacked here.
+        Variable* error_builtin = scope_lookup_variable(checker->current_scope, "error");
+        if (strcmp(func_ident->name, "error") == 0 && error_builtin && error_builtin->is_builtin) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "error expects exactly one string argument");
                 return NULL;
@@ -813,12 +820,45 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     
     // Expression must be an error union
     if (!type_is_error_union(expr_type)) {
-        type_error(checker, expr->pos, 
+        type_error(checker, expr->pos,
                   "try can only be used with error union types, got %s",
                   type_to_string(expr_type));
         return NULL;
     }
-    
+
+    // `try` propagates the error out of the ENCLOSING function on the error
+    // path, so that function must itself return an error union (!T). Rejecting
+    // this here keeps the codegen propagation path (LLVMBuildRet operand) total
+    // — before this check a `try` in a non-!T function silently emitted
+    // `unreachable` (garbage IR, no diagnostic).
+    Type* enclosing = checker->current_return_type;
+    if (!enclosing || !type_is_error_union(enclosing)) {
+        type_error(checker, expr->pos,
+                  "try can only be used inside a function that returns an error union (!T)");
+        return NULL;
+    }
+
+    // Error-union-ness of the enclosing function is NECESSARY. The VALUE types
+    // need NOT match: `try` propagates the operand's ERROR (not its value) out
+    // of the enclosing function, and codegen re-wraps that error into the
+    // enclosing function's error-union type. This enables the headline
+    // cross-value-type propagation pattern — e.g. `name := try getName()` where
+    // getName() is `!string`, used inside a `process() !int` function: the
+    // unwrapped string is consumed locally while any error propagates up as the
+    // function's own `!int`. Only the ERROR types must be compatible; in Phase 1
+    // the error slot is always a string (default error type, represented as a
+    // NULL error_type), so any two `!T`s are compatible. Reject only an explicit
+    // error-type mismatch, which has no faithful re-wrap today.
+    Type* operand_err = expr_type->data.error_union.error_type;
+    Type* enclosing_err = enclosing->data.error_union.error_type;
+    if (operand_err && enclosing_err && !type_equals(operand_err, enclosing_err)) {
+        type_error(checker, expr->pos,
+                  "try operand error type %s does not match the enclosing "
+                  "function's error type %s",
+                  type_to_string(operand_err), type_to_string(enclosing_err));
+        return NULL;
+    }
+
     // try extracts the value type from the error union
     Type* value_type = expr_type->data.error_union.value_type;
     expr->node_type = value_type;

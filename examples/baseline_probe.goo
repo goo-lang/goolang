@@ -41,6 +41,14 @@ func safe_div(n int, d int) !int {
     return n / d
 }
 
+// `try` propagates on the error path, so it is only valid inside a function
+// that itself returns !T (Phase 1 P1-5). Wrap the success-path unwrap in an
+// !int helper; main consumes the result via catch.
+func try_safe_div() !int {
+    v := try safe_div(10, 2)
+    return v
+}
+
 // Nullable (M8-nullable) — ?T type, auto-wrap on init, if-let unwrap.
 // `nil` literal not exercised here (separate codegen path).
 
@@ -157,8 +165,10 @@ func main() {
         }
     }
 
-    // 15. error union + try (success path; error() builtin still WIP)
-    v := try safe_div(10, 2)
+    // 15. error union + try (success path via an !T helper; P1-5)
+    v := try_safe_div() catch e {
+        fmt.Println("FAIL: try:", e)
+    }
     if v == 5 {
         fmt.Println("PASS: error union + try")
     }

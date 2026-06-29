@@ -135,17 +135,33 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
 
     LLVMBuildCondBr(codegen->builder, is_error, propagate_block, continue_block);
 
-    // Propagation block: return the error-union operand from the
-    // current function — but only if the current function's return
-    // type matches (i.e. it also returns this error union). When the
-    // caller's return type doesn't match (e.g. main returns void in
-    // the M8 probe), emit `unreachable` so the static IR verifies;
-    // the success path is the only one exercised in such cases.
+    // Propagation block: re-wrap the operand's ERROR into the ENCLOSING
+    // function's error-union type and return THAT. `try` propagates only the
+    // error (not the operand's value), so the operand and the enclosing function
+    // may have different VALUE types — the headline cross-value-type pattern,
+    // e.g. an `!string` operand propagated out of an `!int` function. Ret-ing
+    // the WHOLE operand would be an ABI mismatch in that case ("Function return
+    // type does not match operand type"); instead we extract the error (the
+    // error slot is always a string in Phase 1) and build a fresh error union of
+    // the enclosing return type. The type checker (type_check_try_expr)
+    // guarantees the enclosing function returns `!T` and the error types are
+    // compatible, so the else-branch is defensive (clean codegen_error rather
+    // than garbage IR if the gate ever regresses).
     codegen_set_insert_point(codegen, propagate_block);
     FunctionInfo* cur = codegen->current_function_info;
     if (cur && cur->goo_type && type_is_error_union(cur->goo_type)) {
-        LLVMBuildRet(codegen->builder, operand_info->llvm_value);
+        LLVMValueRef err_val =
+            codegen_error_union_get_error(codegen, operand_info->llvm_value);
+        LLVMTypeRef enclosing_union = codegen_type_to_llvm(codegen, cur->goo_type);
+        LLVMValueRef rewrapped =
+            codegen_create_error_union_error(codegen, enclosing_union, err_val);
+        LLVMBuildRet(codegen->builder, rewrapped);
     } else {
+        codegen_error(codegen, expr->pos,
+                      "try used outside an error-union function "
+                      "(should have been rejected by the type checker)");
+        // Terminate the block so the (rejected) module is still structurally
+        // valid; error_count>0 already fails the build before emission.
         LLVMBuildUnreachable(codegen->builder);
     }
 
@@ -222,30 +238,25 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
         }
     }
 
-    // Generate the catch body as a statement (always a block).
+    // Generate the catch body as a statement (grammar guarantees a block).
     // Track whether it emits a terminator (e.g. `return`) so we only add a
     // PHI incoming from the error side when the block falls through.
     LLVMValueRef catch_value = NULL;
     LLVMBasicBlockRef error_exit_block = NULL;
 
     if (catch_expr->catch_body) {
-        int body_ok = codegen_generate_statement(codegen, checker, catch_expr->catch_body);
-        if (!body_ok) {
+        if (!codegen_generate_statement(codegen, checker, catch_expr->catch_body)) {
             value_info_free(operand_info);
             return NULL;
         }
-        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
-            // Block fell through — produce a zero default and branch to merge.
-            Type* vtype = operand_info->goo_type->data.error_union.value_type;
-            LLVMTypeRef vllvm = codegen_type_to_llvm(codegen, vtype);
-            catch_value = LLVMConstNull(vllvm);
-            LLVMBuildBr(codegen->builder, merge_block);
-            error_exit_block = LLVMGetInsertBlock(codegen->builder);
-        }
-        // else: block already terminated (e.g. `return`) — no br needed,
-        // and no incoming to add to the PHI from the error side.
-    } else {
-        // No catch body: zero default, fall through to merge.
+    }
+
+    // Recovery merge: if the error block fell through (the body did not end in
+    // a terminator such as `return`, or there was no body), the catch recovers
+    // and the merged result is the zero value of the union's value type T. A
+    // body that already terminated contributes no incoming to the merge PHI.
+    // (Single path — previously duplicated across the body / no-body branches.)
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
         Type* vtype = operand_info->goo_type->data.error_union.value_type;
         LLVMTypeRef vllvm = codegen_type_to_llvm(codegen, vtype);
         catch_value = LLVMConstNull(vllvm);

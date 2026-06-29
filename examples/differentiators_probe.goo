@@ -1,0 +1,75 @@
+// differentiators_probe: end-to-end proof that Goo's headline differentiators
+// — `!T` error unions (the FAILURE path) and `?T` nullables — coexist and work
+// together in a single compilation unit. This is the P1-6 integration gate for
+// Phase 1: it consolidates every piece wired by P1-1..P1-5 into one program.
+//
+//   * divide() is an !int function: it constructs error("divide by zero") on
+//     one path (is_error=1) and returns a real value on the other.
+//   * main's `catch` consumes BOTH paths of divide(): it binds the message on
+//     failure and receives the unwrapped value through the merge on success.
+//   * safeDivide() is a second !int caller that `try`-propagates divide()'s
+//     error up to main's top-level catch, and on success consumes the unwrapped
+//     value locally (q+1) — the headline try-propagation pattern.
+//   * a `?int` nullable runs alongside via `if let`, proving the two
+//     differentiators coexist in the same program without interfering.
+package main
+
+import "fmt"
+
+// !int: error on the b==0 path, a real value otherwise.
+func divide(a int, b int) !int {
+    if b == 0 {
+        return error("divide by zero")
+    }
+    return a / b
+}
+
+// try-propagates divide()'s error; on success consumes the unwrapped value.
+func safeDivide(a int, b int) !int {
+    q := try divide(a, b)
+    return q + 1
+}
+
+func main() {
+    // !T success path: catch passes the unwrapped value through the merge.
+    x := divide(10, 2) catch e {
+        fmt.Println("unexpected:", e)
+    }
+    fmt.Println("divide ok:", x)
+
+    // !T failure path: error("divide by zero") fires the catch and binds e; the
+    // body does not return, so the recovered zero value flows through the merge.
+    y := divide(10, 0) catch e {
+        fmt.Println("caught:", e)
+    }
+    fmt.Println("recovered:", y)
+
+    // try-propagation success: safeDivide unwraps 5, returns 6.
+    s := safeDivide(10, 2) catch e {
+        fmt.Println("unexpected:", e)
+    }
+    fmt.Println("safeDivide ok:", s)
+
+    // try-propagation failure: divide's error propagates up through safeDivide
+    // to this top-level catch, which binds the original message.
+    f := safeDivide(10, 0) catch e {
+        fmt.Println("propagated:", e)
+    }
+    fmt.Println("after propagate:", f)
+
+    // ?int nullable differentiator coexisting in the same program: the value
+    // path binds, the nil path takes else.
+    var present ?int = 7
+    if let v = present {
+        fmt.Println("nullable present:", v)
+    } else {
+        fmt.Println("FAIL: present took else")
+    }
+
+    var absent ?int = nil
+    if let v = absent {
+        fmt.Println("FAIL: absent took value", v)
+    } else {
+        fmt.Println("nullable absent: nil")
+    }
+}
