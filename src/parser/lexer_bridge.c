@@ -81,6 +81,7 @@ static int     s_have_pending = 0;   // a peeked token is buffered
 static int     s_pending_tok = 0;    // its bison token id
 static YYSTYPE s_pending_val;        // its semantic value
 static int     s_last_emitted = 0;   // last token yylex returned (for `[]`)
+static int     s_last_token_line = 0;// source line of the token bridge_next_mapped last returned
 
 // FIRST(type): if one of these follows an empty `[]`, the `[]` is a
 // slice-type prefix, not a bare empty-slice literal. Kept in sync with the
@@ -105,6 +106,7 @@ void bridge_reset_cond_state(void) {
     m10_paren_depth = 0;
     s_have_pending = 0;
     s_last_emitted = 0;
+    s_last_token_line = 0;
 }
 
 // Map our tokens to Bison tokens
@@ -285,6 +287,14 @@ static int bridge_next_mapped(void) {
         return 0; // EOF
     }
 
+    // Record the source line of this token so the `[]` lookahead in yylex can
+    // tell whether a statement-boundary newline separated the `]` from the
+    // peeked token (the lexer elides newlines Go-style, so the token stream
+    // alone can't reveal the boundary). On the skip-recursion path below this
+    // is overwritten by the recursive call, so it always reflects the token
+    // actually returned.
+    s_last_token_line = token->pos.line;
+
     int bison_token = map_token_to_bison(token->type);
 
     // Set the semantic value based on token type
@@ -336,11 +346,23 @@ int yylex(void) {
     // RBRACKET_SLICE carry no semantic value, so overwriting yylval here is
     // harmless.
     if (tok == RBRACKET && s_last_emitted == LBRACKET) {
+        int rbracket_line = s_last_token_line;
         int nxt = bridge_next_mapped();
+        int nxt_line = s_last_token_line;
         s_pending_tok = nxt;
         s_pending_val = yylval;
         s_have_pending = 1;
-        if (bridge_token_starts_type(nxt)) {
+        // Only treat the empty `[]` as a slice-TYPE prefix when the following
+        // type-starting token sits on the SAME source line. A newline between
+        // `]` and the next token is a statement boundary — the lexer elides
+        // newlines Go-style, so no separator token survives — and in that case
+        // the `[]` is a bare empty-slice literal whose statement has ended; the
+        // next line is a NEW statement, not the slice element type. Without the
+        // same-line check, `xs := []` <nl> `fmt.Println(...)` mis-lexed the
+        // following identifier as the element type and failed to parse. `[]int`
+        // / `[]Foo{...}` always keep their element type on the same line, so
+        // they still route through RBRACKET_SLICE unchanged.
+        if (nxt_line == rbracket_line && bridge_token_starts_type(nxt)) {
             s_last_emitted = RBRACKET_SLICE;
             return RBRACKET_SLICE;
         }

@@ -933,7 +933,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1137,6 +1137,54 @@ named-return-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/nrr_aggr_ok.goo -o build/nrr_aggr_ok.out 2>build/nrr_aggr_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "named-return-reject-probe: FAIL (aggregate single named result wrongly rejected — over-rejection)"; cat build/nrr_aggr_ok.err; exit 1; fi
 	@echo "named-return-reject-probe: PASS"
+
+# P3-1: Go-standard composite literals (`[]T{...}` / `map[K]V{...}`). This is
+# the NEGATIVE/boundary gate for the type-check + lowering rules; the positive
+# construction+indexing cases live in examples/composite_{slice,map}_probe.goo
+# under test-golden. Four rejections + a no-over-rejection group:
+#   REJECT (clean type error, never a silent miscompile or LLVM-verifier crash):
+#     * element/value type mismatch — the DECLARED element/key/value type is
+#       honored over first-element inference ([]string{1}, []int{1,"two"},
+#       map[string]int{"a":"notint"}). This is the core of fix d242a56.
+#     * non-i32-width typed slice ([]int64{...}) — codegen lowers the typed form
+#       with i32 element constants laid out against the declared width, so wider
+#       widths SILENTLY MISCOMPILE (e.g. []int64{100,200,300} -> 858993459300,0).
+#       Until P3-2 lowers these, the type-checker rejects them with a clear
+#       "not yet supported" error instead of emitting garbage.
+#   ACCEPT (no over-rejection): []int / []string (incl. empty {}), the native
+#     untyped [1,2,3] form, and the bare empty `[]` literal followed on the NEXT
+#     line by an identifier-led statement (the lexer's same-line `[]` lookahead
+#     must not swallow it as the slice element type).
+composite-literal-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== composite-literal-reject-probe: typed []T{}/map[K]V{} boundary gates ==="
+	@printf 'package main\nimport "fmt"\nfunc main(){ xs := []string{1,2,3}; fmt.Println(xs[0]) }\n' > build/clr_slice_elem.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ xs := []int{1,"two",3}; fmt.Println(xs[0]) }\n' > build/clr_slice_mix.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ m := map[string]int{"a":"notint"}; fmt.Println(m["a"]) }\n' > build/clr_map_val.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ xs := []int64{100,200,300}; fmt.Println(xs[0], xs[2]) }\n' > build/clr_slice_width.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){\n\tnative := [1,2,3]\n\txs := []int{4,5,6}\n\tys := []string{"go","lang"}\n\tei := []int{}\n\tes := []string{}\n\tfmt.Println(native[0], xs[2], ys[1], len(ei), len(es))\n}\n' > build/clr_ok.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){\n\txs := []\n\tfmt.Println(len(xs))\n}\n' > build/clr_empty_ok.goo
+	@"$(COMPILER)" build/clr_slice_elem.goo -o build/clr_slice_elem.out 2>build/clr_slice_elem.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "composite-literal-reject-probe: FAIL ([]string{1,2,3} compiled — declared element type not honored over inference)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/clr_slice_elem.err; then echo "composite-literal-reject-probe: FAIL (bad []string{int} IR reached verifier)"; cat build/clr_slice_elem.err; exit 1; fi; \
+	  if ! grep -qiE "not compatible with declared element type" build/clr_slice_elem.err; then echo "composite-literal-reject-probe: FAIL (no clean element-mismatch diagnostic for []string{int})"; cat build/clr_slice_elem.err; exit 1; fi
+	@"$(COMPILER)" build/clr_slice_mix.goo -o build/clr_slice_mix.out 2>build/clr_slice_mix.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "composite-literal-reject-probe: FAIL ([]int{1,\"two\",3} compiled — mixed-type elements not rejected)"; exit 1; fi; \
+	  if ! grep -qiE "not compatible with declared element type" build/clr_slice_mix.err; then echo "composite-literal-reject-probe: FAIL (no clean element-mismatch diagnostic for []int{string})"; cat build/clr_slice_mix.err; exit 1; fi
+	@"$(COMPILER)" build/clr_map_val.goo -o build/clr_map_val.out 2>build/clr_map_val.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "composite-literal-reject-probe: FAIL (map[string]int{\"a\":\"notint\"} compiled — declared value type not honored)"; exit 1; fi; \
+	  if ! grep -qiE "not compatible with declared value type" build/clr_map_val.err; then echo "composite-literal-reject-probe: FAIL (no clean value-mismatch diagnostic for map value)"; cat build/clr_map_val.err; exit 1; fi
+	@"$(COMPILER)" build/clr_slice_width.goo -o build/clr_slice_width.out 2>build/clr_slice_width.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "composite-literal-reject-probe: FAIL ([]int64{...} compiled — non-i32-width typed slice SILENTLY MISCOMPILES, must be rejected until P3-2)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/clr_slice_width.err; then echo "composite-literal-reject-probe: FAIL ([]int64{} bad IR reached verifier instead of clean rejection)"; cat build/clr_slice_width.err; exit 1; fi; \
+	  if ! grep -qiE "not yet supported" build/clr_slice_width.err; then echo "composite-literal-reject-probe: FAIL (no clean 'not yet supported' diagnostic for []int64{})"; cat build/clr_slice_width.err; exit 1; fi
+	@"$(COMPILER)" build/clr_ok.goo -o build/clr_ok.out 2>build/clr_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "composite-literal-reject-probe: FAIL ([]int/[]string (incl. empty) or native [1,2,3] wrongly rejected — over-rejection)"; cat build/clr_ok.err; exit 1; fi; \
+	  out="$$(./build/clr_ok.out)"; if [ "$$out" != "1 6 lang 0 0" ]; then echo "composite-literal-reject-probe: FAIL (accepted-forms output '$$out' != '1 6 lang 0 0')"; exit 1; fi
+	@"$(COMPILER)" build/clr_empty_ok.goo -o build/clr_empty_ok.out 2>build/clr_empty_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "composite-literal-reject-probe: FAIL (bare empty [] <nl> identifier-led stmt wrongly mis-lexed as slice type — regression)"; cat build/clr_empty_ok.err; exit 1; fi; \
+	  out="$$(./build/clr_empty_ok.out)"; if [ "$$out" != "0" ]; then echo "composite-literal-reject-probe: FAIL (bare empty [] output '$$out' != '0')"; exit 1; fi
+	@echo "composite-literal-reject-probe: PASS"
 
 # P2-2: a user-function call with the wrong number of arguments must be
 # rejected at type-check with a clean source-located diagnostic, NOT reach
