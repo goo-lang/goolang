@@ -90,30 +90,12 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 Type* want = declared->data.slice.element_type;
                 if (!want) return NULL;
 
-                // Lowering guard (P3-1, pending P3-2). The typed-literal
-                // codegen emits each element CONSTANT with its natural
-                // representation (an int literal is i32, a string literal is
-                // the string repr) but lays the backing array out with the
-                // DECLARED element type. Those only agree when the declared
-                // element type already matches what the elements produce —
-                // i.e. int/int32 and string. For any wider/other element type
-                // (int64, uint, float64, struct, …) the backing buffer is
-                // mis-sized and the literal SILENTLY MISCOMPILES (e.g.
-                // []int64{100,200,300} indexes to 858993459300, 0). Until the
-                // dedicated lowering lands (P3-2), reject the element types we
-                // cannot faithfully lower with a clear, source-located error
-                // rather than stamping a width codegen can't produce. This
-                // restores the pre-P3-1 behaviour (a clean rejection) for the
-                // unsupported widths while keeping the []int / []string forms.
-                if (want->kind != TYPE_INT32 && want->kind != TYPE_STRING) {
-                    type_error(checker, expr->pos,
-                               "typed slice literal element type '%s' is not yet "
-                               "supported: only []int and []string lower correctly "
-                               "today; wider/other element types are pending P3-2",
-                               type_to_string(want));
-                    return NULL;
-                }
-
+                // The lowering (codegen_generate_slice_lit) now coerces each
+                // element to the declared element width (SExt/Trunc/SIToFP via
+                // slice_coerce_elem), so the general []T{} case lowers —
+                // int64/uint/float64/bool, not just the natural-width
+                // i32/string forms. Element compatibility is still enforced
+                // per-element below (incl. the lossy float->int rejection).
                 size_t i = 0;
                 for (ASTNode* e = lit->elements; e; e = e->next, i++) {
                     Type* et = type_check_expression(checker, e);

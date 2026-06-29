@@ -655,6 +655,27 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 #endif
 }
 
+// Coerce a slice-literal element value to the declared element LLVM type
+// before it is stored into the backing array. Mirrors the struct-literal field
+// coercion: int->int widens with SExt (Goo ints are signed) / narrows with
+// Trunc, int->float uses SIToFP. Matching widths and other kinds (bool, string)
+// pass through unchanged. This is what lets the general []T{} case lower
+// (int64/uint/float), not just the natural-width i32/string forms.
+static LLVMValueRef slice_coerce_elem(CodeGenerator* codegen, LLVMValueRef v, LLVMTypeRef to) {
+    LLVMTypeRef from = LLVMTypeOf(v);
+    if (from == to) return v;
+    LLVMTypeKind fk = LLVMGetTypeKind(from), tk = LLVMGetTypeKind(to);
+    if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
+        unsigned fb = LLVMGetIntTypeWidth(from), tb = LLVMGetIntTypeWidth(to);
+        if (fb < tb) return LLVMBuildSExt(codegen->builder, v, to, "elem_sext");
+        if (fb > tb) return LLVMBuildTrunc(codegen->builder, v, to, "elem_trunc");
+        return v;
+    }
+    if (fk == LLVMIntegerTypeKind && (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind))
+        return LLVMBuildSIToFP(codegen->builder, v, to, "elem_sitofp");
+    return v;
+}
+
 // codegen_generate_slice_lit lowers a slice literal to a slice struct
 // { ptr, i64 len, i64 cap } backed by a heap-allocated array. Element
 // type is taken from the type-check pass (node_type is already
@@ -746,6 +767,13 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
             LLVMValueRef indices[2] = { zero, LLVMConstInt(i32ty, i, 0) };
             LLVMValueRef ep = LLVMBuildGEP2(codegen->builder, arr_type, data_ptr,
                                             indices, 2, "slice_elem");
+            // Coerce the element to the declared element LLVM type before the
+            // store (mirrors the struct-literal field coercion). An i32 int
+            // literal stored into a []int64 backing, or into a []float64, would
+            // otherwise be a store-operand type mismatch / invalid IR. Lets the
+            // general []T{} case (int64/uint/float/bool) lower, not just
+            // i32/string. Goo ints are signed -> SExt to widen.
+            elem_vals[i] = slice_coerce_elem(codegen, elem_vals[i], llvm_elem);
             LLVMBuildStore(codegen->builder, elem_vals[i], ep);
         }
     } else if (all_const) {

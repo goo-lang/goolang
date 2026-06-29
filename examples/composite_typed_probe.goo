@@ -1,0 +1,12 @@
+// composite_typed_probe: general []T{} lowering — int64/bool/float64 elements
+// (not just []int/[]string). Each element coerced to the declared width.
+package main
+import "fmt"
+func main() {
+    a := []int64{100, 200, 300}
+    fmt.Println(a[0] + a[2])
+    b := []bool{true, false}
+    fmt.Println(b[0], b[1])
+    c := []float64{1.5, 2.5}
+    fmt.Println(c[0] + c[1])
+}

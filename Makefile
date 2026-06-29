@@ -1175,9 +1175,9 @@ composite-literal-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "composite-literal-reject-probe: FAIL (map[string]int{\"a\":\"notint\"} compiled — declared value type not honored)"; exit 1; fi; \
 	  if ! grep -qiE "not compatible with declared value type" build/clr_map_val.err; then echo "composite-literal-reject-probe: FAIL (no clean value-mismatch diagnostic for map value)"; cat build/clr_map_val.err; exit 1; fi
 	@"$(COMPILER)" build/clr_slice_width.goo -o build/clr_slice_width.out 2>build/clr_slice_width.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "composite-literal-reject-probe: FAIL ([]int64{...} compiled — non-i32-width typed slice SILENTLY MISCOMPILES, must be rejected until P3-2)"; exit 1; fi; \
-	  if grep -qiE "Module verification failed|LLVM ERROR" build/clr_slice_width.err; then echo "composite-literal-reject-probe: FAIL ([]int64{} bad IR reached verifier instead of clean rejection)"; cat build/clr_slice_width.err; exit 1; fi; \
-	  if ! grep -qiE "not yet supported" build/clr_slice_width.err; then echo "composite-literal-reject-probe: FAIL (no clean 'not yet supported' diagnostic for []int64{})"; cat build/clr_slice_width.err; exit 1; fi
+	  if [ $$rc -ne 0 ]; then echo "composite-literal-reject-probe: FAIL ([]int64{100,200,300} wrongly rejected — general []T width lowering regressed)"; cat build/clr_slice_width.err; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/clr_slice_width.err; then echo "composite-literal-reject-probe: FAIL ([]int64{} bad IR reached verifier)"; cat build/clr_slice_width.err; exit 1; fi; \
+	  out="$$(./build/clr_slice_width.out)"; if [ "$$out" != "100 300" ]; then echo "composite-literal-reject-probe: FAIL ([]int64 width-coerced output '$$out' != '100 300')"; exit 1; fi
 	@"$(COMPILER)" build/clr_ok.goo -o build/clr_ok.out 2>build/clr_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "composite-literal-reject-probe: FAIL ([]int/[]string (incl. empty) or native [1,2,3] wrongly rejected — over-rejection)"; cat build/clr_ok.err; exit 1; fi; \
 	  out="$$(./build/clr_ok.out)"; if [ "$$out" != "1 6 lang 0 0" ]; then echo "composite-literal-reject-probe: FAIL (accepted-forms output '$$out' != '1 6 lang 0 0')"; exit 1; fi
