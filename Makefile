@@ -426,6 +426,22 @@ conv-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# F3 gate: char/rune literals `'x'`. A rune literal is an untyped integer
+# constant (rune = int32 = `int` today), so the lexer decodes `'A'`/`'\n'`/`'\''`
+# to its integer value and emits an INT token — no new grammar terminal, so the
+# parser conflict count is unaffected. Covers basic ASCII, char arithmetic
+# ('0'+5), the common escapes (\n \t \\ \'), and rune subtraction ('a'-'A').
+charlit-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/charlit_probe examples/charlit_probe.goo
+	@./build/charlit_probe > build/charlit_probe.actual.txt
+	@if diff -u examples/charlit_probe.expected.txt build/charlit_probe.actual.txt; then \
+	  echo "charlit-probe: PASS"; \
+	else \
+	  echo "charlit-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # F2 boundary gate for `T(x)` conversions: the SOUNDNESS + clean-rejection
 # properties that conv-probe (positive numeric cases) does NOT guard.
 #  1. Function-shadowing soundness (the fix in 6d69e2a): a user `func int`
@@ -984,7 +1000,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

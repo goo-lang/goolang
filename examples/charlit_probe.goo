@@ -1,0 +1,32 @@
+// charlit_probe (F3): char/rune literals `'x'`.
+//
+// Char literals were a parse error ("syntax error") because the lexer's
+// TOKEN_CHAR was never accepted in expression position. A rune literal is an
+// untyped integer constant (rune = int32 = `int` today), so `'A'` lexes to the
+// integer 65 and flows through the ordinary int path: arithmetic, comparison,
+// and fmt.Println(int) all work for free.
+//
+// Each line below changes the output if the matching case regresses, so the
+// golden suite actually GUARDS the literal/escape decoding:
+//   'A'        -> 65   basic ASCII value
+//   '0' + 5    -> 53   char arithmetic (48 + 5)
+//   '\n'       -> 10   escape: newline
+//   '\t'       -> 9    escape: tab
+//   '\\'       -> 92   escape: backslash
+//   '\''       -> 39   escape: single quote
+//   'a' - 'A'  -> 32   subtraction of two runes (ASCII case offset)
+package main
+
+import "fmt"
+
+func main() {
+	c := 'A'
+	fmt.Println(c)       // 65
+	fmt.Println('0' + 5) // 53
+	fmt.Println('\n')    // 10
+	fmt.Println('\t')    // 9
+	fmt.Println('\\')    // 92
+	fmt.Println('\'')    // 39
+	d := 'a' - 'A'       // 32
+	fmt.Println(d)
+}
