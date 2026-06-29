@@ -1,0 +1,10 @@
+// cwd_link_probe: the compiler must locate libgoo_runtime.a relative to the
+// binary, not the cwd. Compiled+run from a directory with no lib/ (e.g. /tmp),
+// it must still link and print 7 (P0-1).
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println(7)
+}

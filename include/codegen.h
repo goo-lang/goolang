@@ -65,7 +65,13 @@ struct CodeGenerator {
     LLVMTypeRef* struct_cache_vals;
     size_t struct_cache_size;
     size_t struct_cache_cap;
-    
+
+    // Loop-context stack for break/continue targets (depth-bounded; nesting
+    // deeper than 32 is rejected with a codegen error).
+    LLVMBasicBlockRef loop_break_bb[32];
+    LLVMBasicBlockRef loop_continue_bb[32];
+    int loop_depth;
+
     // Error reporting
     char* current_file;
     int error_count;

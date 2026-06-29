@@ -700,6 +700,15 @@ deadlock-goroutine-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -ne 2 ]; then echo "deadlock-goroutine-probe: FAIL (exit $$rc, expected 2)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
 	if grep -q "all goroutines are asleep - deadlock!" build/deadlock_goroutine_probe.err; then echo "deadlock-goroutine-probe: PASS"; else echo "deadlock-goroutine-probe: FAIL (missing message)"; cat build/deadlock_goroutine_probe.err; exit 1; fi
 
+# P0-4: a failed link must not leave a stray object file behind.
+link-cleanup-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== link-cleanup-probe: failed link leaves no .o ==="
+	@printf 'package main\nfunc main() {}\n' > build/cleanup_probe.goo
+	@rm -f build/cleanup_probe.out.o
+	@GOO_RUNTIME=/nonexistent/libgoo_runtime.a "$(COMPILER)" build/cleanup_probe.goo -o build/cleanup_probe.out 2>/dev/null; true
+	@if [ -e build/cleanup_probe.out.o ]; then echo "link-cleanup-probe: FAIL (.o left behind)"; exit 1; else echo "link-cleanup-probe: PASS"; fi
+
 # Soak iteration count for the parallel probes (override: make ... PARALLEL_SOAK_ITERS=200).
 PARALLEL_SOAK_ITERS ?= 50
 
@@ -854,6 +863,16 @@ m10-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# P0-1: the compiler must link from ANY cwd, not just the repo root. Invoked
+# from /tmp (no lib/ present) with GOO_RUNTIME unset, the compiler must still
+# resolve libgoo_runtime.a relative to its own binary, link, and run.
+cwd-link-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== cwd-link-probe: compile+run from a non-repo-root cwd ==="
+	@cd /tmp && GOO_RUNTIME="" "$(abspath $(COMPILER))" "$(abspath examples/cwd_link_probe.goo)" -o /tmp/cwd_link_probe.out 2>/tmp/cwd_link_probe.err; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat /tmp/cwd_link_probe.err; exit 1; fi
+	@out=$$(/tmp/cwd_link_probe.out); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
+
 # M12 stdlib-breadth probe: compile + run examples/m12_probe.goo and
 # diff stdout against expected.txt (m10-probe pattern). Each
 # M12-stdlib-* child appends a numbered section + expected lines in
@@ -896,9 +915,62 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
+
+# P0-2: break/continue codegen via a loop-context stack. break must exit the
+# loop; continue must re-run the post/increment then re-test the condition.
+break-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/break_probe examples/break_probe.goo
+	@./build/break_probe > build/break_probe.actual.txt
+	@if diff -u examples/break_probe.expected.txt build/break_probe.actual.txt; then \
+	  echo "break-probe: PASS (break exits the loop)"; \
+	else \
+	  echo "break-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+continue-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/continue_probe examples/continue_probe.goo
+	@./build/continue_probe > build/continue_probe.actual.txt
+	@if diff -u examples/continue_probe.expected.txt build/continue_probe.actual.txt; then \
+	  echo "continue-probe: PASS (continue skips to the increment)"; \
+	else \
+	  echo "continue-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# Nested-loop sanity: a break in the inner loop must exit ONLY the inner loop.
+break-nested-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/break_nested examples/break_nested.goo
+	@./build/break_nested > build/break_nested.actual.txt
+	@if diff -u examples/break_nested.expected.txt build/break_nested.actual.txt; then \
+	  echo "break-nested-probe: PASS (inner break leaves outer loop running)"; \
+	else \
+	  echo "break-nested-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# P0-3: printing an unsupported type must be a clean compile error, not invalid IR.
+println-badtype-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== println-badtype-probe: printing a struct fails cleanly ==="
+	@printf 'package main\nimport "fmt"\ntype P struct { x int }\nfunc main() { p := P{1}; fmt.Println(p) }\n' > build/println_bad.goo
+	@"$(COMPILER)" build/println_bad.goo -o build/println_bad.out 2>build/println_bad.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "println-badtype-probe: FAIL (compiled an unsupported print — expected error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/println_bad.err; then echo "println-badtype-probe: FAIL (invalid IR reached verifier)"; cat build/println_bad.err; exit 1; fi; \
+	  if grep -qiE "unsupported|cannot print|Println" build/println_bad.err; then echo "println-badtype-probe: PASS"; else echo "println-badtype-probe: FAIL (no clean diagnostic)"; cat build/println_bad.err; exit 1; fi
+
+# P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
+# The honest e2e signal (unlike `make test`, which never invokes bin/goo).
+.PHONY: test-golden
+test-golden: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== test-golden: data-driven end-to-end golden suite ==="
+	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
 
 # Switch-statement probe: compile + run examples/switch_probe.goo and diff
 # stdout against expected.txt (m10-probe pattern). Covers first/middle case
