@@ -961,21 +961,30 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
     return result;
 }
 
-// Returns non-zero if `node` is an untyped integer literal: a bare integer
-// literal or a unary minus applied to one (`-1`). These are the only numeric
-// returns codegen width-coerces to the declared integer return type (mirrors
-// is_int_literal_node in expression_codegen.c), so they may safely cross an
-// i32-vs-iN boundary; any other numeric width/kind mismatch reaches the
-// verifier as invalid IR.
-static int is_untyped_int_literal(ASTNode* node) {
+// Returns non-zero if `node` is an untyped integer constant expression: a bare
+// integer literal, a unary minus applied to one (`-1`), or a binary/shift
+// expression whose operands are themselves untyped integer constant
+// expressions (`1 + 1`, `1 << 3`). Codegen materializes all of these as an i32
+// constant and then SExt-WIDENS it to the declared integer return type (see the
+// return-widening path in statement_codegen.c). Because codegen only widens —
+// it never truncates — the caller must additionally gate on the declared return
+// type being no narrower than the operand (see `int_const_widen`); a narrowing
+// target (e.g. `return 65` into a byte) would otherwise reach the verifier as
+// invalid IR.
+static int is_untyped_int_const_expr(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
         return ((LiteralNode*)node)->literal_type == TOKEN_INT;
     if (node->type == AST_UNARY_EXPR) {
         UnaryExprNode* u = (UnaryExprNode*)node;
-        if (u->operator == TOKEN_MINUS && u->operand &&
-            u->operand->type == AST_LITERAL)
-            return ((LiteralNode*)u->operand)->literal_type == TOKEN_INT;
+        return u->operator == TOKEN_MINUS && u->operand &&
+               is_untyped_int_const_expr(u->operand);
+    }
+    if (node->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)node;
+        return b->left && b->right &&
+               is_untyped_int_const_expr(b->left) &&
+               is_untyped_int_const_expr(b->right);
     }
     return 0;
 }
@@ -1091,15 +1100,22 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
             // or a float into an integer (e.g. `return 3.9` from int) — would
             // slip past type_compatible and crash the LLVM verifier with a
             // return-operand mismatch. Reject those here. The sole exception
-            // codegen DOES width-coerce is an untyped integer literal targeting
-            // an integer return type (e.g. `return 42` from an int64 function).
+            // codegen DOES coerce is an untyped integer constant expression
+            // (literal `42`, or constant arithmetic like `1 + 1` / `1 << 3`)
+            // returned into a WIDER-OR-EQUAL integer type (e.g. `return 42` or
+            // `return 1 + 1` from an int64 function): codegen SExt-widens the
+            // i32 constant to match. It does NOT truncate, so a NARROWING target
+            // (e.g. `return 65` into a byte) gets no trunc and must still be
+            // rejected here — gate the exemption on expected being no narrower
+            // than the operand, mirroring codegen's widen-only behavior.
             if (type_is_numeric(return_type) && type_is_numeric(expected)) {
                 int same_kind  = (type_is_float(return_type) == type_is_float(expected));
                 int same_width = (type_size(return_type) == type_size(expected));
-                int int_literal_to_int =
+                int int_const_widen =
                     type_is_integer(expected) &&
-                    is_untyped_int_literal(ret_stmt->values);
-                if ((!same_kind || !same_width) && !int_literal_to_int) {
+                    type_size(expected) >= type_size(return_type) &&
+                    is_untyped_int_const_expr(ret_stmt->values);
+                if ((!same_kind || !same_width) && !int_const_widen) {
                     type_error(checker, stmt->pos,
                                "return type mismatch: cannot return %s from a "
                                "function returning %s",
