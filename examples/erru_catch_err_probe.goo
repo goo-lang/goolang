@@ -1,0 +1,35 @@
+// erru_catch_err_probe: the catch ERROR path with a NON-diverging body.
+//
+// P1-4 coverage: when the callee returns error(...) (is_error=1), the catch
+// dispatch must (a) bind the error var `e` to the REAL message string (not
+// garbage, not the success slot), and (b) since the body does not return, let
+// the recovered zero value flow through the catch merge and be CONSUMED
+// downstream. The ok case feeds the SAME post-catch use to prove the success
+// value also reaches the merge. Distinct messages/arithmetic from
+// erru_fail_probe so this stands alone as the P1-4 regression fixture.
+package main
+
+import "fmt"
+
+func lookup(miss bool) !int {
+	if miss {
+		return error("not found")
+	}
+	return 10
+}
+
+func main() {
+	// error path: catch binds e to the real message and recovers WITHOUT
+	// returning; the recovered value (0) is consumed downstream (x+5 => 5).
+	x := lookup(true) catch e {
+		fmt.Println("error path:", e)
+	}
+	fmt.Println("x+5:", x+5)
+
+	// ok path: the unwrapped value flows through the same catch merge and is
+	// consumed (y+5 => 15), with the catch body skipped.
+	y := lookup(false) catch e {
+		fmt.Println("unexpected:", e)
+	}
+	fmt.Println("y+5:", y+5)
+}
