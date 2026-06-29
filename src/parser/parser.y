@@ -463,14 +463,17 @@ func_result:
         //  - exactly one ANONYMOUS entry -> single return: unwrap to the
         //    bare type so the return ABI stays a scalar (preserves the old
         //    `func f() (int)` form).
-        //  - otherwise (>=2 entries, or any named entry) -> tuple / named
-        //    results: wrap in an anonymous StructTypeNode, reusing the
-        //    existing multi-return struct-return ABI. Anonymous fields get
+        //  - otherwise (>=2 entries, or any named entry) -> wrap in a
+        //    StructTypeNode tagged `is_result_tuple`. Anonymous fields get
         //    synthetic `_N` names (so the type checker's AST_STRUCT_TYPE
         //    path, which skips name-less fields, still sees them); named
         //    fields keep their user names so function codegen can bind them
         //    as in-scope zero-initialized locals and a bare `return` can
-        //    read their current values.
+        //    read their current values. The `is_result_tuple` tag lets the
+        //    type system collapse a SINGLE named result (`(r int)`) back to
+        //    a scalar return ABI — the common Go form `func f() (err error)`
+        //    must be a scalar, not a 1-field struct — while still binding the
+        //    name; a >=2-field tuple keeps the multi-return struct ABI.
         ASTNode* list = $2;
         size_t count = 0; int any_named = 0;
         for (ASTNode* p = list; p; p = p->next) {
@@ -500,6 +503,7 @@ func_result:
             st->base.node_type = NULL;
             st->base.next = NULL;
             st->fields = list;
+            st->is_result_tuple = 1;   // parser-synthesized result list
             $$ = (ASTNode*)st;
         }
     }
@@ -1294,6 +1298,7 @@ struct_type:
         st->base.node_type = NULL;
         st->base.next = NULL;
         st->fields = $3;
+        st->is_result_tuple = 0;   // user-written struct type
         $$ = (ASTNode*)st;
     }
     | STRUCT LBRACE RBRACE {
@@ -1303,6 +1308,7 @@ struct_type:
         st->base.node_type = NULL;
         st->base.next = NULL;
         st->fields = NULL;
+        st->is_result_tuple = 0;   // user-written struct type
         $$ = (ASTNode*)st;
     }
     ;

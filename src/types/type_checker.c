@@ -1057,6 +1057,30 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                        type_to_string(vt));
             return 0;
         }
+        // Bare return from an UNNAMED multi-result function `func f() (int, int)`
+        // is invalid in Go — a bare return is only allowed when results are
+        // named. The parser tags such a result list as a TYPE_STRUCT whose
+        // fields all carry synthetic `_N` names (a SINGLE named/unnamed result
+        // is collapsed to a scalar in type_from_ast and never reaches here, and
+        // a NAMED tuple keeps the user's field names). Reject it here rather
+        // than letting codegen synthesize a zeroed aggregate (`return` would
+        // silently yield 0,0 — a miscompile).
+        if (expected && expected->kind == TYPE_STRUCT &&
+            expected->data.struct_type.field_count > 0) {
+            int all_synthetic = 1;
+            for (size_t i = 0; i < expected->data.struct_type.field_count; i++) {
+                if (!is_synthetic_result_name(expected->data.struct_type.fields[i].name)) {
+                    all_synthetic = 0;
+                    break;
+                }
+            }
+            if (all_synthetic) {
+                type_error(checker, stmt->pos,
+                           "not enough return values: bare return is only allowed "
+                           "when the function has named results");
+                return 0;
+            }
+        }
         return 1;
     }
 
@@ -1317,6 +1341,21 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             size_t count = 0;
             for (ASTNode* f = st->fields; f; f = f->next) {
                 if (f->type == AST_VAR_DECL) count++;
+            }
+            // Named-result ABI (P3-5): a parser-synthesized result tuple with a
+            // SINGLE field is `func f() (r int)` — the common Go named-result
+            // form (`(err error)`, `(n int)`). Collapse it to the field's scalar
+            // type so callers see a plain scalar (not a 1-field aggregate) and an
+            // explicit `return n+1` type-checks against the scalar. The name is
+            // still bound as an in-scope local by the AST_STRUCT_TYPE walks in
+            // type_check_function_decl / function_codegen (they key off the AST
+            // node, which stays a struct). A >=2-field tuple keeps its struct ABI.
+            if (st->is_result_tuple && count == 1) {
+                for (ASTNode* f = st->fields; f; f = f->next) {
+                    if (f->type != AST_VAR_DECL) continue;
+                    VarDeclNode* fd = (VarDeclNode*)f;
+                    return fd->type ? type_from_ast(checker, fd->type) : NULL;
+                }
             }
             Type* result = type_new(TYPE_STRUCT);
             if (!result) return NULL;

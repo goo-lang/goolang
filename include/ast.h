@@ -517,9 +517,18 @@ typedef struct {
 // Struct type definition: `struct { x int; y int }`
 // Fields are a `next`-chained list of VarDeclNode entries (same shape
 // as function parameters — name + type, no initial value).
+//
+// `is_result_tuple` marks a struct node synthesized by the parser to carry
+// a function's named/multi result list `(x int, y int)` — NOT a user-written
+// `struct{...}` type. It lets the type system collapse a *single*-field
+// result tuple (`func f() (r int)`) back to a scalar return ABI (Go-faithful)
+// while still binding `r` as an in-scope local, and lets a bare `return` be
+// rejected for an *unnamed* multi-result function. A user struct return
+// (`func f() Point`) has this flag clear and keeps its struct ABI.
 typedef struct {
     ASTNode base;
     struct ASTNode* fields;
+    int is_result_tuple;
 } StructTypeNode;
 
 // Enum (tagged union) type: `enum { Circle{radius int}  Rect{w int; h int} }`.

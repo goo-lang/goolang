@@ -767,6 +767,25 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // expects (the struct return type built by the parser/type checker).
         FunctionInfo* fi = codegen->current_function_info;
         if (fi && fi->named_result_count > 0) {
+            // Single named result `func f() (r int)` has a SCALAR return ABI
+            // (the parser's result tuple was collapsed to its field type in
+            // type_from_ast). Load the one named local and return it directly —
+            // an aggregate InsertValue would be invalid IR on a non-struct
+            // return type. The >=2 named-result case keeps the struct path.
+            if (fi->named_result_count == 1 &&
+                LLVMGetTypeKind(fn_ret) != LLVMStructTypeKind) {
+                ValueInfo* rv = codegen_lookup_value(codegen, fi->named_result_names[0]);
+                if (!rv) {
+                    codegen_error(codegen, stmt->pos,
+                                  "named result '%s' not in scope for bare return",
+                                  fi->named_result_names[0]);
+                    return 0;
+                }
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, rv->goo_type);
+                LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, vt, rv->llvm_value, "named_ret");
+                LLVMBuildRet(codegen->builder, loaded);
+                return 1;
+            }
             LLVMValueRef agg = LLVMGetUndef(fn_ret);
             for (size_t i = 0; i < fi->named_result_count; i++) {
                 ValueInfo* rv = codegen_lookup_value(codegen, fi->named_result_names[i]);

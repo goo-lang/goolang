@@ -5,6 +5,12 @@
 // to them and then issuing a bare `return` (no operands) yields their
 // current values. The caller destructures the two results and prints
 // them, giving deterministic stdout.
+//
+// SINGLE named result coverage (regression guard): `func f() (r int)` is
+// the most common Go named-result form (`(err error)`, `(n int)`). It must
+// compile to a SCALAR return ABI — usable directly in arithmetic and passed
+// to fmt.Println — NOT a 1-field struct. Both the bare-return form (inc) and
+// an explicit `return expr` overriding the bound local (dbl) are exercised.
 package main
 
 import "fmt"
@@ -15,8 +21,24 @@ func split(sum int) (x int, y int) {
     return
 }
 
+func inc(n int) (r int) {
+    r = n + 1
+    return
+}
+
+func dbl(n int) (r int) {
+    return n + n
+}
+
 func main() {
     a, b := split(17)
     fmt.Println(a)
     fmt.Println(b)
+
+    v := inc(41)
+    fmt.Println(v)
+    y := v + 1
+    fmt.Println(y)
+
+    fmt.Println(dbl(21))
 }
