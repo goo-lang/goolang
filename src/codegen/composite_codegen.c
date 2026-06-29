@@ -655,10 +655,16 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 #endif
 }
 
-// codegen_generate_slice_lit lowers `[1, 2, 3]` to a slice struct
-// { ptr, i64 } pointing at a global constant array. Element type is
-// inferred from the type-check pass (goo_type on the AST node is
-// already TYPE_SLICE).
+// codegen_generate_slice_lit lowers a slice literal to a slice struct
+// { ptr, i64 len, i64 cap } backed by a heap-allocated array. Element
+// type is taken from the type-check pass (node_type is already
+// TYPE_SLICE).
+//
+// This single path serves BOTH surface forms (P3-2): the Goo-native
+// `[1, 2, 3]` literal and the Go-standard typed composite literal
+// `[]int{1, 2, 3}`. The P3-1 parser routes both to AST_SLICE_EXPR /
+// SliceLitNode, so index, range, len, and append over a `[]T{}` literal
+// reuse this lowering unchanged — no separate codegen is needed.
 ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");

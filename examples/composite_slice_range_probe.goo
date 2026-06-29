@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+func main() {
+	// P3-2: a Go-standard typed slice composite literal must lower to a
+	// real runtime slice — indexable, rangeable, and measurable with len.
+	// This extends the P3-1 parse/type-check coverage to the lowering:
+	// range accumulates every element and len reports the true count.
+	xs := []int{10, 20, 30}
+	sum := 0
+	for _, v := range xs {
+		sum = sum + v
+	}
+	fmt.Println(sum)
+	fmt.Println(len(xs))
+}
