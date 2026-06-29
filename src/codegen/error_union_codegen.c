@@ -136,19 +136,24 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
     LLVMBuildCondBr(codegen->builder, is_error, propagate_block, continue_block);
 
     // Propagation block: return the error-union operand from the current
-    // function. This is total because the type checker (type_check_try_expr)
-    // now rejects `try` whose enclosing function does not return an error
-    // union, so `cur->goo_type` is always an error union here for valid
-    // programs. The else-branch is therefore unreachable-in-practice; keep a
-    // defensive codegen_error (not a silent `unreachable`) so any regression in
-    // the type-check gate surfaces as a clean diagnostic rather than garbage IR.
+    // function. The error path rets the WHOLE operand, so the operand's
+    // error-union type must equal the enclosing function's return type for the
+    // `ret` to be ABI-valid. The type checker (type_check_try_expr) now enforces
+    // exactly that via type_equals(operand, enclosing) — error-union-ness alone
+    // is necessary but NOT sufficient, since an `!string` operand in an `!int`
+    // function would emit a mismatched `ret` that reaches the LLVM verifier with
+    // no clean diagnostic. The guard below mirrors that invariant (a full type
+    // match, not just type_is_error_union) so any regression in the type-check
+    // gate surfaces as a clean codegen_error rather than garbage IR. The
+    // else-branch is therefore unreachable-in-practice for valid programs.
     codegen_set_insert_point(codegen, propagate_block);
     FunctionInfo* cur = codegen->current_function_info;
-    if (cur && cur->goo_type && type_is_error_union(cur->goo_type)) {
+    if (cur && cur->goo_type && type_equals(operand_info->goo_type, cur->goo_type)) {
         LLVMBuildRet(codegen->builder, operand_info->llvm_value);
     } else {
         codegen_error(codegen, expr->pos,
-                      "try used outside a function returning an error union "
+                      "try operand type does not match the enclosing function's "
+                      "error-union return type "
                       "(should have been rejected by the type checker)");
         // Terminate the block so the (rejected) module is still structurally
         // valid; error_count>0 already fails the build before emission.

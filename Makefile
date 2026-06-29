@@ -1038,6 +1038,7 @@ try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== try-nonerru-probe: try rejected outside !T; allowed inside !T ==="
 	@printf 'package main\nfunc mightFail() !int { return error("x") }\nfunc f() int { v := try mightFail(); return v }\nfunc main() {}\n' > build/try_nonerru_int.goo
 	@printf 'package main\nfunc mightFail() !int { return error("x") }\nfunc f() { v := try mightFail(); _ = v }\nfunc main() {}\n' > build/try_nonerru_void.goo
+	@printf 'package main\nfunc mightFailStr() !string { return error("x") }\nfunc f() !int { v := try mightFailStr(); _ = v; return 0 }\nfunc main() {}\n' > build/try_mismatch.goo
 	@printf 'package main\nimport "fmt"\nfunc mightFail() !int { return 5 }\nfunc f() !int { v := try mightFail(); return v + 1 }\nfunc main() { fmt.Println("ok") }\n' > build/try_erru_ok.goo
 	@"$(COMPILER)" build/try_nonerru_int.goo -o build/try_nonerru_int.out 2>build/try_nonerru_int.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in !int->int compiled — expected a type error)"; exit 1; fi; \
@@ -1047,6 +1048,10 @@ try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in void func compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (void-func try reached verifier)"; cat build/try_nonerru_void.err; exit 1; fi; \
 	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for void-func try)"; cat build/try_nonerru_void.err; exit 1; fi
+	@"$(COMPILER)" build/try_mismatch.goo -o build/try_mismatch.out 2>build/try_mismatch.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try with !string operand in !int func compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_mismatch.err; then echo "try-nonerru-probe: FAIL (mismatched-erru try reached verifier)"; cat build/try_mismatch.err; exit 1; fi; \
+	  if ! grep -qiE "does not match the enclosing function" build/try_mismatch.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for mismatched-erru try)"; cat build/try_mismatch.err; exit 1; fi
 	@"$(COMPILER)" build/try_erru_ok.goo -o build/try_erru_ok.out 2>build/try_erru_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (legitimate try inside !T rejected)"; cat build/try_erru_ok.err; exit 1; fi
 	@echo "try-nonerru-probe: PASS"
