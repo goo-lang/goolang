@@ -1,0 +1,22 @@
+// named_return_probe (P3-5): named return parameters.
+//
+// `func split(sum int) (x int, y int)` declares named results x, y.
+// Inside the body they are zero-initialized locals in scope; assigning
+// to them and then issuing a bare `return` (no operands) yields their
+// current values. The caller destructures the two results and prints
+// them, giving deterministic stdout.
+package main
+
+import "fmt"
+
+func split(sum int) (x int, y int) {
+    x = sum - 1
+    y = 1
+    return
+}
+
+func main() {
+    a, b := split(17)
+    fmt.Println(a)
+    fmt.Println(b)
+}

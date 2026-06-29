@@ -297,6 +297,17 @@ int type_check_declaration(TypeChecker* checker, ASTNode* decl) {
     }
 }
 
+// A result field is a *named* result (P3-5) iff its name is not one of the
+// synthetic `_0`, `_1`, ... placeholders the parser assigns to anonymous
+// tuple-return fields. Synthetic = `_` followed by one or more digits and
+// nothing else.
+int is_synthetic_result_name(const char* n) {
+    if (!n || n[0] != '_' || n[1] == '\0') return 0;
+    for (const char* p = n + 1; *p; p++)
+        if (*p < '0' || *p > '9') return 0;
+    return 1;
+}
+
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
     
@@ -391,7 +402,29 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
             param = param->next;
         }
     }
-    
+
+    // Named return parameters (P3-5): register each named result as a
+    // zero-initialized in-scope local so the body can assign to it
+    // (`x = ...`) and a bare `return` is valid. The parser encodes named
+    // results as an inline StructTypeNode whose fields carry the user
+    // names; anonymous tuple results use synthetic `_N` names (skipped).
+    if (func->return_type && func->return_type->type == AST_STRUCT_TYPE) {
+        StructTypeNode* st = (StructTypeNode*)func->return_type;
+        for (ASTNode* f = st->fields; f; f = f->next) {
+            if (f->type != AST_VAR_DECL) continue;
+            VarDeclNode* fd = (VarDeclNode*)f;
+            if (fd->name_count == 0 || !fd->names) continue;
+            if (is_synthetic_result_name(fd->names[0])) continue;
+            Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
+            if (!ft) continue;
+            Variable* rv = variable_new(fd->names[0], ft, fd->base.pos);
+            if (rv) {
+                rv->is_initialized = 1;  // zero-initialized per Go semantics
+                scope_add_variable(checker->current_scope, rv);
+            }
+        }
+    }
+
     // Type check function body
     int result = 1;
     if (func->body) {

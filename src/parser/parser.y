@@ -105,7 +105,6 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> struct_type struct_field_list struct_field
 %type <node> enum_type enum_variant_list enum_variant
 %type <node> slice_lit
-%type <node> multi_return_type_list
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
 %type <node> identifier literal
@@ -454,52 +453,55 @@ func_param:
 
 func_result:
     type { $$ = $1; }
-    | LPAREN type RPAREN { $$ = $2; }
-    | LPAREN multi_return_type_list RPAREN {
-        // Multi-return: builds an anonymous StructTypeNode whose
-        // fields are VarDeclNodes named _0, _1, ... — the type
-        // checker reuses its existing AST_STRUCT_TYPE path to
-        // build a TYPE_STRUCT. Function codegen then returns the
-        // anonymous struct via LLVM insertvalue + ret.
-        StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
-        st->base.type = AST_STRUCT_TYPE;
-        st->base.pos = get_current_position();
-        st->base.node_type = NULL;
-        st->base.next = NULL;
-        st->fields = $2;
-        $$ = (ASTNode*)st;
-    }
-    ;
-
-multi_return_type_list:
-    type COMMA type {
-        // Always at least two types (the COMMA disambiguates from
-        // the single-type form above).
-        char buf[8];
-        VarDeclNode* f0 = ast_var_decl_new(get_current_position());
-        f0->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_0");
-        f0->names[0] = strdup(buf); f0->name_count = 1;
-        f0->type = $1; f0->values = NULL;
-        VarDeclNode* f1 = ast_var_decl_new(get_current_position());
-        f1->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_1");
-        f1->names[0] = strdup(buf); f1->name_count = 1;
-        f1->type = $3; f1->values = NULL;
-        ast_add_child((ASTNode*)f0, (ASTNode*)f1);
-        $$ = (ASTNode*)f0;
-    }
-    | multi_return_type_list COMMA type {
-        // Append additional return types. Field index = current
-        // length of the chain. Walk to find it.
-        ASTNode* tail = $1;
-        size_t idx = 1;
-        while (tail->next) { tail = tail->next; idx++; }
-        char buf[16];
-        VarDeclNode* fn = ast_var_decl_new(get_current_position());
-        fn->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_%zu", idx);
-        fn->names[0] = strdup(buf); fn->name_count = 1;
-        fn->type = $3; fn->values = NULL;
-        ast_add_child($1, (ASTNode*)fn);
-        $$ = $1;
+    | LPAREN func_params RPAREN {
+        // Parenthesized results reuse the func_param machinery, so a
+        // named-result list `(x int, y int)` parses with the SAME rules
+        // as a parameter list — no new grammar conflicts. The chain is a
+        // ->next list of VarDeclNode (P3-5), each carrying an optional
+        // name + a type.
+        //
+        //  - exactly one ANONYMOUS entry -> single return: unwrap to the
+        //    bare type so the return ABI stays a scalar (preserves the old
+        //    `func f() (int)` form).
+        //  - otherwise (>=2 entries, or any named entry) -> tuple / named
+        //    results: wrap in an anonymous StructTypeNode, reusing the
+        //    existing multi-return struct-return ABI. Anonymous fields get
+        //    synthetic `_N` names (so the type checker's AST_STRUCT_TYPE
+        //    path, which skips name-less fields, still sees them); named
+        //    fields keep their user names so function codegen can bind them
+        //    as in-scope zero-initialized locals and a bare `return` can
+        //    read their current values.
+        ASTNode* list = $2;
+        size_t count = 0; int any_named = 0;
+        for (ASTNode* p = list; p; p = p->next) {
+            count++;
+            VarDeclNode* vd = (VarDeclNode*)p;
+            if (vd->name_count > 0 && vd->names && vd->names[0]) any_named = 1;
+        }
+        if (count == 1 && !any_named) {
+            VarDeclNode* only = (VarDeclNode*)list;
+            ASTNode* t = only->type;
+            only->type = NULL;     // hand the type to $$ before freeing the wrapper
+            ast_node_free(list);   // frees the lone wrapper VarDecl, not the type
+            $$ = t;
+        } else {
+            size_t idx = 0;
+            for (ASTNode* p = list; p; p = p->next, idx++) {
+                VarDeclNode* vd = (VarDeclNode*)p;
+                if (vd->name_count == 0 || !vd->names) {
+                    char buf[16]; snprintf(buf, sizeof(buf), "_%zu", idx);
+                    vd->names = malloc(sizeof(char*));
+                    vd->names[0] = strdup(buf); vd->name_count = 1;
+                }
+            }
+            StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+            st->base.type = AST_STRUCT_TYPE;
+            st->base.pos = get_current_position();
+            st->base.node_type = NULL;
+            st->base.next = NULL;
+            st->fields = list;
+            $$ = (ASTNode*)st;
+        }
     }
     ;
 

@@ -757,11 +757,36 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 #endif
         value_info_free(return_value);
     } else {
-        // Bare return. If the enclosing function has a non-void LLVM signature
-        // (e.g. the entry-point main, lowered to `i32 @main`), return a zero of
-        // that type so the IR stays well-typed; otherwise a plain void return.
+        // Bare return.
         LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
         LLVMTypeRef fn_ret = LLVMGetReturnType(LLVMGlobalGetValueType(cur_fn));
+
+        // Named return parameters (P3-5): `func f() (x int, y int) { ...; return }`
+        // yields the current values of the named-result locals. Load each in
+        // field order and rebuild the aggregate the function's LLVM signature
+        // expects (the struct return type built by the parser/type checker).
+        FunctionInfo* fi = codegen->current_function_info;
+        if (fi && fi->named_result_count > 0) {
+            LLVMValueRef agg = LLVMGetUndef(fn_ret);
+            for (size_t i = 0; i < fi->named_result_count; i++) {
+                ValueInfo* rv = codegen_lookup_value(codegen, fi->named_result_names[i]);
+                if (!rv) {
+                    codegen_error(codegen, stmt->pos,
+                                  "named result '%s' not in scope for bare return",
+                                  fi->named_result_names[i]);
+                    return 0;
+                }
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, rv->goo_type);
+                LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, vt, rv->llvm_value, "named_ret");
+                agg = LLVMBuildInsertValue(codegen->builder, agg, loaded, (unsigned)i, "named_ret_agg");
+            }
+            LLVMBuildRet(codegen->builder, agg);
+            return 1;
+        }
+
+        // Otherwise: if the enclosing function has a non-void LLVM signature
+        // (e.g. the entry-point main, lowered to `i32 @main`), return a zero of
+        // that type so the IR stays well-typed; otherwise a plain void return.
         if (LLVMGetTypeKind(fn_ret) != LLVMVoidTypeKind) {
             LLVMBuildRet(codegen->builder, LLVMConstNull(fn_ret));
         } else {

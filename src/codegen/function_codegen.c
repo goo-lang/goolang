@@ -401,7 +401,52 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     }
     
     if (param_types) free(param_types);
-    
+
+    // Named return parameters (P3-5): bind each named result as a
+    // zero-initialized in-scope local (its own alloca), mirror it into the
+    // type-checker scope, and record its name on the FunctionInfo in field
+    // order. Assignments in the body write through these allocas; a bare
+    // `return` (see codegen_generate_return_stmt) loads them and rebuilds
+    // the aggregate. The parser encodes named results as an inline
+    // StructTypeNode; anonymous tuple results use synthetic `_N` names and
+    // are skipped (they are produced by explicit `return a, b`).
+    if (func_decl->return_type && func_decl->return_type->type == AST_STRUCT_TYPE) {
+        StructTypeNode* st = (StructTypeNode*)func_decl->return_type;
+        size_t cap = 0;
+        for (ASTNode* f = st->fields; f; f = f->next)
+            if (f->type == AST_VAR_DECL) cap++;
+        char** names = cap ? calloc(cap, sizeof(char*)) : NULL;
+        size_t nnamed = 0;
+        for (ASTNode* f = st->fields; f; f = f->next) {
+            if (f->type != AST_VAR_DECL) continue;
+            VarDeclNode* fd = (VarDeclNode*)f;
+            if (fd->name_count == 0 || !fd->names) continue;
+            if (is_synthetic_result_name(fd->names[0])) continue;
+            const char* rname = fd->names[0];
+            Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
+            if (!ft) continue;
+            LLVMTypeRef llvm_ft = codegen_type_to_llvm(codegen, ft);
+            if (!llvm_ft) continue;
+            LLVMValueRef slot = codegen_alloc_local(codegen, llvm_ft, rname);
+            LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_ft), slot);
+            ValueInfo* vi = value_info_new(rname, slot, ft);
+            vi->is_lvalue = 1;
+            vi->is_initialized = 1;
+            codegen_add_value(codegen, vi);
+            // Mirror into the type-checker scope so re-checks from codegen
+            // (e.g. binary-expr type resolution) can resolve the name.
+            Variable* rv = variable_new(rname, ft, fd->base.pos);
+            if (rv) { rv->is_initialized = 1; scope_add_variable(checker->current_scope, rv); }
+            if (names) names[nnamed++] = strdup(rname);
+        }
+        if (nnamed > 0) {
+            func_info->named_result_names = names;
+            func_info->named_result_count = nnamed;
+        } else {
+            free(names);
+        }
+    }
+
     // Generate function body
     int result = 1;
     if (func_decl->body) {

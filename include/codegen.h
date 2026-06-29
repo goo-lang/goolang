@@ -103,6 +103,13 @@ struct FunctionInfo {
     ValueInfo** locals;
     size_t local_count;
     size_t local_capacity;
+
+    // Named return parameters (P3-5). When the function declares
+    // `(x int, y int)` results, these hold the result names in field
+    // order; a bare `return` loads each named-result local and builds the
+    // aggregate return value from them. NULL / 0 for ordinary functions.
+    char** named_result_names;
+    size_t named_result_count;
 };
 
 // Value information for variables and expressions
