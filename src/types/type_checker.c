@@ -965,9 +965,28 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_RETURN_STMT) return 0;
     
     ReturnStmtNode* ret_stmt = (ReturnStmtNode*)stmt;
-    
+
+    // A value-less `return` from a function declared to return an error union
+    // (!T) supplies neither an error(...) construction nor a value of T, so it
+    // cannot satisfy the declared type. Reject it here rather than letting
+    // codegen synthesize a zeroed error union (which a caller's catch would
+    // never fire on, leaving the value half as garbage).
+    if (!ret_stmt->values) {
+        Type* expected = checker->current_return_type;
+        if (expected && type_is_error_union(expected)) {
+            type_error(checker, stmt->pos,
+                       "return type mismatch: bare return from a function "
+                       "returning %s (expected a value of %s or an error(...) "
+                       "construction)",
+                       type_to_string(expected),
+                       type_to_string(expected->data.error_union.value_type));
+            return 0;
+        }
+        return 1;
+    }
+
     // Check return value if present
-    if (ret_stmt->values) {
+    {
         Type* return_type = type_check_expression(checker, ret_stmt->values);
         if (!return_type) return 0;
 

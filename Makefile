@@ -1008,12 +1008,17 @@ return-type-erru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== return-type-erru-probe: return type-checked against !T value type ==="
 	@printf 'package main\nfunc f() !int { return "str" }\nfunc main() {}\n' > build/rt_erru_bad.goo
+	@printf 'package main\nfunc f() !int { return }\nfunc main() {}\n' > build/rt_erru_bare.goo
 	@printf 'package main\nfunc s() !string { return error("x") }\nfunc f() !int { return s() }\nfunc main() {}\n' > build/rt_erru_xfwd.goo
 	@printf 'package main\nimport "fmt"\nfunc okval() !int { return 42 }\nfunc okerr() !int { return error("x") }\nfunc fwd() !int { return okval() }\nfunc main() { fmt.Println("ok") }\n' > build/rt_erru_ok.goo
 	@"$(COMPILER)" build/rt_erru_bad.goo -o build/rt_erru_bad.out 2>build/rt_erru_bad.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (return \"str\" from !int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_bad.err; then echo "return-type-erru-probe: FAIL (invalid IR reached verifier)"; cat build/rt_erru_bad.err; exit 1; fi; \
 	  if ! grep -qiE "return type mismatch" build/rt_erru_bad.err; then echo "return-type-erru-probe: FAIL (no clean return-type diagnostic)"; cat build/rt_erru_bad.err; exit 1; fi
+	@"$(COMPILER)" build/rt_erru_bare.goo -o build/rt_erru_bare.out 2>build/rt_erru_bare.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (bare return from !int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_bare.err; then echo "return-type-erru-probe: FAIL (bare return reached verifier)"; cat build/rt_erru_bare.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_erru_bare.err; then echo "return-type-erru-probe: FAIL (no clean diagnostic for bare return)"; cat build/rt_erru_bare.err; exit 1; fi
 	@"$(COMPILER)" build/rt_erru_xfwd.goo -o build/rt_erru_xfwd.out 2>build/rt_erru_xfwd.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (mismatched !string forwarded from !int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_xfwd.err; then echo "return-type-erru-probe: FAIL (mismatched forward reached verifier)"; cat build/rt_erru_xfwd.err; exit 1; fi; \
