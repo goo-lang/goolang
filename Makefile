@@ -1107,7 +1107,8 @@ call-arity-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== call-arity-probe: user-function call arity type-checked ==="
 	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add(1) }\n' > build/ca_few.goo
 	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add(1, 2, 3) }\n' > build/ca_many.goo
-	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c Counter) get() int { return c.n }\nfunc add(a int, b int) int { return a + b }\nfunc main() { var c Counter = Counter{n: 7}; fmt.Println(add(1, 2)); fmt.Println(c.get()) }\n' > build/ca_ok.goo
+	@printf 'package main\ntype Counter struct { n int }\nfunc (c Counter) get() int { return c.n }\nfunc main() { var c Counter = Counter{n: 7}; c.get(99) }\n' > build/ca_method.goo
+	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c Counter) get() int { return c.n }\nfunc (c Counter) addn(x int) int { return c.n + x }\nfunc add(a int, b int) int { return a + b }\nfunc main() { var c Counter = Counter{n: 7}; fmt.Println(add(1, 2)); fmt.Println(c.get()); fmt.Println(c.addn(3)) }\n' > build/ca_ok.goo
 	@"$(COMPILER)" build/ca_few.goo -o build/ca_few.out 2>build/ca_few.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (add(1) with too few args compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_few.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for too-few)"; cat build/ca_few.err; exit 1; fi; \
@@ -1116,6 +1117,10 @@ call-arity-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (add(1,2,3) with too many args compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_many.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for too-many)"; cat build/ca_many.err; exit 1; fi; \
 	  if ! grep -qiE "wrong number of arguments" build/ca_many.err; then echo "call-arity-probe: FAIL (no clean arity diagnostic for too-many)"; cat build/ca_many.err; exit 1; fi
+	@"$(COMPILER)" build/ca_method.goo -o build/ca_method.out 2>build/ca_method.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (c.get(99) with too many args compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_method.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for method too-many)"; cat build/ca_method.err; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/ca_method.err; then echo "call-arity-probe: FAIL (no clean arity diagnostic for method too-many)"; cat build/ca_method.err; exit 1; fi
 	@"$(COMPILER)" build/ca_ok.goo -o build/ca_ok.out 2>build/ca_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "call-arity-probe: FAIL (valid call/method/builtin rejected)"; cat build/ca_ok.err; exit 1; fi
 	@echo "call-arity-probe: PASS"
@@ -1129,7 +1134,8 @@ call-argtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== call-argtype-probe: user-function call arg types type-checked ==="
 	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add("x", 2) }\n' > build/cat_str.goo
 	@printf 'package main\nfunc greet(s string) string { return s }\nfunc main() { greet(42) }\n' > build/cat_int.goo
-	@printf 'package main\nimport "fmt"\nfunc add(a int, b int) int { return a + b }\nfunc greet(s string) string { return s }\nfunc main() { fmt.Println(add(1, 2)); fmt.Println(greet("hi")) }\n' > build/cat_ok.goo
+	@printf 'package main\ntype Counter struct { n int }\nfunc (c Counter) addn(x int) int { return c.n + x }\nfunc main() { var c Counter = Counter{n: 7}; c.addn("x") }\n' > build/cat_method.goo
+	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c Counter) addn(x int) int { return c.n + x }\nfunc add(a int, b int) int { return a + b }\nfunc greet(s string) string { return s }\nfunc main() { var c Counter = Counter{n: 7}; fmt.Println(add(1, 2)); fmt.Println(greet("hi")); fmt.Println(c.addn(3)) }\n' > build/cat_ok.goo
 	@"$(COMPILER)" build/cat_str.goo -o build/cat_str.out 2>build/cat_str.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (add(\"x\", 2) string-as-int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_str.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for string-as-int)"; cat build/cat_str.err; exit 1; fi; \
@@ -1138,6 +1144,10 @@ call-argtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (greet(42) int-as-string compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_int.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for int-as-string)"; cat build/cat_int.err; exit 1; fi; \
 	  if ! grep -qiE "cannot use .* as string" build/cat_int.err; then echo "call-argtype-probe: FAIL (no clean arg-type diagnostic for int-as-string)"; cat build/cat_int.err; exit 1; fi
+	@"$(COMPILER)" build/cat_method.goo -o build/cat_method.out 2>build/cat_method.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (c.addn(\"x\") string-as-int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_method.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for method string-as-int)"; cat build/cat_method.err; exit 1; fi; \
+	  if ! grep -qiE "cannot use string as int" build/cat_method.err; then echo "call-argtype-probe: FAIL (no clean arg-type diagnostic for method string-as-int)"; cat build/cat_method.err; exit 1; fi
 	@"$(COMPILER)" build/cat_ok.goo -o build/cat_ok.out 2>build/cat_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "call-argtype-probe: FAIL (valid typed calls rejected)"; cat build/cat_ok.err; exit 1; fi
 	@echo "call-argtype-probe: PASS"
