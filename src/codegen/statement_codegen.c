@@ -634,6 +634,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 agg = LLVMBuildInsertValue(codegen->builder, agg, raw, (unsigned)i, "ret_field");
                 value_info_free(vv);
             }
+            codegen_emit_deferred_calls(codegen, checker);
             LLVMBuildRet(codegen->builder, agg);
             return 1;
         }
@@ -657,6 +658,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             ((LiteralNode*)return_stmt->values)->literal_type == TOKEN_NIL) {
             ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, function_return_type);
             if (!nil_vi) return 0;
+            codegen_emit_deferred_calls(codegen, checker);
             LLVMBuildRet(codegen->builder, nil_vi->llvm_value);
             value_info_free(nil_vi);
             return 1;
@@ -750,6 +752,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             }
         }
 
+        codegen_emit_deferred_calls(codegen, checker);
         LLVMBuildRet(codegen->builder, final_return_value);
 #else
         codegen_generate_error_return(codegen, return_value->llvm_value,
@@ -788,6 +791,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 }
                 LLVMTypeRef vt = codegen_type_to_llvm(codegen, rv->goo_type);
                 LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, vt, rv->llvm_value, "named_ret");
+                codegen_emit_deferred_calls(codegen, checker);
                 LLVMBuildRet(codegen->builder, loaded);
                 return 1;
             }
@@ -804,6 +808,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, vt, rv->llvm_value, "named_ret");
                 agg = LLVMBuildInsertValue(codegen->builder, agg, loaded, (unsigned)i, "named_ret_agg");
             }
+            codegen_emit_deferred_calls(codegen, checker);
             LLVMBuildRet(codegen->builder, agg);
             return 1;
         }
@@ -811,13 +816,14 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // Otherwise: if the enclosing function has a non-void LLVM signature
         // (e.g. the entry-point main, lowered to `i32 @main`), return a zero of
         // that type so the IR stays well-typed; otherwise a plain void return.
+        codegen_emit_deferred_calls(codegen, checker);
         if (LLVMGetTypeKind(fn_ret) != LLVMVoidTypeKind) {
             LLVMBuildRet(codegen->builder, LLVMConstNull(fn_ret));
         } else {
             LLVMBuildRetVoid(codegen->builder);
         }
     }
-    
+
     return 1;
 #endif
 }
@@ -999,23 +1005,61 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 #endif
 }
 
+// Emit the current function's deferred calls in LIFO (last-registered-first)
+// order. Called at every function-exit path immediately before the `ret`.
+// No-op when the function registered no defers, so existing functions are
+// unaffected. MVP: the call's arguments are evaluated here (at exit time),
+// which matches Go's defer-time evaluation for the literal/simple-arg cases
+// the probe covers; full Go semantics (snapshotting args at the defer site)
+// is a documented follow-up.
+void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
+#if LLVM_AVAILABLE
+    if (!codegen || !checker) return;
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || fi->deferred_count == 0) return;
+
+    for (size_t i = fi->deferred_count; i > 0; i--) {
+        ValueInfo* result =
+            codegen_generate_expression(codegen, checker, fi->deferred_calls[i - 1]);
+        if (result) value_info_free(result);
+    }
+#else
+    (void)codegen;
+    (void)checker;
+#endif
+}
+
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available for defer statements");
     return 0;
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_DEFER_STMT) return 0;
-    
-    // TODO: Implement defer statements
-    // For now, just treat it as a regular function call for compilation purposes
+    (void)checker;
+
     DeferStmtNode* defer_stmt = (DeferStmtNode*)stmt;
-    
-    // Generate the deferred call as a regular expression for now
-    ValueInfo* result = codegen_generate_expression(codegen, checker, defer_stmt->call);
-    if (result) {
-        value_info_free(result);
+    if (!defer_stmt->call) return 1;
+
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi) {
+        codegen_error(codegen, stmt->pos, "defer statement outside of a function");
+        return 0;
     }
-    
+
+    // Register (don't emit) the deferred call. It is emitted in reverse order
+    // at each function-exit path by codegen_emit_deferred_calls.
+    if (fi->deferred_count >= fi->deferred_capacity) {
+        size_t newcap = fi->deferred_capacity ? fi->deferred_capacity * 2 : 4;
+        ASTNode** grown = realloc(fi->deferred_calls, newcap * sizeof(ASTNode*));
+        if (!grown) {
+            codegen_error(codegen, stmt->pos, "out of memory registering defer");
+            return 0;
+        }
+        fi->deferred_calls = grown;
+        fi->deferred_capacity = newcap;
+    }
+    fi->deferred_calls[fi->deferred_count++] = defer_stmt->call;
+
     return 1;
 #endif
 }

@@ -469,6 +469,8 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             if (!wait_fn) wait_fn = LLVMAddFunction(codegen->module, "goo_scheduler_wait", wait_ty);
             LLVMBuildCall2(codegen->builder, wait_ty, wait_fn, NULL, 0, "");
         }
+        // Run any registered defers (LIFO) on the fall-off-the-end exit path.
+        codegen_emit_deferred_calls(codegen, checker);
         if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
             LLVMBuildRetVoid(codegen->builder);
         } else {

@@ -811,6 +811,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return 1;  // Always valid
         case AST_GO_STMT:
             return type_check_go_stmt(checker, stmt);
+        case AST_DEFER_STMT:
+            return type_check_defer_stmt(checker, stmt);
         case AST_SELECT_STMT:
             return type_check_select_stmt(checker, stmt);
         case AST_SWITCH_STMT: {
@@ -1209,6 +1211,26 @@ int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
         // TODO: Validate that the expression is a function call
     }
     
+    return 1;
+}
+
+int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_DEFER_STMT) return 0;
+
+    DeferStmtNode* defer_stmt = (DeferStmtNode*)stmt;
+
+    // The grammar only produces `defer call_expr`, so `call` is a call
+    // expression. Type-check it so argument types/arity are validated at the
+    // defer site (the call is later emitted at function exit by codegen).
+    if (defer_stmt->call) {
+        if (defer_stmt->call->type != AST_CALL_EXPR) {
+            type_error(checker, stmt->pos, "defer requires a function call");
+            return 0;
+        }
+        Type* call_type = type_check_expression(checker, defer_stmt->call);
+        if (!call_type) return 0;
+    }
+
     return 1;
 }
 

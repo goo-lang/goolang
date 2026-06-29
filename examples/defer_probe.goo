@@ -1,0 +1,35 @@
+// defer_probe (P3-4): defer type-check acceptance + LIFO codegen.
+//
+// Two properties under test:
+//
+// 1. LIFO order. `main` registers `defer fmt.Println("c")` then
+//    `defer fmt.Println("b")`. At function exit the deferred calls run in
+//    last-in-first-out order, so "b" (registered last) runs before "c"
+//    (registered first). The body prints "a" before either fires.
+//
+// 2. Early-return path. `earlyReturn` registers a defer and then hits an
+//    explicit `return` partway through the body. The deferred call must
+//    still run on that early-exit path — not only on fall-off-the-end exit.
+//
+// MVP scope (Go-faithful for this probe): deferred calls take literal/
+// already-evaluated arguments, so emitting the call at function-exit time
+// matches Go's "args evaluated at defer time" semantics for these cases.
+package main
+
+import "fmt"
+
+func earlyReturn(x int) {
+    defer fmt.Println("deferred-early")
+    if x > 0 {
+        fmt.Println("before-early-return")
+        return
+    }
+    fmt.Println("unreachable")
+}
+
+func main() {
+    defer fmt.Println("c")
+    defer fmt.Println("b")
+    fmt.Println("a")
+    earlyReturn(1)
+}

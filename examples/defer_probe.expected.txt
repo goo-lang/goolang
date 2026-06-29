@@ -1,0 +1,5 @@
+a
+before-early-return
+deferred-early
+b
+c
