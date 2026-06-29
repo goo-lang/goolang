@@ -135,17 +135,23 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
 
     LLVMBuildCondBr(codegen->builder, is_error, propagate_block, continue_block);
 
-    // Propagation block: return the error-union operand from the
-    // current function — but only if the current function's return
-    // type matches (i.e. it also returns this error union). When the
-    // caller's return type doesn't match (e.g. main returns void in
-    // the M8 probe), emit `unreachable` so the static IR verifies;
-    // the success path is the only one exercised in such cases.
+    // Propagation block: return the error-union operand from the current
+    // function. This is total because the type checker (type_check_try_expr)
+    // now rejects `try` whose enclosing function does not return an error
+    // union, so `cur->goo_type` is always an error union here for valid
+    // programs. The else-branch is therefore unreachable-in-practice; keep a
+    // defensive codegen_error (not a silent `unreachable`) so any regression in
+    // the type-check gate surfaces as a clean diagnostic rather than garbage IR.
     codegen_set_insert_point(codegen, propagate_block);
     FunctionInfo* cur = codegen->current_function_info;
     if (cur && cur->goo_type && type_is_error_union(cur->goo_type)) {
         LLVMBuildRet(codegen->builder, operand_info->llvm_value);
     } else {
+        codegen_error(codegen, expr->pos,
+                      "try used outside a function returning an error union "
+                      "(should have been rejected by the type checker)");
+        // Terminate the block so the (rejected) module is still structurally
+        // valid; error_count>0 already fails the build before emission.
         LLVMBuildUnreachable(codegen->builder);
     }
 

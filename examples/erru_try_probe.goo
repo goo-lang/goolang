@@ -1,0 +1,38 @@
+// erru_try_probe: `try` inside an !T function propagates a REAL error.
+//
+// outer() returns !int and binds `v := try mightFail(bad)`. On mightFail's
+// error path the try short-circuits and returns the error-union out of outer();
+// main's top-level catch then fires and binds the message. On the success path
+// try unwraps the value and outer continues, returning v+1, which main's catch
+// passes straight through. Exercises the try PROPAGATION path (is_error=1 ->
+// LLVMBuildRet operand) end-to-end — dead before Phase 1's error construction.
+package main
+
+import "fmt"
+
+func mightFail(bad bool) !int {
+    if bad {
+        return error("boom")
+    }
+    return 20
+}
+
+func outer(bad bool) !int {
+    v := try mightFail(bad)
+    return v + 1
+}
+
+func main() {
+    // success path: try unwraps 20, outer returns 21; catch passes value through.
+    s := outer(false) catch e {
+        fmt.Println("unexpected:", e)
+    }
+    fmt.Println("ok:", s)
+
+    // error path: try propagates error("boom") up out of outer; main's catch fires.
+    a := outer(true) catch e {
+        fmt.Println("caught:", e)
+        return
+    }
+    fmt.Println("unreachable", a)
+}

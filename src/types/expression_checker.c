@@ -820,12 +820,24 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     
     // Expression must be an error union
     if (!type_is_error_union(expr_type)) {
-        type_error(checker, expr->pos, 
+        type_error(checker, expr->pos,
                   "try can only be used with error union types, got %s",
                   type_to_string(expr_type));
         return NULL;
     }
-    
+
+    // `try` propagates the error out of the ENCLOSING function on the error
+    // path, so that function must itself return an error union (!T). Rejecting
+    // this here keeps the codegen propagation path (LLVMBuildRet operand) total
+    // — before this check a `try` in a non-!T function silently emitted
+    // `unreachable` (garbage IR, no diagnostic).
+    Type* enclosing = checker->current_return_type;
+    if (!enclosing || !type_is_error_union(enclosing)) {
+        type_error(checker, expr->pos,
+                  "try can only be used inside a function that returns an error union (!T)");
+        return NULL;
+    }
+
     // try extracts the value type from the error union
     Type* value_type = expr_type->data.error_union.value_type;
     expr->node_type = value_type;

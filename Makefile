@@ -915,7 +915,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1026,6 +1026,30 @@ return-type-erru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/rt_erru_ok.goo -o build/rt_erru_ok.out 2>build/rt_erru_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "return-type-erru-probe: FAIL (valid !T returns rejected)"; cat build/rt_erru_ok.err; exit 1; fi
 	@echo "return-type-erru-probe: PASS"
+
+# P1-5: `try` propagates the real error in an !T function; reject `try` whose
+# enclosing function does NOT return an error union. Before Phase 1 a `try` in a
+# non-!T function silently emitted `unreachable` (no diagnostic, garbage IR);
+# now the type checker rejects it with a clean diagnostic, NOT an LLVM-verifier
+# crash. The probe also guards against over-rejection: a `try` inside an !T
+# function (the legitimate propagation form) must still compile.
+try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== try-nonerru-probe: try rejected outside !T; allowed inside !T ==="
+	@printf 'package main\nfunc mightFail() !int { return error("x") }\nfunc f() int { v := try mightFail(); return v }\nfunc main() {}\n' > build/try_nonerru_int.goo
+	@printf 'package main\nfunc mightFail() !int { return error("x") }\nfunc f() { v := try mightFail(); _ = v }\nfunc main() {}\n' > build/try_nonerru_void.goo
+	@printf 'package main\nimport "fmt"\nfunc mightFail() !int { return 5 }\nfunc f() !int { v := try mightFail(); return v + 1 }\nfunc main() { fmt.Println("ok") }\n' > build/try_erru_ok.goo
+	@"$(COMPILER)" build/try_nonerru_int.goo -o build/try_nonerru_int.out 2>build/try_nonerru_int.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in !int->int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (invalid IR reached verifier)"; cat build/try_nonerru_int.err; exit 1; fi; \
+	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (no clean try-context diagnostic)"; cat build/try_nonerru_int.err; exit 1; fi
+	@"$(COMPILER)" build/try_nonerru_void.goo -o build/try_nonerru_void.out 2>build/try_nonerru_void.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in void func compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (void-func try reached verifier)"; cat build/try_nonerru_void.err; exit 1; fi; \
+	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for void-func try)"; cat build/try_nonerru_void.err; exit 1; fi
+	@"$(COMPILER)" build/try_erru_ok.goo -o build/try_erru_ok.out 2>build/try_erru_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (legitimate try inside !T rejected)"; cat build/try_erru_ok.err; exit 1; fi
+	@echo "try-nonerru-probe: PASS"
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
