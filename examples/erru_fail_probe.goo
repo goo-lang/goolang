@@ -1,18 +1,35 @@
-// erru_fail_probe: an !int function returns error("boom"); the caller's catch
-// fires and binds the message. Exercises the error-construction + is_error=1 +
-// catch-error-path that were dead before Phase 1.
+// erru_fail_probe: the catch-MERGE recovery path for a constructed error.
+//
+// Distinct from the rest of the erru suite, which only observes a constructed
+// error via catch-DIVERGE (erru_error_probe's second case, erru_abi_probe) or
+// prints a literal fallback without consuming it (erru_error_probe's first
+// case). Here the catch body does NOT return: the recovered zero value flows
+// through the merge PHI and is CONSUMED downstream (a*2), and on the success
+// path the unwrapped value flows through the SAME merge and is consumed (b*2).
+// Exercises both PHI incomings feeding a real use — the consolidated
+// catch-merge fallback path in codegen_generate_catch_expr_impl.
 package main
 
 import "fmt"
 
-func mightFail() !int {
-    return error("boom")
+func parse(bad bool) !int {
+    if bad {
+        return error("bad input")
+    }
+    return 21
 }
 
 func main() {
-    x := mightFail() catch e {
-        fmt.Println("caught:", e)
-        return
+    // error path: catch recovers WITHOUT returning; recovered value (0) is
+    // consumed in arithmetic downstream.
+    a := parse(true) catch e {
+        fmt.Println("recovered:", e)
     }
-    fmt.Println("ok:", x)
+    fmt.Println("a*2:", a*2)
+
+    // success path: unwrapped value flows through the same merge and is used.
+    b := parse(false) catch e {
+        fmt.Println("unexpected:", e)
+    }
+    fmt.Println("b*2:", b*2)
 }
