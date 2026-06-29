@@ -3,6 +3,9 @@ package main
 import "fmt"
 
 func main() {
-	m := map[string]int{"a": 1}
-	fmt.Println(m["a"])
+	// Go-standard map composite literal. Keys are type-checked against K
+	// and values against V (a wrong-typed entry is now a clean type error,
+	// not an opaque LLVM failure). Two entries exercise the entry chain. (P3-1)
+	m := map[string]int{"a": 1, "b": 2}
+	fmt.Println(m["a"], m["b"])
 }

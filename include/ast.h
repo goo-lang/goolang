@@ -554,6 +554,10 @@ typedef struct {
 typedef struct {
     ASTNode base;
     struct ASTNode* elements;
+    // Declared element type for a Go-standard typed literal `[]T{...}`
+    // (an AST_SLICE_TYPE node). NULL for the Goo-native untyped form
+    // `[1, 2, 3]`, where the element type is inferred from the elements.
+    struct ASTNode* elem_type;
 } SliceLitNode;
 
 // Map literal: `map[K]V{k: v, …}`. Tagged AST_PAREN_EXPR — that

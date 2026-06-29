@@ -3,6 +3,12 @@ package main
 import "fmt"
 
 func main() {
+	// Go-standard typed slice composite literals. The declared element
+	// type is type-checked against the elements and honored end-to-end:
+	// a []string can't come from int-default inference, so the string
+	// case proves the declared type drives the literal (P3-1), not
+	// first-element inference. The native [1,2,3] form still works too.
 	xs := []int{1, 2, 3}
-	fmt.Println(xs[0], xs[2])
+	ys := []string{"go", "lang"}
+	fmt.Println(xs[0], xs[2], ys[0], ys[1])
 }

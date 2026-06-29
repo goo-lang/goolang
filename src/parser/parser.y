@@ -78,6 +78,15 @@ static TokenType bison_token_to_token_type(int bison_token);
 // shift/reduce ambiguity never arises at the cond/body boundary. See
 // docs/M10_GRAMMAR_DECISION.md + docs/M10_LEXER_LAYER_PROBE.md.
 %token LBRACE_BODY
+// RBRACKET_SLICE: context-sensitive variant of RBRACKET emitted by the lexer
+// bridge to close an EMPTY `[]` that is immediately followed by a type-starting
+// token — i.e. the `[]` is a slice-TYPE prefix (`[]int`, `[]Foo{...}`), not a
+// bare empty-slice literal. Using a distinct token keeps the empty-slice
+// literal rule (`LBRACKET RBRACKET`) and the slice-type rule
+// (`LBRACKET RBRACKET_SLICE type`) in separate parser states, so the
+// reduce-vs-shift conflict at `LBRACKET RBRACKET .` (empty literal vs `[]T{...}`
+// prefix) never arises. See lexer_bridge.c `[]`-disambiguation. (P3-1)
+%token RBRACKET_SLICE
 %token SEMICOLON COMMA DOT COLON ELLIPSIS
 %token NEWLINE
 
@@ -1599,6 +1608,7 @@ slice_lit:
         lit->base.node_type = NULL;
         lit->base.next = NULL;
         lit->elements = $2;
+        lit->elem_type = NULL;  // native untyped form: element type inferred
         $$ = (ASTNode*)lit;
     }
     | LBRACKET RBRACKET {
@@ -1608,35 +1618,35 @@ slice_lit:
         lit->base.node_type = NULL;
         lit->base.next = NULL;
         lit->elements = NULL;
+        lit->elem_type = NULL;  // native empty form: element type inferred
         $$ = (ASTNode*)lit;
     }
     | slice_type LBRACE expression_list RBRACE {
         // Go-standard typed slice composite literal: `[]int{1, 2, 3}`.
-        // Reuses the AST_SLICE_EXPR / SliceLitNode path so type-check
-        // (element-type inference) and codegen lowering match the
-        // native `[1, 2, 3]` form. The explicit element type ($1) is
-        // not stored — element type is inferred from the elements, so
-        // the slice_type node is freed here. (P3-1)
+        // The declared slice_type ($1, an AST_SLICE_TYPE) is STORED on the
+        // node so the type checker validates each element against the
+        // declared element type T (rather than inferring T from the first
+        // element) and stamps the literal with the declared slice type. (P3-1)
         SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
         lit->base.type = AST_SLICE_EXPR;
         lit->base.pos = get_current_position();
         lit->base.node_type = NULL;
         lit->base.next = NULL;
         lit->elements = $3;
-        ast_node_free($1);
+        lit->elem_type = $1;
         $$ = (ASTNode*)lit;
     }
     | slice_type LBRACE RBRACE {
-        // Empty typed slice literal: `[]int{}`. Element type is the
-        // declared one, but the inference path defaults empty slices to
-        // int32 today; honoring $1's element type is left to P3-2. (P3-1)
+        // Empty typed slice literal: `[]int{}`. The declared element type
+        // ($1) is stored so the checker stamps the correct slice type
+        // (e.g. []string{} is []string, not the int32 default). (P3-1)
         SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
         lit->base.type = AST_SLICE_EXPR;
         lit->base.pos = get_current_position();
         lit->base.node_type = NULL;
         lit->base.next = NULL;
         lit->elements = NULL;
-        ast_node_free($1);
+        lit->elem_type = $1;
         $$ = (ASTNode*)lit;
     }
     ;
@@ -1670,7 +1680,11 @@ array_type:
     ;
 
 slice_type:
-    LBRACKET RBRACKET type {
+    LBRACKET RBRACKET_SLICE type {
+        // RBRACKET_SLICE (not plain RBRACKET) is emitted by the lexer bridge
+        // exactly when an empty `[]` is followed by a type — see the token
+        // declaration. This keeps `[]T` (slice type) out of the same parser
+        // state as the bare `[]` empty-slice literal, so no conflict is added.
         SliceTypeNode* slice = (SliceTypeNode*)malloc(sizeof(SliceTypeNode));
         slice->base.type = AST_SLICE_TYPE;
         slice->base.pos = get_current_position();
