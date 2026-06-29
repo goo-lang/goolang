@@ -1610,6 +1610,35 @@ slice_lit:
         lit->elements = NULL;
         $$ = (ASTNode*)lit;
     }
+    | slice_type LBRACE expression_list RBRACE {
+        // Go-standard typed slice composite literal: `[]int{1, 2, 3}`.
+        // Reuses the AST_SLICE_EXPR / SliceLitNode path so type-check
+        // (element-type inference) and codegen lowering match the
+        // native `[1, 2, 3]` form. The explicit element type ($1) is
+        // not stored — element type is inferred from the elements, so
+        // the slice_type node is freed here. (P3-1)
+        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+        lit->base.type = AST_SLICE_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = $3;
+        ast_node_free($1);
+        $$ = (ASTNode*)lit;
+    }
+    | slice_type LBRACE RBRACE {
+        // Empty typed slice literal: `[]int{}`. Element type is the
+        // declared one, but the inference path defaults empty slices to
+        // int32 today; honoring $1's element type is left to P3-2. (P3-1)
+        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+        lit->base.type = AST_SLICE_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)lit;
+    }
     ;
 
 type_name:
