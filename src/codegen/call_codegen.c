@@ -37,8 +37,12 @@ static LLVMValueRef codegen_arg_as_cstr(CodeGenerator* codegen, TypeChecker* che
 }
 
 // Builtin numeric type-conversion name (F2): mirrors
-// builtin_conversion_target() in the type checker so codegen takes the
-// conversion path for the same callee names the checker accepted.
+// builtin_conversion_target() in the type checker — the names that produce an
+// actual value conversion. This set is intentionally numeric-only: the checker
+// recognizes `string`/`bool` as conversion names too (full set in
+// name_is_builtin_conv_name) but REJECTS them as unsupported in v1, so a
+// `string(x)`/`bool(x)` program fails type-check and never reaches codegen.
+// Codegen therefore only ever needs the names it can actually lower.
 static int is_builtin_conv_name(const char* name) {
     if (!name) return 0;
     static const char* kinds[] = {

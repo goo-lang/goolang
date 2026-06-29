@@ -569,11 +569,15 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
 
 // Builtin numeric/char type-conversion target (F2). Returns the named
 // builtin Type for a conversion `T(x)`, or NULL if `name` is not a
-// supported conversion type. Mirrors the type-name table in
+// *supported* conversion type. Mirrors the type-name table in
 // type_from_ast() but scoped to the numeric kinds a value conversion can
-// produce; `string`/`bool` conversions are intentionally NOT here (string
-// conversions need byte/rune lowering — deferred — and bool has no numeric
-// conversion in Go), so those names fall through to ordinary resolution.
+// produce. `string`/`bool` are deliberately NOT here — string conversions
+// need byte/rune lowering (deferred) and bool has no numeric conversion in
+// Go — but they ARE recognized as conversion *names* (see
+// name_is_builtin_conv_name) so the call gate can reject them with a clean
+// conversion-specific diagnostic instead of letting them fall through to
+// ordinary identifier resolution (a misleading "Undefined variable 'string'"
+// plus a follow-on cascade).
 // Does a user-declared symbol shadow the predeclared type `name`? Go permits
 // shadowing predeclared identifiers, so a value or function named `int`/`byte`
 // makes `int(x)` an ordinary reference/call, not a conversion. Two sources:
@@ -619,6 +623,26 @@ static Type* builtin_conversion_target(TypeChecker* checker, const char* name) {
     return NULL;
 }
 
+// Is `name` a builtin type-conversion name `T(x)` recognizes (F2)? This is the
+// FULL recognized set the plan (F2 Step 3) lists — the numeric kinds plus
+// `string`/`bool`. It is a superset of builtin_conversion_target(): numeric
+// names produce a value conversion; `string`/`bool` are recognized only so the
+// call gate rejects them cleanly (unsupported in v1) rather than mis-resolving
+// them as undefined variables. Used solely to route a call onto the conversion
+// gate; the gate then asks builtin_conversion_target() what to actually do.
+static int name_is_builtin_conv_name(const char* name) {
+    if (!name) return 0;
+    static const char* names[] = {
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64",
+        "byte", "float32", "float64", "string", "bool",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(name, names[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
@@ -631,15 +655,28 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             return type_check_make_chan_call(checker, call, expr);
         }
         // Builtin type conversion `T(x)` (F2): a call whose callee names a
-        // builtin numeric type is a conversion, not a function call. Gate on
+        // builtin conversion type is a conversion, not a function call. Gate on
         // the name NOT being shadowed by a user variable OR function (Go
         // permits shadowing predeclared identifiers), so a user `func int` /
         // `var int` still calls/references through. Type names are not
-        // registered in scope, so an unshadowed name takes the conversion path.
-        {
-            Type* conv_target = builtin_conversion_target(checker, func_ident->name);
-            if (conv_target &&
-                !name_is_user_shadowed(checker, func_ident->name)) {
+        // registered in scope, so an unshadowed name takes the conversion path,
+        // where numeric targets convert and `string`/`bool` are rejected cleanly.
+        if (name_is_builtin_conv_name(func_ident->name) &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
+            {
+                Type* conv_target = builtin_conversion_target(checker, func_ident->name);
+                // Recognized-but-unsupported conversion target (`string`/`bool`):
+                // reject cleanly here with a conversion-specific diagnostic. The
+                // name is no longer left to fall through to identifier resolution,
+                // which emitted a misleading "Undefined variable '<name>'" plus a
+                // follow-on cascade. v1 supports numeric conversions only.
+                if (!conv_target) {
+                    type_error(checker, expr->pos,
+                               "cannot convert to %s (only numeric conversions "
+                               "are supported in v1)",
+                               func_ident->name);
+                    return NULL;
+                }
                 if (!call->args || call->args->next) {
                     type_error(checker, expr->pos,
                                "conversion %s() expects exactly one argument",
