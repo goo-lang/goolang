@@ -961,6 +961,25 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
     return result;
 }
 
+// Returns non-zero if `node` is an untyped integer literal: a bare integer
+// literal or a unary minus applied to one (`-1`). These are the only numeric
+// returns codegen width-coerces to the declared integer return type (mirrors
+// is_int_literal_node in expression_codegen.c), so they may safely cross an
+// i32-vs-iN boundary; any other numeric width/kind mismatch reaches the
+// verifier as invalid IR.
+static int is_untyped_int_literal(ASTNode* node) {
+    if (!node) return 0;
+    if (node->type == AST_LITERAL)
+        return ((LiteralNode*)node)->literal_type == TOKEN_INT;
+    if (node->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)node;
+        if (u->operator == TOKEN_MINUS && u->operand &&
+            u->operand->type == AST_LITERAL)
+            return ((LiteralNode*)u->operand)->literal_type == TOKEN_INT;
+    }
+    return 0;
+}
+
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_RETURN_STMT) return 0;
     
@@ -1062,6 +1081,32 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
             // soundly reject; defer rather than risk a false positive.
             if (return_type->kind == TYPE_UNKNOWN) {
                 return 1;
+            }
+
+            // type_compatible() permits ANY numeric->numeric pair (it allows
+            // implicit conversions), but a return value reaches codegen with NO
+            // trunc/ext/fptosi inserted. So a numeric return whose machine
+            // representation differs from the declared return type — a wider/
+            // narrower integer (e.g. an int64 call result from an int function)
+            // or a float into an integer (e.g. `return 3.9` from int) — would
+            // slip past type_compatible and crash the LLVM verifier with a
+            // return-operand mismatch. Reject those here. The sole exception
+            // codegen DOES width-coerce is an untyped integer literal targeting
+            // an integer return type (e.g. `return 42` from an int64 function).
+            if (type_is_numeric(return_type) && type_is_numeric(expected)) {
+                int same_kind  = (type_is_float(return_type) == type_is_float(expected));
+                int same_width = (type_size(return_type) == type_size(expected));
+                int int_literal_to_int =
+                    type_is_integer(expected) &&
+                    is_untyped_int_literal(ret_stmt->values);
+                if ((!same_kind || !same_width) && !int_literal_to_int) {
+                    type_error(checker, stmt->pos,
+                               "return type mismatch: cannot return %s from a "
+                               "function returning %s",
+                               type_to_string(return_type),
+                               type_to_string(expected));
+                    return 0;
+                }
             }
 
             if (!type_compatible(return_type, expected)) {
