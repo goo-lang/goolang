@@ -366,7 +366,21 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
     
     BinaryExprNode* binary = (BinaryExprNode*)expr;
-    
+
+    // Blank identifier `_` as a plain-assignment target (F1): `_ = rhs`
+    // discards the value. The LHS `_` is not a real variable, so type-checking
+    // it as an expression would wrongly report "Undefined variable '_'".
+    // Skip the LHS lookup, type-check the RHS for its side effects/validity,
+    // and yield the RHS type as the assignment's result.
+    if (binary->operator == TOKEN_ASSIGN &&
+        binary->left && binary->left->type == AST_IDENTIFIER &&
+        strcmp(((IdentifierNode*)binary->left)->name, "_") == 0) {
+        Type* rhs_type = type_check_expression(checker, binary->right);
+        if (!rhs_type) return NULL;
+        expr->node_type = rhs_type;
+        return rhs_type;
+    }
+
     Type* left_type = type_check_expression(checker, binary->left);
     Type* right_type = type_check_expression(checker, binary->right);
     
