@@ -721,8 +721,9 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     
     int link_result = system(link_command);
     if (link_result != 0) {
-        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, 
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
                      "Linking failed with command: %s", link_command);
+        remove(object_filename);   // don't leave a stray object behind
         free(object_filename);
         return 0;
     }

@@ -700,6 +700,15 @@ deadlock-goroutine-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -ne 2 ]; then echo "deadlock-goroutine-probe: FAIL (exit $$rc, expected 2)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
 	if grep -q "all goroutines are asleep - deadlock!" build/deadlock_goroutine_probe.err; then echo "deadlock-goroutine-probe: PASS"; else echo "deadlock-goroutine-probe: FAIL (missing message)"; cat build/deadlock_goroutine_probe.err; exit 1; fi
 
+# P0-4: a failed link must not leave a stray object file behind.
+link-cleanup-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== link-cleanup-probe: failed link leaves no .o ==="
+	@printf 'package main\nfunc main() {}\n' > build/cleanup_probe.goo
+	@rm -f build/cleanup_probe.out.o
+	@GOO_RUNTIME=/nonexistent/libgoo_runtime.a "$(COMPILER)" build/cleanup_probe.goo -o build/cleanup_probe.out 2>/dev/null; true
+	@if [ -e build/cleanup_probe.out.o ]; then echo "link-cleanup-probe: FAIL (.o left behind)"; exit 1; else echo "link-cleanup-probe: PASS"; fi
+
 # Soak iteration count for the parallel probes (override: make ... PARALLEL_SOAK_ITERS=200).
 PARALLEL_SOAK_ITERS ?= 50
 
