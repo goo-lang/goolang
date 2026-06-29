@@ -1,2 +1,4 @@
 ok: 21
 caught: boom
+len: 4
+crossval caught: no name

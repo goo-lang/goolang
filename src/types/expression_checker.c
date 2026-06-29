@@ -838,21 +838,24 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
         return NULL;
     }
 
-    // Error-union-ness of the enclosing function is NECESSARY but not
-    // SUFFICIENT. The codegen error path rets the WHOLE operand error union as
-    // the enclosing function's return value (LLVMBuildRet operand), so the
-    // operand's error-union type must MATCH the enclosing return type exactly
-    // — both value and error type. A mismatch (e.g. an `!string` operand
-    // propagated out of an `!int` function) would otherwise emit an
-    // ABI-mismatched `ret` that reaches the LLVM verifier with no clean
-    // diagnostic ("Function return type does not match operand type"). The
-    // current propagation codegen does not re-wrap the error into the target
-    // value type, so equality is the correct (and minimal) requirement.
-    if (!type_equals(expr_type, enclosing)) {
+    // Error-union-ness of the enclosing function is NECESSARY. The VALUE types
+    // need NOT match: `try` propagates the operand's ERROR (not its value) out
+    // of the enclosing function, and codegen re-wraps that error into the
+    // enclosing function's error-union type. This enables the headline
+    // cross-value-type propagation pattern — e.g. `name := try getName()` where
+    // getName() is `!string`, used inside a `process() !int` function: the
+    // unwrapped string is consumed locally while any error propagates up as the
+    // function's own `!int`. Only the ERROR types must be compatible; in Phase 1
+    // the error slot is always a string (default error type, represented as a
+    // NULL error_type), so any two `!T`s are compatible. Reject only an explicit
+    // error-type mismatch, which has no faithful re-wrap today.
+    Type* operand_err = expr_type->data.error_union.error_type;
+    Type* enclosing_err = enclosing->data.error_union.error_type;
+    if (operand_err && enclosing_err && !type_equals(operand_err, enclosing_err)) {
         type_error(checker, expr->pos,
-                  "try operand type %s does not match the enclosing function's "
-                  "return type %s",
-                  type_to_string(expr_type), type_to_string(enclosing));
+                  "try operand error type %s does not match the enclosing "
+                  "function's error type %s",
+                  type_to_string(operand_err), type_to_string(enclosing_err));
         return NULL;
     }
 

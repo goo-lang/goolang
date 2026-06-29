@@ -135,25 +135,30 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
 
     LLVMBuildCondBr(codegen->builder, is_error, propagate_block, continue_block);
 
-    // Propagation block: return the error-union operand from the current
-    // function. The error path rets the WHOLE operand, so the operand's
-    // error-union type must equal the enclosing function's return type for the
-    // `ret` to be ABI-valid. The type checker (type_check_try_expr) now enforces
-    // exactly that via type_equals(operand, enclosing) — error-union-ness alone
-    // is necessary but NOT sufficient, since an `!string` operand in an `!int`
-    // function would emit a mismatched `ret` that reaches the LLVM verifier with
-    // no clean diagnostic. The guard below mirrors that invariant (a full type
-    // match, not just type_is_error_union) so any regression in the type-check
-    // gate surfaces as a clean codegen_error rather than garbage IR. The
-    // else-branch is therefore unreachable-in-practice for valid programs.
+    // Propagation block: re-wrap the operand's ERROR into the ENCLOSING
+    // function's error-union type and return THAT. `try` propagates only the
+    // error (not the operand's value), so the operand and the enclosing function
+    // may have different VALUE types — the headline cross-value-type pattern,
+    // e.g. an `!string` operand propagated out of an `!int` function. Ret-ing
+    // the WHOLE operand would be an ABI mismatch in that case ("Function return
+    // type does not match operand type"); instead we extract the error (the
+    // error slot is always a string in Phase 1) and build a fresh error union of
+    // the enclosing return type. The type checker (type_check_try_expr)
+    // guarantees the enclosing function returns `!T` and the error types are
+    // compatible, so the else-branch is defensive (clean codegen_error rather
+    // than garbage IR if the gate ever regresses).
     codegen_set_insert_point(codegen, propagate_block);
     FunctionInfo* cur = codegen->current_function_info;
-    if (cur && cur->goo_type && type_equals(operand_info->goo_type, cur->goo_type)) {
-        LLVMBuildRet(codegen->builder, operand_info->llvm_value);
+    if (cur && cur->goo_type && type_is_error_union(cur->goo_type)) {
+        LLVMValueRef err_val =
+            codegen_error_union_get_error(codegen, operand_info->llvm_value);
+        LLVMTypeRef enclosing_union = codegen_type_to_llvm(codegen, cur->goo_type);
+        LLVMValueRef rewrapped =
+            codegen_create_error_union_error(codegen, enclosing_union, err_val);
+        LLVMBuildRet(codegen->builder, rewrapped);
     } else {
         codegen_error(codegen, expr->pos,
-                      "try operand type does not match the enclosing function's "
-                      "error-union return type "
+                      "try used outside an error-union function "
                       "(should have been rejected by the type checker)");
         // Terminate the block so the (rejected) module is still structurally
         // valid; error_count>0 already fails the build before emission.

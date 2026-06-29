@@ -5,7 +5,13 @@
 // main's top-level catch then fires and binds the message. On the success path
 // try unwraps the value and outer continues, returning v+1, which main's catch
 // passes straight through. Exercises the try PROPAGATION path (is_error=1 ->
-// LLVMBuildRet operand) end-to-end — dead before Phase 1's error construction.
+// LLVMBuildRet) end-to-end — dead before Phase 1's error construction.
+//
+// crossValue() additionally exercises CROSS-VALUE-TYPE propagation: it returns
+// !int but `try getName(bad)` operates on an !string. The unwrapped string is
+// consumed locally (its length is returned); on the error path try re-wraps the
+// error into crossValue's own !int and propagates it up. This is the headline
+// `try` pattern — propagate the error, consume the unwrapped value locally.
 package main
 
 import "fmt"
@@ -22,6 +28,18 @@ func outer(bad bool) !int {
     return v + 1
 }
 
+func getName(bad bool) !string {
+    if bad {
+        return error("no name")
+    }
+    return "abcd"
+}
+
+func crossValue(bad bool) !int {
+    name := try getName(bad)
+    return len(name)
+}
+
 func main() {
     // success path: try unwraps 20, outer returns 21; catch passes value through.
     s := outer(false) catch e {
@@ -30,9 +48,23 @@ func main() {
     fmt.Println("ok:", s)
 
     // error path: try propagates error("boom") up out of outer; main's catch fires.
+    // (a is left unbound on the error path; we don't read it.)
     a := outer(true) catch e {
         fmt.Println("caught:", e)
+    }
+
+    // cross-value-type success: getName()!string unwrapped to "abcd" inside an
+    // !int function; len consumed locally, crossValue returns 4.
+    n := crossValue(false) catch e {
+        fmt.Println("unexpected:", e)
+    }
+    fmt.Println("len:", n)
+
+    // cross-value-type error: getName's error is re-wrapped into crossValue's
+    // !int and propagated to main's catch, which binds the original message.
+    b := crossValue(true) catch e {
+        fmt.Println("crossval caught:", e)
         return
     }
-    fmt.Println("unreachable", a)
+    fmt.Println("unreachable", b)
 }
