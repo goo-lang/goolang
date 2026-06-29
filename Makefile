@@ -967,8 +967,17 @@ println-badtype-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P1-1: error(msg) builtin — recognition + string-arg type-check. The bad forms
 # error() (wrong arity) and error(5) (non-string arg) must each be rejected by
-# the type checker with a clean diagnostic (non-zero exit, message mentioning
-# "error"), and must NOT reach the LLVM verifier (no invalid-IR crash).
+# the type checker's `error` special-case with its OWN diagnostic, and must NOT
+# reach the LLVM verifier (no invalid-IR crash).
+#
+# The assertions key on the special-case's specific messages ("expects exactly
+# one string argument" / "argument must be a string"), not just the substring
+# "error". This is deliberate: that special-case only fires when the predeclared
+# `error` builtin resolves in scope (registered in type_checker.c). If the
+# registration is removed, `error(...)` instead falls through to ordinary
+# identifier resolution and fails with "Undefined variable 'error'" — which would
+# NOT match these patterns, turning this probe RED. So the probe genuinely
+# exercises the builtin registration, not just the pre-existing name match.
 error-arity-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== error-arity-probe: error()/error(5) fail cleanly in type check ==="
@@ -977,11 +986,11 @@ error-arity-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/error_arity_noargs.goo -o build/error_arity_noargs.out 2>build/error_arity_noargs.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "error-arity-probe: FAIL (error() compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/error_arity_noargs.err; then echo "error-arity-probe: FAIL (invalid IR reached verifier for error())"; cat build/error_arity_noargs.err; exit 1; fi; \
-	  if ! grep -qiE "error" build/error_arity_noargs.err; then echo "error-arity-probe: FAIL (no clean diagnostic for error())"; cat build/error_arity_noargs.err; exit 1; fi
+	  if ! grep -qiE "error expects exactly one string argument" build/error_arity_noargs.err; then echo "error-arity-probe: FAIL (error() not rejected by the error builtin special-case)"; cat build/error_arity_noargs.err; exit 1; fi
 	@"$(COMPILER)" build/error_arity_intarg.goo -o build/error_arity_intarg.out 2>build/error_arity_intarg.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "error-arity-probe: FAIL (error(5) compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/error_arity_intarg.err; then echo "error-arity-probe: FAIL (invalid IR reached verifier for error(5))"; cat build/error_arity_intarg.err; exit 1; fi; \
-	  if ! grep -qiE "error" build/error_arity_intarg.err; then echo "error-arity-probe: FAIL (no clean diagnostic for error(5))"; cat build/error_arity_intarg.err; exit 1; fi
+	  if ! grep -qiE "argument must be a string" build/error_arity_intarg.err; then echo "error-arity-probe: FAIL (error(5) not rejected by the error builtin special-case)"; cat build/error_arity_intarg.err; exit 1; fi
 	@echo "error-arity-probe: PASS"
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.

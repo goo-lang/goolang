@@ -551,7 +551,14 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // error(msg) -> !T. Constructs the error case of the enclosing function's
         // return type. The argument must be a string; the call is only valid inside
         // a function whose return type is an error union (!T).
-        if (strcmp(func_ident->name, "error") == 0) {
+        //
+        // Gate on the predeclared `error` builtin actually resolving in scope (it
+        // is registered in type_checker.c alongside len/cap/append). This makes the
+        // registration load-bearing and keeps `error` Go-faithfully shadowable: a
+        // user-declared local `error` (is_builtin == 0, or absent from scope) falls
+        // through to ordinary identifier resolution instead of being hijacked here.
+        Variable* error_builtin = scope_lookup_variable(checker->current_scope, "error");
+        if (strcmp(func_ident->name, "error") == 0 && error_builtin && error_builtin->is_builtin) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "error expects exactly one string argument");
                 return NULL;
