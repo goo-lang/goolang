@@ -1,0 +1,22 @@
+// defer_method_probe: defer on a method call (value receiver). The receiver is
+// snapshotted at defer-time and the deferred method runs at function exit —
+// the common Go idiom (defer f.Close()). Mixed with a package-selector defer
+// (fmt.Println) and free-function defers to prove all paths coexist (LIFO).
+package main
+
+import "fmt"
+
+type Resource struct {
+    id int
+}
+
+func (r Resource) close() {
+    fmt.Println("closed resource", r.id)
+}
+
+func main() {
+    r := Resource{7}
+    defer fmt.Println("last")
+    defer r.close()
+    fmt.Println("working")
+}

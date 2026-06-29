@@ -1181,14 +1181,27 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
 
+    // Method-call receiver: `defer x.m(args)` evaluates the receiver `x` at
+    // defer-time (Go semantics), but it lives in the selector base (call->func),
+    // not call->args. Snapshot it too so it doesn't dangle at function exit
+    // ("Undefined identifier 'x'"). Skip PACKAGE selectors like `fmt.Println`
+    // (base resolves to TYPE_PACKAGE, not a value) — those need no snapshot.
+    ASTNode* recv_base = NULL;
+    if (call->function && call->function->type == AST_SELECTOR_EXPR) {
+        ASTNode* base = ((SelectorExprNode*)call->function)->expr;
+        if (base && base->node_type && base->node_type->kind != TYPE_PACKAGE)
+            recv_base = base;
+    }
+    size_t total = argc + (recv_base ? 1 : 0);
+
     DeferCodegenInfo cinfo;
     memset(&cinfo, 0, sizeof(cinfo));
     cinfo.active_flag = flag;
-    cinfo.arg_count = argc;
-    if (argc > 0) {
-        cinfo.arg_slots = calloc(argc, sizeof(LLVMValueRef));
-        cinfo.arg_types = calloc(argc, sizeof(Type*));
-        cinfo.arg_names = calloc(argc, sizeof(char*));
+    cinfo.arg_count = total;
+    if (total > 0) {
+        cinfo.arg_slots = calloc(total, sizeof(LLVMValueRef));
+        cinfo.arg_types = calloc(total, sizeof(Type*));
+        cinfo.arg_names = calloc(total, sizeof(char*));
         if (!cinfo.arg_slots || !cinfo.arg_types || !cinfo.arg_names) {
             free(cinfo.arg_slots); free(cinfo.arg_types); free(cinfo.arg_names);
             codegen_error(codegen, stmt->pos, "out of memory snapshotting defer args");
@@ -1197,6 +1210,39 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     }
 
     size_t idx = 0;
+
+    // Snapshot the method receiver (if any) first, rewriting the selector base
+    // to a synthetic identifier that resolves to the snapshot at exit.
+    if (recv_base) {
+        ValueInfo* rv = codegen_generate_expression(codegen, checker, recv_base);
+        if (!rv) {
+            codegen_error(codegen, recv_base->pos, "failed to evaluate defer receiver");
+            return 0;
+        }
+        LLVMValueRef rval = rv->llvm_value;
+        Type* rt = rv->goo_type;
+        if (rv->is_lvalue && rt) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, rt);
+            if (lt) rval = LLVMBuildLoad2(codegen->builder, lt, rval, "defer_recv");
+        }
+        LLVMTypeRef slot_ty = rt ? codegen_type_to_llvm(codegen, rt) : LLVMTypeOf(rval);
+        LLVMValueRef slot = codegen_create_entry_alloca(codegen, slot_ty, "defer_recv_slot");
+        LLVMBuildStore(codegen->builder, rval, slot);
+        value_info_free(rv);
+
+        char nm[64];
+        snprintf(nm, sizeof(nm), "__goo_defer%zu_recv", fi->deferred_count);
+        cinfo.arg_slots[idx] = slot;
+        cinfo.arg_types[idx] = rt;
+        cinfo.arg_names[idx] = strdup(nm);
+        type_checker_declare_synthetic(checker, nm, rt);
+
+        IdentifierNode* rid = ast_identifier_new(nm, recv_base->pos);
+        ((ASTNode*)rid)->node_type = rt;
+        ((SelectorExprNode*)call->function)->expr = (ASTNode*)rid;
+        idx++;
+    }
+
     ASTNode* prev = NULL;
     ASTNode* a = call->args;
     while (a) {
