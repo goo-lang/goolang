@@ -338,6 +338,21 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             int ptr_recv = recv_param && recv_param->kind == TYPE_POINTER;
             int recv_is_ptr_value = recv_type && recv_type->kind == TYPE_POINTER;
 
+            // Invariant: a registered method always carries its receiver as
+            // params[0] (the parser splices it in; type_check_function_decl
+            // records it). If we can't see it, the receiver kind is unknown
+            // and any guess (value vs pointer) risks passing a mismatched
+            // argument into the call — which the LLVM verifier rejects with a
+            // crash and no diagnostic. Fail cleanly on the broken invariant
+            // instead of degrading to a verifier abort.
+            if (!recv_param) {
+                codegen_error(codegen, expr->pos,
+                    "internal: cannot resolve receiver type for method '%s'",
+                    msel->selector);
+                free(mangled);
+                return NULL;
+            }
+
             LLVMValueRef recv_arg = NULL;
             if (ptr_recv && !recv_is_ptr_value) {
                 // Auto-address-of: the receiver must be an addressable lvalue.
@@ -352,9 +367,29 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 // Identifier lvalues alias the value table; do not free addr
                 // (mirrors the `&x` address-of path in expression_codegen.c).
                 recv_arg = addr->llvm_value;
+            } else if (!ptr_recv && recv_is_ptr_value) {
+                // Auto-deref: a value-receiver method called on a pointer
+                // value `p.m()` is `(*p).m()` in Go (and Goo). Load the
+                // pointed-to struct and pass it by value to match the
+                // value-receiver signature. Without this, the raw pointer
+                // would be handed to a value param and fail LLVM verification.
+                ValueInfo* pv = codegen_generate_expression(codegen, checker, msel->expr);
+                if (!pv) { free(mangled); return NULL; }
+                LLVMValueRef ptr = pv->llvm_value;
+                value_info_free(pv);
+                LLVMTypeRef val_llvm = codegen_type_to_llvm(codegen, recv_param);
+                if (!val_llvm) {
+                    codegen_error(codegen, expr->pos,
+                        "cannot lower receiver type for method '%s'",
+                        msel->selector);
+                    free(mangled);
+                    return NULL;
+                }
+                recv_arg = LLVMBuildLoad2(codegen->builder, val_llvm, ptr, "recv_deref");
             } else {
-                // Value receiver, or receiver already a pointer:
-                // codegen_generate_expression loads lvalues to a value.
+                // Value receiver on a value, or pointer receiver on a pointer:
+                // codegen_generate_expression loads lvalues to a value, which
+                // already matches the param type in both cases.
                 ValueInfo* recv = codegen_generate_expression(codegen, checker, msel->expr);
                 if (!recv) { free(mangled); return NULL; }
                 recv_arg = recv->llvm_value;
