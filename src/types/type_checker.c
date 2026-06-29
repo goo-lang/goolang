@@ -970,10 +970,30 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (ret_stmt->values) {
         Type* return_type = type_check_expression(checker, ret_stmt->values);
         if (!return_type) return 0;
-        
-        // TODO: Check against function return type
+
+        // When the enclosing function returns an error union (!T), the returned
+        // expression is valid iff it is an error(...) construction / another !T
+        // forwarded whole (its resolved type is the error union itself) OR its
+        // type is compatible with the union's value type T. A plain value of an
+        // incompatible type (e.g. `return "str"` from an !int function) is a
+        // clean type error here, before it can reach codegen / the verifier.
+        Type* expected = checker->current_return_type;
+        if (expected && type_is_error_union(expected)) {
+            Type* value_type = expected->data.error_union.value_type;
+            int is_error_or_forward = type_is_error_union(return_type);
+            int is_value = value_type && type_compatible(return_type, value_type);
+            if (!is_error_or_forward && !is_value) {
+                type_error(checker, stmt->pos,
+                           "return type mismatch: cannot return %s from a function "
+                           "returning %s (expected %s or an error(...) construction)",
+                           type_to_string(return_type),
+                           type_to_string(expected),
+                           type_to_string(value_type));
+                return 0;
+            }
+        }
     }
-    
+
     return 1;
 }
 
