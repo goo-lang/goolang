@@ -973,14 +973,22 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
 
         // When the enclosing function returns an error union (!T), the returned
         // expression is valid iff it is an error(...) construction / another !T
-        // forwarded whole (its resolved type is the error union itself) OR its
+        // forwarded whole (its resolved type is THE SAME error union) OR its
         // type is compatible with the union's value type T. A plain value of an
         // incompatible type (e.g. `return "str"` from an !int function) is a
         // clean type error here, before it can reach codegen / the verifier.
+        //
+        // The forward case must require type_equals against the enclosing union,
+        // not merely type_is_error_union: a mismatched !T (e.g. forwarding an
+        // !string out of an !int function) is otherwise waved through here and
+        // then crashes the LLVM verifier with a return-operand type mismatch.
+        // error(...) resolves to exactly current_return_type (see
+        // expression_checker.c), so type_equals also accepts genuine
+        // error(...) constructions.
         Type* expected = checker->current_return_type;
         if (expected && type_is_error_union(expected)) {
             Type* value_type = expected->data.error_union.value_type;
-            int is_error_or_forward = type_is_error_union(return_type);
+            int is_error_or_forward = type_equals(return_type, expected);
             int is_value = value_type && type_compatible(return_type, value_type);
             if (!is_error_or_forward && !is_value) {
                 type_error(checker, stmt->pos,

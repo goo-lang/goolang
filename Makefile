@@ -995,20 +995,29 @@ error-arity-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P1-3: type-check `return` against the declared !T value type. Inside a function
 # returning !T, a `return <expr>` is valid iff <expr> is an error(...) construction
-# (or another !T forwarded whole) OR its type is compatible with T. A plain value
+# (or the SAME !T forwarded whole) OR its type is compatible with T. A plain value
 # of an incompatible type — e.g. `return "str"` from an !int function — must be a
 # clean type error, NOT silently accepted (today the return stub accepts anything)
-# and NOT an LLVM-verifier crash. The probe also guards against over-rejection:
-# `return 42` and `return error("x")` from an !int function must still compile.
+# and NOT an LLVM-verifier crash. A MISMATCHED error union forwarded whole — e.g.
+# `return s()` where s() is !string inside an !int function — must likewise be a
+# clean type error, not an "any error union accepted" pass that crashes the
+# verifier with a return-operand type mismatch. The probe also guards against
+# over-rejection: `return 42` and `return error("x")` from an !int function, and a
+# matching !int forwarded whole, must all still compile.
 return-type-erru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== return-type-erru-probe: return type-checked against !T value type ==="
 	@printf 'package main\nfunc f() !int { return "str" }\nfunc main() {}\n' > build/rt_erru_bad.goo
-	@printf 'package main\nimport "fmt"\nfunc okval() !int { return 42 }\nfunc okerr() !int { return error("x") }\nfunc main() { fmt.Println("ok") }\n' > build/rt_erru_ok.goo
+	@printf 'package main\nfunc s() !string { return error("x") }\nfunc f() !int { return s() }\nfunc main() {}\n' > build/rt_erru_xfwd.goo
+	@printf 'package main\nimport "fmt"\nfunc okval() !int { return 42 }\nfunc okerr() !int { return error("x") }\nfunc fwd() !int { return okval() }\nfunc main() { fmt.Println("ok") }\n' > build/rt_erru_ok.goo
 	@"$(COMPILER)" build/rt_erru_bad.goo -o build/rt_erru_bad.out 2>build/rt_erru_bad.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (return \"str\" from !int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_bad.err; then echo "return-type-erru-probe: FAIL (invalid IR reached verifier)"; cat build/rt_erru_bad.err; exit 1; fi; \
 	  if ! grep -qiE "return type mismatch" build/rt_erru_bad.err; then echo "return-type-erru-probe: FAIL (no clean return-type diagnostic)"; cat build/rt_erru_bad.err; exit 1; fi
+	@"$(COMPILER)" build/rt_erru_xfwd.goo -o build/rt_erru_xfwd.out 2>build/rt_erru_xfwd.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-type-erru-probe: FAIL (mismatched !string forwarded from !int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_erru_xfwd.err; then echo "return-type-erru-probe: FAIL (mismatched forward reached verifier)"; cat build/rt_erru_xfwd.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_erru_xfwd.err; then echo "return-type-erru-probe: FAIL (no clean diagnostic for mismatched forward)"; cat build/rt_erru_xfwd.err; exit 1; fi
 	@"$(COMPILER)" build/rt_erru_ok.goo -o build/rt_erru_ok.out 2>build/rt_erru_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "return-type-erru-probe: FAIL (valid !T returns rejected)"; cat build/rt_erru_ok.err; exit 1; fi
 	@echo "return-type-erru-probe: PASS"
