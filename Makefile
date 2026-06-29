@@ -915,7 +915,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1054,6 +1054,32 @@ try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/try_erru_ok.goo -o build/try_erru_ok.out 2>build/try_erru_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (legitimate try inside !T rejected)"; cat build/try_erru_ok.err; exit 1; fi
 	@echo "try-nonerru-probe: PASS"
+
+# P2-1: a `return <value>` is type-checked against a NON-error-union function
+# signature. Before Phase 2 the return stub only validated the `!T` case, so
+# `func f() int { return "str" }` was silently accepted and then crashed the
+# LLVM verifier ("Function return type does not match operand type of return
+# inst!"). Now it is a clean type error here, before codegen. The probe also
+# rejects returning a value from a void function, and guards against
+# over-rejection: scalar, string, nullable, and multi-return functions must all
+# still compile.
+return-mismatch-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== return-mismatch-probe: return value type-checked against non-!T signature ==="
+	@printf 'package main\nfunc f() int { return "str" }\nfunc main() {}\n' > build/rt_mm_str.goo
+	@printf 'package main\nfunc f() { return 5 }\nfunc main() {}\n' > build/rt_mm_void.goo
+	@printf 'package main\nimport "fmt"\nfunc i() int { return 42 }\nfunc s() string { return "ok" }\nfunc n() ?int { return 5 }\nfunc divmod(a int, b int) (int, int) { return a / b, a % b }\nfunc main() { fmt.Println(i()) }\n' > build/rt_mm_ok.goo
+	@"$(COMPILER)" build/rt_mm_str.goo -o build/rt_mm_str.out 2>build/rt_mm_str.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return \"str\" from int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_str.err; then echo "return-mismatch-probe: FAIL (invalid IR reached verifier)"; cat build/rt_mm_str.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_str.err; then echo "return-mismatch-probe: FAIL (no clean return-type diagnostic)"; cat build/rt_mm_str.err; exit 1; fi
+	@"$(COMPILER)" build/rt_mm_void.goo -o build/rt_mm_void.out 2>build/rt_mm_void.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return value from void func compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_void.err; then echo "return-mismatch-probe: FAIL (void-return value reached verifier)"; cat build/rt_mm_void.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_void.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for value-from-void)"; cat build/rt_mm_void.err; exit 1; fi
+	@"$(COMPILER)" build/rt_mm_ok.goo -o build/rt_mm_ok.out 2>build/rt_mm_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "return-mismatch-probe: FAIL (valid scalar/string/nullable/multi returns rejected)"; cat build/rt_mm_ok.err; exit 1; fi
+	@echo "return-mismatch-probe: PASS"
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).

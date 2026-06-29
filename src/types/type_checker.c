@@ -1032,6 +1032,46 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                            type_to_string(value_type));
                 return 0;
             }
+        } else if (expected) {
+            // Non-error-union enclosing return type. Reject a returned value
+            // whose type is incompatible with the declared return type here,
+            // before it reaches codegen and crashes the LLVM verifier with a
+            // "return type does not match operand type" mismatch.
+
+            // A multi-value `return a, b` targets an anonymous multi-return
+            // struct (parser lowers `(int, int)` to a TYPE_STRUCT). Only the
+            // FIRST value is resolved by type_check_expression above, so a
+            // single-type comparison against the struct would be a false
+            // positive. Per-element multi-return checking is out of scope —
+            // accept and let codegen build the aggregate.
+            if (ret_stmt->values->next) {
+                return 1;
+            }
+
+            // A value returned from a function with no declared return type
+            // (void) is always a mismatch (Go: "too many return values").
+            if (expected->kind == TYPE_VOID) {
+                type_error(checker, stmt->pos,
+                           "return type mismatch: cannot return a value from a "
+                           "function with no return type");
+                return 0;
+            }
+
+            // An unresolved operand type (TYPE_UNKNOWN — e.g. a bare nil or an
+            // expression the checker couldn't pin down) is not something we can
+            // soundly reject; defer rather than risk a false positive.
+            if (return_type->kind == TYPE_UNKNOWN) {
+                return 1;
+            }
+
+            if (!type_compatible(return_type, expected)) {
+                type_error(checker, stmt->pos,
+                           "return type mismatch: cannot return %s from a "
+                           "function returning %s",
+                           type_to_string(return_type),
+                           type_to_string(expected));
+                return 0;
+            }
         }
     }
 
