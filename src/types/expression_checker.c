@@ -118,6 +118,18 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 for (ASTNode* e = lit->elements; e; e = e->next, i++) {
                     Type* et = type_check_expression(checker, e);
                     if (!et) return NULL;
+                    // A float element in an integer slice would silently
+                    // truncate (`[]int{1, 2.5, 3}` -> 1 0 3) — type_compatible
+                    // wrongly permits it as a numeric conversion. Reject the
+                    // lossy float->int case explicitly so it can't miscompile.
+                    if (type_is_integer(want)
+                        && (et->kind == TYPE_FLOAT32 || et->kind == TYPE_FLOAT64)) {
+                        type_error(checker, e->pos,
+                                   "Slice literal element %zu: cannot use float "
+                                   "value in a '%s' slice (would truncate)",
+                                   i, type_to_string(want));
+                        return NULL;
+                    }
                     // type_compatible permits numeric widening (so
                     // []int64{1, 2} is fine) but rejects e.g. string vs int.
                     if (!type_compatible(et, want)) {
