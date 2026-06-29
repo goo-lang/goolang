@@ -915,7 +915,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -964,6 +964,25 @@ println-badtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "println-badtype-probe: FAIL (compiled an unsupported print — expected error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/println_bad.err; then echo "println-badtype-probe: FAIL (invalid IR reached verifier)"; cat build/println_bad.err; exit 1; fi; \
 	  if grep -qiE "unsupported|cannot print|Println" build/println_bad.err; then echo "println-badtype-probe: PASS"; else echo "println-badtype-probe: FAIL (no clean diagnostic)"; cat build/println_bad.err; exit 1; fi
+
+# P1-1: error(msg) builtin — recognition + string-arg type-check. The bad forms
+# error() (wrong arity) and error(5) (non-string arg) must each be rejected by
+# the type checker with a clean diagnostic (non-zero exit, message mentioning
+# "error"), and must NOT reach the LLVM verifier (no invalid-IR crash).
+error-arity-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== error-arity-probe: error()/error(5) fail cleanly in type check ==="
+	@printf 'package main\nfunc f() !int { return error() }\nfunc main() {}\n' > build/error_arity_noargs.goo
+	@printf 'package main\nfunc g() !int { return error(5) }\nfunc main() {}\n' > build/error_arity_intarg.goo
+	@"$(COMPILER)" build/error_arity_noargs.goo -o build/error_arity_noargs.out 2>build/error_arity_noargs.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "error-arity-probe: FAIL (error() compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/error_arity_noargs.err; then echo "error-arity-probe: FAIL (invalid IR reached verifier for error())"; cat build/error_arity_noargs.err; exit 1; fi; \
+	  if ! grep -qiE "error" build/error_arity_noargs.err; then echo "error-arity-probe: FAIL (no clean diagnostic for error())"; cat build/error_arity_noargs.err; exit 1; fi
+	@"$(COMPILER)" build/error_arity_intarg.goo -o build/error_arity_intarg.out 2>build/error_arity_intarg.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "error-arity-probe: FAIL (error(5) compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/error_arity_intarg.err; then echo "error-arity-probe: FAIL (invalid IR reached verifier for error(5))"; cat build/error_arity_intarg.err; exit 1; fi; \
+	  if ! grep -qiE "error" build/error_arity_intarg.err; then echo "error-arity-probe: FAIL (no clean diagnostic for error(5))"; cat build/error_arity_intarg.err; exit 1; fi
+	@echo "error-arity-probe: PASS"
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).

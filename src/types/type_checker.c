@@ -168,6 +168,19 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, append_var);
     }
 
+    // error(msg) -> !T: constructs the error case of the enclosing function's
+    // error-union return type. Registered here so the bare identifier resolves
+    // like len/cap/append; the call itself is special-cased in
+    // type_check_call_expr (requires exactly one string arg, only valid inside
+    // a function returning !T).
+    Type* error_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* error_var = variable_new("error", error_type, (Position){0, 0, 0, "builtin"});
+    if (error_var) {
+        error_var->is_builtin = 1;
+        error_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, error_var);
+    }
+
     // Stdlib package identifiers. Registered globally for now (matching the
     // pattern above) — the type checker is lenient about whether `import`
     // was actually written. Selector access (e.g. fmt.Println) resolves
