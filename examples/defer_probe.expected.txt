@@ -1,5 +1,12 @@
 a
 before-early-return
 deferred-early
+local-body
+snap
+arg-now 99
+arg-was 7
+cond-body
+cond-body
+cond-defer
 b
 c

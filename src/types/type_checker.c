@@ -1221,7 +1221,9 @@ int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt) {
 
     // The grammar only produces `defer call_expr`, so `call` is a call
     // expression. Type-check it so argument types/arity are validated at the
-    // defer site (the call is later emitted at function exit by codegen).
+    // defer site. Codegen snapshots the arguments here (defer-time evaluation,
+    // Go semantics) and emits the call, guarded by a runtime active flag, at
+    // each function-exit path.
     if (defer_stmt->call) {
         if (defer_stmt->call->type != AST_CALL_EXPR) {
             type_error(checker, stmt->pos, "defer requires a function call");

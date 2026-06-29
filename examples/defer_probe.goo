@@ -1,6 +1,6 @@
-// defer_probe (P3-4): defer type-check acceptance + LIFO codegen.
+// defer_probe (P3-4): defer type-check acceptance + Go-faithful LIFO codegen.
 //
-// Two properties under test:
+// Properties under test:
 //
 // 1. LIFO order. `main` registers `defer fmt.Println("c")` then
 //    `defer fmt.Println("b")`. At function exit the deferred calls run in
@@ -11,9 +11,20 @@
 //    explicit `return` partway through the body. The deferred call must
 //    still run on that early-exit path — not only on fall-off-the-end exit.
 //
-// MVP scope (Go-faithful for this probe): deferred calls take literal/
-// already-evaluated arguments, so emitting the call at function-exit time
-// matches Go's "args evaluated at defer time" semantics for these cases.
+// 3. Local-variable argument on the fall-off-the-end path. `localArg`
+//    declares `s := "snap"` and `defer fmt.Println(s)`, then falls off the
+//    end. The argument is a `:=`-declared local; it must compile and print
+//    the snapshotted value (this regressed before: re-walking the call at
+//    exit emitted "Undefined identifier 's'" once the body block's locals
+//    were truncated out of the value table).
+//
+// 4. Defer-time argument evaluation (Go semantics). `argTiming` snapshots
+//    `n` at the defer site, then mutates `n`. The deferred print must show
+//    the value AS OF the defer statement (7), not the exit-time value (99).
+//
+// 5. Conditional defer is runtime-tracked. `conditional(false)` registers a
+//    defer inside a not-taken branch; it must NOT run. `conditional(true)`
+//    takes the branch, so the defer runs at exit.
 package main
 
 import "fmt"
@@ -27,9 +38,33 @@ func earlyReturn(x int) {
     fmt.Println("unreachable")
 }
 
+func localArg() {
+    s := "snap"
+    defer fmt.Println(s)
+    fmt.Println("local-body")
+}
+
+func argTiming() {
+    n := 7
+    defer fmt.Println("arg-was", n)
+    n = 99
+    fmt.Println("arg-now", n)
+}
+
+func conditional(cond bool) {
+    if cond {
+        defer fmt.Println("cond-defer")
+    }
+    fmt.Println("cond-body")
+}
+
 func main() {
     defer fmt.Println("c")
     defer fmt.Println("b")
     fmt.Println("a")
     earlyReturn(1)
+    localArg()
+    argTiming()
+    conditional(false)
+    conditional(true)
 }
