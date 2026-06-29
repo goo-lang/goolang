@@ -1,0 +1,32 @@
+// conv_probe (F2): builtin type conversions `T(x)` for numeric types.
+//
+// `int(x)`, `byte(n)`, `float64(n)` were previously rejected with
+// "Undefined variable 'int'" because the callee was type-checked as an
+// ordinary variable. A call whose callee names a builtin numeric type with
+// exactly one argument is a CONVERSION: the result type is the named type
+// and codegen inserts the right SExt/Trunc/SIToFP/FPToSI.
+//
+// Coverage:
+//   int(int64)    -> Trunc  (300 fits i32, stays 300)
+//   int(byte)     -> SExt   (uint8 65 -> i32 65)   [also exercises byte(65)]
+//   int(float64)  -> FPToSI (3.0 -> 3)
+//   float64(int)  -> SIToFP (7 -> 7.0, printed as "7" by %g)
+package main
+
+import "fmt"
+
+func main() {
+	var x int64 = 300
+	y := int(x)
+	fmt.Println(y) // 300
+
+	b := byte(65)
+	fmt.Println(int(b)) // 65
+
+	var f float64 = 3.0
+	n := int(f)
+	fmt.Println(n) // 3
+
+	g := float64(7)
+	fmt.Println(g) // 7
+}

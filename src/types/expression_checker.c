@@ -566,9 +566,34 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
     return chan_type;
 }
 
+// Builtin numeric/char type-conversion target (F2). Returns the named
+// builtin Type for a conversion `T(x)`, or NULL if `name` is not a
+// supported conversion type. Mirrors the type-name table in
+// type_from_ast() but scoped to the numeric kinds a value conversion can
+// produce; `string`/`bool` conversions are intentionally NOT here (string
+// conversions need byte/rune lowering — deferred — and bool has no numeric
+// conversion in Go), so those names fall through to ordinary resolution.
+static Type* builtin_conversion_target(TypeChecker* checker, const char* name) {
+    if (!name) return NULL;
+    if (strcmp(name, "int") == 0)     return type_checker_get_builtin(checker, TYPE_INT32);
+    if (strcmp(name, "int8") == 0)    return type_checker_get_builtin(checker, TYPE_INT8);
+    if (strcmp(name, "int16") == 0)   return type_checker_get_builtin(checker, TYPE_INT16);
+    if (strcmp(name, "int32") == 0)   return type_checker_get_builtin(checker, TYPE_INT32);
+    if (strcmp(name, "int64") == 0)   return type_checker_get_builtin(checker, TYPE_INT64);
+    if (strcmp(name, "uint") == 0)    return type_checker_get_builtin(checker, TYPE_UINT32);
+    if (strcmp(name, "uint8") == 0)   return type_checker_get_builtin(checker, TYPE_UINT8);
+    if (strcmp(name, "uint16") == 0)  return type_checker_get_builtin(checker, TYPE_UINT16);
+    if (strcmp(name, "uint32") == 0)  return type_checker_get_builtin(checker, TYPE_UINT32);
+    if (strcmp(name, "uint64") == 0)  return type_checker_get_builtin(checker, TYPE_UINT64);
+    if (strcmp(name, "byte") == 0)    return type_checker_get_builtin(checker, TYPE_UINT8);
+    if (strcmp(name, "float32") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT32);
+    if (strcmp(name, "float64") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);
+    return NULL;
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
-    
+
     CallExprNode* call = (CallExprNode*)expr;
     
     // Special handling for make_chan
@@ -576,6 +601,39 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         IdentifierNode* func_ident = (IdentifierNode*)call->function;
         if (strcmp(func_ident->name, "make_chan") == 0) {
             return type_check_make_chan_call(checker, call, expr);
+        }
+        // Builtin type conversion `T(x)` (F2): a call whose callee names a
+        // builtin numeric type is a conversion, not a function call. Gate on
+        // the name NOT resolving to a real variable so a user value that
+        // shadows the type name (Go permits this) still calls through. The
+        // type names are not registered in scope, so the lookup normally
+        // fails and the conversion path is taken.
+        {
+            Type* conv_target = builtin_conversion_target(checker, func_ident->name);
+            if (conv_target &&
+                !scope_lookup_variable(checker->current_scope, func_ident->name)) {
+                if (!call->args || call->args->next) {
+                    type_error(checker, expr->pos,
+                               "conversion %s() expects exactly one argument",
+                               func_ident->name);
+                    return NULL;
+                }
+                Type* src = type_check_expression(checker, call->args);
+                if (!src) return NULL;
+                // Only numeric/char sources are convertible in v1. char (rune)
+                // is an integer value, so it converts like one. string/bool
+                // and aggregate sources are rejected cleanly here rather than
+                // miscompiling at the LLVM verifier.
+                if (!type_is_numeric(src) && src->kind != TYPE_CHAR) {
+                    type_error(checker, expr->pos,
+                               "cannot convert %s to %s (only numeric conversions "
+                               "are supported in v1)",
+                               type_to_string(src), func_ident->name);
+                    return NULL;
+                }
+                expr->node_type = conv_target;
+                return conv_target;
+            }
         }
         // new(T) -> *T. The sole argument is a type name (e.g. `new(int)`),
         // resolved as a type rather than typechecked as a value expression.
