@@ -1,0 +1,35 @@
+// Pointer-receiver auto-address-of probe (P2-3).
+//
+// A pointer-receiver method `func (c *Counter) inc()` mutates a field of
+// the receiver. Called on an addressable local `c`, Go (and Goo, as a Go
+// superset) automatically takes the address: `c.inc()` == `(&c).inc()`.
+// The mutation must be observed by the caller.
+//
+// Before the fix the receiver was passed by value (a loaded struct), so
+// either the IR fails LLVM verification (struct value into a pointer param)
+// or the mutation is lost. `make ptr-recv-probe` builds + runs this and
+// diffs against expected.txt.
+package main
+
+import "fmt"
+
+type Counter struct {
+    n int
+}
+
+// Pointer receiver: mutates the receiver in place.
+func (c *Counter) inc() {
+    c.n = c.n + 1
+}
+
+func (c *Counter) add(k int) {
+    c.n = c.n + k
+}
+
+func main() {
+    c := Counter{n: 0}
+    c.inc()       // n -> 1
+    c.inc()       // n -> 2
+    c.add(10)     // n -> 12
+    fmt.Println(c.n) // 12
+}

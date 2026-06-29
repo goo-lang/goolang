@@ -12,6 +12,10 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                                ASTNode* expr, const char* runtime_symbol,
                                                TypeKind return_kind, int unused_extra);
 
+// Defined in expression_codegen.c: storage address of an addressable
+// expression (no load). Used here for pointer-receiver auto-address-of (P2-3).
+ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+
 #if LLVM_AVAILABLE
 // Materialize a call argument as a C string pointer (char*): evaluate it,
 // load through any lvalue, then extract the data pointer (field 0) of a
@@ -320,16 +324,47 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
         LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
         if (fn) {
-            // Receiver: codegen_generate_expression already loads lvalues, so
-            // recv->llvm_value is the struct value (matches arg handling).
-            ValueInfo* recv = codegen_generate_expression(codegen, checker, msel->expr);
-            if (!recv) { free(mangled); return NULL; }
+            // Receiver kind comes from the method's registered type: a pointer
+            // receiver (`func (c *T) m()`) takes params[0] as a pointer. For an
+            // addressable value call `c.m()`, Go (and Goo as a Go superset)
+            // auto-takes the address `(&c).m()` — pass the lvalue's storage
+            // address, not a loaded struct value (which would mismatch the
+            // signature and fail LLVM verification). When the receiver
+            // expression is already a pointer, pass it through unchanged.
+            Variable* mvar = type_checker_lookup_variable(checker, mangled);
+            Type* recv_param = (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION
+                                && mvar->type->data.function.param_count > 0)
+                ? mvar->type->data.function.param_types[0] : NULL;
+            int ptr_recv = recv_param && recv_param->kind == TYPE_POINTER;
+            int recv_is_ptr_value = recv_type && recv_type->kind == TYPE_POINTER;
+
+            LLVMValueRef recv_arg = NULL;
+            if (ptr_recv && !recv_is_ptr_value) {
+                // Auto-address-of: the receiver must be an addressable lvalue.
+                ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, msel->expr);
+                if (!addr || !addr->is_lvalue) {
+                    codegen_error(codegen, expr->pos,
+                        "cannot call pointer-receiver method '%s' on non-addressable value",
+                        msel->selector);
+                    free(mangled);
+                    return NULL;
+                }
+                // Identifier lvalues alias the value table; do not free addr
+                // (mirrors the `&x` address-of path in expression_codegen.c).
+                recv_arg = addr->llvm_value;
+            } else {
+                // Value receiver, or receiver already a pointer:
+                // codegen_generate_expression loads lvalues to a value.
+                ValueInfo* recv = codegen_generate_expression(codegen, checker, msel->expr);
+                if (!recv) { free(mangled); return NULL; }
+                recv_arg = recv->llvm_value;
+                value_info_free(recv);
+            }
             size_t margc = 1;
             for (ASTNode* a = call->args; a; a = a->next) margc++;
             LLVMValueRef* margs = malloc(sizeof(LLVMValueRef) * margc);
-            if (!margs) { value_info_free(recv); free(mangled); return NULL; }
-            margs[0] = recv->llvm_value;
-            value_info_free(recv);
+            if (!margs) { free(mangled); return NULL; }
+            margs[0] = recv_arg;
             int ok = 1;
             size_t i = 1;
             for (ASTNode* a = call->args; a; a = a->next, i++) {
