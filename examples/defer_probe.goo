@@ -25,6 +25,17 @@
 // 5. Conditional defer is runtime-tracked. `conditional(false)` registers a
 //    defer inside a not-taken branch; it must NOT run. `conditional(true)`
 //    takes the branch, so the defer runs at exit.
+//
+// 6. User-defined deferred call with arguments. `userDefer` defers a call to a
+//    *user* function `note` (not the fmt.Println builtin) with string, int, and
+//    expression arguments. This exercises the general defer path: at the defer
+//    site the args are rewritten to synthetic snapshot identifiers, and at
+//    function exit codegen re-emits — and re-type-checks — the call. The synthetic
+//    arg names must resolve in the type-checker scope (otherwise the compiler
+//    prints a spurious "Undefined variable '__goo_deferN_argM'"). The
+//    builtin-only cases above all take fmt.Println's codegen path, which skips
+//    that re-check, so they cannot catch this. LIFO still holds: `note("sum", …)`
+//    (registered last) runs before `note("user-defer", …)`.
 package main
 
 import "fmt"
@@ -58,6 +69,19 @@ func conditional(cond bool) {
     fmt.Println("cond-body")
 }
 
+func note(label string, n int) {
+    fmt.Println("note", label, n)
+}
+
+func userDefer() {
+    a := 2
+    b := 3
+    k := 9
+    defer note("user-defer", k)
+    defer note("sum", a+b)
+    fmt.Println("user-body")
+}
+
 func main() {
     defer fmt.Println("c")
     defer fmt.Println("b")
@@ -67,4 +91,5 @@ func main() {
     argTiming()
     conditional(false)
     conditional(true)
+    userDefer()
 }

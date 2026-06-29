@@ -222,6 +222,34 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
     return scope_lookup_variable(checker->current_scope, name);
 }
 
+// Register a synthetic, codegen-introduced binding in the current type-checker
+// scope. The defer lowering (codegen) snapshots each deferred call's arguments
+// at the defer site and rewrites those argument AST nodes to synthetic
+// identifiers (`__goo_deferN_argM`). When the deferred call is re-emitted at
+// function exit, codegen re-runs the type checker over the rewritten call to
+// recover its return type; without a binding for these synthetic names the
+// checker would report a spurious "Undefined variable" for each one (the real
+// snapshot value lives only in codegen's value table). Declaring the name with
+// its actual snapshotted type lets re-checking resolve cleanly and pass the
+// callee's argument-compatibility check. Idempotent: refreshes the type if the
+// name already exists (the same synthetic name can recur across functions).
+void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type* type) {
+    if (!checker || !checker->current_scope || !name) return;
+
+    Variable* existing = scope_lookup_variable(checker->current_scope, name);
+    if (existing) {
+        if (type) existing->type = type;
+        existing->is_initialized = 1;
+        return;
+    }
+
+    Variable* var = variable_new(name, type, (Position){0, 0, 0, "defer-snapshot"});
+    if (!var) return;
+    var->is_builtin = 1;       // synthetic, not user-shadowable
+    var->is_initialized = 1;
+    scope_add_variable(checker->current_scope, var);
+}
+
 // Type checking entry points
 
 int type_check_program(TypeChecker* checker, ASTNode* program) {

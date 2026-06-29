@@ -9,6 +9,12 @@
 // unsafe, asm). Split from function_codegen.c (refactor, no behavior
 // change) — declarations (func/var/const) stay there.
 
+// Defined in src/types/type_checker.c. Registers a synthetic defer-snapshot
+// binding so the deferred call re-type-checked at function exit resolves its
+// rewritten `__goo_deferN_argM` arguments instead of erroring. Forward-declared
+// here (rather than in the shared types.h) to keep this change scoped.
+void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type* type);
+
 
 #if LLVM_AVAILABLE
 // Loop-context stack: break/continue target blocks for the innermost loop.
@@ -1219,6 +1225,16 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
         cinfo.arg_slots[idx] = slot;
         cinfo.arg_types[idx] = gt;
         cinfo.arg_names[idx] = strdup(nm);
+
+        // Register the synthetic name in the type-checker scope with its real
+        // snapshotted type. codegen_emit_deferred_calls re-type-checks the
+        // rewritten call at function exit (call_codegen invokes
+        // type_check_call_expr to recover the return type); without this binding
+        // a USER-DEFINED deferred call would emit a spurious "Undefined variable
+        // '__goo_deferN_argM'" for each arg. fmt.Println takes a different
+        // codegen path that skips the re-check, which is why the builtin-only
+        // probe never surfaced this.
+        type_checker_declare_synthetic(checker, nm, gt);
 
         // Splice a synthetic identifier in place of the original argument.
         IdentifierNode* id = ast_identifier_new(nm, a->pos);
