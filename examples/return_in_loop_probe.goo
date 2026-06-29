@@ -1,0 +1,17 @@
+// return_in_loop_probe: a loop body whose last statement is a bare `return`
+// (not wrapped in if) must compile to valid IR. Regression guard for the
+// unconditional post-body branch in codegen_generate_for_stmt.
+package main
+
+import "fmt"
+
+func first() int {
+    for i := 0; i < 10; i = i + 1 {
+        return i
+    }
+    return -1
+}
+
+func main() {
+    fmt.Println(first())
+}

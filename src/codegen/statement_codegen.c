@@ -500,7 +500,11 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
         }
         codegen_pop_loop(codegen);
-        LLVMBuildBr(codegen->builder, rpost);
+        // Only branch to the post block if the body didn't already terminate
+        // (e.g. a bare `return` as the loop body's last statement) — otherwise
+        // we'd emit a second terminator and produce invalid IR.
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+            LLVMBuildBr(codegen->builder, rpost);
 
         // post: i = i + 1, then back to the condition.
         codegen_set_insert_point(codegen, rpost);
@@ -566,8 +570,11 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         }
     }
     codegen_pop_loop(codegen);
-    LLVMBuildBr(codegen->builder, post_block);
-    
+    // Skip the post-block branch if the body already terminated (e.g. a bare
+    // `return` last statement) to avoid a second terminator / invalid IR.
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+        LLVMBuildBr(codegen->builder, post_block);
+
     // Generate post block
     codegen_set_insert_point(codegen, post_block);
     if (for_stmt->post) {

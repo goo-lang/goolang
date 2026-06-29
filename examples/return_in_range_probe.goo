@@ -1,0 +1,17 @@
+// return_in_range_probe: a `range` loop whose body's last statement is a bare
+// `return` must compile to valid IR (guards the range-path post-body branch).
+package main
+
+import "fmt"
+
+func firstOf(xs []int) int {
+    for _, v := range xs {
+        return v
+    }
+    return -1
+}
+
+func main() {
+    nums := [10, 20, 30]
+    fmt.Println(firstOf(nums))
+}
