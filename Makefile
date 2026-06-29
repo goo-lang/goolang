@@ -915,7 +915,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe link-cleanup-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -964,6 +964,13 @@ println-badtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "println-badtype-probe: FAIL (compiled an unsupported print — expected error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/println_bad.err; then echo "println-badtype-probe: FAIL (invalid IR reached verifier)"; cat build/println_bad.err; exit 1; fi; \
 	  if grep -qiE "unsupported|cannot print|Println" build/println_bad.err; then echo "println-badtype-probe: PASS"; else echo "println-badtype-probe: FAIL (no clean diagnostic)"; cat build/println_bad.err; exit 1; fi
+
+# P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
+# The honest e2e signal (unlike `make test`, which never invokes bin/goo).
+.PHONY: test-golden
+test-golden: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== test-golden: data-driven end-to-end golden suite ==="
+	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
 
 # Switch-statement probe: compile + run examples/switch_probe.goo and diff
 # stdout against expected.txt (m10-probe pattern). Covers first/middle case
