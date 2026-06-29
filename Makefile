@@ -906,6 +906,24 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# P2-3 (follow-up): a pointer-receiver method called on a NON-addressable
+# value (e.g. a composite literal `Counter{...}.inc()`) has no storage to take
+# the address of. The method-dispatch auto-address-of branch must reject this
+# cleanly in codegen — a source-located diagnostic, non-zero exit — and must
+# NOT degrade to a struct-value-into-pointer-param LLVM verifier crash.
+#
+# This is the negative counterpart to the ptr_recv_probe golden (which gates
+# the four *valid* receiver/value dispatch branches). Together they regression-
+# gate the whole method-dispatch path added in call_codegen.c.
+ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== ptr-recv-nonaddr-probe: pointer-recv on a non-addressable value fails cleanly ==="
+	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c *Counter) inc() { c.n = c.n + 1 }\nfunc main() { Counter{n: 5}.inc(); fmt.Println("unreached") }\n' > build/ptr_recv_nonaddr.goo
+	@"$(COMPILER)" build/ptr_recv_nonaddr.goo -o build/ptr_recv_nonaddr.out 2>build/ptr_recv_nonaddr.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "ptr-recv-nonaddr-probe: FAIL (compiled a non-addressable pointer-recv call — expected an error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ptr_recv_nonaddr.err; then echo "ptr-recv-nonaddr-probe: FAIL (invalid IR reached the verifier)"; cat build/ptr_recv_nonaddr.err; exit 1; fi; \
+	  if grep -qiE "non-addressable" build/ptr_recv_nonaddr.err; then echo "ptr-recv-nonaddr-probe: PASS"; else echo "ptr-recv-nonaddr-probe: FAIL (no clean source-located diagnostic)"; cat build/ptr_recv_nonaddr.err; exit 1; fi
+
 # Aggregate verification net per `verification_gates.md`. Runs the
 # green gates in sequence: baseline-probe, smoke-stdlib,
 # v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe,
@@ -915,7 +933,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1054,6 +1072,125 @@ try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/try_erru_ok.goo -o build/try_erru_ok.out 2>build/try_erru_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (legitimate try inside !T rejected)"; cat build/try_erru_ok.err; exit 1; fi
 	@echo "try-nonerru-probe: PASS"
+
+# P2-1: a `return <value>` is type-checked against a NON-error-union function
+# signature. Before Phase 2 the return stub only validated the `!T` case, so
+# `func f() int { return "str" }` was silently accepted and then crashed the
+# LLVM verifier ("Function return type does not match operand type of return
+# inst!"). Now it is a clean type error here, before codegen. The probe also
+# rejects returning a value from a void function, and guards against
+# over-rejection: scalar, string, nullable, and multi-return functions must all
+# still compile.
+return-mismatch-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== return-mismatch-probe: return value type-checked against non-!T signature ==="
+	@printf 'package main\nfunc f() int { return "str" }\nfunc main() {}\n' > build/rt_mm_str.goo
+	@printf 'package main\nfunc f() { return 5 }\nfunc main() {}\n' > build/rt_mm_void.goo
+	@printf 'package main\nfunc f() int { return 3.9 }\nfunc main() {}\n' > build/rt_mm_float.goo
+	@printf 'package main\nfunc big() int64 { return 9 }\nfunc f() int { return big() }\nfunc main() {}\n' > build/rt_mm_width.goo
+	@printf 'package main\nfunc f() byte { return 65 }\nfunc main() {}\n' > build/rt_mm_narrow.goo
+	@printf 'package main\nimport "fmt"\nfunc i() int { return 42 }\nfunc w() int64 { return 42 }\nfunc c() int64 { return 1 + 1 }\nfunc s() string { return "ok" }\nfunc n() ?int { return 5 }\nfunc divmod(a int, b int) (int, int) { return a / b, a % b }\nfunc main() { fmt.Println(i()); fmt.Println(w()); fmt.Println(c()) }\n' > build/rt_mm_ok.goo
+	@"$(COMPILER)" build/rt_mm_str.goo -o build/rt_mm_str.out 2>build/rt_mm_str.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return \"str\" from int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_str.err; then echo "return-mismatch-probe: FAIL (invalid IR reached verifier)"; cat build/rt_mm_str.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_str.err; then echo "return-mismatch-probe: FAIL (no clean return-type diagnostic)"; cat build/rt_mm_str.err; exit 1; fi
+	@"$(COMPILER)" build/rt_mm_void.goo -o build/rt_mm_void.out 2>build/rt_mm_void.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return value from void func compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_void.err; then echo "return-mismatch-probe: FAIL (void-return value reached verifier)"; cat build/rt_mm_void.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_void.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for value-from-void)"; cat build/rt_mm_void.err; exit 1; fi
+	@"$(COMPILER)" build/rt_mm_float.goo -o build/rt_mm_float.out 2>build/rt_mm_float.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return float from int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_float.err; then echo "return-mismatch-probe: FAIL (float->int reached verifier)"; cat build/rt_mm_float.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_float.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for float->int)"; cat build/rt_mm_float.err; exit 1; fi
+	@"$(COMPILER)" build/rt_mm_width.goo -o build/rt_mm_width.out 2>build/rt_mm_width.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return int64 from int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (int64->int reached verifier)"; cat build/rt_mm_width.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for int64->int)"; cat build/rt_mm_width.err; exit 1; fi
+	@"$(COMPILER)" build/rt_mm_narrow.goo -o build/rt_mm_narrow.out 2>build/rt_mm_narrow.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (narrowing int literal return byte<-65 compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_narrow.err; then echo "return-mismatch-probe: FAIL (narrowing int-literal return reached verifier)"; cat build/rt_mm_narrow.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_narrow.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for narrowing int-literal return)"; cat build/rt_mm_narrow.err; exit 1; fi
+	@"$(COMPILER)" build/rt_mm_ok.goo -o build/rt_mm_ok.out 2>build/rt_mm_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "return-mismatch-probe: FAIL (valid scalar/string/nullable/multi returns rejected)"; cat build/rt_mm_ok.err; exit 1; fi
+	@echo "return-mismatch-probe: PASS"
+
+# P2-2: a user-function call with the wrong number of arguments must be
+# rejected at type-check with a clean source-located diagnostic, NOT reach
+# the LLVM verifier ("Incorrect number of arguments passed to called
+# function!"). Covers too-few and too-many; the OK fixture (correct arity,
+# a method call, and variadic builtins) must still compile so we don't
+# over-reject.
+call-arity-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== call-arity-probe: user-function call arity type-checked ==="
+	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add(1) }\n' > build/ca_few.goo
+	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add(1, 2, 3) }\n' > build/ca_many.goo
+	@printf 'package main\ntype Counter struct { n int }\nfunc (c Counter) get() int { return c.n }\nfunc main() { var c Counter = Counter{n: 7}; c.get(99) }\n' > build/ca_method.goo
+	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c Counter) get() int { return c.n }\nfunc (c Counter) addn(x int) int { return c.n + x }\nfunc add(a int, b int) int { return a + b }\nfunc main() { var c Counter = Counter{n: 7}; fmt.Println(add(1, 2)); fmt.Println(c.get()); fmt.Println(c.addn(3)) }\n' > build/ca_ok.goo
+	@"$(COMPILER)" build/ca_few.goo -o build/ca_few.out 2>build/ca_few.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (add(1) with too few args compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_few.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for too-few)"; cat build/ca_few.err; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/ca_few.err; then echo "call-arity-probe: FAIL (no clean arity diagnostic for too-few)"; cat build/ca_few.err; exit 1; fi
+	@"$(COMPILER)" build/ca_many.goo -o build/ca_many.out 2>build/ca_many.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (add(1,2,3) with too many args compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_many.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for too-many)"; cat build/ca_many.err; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/ca_many.err; then echo "call-arity-probe: FAIL (no clean arity diagnostic for too-many)"; cat build/ca_many.err; exit 1; fi
+	@"$(COMPILER)" build/ca_method.goo -o build/ca_method.out 2>build/ca_method.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-arity-probe: FAIL (c.get(99) with too many args compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ca_method.err; then echo "call-arity-probe: FAIL (invalid IR reached verifier for method too-many)"; cat build/ca_method.err; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/ca_method.err; then echo "call-arity-probe: FAIL (no clean arity diagnostic for method too-many)"; cat build/ca_method.err; exit 1; fi
+	@"$(COMPILER)" build/ca_ok.goo -o build/ca_ok.out 2>build/ca_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "call-arity-probe: FAIL (valid call/method/builtin rejected)"; cat build/ca_ok.err; exit 1; fi
+	@echo "call-arity-probe: PASS"
+
+# P2-2: a user-function call whose argument type is incompatible with the
+# declared parameter must be rejected at type-check with a clean,
+# position-named diagnostic, NOT reach the LLVM verifier ("Call parameter
+# type does not match function signature!").
+call-argtype-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== call-argtype-probe: user-function call arg types type-checked ==="
+	@printf 'package main\nfunc add(a int, b int) int { return a + b }\nfunc main() { add("x", 2) }\n' > build/cat_str.goo
+	@printf 'package main\nfunc greet(s string) string { return s }\nfunc main() { greet(42) }\n' > build/cat_int.goo
+	@printf 'package main\ntype Counter struct { n int }\nfunc (c Counter) addn(x int) int { return c.n + x }\nfunc main() { var c Counter = Counter{n: 7}; c.addn("x") }\n' > build/cat_method.goo
+	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c Counter) addn(x int) int { return c.n + x }\nfunc add(a int, b int) int { return a + b }\nfunc greet(s string) string { return s }\nfunc main() { var c Counter = Counter{n: 7}; fmt.Println(add(1, 2)); fmt.Println(greet("hi")); fmt.Println(c.addn(3)) }\n' > build/cat_ok.goo
+	@"$(COMPILER)" build/cat_str.goo -o build/cat_str.out 2>build/cat_str.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (add(\"x\", 2) string-as-int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_str.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for string-as-int)"; cat build/cat_str.err; exit 1; fi; \
+	  if ! grep -qiE "cannot use string as int" build/cat_str.err; then echo "call-argtype-probe: FAIL (no clean arg-type diagnostic for string-as-int)"; cat build/cat_str.err; exit 1; fi
+	@"$(COMPILER)" build/cat_int.goo -o build/cat_int.out 2>build/cat_int.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (greet(42) int-as-string compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_int.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for int-as-string)"; cat build/cat_int.err; exit 1; fi; \
+	  if ! grep -qiE "cannot use .* as string" build/cat_int.err; then echo "call-argtype-probe: FAIL (no clean arg-type diagnostic for int-as-string)"; cat build/cat_int.err; exit 1; fi
+	@"$(COMPILER)" build/cat_method.goo -o build/cat_method.out 2>build/cat_method.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "call-argtype-probe: FAIL (c.addn(\"x\") string-as-int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cat_method.err; then echo "call-argtype-probe: FAIL (invalid IR reached verifier for method string-as-int)"; cat build/cat_method.err; exit 1; fi; \
+	  if ! grep -qiE "cannot use string as int" build/cat_method.err; then echo "call-argtype-probe: FAIL (no clean arg-type diagnostic for method string-as-int)"; cat build/cat_method.err; exit 1; fi
+	@"$(COMPILER)" build/cat_ok.goo -o build/cat_ok.out 2>build/cat_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "call-argtype-probe: FAIL (valid typed calls rejected)"; cat build/cat_ok.err; exit 1; fi
+	@echo "call-argtype-probe: PASS"
+
+# P2-4: printing an AGGREGATE nullable (?T) or error-union (!T) value must be a
+# clean, source-located compile error, NOT invalid IR that crashes the LLVM
+# verifier. P0-3 already rejects these at the fmt.Println unsupported-argument
+# check (only string/integer/bool/float print in v1); this probe is a permanent
+# regression gate so a future change can't silently start lowering an aggregate
+# ?T/!T into a print and emit invalid IR. Covers both kinds; asserts non-zero
+# exit, the clean diagnostic, and the ABSENCE of "Module verification failed".
+print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== print-aggregate-probe: printing ?T/!T aggregates fails cleanly ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { var x ?int = 5; fmt.Println(x) }\n' > build/print_agg_null.goo
+	@printf 'package main\nimport "fmt"\nfunc f() !int { return 5 }\nfunc main() { x := f(); fmt.Println(x) }\n' > build/print_agg_erru.goo
+	@"$(COMPILER)" build/print_agg_null.goo -o build/print_agg_null.out 2>build/print_agg_null.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "print-aggregate-probe: FAIL (printing ?int compiled — expected a clean error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/print_agg_null.err; then echo "print-aggregate-probe: FAIL (invalid IR reached verifier for ?int print)"; cat build/print_agg_null.err; exit 1; fi; \
+	  if ! grep -qiE "unsupported argument type" build/print_agg_null.err; then echo "print-aggregate-probe: FAIL (no clean diagnostic for ?int print)"; cat build/print_agg_null.err; exit 1; fi
+	@"$(COMPILER)" build/print_agg_erru.goo -o build/print_agg_erru.out 2>build/print_agg_erru.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "print-aggregate-probe: FAIL (printing !int compiled — expected a clean error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/print_agg_erru.err; then echo "print-aggregate-probe: FAIL (invalid IR reached verifier for !int print)"; cat build/print_agg_erru.err; exit 1; fi; \
+	  if ! grep -qiE "unsupported argument type" build/print_agg_erru.err; then echo "print-aggregate-probe: FAIL (no clean diagnostic for !int print)"; cat build/print_agg_erru.err; exit 1; fi
+	@echo "print-aggregate-probe: PASS"
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).

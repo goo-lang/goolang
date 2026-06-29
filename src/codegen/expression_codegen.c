@@ -281,7 +281,10 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
 // and `a[i] = v` write to the real storage. Returns a ValueInfo whose
 // llvm_value is a pointer to the storage (is_lvalue == 1), or NULL if the
 // expression is not an addressable lvalue.
-static ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+// Resolve the storage address of an addressable expression (identifier,
+// selector, index, deref) without loading it. Shared with call_codegen.c so a
+// pointer-receiver method call can auto-take the receiver's address (P2-3).
+ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
     if (!expr) return NULL;
 
     if (expr->type == AST_IDENTIFIER) {

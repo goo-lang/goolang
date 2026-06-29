@@ -592,21 +592,129 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         return NULL;
     }
     
+    // Decide whether to validate arity/arg types against the callee's
+    // declared parameter list. We do so for ordinary *user* functions called
+    // by their bare name, AND for user *method* calls (selectors that resolve
+    // to a method). Two wrinkles:
+    //   - Builtins (println/print/len/cap/append/error/make_chan/new) carry
+    //     param_types=NULL/param_count=0 and are variadic or special-cased,
+    //     so checking them against their stub signature would false-reject
+    //     (e.g. len("x")). They are flagged is_builtin — skip them.
+    //   - A method's func_type carries the spliced receiver as params[0]
+    //     while the call's arg list omits it. So for methods we offset every
+    //     comparison by recv_offset=1: arg i is matched against params[i+1]
+    //     and the expected user-visible arity is (param_count - 1).
+    //   - Variadic user functions have no fixed arity to check.
+    // Package functions (fmt.Println) are also selectors but resolve through
+    // TYPE_PACKAGE, not a struct receiver, so the method branch below skips
+    // them; their variadic flag would skip them regardless.
+    int check_signature = 0;
+    size_t recv_offset = 0;
+    const char* callee_name = NULL;
+    if (call->function && call->function->type == AST_IDENTIFIER
+        && !func_type->data.function.is_variadic) {
+        IdentifierNode* callee_ident = (IdentifierNode*)call->function;
+        Variable* callee = type_checker_lookup_variable(checker, callee_ident->name);
+        if (callee && !callee->is_builtin) {
+            check_signature = 1;
+            callee_name = callee_ident->name;
+        }
+    } else if (call->function && call->function->type == AST_SELECTOR_EXPR
+               && !func_type->data.function.is_variadic) {
+        // Confirm the selector names a METHOD (receiver spliced into
+        // params[0]), not a struct field that happens to hold a function
+        // value, by re-resolving the mangled method name exactly as the
+        // selector checker does and demanding it yields THIS func_type. This
+        // precision avoids over-rejecting a function-valued field call (which
+        // has no receiver to offset) and skips package functions cleanly.
+        SelectorExprNode* sel = (SelectorExprNode*)call->function;
+        Type* recv_t = sel->expr ? sel->expr->node_type : NULL;
+        if (recv_t) {
+            Type* st = recv_t;
+            if (st->kind == TYPE_POINTER &&
+                st->data.pointer.pointee_type &&
+                st->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+                st = st->data.pointer.pointee_type;
+            }
+            if (st->kind == TYPE_STRUCT) {
+                const char* tn = type_receiver_name(st);
+                if (tn) {
+                    char* mangled = type_method_mangled_name(tn, sel->selector);
+                    Variable* m = mangled
+                        ? type_checker_lookup_variable(checker, mangled) : NULL;
+                    free(mangled);
+                    if (m && m->type == func_type && !m->is_builtin) {
+                        check_signature = 1;
+                        recv_offset = 1;
+                        callee_name = sel->selector;
+                    }
+                }
+            }
+        }
+    }
+
     // Check arguments
     ASTNode* arg = call->args;
-    size_t arg_count __attribute__((unused)) = 0;
+    size_t arg_count = 0;
+    size_t param_count = func_type->data.function.param_count;
+    Type** param_types = func_type->data.function.param_types;
     while (arg) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
-        
-        // TODO: Check argument type compatibility with function parameters
-        
+
+        // Argument type compatibility: position-named so the diagnostic
+        // points at the offending argument rather than the LLVM verifier.
+        // For methods, recv_offset=1 skips the spliced receiver in params[0].
+        if (check_signature && (arg_count + recv_offset) < param_count && param_types) {
+            Type* param_type = param_types[arg_count + recv_offset];
+
+            // type_compatible() permits ANY numeric->numeric pair (it allows
+            // implicit conversions), but call_codegen passes each argument to
+            // the callee with NO trunc/ext/fptosi inserted (unlike the return
+            // path, codegen never coerces a numeric arg). So a numeric arg
+            // whose machine representation differs from the declared parameter
+            // — a wider/narrower integer (int64 into an int param) or a float
+            // into an integer (e.g. `add(1.5, 2)`) — slips past type_compatible
+            // and crashes the LLVM verifier with "Call parameter type does not
+            // match function signature!". Reject those here, mirroring P2-1's
+            // return guard. No int-constant-widen exemption applies: codegen
+            // does not widen arguments, so even an untyped literal into a wider
+            // param would reach the verifier as invalid IR.
+            if (param_type && type_is_numeric(arg_type) && type_is_numeric(param_type)) {
+                int same_kind  = (type_is_float(arg_type) == type_is_float(param_type));
+                int same_width = (type_size(arg_type) == type_size(param_type));
+                if (!same_kind || !same_width) {
+                    type_error(checker, arg->pos,
+                               "argument %zu: cannot use %s as %s",
+                               arg_count + 1,
+                               type_to_string(arg_type), type_to_string(param_type));
+                    return NULL;
+                }
+            }
+
+            if (param_type && !type_compatible(arg_type, param_type)) {
+                type_error(checker, arg->pos,
+                           "argument %zu: cannot use %s as %s",
+                           arg_count + 1,
+                           type_to_string(arg_type), type_to_string(param_type));
+                return NULL;
+            }
+        }
+
         arg_count++;
         arg = arg->next;
     }
-    
-    // TODO: Check argument count against function parameters
-    
+
+    // Argument count against the declared parameter list (minus the spliced
+    // receiver for methods: param_count >= 1 whenever recv_offset == 1, so the
+    // subtraction never underflows).
+    if (check_signature && arg_count != param_count - recv_offset) {
+        type_error(checker, expr->pos,
+                   "call to %s: wrong number of arguments (have %zu, want %zu)",
+                   callee_name, arg_count, param_count - recv_offset);
+        return NULL;
+    }
+
     expr->node_type = func_type->data.function.return_type;
     return func_type->data.function.return_type;
 }

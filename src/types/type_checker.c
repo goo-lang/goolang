@@ -961,6 +961,34 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
     return result;
 }
 
+// Returns non-zero if `node` is an untyped integer constant expression: a bare
+// integer literal, a unary minus applied to one (`-1`), or a binary/shift
+// expression whose operands are themselves untyped integer constant
+// expressions (`1 + 1`, `1 << 3`). Codegen materializes all of these as an i32
+// constant and then SExt-WIDENS it to the declared integer return type (see the
+// return-widening path in statement_codegen.c). Because codegen only widens —
+// it never truncates — the caller must additionally gate on the declared return
+// type being no narrower than the operand (see `int_const_widen`); a narrowing
+// target (e.g. `return 65` into a byte) would otherwise reach the verifier as
+// invalid IR.
+static int is_untyped_int_const_expr(ASTNode* node) {
+    if (!node) return 0;
+    if (node->type == AST_LITERAL)
+        return ((LiteralNode*)node)->literal_type == TOKEN_INT;
+    if (node->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)node;
+        return u->operator == TOKEN_MINUS && u->operand &&
+               is_untyped_int_const_expr(u->operand);
+    }
+    if (node->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)node;
+        return b->left && b->right &&
+               is_untyped_int_const_expr(b->left) &&
+               is_untyped_int_const_expr(b->right);
+    }
+    return 0;
+}
+
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_RETURN_STMT) return 0;
     
@@ -1030,6 +1058,79 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                            type_to_string(return_type),
                            type_to_string(expected),
                            type_to_string(value_type));
+                return 0;
+            }
+        } else if (expected) {
+            // Non-error-union enclosing return type. Reject a returned value
+            // whose type is incompatible with the declared return type here,
+            // before it reaches codegen and crashes the LLVM verifier with a
+            // "return type does not match operand type" mismatch.
+
+            // A multi-value `return a, b` targets an anonymous multi-return
+            // struct (parser lowers `(int, int)` to a TYPE_STRUCT). Only the
+            // FIRST value is resolved by type_check_expression above, so a
+            // single-type comparison against the struct would be a false
+            // positive. Per-element multi-return checking is out of scope —
+            // accept and let codegen build the aggregate.
+            if (ret_stmt->values->next) {
+                return 1;
+            }
+
+            // A value returned from a function with no declared return type
+            // (void) is always a mismatch (Go: "too many return values").
+            if (expected->kind == TYPE_VOID) {
+                type_error(checker, stmt->pos,
+                           "return type mismatch: cannot return a value from a "
+                           "function with no return type");
+                return 0;
+            }
+
+            // An unresolved operand type (TYPE_UNKNOWN — e.g. a bare nil or an
+            // expression the checker couldn't pin down) is not something we can
+            // soundly reject; defer rather than risk a false positive.
+            if (return_type->kind == TYPE_UNKNOWN) {
+                return 1;
+            }
+
+            // type_compatible() permits ANY numeric->numeric pair (it allows
+            // implicit conversions), but a return value reaches codegen with NO
+            // trunc/ext/fptosi inserted. So a numeric return whose machine
+            // representation differs from the declared return type — a wider/
+            // narrower integer (e.g. an int64 call result from an int function)
+            // or a float into an integer (e.g. `return 3.9` from int) — would
+            // slip past type_compatible and crash the LLVM verifier with a
+            // return-operand mismatch. Reject those here. The sole exception
+            // codegen DOES coerce is an untyped integer constant expression
+            // (literal `42`, or constant arithmetic like `1 + 1` / `1 << 3`)
+            // returned into a WIDER-OR-EQUAL integer type (e.g. `return 42` or
+            // `return 1 + 1` from an int64 function): codegen SExt-widens the
+            // i32 constant to match. It does NOT truncate, so a NARROWING target
+            // (e.g. `return 65` into a byte) gets no trunc and must still be
+            // rejected here — gate the exemption on expected being no narrower
+            // than the operand, mirroring codegen's widen-only behavior.
+            if (type_is_numeric(return_type) && type_is_numeric(expected)) {
+                int same_kind  = (type_is_float(return_type) == type_is_float(expected));
+                int same_width = (type_size(return_type) == type_size(expected));
+                int int_const_widen =
+                    type_is_integer(expected) &&
+                    type_size(expected) >= type_size(return_type) &&
+                    is_untyped_int_const_expr(ret_stmt->values);
+                if ((!same_kind || !same_width) && !int_const_widen) {
+                    type_error(checker, stmt->pos,
+                               "return type mismatch: cannot return %s from a "
+                               "function returning %s",
+                               type_to_string(return_type),
+                               type_to_string(expected));
+                    return 0;
+                }
+            }
+
+            if (!type_compatible(return_type, expected)) {
+                type_error(checker, stmt->pos,
+                           "return type mismatch: cannot return %s from a "
+                           "function returning %s",
+                           type_to_string(return_type),
+                           type_to_string(expected));
                 return 0;
             }
         }
