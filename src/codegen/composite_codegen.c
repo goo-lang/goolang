@@ -726,9 +726,17 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
     // prototype's current allocate-and-leak memory model. Falls back to a
     // read-only global only when the runtime allocator is unavailable, which
     // requires all-constant elements.
+    //
+    // The EMPTY literal `[]T{}` (count == 0) must also take this runtime path,
+    // not the const-global fallback: a zero-cap slice backed by a read-only
+    // global aborts on the first `append`, because goo_slice_append grows
+    // (len 0 >= cap 0) and reallocs a non-heap pointer. goo_alloc(0) returns
+    // NULL, the store loop runs zero times, and the slice is {NULL, 0, 0} —
+    // a heap-owned (nil-backed) empty slice that append can realloc(NULL→…)
+    // safely. The common idiom `xs := []int{}; xs = append(xs, v)` then works.
     LLVMValueRef data_ptr;
     LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-    if (alloc_fn && count > 0) {
+    if (alloc_fn) {
         LLVMValueRef size = LLVMSizeOf(arr_type);
         data_ptr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
                                   alloc_fn, &size, 1, "slice_backing");
