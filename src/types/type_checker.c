@@ -974,12 +974,26 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!ret_stmt->values) {
         Type* expected = checker->current_return_type;
         if (expected && type_is_error_union(expected)) {
+            Type* vt = expected->data.error_union.value_type;
+            // `!void` (error-only, the Go `func() error` shape) is not yet
+            // supported end-to-end — the success-variant codegen can't build a
+            // void-valued union (invalid IR). Reject it cleanly until the
+            // void-union codegen lands, rather than crash the verifier or
+            // (worse) emit a zeroed union a caller's catch never fires on.
+            if (vt && vt->kind == TYPE_VOID) {
+                type_error(checker, stmt->pos,
+                           "!void (error-only) functions are not yet supported "
+                           "in v1; use !T with a value type for now");
+                return 0;
+            }
+            // `!T` with a real value type: a bare return supplies neither an
+            // error(...) construction nor a value of T.
             type_error(checker, stmt->pos,
                        "return type mismatch: bare return from a function "
                        "returning %s (expected a value of %s or an error(...) "
                        "construction)",
                        type_to_string(expected),
-                       type_to_string(expected->data.error_union.value_type));
+                       type_to_string(vt));
             return 0;
         }
         return 1;
