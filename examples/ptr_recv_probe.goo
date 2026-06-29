@@ -1,14 +1,22 @@
-// Pointer-receiver auto-address-of probe (P2-3).
+// Method-receiver dispatch probe (P2-3 + follow-up).
 //
-// A pointer-receiver method `func (c *Counter) inc()` mutates a field of
-// the receiver. Called on an addressable local `c`, Go (and Goo, as a Go
-// superset) automatically takes the address: `c.inc()` == `(&c).inc()`.
-// The mutation must be observed by the caller.
+// Exercises all four receiver/value combinations of method dispatch so a
+// regression in any branch of call_codegen.c's method path is caught by the
+// golden gate:
 //
-// Before the fix the receiver was passed by value (a loaded struct), so
-// either the IR fails LLVM verification (struct value into a pointer param)
-// or the mutation is lost. `make ptr-recv-probe` builds + runs this and
-// diffs against expected.txt.
+//   1. pointer-receiver method on an addressable VALUE  -> auto-address-of
+//      `c.inc()` == `(&c).inc()` (Go superset). The mutation must be observed.
+//   2. value-receiver method on a VALUE                 -> pass-through
+//      (the loaded struct already matches the value param).
+//   3. value-receiver method on a POINTER value         -> auto-deref
+//      `p.get()` == `(*p).get()`: load the pointee and pass it by value.
+//   4. pointer-receiver method on a POINTER value       -> pass-through
+//      `p.inc()`: the pointer already matches the pointer param.
+//
+// Before the auto-deref / auto-address-of branches existed, cases 1, 3 and 4
+// either failed LLVM verification (struct value into a pointer param, or a
+// raw pointer into a value param) or silently lost the mutation.
+// `make test-golden` builds + runs this and diffs against expected.txt.
 package main
 
 import "fmt"
@@ -26,10 +34,22 @@ func (c *Counter) add(k int) {
     c.n = c.n + k
 }
 
+// Value receiver: reads the receiver by value.
+func (c Counter) get() int {
+    return c.n
+}
+
 func main() {
     c := Counter{n: 0}
-    c.inc()       // n -> 1
-    c.inc()       // n -> 2
-    c.add(10)     // n -> 12
-    fmt.Println(c.n) // 12
+    c.inc()              // (1) ptr-recv on value: auto-&, n -> 1
+    c.inc()              // (1) n -> 2
+    c.add(10)            // (1) n -> 12
+    fmt.Println(c.n)     // 12 (direct field read)
+    fmt.Println(c.get()) // (2) value-recv on value: 12
+
+    p := &c
+    fmt.Println(p.get()) // (3) value-recv on pointer: auto-deref -> 12
+    p.inc()              // (4) ptr-recv on pointer: pass-through, n -> 13
+    fmt.Println(p.get()) // (3) value-recv on pointer: 13
+    fmt.Println(c.n)     // 13 (mutation through p visible on c)
 }

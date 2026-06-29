@@ -906,6 +906,24 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# P2-3 (follow-up): a pointer-receiver method called on a NON-addressable
+# value (e.g. a composite literal `Counter{...}.inc()`) has no storage to take
+# the address of. The method-dispatch auto-address-of branch must reject this
+# cleanly in codegen — a source-located diagnostic, non-zero exit — and must
+# NOT degrade to a struct-value-into-pointer-param LLVM verifier crash.
+#
+# This is the negative counterpart to the ptr_recv_probe golden (which gates
+# the four *valid* receiver/value dispatch branches). Together they regression-
+# gate the whole method-dispatch path added in call_codegen.c.
+ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== ptr-recv-nonaddr-probe: pointer-recv on a non-addressable value fails cleanly ==="
+	@printf 'package main\nimport "fmt"\ntype Counter struct { n int }\nfunc (c *Counter) inc() { c.n = c.n + 1 }\nfunc main() { Counter{n: 5}.inc(); fmt.Println("unreached") }\n' > build/ptr_recv_nonaddr.goo
+	@"$(COMPILER)" build/ptr_recv_nonaddr.goo -o build/ptr_recv_nonaddr.out 2>build/ptr_recv_nonaddr.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "ptr-recv-nonaddr-probe: FAIL (compiled a non-addressable pointer-recv call — expected an error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/ptr_recv_nonaddr.err; then echo "ptr-recv-nonaddr-probe: FAIL (invalid IR reached the verifier)"; cat build/ptr_recv_nonaddr.err; exit 1; fi; \
+	  if grep -qiE "non-addressable" build/ptr_recv_nonaddr.err; then echo "ptr-recv-nonaddr-probe: PASS"; else echo "ptr-recv-nonaddr-probe: FAIL (no clean source-located diagnostic)"; cat build/ptr_recv_nonaddr.err; exit 1; fi
+
 # Aggregate verification net per `verification_gates.md`. Runs the
 # green gates in sequence: baseline-probe, smoke-stdlib,
 # v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe,
@@ -915,7 +933,7 @@ methods-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe call-arity-probe call-argtype-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe call-arity-probe call-argtype-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
