@@ -1,0 +1,18 @@
+// erru_fail_probe: an !int function returns error("boom"); the caller's catch
+// fires and binds the message. Exercises the error-construction + is_error=1 +
+// catch-error-path that were dead before Phase 1.
+package main
+
+import "fmt"
+
+func mightFail() !int {
+    return error("boom")
+}
+
+func main() {
+    x := mightFail() catch e {
+        fmt.Println("caught:", e)
+        return
+    }
+    fmt.Println("ok:", x)
+}
