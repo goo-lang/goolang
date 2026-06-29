@@ -1,0 +1,8 @@
+divide ok: 5
+caught: divide by zero
+recovered: 0
+safeDivide ok: 6
+propagated: divide by zero
+after propagate: 0
+nullable present: 7
+nullable absent: nil
