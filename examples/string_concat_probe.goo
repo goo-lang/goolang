@@ -1,0 +1,14 @@
+// string_concat_probe: binary `+` on string operands lowers to the
+// goo_string_concat runtime fn (P3-3). Exercises variable + variable,
+// literal + variable, and a chained concatenation.
+package main
+
+import "fmt"
+
+func main() {
+	a := "foo"
+	b := "bar"
+	fmt.Println(a + b)
+	fmt.Println("hello, " + a)
+	fmt.Println(a + b + "baz")
+}

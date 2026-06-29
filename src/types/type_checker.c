@@ -222,6 +222,34 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
     return scope_lookup_variable(checker->current_scope, name);
 }
 
+// Register a synthetic, codegen-introduced binding in the current type-checker
+// scope. The defer lowering (codegen) snapshots each deferred call's arguments
+// at the defer site and rewrites those argument AST nodes to synthetic
+// identifiers (`__goo_deferN_argM`). When the deferred call is re-emitted at
+// function exit, codegen re-runs the type checker over the rewritten call to
+// recover its return type; without a binding for these synthetic names the
+// checker would report a spurious "Undefined variable" for each one (the real
+// snapshot value lives only in codegen's value table). Declaring the name with
+// its actual snapshotted type lets re-checking resolve cleanly and pass the
+// callee's argument-compatibility check. Idempotent: refreshes the type if the
+// name already exists (the same synthetic name can recur across functions).
+void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type* type) {
+    if (!checker || !checker->current_scope || !name) return;
+
+    Variable* existing = scope_lookup_variable(checker->current_scope, name);
+    if (existing) {
+        if (type) existing->type = type;
+        existing->is_initialized = 1;
+        return;
+    }
+
+    Variable* var = variable_new(name, type, (Position){0, 0, 0, "defer-snapshot"});
+    if (!var) return;
+    var->is_builtin = 1;       // synthetic, not user-shadowable
+    var->is_initialized = 1;
+    scope_add_variable(checker->current_scope, var);
+}
+
 // Type checking entry points
 
 int type_check_program(TypeChecker* checker, ASTNode* program) {
@@ -295,6 +323,17 @@ int type_check_declaration(TypeChecker* checker, ASTNode* decl) {
             type_error(checker, decl->pos, "Unknown declaration type");
             return 0;
     }
+}
+
+// A result field is a *named* result (P3-5) iff its name is not one of the
+// synthetic `_0`, `_1`, ... placeholders the parser assigns to anonymous
+// tuple-return fields. Synthetic = `_` followed by one or more digits and
+// nothing else.
+int is_synthetic_result_name(const char* n) {
+    if (!n || n[0] != '_' || n[1] == '\0') return 0;
+    for (const char* p = n + 1; *p; p++)
+        if (*p < '0' || *p > '9') return 0;
+    return 1;
 }
 
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
@@ -391,7 +430,29 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
             param = param->next;
         }
     }
-    
+
+    // Named return parameters (P3-5): register each named result as a
+    // zero-initialized in-scope local so the body can assign to it
+    // (`x = ...`) and a bare `return` is valid. The parser encodes named
+    // results as an inline StructTypeNode whose fields carry the user
+    // names; anonymous tuple results use synthetic `_N` names (skipped).
+    if (func->return_type && func->return_type->type == AST_STRUCT_TYPE) {
+        StructTypeNode* st = (StructTypeNode*)func->return_type;
+        for (ASTNode* f = st->fields; f; f = f->next) {
+            if (f->type != AST_VAR_DECL) continue;
+            VarDeclNode* fd = (VarDeclNode*)f;
+            if (fd->name_count == 0 || !fd->names) continue;
+            if (is_synthetic_result_name(fd->names[0])) continue;
+            Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
+            if (!ft) continue;
+            Variable* rv = variable_new(fd->names[0], ft, fd->base.pos);
+            if (rv) {
+                rv->is_initialized = 1;  // zero-initialized per Go semantics
+                scope_add_variable(checker->current_scope, rv);
+            }
+        }
+    }
+
     // Type check function body
     int result = 1;
     if (func->body) {
@@ -778,6 +839,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return 1;  // Always valid
         case AST_GO_STMT:
             return type_check_go_stmt(checker, stmt);
+        case AST_DEFER_STMT:
+            return type_check_defer_stmt(checker, stmt);
         case AST_SELECT_STMT:
             return type_check_select_stmt(checker, stmt);
         case AST_SWITCH_STMT: {
@@ -1024,6 +1087,30 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                        type_to_string(vt));
             return 0;
         }
+        // Bare return from an UNNAMED multi-result function `func f() (int, int)`
+        // is invalid in Go — a bare return is only allowed when results are
+        // named. The parser tags such a result list as a TYPE_STRUCT whose
+        // fields all carry synthetic `_N` names (a SINGLE named/unnamed result
+        // is collapsed to a scalar in type_from_ast and never reaches here, and
+        // a NAMED tuple keeps the user's field names). Reject it here rather
+        // than letting codegen synthesize a zeroed aggregate (`return` would
+        // silently yield 0,0 — a miscompile).
+        if (expected && expected->kind == TYPE_STRUCT &&
+            expected->data.struct_type.field_count > 0) {
+            int all_synthetic = 1;
+            for (size_t i = 0; i < expected->data.struct_type.field_count; i++) {
+                if (!is_synthetic_result_name(expected->data.struct_type.fields[i].name)) {
+                    all_synthetic = 0;
+                    break;
+                }
+            }
+            if (all_synthetic) {
+                type_error(checker, stmt->pos,
+                           "not enough return values: bare return is only allowed "
+                           "when the function has named results");
+                return 0;
+            }
+        }
         return 1;
     }
 
@@ -1152,6 +1239,28 @@ int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
         // TODO: Validate that the expression is a function call
     }
     
+    return 1;
+}
+
+int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_DEFER_STMT) return 0;
+
+    DeferStmtNode* defer_stmt = (DeferStmtNode*)stmt;
+
+    // The grammar only produces `defer call_expr`, so `call` is a call
+    // expression. Type-check it so argument types/arity are validated at the
+    // defer site. Codegen snapshots the arguments here (defer-time evaluation,
+    // Go semantics) and emits the call, guarded by a runtime active flag, at
+    // each function-exit path.
+    if (defer_stmt->call) {
+        if (defer_stmt->call->type != AST_CALL_EXPR) {
+            type_error(checker, stmt->pos, "defer requires a function call");
+            return 0;
+        }
+        Type* call_type = type_check_expression(checker, defer_stmt->call);
+        if (!call_type) return 0;
+    }
+
     return 1;
 }
 
@@ -1284,6 +1393,21 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             size_t count = 0;
             for (ASTNode* f = st->fields; f; f = f->next) {
                 if (f->type == AST_VAR_DECL) count++;
+            }
+            // Named-result ABI (P3-5): a parser-synthesized result tuple with a
+            // SINGLE field is `func f() (r int)` — the common Go named-result
+            // form (`(err error)`, `(n int)`). Collapse it to the field's scalar
+            // type so callers see a plain scalar (not a 1-field aggregate) and an
+            // explicit `return n+1` type-checks against the scalar. The name is
+            // still bound as an in-scope local by the AST_STRUCT_TYPE walks in
+            // type_check_function_decl / function_codegen (they key off the AST
+            // node, which stays a struct). A >=2-field tuple keeps its struct ABI.
+            if (st->is_result_tuple && count == 1) {
+                for (ASTNode* f = st->fields; f; f = f->next) {
+                    if (f->type != AST_VAR_DECL) continue;
+                    VarDeclNode* fd = (VarDeclNode*)f;
+                    return fd->type ? type_from_ast(checker, fd->type) : NULL;
+                }
             }
             Type* result = type_new(TYPE_STRUCT);
             if (!result) return NULL;

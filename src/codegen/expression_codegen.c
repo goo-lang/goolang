@@ -709,7 +709,22 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     switch (binary->operator) {
         // Arithmetic operators
         case TOKEN_PLUS:
-            if (type_is_integer(left_val->goo_type)) {
+            if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // String concatenation (P3-3): both operands are goo_string_t
+                // values (16-byte {data, len} structs passed by value); call
+                // the runtime fn and return its goo_string_t result.
+                LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+                if (!concat_fn) {
+                    codegen_error(codegen, expr->pos, "goo_string_concat not found in module");
+                    value_info_free(left_val);
+                    value_info_free(right_val);
+                    return NULL;
+                }
+                LLVMValueRef cargs[] = { left_llvm, right_llvm };
+                result = LLVMBuildCall2(codegen->builder,
+                                        LLVMGlobalGetValueType(concat_fn), concat_fn,
+                                        cargs, 2, "strconcat");
+            } else if (type_is_integer(left_val->goo_type)) {
                 result = LLVMBuildAdd(codegen->builder, left_llvm, right_llvm, "add");
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFAdd(codegen->builder, left_llvm, right_llvm, "fadd");

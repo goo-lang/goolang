@@ -63,12 +63,50 @@ static void m10_pop_frame(void) {
     if (m10_frame_top >= 0) m10_frame_top--;
 }
 
+// `[]` slice-type disambiguation (P3-1).
+//
+// An empty `[]` is ambiguous between a bare empty-slice literal (`xs := []`)
+// and the prefix of a slice TYPE (`[]int`, including the typed composite
+// literal `[]Foo{...}`). LALR cannot defer this decision — after `[] .` it
+// must either reduce the empty literal or shift a type, and the type-starting
+// lookahead tokens overlap FOLLOW(empty-slice), producing shift/reduce
+// conflicts. We resolve it in the lexer with one-token lookahead, mirroring
+// the existing LBRACE_BODY trick: when an empty `[]` is immediately followed
+// by a type-starting token, the closing `]` is emitted as RBRACKET_SLICE so
+// the grammar routes it through `slice_type: LBRACKET RBRACKET_SLICE type`,
+// out of the empty-literal state. Otherwise plain RBRACKET is emitted and the
+// empty-slice literal (and HKT `F[]`) parse exactly as before — zero added
+// conflicts.
+static int     s_have_pending = 0;   // a peeked token is buffered
+static int     s_pending_tok = 0;    // its bison token id
+static YYSTYPE s_pending_val;        // its semantic value
+static int     s_last_emitted = 0;   // last token yylex returned (for `[]`)
+static int     s_last_token_line = 0;// source line of the token bridge_next_mapped last returned
+
+// FIRST(type): if one of these follows an empty `[]`, the `[]` is a
+// slice-type prefix, not a bare empty-slice literal. Kept in sync with the
+// `type` nonterminal's alternatives in parser.y.
+static int bridge_token_starts_type(int bt) {
+    switch (bt) {
+        case IDENTIFIER: case LBRACKET: case MAP: case CHAN:
+        case FUNC: case STRUCT: case ENUM:
+        case PUB: case SUB: case REQ: case REP: case PUSH: case PULL:
+        case MULTIPLY: case BIT_AND: case UNSAFE: case BANG: case QUESTION:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 // Reset the M10 state. Called from parse_input on entry so a parse error
 // in a prior invocation doesn't leak frames into the next. Also exposed
 // for LSP use (see parser_init/parser_cleanup callers in src/ide/).
 void bridge_reset_cond_state(void) {
     m10_frame_top = -1;
     m10_paren_depth = 0;
+    s_have_pending = 0;
+    s_last_emitted = 0;
+    s_last_token_line = 0;
 }
 
 // Map our tokens to Bison tokens
@@ -236,19 +274,29 @@ static int map_token_to_bison(TokenType type) {
     }
 }
 
-// Bison's lexer interface
-int yylex(void) {
+// Fetch + map the next token, setting yylval. Skips unknown tokens. Returns
+// the bison token id (0 = EOF). This is the raw stream; the `[]` lookahead
+// in yylex() is layered on top.
+static int bridge_next_mapped(void) {
     if (!current_lexer) {
         return 0; // EOF
     }
-    
+
     Token* token = lexer_next_token(current_lexer);
     if (!token) {
         return 0; // EOF
     }
-    
+
+    // Record the source line of this token so the `[]` lookahead in yylex can
+    // tell whether a statement-boundary newline separated the `]` from the
+    // peeked token (the lexer elides newlines Go-style, so the token stream
+    // alone can't reveal the boundary). On the skip-recursion path below this
+    // is overwritten by the recursive call, so it always reflects the token
+    // actually returned.
+    s_last_token_line = token->pos.line;
+
     int bison_token = map_token_to_bison(token->type);
-    
+
     // Set the semantic value based on token type
     switch (token->type) {
         case TOKEN_IDENT:
@@ -267,15 +315,63 @@ int yylex(void) {
             yylval.token = (int)token->type;
             break;
     }
-    
+
     token_free(token);
 
     if (bison_token == -1) {
         // Skip unknown tokens
-        return yylex();
+        return bridge_next_mapped();
     }
 
     return bison_token;
+}
+
+// Bison's lexer interface. Adds one-token lookahead over bridge_next_mapped to
+// emit RBRACKET_SLICE for an empty `[]` that prefixes a slice type (see the
+// disambiguation note above).
+int yylex(void) {
+    if (s_have_pending) {
+        s_have_pending = 0;
+        yylval = s_pending_val;
+        s_last_emitted = s_pending_tok;
+        return s_pending_tok;
+    }
+
+    int tok = bridge_next_mapped();
+
+    // Empty `[]`: the just-fetched RBRACKET closes an immediately-preceding
+    // LBRACKET. Peek the next token; if it starts a type, this `[]` is a
+    // slice-type prefix → emit RBRACKET_SLICE instead. The peeked token is
+    // buffered (with its yylval) and returned on the next call. RBRACKET /
+    // RBRACKET_SLICE carry no semantic value, so overwriting yylval here is
+    // harmless.
+    if (tok == RBRACKET && s_last_emitted == LBRACKET) {
+        int rbracket_line = s_last_token_line;
+        int nxt = bridge_next_mapped();
+        int nxt_line = s_last_token_line;
+        s_pending_tok = nxt;
+        s_pending_val = yylval;
+        s_have_pending = 1;
+        // Only treat the empty `[]` as a slice-TYPE prefix when the following
+        // type-starting token sits on the SAME source line. A newline between
+        // `]` and the next token is a statement boundary — the lexer elides
+        // newlines Go-style, so no separator token survives — and in that case
+        // the `[]` is a bare empty-slice literal whose statement has ended; the
+        // next line is a NEW statement, not the slice element type. Without the
+        // same-line check, `xs := []` <nl> `fmt.Println(...)` mis-lexed the
+        // following identifier as the element type and failed to parse. `[]int`
+        // / `[]Foo{...}` always keep their element type on the same line, so
+        // they still route through RBRACKET_SLICE unchanged.
+        if (nxt_line == rbracket_line && bridge_token_starts_type(nxt)) {
+            s_last_emitted = RBRACKET_SLICE;
+            return RBRACKET_SLICE;
+        }
+        s_last_emitted = RBRACKET;
+        return RBRACKET;
+    }
+
+    s_last_emitted = tok;
+    return tok;
 }
 
 // Initialize parser with input

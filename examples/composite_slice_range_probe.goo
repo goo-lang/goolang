@@ -1,0 +1,43 @@
+package main
+
+import "fmt"
+
+func main() {
+	// P3-2: a Go-standard typed slice composite literal must lower to a
+	// real runtime slice — indexable, rangeable, and measurable with len.
+	// This extends the P3-1 parse/type-check coverage to the lowering:
+	// range accumulates every element and len reports the true count.
+	xs := []int{10, 20, 30}
+	sum := 0
+	for _, v := range xs {
+		sum = sum + v
+	}
+	fmt.Println(sum)
+	fmt.Println(len(xs))
+
+	// Step 3 deliverable: append over a `[]T{}` literal must work too.
+	// append onto a NON-empty literal grows the exactly-sized backing.
+	xs = append(xs, 40)
+	fmt.Println(len(xs)) // 4
+	fmt.Println(xs[3])   // 40
+
+	// Regression guard for the empty-literal abort: a `[]int{}` literal
+	// must lower to a heap-owned (nil-backed) empty slice, NOT a read-only
+	// const global — otherwise the first append reallocs a non-heap pointer
+	// and glibc aborts with "realloc(): invalid pointer" (SIGABRT). Start
+	// empty, append in a loop (the most common Go idiom).
+	ys := []int{}
+	fmt.Println(len(ys)) // 0
+	total := 0
+	for i := 0; i < 3; i = i + 1 {
+		ys = append(ys, i*10)
+		total = total + ys[i]
+	}
+	fmt.Println(len(ys)) // 3
+	fmt.Println(total)   // 0 + 10 + 20 = 30
+
+	// `[]string{...}` element slices still lower (index + len).
+	ss := []string{"foo", "bar"}
+	fmt.Println(len(ss)) // 2
+	fmt.Println(ss[0])   // foo
+}

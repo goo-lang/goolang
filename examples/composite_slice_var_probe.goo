@@ -1,0 +1,34 @@
+package main
+
+import "fmt"
+
+func main() {
+	// P3-2 regression guard: a slice literal with VARIABLE (runtime,
+	// non-constant) elements must lower like any other slice. Before the
+	// fix the const-array path embedded a runtime load illegally and the
+	// LLVM verifier aborted with "Use of instruction is not an instruction!".
+	// Both surface forms share the one lowering path, so both are covered:
+	// the Go-standard typed `[]int{a, b, 30}` and the Goo-native `[a, b, 30]`.
+	a := 10
+	b := 20
+
+	// Typed form with mixed variable + constant elements.
+	xs := []int{a, b, 30}
+	fmt.Println(xs[0], xs[1], xs[2])
+
+	// Index, range and len must all work over the variable-backed slice.
+	sum := 0
+	for _, v := range xs {
+		sum = sum + v
+	}
+	fmt.Println(sum)
+	fmt.Println(len(xs))
+
+	// Goo-native form with variable elements lowers identically.
+	ys := [a, b, 30]
+	nsum := 0
+	for _, v := range ys {
+		nsum = nsum + v
+	}
+	fmt.Println(nsum)
+}

@@ -367,7 +367,14 @@ FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* g
     info->locals = NULL;
     info->local_count = 0;
     info->local_capacity = 0;
-    
+
+    info->named_result_names = NULL;
+    info->named_result_count = 0;
+
+    info->deferred_calls = NULL;
+    info->deferred_count = 0;
+    info->deferred_capacity = 0;
+
     return info;
 }
 
@@ -375,7 +382,17 @@ void function_info_free(FunctionInfo* info) {
     if (!info) return;
     
     free(info->name);
-    
+
+    if (info->named_result_names) {
+        for (size_t i = 0; i < info->named_result_count; i++)
+            free(info->named_result_names[i]);
+        free(info->named_result_names);
+    }
+
+    // The deferred-call array holds borrowed AST node pointers (owned by the
+    // parse tree), so free only the array, not the nodes.
+    free(info->deferred_calls);
+
     if (info->locals) {
         for (size_t i = 0; i < info->local_count; i++) {
             if (info->locals[i]) {

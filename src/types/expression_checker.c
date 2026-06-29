@@ -41,42 +41,115 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             // MapLitNode — `map[K]V{ … }`. Type is just TYPE_MAP(K,V).
             MapLitNode* lit = (MapLitNode*)expr;
             Type* mt = type_from_ast(checker, lit->map_type);
-            if (!mt) return NULL;
-            // Type-check each key + value, but don't strict-check —
-            // only the declared map type is formally validated (and its
-            // key=string / value=scalar constraint is enforced in
-            // type_from_ast). Element/value mismatches surface in codegen.
-            for (ASTNode* k = lit->keys; k; k = k->next) {
-                if (!type_check_expression(checker, k)) return NULL;
+            if (!mt || mt->kind != TYPE_MAP) return NULL;
+            // Check every key against the declared key type K and every value
+            // against the declared value type V, so a wrong-typed entry (e.g.
+            // map[string]int{"a": "notint"}) is rejected here with a clean
+            // type error instead of leaking to an opaque LLVM failure. (P3-1)
+            Type* want_key = mt->data.map.key_type;
+            Type* want_val = mt->data.map.value_type;
+            size_t ki = 0;
+            for (ASTNode* k = lit->keys; k; k = k->next, ki++) {
+                Type* kt = type_check_expression(checker, k);
+                if (!kt) return NULL;
+                if (!type_compatible(kt, want_key)) {
+                    type_error(checker, k->pos,
+                               "Map literal key %zu type '%s' is not compatible "
+                               "with declared key type '%s'",
+                               ki, type_to_string(kt), type_to_string(want_key));
+                    return NULL;
+                }
             }
-            for (ASTNode* v = lit->values; v; v = v->next) {
-                if (!type_check_expression(checker, v)) return NULL;
+            size_t vi = 0;
+            for (ASTNode* v = lit->values; v; v = v->next, vi++) {
+                Type* vt = type_check_expression(checker, v);
+                if (!vt) return NULL;
+                if (!type_compatible(vt, want_val)) {
+                    type_error(checker, v->pos,
+                               "Map literal value %zu type '%s' is not compatible "
+                               "with declared value type '%s'",
+                               vi, type_to_string(vt), type_to_string(want_val));
+                    return NULL;
+                }
             }
             expr->node_type = mt;
             return mt;
         }
         case AST_SLICE_EXPR: {
-            // SliceLitNode — `[1, 2, 3]`. Element type inferred from
-            // the first element; subsequent elements must match.
             SliceLitNode* lit = (SliceLitNode*)expr;
+
+            // Go-standard typed literal `[]T{...}`: the declared slice type is
+            // stored on the node. Check every element against the declared
+            // element type T and stamp the literal with the declared type —
+            // this is the type-check the form is named for, and it makes the
+            // inferred type correct even for an empty `[]T{}` (which would
+            // otherwise default to []int32). (P3-1)
+            if (lit->elem_type) {
+                Type* declared = type_from_ast(checker, lit->elem_type);
+                if (!declared || declared->kind != TYPE_SLICE) return NULL;
+                Type* want = declared->data.slice.element_type;
+                if (!want) return NULL;
+
+                // The lowering (codegen_generate_slice_lit) now coerces each
+                // element to the declared element width (SExt/Trunc/SIToFP via
+                // slice_coerce_elem), so the general []T{} case lowers —
+                // int64/uint/float64/bool, not just the natural-width
+                // i32/string forms. Element compatibility is still enforced
+                // per-element below (incl. the lossy float->int rejection).
+                size_t i = 0;
+                for (ASTNode* e = lit->elements; e; e = e->next, i++) {
+                    Type* et = type_check_expression(checker, e);
+                    if (!et) return NULL;
+                    // A float element in an integer slice would silently
+                    // truncate (`[]int{1, 2.5, 3}` -> 1 0 3) — type_compatible
+                    // wrongly permits it as a numeric conversion. Reject the
+                    // lossy float->int case explicitly so it can't miscompile.
+                    if (type_is_integer(want)
+                        && (et->kind == TYPE_FLOAT32 || et->kind == TYPE_FLOAT64)) {
+                        type_error(checker, e->pos,
+                                   "Slice literal element %zu: cannot use float "
+                                   "value in a '%s' slice (would truncate)",
+                                   i, type_to_string(want));
+                        return NULL;
+                    }
+                    // type_compatible permits numeric widening (so
+                    // []int64{1, 2} is fine) but rejects e.g. string vs int.
+                    if (!type_compatible(et, want)) {
+                        type_error(checker, e->pos,
+                                   "Slice literal element %zu type '%s' is not "
+                                   "compatible with declared element type '%s'",
+                                   i, type_to_string(et), type_to_string(want));
+                        return NULL;
+                    }
+                }
+                expr->node_type = declared;
+                return declared;
+            }
+
+            // Goo-native untyped form `[1, 2, 3]`: element type inferred from
+            // the first element; subsequent elements must be compatible.
             if (!lit->elements) {
-                // Empty slice — element type defaults to int32 until
-                // context-based inference is wired up. Suitable for
-                // M8-scope probe coverage.
+                // Empty untyped slice — element type defaults to int32 (no
+                // declared type and no elements to infer from).
                 Type* def = type_checker_get_builtin(checker, TYPE_INT32);
                 Type* st = type_slice(def);
                 expr->node_type = st;
                 return st;
             }
             Type* elem_type = NULL;
-            for (ASTNode* e = lit->elements; e; e = e->next) {
+            size_t i = 0;
+            for (ASTNode* e = lit->elements; e; e = e->next, i++) {
                 Type* et = type_check_expression(checker, e);
                 if (!et) return NULL;
-                if (!elem_type) elem_type = et;
-                // (Skip strict element-type check for now — Goo's
-                //  type_compatible interactions with int literals
-                //  need more care; mismatches will surface in codegen
-                //  if they're real.)
+                if (!elem_type) {
+                    elem_type = et;
+                } else if (!type_compatible(et, elem_type)) {
+                    type_error(checker, e->pos,
+                               "Slice literal element %zu type '%s' is not "
+                               "compatible with element type '%s'",
+                               i, type_to_string(et), type_to_string(elem_type));
+                    return NULL;
+                }
             }
             Type* st = type_slice(elem_type);
             expr->node_type = st;

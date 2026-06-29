@@ -78,6 +78,15 @@ static TokenType bison_token_to_token_type(int bison_token);
 // shift/reduce ambiguity never arises at the cond/body boundary. See
 // docs/M10_GRAMMAR_DECISION.md + docs/M10_LEXER_LAYER_PROBE.md.
 %token LBRACE_BODY
+// RBRACKET_SLICE: context-sensitive variant of RBRACKET emitted by the lexer
+// bridge to close an EMPTY `[]` that is immediately followed by a type-starting
+// token — i.e. the `[]` is a slice-TYPE prefix (`[]int`, `[]Foo{...}`), not a
+// bare empty-slice literal. Using a distinct token keeps the empty-slice
+// literal rule (`LBRACKET RBRACKET`) and the slice-type rule
+// (`LBRACKET RBRACKET_SLICE type`) in separate parser states, so the
+// reduce-vs-shift conflict at `LBRACKET RBRACKET .` (empty literal vs `[]T{...}`
+// prefix) never arises. See lexer_bridge.c `[]`-disambiguation. (P3-1)
+%token RBRACKET_SLICE
 %token SEMICOLON COMMA DOT COLON ELLIPSIS
 %token NEWLINE
 
@@ -105,7 +114,6 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> struct_type struct_field_list struct_field
 %type <node> enum_type enum_variant_list enum_variant
 %type <node> slice_lit
-%type <node> multi_return_type_list
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
 %type <node> identifier literal
@@ -454,52 +462,96 @@ func_param:
 
 func_result:
     type { $$ = $1; }
-    | LPAREN type RPAREN { $$ = $2; }
-    | LPAREN multi_return_type_list RPAREN {
-        // Multi-return: builds an anonymous StructTypeNode whose
-        // fields are VarDeclNodes named _0, _1, ... — the type
-        // checker reuses its existing AST_STRUCT_TYPE path to
-        // build a TYPE_STRUCT. Function codegen then returns the
-        // anonymous struct via LLVM insertvalue + ret.
-        StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
-        st->base.type = AST_STRUCT_TYPE;
-        st->base.pos = get_current_position();
-        st->base.node_type = NULL;
-        st->base.next = NULL;
-        st->fields = $2;
-        $$ = (ASTNode*)st;
-    }
-    ;
-
-multi_return_type_list:
-    type COMMA type {
-        // Always at least two types (the COMMA disambiguates from
-        // the single-type form above).
-        char buf[8];
-        VarDeclNode* f0 = ast_var_decl_new(get_current_position());
-        f0->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_0");
-        f0->names[0] = strdup(buf); f0->name_count = 1;
-        f0->type = $1; f0->values = NULL;
-        VarDeclNode* f1 = ast_var_decl_new(get_current_position());
-        f1->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_1");
-        f1->names[0] = strdup(buf); f1->name_count = 1;
-        f1->type = $3; f1->values = NULL;
-        ast_add_child((ASTNode*)f0, (ASTNode*)f1);
-        $$ = (ASTNode*)f0;
-    }
-    | multi_return_type_list COMMA type {
-        // Append additional return types. Field index = current
-        // length of the chain. Walk to find it.
-        ASTNode* tail = $1;
-        size_t idx = 1;
-        while (tail->next) { tail = tail->next; idx++; }
-        char buf[16];
-        VarDeclNode* fn = ast_var_decl_new(get_current_position());
-        fn->names = malloc(sizeof(char*)); snprintf(buf, sizeof(buf), "_%zu", idx);
-        fn->names[0] = strdup(buf); fn->name_count = 1;
-        fn->type = $3; fn->values = NULL;
-        ast_add_child($1, (ASTNode*)fn);
-        $$ = $1;
+    | LPAREN func_params RPAREN {
+        // Parenthesized results reuse the func_param machinery, so a
+        // named-result list `(x int, y int)` parses with the SAME rules
+        // as a parameter list — no new grammar conflicts. The chain is a
+        // ->next list of VarDeclNode (P3-5), each carrying an optional
+        // name + a type.
+        //
+        //  - exactly one ANONYMOUS entry -> single return: unwrap to the
+        //    bare type so the return ABI stays a scalar (preserves the old
+        //    `func f() (int)` form).
+        //  - otherwise (>=2 entries, or any named entry) -> wrap in a
+        //    StructTypeNode tagged `is_result_tuple`. Anonymous fields get
+        //    synthetic `_N` names (so the type checker's AST_STRUCT_TYPE
+        //    path, which skips name-less fields, still sees them); named
+        //    fields keep their user names so function codegen can bind them
+        //    as in-scope zero-initialized locals and a bare `return` can
+        //    read their current values. The `is_result_tuple` tag lets the
+        //    type system collapse a SINGLE named result (`(r int)`) back to
+        //    a scalar return ABI — the common Go form `func f() (err error)`
+        //    must be a scalar, not a 1-field struct — while still binding the
+        //    name; a >=2-field tuple keeps the multi-return struct ABI.
+        ASTNode* list = $2;
+        // Grouped named results: Go's `(x, y int)` shorthand for `(x int,
+        // y int)`. The func_param machinery has no comma-shared-type rule, so
+        // a leading `x` (no type of its own) parses as an ANONYMOUS entry whose
+        // `type` is the bare type-name `x`. Reinterpret each such entry as a
+        // NAME that borrows the type of the next explicitly-typed named entry
+        // to its right — matching Go's `IdentifierList Type` parameter group.
+        // Only run this when the list already has a truly-named entry, so a
+        // genuinely anonymous result list `(int, int)` is left untouched. Each
+        // borrowed type is DEEP-CLONED so every VarDecl owns its own node (AST
+        // teardown frees each ->type once). This is an action-only change — the
+        // grammar is unchanged, so the parser conflict count is unaffected.
+        int grp_has_named = 0;
+        for (ASTNode* p = list; p; p = p->next) {
+            VarDeclNode* vd = (VarDeclNode*)p;
+            if (vd->name_count > 0 && vd->names && vd->names[0]) { grp_has_named = 1; break; }
+        }
+        if (grp_has_named) {
+            for (ASTNode* p = list; p; p = p->next) {
+                VarDeclNode* vd = (VarDeclNode*)p;
+                if (vd->name_count > 0) continue;              // already a name
+                if (!vd->type || vd->type->type != AST_BASIC_TYPE) continue; // not a bare name candidate
+                ASTNode* shared = NULL;                        // the group's declared type
+                for (ASTNode* q = p->next; q; q = q->next) {
+                    VarDeclNode* qd = (VarDeclNode*)q;
+                    if (qd->name_count > 0 && qd->type) { shared = qd->type; break; }
+                }
+                if (!shared) continue;                         // no group type to the right
+                ASTNode* cloned = ast_type_clone(shared);
+                if (!cloned) continue;                         // unclonable shared type: leave as-is
+                BasicTypeNode* bt = (BasicTypeNode*)vd->type;  // misparsed type-name == the intended name
+                vd->names = (char**)malloc(sizeof(char*));
+                vd->names[0] = strdup(bt->name);
+                vd->name_count = 1;
+                ast_node_free(vd->type);                       // drop the misparsed bare type-name
+                vd->type = cloned;
+            }
+        }
+        size_t count = 0; int any_named = 0;
+        for (ASTNode* p = list; p; p = p->next) {
+            count++;
+            VarDeclNode* vd = (VarDeclNode*)p;
+            if (vd->name_count > 0 && vd->names && vd->names[0]) any_named = 1;
+        }
+        if (count == 1 && !any_named) {
+            VarDeclNode* only = (VarDeclNode*)list;
+            ASTNode* t = only->type;
+            only->type = NULL;     // hand the type to $$ before freeing the wrapper
+            ast_node_free(list);   // frees the lone wrapper VarDecl, not the type
+            $$ = t;
+        } else {
+            size_t idx = 0;
+            for (ASTNode* p = list; p; p = p->next, idx++) {
+                VarDeclNode* vd = (VarDeclNode*)p;
+                if (vd->name_count == 0 || !vd->names) {
+                    char buf[16]; snprintf(buf, sizeof(buf), "_%zu", idx);
+                    vd->names = malloc(sizeof(char*));
+                    vd->names[0] = strdup(buf); vd->name_count = 1;
+                }
+            }
+            StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+            st->base.type = AST_STRUCT_TYPE;
+            st->base.pos = get_current_position();
+            st->base.node_type = NULL;
+            st->base.next = NULL;
+            st->fields = list;
+            st->is_result_tuple = 1;   // parser-synthesized result list
+            $$ = (ASTNode*)st;
+        }
     }
     ;
 
@@ -1292,6 +1344,7 @@ struct_type:
         st->base.node_type = NULL;
         st->base.next = NULL;
         st->fields = $3;
+        st->is_result_tuple = 0;   // user-written struct type
         $$ = (ASTNode*)st;
     }
     | STRUCT LBRACE RBRACE {
@@ -1301,6 +1354,7 @@ struct_type:
         st->base.node_type = NULL;
         st->base.next = NULL;
         st->fields = NULL;
+        st->is_result_tuple = 0;   // user-written struct type
         $$ = (ASTNode*)st;
     }
     ;
@@ -1554,6 +1608,7 @@ slice_lit:
         lit->base.node_type = NULL;
         lit->base.next = NULL;
         lit->elements = $2;
+        lit->elem_type = NULL;  // native untyped form: element type inferred
         $$ = (ASTNode*)lit;
     }
     | LBRACKET RBRACKET {
@@ -1563,6 +1618,35 @@ slice_lit:
         lit->base.node_type = NULL;
         lit->base.next = NULL;
         lit->elements = NULL;
+        lit->elem_type = NULL;  // native empty form: element type inferred
+        $$ = (ASTNode*)lit;
+    }
+    | slice_type LBRACE expression_list RBRACE {
+        // Go-standard typed slice composite literal: `[]int{1, 2, 3}`.
+        // The declared slice_type ($1, an AST_SLICE_TYPE) is STORED on the
+        // node so the type checker validates each element against the
+        // declared element type T (rather than inferring T from the first
+        // element) and stamps the literal with the declared slice type. (P3-1)
+        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+        lit->base.type = AST_SLICE_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = $3;
+        lit->elem_type = $1;
+        $$ = (ASTNode*)lit;
+    }
+    | slice_type LBRACE RBRACE {
+        // Empty typed slice literal: `[]int{}`. The declared element type
+        // ($1) is stored so the checker stamps the correct slice type
+        // (e.g. []string{} is []string, not the int32 default). (P3-1)
+        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+        lit->base.type = AST_SLICE_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = NULL;
+        lit->elem_type = $1;
         $$ = (ASTNode*)lit;
     }
     ;
@@ -1596,7 +1680,11 @@ array_type:
     ;
 
 slice_type:
-    LBRACKET RBRACKET type {
+    LBRACKET RBRACKET_SLICE type {
+        // RBRACKET_SLICE (not plain RBRACKET) is emitted by the lexer bridge
+        // exactly when an empty `[]` is followed by a type — see the token
+        // declaration. This keeps `[]T` (slice type) out of the same parser
+        // state as the bare `[]` empty-slice literal, so no conflict is added.
         SliceTypeNode* slice = (SliceTypeNode*)malloc(sizeof(SliceTypeNode));
         slice->base.type = AST_SLICE_TYPE;
         slice->base.pos = get_current_position();

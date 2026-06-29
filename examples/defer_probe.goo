@@ -1,0 +1,95 @@
+// defer_probe (P3-4): defer type-check acceptance + Go-faithful LIFO codegen.
+//
+// Properties under test:
+//
+// 1. LIFO order. `main` registers `defer fmt.Println("c")` then
+//    `defer fmt.Println("b")`. At function exit the deferred calls run in
+//    last-in-first-out order, so "b" (registered last) runs before "c"
+//    (registered first). The body prints "a" before either fires.
+//
+// 2. Early-return path. `earlyReturn` registers a defer and then hits an
+//    explicit `return` partway through the body. The deferred call must
+//    still run on that early-exit path — not only on fall-off-the-end exit.
+//
+// 3. Local-variable argument on the fall-off-the-end path. `localArg`
+//    declares `s := "snap"` and `defer fmt.Println(s)`, then falls off the
+//    end. The argument is a `:=`-declared local; it must compile and print
+//    the snapshotted value (this regressed before: re-walking the call at
+//    exit emitted "Undefined identifier 's'" once the body block's locals
+//    were truncated out of the value table).
+//
+// 4. Defer-time argument evaluation (Go semantics). `argTiming` snapshots
+//    `n` at the defer site, then mutates `n`. The deferred print must show
+//    the value AS OF the defer statement (7), not the exit-time value (99).
+//
+// 5. Conditional defer is runtime-tracked. `conditional(false)` registers a
+//    defer inside a not-taken branch; it must NOT run. `conditional(true)`
+//    takes the branch, so the defer runs at exit.
+//
+// 6. User-defined deferred call with arguments. `userDefer` defers a call to a
+//    *user* function `note` (not the fmt.Println builtin) with string, int, and
+//    expression arguments. This exercises the general defer path: at the defer
+//    site the args are rewritten to synthetic snapshot identifiers, and at
+//    function exit codegen re-emits — and re-type-checks — the call. The synthetic
+//    arg names must resolve in the type-checker scope (otherwise the compiler
+//    prints a spurious "Undefined variable '__goo_deferN_argM'"). The
+//    builtin-only cases above all take fmt.Println's codegen path, which skips
+//    that re-check, so they cannot catch this. LIFO still holds: `note("sum", …)`
+//    (registered last) runs before `note("user-defer", …)`.
+package main
+
+import "fmt"
+
+func earlyReturn(x int) {
+    defer fmt.Println("deferred-early")
+    if x > 0 {
+        fmt.Println("before-early-return")
+        return
+    }
+    fmt.Println("unreachable")
+}
+
+func localArg() {
+    s := "snap"
+    defer fmt.Println(s)
+    fmt.Println("local-body")
+}
+
+func argTiming() {
+    n := 7
+    defer fmt.Println("arg-was", n)
+    n = 99
+    fmt.Println("arg-now", n)
+}
+
+func conditional(cond bool) {
+    if cond {
+        defer fmt.Println("cond-defer")
+    }
+    fmt.Println("cond-body")
+}
+
+func note(label string, n int) {
+    fmt.Println("note", label, n)
+}
+
+func userDefer() {
+    a := 2
+    b := 3
+    k := 9
+    defer note("user-defer", k)
+    defer note("sum", a+b)
+    fmt.Println("user-body")
+}
+
+func main() {
+    defer fmt.Println("c")
+    defer fmt.Println("b")
+    fmt.Println("a")
+    earlyReturn(1)
+    localArg()
+    argTiming()
+    conditional(false)
+    conditional(true)
+    userDefer()
+}

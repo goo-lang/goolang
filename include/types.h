@@ -418,10 +418,16 @@ int type_check_if_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt);
+int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt);
 
 // Helper functions
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node);
+
+// Named-return-parameter helper (P3-5): true iff `n` is a synthetic
+// `_0`/`_1`/... placeholder for an anonymous tuple-return field (not a
+// user-named result). Shared by the type checker and codegen.
+int is_synthetic_result_name(const char* n);
 
 // Expression type checking functions
 Type* type_check_identifier(TypeChecker* checker, ASTNode* expr);

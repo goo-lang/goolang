@@ -517,9 +517,18 @@ typedef struct {
 // Struct type definition: `struct { x int; y int }`
 // Fields are a `next`-chained list of VarDeclNode entries (same shape
 // as function parameters — name + type, no initial value).
+//
+// `is_result_tuple` marks a struct node synthesized by the parser to carry
+// a function's named/multi result list `(x int, y int)` — NOT a user-written
+// `struct{...}` type. It lets the type system collapse a *single*-field
+// result tuple (`func f() (r int)`) back to a scalar return ABI (Go-faithful)
+// while still binding `r` as an in-scope local, and lets a bare `return` be
+// rejected for an *unnamed* multi-result function. A user struct return
+// (`func f() Point`) has this flag clear and keeps its struct ABI.
 typedef struct {
     ASTNode base;
     struct ASTNode* fields;
+    int is_result_tuple;
 } StructTypeNode;
 
 // Enum (tagged union) type: `enum { Circle{radius int}  Rect{w int; h int} }`.
@@ -545,6 +554,10 @@ typedef struct {
 typedef struct {
     ASTNode base;
     struct ASTNode* elements;
+    // Declared element type for a Go-standard typed literal `[]T{...}`
+    // (an AST_SLICE_TYPE node). NULL for the Goo-native untyped form
+    // `[1, 2, 3]`, where the element type is inferred from the elements.
+    struct ASTNode* elem_type;
 } SliceLitNode;
 
 // Map literal: `map[K]V{k: v, …}`. Tagged AST_PAREN_EXPR — that
@@ -981,6 +994,9 @@ typedef struct {
 ASTNode* ast_node_new(ASTNodeType type, Position pos);
 void ast_node_free(ASTNode* node);
 ASTNode* ast_node_copy(const ASTNode* node);
+// Deep-clone a type-expression AST node (see ast.c). Returns NULL for type
+// kinds the grouped-name expansion path does not duplicate.
+ASTNode* ast_type_clone(const ASTNode* node);
 
 // Contract constructors
 ContractClauseNode* ast_contract_clause_new(ASTNode* condition, const char* description, Position pos);

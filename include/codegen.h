@@ -103,6 +103,22 @@ struct FunctionInfo {
     ValueInfo** locals;
     size_t local_count;
     size_t local_capacity;
+
+    // Named return parameters (P3-5). When the function declares
+    // `(x int, y int)` results, these hold the result names in field
+    // order; a bare `return` loads each named-result local and builds the
+    // aggregate return value from them. NULL / 0 for ordinary functions.
+    char** named_result_names;
+    size_t named_result_count;
+
+    // Deferred calls (P3-4). Each `defer <call>` pushes its call AST node
+    // here in source order; at every function-exit path the calls are
+    // emitted in reverse (LIFO) order immediately before the `ret`. MVP:
+    // arguments are evaluated at exit time, which matches Go's defer-time
+    // evaluation for the literal/simple-arg cases the probe covers.
+    ASTNode** deferred_calls;
+    size_t deferred_count;
+    size_t deferred_capacity;
 };
 
 // Value information for variables and expressions
@@ -163,6 +179,8 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
 int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
+// Emit the current function's registered defers in LIFO order before a `ret`.
+void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
 int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);

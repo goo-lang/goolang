@@ -9,6 +9,12 @@
 // unsafe, asm). Split from function_codegen.c (refactor, no behavior
 // change) — declarations (func/var/const) stay there.
 
+// Defined in src/types/type_checker.c. Registers a synthetic defer-snapshot
+// binding so the deferred call re-type-checked at function exit resolves its
+// rewritten `__goo_deferN_argM` arguments instead of erroring. Forward-declared
+// here (rather than in the shared types.h) to keep this change scoped.
+void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type* type);
+
 
 #if LLVM_AVAILABLE
 // Loop-context stack: break/continue target blocks for the innermost loop.
@@ -38,6 +44,62 @@ static int codegen_push_break_scope(CodeGenerator* cg, LLVMBasicBlockRef brk) {
     cg->loop_continue_bb[cg->loop_depth] = inherited_continue;
     cg->loop_depth++;
     return 1;
+}
+
+// --- defer codegen state -------------------------------------------------
+// Per-defer LLVM state that the header's FunctionInfo cannot carry (it only
+// stores the call AST nodes in `deferred_calls`). This array is kept in
+// lock-step with current_function_info->deferred_calls and is reset when a
+// function registers its first defer (deferred_count == 0). The compiler is
+// single-threaded and emits one function at a time (a function is fully
+// generated — defers registered AND emitted at every exit — before the next
+// begins), so a file-static cache keyed by the owning FunctionInfo is safe.
+//
+// Why snapshots + an active flag (vs. re-walking the stored call at exit):
+//   * arg snapshot at defer-time gives Go's "args evaluated at defer-time"
+//     semantics and lets the deferred call reference defer-time values after
+//     the body block's locals have been truncated out of the value table
+//     (the old re-walk-at-exit emitted "Undefined identifier" for any local
+//     argument on the fall-off-the-end path);
+//   * the runtime active flag makes a defer inside a not-taken branch NOT run
+//     (the old design ran every statically-registered defer unconditionally).
+typedef struct {
+    LLVMValueRef  active_flag;   // i1 alloca, 0 at entry, set to 1 when reached
+    size_t        arg_count;     // number of snapshotted call arguments
+    LLVMValueRef* arg_slots;     // entry-block alloca per snapshotted argument
+    Type**        arg_types;     // goo type of each snapshot (for the exit load)
+    char**        arg_names;     // synthetic identifier names bound at exit
+} DeferCodegenInfo;
+
+static DeferCodegenInfo* g_defer_info = NULL;
+static size_t            g_defer_info_count = 0;
+static size_t            g_defer_info_capacity = 0;
+static FunctionInfo*     g_defer_info_owner = NULL;
+
+static void defer_info_reset(FunctionInfo* owner) {
+    for (size_t i = 0; i < g_defer_info_count; i++) {
+        for (size_t j = 0; j < g_defer_info[i].arg_count; j++)
+            free(g_defer_info[i].arg_names[j]);
+        free(g_defer_info[i].arg_names);
+        free(g_defer_info[i].arg_slots);
+        free(g_defer_info[i].arg_types);
+    }
+    g_defer_info_count = 0;
+    g_defer_info_owner = owner;
+}
+
+// Initialise a defer's active flag to 0 unconditionally in the entry block,
+// so a defer placed inside a branch that is never taken stays inactive.
+static void defer_entry_store_zero(CodeGenerator* cg, LLVMValueRef flag, LLVMTypeRef i1) {
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(cg->builder);
+    LLVMBasicBlockRef entry = cg->current_function_info
+        ? cg->current_function_info->entry_block
+        : LLVMGetEntryBasicBlock(cg->current_function);
+    LLVMValueRef term = entry ? LLVMGetBasicBlockTerminator(entry) : NULL;
+    if (term) LLVMPositionBuilderBefore(cg->builder, term);
+    else      LLVMPositionBuilderAtEnd(cg->builder, entry);
+    LLVMBuildStore(cg->builder, LLVMConstNull(i1), flag);
+    if (cur) LLVMPositionBuilderAtEnd(cg->builder, cur);
 }
 #endif
 
@@ -634,6 +696,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 agg = LLVMBuildInsertValue(codegen->builder, agg, raw, (unsigned)i, "ret_field");
                 value_info_free(vv);
             }
+            codegen_emit_deferred_calls(codegen, checker);
             LLVMBuildRet(codegen->builder, agg);
             return 1;
         }
@@ -657,6 +720,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             ((LiteralNode*)return_stmt->values)->literal_type == TOKEN_NIL) {
             ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, function_return_type);
             if (!nil_vi) return 0;
+            codegen_emit_deferred_calls(codegen, checker);
             LLVMBuildRet(codegen->builder, nil_vi->llvm_value);
             value_info_free(nil_vi);
             return 1;
@@ -750,6 +814,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             }
         }
 
+        codegen_emit_deferred_calls(codegen, checker);
         LLVMBuildRet(codegen->builder, final_return_value);
 #else
         codegen_generate_error_return(codegen, return_value->llvm_value,
@@ -757,18 +822,70 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 #endif
         value_info_free(return_value);
     } else {
-        // Bare return. If the enclosing function has a non-void LLVM signature
-        // (e.g. the entry-point main, lowered to `i32 @main`), return a zero of
-        // that type so the IR stays well-typed; otherwise a plain void return.
+        // Bare return.
         LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
         LLVMTypeRef fn_ret = LLVMGetReturnType(LLVMGlobalGetValueType(cur_fn));
+
+        // Named return parameters (P3-5): `func f() (x int, y int) { ...; return }`
+        // yields the current values of the named-result locals. Load each in
+        // field order and rebuild the aggregate the function's LLVM signature
+        // expects (the struct return type built by the parser/type checker).
+        FunctionInfo* fi = codegen->current_function_info;
+        if (fi && fi->named_result_count > 0) {
+            // A SINGLE named result `func f() (r T)` returns T DIRECTLY: the
+            // parser's 1-field result tuple was collapsed to its field type in
+            // type_from_ast, so the function's return ABI *is* T — whether T is
+            // a scalar (i32) or an LLVM aggregate (string `{ptr,i64}`, slice
+            // `{ptr,i64,i64}`, struct). Load the one named local and return it
+            // as-is. The discriminator MUST be arity (count == 1), NOT the LLVM
+            // type kind: an aggregate-typed single result has a StructTypeKind
+            // return type, but it is still a one-value return, so the multi-
+            // result InsertValue path below would emit invalid IR for it
+            // (`insertvalue {ptr,i64} undef, {ptr,i64} %r, 0`). The >=2 named-
+            // result case keeps the struct-aggregate path.
+            if (fi->named_result_count == 1) {
+                ValueInfo* rv = codegen_lookup_value(codegen, fi->named_result_names[0]);
+                if (!rv) {
+                    codegen_error(codegen, stmt->pos,
+                                  "named result '%s' not in scope for bare return",
+                                  fi->named_result_names[0]);
+                    return 0;
+                }
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, rv->goo_type);
+                LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, vt, rv->llvm_value, "named_ret");
+                codegen_emit_deferred_calls(codegen, checker);
+                LLVMBuildRet(codegen->builder, loaded);
+                return 1;
+            }
+            LLVMValueRef agg = LLVMGetUndef(fn_ret);
+            for (size_t i = 0; i < fi->named_result_count; i++) {
+                ValueInfo* rv = codegen_lookup_value(codegen, fi->named_result_names[i]);
+                if (!rv) {
+                    codegen_error(codegen, stmt->pos,
+                                  "named result '%s' not in scope for bare return",
+                                  fi->named_result_names[i]);
+                    return 0;
+                }
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, rv->goo_type);
+                LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, vt, rv->llvm_value, "named_ret");
+                agg = LLVMBuildInsertValue(codegen->builder, agg, loaded, (unsigned)i, "named_ret_agg");
+            }
+            codegen_emit_deferred_calls(codegen, checker);
+            LLVMBuildRet(codegen->builder, agg);
+            return 1;
+        }
+
+        // Otherwise: if the enclosing function has a non-void LLVM signature
+        // (e.g. the entry-point main, lowered to `i32 @main`), return a zero of
+        // that type so the IR stays well-typed; otherwise a plain void return.
+        codegen_emit_deferred_calls(codegen, checker);
         if (LLVMGetTypeKind(fn_ret) != LLVMVoidTypeKind) {
             LLVMBuildRet(codegen->builder, LLVMConstNull(fn_ret));
         } else {
             LLVMBuildRetVoid(codegen->builder);
         }
     }
-    
+
     return 1;
 #endif
 }
@@ -950,23 +1067,262 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 #endif
 }
 
+// Emit the current function's deferred calls in LIFO (last-registered-first)
+// order. Called at every function-exit path immediately before the `ret`.
+// No-op when the function registered no defers, so existing functions are
+// unaffected.
+//
+// Each deferred call's arguments were snapshotted into entry-block allocas at
+// the defer site (Go's defer-time arg evaluation), and the call's argument AST
+// nodes were rewritten to synthetic identifiers referencing those snapshots.
+// Here we (1) re-bind those synthetic names to their snapshot slots in the
+// value table (the originating block's locals are long gone), then (2) emit
+// each call guarded by its runtime "active" flag, so a defer that was never
+// reached at runtime (e.g. inside a not-taken branch) does not run.
+void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
+#if LLVM_AVAILABLE
+    if (!codegen || !checker) return;
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi || fi->deferred_count == 0) return;
+    if (g_defer_info_owner != fi || g_defer_info_count < fi->deferred_count) return;
+
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(codegen->context);
+
+    for (size_t i = fi->deferred_count; i > 0; i--) {
+        DeferCodegenInfo* info = &g_defer_info[i - 1];
+        ASTNode* call = fi->deferred_calls[i - 1];
+
+        // Re-bind the defer-time argument snapshots so the rewritten call's
+        // synthetic identifiers resolve to them (LIFO lookup => latest wins,
+        // so re-binding on every exit path is harmless).
+        for (size_t j = 0; j < info->arg_count; j++) {
+            if (!info->arg_slots[j]) continue;
+            ValueInfo* vi = value_info_new(info->arg_names[j], info->arg_slots[j],
+                                           info->arg_types[j]);
+            if (!vi) continue;
+            vi->is_lvalue = 1;
+            vi->is_initialized = 1;
+            codegen_add_value(codegen, vi);
+        }
+
+        // Guard the call with the runtime active flag.
+        LLVMValueRef live = LLVMBuildLoad2(codegen->builder, i1, info->active_flag,
+                                           "defer_live");
+        LLVMBasicBlockRef run_bb = codegen_create_block(codegen, "defer_run");
+        LLVMBasicBlockRef cont_bb = codegen_create_block(codegen, "defer_cont");
+        LLVMBuildCondBr(codegen->builder, live, run_bb, cont_bb);
+
+        LLVMPositionBuilderAtEnd(codegen->builder, run_bb);
+        ValueInfo* result = codegen_generate_expression(codegen, checker, call);
+        if (result) value_info_free(result);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+            LLVMBuildBr(codegen->builder, cont_bb);
+
+        LLVMPositionBuilderAtEnd(codegen->builder, cont_bb);
+    }
+#else
+    (void)codegen;
+    (void)checker;
+#endif
+}
+
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available for defer statements");
     return 0;
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_DEFER_STMT) return 0;
-    
-    // TODO: Implement defer statements
-    // For now, just treat it as a regular function call for compilation purposes
+
     DeferStmtNode* defer_stmt = (DeferStmtNode*)stmt;
-    
-    // Generate the deferred call as a regular expression for now
-    ValueInfo* result = codegen_generate_expression(codegen, checker, defer_stmt->call);
-    if (result) {
-        value_info_free(result);
+    if (!defer_stmt->call) return 1;
+
+    FunctionInfo* fi = codegen->current_function_info;
+    if (!fi) {
+        codegen_error(codegen, stmt->pos, "defer statement outside of a function");
+        return 0;
     }
-    
+
+    // A defer inside a loop accumulates one deferred call PER ITERATION in Go,
+    // which a single static per-defer slot cannot model. Rather than silently
+    // miscompiling (running once, with the last iteration's snapshot), reject
+    // it cleanly; once-per-iteration defers need a runtime defer stack (tracked
+    // follow-up requiring runtime support).
+    if (codegen->loop_depth > 0) {
+        codegen_error(codegen, stmt->pos,
+                      "defer inside a loop is not yet supported "
+                      "(needs a runtime defer stack)");
+        return 0;
+    }
+
+    if (defer_stmt->call->type != AST_CALL_EXPR) {
+        codegen_error(codegen, stmt->pos, "defer requires a function call");
+        return 0;
+    }
+    CallExprNode* call = (CallExprNode*)defer_stmt->call;
+
+    // First defer of this function: reset the parallel codegen-info cache.
+    if (fi->deferred_count == 0) defer_info_reset(fi);
+
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(codegen->context);
+
+    // Runtime active flag: 0 at entry, set to 1 here (at the defer site, so it
+    // only becomes 1 if control actually reaches this defer at runtime).
+    LLVMValueRef flag = codegen_create_entry_alloca(codegen, i1, "defer_active");
+    if (!flag) {
+        codegen_error(codegen, stmt->pos, "failed to allocate defer flag");
+        return 0;
+    }
+    defer_entry_store_zero(codegen, flag, i1);
+
+    // Snapshot each argument NOW (defer-time evaluation), store it into an
+    // entry-block alloca, and rewrite the argument node to a synthetic
+    // identifier that resolves to that snapshot when the call is emitted at
+    // function exit.
+    size_t argc = 0;
+    for (ASTNode* a = call->args; a; a = a->next) argc++;
+
+    // Method-call receiver: `defer x.m(args)` evaluates the receiver `x` at
+    // defer-time (Go semantics), but it lives in the selector base (call->func),
+    // not call->args. Snapshot it too so it doesn't dangle at function exit
+    // ("Undefined identifier 'x'"). Skip PACKAGE selectors like `fmt.Println`
+    // (base resolves to TYPE_PACKAGE, not a value) — those need no snapshot.
+    ASTNode* recv_base = NULL;
+    if (call->function && call->function->type == AST_SELECTOR_EXPR) {
+        ASTNode* base = ((SelectorExprNode*)call->function)->expr;
+        if (base && base->node_type && base->node_type->kind != TYPE_PACKAGE)
+            recv_base = base;
+    }
+    size_t total = argc + (recv_base ? 1 : 0);
+
+    DeferCodegenInfo cinfo;
+    memset(&cinfo, 0, sizeof(cinfo));
+    cinfo.active_flag = flag;
+    cinfo.arg_count = total;
+    if (total > 0) {
+        cinfo.arg_slots = calloc(total, sizeof(LLVMValueRef));
+        cinfo.arg_types = calloc(total, sizeof(Type*));
+        cinfo.arg_names = calloc(total, sizeof(char*));
+        if (!cinfo.arg_slots || !cinfo.arg_types || !cinfo.arg_names) {
+            free(cinfo.arg_slots); free(cinfo.arg_types); free(cinfo.arg_names);
+            codegen_error(codegen, stmt->pos, "out of memory snapshotting defer args");
+            return 0;
+        }
+    }
+
+    size_t idx = 0;
+
+    // Snapshot the method receiver (if any) first, rewriting the selector base
+    // to a synthetic identifier that resolves to the snapshot at exit.
+    if (recv_base) {
+        ValueInfo* rv = codegen_generate_expression(codegen, checker, recv_base);
+        if (!rv) {
+            codegen_error(codegen, recv_base->pos, "failed to evaluate defer receiver");
+            return 0;
+        }
+        LLVMValueRef rval = rv->llvm_value;
+        Type* rt = rv->goo_type;
+        if (rv->is_lvalue && rt) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, rt);
+            if (lt) rval = LLVMBuildLoad2(codegen->builder, lt, rval, "defer_recv");
+        }
+        LLVMTypeRef slot_ty = rt ? codegen_type_to_llvm(codegen, rt) : LLVMTypeOf(rval);
+        LLVMValueRef slot = codegen_create_entry_alloca(codegen, slot_ty, "defer_recv_slot");
+        LLVMBuildStore(codegen->builder, rval, slot);
+        value_info_free(rv);
+
+        char nm[64];
+        snprintf(nm, sizeof(nm), "__goo_defer%zu_recv", fi->deferred_count);
+        cinfo.arg_slots[idx] = slot;
+        cinfo.arg_types[idx] = rt;
+        cinfo.arg_names[idx] = strdup(nm);
+        type_checker_declare_synthetic(checker, nm, rt);
+
+        IdentifierNode* rid = ast_identifier_new(nm, recv_base->pos);
+        ((ASTNode*)rid)->node_type = rt;
+        ((SelectorExprNode*)call->function)->expr = (ASTNode*)rid;
+        idx++;
+    }
+
+    ASTNode* prev = NULL;
+    ASTNode* a = call->args;
+    while (a) {
+        ASTNode* nextarg = a->next;
+
+        ValueInfo* av = codegen_generate_expression(codegen, checker, a);
+        if (!av) {
+            codegen_error(codegen, a->pos, "failed to evaluate defer argument");
+            return 0;
+        }
+        LLVMValueRef val = av->llvm_value;
+        Type* gt = av->goo_type;
+        if (av->is_lvalue && gt) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, gt);
+            if (lt) {
+                val = LLVMBuildLoad2(codegen->builder, lt, val, "defer_arg");
+            }
+        }
+        LLVMTypeRef slot_ty = gt ? codegen_type_to_llvm(codegen, gt) : LLVMTypeOf(val);
+        LLVMValueRef slot = codegen_create_entry_alloca(codegen, slot_ty, "defer_arg_slot");
+        LLVMBuildStore(codegen->builder, val, slot);
+        value_info_free(av);
+
+        char nm[64];
+        snprintf(nm, sizeof(nm), "__goo_defer%zu_arg%zu", fi->deferred_count, idx);
+        cinfo.arg_slots[idx] = slot;
+        cinfo.arg_types[idx] = gt;
+        cinfo.arg_names[idx] = strdup(nm);
+
+        // Register the synthetic name in the type-checker scope with its real
+        // snapshotted type. codegen_emit_deferred_calls re-type-checks the
+        // rewritten call at function exit (call_codegen invokes
+        // type_check_call_expr to recover the return type); without this binding
+        // a USER-DEFINED deferred call would emit a spurious "Undefined variable
+        // '__goo_deferN_argM'" for each arg. fmt.Println takes a different
+        // codegen path that skips the re-check, which is why the builtin-only
+        // probe never surfaced this.
+        type_checker_declare_synthetic(checker, nm, gt);
+
+        // Splice a synthetic identifier in place of the original argument.
+        IdentifierNode* id = ast_identifier_new(nm, a->pos);
+        ASTNode* idn = (ASTNode*)id;
+        idn->next = nextarg;
+        if (prev) prev->next = idn; else call->args = idn;
+        prev = idn;
+
+        a = nextarg;
+        idx++;
+    }
+
+    // Mark this defer active at runtime (current block; runs only if reached).
+    LLVMBuildStore(codegen->builder, LLVMConstInt(i1, 1, 0), flag);
+
+    // Register the (rewritten) call node on the FunctionInfo and its codegen
+    // info in the parallel cache. Both arrays grow in lock-step from index 0.
+    if (fi->deferred_count >= fi->deferred_capacity) {
+        size_t newcap = fi->deferred_capacity ? fi->deferred_capacity * 2 : 4;
+        ASTNode** grown = realloc(fi->deferred_calls, newcap * sizeof(ASTNode*));
+        if (!grown) {
+            codegen_error(codegen, stmt->pos, "out of memory registering defer");
+            return 0;
+        }
+        fi->deferred_calls = grown;
+        fi->deferred_capacity = newcap;
+    }
+    if (g_defer_info_count >= g_defer_info_capacity) {
+        size_t newcap = g_defer_info_capacity ? g_defer_info_capacity * 2 : 4;
+        DeferCodegenInfo* grown = realloc(g_defer_info, newcap * sizeof(DeferCodegenInfo));
+        if (!grown) {
+            codegen_error(codegen, stmt->pos, "out of memory registering defer info");
+            return 0;
+        }
+        g_defer_info = grown;
+        g_defer_info_capacity = newcap;
+    }
+    fi->deferred_calls[fi->deferred_count] = defer_stmt->call;
+    g_defer_info[fi->deferred_count] = cinfo;
+    g_defer_info_count = fi->deferred_count + 1;
+    fi->deferred_count++;
+
     return 1;
 #endif
 }
