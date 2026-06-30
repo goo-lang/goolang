@@ -475,6 +475,77 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     return result;
 }
 
+// P4-3: does `concrete`'s method set satisfy interface `iface`? A concrete type
+// implements an interface iff, for every interface method, it has a method
+// registered under its mangled name "T__m" whose signature matches (params after
+// the receiver, plus the return type). The empty interface is satisfied by every
+// type. On failure returns 0 and writes the offending method name + reason to
+// *method_out / *reason_out (for a clear "X does not implement Y" diagnostic).
+static int interface_is_satisfied_by(TypeChecker* checker, Type* iface,
+                                     Type* concrete, const char** method_out,
+                                     const char** reason_out) {
+    if (!iface || iface->kind != TYPE_INTERFACE || !concrete) return 0;
+
+    const char* tn = type_receiver_name(concrete);
+    for (InterfaceMethod* im = iface->data.interface.methods; im; im = im->next) {
+        // No nameable receiver type → cannot have methods → missing.
+        if (!tn) { *method_out = im->name; *reason_out = "missing"; return 0; }
+
+        char* mangled = type_method_mangled_name(tn, im->name);
+        Variable* mv = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        free(mangled);
+        if (!mv || !mv->type || mv->type->kind != TYPE_FUNCTION) {
+            *method_out = im->name; *reason_out = "missing"; return 0;
+        }
+
+        // The registered method carries the receiver as params[0]; the interface
+        // method's function type has no receiver. So a match requires
+        // impl.param_count == want.param_count + 1 and the tails to be equal.
+        Type* impl = mv->type;
+        Type* want = im->type;
+        size_t want_params = want ? want->data.function.param_count : 0;
+        if (impl->data.function.param_count != want_params + 1) {
+            *method_out = im->name; *reason_out = "signature mismatch"; return 0;
+        }
+        for (size_t k = 0; k < want_params; k++) {
+            if (!type_equals(impl->data.function.param_types[k + 1],
+                             want->data.function.param_types[k])) {
+                *method_out = im->name; *reason_out = "signature mismatch"; return 0;
+            }
+        }
+        Type* want_ret = want ? want->data.function.return_type : NULL;
+        if (want_ret && want_ret->kind != TYPE_VOID &&
+            !type_equals(impl->data.function.return_type, want_ret)) {
+            *method_out = im->name; *reason_out = "signature mismatch"; return 0;
+        }
+    }
+    return 1;  // every method satisfied (or empty interface)
+}
+
+// P4-3: assignability into an interface-typed target. When `target` is an
+// interface, accept iff `src` is that interface (or a concrete implementer);
+// otherwise fall back to ordinary type_compatible. Emits the implementation
+// diagnostic itself on failure (returns 0). `pos` anchors the error.
+static int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
+                                  Position pos) {
+    if (!target || target->kind != TYPE_INTERFACE) {
+        return type_compatible(src, target);
+    }
+    if (src && src->kind == TYPE_INTERFACE) return 1;  // interface→interface (v1: permissive)
+
+    const char* method = NULL;
+    const char* reason = NULL;
+    if (interface_is_satisfied_by(checker, target, src, &method, &reason)) return 1;
+
+    const char* iname = target->data.interface.name ? target->data.interface.name
+                                                    : "interface";
+    const char* cname = src ? type_receiver_name(src) : NULL;
+    type_error(checker, pos, "%s does not implement %s (%s method %s)",
+               cname ? cname : type_to_string(src), iname,
+               reason ? reason : "missing", method ? method : "?");
+    return 0;
+}
+
 int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_VAR_DECL) return 0;
     
@@ -505,11 +576,17 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (!final_type) {
         final_type = inferred_type;
     } else if (inferred_type) {
-        // Check compatibility
-        if (!type_compatible(inferred_type, declared_type)) {
-            type_error(checker, var_decl->base.pos, 
-                      "Cannot assign %s to %s", 
-                      type_to_string(inferred_type), 
+        // Check compatibility. An interface-typed target accepts any concrete
+        // implementer (P4-3); check_interface_assign emits its own diagnostic.
+        if (declared_type->kind == TYPE_INTERFACE) {
+            if (!check_interface_assign(checker, inferred_type, declared_type,
+                                        var_decl->base.pos)) {
+                return 0;
+            }
+        } else if (!type_compatible(inferred_type, declared_type)) {
+            type_error(checker, var_decl->base.pos,
+                      "Cannot assign %s to %s",
+                      type_to_string(inferred_type),
                       type_to_string(declared_type));
             return 0;
         }
@@ -765,6 +842,12 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
                 return 0;
             }
         }
+    }
+
+    // Stamp the declared name onto an interface type so satisfaction
+    // diagnostics read "Sq does not implement Shape" rather than "interface".
+    if (resolved->kind == TYPE_INTERFACE && !resolved->data.interface.name) {
+        resolved->data.interface.name = strdup(td->name);
     }
 
     // Register the named type alias only when we did NOT forward-declare a
@@ -1285,7 +1368,13 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 }
             }
 
-            if (!type_compatible(return_type, expected)) {
+            // Returning a concrete implementer into an interface return type
+            // (P4-3) — accept iff it satisfies the interface.
+            if (expected->kind == TYPE_INTERFACE) {
+                if (!check_interface_assign(checker, return_type, expected, stmt->pos)) {
+                    return 0;
+                }
+            } else if (!type_compatible(return_type, expected)) {
                 type_error(checker, stmt->pos,
                            "return type mismatch: cannot return %s from a "
                            "function returning %s",
