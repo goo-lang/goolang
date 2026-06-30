@@ -466,6 +466,71 @@ static void coerce_int_literal_operand(CodeGenerator* codegen,
     }
 }
 
+#if LLVM_AVAILABLE
+// P1-1: lower a string `==`/`!=` to a goo_string_eq call plus an i1 conversion.
+// goo_string_eq returns i32 (0/1); `want_equal` selects `== `(true iff equal,
+// eqi != 0) vs `!=` (true iff not equal, eqi == 0). Returns NULL (after a
+// source-located error) if the runtime symbol is missing.
+static LLVMValueRef codegen_string_eq_to_i1(CodeGenerator* codegen,
+                                            LLVMValueRef a, LLVMValueRef b,
+                                            int want_equal, ASTNode* expr) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_eq");
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "goo_string_eq not found in module");
+        return NULL;
+    }
+    LLVMValueRef args[2] = { a, b };
+    LLVMValueRef eqi = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                      fn, args, 2, "streq");
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    return LLVMBuildICmp(codegen->builder, want_equal ? LLVMIntNE : LLVMIntEQ,
+                         eqi, zero, want_equal ? "streq_b" : "strne_b");
+}
+
+// P1-2: lower a string ordering comparison to goo_string_cmp (returns
+// -1/0/1) followed by `<pred> 0`, where pred is SLT/SLE/SGT/SGE for
+// < / <= / > / >= respectively.
+static LLVMValueRef codegen_string_cmp_to_i1(CodeGenerator* codegen,
+                                             LLVMValueRef a, LLVMValueRef b,
+                                             LLVMIntPredicate pred, ASTNode* expr) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_cmp");
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "goo_string_cmp not found in module");
+        return NULL;
+    }
+    LLVMValueRef args[2] = { a, b };
+    LLVMValueRef cmp = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                      fn, args, 2, "strcmp");
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    return LLVMBuildICmp(codegen->builder, pred, cmp, zero, "strcmp_b");
+}
+
+// P1-7: emit a runtime divide-by-zero guard before an integer div/rem. If the
+// divisor is 0, call goo_panic('integer divide by zero') (which aborts) and
+// mark the block unreachable; otherwise fall through to `divzero.cont`, where
+// the builder is left positioned so the division is emitted on the safe path.
+static void codegen_emit_divzero_check(CodeGenerator* codegen, LLVMValueRef divisor,
+                                       ASTNode* expr) {
+    (void)expr;
+    LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+    if (!panic_fn) return;  // no panic symbol: emit the div unguarded
+    LLVMValueRef zero = LLVMConstInt(LLVMTypeOf(divisor), 0, 0);
+    LLVMValueRef iszero = LLVMBuildICmp(codegen->builder, LLVMIntEQ, divisor, zero, "divzero");
+    LLVMBasicBlockRef panic_bb = codegen_create_block(codegen, "divzero.panic");
+    LLVMBasicBlockRef cont_bb = codegen_create_block(codegen, "divzero.cont");
+    LLVMBuildCondBr(codegen->builder, iszero, panic_bb, cont_bb);
+
+    codegen_set_insert_point(codegen, panic_bb);
+    LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder,
+                                                "integer divide by zero", "divzero_msg");
+    LLVMValueRef args[1] = { msg };
+    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn), panic_fn, args, 1, "");
+    LLVMBuildUnreachable(codegen->builder);
+
+    codegen_set_insert_point(codegen, cont_bb);
+}
+#endif
+
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -672,6 +737,68 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         }
     }
 
+    // P1-5: short-circuit && / ||. Must run BEFORE the eager operand
+    // generation below — the whole point is that the right operand is only
+    // evaluated when the result isn't already determined by the left.
+    //   a && b  ≡  a ? b : false
+    //   a || b  ≡  a ? true : b
+    if (binary->operator == TOKEN_AND || binary->operator == TOKEN_OR) {
+        int is_and = (binary->operator == TOKEN_AND);
+
+        // Evaluate the left operand to an i1.
+        ValueInfo* lv = codegen_generate_expression(codegen, checker, binary->left);
+        if (!lv) return NULL;
+        if (lv->is_lvalue && lv->goo_type) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, lv->goo_type);
+            if (lt) {
+                lv->llvm_value = LLVMBuildLoad2(codegen->builder, lt, lv->llvm_value, "lval");
+                lv->is_lvalue = 0;
+            }
+        }
+        LLVMValueRef lbool = lv->llvm_value;
+        value_info_free(lv);
+
+        // Capture the block the conditional branch lives in: it is the
+        // PHI predecessor for the short-circuit value.
+        LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(codegen->builder);
+        LLVMBasicBlockRef rhs_bb = codegen_create_block(codegen, is_and ? "and.rhs" : "or.rhs");
+        LLVMBasicBlockRef merge_bb = codegen_create_block(codegen, is_and ? "and.merge" : "or.merge");
+
+        // && : left true -> evaluate rhs; left false -> merge (result false).
+        // || : left true -> merge (result true); left false -> evaluate rhs.
+        if (is_and) LLVMBuildCondBr(codegen->builder, lbool, rhs_bb, merge_bb);
+        else        LLVMBuildCondBr(codegen->builder, lbool, merge_bb, rhs_bb);
+
+        // rhs block: evaluate the right operand (only reached when needed).
+        codegen_set_insert_point(codegen, rhs_bb);
+        ValueInfo* rv = codegen_generate_expression(codegen, checker, binary->right);
+        if (!rv) return NULL;
+        if (rv->is_lvalue && rv->goo_type) {
+            LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
+            if (rt) {
+                rv->llvm_value = LLVMBuildLoad2(codegen->builder, rt, rv->llvm_value, "rval");
+                rv->is_lvalue = 0;
+            }
+        }
+        LLVMValueRef rbool = rv->llvm_value;
+        value_info_free(rv);
+        // The rhs may itself have introduced blocks (nested &&/||, calls);
+        // the PHI predecessor is wherever rhs evaluation actually ended.
+        LLVMBasicBlockRef rhs_end_bb = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildBr(codegen->builder, merge_bb);
+
+        // merge: phi over the short-circuit constant and the rhs value.
+        codegen_set_insert_point(codegen, merge_bb);
+        LLVMTypeRef i1 = LLVMInt1TypeInContext(codegen->context);
+        LLVMValueRef phi = LLVMBuildPhi(codegen->builder, i1, is_and ? "and.sc" : "or.sc");
+        LLVMValueRef sc_const = LLVMConstInt(i1, is_and ? 0 : 1, 0);
+        LLVMValueRef in_vals[2] = { sc_const, rbool };
+        LLVMBasicBlockRef in_blocks[2] = { entry_bb, rhs_end_bb };
+        LLVMAddIncoming(phi, in_vals, in_blocks, 2);
+
+        return value_info_new(NULL, phi, type_checker_get_builtin(checker, TYPE_BOOL));
+    }
+
     // Generate left and right operands
     ValueInfo* left_val = codegen_generate_expression(codegen, checker, binary->left);
     if (!left_val) return NULL;
@@ -768,6 +895,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             
         case TOKEN_DIVIDE:
             if (type_is_integer(left_val->goo_type)) {
+                codegen_emit_divzero_check(codegen, right_llvm, expr); // P1-7
                 if (type_is_signed(left_val->goo_type)) {
                     result = LLVMBuildSDiv(codegen->builder, left_llvm, right_llvm, "sdiv");
                 } else {
@@ -780,6 +908,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             
         case TOKEN_MODULO:
             if (type_is_integer(left_val->goo_type)) {
+                codegen_emit_divzero_check(codegen, right_llvm, expr); // P1-7
                 if (type_is_signed(left_val->goo_type)) {
                     result = LLVMBuildSRem(codegen->builder, left_llvm, right_llvm, "srem");
                 } else {
@@ -794,14 +923,31 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "eq");
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, left_llvm, right_llvm, "feq");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_BOOL) {
+                // P1-3: bools are i1 — integer-equality is the right lowering.
+                result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "booleq");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // P1-1: string value equality via goo_string_eq (returns i32
+                // 0/1); convert to i1 with `!= 0` (true iff equal).
+                result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
+                                                 /*want_equal=*/1, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
-            
+
         case TOKEN_NE:
             if (type_is_integer(left_val->goo_type)) {
                 result = LLVMBuildICmp(codegen->builder, LLVMIntNE, left_llvm, right_llvm, "ne");
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealONE, left_llvm, right_llvm, "fne");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_BOOL) {
+                // P1-3: bool inequality.
+                result = LLVMBuildICmp(codegen->builder, LLVMIntNE, left_llvm, right_llvm, "boolne");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // P1-1: string inequality — true iff goo_string_eq == 0.
+                result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
+                                                 /*want_equal=*/0, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
@@ -814,6 +960,9 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOLT, left_llvm, right_llvm, "flt");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSLT, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
@@ -826,6 +975,9 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOLE, left_llvm, right_llvm, "fle");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSLE, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
@@ -838,6 +990,9 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOGT, left_llvm, right_llvm, "fgt");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSGT, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
@@ -850,17 +1005,23 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOGE, left_llvm, right_llvm, "fge");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSGE, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
-        // Logical operators
+        // Logical operators: handled by the short-circuit path above, which
+        // returns before reaching this switch. These cases are unreachable;
+        // keep them defensive so a future refactor can't silently fall back
+        // to eager (non-short-circuiting) And/Or.
         case TOKEN_AND:
-            result = LLVMBuildAnd(codegen->builder, left_llvm, right_llvm, "and");
-            break;
-            
         case TOKEN_OR:
-            result = LLVMBuildOr(codegen->builder, left_llvm, right_llvm, "or");
-            break;
+            codegen_error(codegen, expr->pos,
+                          "internal: && / || must be lowered by the short-circuit path");
+            value_info_free(left_val);
+            value_info_free(right_val);
+            return NULL;
             
         // Bitwise operators
         case TOKEN_BIT_AND:

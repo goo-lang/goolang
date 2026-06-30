@@ -1,0 +1,16 @@
+// string_cmp_probe (P1-2): string ordering < <= > >= via goo_string_cmp.
+package main
+
+import "fmt"
+
+func main() {
+	a := "apple"
+	b := "banana"
+	fmt.Println(a < b)  // true
+	fmt.Println(b < a)  // false
+	fmt.Println(a <= a) // true
+	fmt.Println(b > a)  // true
+	fmt.Println(a >= b) // false
+	c := "app"
+	fmt.Println(c < a)  // true  (shorter prefix sorts first)
+}

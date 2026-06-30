@@ -1,0 +1,24 @@
+// string_switch_probe (P1-4): switch on a string tag.
+//
+// Before P1-4, a string switch emitted `icmp eq {ptr,i64}` which is invalid
+// IR (module verification failed). Each case is now matched with goo_string_eq.
+package main
+
+import "fmt"
+
+func classify(s string) {
+	switch s {
+	case "a":
+		fmt.Println("got a")
+	case "b":
+		fmt.Println("got b")
+	default:
+		fmt.Println("other")
+	}
+}
+
+func main() {
+	classify("a") // got a   (first arm)
+	classify("b") // got b   (middle arm)
+	classify("z") // other   (default)
+}

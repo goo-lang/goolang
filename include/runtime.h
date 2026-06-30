@@ -69,6 +69,12 @@ goo_string_t goo_string_new(const char* data);
 goo_string_t goo_string_new_with_length(const char* data, size_t length);
 void goo_string_free(goo_string_t str);
 goo_string_t goo_string_concat(goo_string_t a, goo_string_t b);
+// P1-1: value equality for `==`/`!=` on strings. Returns 1 iff equal
+// (same length and bytes), 0 otherwise. nil/empty are equal to each other.
+int goo_string_eq(goo_string_t a, goo_string_t b);
+// P1-2: lexicographic comparison for `< <= > >=`. Returns -1, 0, or 1
+// (a<b, a==b, a>b) — bytes compared up to the shorter length, then by length.
+int goo_string_cmp(goo_string_t a, goo_string_t b);
 
 // Stdlib package backings (used by codegen to lower fmt.*, os.*,
 // strings.*, math.* calls into runtime symbols)

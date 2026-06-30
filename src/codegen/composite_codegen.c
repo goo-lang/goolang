@@ -7,6 +7,29 @@
 // struct field selectors, struct literals, and slice literals.
 // Split from expression_codegen.c (refactor, no behavior change).
 
+#if LLVM_AVAILABLE
+// P1-6: emit a goo_bounds_check(index, length, file, line) call. The runtime
+// fn panics if index >= length (negative indices SExt to a huge size_t and so
+// also fail), aborting before any out-of-range read/write. The bounds test is
+// inside the runtime fn, so no IR branching is emitted here.
+static void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
+                                      LLVMValueRef length, ASTNode* expr) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_bounds_check");
+    if (!fn) return;  // no symbol: index unguarded (best-effort)
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+    LLVMValueRef idx64 = index;
+    unsigned iw = LLVMGetIntTypeWidth(LLVMTypeOf(index));
+    if (iw < 64)      idx64 = LLVMBuildSExt(codegen->builder, index, i64, "bc_idx");
+    else if (iw > 64) idx64 = LLVMBuildTrunc(codegen->builder, index, i64, "bc_idx");
+    LLVMValueRef file = LLVMBuildGlobalStringPtr(codegen->builder,
+        expr->pos.filename ? expr->pos.filename : "<input>", "bc_file");
+    LLVMValueRef line = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                     (unsigned long long)expr->pos.line, 0);
+    LLVMValueRef args[4] = { idx64, length, file, line };
+    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 4, "");
+}
+#endif
+
 ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -90,23 +113,29 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         
         case TYPE_SLICE: {
             element_type = base_type->data.slice.element_type;
-            
-            // Slices are structs with { ptr, len, cap }
-            // Extract the data pointer (field 0)
+
+            // Slices are structs with { ptr, len, cap }. Extract the data
+            // pointer (field 0) and the length (field 1).
             LLVMValueRef slice_ptr;
+            LLVMValueRef slice_len;
             if (base_val->is_lvalue) {
                 // Load the slice struct
                 LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder,
                                                        codegen_type_to_llvm(codegen, base_type),
                                                        base_val->llvm_value, "slice_load");
                 slice_ptr = LLVMBuildExtractValue(codegen->builder, slice_val, 0, "slice_ptr");
+                slice_len = LLVMBuildExtractValue(codegen->builder, slice_val, 1, "slice_len");
             } else {
                 slice_ptr = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 0, "slice_ptr");
+                slice_len = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 1, "slice_len");
             }
-            
-            // Generate bounds check if in safe mode
-            // TODO: Add runtime bounds checking
-            
+
+            // P1-6: runtime bounds check before the element GEP. goo_bounds_check
+            // panics ("bounds check failed") if index >= length, so out-of-range
+            // access aborts instead of reading/writing past the buffer. The
+            // comparison lives in the runtime fn, so no IR branching here.
+            codegen_emit_bounds_check(codegen, index_val->llvm_value, slice_len, expr);
+
             // Index into the slice data
             result = LLVMBuildGEP2(codegen->builder,
                                   codegen_type_to_llvm(codegen, element_type),
