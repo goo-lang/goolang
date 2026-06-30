@@ -129,6 +129,7 @@ static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field
 %type <node> enum_type enum_variant_list enum_variant
+%type <node> interface_type interface_method_list interface_method
 %type <node> slice_lit
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
@@ -1432,6 +1433,7 @@ type:
     | nullable_type { $$ = $1; }      // Goo extension
     | struct_type { $$ = $1; }
     | enum_type { $$ = $1; }
+    | interface_type { $$ = $1; }
     ;
 
 struct_type:
@@ -1484,6 +1486,62 @@ enum_variant:
         IdentifierNode* ident = (IdentifierNode*)$1;
         $$ = (ASTNode*)ast_enum_variant_new(ident->name, NULL, get_current_position());
         ast_node_free($1);
+    }
+    ;
+
+// Interface type (P4-1): `interface { Area() int  Less(i int, j int) bool }`
+// or the empty `interface {}`. Modeled on enum_type/struct_type (juxtaposed
+// list, no separators — relies on ASI/whitespace). Each method is a FuncDeclNode
+// signature with body == NULL; type_from_ast (P4-2) walks them into the
+// TYPE_INTERFACE method set.
+interface_type:
+    INTERFACE LBRACE interface_method_list RBRACE {
+        $$ = (ASTNode*)ast_interface_type_new($3, get_current_position());
+    }
+    | INTERFACE LBRACE RBRACE {
+        $$ = (ASTNode*)ast_interface_type_new(NULL, get_current_position());
+    }
+    ;
+
+interface_method_list:
+    interface_method { $$ = $1; }
+    | interface_method_list interface_method {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+// A method signature: `Name`, `Name() ret`, `Name(params)`, `Name(params) ret`.
+// Reuses func_params / func_result so signatures parse with the SAME rules as
+// function decls (no new param/result grammar). Stored as a bodyless FuncDeclNode.
+interface_method:
+    identifier LPAREN RPAREN {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        FuncDeclNode* m = ast_func_decl_new(ident->name, ident->base.pos);
+        m->params = NULL; m->return_type = NULL; m->body = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)m;
+    }
+    | identifier LPAREN RPAREN func_result {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        FuncDeclNode* m = ast_func_decl_new(ident->name, ident->base.pos);
+        m->params = NULL; m->return_type = $4; m->body = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)m;
+    }
+    | identifier LPAREN func_params RPAREN {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        FuncDeclNode* m = ast_func_decl_new(ident->name, ident->base.pos);
+        m->params = $3; m->return_type = NULL; m->body = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)m;
+    }
+    | identifier LPAREN func_params RPAREN func_result {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        FuncDeclNode* m = ast_func_decl_new(ident->name, ident->base.pos);
+        m->params = $3; m->return_type = $5; m->body = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)m;
     }
     ;
 

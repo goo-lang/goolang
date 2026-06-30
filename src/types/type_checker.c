@@ -1586,6 +1586,71 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             return result;
         }
 
+        case AST_INTERFACE_TYPE: {
+            // P4-2: build a TYPE_INTERFACE from the method-signature list. Each
+            // method is a bodyless FuncDeclNode (name + params + return_type);
+            // turn it into an InterfaceMethod carrying a function Type so P4-3/4-4
+            // can check satisfaction and dispatch.
+            InterfaceTypeNode* it = (InterfaceTypeNode*)type_node;
+            InterfaceMethod* head = NULL;
+            InterfaceMethod* tail = NULL;
+            size_t method_count = 0;
+
+            for (ASTNode* m = it->methods; m; m = m->next) {
+                if (m->type != AST_FUNC_DECL) continue;
+                FuncDeclNode* fn = (FuncDeclNode*)m;
+
+                size_t pcount = 0;
+                for (ASTNode* p = fn->params; p; p = p->next) {
+                    if (p->type == AST_VAR_DECL) {
+                        pcount += ((VarDeclNode*)p)->name_count
+                                      ? ((VarDeclNode*)p)->name_count : 1;
+                    }
+                }
+                Type** ptypes = pcount ? calloc(pcount, sizeof(Type*)) : NULL;
+                size_t pidx = 0;
+                for (ASTNode* p = fn->params; p; p = p->next) {
+                    if (p->type != AST_VAR_DECL) continue;
+                    VarDeclNode* pd = (VarDeclNode*)p;
+                    Type* pt = pd->type ? type_from_ast(checker, pd->type) : NULL;
+                    if (!pt) { free(ptypes); return NULL; }
+                    // One declared type may cover several names (`i, j int`).
+                    size_t n = pd->name_count ? pd->name_count : 1;
+                    for (size_t k = 0; k < n && pidx < pcount; k++) ptypes[pidx++] = pt;
+                }
+
+                Type* ret = fn->return_type
+                                ? type_from_ast(checker, fn->return_type)
+                                : type_checker_get_builtin(checker, TYPE_VOID);
+                if (!ret) { free(ptypes); return NULL; }
+
+                Type* method_fn = type_function(ptypes, pcount, ret);
+                free(ptypes);  // type_function copies what it needs
+
+                // Build the InterfaceMethod inline (mirrors the struct/enum
+                // cases building their types via type_new rather than pulling in
+                // the concept/protocol subsystem helpers).
+                InterfaceMethod* im = calloc(1, sizeof(InterfaceMethod));
+                if (!im) return NULL;
+                im->name = strdup(fn->name);
+                im->type = method_fn;
+                im->next = NULL;
+                if (tail) tail->next = im; else head = im;
+                tail = im;
+                method_count++;
+            }
+
+            // Empty interface (`interface {}`) is valid — every type satisfies it.
+            Type* result = type_new(TYPE_INTERFACE);
+            if (!result) return NULL;
+            result->data.interface.methods = head;
+            result->data.interface.method_count = method_count;
+            result->data.interface.name = NULL;  // stamped by type_decl if named
+            result->data.interface.is_synthesized = 0;
+            result->data.interface.source_concept = NULL;
+            return result;
+        }
+
         case AST_MAP_TYPE: {
             MapTypeNode* map = (MapTypeNode*)type_node;
             Type* key_type = type_from_ast(checker, map->key_type);

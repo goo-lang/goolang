@@ -992,6 +992,17 @@ EnumTypeNode* ast_enum_type_new(ASTNode* variants, Position pos) {
     return n;
 }
 
+InterfaceTypeNode* ast_interface_type_new(ASTNode* methods, Position pos) {
+    InterfaceTypeNode* n = (InterfaceTypeNode*)calloc(1, sizeof(InterfaceTypeNode));
+    if (!n) return NULL;
+    n->base.type = AST_INTERFACE_TYPE;
+    n->base.pos = pos;
+    n->base.node_type = NULL;
+    n->base.next = NULL;
+    n->methods = methods;
+    return n;
+}
+
 EnumVariantNode* ast_enum_variant_new(const char* name, ASTNode* fields, Position pos) {
     EnumVariantNode* n = (EnumVariantNode*)calloc(1, sizeof(EnumVariantNode));
     if (!n) return NULL;
