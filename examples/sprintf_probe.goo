@@ -1,0 +1,6 @@
+package main
+import "fmt"
+func main() {
+	s := fmt.Sprintf("[%d:%s:%t]", 7, "ok", true)
+	fmt.Println(s)
+}

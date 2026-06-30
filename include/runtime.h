@@ -75,6 +75,11 @@ int goo_string_eq(goo_string_t a, goo_string_t b);
 // P1-2: lexicographic comparison for `< <= > >=`. Returns -1, 0, or 1
 // (a<b, a==b, a>b) — bytes compared up to the shorter length, then by length.
 int goo_string_cmp(goo_string_t a, goo_string_t b);
+// Scalar-to-string conversions — heap-allocate the result; used by fmt.Sprintf
+// and reusable by a later strconv milestone.
+goo_string_t goo_int_to_string(int64_t value);
+goo_string_t goo_float_to_string(double value);
+goo_string_t goo_bool_to_string(int value);
 
 // Stdlib package backings (used by codegen to lower fmt.*, os.*,
 // strings.*, math.* calls into runtime symbols)
