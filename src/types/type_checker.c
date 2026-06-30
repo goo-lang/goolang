@@ -108,6 +108,13 @@ Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
     return checker->builtin_types[kind];
 }
 
+// v1 `error` = `?*int8` (a nullable pointer). Single source of truth so the
+// `error` keyword, the n,err destructure, and errors.New stay in lockstep —
+// Phase 6's real error struct / `.Error()` changes only this.
+Type* type_checker_error_type(TypeChecker* checker) {
+    return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+}
+
 void type_checker_add_builtin_functions(TypeChecker* checker) {
     if (!checker || !checker->current_scope) return;
     
@@ -658,8 +665,7 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         per_name_types = malloc(sizeof(Type*) * 2);
         if (per_name_types) {
             per_name_types[0] = final_type->data.error_union.value_type;
-            per_name_types[1] = type_nullable(
-                type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+            per_name_types[1] = type_checker_error_type(checker);
         }
     }
 
@@ -1549,7 +1555,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             // pointer — nameable in signatures, accepts nil, and `== nil`
             // works. Method dispatch (`.Error()`) is deferred to Phase 6.
             if (strcmp(ident->name, "error") == 0)
-                return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+                return type_checker_error_type(checker);
 
             // User-defined named type (e.g. `new(Point)`): `type Foo ...` is
             // registered as a Variable whose `type` field is the named Type
@@ -1589,7 +1595,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
             // F8: Go's `error` interface — see the AST_IDENTIFIER branch above.
             if (strcmp(basic->name, "error") == 0)
-                return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+                return type_checker_error_type(checker);
 
             // User-defined named type? type_check_type_decl registers
             // `type Foo = ...` aliases by piggybacking on the variable

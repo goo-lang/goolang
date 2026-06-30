@@ -531,6 +531,13 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         const char* nm0 = var_decl->names[0];
         LLVMValueRef value = codegen_error_union_get_value(codegen, rhs->llvm_value);
         LLVMTypeRef value_llvm = codegen_type_to_llvm(codegen, value_type);
+        // Go semantics: name0 is the zero value when the union holds an error.
+        // The error arm leaves the value slot undef (the error constructor only
+        // writes the error slot), so `n, err := Atoi("bad")` must read 0 for n,
+        // not poison. select(is_error, zero(T), value) — mirrors the err_ptr
+        // select below and the spec's preferred form for the value arm.
+        value = LLVMBuildSelect(codegen->builder, is_error,
+            LLVMConstNull(value_llvm), value, "val_zero_on_err");
         LLVMValueRef val_alloca = codegen_alloc_local(codegen, value_llvm, nm0);
         LLVMBuildStore(codegen->builder, value, val_alloca);
         ValueInfo* vi0 = value_info_new(nm0, val_alloca, value_type);
@@ -543,8 +550,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // name1 = ?error {i1 is_null, i8*}. nil ⟺ !is_error, so `err != nil`
         // (which lowers to !is_null) is true exactly when is_error is true.
         const char* nm1 = var_decl->names[1];
-        Type* err_type = type_nullable(
-            type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+        Type* err_type = type_checker_error_type(checker);
         LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
         LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
         LLVMValueRef is_null = LLVMBuildNot(codegen->builder, is_error, "err_is_null");

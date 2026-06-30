@@ -1,0 +1,19 @@
+// erru_zero_on_error_probe: Go guarantees the value is its zero value when the
+// (value, err) pair carries an error. `n, err := strconv.Atoi("bad")` must read
+// n == 0 on the error path — NOT the undef left in the union's value slot.
+// Locks in the select(is_error, zero, value) behaviour of the !T destructure.
+package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func main() {
+	n, err := strconv.Atoi("bad")
+	if err != nil {
+		fmt.Println(n) // 0
+	} else {
+		fmt.Println("FAIL err-path")
+	}
+}

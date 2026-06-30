@@ -419,8 +419,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     ValueInfo* msg = codegen_generate_expression(codegen, checker, call->args);
                     if (msg) value_info_free(msg); // evaluated, not stored (v1)
                 }
-                Type* err_type = type_nullable(
-                    type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+                Type* err_type = type_checker_error_type(checker);
                 LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
                 LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
                 // is_null = 0 (present / non-nil)

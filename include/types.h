@@ -477,6 +477,13 @@ void type_checker_init_builtins(TypeChecker* checker);
 void type_checker_add_builtin_functions(TypeChecker* checker);
 Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind);
 
+// The v1 representation of Go's `error` interface: a nullable pointer
+// (`?*int8`). Single source of truth — the type checker (`error` keyword,
+// the n,err destructure bind, errors.New) and codegen (destructure, errors.New)
+// all build the error type through this, so Phase 6 (real error struct /
+// `.Error()`) changes one place instead of five.
+Type* type_checker_error_type(TypeChecker* checker);
+
 // Channel helper functions
 const char* channel_pattern_string(ChannelPattern pattern);
 

@@ -1224,7 +1224,7 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
     // For v1, the returned error is a non-nil marker; message storage is
     // deferred to Phase 6 (.Error() method / runtime error struct).
     if (strcmp(package, "errors") == 0 && strcmp(name, "New") == 0) {
-        Type* err_t = type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+        Type* err_t = type_checker_error_type(checker);
         return type_function(NULL, 0, err_t);
     }
 
