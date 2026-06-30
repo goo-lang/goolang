@@ -554,13 +554,32 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
         LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
         LLVMValueRef is_null = LLVMBuildNot(codegen->builder, is_error, "err_is_null");
-        // Non-null marker so `!= nil` consumers that only read is_null are
-        // unaffected; inttoptr(1) keeps a distinguishable non-null pointer.
-        LLVMValueRef non_null = LLVMBuildIntToPtr(codegen->builder,
-            LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0), i8pt, "err_marker");
+
+        // Branch: box the union's goo_string error arm only when is_error (keeps the
+        // common success path allocation-free). PHI the resulting i8* handle.
+        LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+        LLVMBasicBlockRef box_bb   = LLVMAppendBasicBlockInContext(codegen->context, fn, "err.box");
+        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(codegen->context, fn, "err.box.merge");
+        LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildCondBr(codegen->builder, is_error, box_bb, merge_bb);
+
+        // box_bb: extract the error arm goo_string and box it.
+        codegen_set_insert_point(codegen, box_bb);
+        LLVMValueRef arm = codegen_error_union_get_error(codegen, rhs->llvm_value);
+        LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+        LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
+        LLVMValueRef fargs[] = { arm };
+        LLVMValueRef boxed = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, fargs, 1, "err.boxed");
+        LLVMBuildBr(codegen->builder, merge_bb);
+        LLVMBasicBlockRef box_exit = LLVMGetInsertBlock(codegen->builder);
+
+        // merge_bb: PHI null (success) vs boxed (error).
+        codegen_set_insert_point(codegen, merge_bb);
+        LLVMValueRef err_ptr = LLVMBuildPhi(codegen->builder, i8pt, "err_ptr");
         LLVMValueRef null_ptr = LLVMConstNull(i8pt);
-        LLVMValueRef err_ptr  = LLVMBuildSelect(codegen->builder, is_error,
-            non_null, null_ptr, "err_ptr");
+        LLVMAddIncoming(err_ptr, &null_ptr, &entry_bb, 1);
+        LLVMAddIncoming(err_ptr, &boxed, &box_exit, 1);
+
         LLVMValueRef err_val = LLVMGetUndef(err_llvm);
         err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "err.is_null");
         err_val = LLVMBuildInsertValue(codegen->builder, err_val, err_ptr, 1, "err.ptr");

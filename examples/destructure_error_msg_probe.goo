@@ -1,0 +1,12 @@
+package main
+import (
+	"fmt"
+	"strconv"
+)
+func main() {
+	n, err := strconv.Atoi("bad")
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	fmt.Println(n)
+}
