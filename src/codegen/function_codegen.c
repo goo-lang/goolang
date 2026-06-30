@@ -507,18 +507,6 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         return 0;
     }
 
-    // P4-3/P4-5 boundary: the type checker accepts initializing an interface
-    // variable with a concrete implementer, but boxing the value into an
-    // {vtable, data} interface value is P4-5 (not yet implemented). A bare
-    // `var s Shape` (no initializer) is fine — it is a zero interface value.
-    // Reject only the boxing case with a clean diagnostic, not a verifier crash
-    // or a silently-stored concrete value.
-    if (var_type->kind == TYPE_INTERFACE && var_decl->values) {
-        codegen_error(codegen, decl->pos,
-                      "initializing an interface variable with a concrete value "
-                      "is not yet implemented (Phase 4 P4-5: vtable dispatch)");
-        return 0;
-    }
 
     // Multi-LHS short var decl `a, b := f()` — evaluate RHS once,
     // destructure via ExtractValue. Per-name types come from the
@@ -717,6 +705,19 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "null_tag");
                 agg = LLVMBuildInsertValue(codegen->builder, agg, init_value->llvm_value, 1, "null_val");
                 init_value->llvm_value = agg;
+                init_value->goo_type = var_type;
+            }
+
+            // Box a concrete value into an interface value (P4-5) when the
+            // declared type is an interface. The {vtable, data} box replaces the
+            // concrete value before it is stored into the interface-typed slot.
+            if (var_type && var_type->kind == TYPE_INTERFACE &&
+                init_value->goo_type && init_value->goo_type->kind != TYPE_INTERFACE) {
+                LLVMValueRef boxed = codegen_interface_box(codegen, checker, var_type,
+                                                           init_value->goo_type,
+                                                           init_value->llvm_value);
+                if (!boxed) { value_info_free(init_value); return 0; }
+                init_value->llvm_value = boxed;
                 init_value->goo_type = var_type;
             }
 

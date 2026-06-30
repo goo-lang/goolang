@@ -1,0 +1,48 @@
+// interface_dispatch_probe (P4-5): interface values dispatch through a vtable.
+//
+// Two concrete types implement the same interface; an interface-typed variable
+// holding each dispatches to the correct concrete method (polymorphism), method
+// arguments are forwarded, and a function returning an interface boxes its
+// concrete result. This is the end-to-end proof of vtable construction + boxing
+// + dynamic dispatch (the sort.Interface mechanism).
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+	Scale(f int) int
+}
+
+type Sq struct {
+	side int
+}
+
+func (s Sq) Area() int       { return s.side * s.side }
+func (s Sq) Scale(f int) int { return s.side * f }
+
+type Rect struct {
+	w int
+	h int
+}
+
+func (r Rect) Area() int       { return r.w * r.h }
+func (r Rect) Scale(f int) int { return (r.w + r.h) * f }
+
+// Returns an interface value — exercises return-boxing.
+func makeSquare(n int) Shape { return Sq{side: n} }
+
+func main() {
+	var a Shape = Sq{side: 4}
+	var b Shape = Rect{w: 2, h: 3}
+
+	// Polymorphic dispatch: each interface value calls its own concrete method.
+	fmt.Println(a.Area())     // 16
+	fmt.Println(b.Area())     // 6
+	fmt.Println(a.Scale(10))  // 40
+	fmt.Println(b.Scale(10))  // 50
+
+	// Return-boxing: a function result of interface type dispatches correctly.
+	c := makeSquare(5)
+	fmt.Println(c.Area())     // 25
+}

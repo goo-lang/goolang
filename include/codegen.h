@@ -211,6 +211,16 @@ ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* chec
 ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
+// Interface codegen (P4-5): vtable construction, boxing, dynamic dispatch.
+LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
+                                      Type* iface, Type* concrete);
+LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
+                                   Type* iface, Type* concrete, LLVMValueRef value);
+ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* checker,
+                                      LLVMValueRef iface_val, Type* iface_type,
+                                      const char* method_name,
+                                      LLVMValueRef* args, size_t argc);
+
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_catch_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);

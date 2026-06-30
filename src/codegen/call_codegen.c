@@ -418,6 +418,31 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     if (call->function->type == AST_SELECTOR_EXPR) {
         SelectorExprNode* msel = (SelectorExprNode*)call->function;
         Type* recv_type = type_check_expression(checker, msel->expr);
+
+        // Interface dispatch (P4-5): when the receiver is an interface value,
+        // lower the call to a vtable dispatch instead of a direct mangled call.
+        if (recv_type && recv_type->kind == TYPE_INTERFACE) {
+            ValueInfo* iv = codegen_generate_expression(codegen, checker, msel->expr);
+            if (!iv) return NULL;
+            LLVMValueRef iface_val = iv->llvm_value;
+            value_info_free(iv);
+
+            size_t argc = 0;
+            for (ASTNode* a = call->args; a; a = a->next) argc++;
+            LLVMValueRef* dargs = argc ? malloc(argc * sizeof(LLVMValueRef)) : NULL;
+            size_t i = 0;
+            for (ASTNode* a = call->args; a; a = a->next, i++) {
+                ValueInfo* av = codegen_generate_expression(codegen, checker, a);
+                if (!av) { free(dargs); return NULL; }
+                dargs[i] = av->llvm_value;
+                value_info_free(av);
+            }
+            ValueInfo* r = codegen_interface_dispatch(codegen, checker, iface_val,
+                                                      recv_type, msel->selector, dargs, argc);
+            free(dargs);
+            return r;
+        }
+
         const char* tn = type_receiver_name(recv_type);
         char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
         LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
