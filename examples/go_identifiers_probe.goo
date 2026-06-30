@@ -1,0 +1,45 @@
+// go_identifiers_probe: words that USED to be reserved by dead WASM/GPU/parallel/
+// ownership/messaging features are now ordinary identifiers, so idiomatic Go code
+// compiles. Exercises them as function names, parameters, struct fields, and vars.
+package main
+
+import "fmt"
+
+type server struct {
+	host   string
+	start  int
+	memory int
+}
+
+// `reduce` (was a parallel keyword) as a function name; `data` (was the WASM
+// data-segment keyword) as a parameter — the exact name the sort port needs.
+func reduce(data []int) int {
+	total := 0
+	for i := 0; i < len(data); i++ {
+		total = total + data[i]
+	}
+	return total
+}
+
+func main() {
+	s := server{host: "h", start: 1, memory: 64}
+
+	table := []int{1, 2, 3}     // was WASM keyword
+	local := 10                 // was GPU keyword
+	global := 20                // was GPU keyword
+	shared := 30                // was ownership keyword
+	from := 5                   // was messaging keyword
+	atomic := 7                 // was parallel keyword
+	device := 2                 // was GPU keyword
+	push := 1                   // was messaging keyword
+	pull := 1                   // was messaging keyword
+	export := 1                 // was WASM keyword
+	elem := 1                   // was WASM keyword
+	parallel := 1               // was parallel keyword
+	constant := 100             // was GPU keyword
+
+	sum := reduce(table) + local + global + shared + from + atomic +
+		device + push + pull + export + elem + parallel + s.start + s.memory
+	fmt.Println(sum)      // 6+10+20+30+5+7+2+1+1+1+1+1+1+64 = 150
+	fmt.Println(constant) // 100
+}
