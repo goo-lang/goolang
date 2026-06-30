@@ -1228,6 +1228,18 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
         return NULL;
     }
 
+    // Named non-struct type (e.g. `type IntSlice []int`) method call: resolve
+    // `Name__selector` exactly like the struct method path above (1199-1208).
+    if (expr_type->name) {
+        char* mangled = type_method_mangled_name(expr_type->name, selector->selector);
+        Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        free(mangled);
+        if (m && m->type && m->type->kind == TYPE_FUNCTION) {
+            expr->node_type = m->type;
+            return m->type;
+        }
+    }
+
     type_error(checker, expr->pos, "Selector on non-struct, non-package type");
     return NULL;
 }
