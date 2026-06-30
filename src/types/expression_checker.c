@@ -1126,6 +1126,11 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, void_t);
     }
 
+    // fmt.Printf(format string, args...) -> void  (compile-time format walker)
+    if (strcmp(package, "fmt") == 0 && strcmp(name, "Printf") == 0) {
+        return type_function(NULL, 0, void_t);
+    }
+
     // os.Exit(int) -> void
     if (strcmp(package, "os") == 0 && strcmp(name, "Exit") == 0) {
         return type_function(NULL, 0, void_t);

@@ -11,6 +11,7 @@
 static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeChecker* checker,
                                                ASTNode* expr, const char* runtime_symbol,
                                                TypeKind return_kind, int unused_extra);
+static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 // Defined in expression_codegen.c: storage address of an addressable
 // expression (no load). Used here for pointer-receiver auto-address-of (P2-3).
@@ -303,6 +304,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
                 // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
                 return codegen_generate_println_call(codegen, checker, expr);
+            }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Printf") == 0) {
+                return codegen_generate_printf_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
@@ -1063,7 +1067,7 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
         
         value_info_free(arg_val);
     }
-    
+
     // Return void value
     ValueInfo* result = malloc(sizeof(ValueInfo));
     result->name = NULL;
@@ -1072,7 +1076,288 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
     result->is_lvalue = 0;
     result->is_moved = 0;
     result->is_initialized = 1;
-    
+
     return result;
+#endif
+}
+
+// fmt_emit_segments: shared format-string walker used by Printf (sprintf_mode=0)
+// and eventually Sprintf (Task 3, sprintf_mode=1).  For Printf mode it emits
+// goo_print/goo_print_string/goo_print_int/goo_print_bool/goo_print_float calls
+// for each literal text chunk and format verb.  For Sprintf mode the function is
+// a stub that will be filled by Task 3.
+//
+// Parameters:
+//   c            — the active CodeGenerator
+//   tc           — the active TypeChecker
+//   fmt_str      — the already-escape-processed format string (from LiteralNode->value)
+//   args         — the ASTNode list of verb arguments (format arg NOT included)
+//   sprintf_mode — 0 for Printf, 1 for Sprintf (stub until Task 3)
+//   out_str      — (sprintf_mode=1 only) receives the built goo_string
+//
+// Returns 1 on success, 0 after codegen_error on any mismatch.
+#if LLVM_AVAILABLE
+static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
+                              const char* fmt_str, ASTNode* args,
+                              int sprintf_mode, LLVMValueRef* out_str) {
+    (void)out_str;  // used only in sprintf_mode=1 (Task 3)
+    if (sprintf_mode) {
+        // Task 3 fills the Sprintf branch; for now reject it cleanly.
+        codegen_error(c, (Position){0, 0, 0, NULL},
+                      "fmt.Sprintf: sprintf not yet wired");
+        return 0;
+    }
+
+    // Collect needed runtime functions once up front.
+    LLVMValueRef print_fn       = LLVMGetNamedFunction(c->module, "goo_print");
+    LLVMValueRef print_str_fn   = LLVMGetNamedFunction(c->module, "goo_print_string");
+    LLVMValueRef print_int_fn   = LLVMGetNamedFunction(c->module, "goo_print_int");
+    LLVMValueRef print_bool_fn  = LLVMGetNamedFunction(c->module, "goo_print_bool");
+    LLVMValueRef print_float_fn = LLVMGetNamedFunction(c->module, "goo_print_float");
+
+    if (!print_fn || !print_str_fn || !print_int_fn || !print_bool_fn || !print_float_fn) {
+        codegen_error(c, (Position){0, 0, 0, NULL},
+                      "fmt.Printf: required runtime print functions not found in module");
+        return 0;
+    }
+
+    size_t fmt_len = strlen(fmt_str);
+    // chunk accumulates consecutive literal (non-verb) characters.
+    // Escapes are already processed by the lexer so this is pure byte-copy.
+    char* chunk = malloc(fmt_len + 1);
+    if (!chunk) {
+        codegen_error(c, (Position){0, 0, 0, NULL}, "fmt.Printf: out of memory");
+        return 0;
+    }
+    size_t chunk_len = 0;
+
+    ASTNode* arg_cursor = args;  // next verb argument to consume
+    int ok = 1;
+
+    for (size_t i = 0; i <= fmt_len && ok; i++) {
+        char ch = (i < fmt_len) ? fmt_str[i] : '\0';
+
+        // Accumulate non-verb characters into the current literal chunk.
+        if (ch != '%' && ch != '\0') {
+            chunk[chunk_len++] = ch;
+            continue;
+        }
+
+        // Flush the current literal chunk (if any) via goo_print.
+        // goo_print takes a NUL-terminated char* — safe here because every
+        // chunk is compiler-generated from the format-string body (never a
+        // runtime substring), so we append a NUL terminator before emitting.
+        if (chunk_len > 0) {
+            chunk[chunk_len] = '\0';
+            LLVMValueRef cstr = LLVMBuildGlobalStringPtr(c->builder, chunk, "pf_chunk");
+            LLVMValueRef pargs[] = { cstr };
+            LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_fn),
+                           print_fn, pargs, 1, "");
+            chunk_len = 0;
+        }
+
+        if (ch == '\0') break;  // end of format string
+
+        // ch == '%': consume the verb character.
+        i++;
+        if (i >= fmt_len) {
+            codegen_error(c, (Position){0, 0, 0, NULL},
+                          "fmt.Printf: trailing '%%' with no verb at end of format string");
+            ok = 0;
+            break;
+        }
+        char verb = fmt_str[i];
+
+        if (verb == '%') {
+            // %% → emit a literal '%'.
+            LLVMValueRef cstr = LLVMBuildGlobalStringPtr(c->builder, "%", "pf_pct");
+            LLVMValueRef pargs[] = { cstr };
+            LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_fn),
+                           print_fn, pargs, 1, "");
+            continue;
+        }
+
+        // Every other verb consumes one argument from the caller's list.
+        if (!arg_cursor) {
+            codegen_error(c, (Position){0, 0, 0, NULL},
+                          "fmt.Printf: too few arguments for format string");
+            ok = 0;
+            break;
+        }
+
+        ValueInfo* arg_val = codegen_generate_expression(c, tc, arg_cursor);
+        if (!arg_val) { ok = 0; break; }
+
+        // Load through lvalue (field/index selectors arrive as address + is_lvalue).
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(c, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(c->builder, at,
+                                                      arg_val->llvm_value, "pf_load");
+                arg_val->is_lvalue = 0;
+            }
+        }
+
+        TypeKind kind = arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID;
+
+        if (verb == 'd') {
+            // %d — signed decimal integer
+            if (kind != TYPE_INT8 && kind != TYPE_INT16 &&
+                kind != TYPE_INT32 && kind != TYPE_INT64) {
+                codegen_error(c, arg_cursor->pos,
+                              "fmt.Printf: %%d requires an integer argument");
+                value_info_free(arg_val);
+                ok = 0;
+                break;
+            }
+            LLVMValueRef w = LLVMBuildSExt(c->builder, arg_val->llvm_value,
+                                            LLVMInt64TypeInContext(c->context), "sext");
+            LLVMValueRef pargs[] = { w };
+            LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_int_fn),
+                           print_int_fn, pargs, 1, "");
+
+        } else if (verb == 's') {
+            // %s — string (length-aware via goo_print_string, safe for substrings)
+            if (kind != TYPE_STRING) {
+                codegen_error(c, arg_cursor->pos,
+                              "fmt.Printf: %%s requires a string argument");
+                value_info_free(arg_val);
+                ok = 0;
+                break;
+            }
+            LLVMValueRef pargs[] = { arg_val->llvm_value };
+            LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
+                           print_str_fn, pargs, 1, "");
+
+        } else if (verb == 'f') {
+            // %f — floating-point
+            if (kind != TYPE_FLOAT32 && kind != TYPE_FLOAT64) {
+                codegen_error(c, arg_cursor->pos,
+                              "fmt.Printf: %%f requires a float argument");
+                value_info_free(arg_val);
+                ok = 0;
+                break;
+            }
+            LLVMValueRef w = (kind == TYPE_FLOAT32)
+                ? LLVMBuildFPExt(c->builder, arg_val->llvm_value,
+                                  LLVMDoubleTypeInContext(c->context), "fpext")
+                : arg_val->llvm_value;
+            LLVMValueRef pargs[] = { w };
+            LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_float_fn),
+                           print_float_fn, pargs, 1, "");
+
+        } else if (verb == 't') {
+            // %t — boolean ("true"/"false")
+            if (kind != TYPE_BOOL) {
+                codegen_error(c, arg_cursor->pos,
+                              "fmt.Printf: %%t requires a bool argument");
+                value_info_free(arg_val);
+                ok = 0;
+                break;
+            }
+            LLVMValueRef w = LLVMBuildZExt(c->builder, arg_val->llvm_value,
+                                            LLVMInt32TypeInContext(c->context), "zext");
+            LLVMValueRef pargs[] = { w };
+            LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_bool_fn),
+                           print_bool_fn, pargs, 1, "");
+
+        } else if (verb == 'v') {
+            // %v — default format: dispatch on arg kind, matching Println's dispatch.
+            if (kind == TYPE_STRING) {
+                LLVMValueRef pargs[] = { arg_val->llvm_value };
+                LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
+                               print_str_fn, pargs, 1, "");
+            } else if (kind == TYPE_INT8 || kind == TYPE_INT16 ||
+                       kind == TYPE_INT32 || kind == TYPE_INT64) {
+                LLVMValueRef w = LLVMBuildSExt(c->builder, arg_val->llvm_value,
+                                                LLVMInt64TypeInContext(c->context), "sext");
+                LLVMValueRef pargs[] = { w };
+                LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_int_fn),
+                               print_int_fn, pargs, 1, "");
+            } else if (kind == TYPE_BOOL) {
+                LLVMValueRef w = LLVMBuildZExt(c->builder, arg_val->llvm_value,
+                                                LLVMInt32TypeInContext(c->context), "zext");
+                LLVMValueRef pargs[] = { w };
+                LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_bool_fn),
+                               print_bool_fn, pargs, 1, "");
+            } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
+                LLVMValueRef w = (kind == TYPE_FLOAT32)
+                    ? LLVMBuildFPExt(c->builder, arg_val->llvm_value,
+                                      LLVMDoubleTypeInContext(c->context), "fpext")
+                    : arg_val->llvm_value;
+                LLVMValueRef pargs[] = { w };
+                LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_float_fn),
+                               print_float_fn, pargs, 1, "");
+            } else {
+                codegen_error(c, arg_cursor->pos,
+                              "fmt.Printf: %%v: unsupported argument type "
+                              "(only string, integer, bool, float supported in v1)");
+                value_info_free(arg_val);
+                ok = 0;
+                break;
+            }
+
+        } else {
+            codegen_error(c, (Position){0, 0, 0, NULL},
+                          "fmt.Printf: unknown format verb '%%%c'", verb);
+            value_info_free(arg_val);
+            ok = 0;
+            break;
+        }
+
+        value_info_free(arg_val);
+        arg_cursor = arg_cursor->next;
+    }
+
+    free(chunk);
+
+    if (!ok) return 0;
+
+    // Reject excess arguments not consumed by any verb.
+    if (arg_cursor) {
+        codegen_error(c, arg_cursor->pos,
+                      "fmt.Printf: too many arguments for format string");
+        return 0;
+    }
+
+    return 1;
+}
+#endif  /* LLVM_AVAILABLE */
+
+// codegen_generate_printf_call: entry point for fmt.Printf.  Validates that the
+// first argument is a compile-time string literal, then delegates to the shared
+// fmt_emit_segments walker (sprintf_mode=0) to emit goo_print* calls for each
+// literal chunk and format verb.
+static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen,
+                                                TypeChecker* checker,
+                                                ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+
+    CallExprNode* call = (CallExprNode*)expr;
+
+    // First argument must be a string literal — Printf is a compile-time
+    // format walker, not a runtime sprintf.
+    ASTNode* fmt_arg = call->args;
+    if (!fmt_arg ||
+        fmt_arg->type != AST_LITERAL ||
+        ((LiteralNode*)fmt_arg)->literal_type != TOKEN_STRING) {
+        codegen_error(codegen, expr->pos,
+                      "fmt.Printf: format must be a string literal");
+        return NULL;
+    }
+
+    const char* fmt_str = ((LiteralNode*)fmt_arg)->value;
+
+    // Walk the format string, emitting print calls for each segment.
+    // Pass fmt_arg->next so the walker sees only the verb arguments.
+    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 0, NULL)) {
+        return NULL;
+    }
+
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
 #endif
 }
