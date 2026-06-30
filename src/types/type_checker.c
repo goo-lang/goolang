@@ -1032,9 +1032,15 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             elem_type = range_type->data.slice.element_type;
         } else if (range_type->kind == TYPE_ARRAY) {
             elem_type = range_type->data.array.element_type;
+        } else if (range_type->kind == TYPE_STRING) {
+            // F7: range over a string. v1 iterates BYTES (rune decoding is
+            // deferred): key is the byte index, value is the byte widened to
+            // int32 (rune today). int32 — not uint8 — so fmt.Println accepts
+            // the value, and codegen zero-extends the i8 byte into it.
+            elem_type = type_checker_get_builtin(checker, TYPE_INT32);
         } else {
             type_error(checker, for_stmt->range_expr->pos,
-                      "for-range supported only on slice/array types in M8");
+                      "for-range supported only on slice/array/string types");
             scope_pop(checker);
             return 0;
         }

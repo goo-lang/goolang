@@ -564,10 +564,20 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "range_data");
         LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "range_len");
 
-        Type* elem_type = range_val->goo_type && range_val->goo_type->kind == TYPE_SLICE
-            ? range_val->goo_type->data.slice.element_type
-            : NULL;
-        LLVMTypeRef llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        // F7: range over a string iterates its bytes — the value var is an
+        // int32 rune (v1 byte-wise), so the backing i8 byte is zero-extended
+        // into it in the body below. Slices/arrays use their element type.
+        int is_string_range = range_val->goo_type
+                           && range_val->goo_type->kind == TYPE_STRING;
+        Type* elem_type = NULL;
+        LLVMTypeRef llvm_elem = NULL;
+        if (range_val->goo_type && range_val->goo_type->kind == TYPE_SLICE) {
+            elem_type = range_val->goo_type->data.slice.element_type;
+            llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        } else if (is_string_range) {
+            elem_type = type_checker_get_builtin(checker, TYPE_INT32);
+            llvm_elem = LLVMInt32TypeInContext(codegen->context);
+        }
 
         // Allocate index var; register it in scope under key_name.
         LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
@@ -625,12 +635,23 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // body: optionally load element, then run body
         codegen_set_insert_point(codegen, rbody);
         if (val_alloca && llvm_elem) {
-            // elem_ptr = GEP data_ptr, i
             LLVMValueRef indices[] = { i_loaded };
-            LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem,
-                                                  data_ptr, indices, 1, "elem_ptr");
-            LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "elem");
-            LLVMBuildStore(codegen->builder, elem_val, val_alloca);
+            if (is_string_range) {
+                // F7: load the i8 byte at data_ptr[i] and zero-extend it into
+                // the int32 value var (byte is unsigned, 0..255).
+                LLVMTypeRef i8t = LLVMInt8TypeInContext(codegen->context);
+                LLVMValueRef byte_ptr = LLVMBuildGEP2(codegen->builder, i8t,
+                                                      data_ptr, indices, 1, "byte_ptr");
+                LLVMValueRef byte_val = LLVMBuildLoad2(codegen->builder, i8t, byte_ptr, "byte");
+                LLVMValueRef rune_val = LLVMBuildZExt(codegen->builder, byte_val, llvm_elem, "rune");
+                LLVMBuildStore(codegen->builder, rune_val, val_alloca);
+            } else {
+                // Slice/array: load the element directly.
+                LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem,
+                                                      data_ptr, indices, 1, "elem_ptr");
+                LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "elem");
+                LLVMBuildStore(codegen->builder, elem_val, val_alloca);
+            }
         }
         // break exits to rexit; continue jumps to rpost (the increment block).
         if (!codegen_push_loop(codegen, rexit, rpost)) {
