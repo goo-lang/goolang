@@ -372,6 +372,13 @@ size_t type_align(const Type* type);
 char* type_method_mangled_name(const char* type_name, const char* method_name);
 const char* type_receiver_name(const Type* type);
 
+// P4-3: does `concrete`'s method set satisfy interface `iface`? Returns 1 if so
+// (or for the empty interface). On failure returns 0 and writes the offending
+// method name and reason ("missing" / "signature mismatch") to the out params.
+int type_interface_satisfied(TypeChecker* checker, Type* iface,
+                             Type* concrete, const char** method_out,
+                             const char** reason_out);
+
 // Type checking utilities
 int type_is_integer(const Type* type);
 int type_is_float(const Type* type);

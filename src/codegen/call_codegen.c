@@ -617,6 +617,23 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 }
             }
 
+            // Box a concrete argument into an interface parameter (P4-5).
+            if (param_type && param_type->kind == TYPE_INTERFACE &&
+                arg_val->goo_type && arg_val->goo_type->kind != TYPE_INTERFACE) {
+                if (arg_val->is_lvalue && arg_val->goo_type) {
+                    LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+                    if (at) {
+                        arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "ifargld");
+                        arg_val->is_lvalue = 0;
+                    }
+                }
+                LLVMValueRef boxed = codegen_interface_box(codegen, checker, param_type,
+                                                           arg_val->goo_type, arg_val->llvm_value);
+                if (!boxed) { value_info_free(arg_val); free(args); value_info_free(func_val); return NULL; }
+                arg_val->llvm_value = boxed;
+                arg_val->goo_type = param_type;
+            }
+
             args[i] = arg_val->llvm_value;
             value_info_free(arg_val);
             arg = arg->next;

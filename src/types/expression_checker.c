@@ -916,7 +916,25 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 }
             }
 
-            if (param_type && !type_compatible(arg_type, param_type)) {
+            // Interface parameter (P4-3/P4-5): a concrete implementer may be
+            // passed where an interface is expected. Check satisfaction here so
+            // `f(Sq{})` into `func f(s Shape)` is accepted; codegen boxes it.
+            if (param_type && param_type->kind == TYPE_INTERFACE &&
+                arg_type && arg_type->kind != TYPE_INTERFACE) {
+                const char* method = NULL;
+                const char* reason = NULL;
+                if (!type_interface_satisfied(checker, param_type, arg_type,
+                                              &method, &reason)) {
+                    const char* iname = param_type->data.interface.name
+                                            ? param_type->data.interface.name : "interface";
+                    const char* cname = type_receiver_name(arg_type);
+                    type_error(checker, arg->pos,
+                               "argument %zu: %s does not implement %s (%s method %s)",
+                               arg_count + 1, cname ? cname : type_to_string(arg_type),
+                               iname, reason ? reason : "missing", method ? method : "?");
+                    return NULL;
+                }
+            } else if (param_type && !type_compatible(arg_type, param_type)) {
                 type_error(checker, arg->pos,
                            "argument %zu: cannot use %s as %s",
                            arg_count + 1,

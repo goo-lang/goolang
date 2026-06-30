@@ -1,0 +1,32 @@
+// interface_param_probe (P4-5 gap): a concrete value passed where an interface
+// PARAMETER is expected is boxed at the call site and dispatches polymorphically
+// inside the callee. This is the sort.Sort(data Interface) calling shape.
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+}
+
+type Sq struct {
+	side int
+}
+
+func (s Sq) Area() int { return s.side * s.side }
+
+type Rect struct {
+	w int
+	h int
+}
+
+func (r Rect) Area() int { return r.w * r.h }
+
+func describe(s Shape) {
+	fmt.Println(s.Area())
+}
+
+func main() {
+	describe(Sq{side: 3})       // 9
+	describe(Rect{w: 4, h: 5})  // 20
+}
