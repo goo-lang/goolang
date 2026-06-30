@@ -1,9 +1,8 @@
 // sort_named_probe (capstone): a TinyGo-style sort.Interface port — named slice
 // type with Len/Less/Swap methods, boxed and dispatched through an interface,
 // sorted in place. Exercises the whole named-non-struct-types milestone:
-// composite literal (IntSlice{...}), method dispatch, interface boxing, and the
-// lvalue-load fix (tmp := s[i]). Temp-based Swap (tuple-index swap is a separate
-// deferred grammar milestone).
+// composite literal (IntSlice{...}), method dispatch, interface boxing, and
+// idiomatic tuple-based Swap.
 package main
 
 import "fmt"
@@ -31,9 +30,7 @@ type IntSlice []int
 func (s IntSlice) Len() int               { return len(s) }
 func (s IntSlice) Less(i int, j int) bool { return s[i] < s[j] }
 func (s IntSlice) Swap(i int, j int) {
-	tmp := s[i]
-	s[i] = s[j]
-	s[j] = tmp
+	s[i], s[j] = s[j], s[i]
 }
 
 func main() {

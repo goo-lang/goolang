@@ -913,9 +913,33 @@ simple_stmt:
     }
     | short_var_decl { $$ = $1; }
     | var_decl { $$ = $1; }
-    // F6: `a, b = v1, v2` — multiple assignment to existing lvalues. Go
-    // evaluates all RHS before any store, so `a, b = b, a` swaps.
+    // Single assignment to any lvalue: `x = e`, `s[i] = e`, `p.f = e`. Was an
+    // expression-level rule (expression ASSIGN expression); moved here so the
+    // LHS shares the `expression` reduction and tuple assignment below has no
+    // reduce/reduce conflict. Wrapped in ExprStmt to match the prior AST shape.
+    | expression ASSIGN expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ASSIGN), $3, get_current_position());
+        ExprStmtNode* es = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
+        es->base.type = AST_EXPR_STMT;
+        es->base.pos = get_current_position();
+        es->base.node_type = NULL;
+        es->base.next = NULL;
+        es->expr = (ASTNode*)binary;
+        $$ = (ASTNode*)es;
+    }
+    // F6: `a, b = v1, v2` — tuple assignment to two existing identifiers. Kept
+    // as an `identifier`-prefixed rule (alongside the `expression`-prefixed rule
+    // below) because short_var_decl uses `identifier COMMA identifier ...`; for a
+    // bare-identifier LHS bison resolves the reduce/reduce toward `identifier`
+    // (this rule is declared first), so `a, b = b, a` keeps working. Index and
+    // selector LHS (`s[i]`) can only reduce as `expression`, so they fall through
+    // to the rule below.
     | identifier COMMA identifier ASSIGN expression COMMA expression {
+        $$ = multi_assign_2_new($1, $3, $5, $7, 0);
+    }
+    // Tuple assignment to any lvalues: `s[i], s[j] = s[j], s[i]`, `p.a, p.b = …`.
+    // Targets are full expressions (addressability checked in the typechecker).
+    | expression COMMA expression ASSIGN expression COMMA expression {
         $$ = multi_assign_2_new($1, $3, $5, $7, 0);
     }
     ;
@@ -1281,14 +1305,6 @@ binary_expr:
     }
     | expression OR expression {
         BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(OR), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | expression ASSIGN expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ASSIGN), $3, get_current_position());
-        $$ = (ASTNode*)binary;
-    }
-    | expression SHORT_ASSIGN expression {
-        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(SHORT_ASSIGN), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression ARROW expression {
