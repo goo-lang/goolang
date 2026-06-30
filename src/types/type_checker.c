@@ -850,6 +850,27 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
         resolved->data.interface.name = strdup(td->name);
     }
 
+    // Stamp the declared name onto a named NON-struct/enum/interface type
+    // (e.g. `type IntSlice []int`, `type MyInt int`). Those kinds carry no
+    // kind-specific name field, so use the generic Type.name — which
+    // type_receiver_name() already falls back to — enabling method mangling
+    // (`IntSlice__M`), selector dispatch, and interface boxing on named types.
+    //
+    // type_slice/type_array/type_map pre-populate ->name with an internal
+    // descriptor (e.g. "[]int") rather than NULL, so we cannot use !->name as
+    // a guard. Shared scalar builtins (TYPE_INT32 etc.) are returned as
+    // singletons by type_checker_get_builtin; mutating them would corrupt the
+    // type table. We distinguish fresh allocations from shared singletons by
+    // pointer identity: if resolved IS the builtin singleton for its kind, skip.
+    if (resolved->kind != TYPE_STRUCT && resolved->kind != TYPE_ENUM &&
+        resolved->kind != TYPE_INTERFACE) {
+        Type* builtin = type_checker_get_builtin(checker, resolved->kind);
+        if (resolved != builtin) {
+            free(resolved->name);
+            resolved->name = strdup(td->name);
+        }
+    }
+
     // Register the named type alias only when we did NOT forward-declare a
     // shell (shell == NULL). When a shell was pre-registered above, td->name
     // is already bound in scope to resolved(=shell); re-registering would
