@@ -535,6 +535,16 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
 // struct bases by spilling to a temporary alloca.
 //
 // Also handles enum variant construction: `Circle{radius: 5}` when the
+// Forward declaration: defined after codegen_generate_slice_lit, used here
+// for named-slice composite literal lowering (TYPE_SLICE via struct literal).
+#if LLVM_AVAILABLE
+static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
+                                                  TypeChecker* checker,
+                                                  ASTNode* first_elem,
+                                                  Type* slice_type,
+                                                  Position pos);
+#endif
+
 // declared type is a TYPE_ENUM. Builds the payload aggregate against the
 // variant's payload TYPE_STRUCT, then stores {tag, payload} through a
 // stack alloca and loads the whole enum value.
@@ -602,6 +612,14 @@ ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* chec
         LLVMValueRef loaded =
             LLVMBuildLoad2(codegen->builder, enum_ty, tmp, "enum_val");
         return value_info_new(NULL, loaded, struct_type);
+    }
+
+    // Named slice composite literal: `type IntSlice []int; IntSlice{3, 1, 2}`
+    // field_values holds the elements (parallel to StructLiteralNode->field_names
+    // but without names for positional form). Lower via the shared slice helper.
+    if (struct_type->kind == TYPE_SLICE) {
+        return codegen_build_slice_from_elems(codegen, checker,
+                                              lit->field_values, struct_type, expr->pos);
     }
 
     if (struct_type->kind != TYPE_STRUCT) {
@@ -844,6 +862,130 @@ static LLVMValueRef slice_coerce_elem(CodeGenerator* codegen, LLVMValueRef v, LL
     return v;
 }
 
+// Shared core: build a slice struct { ptr, i64 len, i64 cap } from a
+// next-chained ASTNode* element list and a resolved TYPE_SLICE type.
+// Called by both codegen_generate_slice_lit (with SliceLitNode->elements)
+// and codegen_generate_struct_lit (with StructLiteralNode->field_values)
+// so the two surface forms share a single lowering path (DRY).
+#if LLVM_AVAILABLE
+static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
+                                                  TypeChecker* checker,
+                                                  ASTNode* first_elem,
+                                                  Type* slice_type,
+                                                  Position pos) {
+    Type* elem_type = slice_type->data.slice.element_type;
+    LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
+    if (!llvm_elem) {
+        codegen_error(codegen, pos, "Cannot lower slice element type");
+        return NULL;
+    }
+
+    size_t count = 0;
+    for (ASTNode* e = first_elem; e; e = e->next) count++;
+
+    int elem_is_nullable = (elem_type && elem_type->kind == TYPE_NULLABLE);
+
+    LLVMValueRef* elem_vals = count ? calloc(count, sizeof(LLVMValueRef)) : NULL;
+    size_t idx = 0;
+    for (ASTNode* e = first_elem; e; e = e->next, idx++) {
+        if (elem_is_nullable && e->type == AST_LITERAL &&
+            ((LiteralNode*)e)->literal_type == TOKEN_NIL) {
+            ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, elem_type);
+            if (!nil_val) { free(elem_vals); return NULL; }
+            elem_vals[idx] = nil_val->llvm_value;
+            value_info_free(nil_val);
+            continue;
+        }
+
+        ValueInfo* v = codegen_generate_expression(codegen, checker, e);
+        if (!v) { free(elem_vals); return NULL; }
+
+        if (elem_is_nullable && v->goo_type && v->goo_type->kind != TYPE_NULLABLE) {
+            if (v->is_lvalue) {
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, v->goo_type);
+                if (vt) {
+                    v->llvm_value = LLVMBuildLoad2(codegen->builder, vt, v->llvm_value, "elemld");
+                    v->is_lvalue = 0;
+                }
+            }
+            v->llvm_value = codegen_create_nullable_with_value(
+                codegen, llvm_elem, v->llvm_value, v->goo_type);
+        }
+
+        if (elem_type && elem_type->kind == TYPE_INTERFACE &&
+            v->goo_type && v->goo_type->kind != TYPE_INTERFACE) {
+            if (v->is_lvalue) {
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, v->goo_type);
+                if (vt) {
+                    v->llvm_value = LLVMBuildLoad2(codegen->builder, vt, v->llvm_value, "elemld");
+                    v->is_lvalue = 0;
+                }
+            }
+            LLVMValueRef boxed = codegen_interface_box(codegen, checker, elem_type,
+                                                       v->goo_type, v->llvm_value);
+            if (!boxed) {
+                codegen_error(codegen, e->pos,
+                              "failed to box value into interface slice element");
+                value_info_free(v);
+                free(elem_vals);
+                return NULL;
+            }
+            v->llvm_value = boxed;
+        }
+
+        elem_vals[idx] = v->llvm_value;
+        value_info_free(v);
+    }
+
+    LLVMTypeRef arr_type = LLVMArrayType(llvm_elem, count);
+    LLVMValueRef data_ptr;
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+    if (alloc_fn) {
+        LLVMValueRef size = LLVMSizeOf(arr_type);
+        data_ptr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
+                                  alloc_fn, &size, 1, "slice_backing");
+        LLVMTypeRef i32ty = LLVMInt32TypeInContext(codegen->context);
+        LLVMValueRef zero = LLVMConstInt(i32ty, 0, 0);
+        for (size_t i = 0; i < count; i++) {
+            LLVMValueRef indices[2] = { zero, LLVMConstInt(i32ty, i, 0) };
+            LLVMValueRef ep = LLVMBuildGEP2(codegen->builder, arr_type, data_ptr,
+                                            indices, 2, "slice_elem");
+            elem_vals[i] = slice_coerce_elem(codegen, elem_vals[i], llvm_elem);
+            LLVMBuildStore(codegen->builder, elem_vals[i], ep);
+        }
+    } else {
+        int all_const = 1;
+        for (size_t i = 0; i < count; i++) {
+            if (!LLVMIsConstant(elem_vals[i])) { all_const = 0; break; }
+        }
+        if (all_const && count > 0) {
+            LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
+            LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
+            LLVMSetInitializer(global, arr_const);
+            LLVMSetLinkage(global, LLVMPrivateLinkage);
+            LLVMSetGlobalConstant(global, 1);
+            data_ptr = global;
+        } else {
+            free(elem_vals);
+            codegen_error(codegen, pos,
+                "slice literal with non-constant elements requires the runtime "
+                "allocator (goo_alloc), which is unavailable in this build");
+            return NULL;
+        }
+    }
+    free(elem_vals);
+
+    LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
+    LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, data_ptr, 0, "slice_ptr");
+    LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 1, "slice_len");
+    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 2, "slice_cap");
+
+    return value_info_new(NULL, slice_val, slice_type);
+}
+#endif
+
 // codegen_generate_slice_lit lowers a slice literal to a slice struct
 // { ptr, i64 len, i64 cap } backed by a heap-allocated array. Element
 // type is taken from the type-check pass (node_type is already
@@ -874,156 +1016,11 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
         codegen_error(codegen, expr->pos, "Slice literal missing TYPE_SLICE node_type");
         return NULL;
     }
-    Type* elem_type = slice_type->data.slice.element_type;
-    LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
-    if (!llvm_elem) {
-        codegen_error(codegen, expr->pos, "Cannot lower slice element type");
-        return NULL;
-    }
-
-    // Count + evaluate elements.
-    size_t count = 0;
-    for (ASTNode* e = lit->elements; e; e = e->next) count++;
-
-    int elem_is_nullable = (elem_type && elem_type->kind == TYPE_NULLABLE);
-
-    LLVMValueRef* elem_vals = count ? calloc(count, sizeof(LLVMValueRef)) : NULL;
-    size_t idx = 0;
-    for (ASTNode* e = lit->elements; e; e = e->next, idx++) {
-        // P2-5: a `?T` slice element built from the nil literal encodes the
-        // null-nullable directly (mirrors the struct-literal and call-arg paths).
-        if (elem_is_nullable && e->type == AST_LITERAL &&
-            ((LiteralNode*)e)->literal_type == TOKEN_NIL) {
-            ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, elem_type);
-            if (!nil_val) { free(elem_vals); return NULL; }
-            elem_vals[idx] = nil_val->llvm_value;
-            value_info_free(nil_val);
-            continue;
-        }
-
-        ValueInfo* v = codegen_generate_expression(codegen, checker, e);
-        if (!v) { free(elem_vals); return NULL; }
-
-        // P2-5: auto-wrap a bare `T` element into the `?T` element's {i1,T}
-        // struct. An already-nullable element is left as-is. Load an lvalue
-        // first so the value, not its address, is wrapped.
-        if (elem_is_nullable && v->goo_type && v->goo_type->kind != TYPE_NULLABLE) {
-            if (v->is_lvalue) {
-                LLVMTypeRef vt = codegen_type_to_llvm(codegen, v->goo_type);
-                if (vt) {
-                    v->llvm_value = LLVMBuildLoad2(codegen->builder, vt, v->llvm_value, "elemld");
-                    v->is_lvalue = 0;
-                }
-            }
-            v->llvm_value = codegen_create_nullable_with_value(
-                codegen, llvm_elem, v->llvm_value, v->goo_type);
-        }
-
-        // Box a concrete implementer into an interface-typed element's
-        // {vtable, data} value (mirrors the nullable wrap above). Load an
-        // lvalue first so the value, not its address, is boxed.
-        if (elem_type && elem_type->kind == TYPE_INTERFACE &&
-            v->goo_type && v->goo_type->kind != TYPE_INTERFACE) {
-            if (v->is_lvalue) {
-                LLVMTypeRef vt = codegen_type_to_llvm(codegen, v->goo_type);
-                if (vt) {
-                    v->llvm_value = LLVMBuildLoad2(codegen->builder, vt, v->llvm_value, "elemld");
-                    v->is_lvalue = 0;
-                }
-            }
-            LLVMValueRef boxed = codegen_interface_box(codegen, checker, elem_type,
-                                                       v->goo_type, v->llvm_value);
-            if (!boxed) {
-                codegen_error(codegen, e->pos,
-                              "failed to box value into interface slice element");
-                value_info_free(v);
-                free(elem_vals);
-                return NULL;
-            }
-            v->llvm_value = boxed;
-        }
-
-        elem_vals[idx] = v->llvm_value;
-        value_info_free(v);
-    }
-
-    // Are all elements LLVM constants? Variable elements (e.g.
-    // `[]int{a, b, 30}`, the common Go form) produce non-constant loads;
-    // LLVMConstArray would embed those illegally and crash the verifier
-    // ("Use of instruction is not an instruction!"). So the const path is
-    // valid only when every element is constant.
-    int all_const = 1;
-    for (size_t i = 0; i < count; i++) {
-        if (!LLVMIsConstant(elem_vals[i])) { all_const = 0; break; }
-    }
-
-    LLVMTypeRef arr_type = LLVMArrayType(llvm_elem, count);
-
-    // Heap-allocate writable backing for the literal so the slice can be
-    // mutated (e.g. `sl[i] = v`) and stays valid if it escapes the current
-    // frame. A read-only global would segfault on store; a stack alloca would
-    // dangle on escape. Each element is stored individually via GEP — this
-    // serves BOTH constant and VARIABLE elements (a runtime load can't go in a
-    // const array). The backing is not reclaimed — consistent with the
-    // prototype's current allocate-and-leak memory model. Falls back to a
-    // read-only global only when the runtime allocator is unavailable, which
-    // requires all-constant elements.
-    //
-    // The EMPTY literal `[]T{}` (count == 0) must also take this runtime path,
-    // not the const-global fallback: a zero-cap slice backed by a read-only
-    // global aborts on the first `append`, because goo_slice_append grows
-    // (len 0 >= cap 0) and reallocs a non-heap pointer. goo_alloc(0) returns
-    // NULL, the store loop runs zero times, and the slice is {NULL, 0, 0} —
-    // a heap-owned (nil-backed) empty slice that append can realloc(NULL→…)
-    // safely. The common idiom `xs := []int{}; xs = append(xs, v)` then works.
-    LLVMValueRef data_ptr;
-    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-    if (alloc_fn) {
-        LLVMValueRef size = LLVMSizeOf(arr_type);
-        data_ptr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                  alloc_fn, &size, 1, "slice_backing");
-        LLVMTypeRef i32ty = LLVMInt32TypeInContext(codegen->context);
-        LLVMValueRef zero = LLVMConstInt(i32ty, 0, 0);
-        for (size_t i = 0; i < count; i++) {
-            LLVMValueRef indices[2] = { zero, LLVMConstInt(i32ty, i, 0) };
-            LLVMValueRef ep = LLVMBuildGEP2(codegen->builder, arr_type, data_ptr,
-                                            indices, 2, "slice_elem");
-            // Coerce the element to the declared element LLVM type before the
-            // store (mirrors the struct-literal field coercion). An i32 int
-            // literal stored into a []int64 backing, or into a []float64, would
-            // otherwise be a store-operand type mismatch / invalid IR. Lets the
-            // general []T{} case (int64/uint/float/bool) lower, not just
-            // i32/string. Goo ints are signed -> SExt to widen.
-            elem_vals[i] = slice_coerce_elem(codegen, elem_vals[i], llvm_elem);
-            LLVMBuildStore(codegen->builder, elem_vals[i], ep);
-        }
-    } else if (all_const) {
-        LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
-        LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
-        LLVMSetInitializer(global, arr_const);
-        LLVMSetLinkage(global, LLVMPrivateLinkage);
-        LLVMSetGlobalConstant(global, 1);
-        data_ptr = global;
-    } else {
-        free(elem_vals);
-        codegen_error(codegen, expr->pos,
-            "slice literal with non-constant elements requires the runtime "
-            "allocator (goo_alloc), which is unavailable in this build");
-        return NULL;
-    }
-    free(elem_vals);
-
-    // Build the slice struct { ptr, i64 len, i64 cap }. A fresh literal's
-    // capacity equals its length — the backing buffer is sized exactly to
-    // `count`, so append() will grow on the first insert past the end.
-    LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
-    LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
-    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, data_ptr, 0, "slice_ptr");
-    LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
-    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 1, "slice_len");
-    slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len_val, 2, "slice_cap");
-
-    return value_info_new(NULL, slice_val, slice_type);
+    // Delegate to the shared helper that also serves named-slice composite
+    // literals (StructLiteralNode->field_values routed here from
+    // codegen_generate_struct_lit when the resolved type is TYPE_SLICE).
+    return codegen_build_slice_from_elems(codegen, checker,
+                                          lit->elements, slice_type, expr->pos);
 #endif
 }
 

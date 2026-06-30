@@ -221,6 +221,45 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
     }
 
     Type* struct_type = named_type;
+
+    // Named slice composite literal: `type IntSlice []int; IntSlice{3, 1, 2}`
+    // Validates field_values as elements of the underlying element type and
+    // stamps the named TYPE_SLICE as the expression's type. Codegen handles
+    // lowering via the slice path (see codegen_generate_struct_lit).
+    if (struct_type->kind == TYPE_SLICE) {
+        Type* want = struct_type->data.slice.element_type;
+        if (!want) {
+            type_error(checker, expr->pos,
+                       "Named slice type '%s' missing element type", lit->type_name);
+            return NULL;
+        }
+        size_t i = 0;
+        for (ASTNode* e = lit->field_values; e; e = e->next, i++) {
+            Type* et = type_check_expression(checker, e);
+            if (!et) return NULL;
+            // Reject the lossy float→int case explicitly (same guard as []T{}).
+            if (type_is_integer(want) &&
+                (et->kind == TYPE_FLOAT32 || et->kind == TYPE_FLOAT64)) {
+                type_error(checker, e->pos,
+                           "Slice literal element %zu: cannot use float "
+                           "value in a '%s' slice (would truncate)",
+                           i, type_to_string(want));
+                return NULL;
+            }
+            if (want->kind == TYPE_INTERFACE) {
+                if (!check_interface_assign(checker, et, want, e->pos)) return NULL;
+            } else if (!type_compatible(et, want)) {
+                type_error(checker, e->pos,
+                           "Slice literal element %zu type '%s' is not "
+                           "compatible with declared element type '%s'",
+                           i, type_to_string(et), type_to_string(want));
+                return NULL;
+            }
+        }
+        expr->node_type = struct_type;
+        return struct_type;
+    }
+
     if (struct_type->kind != TYPE_STRUCT) {
         type_error(checker, expr->pos,
                    "'%s' is not a struct type, cannot use composite literal",
