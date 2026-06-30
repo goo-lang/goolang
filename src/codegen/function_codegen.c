@@ -508,6 +508,69 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     }
 
 
+    // Go-style error-union destructure `n, err := <!T>` — evaluate the !T
+    // once, then bind name0 to the unwrapped value arm and name1 to a `?error`
+    // ({i1 is_null, i8*}) that is nil exactly when the union holds no error.
+    // Must precede the generic struct-destructure: a !T is a 2-field
+    // {i1 is_error, union} aggregate, and ExtractValue'ing its raw fields would
+    // hand the is_error flag to name0 and the union payload to name1.
+    if (var_decl->name_count == 2 && var_type->kind == TYPE_ERROR_UNION &&
+        var_decl->values) {
+        ValueInfo* rhs = codegen_generate_expression(codegen, checker, var_decl->values);
+        if (!rhs) {
+            codegen_error(codegen, decl->pos, "Failed to generate !T destructure RHS");
+            return 0;
+        }
+
+        // is_error flag (struct index 0) drives both the value arm and the
+        // ?error nil polarity.
+        LLVMValueRef is_error = codegen_error_union_is_error(codegen, rhs->llvm_value);
+
+        // name0 = unwrapped value arm (mirrors catch/try: ExtractValue 1 then 0).
+        Type* value_type = var_type->data.error_union.value_type;
+        const char* nm0 = var_decl->names[0];
+        LLVMValueRef value = codegen_error_union_get_value(codegen, rhs->llvm_value);
+        LLVMTypeRef value_llvm = codegen_type_to_llvm(codegen, value_type);
+        LLVMValueRef val_alloca = codegen_alloc_local(codegen, value_llvm, nm0);
+        LLVMBuildStore(codegen->builder, value, val_alloca);
+        ValueInfo* vi0 = value_info_new(nm0, val_alloca, value_type);
+        vi0->is_lvalue = 1;
+        vi0->is_initialized = 1;
+        codegen_add_value(codegen, vi0);
+        Variable* tv0 = variable_new(nm0, value_type, decl->pos);
+        if (tv0) { tv0->is_initialized = 1; scope_add_variable(checker->current_scope, tv0); }
+
+        // name1 = ?error {i1 is_null, i8*}. nil ⟺ !is_error, so `err != nil`
+        // (which lowers to !is_null) is true exactly when is_error is true.
+        const char* nm1 = var_decl->names[1];
+        Type* err_type = type_nullable(
+            type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+        LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
+        LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+        LLVMValueRef is_null = LLVMBuildNot(codegen->builder, is_error, "err_is_null");
+        // Non-null marker so `!= nil` consumers that only read is_null are
+        // unaffected; inttoptr(1) keeps a distinguishable non-null pointer.
+        LLVMValueRef non_null = LLVMBuildIntToPtr(codegen->builder,
+            LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0), i8pt, "err_marker");
+        LLVMValueRef null_ptr = LLVMConstNull(i8pt);
+        LLVMValueRef err_ptr  = LLVMBuildSelect(codegen->builder, is_error,
+            non_null, null_ptr, "err_ptr");
+        LLVMValueRef err_val = LLVMGetUndef(err_llvm);
+        err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "err.is_null");
+        err_val = LLVMBuildInsertValue(codegen->builder, err_val, err_ptr, 1, "err.ptr");
+        LLVMValueRef err_alloca = codegen_alloc_local(codegen, err_llvm, nm1);
+        LLVMBuildStore(codegen->builder, err_val, err_alloca);
+        ValueInfo* vi1 = value_info_new(nm1, err_alloca, err_type);
+        vi1->is_lvalue = 1;
+        vi1->is_initialized = 1;
+        codegen_add_value(codegen, vi1);
+        Variable* tv1 = variable_new(nm1, err_type, decl->pos);
+        if (tv1) { tv1->is_initialized = 1; scope_add_variable(checker->current_scope, tv1); }
+
+        value_info_free(rhs);
+        return 1;
+    }
+
     // Multi-LHS short var decl `a, b := f()` — evaluate RHS once,
     // destructure via ExtractValue. Per-name types come from the
     // struct's fields. Codepath returns early after handling.

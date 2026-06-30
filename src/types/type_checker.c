@@ -648,6 +648,19 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 per_name_types[i] = final_type->data.struct_type.fields[i].type;
             }
         }
+    } else if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+               final_type && final_type->kind == TYPE_ERROR_UNION) {
+        // Go-style error-union destructure: `n, err := <!T>`. name0 binds the
+        // unwrapped value arm; name1 binds `error` — the same nullable pointer
+        // (`?*int8`) that `error` resolves to in type_from_ast (see :1538), so
+        // `err != nil` type-checks. Without this both names would bind to the
+        // whole !T and the nil-compare would reject as `!int vs nil`.
+        per_name_types = malloc(sizeof(Type*) * 2);
+        if (per_name_types) {
+            per_name_types[0] = final_type->data.error_union.value_type;
+            per_name_types[1] = type_nullable(
+                type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+        }
     }
 
     // Add variables to scope

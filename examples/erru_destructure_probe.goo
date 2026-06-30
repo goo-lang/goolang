@@ -1,0 +1,29 @@
+// erru_destructure_probe: Go-style `n, err := <!T>` destructure bridge.
+// A `!int` value is consumed the Go way: name0 binds the unwrapped value,
+// name1 binds a `?error` that is nil exactly when there is no error.
+package main
+
+import "fmt"
+
+func mk(b bool) !int {
+	if b {
+		return 7
+	}
+	return error("bad")
+}
+
+func main() {
+	n, err := mk(true)
+	if err != nil {
+		fmt.Println("FAIL ok-path")
+	} else {
+		fmt.Println(n)
+	} // 7
+
+	m, e2 := mk(false)
+	if e2 != nil {
+		fmt.Println("caught")
+	} else {
+		fmt.Println(m)
+	} // caught
+}
