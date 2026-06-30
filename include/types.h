@@ -407,6 +407,7 @@ int type_check_declaration(TypeChecker* checker, ASTNode* decl);
 // Declaration type checking functions
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl);
 int type_check_var_decl(TypeChecker* checker, ASTNode* decl);
+int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt);
 int type_check_const_decl(TypeChecker* checker, ASTNode* decl);
 int type_check_type_decl(TypeChecker* checker, ASTNode* decl);
 int type_check_concept_decl(TypeChecker* checker, ASTNode* decl);

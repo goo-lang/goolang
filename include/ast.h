@@ -133,6 +133,11 @@ typedef enum {
     // objects with stale enum values and silently misidentifies nodes.
     AST_SLICE_INDEX_EXPR,  // expr[low:high]
 
+    // F6: `a, b := 1, 2` and `a, b = b, a` — N targets, N independent RHS
+    // values (distinct from the single-multi-value `a, b := f()` destructure,
+    // which stays a VarDeclNode). Tail-appended per the convention above.
+    AST_MULTI_ASSIGN,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -463,6 +468,18 @@ typedef struct {
     struct ASTNode* low;
     struct ASTNode* high;
 } SliceIndexExprNode;
+
+// F6: multiple assignment `a, b := 1, 2` / `a, b = b, a`. `targets` and
+// `values` are each a `next`-chained list of length `count`. For `=`,
+// Go evaluates every value before any store (so the swap works); codegen
+// honours that by computing all RHS rvalues first, then storing.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* targets;   // LHS list (identifiers in v1)
+    struct ASTNode* values;    // RHS list, same length
+    size_t count;
+    int is_short_decl;         // 1 for `:=`, 0 for `=`
+} MultiAssignNode;
 
 // Selector expression (dot notation)
 typedef struct {

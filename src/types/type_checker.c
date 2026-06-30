@@ -811,6 +811,60 @@ int type_check_concept_decl(TypeChecker* checker, ASTNode* decl) {
     return 1;
 }
 
+// F6: `a, b := v1, v2` / `a, b = v1, v2`. Two passes so RHS is evaluated in
+// the pre-assignment scope (Go semantics): pass 1 type-checks every value
+// (before any `:=` name comes into scope); pass 2 binds new names (`:=`) or
+// validates assignment compatibility against existing lvalues (`=`).
+int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_MULTI_ASSIGN) return 0;
+    MultiAssignNode* ma = (MultiAssignNode*)stmt;
+
+    Type* vtypes[2];   // v1 grammar produces exactly count==2
+    size_t n = 0;
+    for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
+        Type* vt = type_check_expression(checker, v);
+        if (!vt) return 0;
+        vtypes[n++] = vt;
+    }
+
+    size_t i = 0;
+    for (ASTNode* t = ma->targets; t; t = t->next, i++) {
+        if (i >= n) {
+            type_error(checker, stmt->pos,
+                       "Multiple assignment: more targets than values");
+            return 0;
+        }
+        Type* vt = vtypes[i];
+
+        if (ma->is_short_decl) {
+            if (t->type != AST_IDENTIFIER) {
+                type_error(checker, t->pos, "Left side of := must be an identifier");
+                return 0;
+            }
+            t->node_type = vt;
+            Variable* var = variable_new(((IdentifierNode*)t)->name, vt, t->pos);
+            if (var) {
+                var->is_initialized = 1;
+                // Tolerate redeclaration in the same scope (Go permits := when
+                // at least one name is new); an existing binding keeps its slot.
+                if (!scope_add_variable(checker->current_scope, var)) {
+                    variable_free(var);
+                }
+            }
+        } else {
+            Type* tt = type_check_expression(checker, t);
+            if (!tt) return 0;
+            if (!type_compatible(vt, tt)) {
+                type_error(checker, t->pos,
+                           "Cannot assign %s to %s in multiple assignment",
+                           type_to_string(vt), type_to_string(tt));
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt) return 0;
     switch (stmt->type) {
@@ -820,6 +874,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_expr_stmt(checker, stmt);
         case AST_VAR_DECL:
             return type_check_var_decl(checker, stmt);
+        case AST_MULTI_ASSIGN:
+            return type_check_multi_assign(checker, stmt);
         case AST_IF_STMT:
             return type_check_if_stmt(checker, stmt);
         case AST_IF_LET_STMT: {

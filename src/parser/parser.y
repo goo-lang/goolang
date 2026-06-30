@@ -28,6 +28,10 @@ static ASTNode* clone_const_value(const ASTNode* n);
 static void substitute_iota(ASTNode** slot, long idx);
 static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value);
 static ASTNode* desugar_const_group(ASTNode* spec_chain);
+
+// F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` / `a,b = v1,v2`).
+static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
+                                   ASTNode* v1, ASTNode* v2, int is_short_decl);
 %}
 
 // Union type for semantic values
@@ -645,6 +649,12 @@ short_var_decl:
         ast_node_free($3);
         $$ = (ASTNode*)var;
     }
+    // F6: `a, b := v1, v2` — two independent RHS values (not a destructure).
+    // The COLON-free trailing `COMMA expression` after the first value is what
+    // distinguishes this from the single-value destructure rule above.
+    | identifier COMMA identifier SHORT_ASSIGN expression COMMA expression {
+        $$ = multi_assign_2_new($1, $3, $5, $7, 1);
+    }
     ;
 
 // Constant declaration
@@ -902,6 +912,11 @@ simple_stmt:
     }
     | short_var_decl { $$ = $1; }
     | var_decl { $$ = $1; }
+    // F6: `a, b = v1, v2` — multiple assignment to existing lvalues. Go
+    // evaluates all RHS before any store, so `a, b = b, a` swaps.
+    | identifier COMMA identifier ASSIGN expression COMMA expression {
+        $$ = multi_assign_2_new($1, $3, $5, $7, 0);
+    }
     ;
 
 if_stmt:
@@ -2575,6 +2590,30 @@ static ASTNode* desugar_const_group(ASTNode* spec_chain) {
 
     if (template) ast_node_free(template);
     return spec_chain;
+}
+
+// F6: build a 2-target/2-value MultiAssignNode. Targets and values are each
+// chained via ->next (t1->t2, v1->v2). For `:=` the targets are new names;
+// for `=` they are existing lvalues. Simultaneous-eval semantics are enforced
+// in codegen, not here.
+static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
+                                   ASTNode* v1, ASTNode* v2, int is_short_decl) {
+    MultiAssignNode* ma = (MultiAssignNode*)malloc(sizeof(MultiAssignNode));
+    ma->base.type = AST_MULTI_ASSIGN;
+    ma->base.pos = get_current_position();
+    ma->base.node_type = NULL;
+    ma->base.next = NULL;
+
+    t1->next = t2;
+    t2->next = NULL;
+    v1->next = v2;
+    v2->next = NULL;
+
+    ma->targets = t1;
+    ma->values = v1;
+    ma->count = 2;
+    ma->is_short_decl = is_short_decl;
+    return (ASTNode*)ma;
 }
 
 // Helper function to get current position

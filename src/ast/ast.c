@@ -40,6 +40,7 @@ static const char* ast_node_type_strings[] = {
     [AST_CALL_EXPR] = "CallExpr",
     [AST_INDEX_EXPR] = "IndexExpr",
     [AST_SLICE_INDEX_EXPR] = "SliceIndexExpr",
+    [AST_MULTI_ASSIGN] = "MultiAssign",
     [AST_SELECTOR_EXPR] = "SelectorExpr",
     [AST_SLICE_EXPR] = "SliceExpr",
     [AST_TYPE_ASSERT_EXPR] = "TypeAssertExpr",
