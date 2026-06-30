@@ -4,6 +4,48 @@
 #include <string.h>
 #include <stdio.h>
 
+// Validate each element of a slice composite literal against the declared
+// element type. Returns 1 on success; emits a type_error and returns 0 on the
+// first incompatible element. Shared by the anonymous []T{} path and the named
+// slice-type path so the element rules live in one place.
+static int check_slice_elements(TypeChecker* checker, ASTNode* elements,
+                                Type* want_elem, Position pos) {
+    (void)pos; // reserved; per-element errors use e->pos for precision
+    size_t i = 0;
+    for (ASTNode* e = elements; e; e = e->next, i++) {
+        Type* et = type_check_expression(checker, e);
+        if (!et) return 0;
+        // A float element in an integer slice would silently truncate
+        // (`[]int{1, 2.5, 3}` -> 1 0 3) — type_compatible wrongly permits it
+        // as a numeric conversion. Reject the lossy float->int case explicitly.
+        if (type_is_integer(want_elem)
+            && (et->kind == TYPE_FLOAT32 || et->kind == TYPE_FLOAT64)) {
+            type_error(checker, e->pos,
+                       "Slice literal element %zu: cannot use float "
+                       "value in a '%s' slice (would truncate)",
+                       i, type_to_string(want_elem));
+            return 0;
+        }
+        // An interface element type accepts any concrete implementer
+        // (boxed at codegen); check_interface_assign emits its own
+        // "does not implement" diagnostic.
+        if (want_elem->kind == TYPE_INTERFACE) {
+            if (!check_interface_assign(checker, et, want_elem, e->pos)) {
+                return 0;
+            }
+        } else if (!type_compatible(et, want_elem)) {
+            // type_compatible permits numeric widening (so []int64{1, 2} is
+            // fine) but rejects e.g. string vs int.
+            type_error(checker, e->pos,
+                       "Slice literal element %zu type '%s' is not "
+                       "compatible with declared element type '%s'",
+                       i, type_to_string(et), type_to_string(want_elem));
+            return 0;
+        }
+    }
+    return 1;
+}
+
 // Expression type checking implementation
 
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
@@ -98,40 +140,9 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 // slice_coerce_elem), so the general []T{} case lowers —
                 // int64/uint/float64/bool, not just the natural-width
                 // i32/string forms. Element compatibility is still enforced
-                // per-element below (incl. the lossy float->int rejection).
-                size_t i = 0;
-                for (ASTNode* e = lit->elements; e; e = e->next, i++) {
-                    Type* et = type_check_expression(checker, e);
-                    if (!et) return NULL;
-                    // A float element in an integer slice would silently
-                    // truncate (`[]int{1, 2.5, 3}` -> 1 0 3) — type_compatible
-                    // wrongly permits it as a numeric conversion. Reject the
-                    // lossy float->int case explicitly so it can't miscompile.
-                    if (type_is_integer(want)
-                        && (et->kind == TYPE_FLOAT32 || et->kind == TYPE_FLOAT64)) {
-                        type_error(checker, e->pos,
-                                   "Slice literal element %zu: cannot use float "
-                                   "value in a '%s' slice (would truncate)",
-                                   i, type_to_string(want));
-                        return NULL;
-                    }
-                    // An interface element type accepts any concrete implementer
-                    // (boxed at codegen); check_interface_assign emits its own
-                    // "does not implement" diagnostic.
-                    if (want->kind == TYPE_INTERFACE) {
-                        if (!check_interface_assign(checker, et, want, e->pos)) {
-                            return NULL;
-                        }
-                    } else if (!type_compatible(et, want)) {
-                        // type_compatible permits numeric widening (so
-                        // []int64{1, 2} is fine) but rejects e.g. string vs int.
-                        type_error(checker, e->pos,
-                                   "Slice literal element %zu type '%s' is not "
-                                   "compatible with declared element type '%s'",
-                                   i, type_to_string(et), type_to_string(want));
-                        return NULL;
-                    }
-                }
+                // per-element (incl. the lossy float->int rejection).
+                if (!check_slice_elements(checker, lit->elements, want, expr->pos))
+                    return NULL;
                 expr->node_type = declared;
                 return declared;
             }
@@ -227,39 +238,29 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
     // stamps the named TYPE_SLICE as the expression's type. Codegen handles
     // lowering via the slice path (see codegen_generate_struct_lit).
     if (struct_type->kind == TYPE_SLICE) {
+        // Keyed form (e.g. `IntSlice{x: 3}`) is invalid for slice types —
+        // slices have no named fields.
+        if (lit->is_keyed) {
+            type_error(checker, expr->pos,
+                       "cannot use keyed (field-name) elements with slice type '%s'",
+                       lit->type_name);
+            return NULL;
+        }
         Type* want = struct_type->data.slice.element_type;
         if (!want) {
             type_error(checker, expr->pos,
                        "Named slice type '%s' missing element type", lit->type_name);
             return NULL;
         }
-        size_t i = 0;
-        for (ASTNode* e = lit->field_values; e; e = e->next, i++) {
-            Type* et = type_check_expression(checker, e);
-            if (!et) return NULL;
-            // Reject the lossy float→int case explicitly (same guard as []T{}).
-            if (type_is_integer(want) &&
-                (et->kind == TYPE_FLOAT32 || et->kind == TYPE_FLOAT64)) {
-                type_error(checker, e->pos,
-                           "Slice literal element %zu: cannot use float "
-                           "value in a '%s' slice (would truncate)",
-                           i, type_to_string(want));
-                return NULL;
-            }
-            if (want->kind == TYPE_INTERFACE) {
-                if (!check_interface_assign(checker, et, want, e->pos)) return NULL;
-            } else if (!type_compatible(et, want)) {
-                type_error(checker, e->pos,
-                           "Slice literal element %zu type '%s' is not "
-                           "compatible with declared element type '%s'",
-                           i, type_to_string(et), type_to_string(want));
-                return NULL;
-            }
-        }
+        if (!check_slice_elements(checker, lit->field_values, want, expr->pos))
+            return NULL;
         expr->node_type = struct_type;
         return struct_type;
     }
 
+    // TODO(follow-up): named map/array composite literals (e.g. `type M map[K]V;
+    // M{k: v}`) fall through to this rejection — supporting them is a deliberate
+    // deferral until the map/array composite-literal lowering path is wired up.
     if (struct_type->kind != TYPE_STRUCT) {
         type_error(checker, expr->pos,
                    "'%s' is not a struct type, cannot use composite literal",
