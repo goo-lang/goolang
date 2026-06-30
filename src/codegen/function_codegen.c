@@ -695,6 +695,25 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 return 0;
             }
 
+            // Auto-load an lvalue initializer to its rvalue before any further
+            // processing. An index/selector initializer (e.g. `tmp := s[i]`,
+            // `x := p.field`) returns the element ADDRESS with is_lvalue=1; the
+            // store below — and the nullable/interface/sext transforms that
+            // precede it — all expect a VALUE. Storing the raw address writes a
+            // pointer into the value-typed slot: the wrong value, and for an
+            // 8-byte pointer in a narrower slot (e.g. a 4-byte int element) an
+            // out-of-bounds stack write that clobbers the adjacent slot. Mirrors
+            // the load idiom used by the `=` assignment, return, range, and
+            // defer paths.
+            if (init_value->is_lvalue && init_value->goo_type) {
+                LLVMTypeRef load_ty = codegen_type_to_llvm(codegen, init_value->goo_type);
+                if (load_ty) {
+                    init_value->llvm_value = LLVMBuildLoad2(codegen->builder, load_ty,
+                                                            init_value->llvm_value, "init_load");
+                    init_value->is_lvalue = 0;
+                }
+            }
+
             // Auto-wrap a plain value into a nullable struct when the
             // declared type is TYPE_NULLABLE. `var hit ?int = 42`
             // builds a {is_null=0, value=42} aggregate.

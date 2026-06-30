@@ -1,0 +1,45 @@
+// sort_named_probe (capstone): a TinyGo-style sort.Interface port — named slice
+// type with Len/Less/Swap methods, boxed and dispatched through an interface,
+// sorted in place. Exercises the whole named-non-struct-types milestone:
+// composite literal (IntSlice{...}), method dispatch, interface boxing, and the
+// lvalue-load fix (tmp := s[i]). Temp-based Swap (tuple-index swap is a separate
+// deferred grammar milestone).
+package main
+
+import "fmt"
+
+type Interface interface {
+	Len() int
+	Less(i int, j int) bool
+	Swap(i int, j int)
+}
+
+func insertionSort(items Interface, a int, b int) {
+	for i := a + 1; i < b; i++ {
+		for j := i; j > a; j-- {
+			if items.Less(j, j-1) {
+				items.Swap(j, j-1)
+			}
+		}
+	}
+}
+
+func Sort(items Interface) { insertionSort(items, 0, items.Len()) }
+
+type IntSlice []int
+
+func (s IntSlice) Len() int               { return len(s) }
+func (s IntSlice) Less(i int, j int) bool { return s[i] < s[j] }
+func (s IntSlice) Swap(i int, j int) {
+	tmp := s[i]
+	s[i] = s[j]
+	s[j] = tmp
+}
+
+func main() {
+	s := IntSlice{3, 1, 2}
+	Sort(s)
+	fmt.Println(s[0]) // 1
+	fmt.Println(s[1]) // 2
+	fmt.Println(s[2]) // 3
+}

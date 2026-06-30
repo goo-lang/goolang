@@ -1,0 +1,12 @@
+package main
+
+import "fmt"
+
+type IntSlice []int
+
+func main() {
+	var s IntSlice = []int{1, 2, 3}
+	var t []int = []int{4, 5}
+	fmt.Println(len(s)) // 3
+	fmt.Println(len(t)) // 2  (plain []int must be unaffected by stamping)
+}

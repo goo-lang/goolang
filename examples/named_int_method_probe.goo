@@ -1,0 +1,13 @@
+// named_int_method_probe: a method on a named int type, called directly.
+package main
+
+import "fmt"
+
+type Celsius int
+
+func (c Celsius) Doubled() int { return int(c) + int(c) }
+
+func main() {
+	var t Celsius = 21
+	fmt.Println(t.Doubled()) // 42
+}

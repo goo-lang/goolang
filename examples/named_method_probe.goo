@@ -1,0 +1,13 @@
+// named_method_probe: a method on a named slice type, called directly.
+package main
+
+import "fmt"
+
+type IntSlice []int
+
+func (s IntSlice) First() int { return s[0] }
+
+func main() {
+	var s IntSlice = []int{7, 8, 9}
+	fmt.Println(s.First()) // 7
+}
