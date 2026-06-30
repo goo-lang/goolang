@@ -1,0 +1,21 @@
+// interface_ptr_recv_probe (P4-5): an interface satisfied by a POINTER-receiver
+// method. The vtable thunk passes the boxed data pointer (not a loaded value) as
+// the receiver, so `*T`-receiver methods dispatch correctly through the interface.
+package main
+
+import "fmt"
+
+type Stringerish interface {
+	Label() int
+}
+
+type Node struct {
+	id int
+}
+
+func (n *Node) Label() int { return n.id + 100 }
+
+func main() {
+	var s Stringerish = Node{id: 7}
+	fmt.Println(s.Label()) // 107
+}
