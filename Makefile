@@ -109,7 +109,12 @@ TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
 all: lexer
 
-lexer: $(COMPILER)
+# P0-1: the runtime archive is a prerequisite of a usable compiler. Without
+# it, a fresh checkout builds bin/goo but the FIRST `goo foo.goo` fails to
+# link ("cannot find lib/libgoo_runtime.a") because `make clean` removes
+# build/ and bin/ but the archive lived only in lib/ as a stale prebuilt.
+# Listing it here makes `make` (= all = lexer) build both.
+lexer: $(COMPILER) $(RUNTIME_LIB)
 
 # Minimal analyzer (lexer only)
 analyzer: $(ANALYZER)
@@ -709,6 +714,20 @@ link-cleanup-probe: $(COMPILER) $(RUNTIME_LIB)
 	@GOO_RUNTIME=/nonexistent/libgoo_runtime.a "$(COMPILER)" build/cleanup_probe.goo -o build/cleanup_probe.out 2>/dev/null; true
 	@if [ -e build/cleanup_probe.out.o ]; then echo "link-cleanup-probe: FAIL (.o left behind)"; exit 1; else echo "link-cleanup-probe: PASS"; fi
 
+# P0-3: a run of blank lines must NOT overflow the stack. The newline ASI
+# handler now iterates instead of tail-recursing, so 1,000,000 consecutive
+# blank lines lex without a SIGSEGV. The fixture is generated at test time
+# (1MB+), never committed. Guards against a regression back to recursion.
+blank-lines-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== blank-lines-probe: 1e6 blank lines must not crash the lexer ==="
+	@{ yes '' | head -n 1000000; printf 'package main\nfunc main() {}\n'; } > build/blank_lines_probe.goo
+	@"$(COMPILER)" build/blank_lines_probe.goo -o build/blank_lines_probe.out 2>build/blank_lines_probe.err; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "blank-lines-probe: FAIL (compile rc=$$rc — stack overflow regression?)"; cat build/blank_lines_probe.err; exit 1; fi; \
+	./build/blank_lines_probe.out; rrc=$$?; \
+	if [ $$rrc -ne 0 ]; then echo "blank-lines-probe: FAIL (run rc=$$rrc)"; exit 1; fi; \
+	echo "blank-lines-probe: PASS"
+
 # Soak iteration count for the parallel probes (override: make ... PARALLEL_SOAK_ITERS=200).
 PARALLEL_SOAK_ITERS ?= 50
 
@@ -933,7 +952,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

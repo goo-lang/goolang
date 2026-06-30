@@ -102,10 +102,20 @@ static int char_starts_continuation_op(char c) {
 Token* lexer_next_token(Lexer* lexer) {
     Token* token = NULL;
     Position current_pos = lexer->pos;
-    
+
+    // P0-3: iterate rather than tail-recurse over skipped newlines. A run of
+    // blank lines previously recursed once per line (the `return
+    // lexer_next_token(lexer)` in the '\n' case), overflowing the stack on
+    // large inputs (1,000,000 blank lines -> SIGSEGV). The loop body is kept
+    // at the original indentation to keep this a minimal, reviewable diff; the
+    // only behavioural change is recursion -> `continue`. Every non-newline
+    // path still falls through to the single `return token` that closes it.
+    for (;;) {
+    token = NULL;
+
     lexer_skip_whitespace(lexer);
     current_pos = lexer->pos; // Update position after skipping whitespace
-    
+
     switch (lexer->ch) {
         case 0:
             token = token_new(TOKEN_EOF, NULL, 0, current_pos);
@@ -132,7 +142,7 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
-            return lexer_next_token(lexer); // otherwise just get the next token
+            continue; // otherwise just get the next token (was: tail recursion)
             
         // Single character tokens
         case '(':
@@ -458,6 +468,7 @@ Token* lexer_next_token(Lexer* lexer) {
 
     if (token) lexer->prev_token_type = token->type; // for newline-driven ASI
     return token;
+    } // for (;;) — only reached via `continue` on a skipped newline (P0-3)
 }
 
 char* lexer_read_identifier(Lexer* lexer, size_t* length) {
