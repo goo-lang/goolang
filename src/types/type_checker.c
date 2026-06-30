@@ -481,9 +481,9 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
 // the receiver, plus the return type). The empty interface is satisfied by every
 // type. On failure returns 0 and writes the offending method name + reason to
 // *method_out / *reason_out (for a clear "X does not implement Y" diagnostic).
-static int interface_is_satisfied_by(TypeChecker* checker, Type* iface,
-                                     Type* concrete, const char** method_out,
-                                     const char** reason_out) {
+int type_interface_satisfied(TypeChecker* checker, Type* iface,
+                             Type* concrete, const char** method_out,
+                             const char** reason_out) {
     if (!iface || iface->kind != TYPE_INTERFACE || !concrete) return 0;
 
     const char* tn = type_receiver_name(concrete);
@@ -535,7 +535,7 @@ static int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
 
     const char* method = NULL;
     const char* reason = NULL;
-    if (interface_is_satisfied_by(checker, target, src, &method, &reason)) return 1;
+    if (type_interface_satisfied(checker, target, src, &method, &reason)) return 1;
 
     const char* iname = target->data.interface.name ? target->data.interface.name
                                                     : "interface";
