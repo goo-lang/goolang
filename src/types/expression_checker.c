@@ -1263,9 +1263,26 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         type_check_statement(checker, catch_expr->catch_body);
         scope_pop(checker);
     }
-    
-    // The type of a catch expression is the value type of the error union
+
+    // The type of a catch expression is the value type of the error union.
     Type* value_type = expr_type->data.error_union.value_type;
+
+    // P2-1: a value-producing handler (one whose final statement is an
+    // expression) recovers with that expression's value on the error path, so
+    // its type must be assignable to the value type T. A void trailing
+    // expression (e.g. `fmt.Println(e)`) is a side-effect-only handler that
+    // recovers with the zero value of T — that is allowed and not checked here.
+    ASTNode* trailing = ast_block_trailing_expr(catch_expr->catch_body);
+    if (trailing && trailing->node_type &&
+        trailing->node_type->kind != TYPE_VOID &&
+        !type_compatible(trailing->node_type, value_type)) {
+        type_error(checker, trailing->pos,
+                   "catch handler value of type %s is not assignable to %s",
+                   type_to_string(trailing->node_type),
+                   type_to_string(value_type));
+        return NULL;
+    }
+
     expr->node_type = value_type;
     return value_type;
 }

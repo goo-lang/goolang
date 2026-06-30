@@ -1,0 +1,31 @@
+// nullable_struct_lit_probe (P2-4): a struct `?T` field initialized in a
+// composite literal auto-wraps a bare scalar into the {i1,T} nullable, and
+// encodes the nil literal as the null-nullable. Before P2-4 the raw scalar was
+// InsertValue'd into the {i1,T} slot, failing verification (and crashing at
+// runtime). A plain (non-nullable) field in the same struct is unaffected.
+package main
+
+import "fmt"
+
+type Holder struct {
+	val ?int
+	tag int
+}
+
+func main() {
+	h := Holder{val: 5, tag: 1}
+	if let v = h.val {
+		fmt.Println("h.val:", v)
+	} else {
+		fmt.Println("h none")
+	}
+
+	n := Holder{val: nil, tag: 2}
+	if let v = n.val {
+		fmt.Println("n.val:", v)
+	} else {
+		fmt.Println("n none")
+	}
+
+	fmt.Println("tags:", h.tag, n.tag)
+}

@@ -426,6 +426,26 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
             }
         }
 
+        Type* field_type = fields[field_index].type;
+
+        // P2-4: a `?T` field initialized with the nil literal builds the field's
+        // null-nullable directly, mirroring the call-arg nullable path. Without
+        // this the raw nil would be InsertValue'd into the {i1,T} slot.
+        if (field_type && field_type->kind == TYPE_NULLABLE &&
+            v->type == AST_LITERAL &&
+            ((LiteralNode*)v)->literal_type == TOKEN_NIL) {
+            ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, field_type);
+            if (!nil_val) {
+                codegen_error(codegen, v->pos, "Failed to generate nil struct literal field");
+                return NULL;
+            }
+            agg = LLVMBuildInsertValue(codegen->builder, agg, nil_val->llvm_value,
+                                       (unsigned)field_index,
+                                       fields[field_index].name ? fields[field_index].name : "field");
+            value_info_free(nil_val);
+            continue;
+        }
+
         ValueInfo* val = codegen_generate_expression(codegen, checker, v);
         if (!val) {
             codegen_error(codegen, v->pos, "Failed to generate struct literal field");
@@ -444,6 +464,20 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
             }
             val->llvm_value = LLVMBuildLoad2(codegen->builder, vt, val->llvm_value, "fieldval");
             val->is_lvalue = 0;
+        }
+
+        // P2-4: auto-wrap a bare `T` value into a `?T` field's {i1,T} struct.
+        // A value that is already nullable (e.g. another `?int`) is left as-is.
+        // After wrapping, the integer-width block below is a no-op (the value is
+        // now an aggregate, not an integer).
+        if (field_type && field_type->kind == TYPE_NULLABLE &&
+            val->goo_type && val->goo_type->kind != TYPE_NULLABLE) {
+            LLVMTypeRef nullable_llvm = codegen_type_to_llvm(codegen, field_type);
+            if (nullable_llvm) {
+                val->llvm_value = codegen_create_nullable_with_value(
+                    codegen, nullable_llvm, val->llvm_value, val->goo_type);
+                val->goo_type = field_type;
+            }
         }
         // Widen or narrow the field value to match the declared LLVM field
         // type before InsertValue.  Without this, an i32 integer literal (the
@@ -834,11 +868,40 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
     size_t count = 0;
     for (ASTNode* e = lit->elements; e; e = e->next) count++;
 
+    int elem_is_nullable = (elem_type && elem_type->kind == TYPE_NULLABLE);
+
     LLVMValueRef* elem_vals = count ? calloc(count, sizeof(LLVMValueRef)) : NULL;
     size_t idx = 0;
     for (ASTNode* e = lit->elements; e; e = e->next, idx++) {
+        // P2-5: a `?T` slice element built from the nil literal encodes the
+        // null-nullable directly (mirrors the struct-literal and call-arg paths).
+        if (elem_is_nullable && e->type == AST_LITERAL &&
+            ((LiteralNode*)e)->literal_type == TOKEN_NIL) {
+            ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, elem_type);
+            if (!nil_val) { free(elem_vals); return NULL; }
+            elem_vals[idx] = nil_val->llvm_value;
+            value_info_free(nil_val);
+            continue;
+        }
+
         ValueInfo* v = codegen_generate_expression(codegen, checker, e);
         if (!v) { free(elem_vals); return NULL; }
+
+        // P2-5: auto-wrap a bare `T` element into the `?T` element's {i1,T}
+        // struct. An already-nullable element is left as-is. Load an lvalue
+        // first so the value, not its address, is wrapped.
+        if (elem_is_nullable && v->goo_type && v->goo_type->kind != TYPE_NULLABLE) {
+            if (v->is_lvalue) {
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, v->goo_type);
+                if (vt) {
+                    v->llvm_value = LLVMBuildLoad2(codegen->builder, vt, v->llvm_value, "elemld");
+                    v->is_lvalue = 0;
+                }
+            }
+            v->llvm_value = codegen_create_nullable_with_value(
+                codegen, llvm_elem, v->llvm_value, v->goo_type);
+        }
+
         elem_vals[idx] = v->llvm_value;
         value_info_free(v);
     }

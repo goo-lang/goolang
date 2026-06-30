@@ -1,0 +1,3 @@
+x: 5
+caught: divide by zero
+y: -1
