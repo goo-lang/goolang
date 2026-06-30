@@ -409,28 +409,32 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_atoi_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "New") == 0) {
-                // errors.New(string) -> ?*int8 (non-nil error marker).
-                // For v1, the message string arg is evaluated (for side-effects
-                // and type-check pass-through) but not stored — message-carrying
-                // .Error() is deferred to Phase 6. We return a non-nil nullable
-                // {is_null=0, ptr=inttoptr(1)} matching the layout Task 1 builds
-                // for the !T destructure error arm so `if e != nil` reads it correctly.
-                if (call->args) {
-                    ValueInfo* msg = codegen_generate_expression(codegen, checker, call->args);
-                    if (msg) value_info_free(msg); // evaluated, not stored (v1)
+                // errors.New(string) -> error. Box the message into a heap goo_error and
+                // store its pointer (as i8*) in the nullable error handle.
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "errors.New: expected a string argument");
+                    return NULL;
                 }
+                ValueInfo* msg = codegen_generate_expression(codegen, checker, call->args);
+                if (!msg) return NULL;
+                LLVMValueRef msg_val = msg->llvm_value;
+                if (msg->is_lvalue && msg->goo_type) {
+                    LLVMTypeRef mt = codegen_type_to_llvm(codegen, msg->goo_type);
+                    if (mt) msg_val = LLVMBuildLoad2(codegen->builder, mt, msg_val, "errnew_msg");
+                }
+                value_info_free(msg);
+
+                LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+                LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
+                LLVMValueRef args1[] = { msg_val };
+                LLVMValueRef handle = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, args1, 1, "errnew_box");
+
                 Type* err_type = type_checker_error_type(checker);
                 LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
-                LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-                // is_null = 0 (present / non-nil)
                 LLVMValueRef is_null = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
-                // ptr = inttoptr(1) — same non-null marker as !T error arm
-                LLVMValueRef non_null = LLVMBuildIntToPtr(codegen->builder,
-                    LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0),
-                    i8pt, "errors_new_marker");
                 LLVMValueRef err_val = LLVMGetUndef(err_llvm);
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "en.is_null");
-                err_val = LLVMBuildInsertValue(codegen->builder, err_val, non_null, 1, "en.ptr");
+                err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
             }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
