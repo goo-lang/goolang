@@ -479,6 +479,23 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
                 val->goo_type = field_type;
             }
         }
+
+        // Box a concrete implementer into an interface-typed field's
+        // {vtable, data} value (mirrors the nullable wrap above and the
+        // assignment/call-arg boxing). interface→interface needs no box.
+        if (field_type && field_type->kind == TYPE_INTERFACE &&
+            val->goo_type && val->goo_type->kind != TYPE_INTERFACE) {
+            LLVMValueRef boxed = codegen_interface_box(codegen, checker, field_type,
+                                                       val->goo_type, val->llvm_value);
+            if (!boxed) {
+                codegen_error(codegen, v->pos,
+                              "failed to box value into interface field");
+                value_info_free(val);
+                return NULL;
+            }
+            val->llvm_value = boxed;
+            val->goo_type = field_type;
+        }
         // Widen or narrow the field value to match the declared LLVM field
         // type before InsertValue.  Without this, an i32 integer literal (the
         // compiler's default width) stored into an int64 struct field produces
@@ -900,6 +917,30 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
             }
             v->llvm_value = codegen_create_nullable_with_value(
                 codegen, llvm_elem, v->llvm_value, v->goo_type);
+        }
+
+        // Box a concrete implementer into an interface-typed element's
+        // {vtable, data} value (mirrors the nullable wrap above). Load an
+        // lvalue first so the value, not its address, is boxed.
+        if (elem_type && elem_type->kind == TYPE_INTERFACE &&
+            v->goo_type && v->goo_type->kind != TYPE_INTERFACE) {
+            if (v->is_lvalue) {
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, v->goo_type);
+                if (vt) {
+                    v->llvm_value = LLVMBuildLoad2(codegen->builder, vt, v->llvm_value, "elemld");
+                    v->is_lvalue = 0;
+                }
+            }
+            LLVMValueRef boxed = codegen_interface_box(codegen, checker, elem_type,
+                                                       v->goo_type, v->llvm_value);
+            if (!boxed) {
+                codegen_error(codegen, e->pos,
+                              "failed to box value into interface slice element");
+                value_info_free(v);
+                free(elem_vals);
+                return NULL;
+            }
+            v->llvm_value = boxed;
         }
 
         elem_vals[idx] = v->llvm_value;
