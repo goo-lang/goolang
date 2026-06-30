@@ -675,6 +675,68 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         }
     }
 
+    // P1-5: short-circuit && / ||. Must run BEFORE the eager operand
+    // generation below — the whole point is that the right operand is only
+    // evaluated when the result isn't already determined by the left.
+    //   a && b  ≡  a ? b : false
+    //   a || b  ≡  a ? true : b
+    if (binary->operator == TOKEN_AND || binary->operator == TOKEN_OR) {
+        int is_and = (binary->operator == TOKEN_AND);
+
+        // Evaluate the left operand to an i1.
+        ValueInfo* lv = codegen_generate_expression(codegen, checker, binary->left);
+        if (!lv) return NULL;
+        if (lv->is_lvalue && lv->goo_type) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, lv->goo_type);
+            if (lt) {
+                lv->llvm_value = LLVMBuildLoad2(codegen->builder, lt, lv->llvm_value, "lval");
+                lv->is_lvalue = 0;
+            }
+        }
+        LLVMValueRef lbool = lv->llvm_value;
+        value_info_free(lv);
+
+        // Capture the block the conditional branch lives in: it is the
+        // PHI predecessor for the short-circuit value.
+        LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(codegen->builder);
+        LLVMBasicBlockRef rhs_bb = codegen_create_block(codegen, is_and ? "and.rhs" : "or.rhs");
+        LLVMBasicBlockRef merge_bb = codegen_create_block(codegen, is_and ? "and.merge" : "or.merge");
+
+        // && : left true -> evaluate rhs; left false -> merge (result false).
+        // || : left true -> merge (result true); left false -> evaluate rhs.
+        if (is_and) LLVMBuildCondBr(codegen->builder, lbool, rhs_bb, merge_bb);
+        else        LLVMBuildCondBr(codegen->builder, lbool, merge_bb, rhs_bb);
+
+        // rhs block: evaluate the right operand (only reached when needed).
+        codegen_set_insert_point(codegen, rhs_bb);
+        ValueInfo* rv = codegen_generate_expression(codegen, checker, binary->right);
+        if (!rv) return NULL;
+        if (rv->is_lvalue && rv->goo_type) {
+            LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
+            if (rt) {
+                rv->llvm_value = LLVMBuildLoad2(codegen->builder, rt, rv->llvm_value, "rval");
+                rv->is_lvalue = 0;
+            }
+        }
+        LLVMValueRef rbool = rv->llvm_value;
+        value_info_free(rv);
+        // The rhs may itself have introduced blocks (nested &&/||, calls);
+        // the PHI predecessor is wherever rhs evaluation actually ended.
+        LLVMBasicBlockRef rhs_end_bb = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildBr(codegen->builder, merge_bb);
+
+        // merge: phi over the short-circuit constant and the rhs value.
+        codegen_set_insert_point(codegen, merge_bb);
+        LLVMTypeRef i1 = LLVMInt1TypeInContext(codegen->context);
+        LLVMValueRef phi = LLVMBuildPhi(codegen->builder, i1, is_and ? "and.sc" : "or.sc");
+        LLVMValueRef sc_const = LLVMConstInt(i1, is_and ? 0 : 1, 0);
+        LLVMValueRef in_vals[2] = { sc_const, rbool };
+        LLVMBasicBlockRef in_blocks[2] = { entry_bb, rhs_end_bb };
+        LLVMAddIncoming(phi, in_vals, in_blocks, 2);
+
+        return value_info_new(NULL, phi, type_checker_get_builtin(checker, TYPE_BOOL));
+    }
+
     // Generate left and right operands
     ValueInfo* left_val = codegen_generate_expression(codegen, checker, binary->left);
     if (!left_val) return NULL;
@@ -873,14 +935,17 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             }
             break;
             
-        // Logical operators
+        // Logical operators: handled by the short-circuit path above, which
+        // returns before reaching this switch. These cases are unreachable;
+        // keep them defensive so a future refactor can't silently fall back
+        // to eager (non-short-circuiting) And/Or.
         case TOKEN_AND:
-            result = LLVMBuildAnd(codegen->builder, left_llvm, right_llvm, "and");
-            break;
-            
         case TOKEN_OR:
-            result = LLVMBuildOr(codegen->builder, left_llvm, right_llvm, "or");
-            break;
+            codegen_error(codegen, expr->pos,
+                          "internal: && / || must be lowered by the short-circuit path");
+            value_info_free(left_val);
+            value_info_free(right_val);
+            return NULL;
             
         // Bitwise operators
         case TOKEN_BIT_AND:

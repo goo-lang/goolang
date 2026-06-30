@@ -1,0 +1,26 @@
+// shortcircuit_probe (P1-5): && and || must short-circuit.
+//
+// Before P1-5, && / || used eager LLVMBuildAnd/Or on both pre-evaluated
+// operands, so the RHS always ran (side effects fired). Go evaluates the RHS
+// only when the result isn't already determined by the LHS. The side-effect
+// prints below would appear in the wrong place / count if RHS were eager.
+//
+//   false && yes()  -> yes() NOT called, result false
+//   true  || no()   -> no()  NOT called, result true
+//   true  && no()   -> no()  IS  called, result false
+package main
+
+import "fmt"
+
+func yes() bool { fmt.Println("yes-called"); return true }
+func no() bool  { fmt.Println("no-called"); return false }
+
+func main() {
+	r1 := false && yes()
+	fmt.Println(r1) // false   (yes-called must NOT appear above)
+	r2 := true || no()
+	fmt.Println(r2) // true    (no-called must NOT appear above)
+	r3 := true && no()
+	fmt.Println(r3) // no-called, then false
+	fmt.Println("done")
+}
