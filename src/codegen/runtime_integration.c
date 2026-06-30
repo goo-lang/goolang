@@ -246,6 +246,17 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_string_to_int", i32_type, params, 2);
     }
 
+    // goo_error_t* goo_error_from_string(goo_string_t msg)  [handle returned as i8*]
+    {
+        LLVMTypeRef params[] = { string_type };
+        add_runtime_function(codegen, "goo_error_from_string", ptr_type, params, 1);
+    }
+    // goo_string_t goo_error_message(goo_error_t* e)  [handle passed as i8*]
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_error_message", string_type, params, 1);
+    }
+
     // Stdlib package backings
     // int goo_strings_contains(const char* haystack, const char* needle)
     {
