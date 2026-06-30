@@ -238,6 +238,18 @@ int goo_string_eq(goo_string_t a, goo_string_t b) {
     return memcmp(a.data, b.data, a.length) == 0;
 }
 
+// P1-2: lexicographic comparison. Compare the common prefix; if equal there,
+// the shorter string sorts first. Returns -1 / 0 / 1.
+int goo_string_cmp(goo_string_t a, goo_string_t b) {
+    size_t n = a.length < b.length ? a.length : b.length;
+    int c = 0;
+    if (n > 0 && a.data && b.data) c = memcmp(a.data, b.data, n);
+    if (c != 0) return c < 0 ? -1 : 1;
+    if (a.length < b.length) return -1;
+    if (a.length > b.length) return 1;
+    return 0;
+}
+
 // Stdlib package backings
 
 int goo_strings_contains(const char* haystack, const char* needle) {

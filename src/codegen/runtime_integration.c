@@ -218,6 +218,12 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_string_eq", i32_type, params, 2);
     }
 
+    // P1-2: int goo_string_cmp(goo_string_t a, goo_string_t b) — returns -1/0/1.
+    {
+        LLVMTypeRef params[] = { string_type, string_type };
+        add_runtime_function(codegen, "goo_string_cmp", i32_type, params, 2);
+    }
+
     // Stdlib package backings
     // int goo_strings_contains(const char* haystack, const char* needle)
     {

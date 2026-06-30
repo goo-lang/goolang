@@ -484,6 +484,24 @@ static LLVMValueRef codegen_string_eq_to_i1(CodeGenerator* codegen,
     return LLVMBuildICmp(codegen->builder, want_equal ? LLVMIntNE : LLVMIntEQ,
                          eqi, zero, want_equal ? "streq_b" : "strne_b");
 }
+
+// P1-2: lower a string ordering comparison to goo_string_cmp (returns
+// -1/0/1) followed by `<pred> 0`, where pred is SLT/SLE/SGT/SGE for
+// < / <= / > / >= respectively.
+static LLVMValueRef codegen_string_cmp_to_i1(CodeGenerator* codegen,
+                                             LLVMValueRef a, LLVMValueRef b,
+                                             LLVMIntPredicate pred, ASTNode* expr) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_cmp");
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "goo_string_cmp not found in module");
+        return NULL;
+    }
+    LLVMValueRef args[2] = { a, b };
+    LLVMValueRef cmp = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                      fn, args, 2, "strcmp");
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    return LLVMBuildICmp(codegen->builder, pred, cmp, zero, "strcmp_b");
+}
 #endif
 
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -896,6 +914,9 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOLT, left_llvm, right_llvm, "flt");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSLT, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
@@ -908,6 +929,9 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOLE, left_llvm, right_llvm, "fle");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSLE, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
@@ -920,6 +944,9 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOGT, left_llvm, right_llvm, "fgt");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSGT, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
@@ -932,6 +959,9 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 }
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOGE, left_llvm, right_llvm, "fge");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                result = codegen_string_cmp_to_i1(codegen, left_llvm, right_llvm, LLVMIntSGE, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
