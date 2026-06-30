@@ -849,33 +849,31 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         }
     }
 
-    // error.Error() -> string (Phase 6 Task 3). `e.Error()` is a real CALL
-    // expression, not just a selector: type_check_selector_expr resolves the
-    // callee `e.Error` to `string` directly (the error type has no actual
-    // "Error" function — see the matching special case there), so the
-    // generic "callee must be TYPE_FUNCTION" check just below would reject
-    // it. Recognize the receiver here too and short-circuit before that.
-    if (call->function && call->function->type == AST_SELECTOR_EXPR) {
+    // Check function expression
+    Type* func_type = type_check_expression(checker, call->function);
+    if (!func_type) return NULL;
+
+    // error.Error() -> string (Phase 6 Task 3). `e.Error` resolves (via the
+    // selector special case) to TYPE_STRING, so the generic TYPE_FUNCTION
+    // check below would reject the call. Recognize it here using the receiver
+    // type already computed during the call->function check above (no
+    // re-evaluation — avoids double type-checking/double-diagnostics).
+    if (call->function->type == AST_SELECTOR_EXPR && func_type->kind == TYPE_STRING) {
         SelectorExprNode* esel = (SelectorExprNode*)call->function;
-        Type* erecv_t = type_check_expression(checker, esel->expr);
+        Type* erecv_t = esel->expr->node_type;
         if (erecv_t && erecv_t->name && strcmp(erecv_t->name, "error") == 0 &&
             strcmp(esel->selector, "Error") == 0) {
             if (call->args) {
                 type_error(checker, expr->pos, "error.Error() takes no arguments");
                 return NULL;
             }
-            Type* ret = type_checker_get_builtin(checker, TYPE_STRING);
-            expr->node_type = ret;
-            return ret;
+            expr->node_type = func_type; // string
+            return func_type;
         }
     }
 
-    // Check function expression
-    Type* func_type = type_check_expression(checker, call->function);
-    if (!func_type) return NULL;
-    
     if (func_type->kind != TYPE_FUNCTION) {
-        type_error(checker, expr->pos, 
+        type_error(checker, expr->pos,
                   "Cannot call non-function type %s", type_to_string(func_type));
         return NULL;
     }
