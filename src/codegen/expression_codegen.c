@@ -502,6 +502,31 @@ static LLVMValueRef codegen_string_cmp_to_i1(CodeGenerator* codegen,
     LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
     return LLVMBuildICmp(codegen->builder, pred, cmp, zero, "strcmp_b");
 }
+
+// P1-7: emit a runtime divide-by-zero guard before an integer div/rem. If the
+// divisor is 0, call goo_panic('integer divide by zero') (which aborts) and
+// mark the block unreachable; otherwise fall through to `divzero.cont`, where
+// the builder is left positioned so the division is emitted on the safe path.
+static void codegen_emit_divzero_check(CodeGenerator* codegen, LLVMValueRef divisor,
+                                       ASTNode* expr) {
+    (void)expr;
+    LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+    if (!panic_fn) return;  // no panic symbol: emit the div unguarded
+    LLVMValueRef zero = LLVMConstInt(LLVMTypeOf(divisor), 0, 0);
+    LLVMValueRef iszero = LLVMBuildICmp(codegen->builder, LLVMIntEQ, divisor, zero, "divzero");
+    LLVMBasicBlockRef panic_bb = codegen_create_block(codegen, "divzero.panic");
+    LLVMBasicBlockRef cont_bb = codegen_create_block(codegen, "divzero.cont");
+    LLVMBuildCondBr(codegen->builder, iszero, panic_bb, cont_bb);
+
+    codegen_set_insert_point(codegen, panic_bb);
+    LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder,
+                                                "integer divide by zero", "divzero_msg");
+    LLVMValueRef args[1] = { msg };
+    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn), panic_fn, args, 1, "");
+    LLVMBuildUnreachable(codegen->builder);
+
+    codegen_set_insert_point(codegen, cont_bb);
+}
 #endif
 
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -851,6 +876,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             
         case TOKEN_DIVIDE:
             if (type_is_integer(left_val->goo_type)) {
+                codegen_emit_divzero_check(codegen, right_llvm, expr); // P1-7
                 if (type_is_signed(left_val->goo_type)) {
                     result = LLVMBuildSDiv(codegen->builder, left_llvm, right_llvm, "sdiv");
                 } else {
@@ -863,6 +889,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             
         case TOKEN_MODULO:
             if (type_is_integer(left_val->goo_type)) {
+                codegen_emit_divzero_check(codegen, right_llvm, expr); // P1-7
                 if (type_is_signed(left_val->goo_type)) {
                     result = LLVMBuildSRem(codegen->builder, left_llvm, right_llvm, "srem");
                 } else {

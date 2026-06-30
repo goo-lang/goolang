@@ -728,6 +728,21 @@ blank-lines-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rrc -ne 0 ]; then echo "blank-lines-probe: FAIL (run rc=$$rrc)"; exit 1; fi; \
 	echo "blank-lines-probe: PASS"
 
+# P1-7: integer divide-by-zero must abort (non-zero exit + panic message),
+# not return garbage. Also confirms normal division still exits 0.
+divzero-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== divzero-probe: 10/0 must abort with 'integer divide by zero' ==="
+	@"$(COMPILER)" examples/divzero_probe.goo -o build/divzero_probe.out 2>build/divzero_probe.cerr || \
+	  { echo "divzero-probe: FAIL (compile)"; cat build/divzero_probe.cerr; exit 1; }
+	@./build/divzero_probe.out 2>build/divzero_probe.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "divzero-probe: FAIL (10/0 did not abort, rc=0)"; exit 1; fi; \
+	if ! grep -q "integer divide by zero" build/divzero_probe.err; then echo "divzero-probe: FAIL (no panic message)"; cat build/divzero_probe.err; exit 1; fi
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(20/4) }\n' > build/divok.goo
+	@"$(COMPILER)" build/divok.goo -o build/divok.out 2>/dev/null && ./build/divok.out >build/divok.out.txt 2>&1; \
+	if [ "$$(cat build/divok.out.txt)" != "5" ]; then echo "divzero-probe: FAIL (normal 20/4 != 5: $$(cat build/divok.out.txt))"; exit 1; fi
+	@echo "divzero-probe: PASS"
+
 # Soak iteration count for the parallel probes (override: make ... PARALLEL_SOAK_ITERS=200).
 PARALLEL_SOAK_ITERS ?= 50
 
@@ -952,7 +967,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
