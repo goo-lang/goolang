@@ -1,0 +1,14 @@
+// printf_hello_probe (capstone): flagship formatted I/O — Printf with %s/%d
+// and Sprintf building a string from an expression. Exercises the whole
+// fmt.Printf/Sprintf milestone end-to-end.
+package main
+
+import "fmt"
+
+func main() {
+	name := "world"
+	n := 3
+	fmt.Printf("hello %s, you have %d messages\n", name, n)
+	line := fmt.Sprintf("sum=%d", 1+2+3)
+	fmt.Println(line)
+}
