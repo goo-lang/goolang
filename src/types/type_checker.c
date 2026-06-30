@@ -1385,6 +1385,11 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(ident->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(ident->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(ident->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
+            // F8: Go's `error` interface. v1 represents it as a nullable
+            // pointer — nameable in signatures, accepts nil, and `== nil`
+            // works. Method dispatch (`.Error()`) is deferred to Phase 6.
+            if (strcmp(ident->name, "error") == 0)
+                return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
 
             // User-defined named type (e.g. `new(Point)`): `type Foo ...` is
             // registered as a Variable whose `type` field is the named Type
@@ -1422,6 +1427,9 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(basic->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(basic->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
+            // F8: Go's `error` interface — see the AST_IDENTIFIER branch above.
+            if (strcmp(basic->name, "error") == 0)
+                return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
 
             // User-defined named type? type_check_type_decl registers
             // `type Foo = ...` aliases by piggybacking on the variable
