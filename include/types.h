@@ -379,6 +379,13 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
                              Type* concrete, const char** method_out,
                              const char** reason_out);
 
+// Validate assigning `src` into a `target`-typed location. For an interface
+// target this accepts any concrete implementer (emitting "X does not implement
+// Y" otherwise) and any interface (permissive); for a non-interface target it
+// falls back to type_compatible. Returns 1 if the assignment is allowed.
+int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
+                           Position pos);
+
 // Type checking utilities
 int type_is_integer(const Type* type);
 int type_is_float(const Type* type);

@@ -664,8 +664,26 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             }
         }
 
+        // Box a concrete implementer into an interface-typed lvalue's
+        // {vtable, data} value (mirrors var-decl init / call-arg boxing).
+        // interface→interface needs no box — same layout, store directly.
+        LLVMValueRef sval = value->llvm_value;
+        if (target->goo_type && target->goo_type->kind == TYPE_INTERFACE &&
+            value->goo_type && value->goo_type->kind != TYPE_INTERFACE) {
+            LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                       target->goo_type,
+                                                       value->goo_type,
+                                                       value->llvm_value);
+            if (!boxed) {
+                codegen_error(codegen, expr->pos,
+                              "failed to box value into interface on assignment");
+                return NULL;
+            }
+            sval = boxed;
+        }
+
         // Store the value into the target's address.
-        LLVMBuildStore(codegen->builder, value->llvm_value, target->llvm_value);
+        LLVMBuildStore(codegen->builder, sval, target->llvm_value);
 
         // Return the stored value
         return value;

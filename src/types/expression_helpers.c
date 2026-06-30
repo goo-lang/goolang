@@ -94,7 +94,17 @@ Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_t
 
 Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos) {
     if (!checker || !target || !target_type || !value_type) return NULL;
-    
+
+    // An interface-typed target accepts any concrete implementer and any
+    // interface (check_interface_assign emits its own diagnostic). Mirrors the
+    // var-decl init path so `s = Sq{}` / `t = s` behave like `var s Shape = …`.
+    if (target_type->kind == TYPE_INTERFACE) {
+        if (!check_interface_assign(checker, value_type, target_type, pos)) {
+            return NULL;
+        }
+        return target_type;
+    }
+
     // Check that value is compatible with target
     if (!type_compatible(value_type, target_type)) {
         type_error(checker, pos, "Cannot assign %s to %s",
