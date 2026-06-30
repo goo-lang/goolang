@@ -861,6 +861,18 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         callee_name = sel->selector;
                     }
                 }
+            } else if (st->kind == TYPE_INTERFACE) {
+                // Interface method call (P4-4): the method type carries no
+                // receiver, so check args directly (recv_offset = 0).
+                for (InterfaceMethod* im = st->data.interface.methods; im; im = im->next) {
+                    if (im->name && strcmp(im->name, sel->selector) == 0 &&
+                        im->type == func_type) {
+                        check_signature = 1;
+                        recv_offset = 0;
+                        callee_name = sel->selector;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1162,6 +1174,24 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
             }
         }
         type_error(checker, expr->pos, "Struct has no field or method '%s'", selector->selector);
+        return NULL;
+    }
+
+    // Interface method access (P4-4): resolve the selector in the interface's
+    // method set. The method's function type carries NO receiver (unlike a
+    // struct method's mangled function), so a call `a.M(args)` checks its args
+    // directly against the method signature.
+    if (expr_type->kind == TYPE_INTERFACE) {
+        for (InterfaceMethod* im = expr_type->data.interface.methods; im; im = im->next) {
+            if (im->name && strcmp(im->name, selector->selector) == 0) {
+                expr->node_type = im->type;
+                return im->type;
+            }
+        }
+        type_error(checker, expr->pos, "%s has no method '%s'",
+                   expr_type->data.interface.name ? expr_type->data.interface.name
+                                                  : "interface",
+                   selector->selector);
         return NULL;
     }
 

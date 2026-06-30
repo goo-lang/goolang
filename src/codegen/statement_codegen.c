@@ -826,6 +826,18 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             function_return_type = codegen->current_function_info->goo_type;
         }
 
+        // P4-3/P4-5 boundary: the type checker accepts returning a concrete
+        // implementer into an interface return type, but boxing the value into
+        // an {vtable, data} interface value is P4-5 (not yet implemented). Emit
+        // a clean diagnostic here rather than letting an unboxed concrete value
+        // reach the verifier as a return-type mismatch.
+        if (function_return_type && function_return_type->kind == TYPE_INTERFACE) {
+            codegen_error(codegen, stmt->pos,
+                          "returning a value as an interface is not yet "
+                          "implemented (Phase 4 P4-5: vtable dispatch)");
+            return 0;
+        }
+
         // Nullable nil-return intercept: `return nil` inside a `?T` function.
         // Without this, codegen_generate_null_literal produces a void* null
         // pointer (no expected-type context), which mismatches the `{i1, T}`

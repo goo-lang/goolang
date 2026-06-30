@@ -1073,7 +1073,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1184,6 +1184,53 @@ return-type-erru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/rt_erru_ok.goo -o build/rt_erru_ok.out 2>build/rt_erru_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "return-type-erru-probe: FAIL (valid !T returns rejected)"; cat build/rt_erru_ok.err; exit 1; fi
 	@echo "return-type-erru-probe: PASS"
+
+# P4-1/P4-2: interface type declarations parse and resolve to TYPE_INTERFACE.
+# Empty interface, single-method, and a multi-method (sort.Interface-shaped)
+# form must all compile, and the interface name must be usable as a variable
+# type. Dispatch/satisfaction are later tasks (P4-3…P4-5); this gates the
+# front-end (grammar + type_from_ast) against regression.
+iface-parse-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== iface-parse-probe: interface decls parse + resolve + usable as a type ==="
+	@printf 'package main\ntype Any interface {}\ntype Shape interface { Area() int }\ntype Sortable interface {\n Len() int\n Less(i int, j int) bool\n Swap(i int, j int)\n}\nfunc main() { var s Shape; _ = s }\n' > build/iface_parse.goo
+	@"$(COMPILER)" build/iface_parse.goo -o build/iface_parse.out 2>build/iface_parse.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "iface-parse-probe: FAIL (interface decls did not compile)"; cat build/iface_parse.err; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR|syntax error" build/iface_parse.err; then echo "iface-parse-probe: FAIL (parse/verify error)"; cat build/iface_parse.err; exit 1; fi
+	@echo "iface-parse-probe: PASS"
+
+# P4-3/P4-4: interface satisfaction + method-call type checking. A non-implementer
+# assigned to an interface is rejected ("does not implement"); a signature
+# mismatch is rejected; an unknown interface method and a wrong-arity call are
+# rejected. A genuine implementer passes the type checker and reaches the clean
+# P4-5 "not yet implemented" codegen boundary (NOT a verifier crash). No invalid
+# IR may escape in any case.
+iface-satisfaction-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== iface-satisfaction-probe: interface satisfaction + method-call checks ==="
+	@printf 'package main\ntype Shape interface { Area() int }\ntype Pt struct { x int }\nfunc main() { var b Shape = Pt{x: 1}\n _ = b }\n' > build/iface_missing.goo
+	@printf 'package main\ntype Shape interface { Area() int }\ntype Bad struct { x int }\nfunc (b Bad) Area() string { return "n" }\nfunc main() { var c Shape = Bad{x: 1}\n _ = c }\n' > build/iface_mm.goo
+	@printf 'package main\ntype Shape interface { Area() int }\ntype Sq struct { side int }\nfunc (s Sq) Area() int { return s.side }\nfunc main() { var a Shape = Sq{side: 5}\n _ = a.Perim() }\n' > build/iface_unknownm.goo
+	@printf 'package main\ntype Shape interface { Scale(f int) int }\ntype Sq struct { side int }\nfunc (s Sq) Scale(f int) int { return s.side * f }\nfunc main() { var a Shape = Sq{side: 5}\n _ = a.Scale(1, 2) }\n' > build/iface_wrongargs.goo
+	@printf 'package main\ntype Shape interface { Area() int }\ntype Sq struct { side int }\nfunc (s Sq) Area() int { return s.side * s.side }\nfunc main() { var a Shape = Sq{side: 3}\n _ = a }\n' > build/iface_ok.goo
+	@"$(COMPILER)" build/iface_missing.goo -o build/iface_missing.out 2>build/iface_missing.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "iface-satisfaction-probe: FAIL (non-implementer compiled)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/iface_missing.err; then echo "iface-satisfaction-probe: FAIL (invalid IR)"; cat build/iface_missing.err; exit 1; fi; \
+	  if ! grep -qiE "does not implement" build/iface_missing.err; then echo "iface-satisfaction-probe: FAIL (no satisfaction diagnostic)"; cat build/iface_missing.err; exit 1; fi
+	@"$(COMPILER)" build/iface_mm.goo -o build/iface_mm.out 2>build/iface_mm.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "iface-satisfaction-probe: FAIL (signature mismatch compiled)"; exit 1; fi; \
+	  if ! grep -qiE "does not implement|signature mismatch" build/iface_mm.err; then echo "iface-satisfaction-probe: FAIL (no mismatch diagnostic)"; cat build/iface_mm.err; exit 1; fi
+	@"$(COMPILER)" build/iface_unknownm.goo -o build/iface_unknownm.out 2>build/iface_unknownm.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "iface-satisfaction-probe: FAIL (unknown method compiled)"; exit 1; fi; \
+	  if ! grep -qiE "has no method" build/iface_unknownm.err; then echo "iface-satisfaction-probe: FAIL (no unknown-method diagnostic)"; cat build/iface_unknownm.err; exit 1; fi
+	@"$(COMPILER)" build/iface_wrongargs.goo -o build/iface_wrongargs.out 2>build/iface_wrongargs.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "iface-satisfaction-probe: FAIL (wrong-arity call compiled)"; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/iface_wrongargs.err; then echo "iface-satisfaction-probe: FAIL (no arity diagnostic)"; cat build/iface_wrongargs.err; exit 1; fi
+	@"$(COMPILER)" build/iface_ok.goo -o build/iface_ok.out 2>build/iface_ok.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "iface-satisfaction-probe: FAIL (boxing should hit the P4-5 boundary, not compile)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/iface_ok.err; then echo "iface-satisfaction-probe: FAIL (implementer reached the verifier — guard missing)"; cat build/iface_ok.err; exit 1; fi; \
+	  if ! grep -qiE "not yet implemented .Phase 4 P4-5" build/iface_ok.err; then echo "iface-satisfaction-probe: FAIL (no clean P4-5 boundary diagnostic)"; cat build/iface_ok.err; exit 1; fi
+	@echo "iface-satisfaction-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void
 # expression) recovers with that expression's value, so its type must be

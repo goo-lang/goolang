@@ -572,6 +572,15 @@ typedef struct {
     struct ASTNode* variants;
 } EnumTypeNode;
 
+// Interface type: `interface { Area() int  Name() string }` (or the empty
+// `interface {}`). `methods` is a next-chained list of FuncDeclNode method
+// SIGNATURES — name + params + return_type, with body == NULL. type_from_ast
+// walks them to build the TYPE_INTERFACE method set.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* methods;
+} InterfaceTypeNode;
+
 // A single enum variant. `fields` is a next-chained list of VarDeclNode
 // (same shape as struct fields), or NULL for a payloadless variant.
 typedef struct {
@@ -1049,6 +1058,7 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos);
 ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos);
 VarDeclNode* ast_var_decl_new(Position pos);
 EnumTypeNode* ast_enum_type_new(struct ASTNode* variants, Position pos);
+InterfaceTypeNode* ast_interface_type_new(struct ASTNode* methods, Position pos);
 EnumVariantNode* ast_enum_variant_new(const char* name, struct ASTNode* fields, Position pos);
 IdentifierNode* ast_identifier_new(const char* name, Position pos);
 LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos);
