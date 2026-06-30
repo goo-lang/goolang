@@ -1,0 +1,19 @@
+// field_init_probe: `x := p.field` — a struct-field selector as a `:=`
+// initializer is an lvalue; it must be auto-loaded to its rvalue, same as the
+// `s[i]` index case (regression lock for the var-decl lvalue-load fix).
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+	Y int
+}
+
+func main() {
+	p := Point{X: 10, Y: 20}
+	x := p.X // struct-field selector lvalue initializer
+	y := p.Y
+	fmt.Println(x) // 10
+	fmt.Println(y) // 20
+}
