@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -233,6 +234,9 @@ goo_string_t goo_string_concat(goo_string_t a, goo_string_t b) {
 goo_string_t goo_int_to_string(int64_t value) {
     char buf[32];
     int n = snprintf(buf, sizeof(buf), "%lld", (long long)value);
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        goo_panic("goo_int_to_string: snprintf overflow");
+    }
     char* data = (char*)goo_alloc((size_t)n + 1);
     memcpy(data, buf, (size_t)n + 1);
     goo_string_t s; s.data = data; s.length = (size_t)n; return s;
@@ -241,9 +245,28 @@ goo_string_t goo_int_to_string(int64_t value) {
 goo_string_t goo_float_to_string(double value) {
     char buf[64];
     int n = snprintf(buf, sizeof(buf), "%g", value);
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        goo_panic("goo_float_to_string: snprintf overflow");
+    }
     char* data = (char*)goo_alloc((size_t)n + 1);
     memcpy(data, buf, (size_t)n + 1);
     goo_string_t s; s.data = data; s.length = (size_t)n; return s;
+}
+
+int goo_string_to_int(goo_string_t s, int64_t* out) {
+    if (!out || s.length == 0) return 0;
+    // Copy to a NUL-terminated stack buffer (s.data may be a non-terminated slice).
+    char buf[32];
+    if (s.length >= sizeof(buf)) return 0;  // too long to be a valid int64
+    memcpy(buf, s.data, s.length);
+    buf[s.length] = '\0';
+    errno = 0;
+    char* end = NULL;
+    long long v = strtoll(buf, &end, 10);
+    if (errno != 0) return 0;          // overflow/underflow
+    if (end == buf || *end != '\0') return 0;  // empty or trailing junk
+    *out = (int64_t)v;
+    return 1;
 }
 
 goo_string_t goo_bool_to_string(int value) {
