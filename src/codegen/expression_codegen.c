@@ -775,14 +775,20 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "eq");
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, left_llvm, right_llvm, "feq");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_BOOL) {
+                // P1-3: bools are i1 — integer-equality is the right lowering.
+                result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "booleq");
             }
             break;
-            
+
         case TOKEN_NE:
             if (type_is_integer(left_val->goo_type)) {
                 result = LLVMBuildICmp(codegen->builder, LLVMIntNE, left_llvm, right_llvm, "ne");
             } else if (type_is_float(left_val->goo_type)) {
                 result = LLVMBuildFCmp(codegen->builder, LLVMRealONE, left_llvm, right_llvm, "fne");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_BOOL) {
+                // P1-3: bool inequality.
+                result = LLVMBuildICmp(codegen->builder, LLVMIntNE, left_llvm, right_llvm, "boolne");
             }
             break;
             

@@ -1,0 +1,18 @@
+// bool_eq_probe (P1-3): bool ==/!= codegen.
+//
+// Before P1-3, TOKEN_EQ/NE only handled integer and float operands (bool is
+// not in type_is_integer's INT8..UINT64 range), so `a == b` on bools emitted
+// no result -> "Failed to generate binary operation". Bools are i1; an
+// ICmp eq/ne is the correct lowering.
+package main
+
+import "fmt"
+
+func main() {
+	a := true
+	b := false
+	fmt.Println(a == b) // false
+	fmt.Println(a != b) // true
+	fmt.Println(a == a) // true
+	fmt.Println(b != b) // false
+}
