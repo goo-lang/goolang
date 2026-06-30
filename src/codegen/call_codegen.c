@@ -13,6 +13,7 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                                TypeKind return_kind, int unused_extra);
 static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 // Defined in expression_codegen.c: storage address of an addressable
@@ -312,6 +313,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
                 return codegen_generate_sprintf_call(codegen, checker, expr);
+            }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
+                return codegen_generate_errorf_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
@@ -1781,5 +1785,45 @@ static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen,
     }
 
     return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+#endif
+}
+
+// codegen_generate_errorf_call: entry point for fmt.Errorf. Mirrors
+// codegen_generate_sprintf_call (compile-time format walker via
+// fmt_emit_segments, sprintf_mode=1) to build a goo_string_t message, then
+// boxes it into a heap goo_error via goo_error_from_string and wraps the
+// resulting handle into the nullable error representation, matching the
+// errors.New boxing path.
+static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen,
+                                               TypeChecker* checker,
+                                               ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+    ASTNode* fmt_arg = call->args;
+    if (!fmt_arg || fmt_arg->type != AST_LITERAL ||
+        ((LiteralNode*)fmt_arg)->literal_type != TOKEN_STRING) {
+        codegen_error(codegen, expr->pos, "fmt.Errorf: format must be a string literal");
+        return NULL;
+    }
+    const char* fmt_str = ((LiteralNode*)fmt_arg)->value;
+    LLVMValueRef msg_str = NULL;
+    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 1, &msg_str, expr->pos)) {
+        return NULL;
+    }
+    LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+    LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
+    LLVMValueRef bargs[] = { msg_str };
+    LLVMValueRef handle = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, bargs, 1, "errorf_box");
+    Type* err_type = type_checker_error_type(checker);
+    LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
+    LLVMValueRef err_val = LLVMGetUndef(err_llvm);
+    err_val = LLVMBuildInsertValue(codegen->builder, err_val,
+        LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0), 0, "ef.is_null");
+    err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "ef.ptr");
+    return value_info_new(NULL, err_val, err_type);
 #endif
 }
