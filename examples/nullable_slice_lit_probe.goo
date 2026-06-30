@@ -1,0 +1,29 @@
+// nullable_slice_lit_probe (P2-5): a `[]?T` slice literal auto-wraps bare
+// scalars into the {i1,T} nullable element and encodes the nil literal as the
+// null-nullable. `[]?int{7, nil, 9}` indexes to a present 7, an absent middle
+// element (if-let else), and a present 9.
+package main
+
+import "fmt"
+
+func main() {
+	xs := []?int{7, nil, 9}
+
+	if let a = xs[0] {
+		fmt.Println("idx0:", a)
+	} else {
+		fmt.Println("idx0 none")
+	}
+
+	if let b = xs[1] {
+		fmt.Println("idx1:", b)
+	} else {
+		fmt.Println("idx1 none")
+	}
+
+	if let c = xs[2] {
+		fmt.Println("idx2:", c)
+	} else {
+		fmt.Println("idx2 none")
+	}
+}
