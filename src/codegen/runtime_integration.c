@@ -224,6 +224,23 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_string_cmp", i32_type, params, 2);
     }
 
+    // Scalar-to-string converters used by fmt.Sprintf / strconv.
+    // goo_string_t goo_int_to_string(int64_t value)
+    {
+        LLVMTypeRef params[] = { i64_type };
+        add_runtime_function(codegen, "goo_int_to_string", string_type, params, 1);
+    }
+    // goo_string_t goo_float_to_string(double value)
+    {
+        LLVMTypeRef params[] = { LLVMDoubleTypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_float_to_string", string_type, params, 1);
+    }
+    // goo_string_t goo_bool_to_string(int value)
+    {
+        LLVMTypeRef params[] = { i32_type };
+        add_runtime_function(codegen, "goo_bool_to_string", string_type, params, 1);
+    }
+
     // Stdlib package backings
     // int goo_strings_contains(const char* haystack, const char* needle)
     {

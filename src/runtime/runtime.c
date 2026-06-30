@@ -228,6 +228,32 @@ goo_string_t goo_string_concat(goo_string_t a, goo_string_t b) {
     return (goo_string_t){result, total_length};
 }
 
+// Scalar-to-string conversions — heap-allocated via goo_alloc (same allocator
+// as goo_string_concat). Used by fmt.Sprintf / strconv.
+goo_string_t goo_int_to_string(int64_t value) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long)value);
+    char* data = (char*)goo_alloc((size_t)n + 1);
+    memcpy(data, buf, (size_t)n + 1);
+    goo_string_t s; s.data = data; s.length = (size_t)n; return s;
+}
+
+goo_string_t goo_float_to_string(double value) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%g", value);
+    char* data = (char*)goo_alloc((size_t)n + 1);
+    memcpy(data, buf, (size_t)n + 1);
+    goo_string_t s; s.data = data; s.length = (size_t)n; return s;
+}
+
+goo_string_t goo_bool_to_string(int value) {
+    const char* lit = value ? "true" : "false";
+    size_t n = strlen(lit);
+    char* data = (char*)goo_alloc(n + 1);
+    memcpy(data, lit, n + 1);
+    goo_string_t s; s.data = data; s.length = n; return s;
+}
+
 // P1-1: byte-wise string value equality for `==`/`!=`. Two strings are equal
 // iff they have the same length and the same bytes. A nil/empty data pointer
 // is treated as the empty string, so "" == "" and nil == "" are equal.
