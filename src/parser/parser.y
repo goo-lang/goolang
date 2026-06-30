@@ -17,6 +17,21 @@ ASTNode* ast_root = NULL;
 // Helper functions
 static Position get_current_position(void);
 static TokenType bison_token_to_token_type(int bison_token);
+
+// F4 grouped-const desugaring (definitions after the second %%):
+//   clone_const_value — correct deep-copy of a const-expr node (NOT
+//                       ast_node_copy, which under-allocates derived structs)
+//   substitute_iota   — replace the identifier `iota` with its ordinal literal
+//   const_spec_new    — build one ConstDeclNode for a grouped-const spec
+//   desugar_const_group — turn the spec chain into ordinary single const decls
+static ASTNode* clone_const_value(const ASTNode* n);
+static void substitute_iota(ASTNode** slot, long idx);
+static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value);
+static ASTNode* desugar_const_group(ASTNode* spec_chain);
+
+// F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` / `a,b = v1,v2`).
+static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
+                                   ASTNode* v1, ASTNode* v2, int is_short_decl);
 %}
 
 // Union type for semantic values
@@ -99,6 +114,7 @@ static TokenType bison_token_to_token_type(int bison_token);
 %type <node> opt_import_decl_list opt_top_level_decl_list
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
+%type <node> const_spec const_spec_list
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
@@ -633,6 +649,12 @@ short_var_decl:
         ast_node_free($3);
         $$ = (ASTNode*)var;
     }
+    // F6: `a, b := v1, v2` — two independent RHS values (not a destructure).
+    // The COLON-free trailing `COMMA expression` after the first value is what
+    // distinguishes this from the single-value destructure rule above.
+    | identifier COMMA identifier SHORT_ASSIGN expression COMMA expression {
+        $$ = multi_assign_2_new($1, $3, $5, $7, 1);
+    }
     ;
 
 // Constant declaration
@@ -672,6 +694,38 @@ const_decl:
         
         ast_node_free($3);
         $$ = (ASTNode*)const_node;
+    }
+    | CONST LPAREN const_spec_list RPAREN {
+        // F4: grouped const block. Desugar into a chain of ordinary single
+        // ConstDeclNodes (one per spec) with `iota` resolved to each spec's
+        // ordinal — so the existing single-const type-check/codegen path
+        // handles them unchanged. The returned chain is spliced into the
+        // top-level decl list by ast_add_child (which follows ->next).
+        $$ = desugar_const_group($3);
+    }
+    ;
+
+// F4: one spec inside a grouped const block. Untyped only (a typed spec
+// `NAME TYPE = expr` would create an `identifier type` vs bare-`identifier`
+// shift/reduce conflict — out of scope, see the F4 plan). A bare `NAME`
+// (no `= expr`) repeats the previous spec's value with iota incremented;
+// it is carried as values==NULL and filled in by desugar_const_group.
+const_spec:
+    identifier ASSIGN expression {
+        $$ = const_spec_new($1, $3);
+    }
+    | identifier {
+        $$ = const_spec_new($1, NULL);
+    }
+    ;
+
+const_spec_list:
+    const_spec {
+        $$ = $1;
+    }
+    | const_spec_list const_spec {
+        ast_add_child($1, $2);
+        $$ = $1;
     }
     ;
 
@@ -858,6 +912,11 @@ simple_stmt:
     }
     | short_var_decl { $$ = $1; }
     | var_decl { $$ = $1; }
+    // F6: `a, b = v1, v2` — multiple assignment to existing lvalues. Go
+    // evaluates all RHS before any store, so `a, b = b, a` swaps.
+    | identifier COMMA identifier ASSIGN expression COMMA expression {
+        $$ = multi_assign_2_new($1, $3, $5, $7, 0);
+    }
     ;
 
 if_stmt:
@@ -1235,6 +1294,31 @@ binary_expr:
         BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ARROW), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
+    // Binary bitwise operators. Tokens, precedence (see the %left block),
+    // type-checking, and codegen (Shl/AShr/LShr/And/Or/Xor) already existed;
+    // only these productions were missing. BIT_AND is also the unary
+    // address-of operator (`&x`), exactly like MULTIPLY's unary-deref dual
+    // role above — the unary_expr level and operator precedence disambiguate.
+    | expression LSHIFT expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LSHIFT), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression RSHIFT expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(RSHIFT), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression BIT_AND expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_AND), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression BIT_OR expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_OR), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression BIT_XOR expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_XOR), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
     ;
 
 primary_expr:
@@ -1291,6 +1375,20 @@ index_expr:
         index->expr = $1;
         index->index = $3;
         $$ = (ASTNode*)index;
+    }
+    // F5: slice/substring expression `expr[low:high]`. The COLON after the
+    // first bound distinguishes it from plain indexing on one lookahead token
+    // (RBRACKET vs COLON). Both bounds required in v1.
+    | primary_expr LBRACKET expression COLON expression RBRACKET {
+        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
+        slice->base.type = AST_SLICE_INDEX_EXPR;
+        slice->base.pos = get_current_position();
+        slice->base.node_type = NULL;
+        slice->base.next = NULL;
+        slice->expr = $1;
+        slice->low = $3;
+        slice->high = $5;
+        $$ = (ASTNode*)slice;
     }
     ;
 
@@ -2355,6 +2453,167 @@ void yyerror(const char* msg) {
     } else {
         fprintf(stderr, "Parse error: %s\n", msg);
     }
+}
+
+// F4: correct deep-copy of a constant-expression node. Deliberately NOT
+// ast_node_copy(): that helper allocates only sizeof(ASTNode) and then writes
+// derived-struct fields past the allocation (a latent heap overflow), so it
+// cannot be used to clone Literal/Identifier/Binary/Unary nodes. Here we use
+// the real constructors, which allocate the correct struct size. Covers the
+// const-expr surface F4 supports; anything else (calls, selectors, indexing)
+// returns NULL — a bare spec repeating such a value is left without an
+// initializer and rejected downstream with the normal clean error.
+static ASTNode* clone_const_value(const ASTNode* n) {
+    if (!n) return NULL;
+    switch (n->type) {
+        case AST_IDENTIFIER: {
+            IdentifierNode* src = (IdentifierNode*)n;
+            return (ASTNode*)ast_identifier_new(src->name, n->pos);
+        }
+        case AST_LITERAL: {
+            LiteralNode* src = (LiteralNode*)n;
+            return (ASTNode*)ast_literal_new(src->literal_type, src->value, n->pos);
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* src = (BinaryExprNode*)n;
+            ASTNode* l = clone_const_value(src->left);
+            ASTNode* r = clone_const_value(src->right);
+            return (ASTNode*)ast_binary_expr_new(l, src->operator, r, n->pos);
+        }
+        case AST_UNARY_EXPR: {
+            UnaryExprNode* src = (UnaryExprNode*)n;
+            ASTNode* operand = clone_const_value(src->operand);
+            return (ASTNode*)ast_unary_expr_new(src->operator, operand, n->pos);
+        }
+        default:
+            return NULL;
+    }
+}
+
+// F4: replace the identifier `iota` with an integer literal equal to `idx`,
+// recursively, inside a const spec's value expression. Handles the constant-
+// expression surface that iota appears in — a bare `iota`, and `iota` nested
+// in binary/unary expressions (e.g. `iota * 2`, `-iota`; and `1 << iota` once
+// bitwise operators land — a separate gap). Parenthesised exprs need no case:
+// `( e )` reduces to `e` directly (no wrapper node). `iota` buried in a
+// call/index/selector is left untouched and will surface as an ordinary
+// "undefined variable 'iota'" error — acceptable for v1 (those forms are
+// vanishingly rare in real const blocks).
+static void substitute_iota(ASTNode** slot, long idx) {
+    if (!slot || !*slot) return;
+    ASTNode* n = *slot;
+
+    if (n->type == AST_IDENTIFIER) {
+        IdentifierNode* id = (IdentifierNode*)n;
+        if (id->name && strcmp(id->name, "iota") == 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%ld", idx);
+            ASTNode* lit = (ASTNode*)ast_literal_new(TOKEN_INT, buf, n->pos);
+            lit->next = n->next;   // preserve sibling chain (NULL in expr context)
+            n->next = NULL;        // detach so the free below doesn't recurse
+            ast_node_free(n);
+            *slot = lit;
+        }
+        return;
+    }
+
+    switch (n->type) {
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)n;
+            substitute_iota(&b->left, idx);
+            substitute_iota(&b->right, idx);
+            break;
+        }
+        case AST_UNARY_EXPR: {
+            UnaryExprNode* u = (UnaryExprNode*)n;
+            substitute_iota(&u->operand, idx);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// F4: build one ConstDeclNode for a grouped-const spec. `value` may be NULL
+// for a bare spec (filled in later by desugar_const_group). Mirrors the
+// single-const construction in the const_decl rule.
+static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value) {
+    ConstDeclNode* c = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
+    c->base.type = AST_CONST_DECL;
+    c->base.pos = get_current_position();
+    c->base.node_type = NULL;
+    c->base.next = NULL;
+
+    IdentifierNode* ident = (IdentifierNode*)name_ident;
+    c->names = malloc(sizeof(char*));
+    c->names[0] = strdup(ident->name);
+    c->name_count = 1;
+    c->type = NULL;
+    c->values = value;
+    c->is_comptime = 0;
+
+    ast_node_free(name_ident);
+    return (ASTNode*)c;
+}
+
+// F4: turn a chain of grouped-const specs into a chain of ordinary single
+// const decls. Walks the specs in order, tracking the iota ordinal and the
+// pristine (pre-substitution) value template for bare-spec repetition, then
+// substitutes iota into each spec's value. A leading bare spec (no prior
+// value) keeps values==NULL and is rejected downstream as a const without an
+// initializer — the same clean error the single-const path already gives.
+static ASTNode* desugar_const_group(ASTNode* spec_chain) {
+    ASTNode* template = NULL;  // owned pristine (pre-iota) clone of last value
+    long idx = 0;
+
+    for (ASTNode* n = spec_chain; n; n = n->next) {
+        ConstDeclNode* c = (ConstDeclNode*)n;
+
+        if (c->values == NULL) {
+            // Bare spec: repeat the previous value with this spec's iota.
+            if (template) {
+                c->values = clone_const_value(template);
+            }
+        } else {
+            // Fresh value: snapshot it (pre-iota) so following bare specs
+            // repeat THIS expression with their own iota, then substitute
+            // into the spec's own value in place.
+            if (template) ast_node_free(template);
+            template = clone_const_value(c->values);
+        }
+
+        if (c->values) {
+            substitute_iota(&c->values, idx);
+        }
+        idx++;
+    }
+
+    if (template) ast_node_free(template);
+    return spec_chain;
+}
+
+// F6: build a 2-target/2-value MultiAssignNode. Targets and values are each
+// chained via ->next (t1->t2, v1->v2). For `:=` the targets are new names;
+// for `=` they are existing lvalues. Simultaneous-eval semantics are enforced
+// in codegen, not here.
+static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
+                                   ASTNode* v1, ASTNode* v2, int is_short_decl) {
+    MultiAssignNode* ma = (MultiAssignNode*)malloc(sizeof(MultiAssignNode));
+    ma->base.type = AST_MULTI_ASSIGN;
+    ma->base.pos = get_current_position();
+    ma->base.node_type = NULL;
+    ma->base.next = NULL;
+
+    t1->next = t2;
+    t2->next = NULL;
+    v1->next = v2;
+    v2->next = NULL;
+
+    ma->targets = t1;
+    ma->values = v1;
+    ma->count = 2;
+    ma->is_short_decl = is_short_decl;
+    return (ASTNode*)ma;
 }
 
 // Helper function to get current position

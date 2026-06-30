@@ -208,6 +208,94 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
     return result_val;
 #endif
 }
+
+// F5: `base[low:high]` slice/substring. Produces a fresh header value that
+// shares the base's backing storage — no copy:
+//   string -> goo_string { data+low,       high-low }
+//   slice  -> goo_slice  { data+low*esize, high-low, cap-low }
+// The element GEP scales `low` by the element size for slices (i8 for
+// strings). Bounds are widened to i64 to match the size_t header fields.
+// Bounds checking is deferred (matching the existing index path's TODO).
+ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_SLICE_INDEX_EXPR) return NULL;
+
+    SliceIndexExprNode* sl = (SliceIndexExprNode*)expr;
+
+    ValueInfo* base_val = codegen_generate_expression(codegen, checker, sl->expr);
+    if (!base_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate slice base");
+        return NULL;
+    }
+    ValueInfo* low_val = codegen_generate_expression(codegen, checker, sl->low);
+    ValueInfo* high_val = codegen_generate_expression(codegen, checker, sl->high);
+    if (!low_val || !high_val) {
+        codegen_error(codegen, expr->pos, "Failed to generate slice bounds");
+        value_info_free(base_val);
+        if (low_val) value_info_free(low_val);
+        if (high_val) value_info_free(high_val);
+        return NULL;
+    }
+
+    Type* base_type = base_val->goo_type;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+    LLVMTypeRef struct_ty = codegen_type_to_llvm(codegen, base_type);
+
+    // Load the base struct (string/slice) value if the base is an lvalue,
+    // mirroring the index path.
+    LLVMValueRef base_struct = base_val->llvm_value;
+    if (base_val->is_lvalue) {
+        base_struct = LLVMBuildLoad2(codegen->builder, struct_ty,
+                                     base_val->llvm_value, "slice_base_load");
+    }
+
+    // Widen both bounds to i64 (header fields are size_t). Bounds are
+    // integer-typed (the checker enforces it), so width is well-defined.
+    LLVMValueRef low64 = low_val->llvm_value;
+    LLVMValueRef high64 = high_val->llvm_value;
+    unsigned low_w = LLVMGetIntTypeWidth(LLVMTypeOf(low64));
+    unsigned high_w = LLVMGetIntTypeWidth(LLVMTypeOf(high64));
+    if (low_w < 64)  low64  = LLVMBuildSExt(codegen->builder, low64, i64, "low64");
+    else if (low_w > 64)  low64  = LLVMBuildTrunc(codegen->builder, low64, i64, "low64");
+    if (high_w < 64) high64 = LLVMBuildSExt(codegen->builder, high64, i64, "high64");
+    else if (high_w > 64) high64 = LLVMBuildTrunc(codegen->builder, high64, i64, "high64");
+
+    LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, base_struct, 0, "base_data");
+    LLVMValueRef new_len = LLVMBuildSub(codegen->builder, high64, low64, "new_len");
+    LLVMValueRef result = LLVMGetUndef(struct_ty);
+
+    if (base_type->kind == TYPE_STRING) {
+        // Byte-addressed: new_data = data_ptr + low.
+        LLVMValueRef new_data = LLVMBuildGEP2(codegen->builder,
+                                              LLVMInt8TypeInContext(codegen->context),
+                                              data_ptr, &low64, 1, "sub_data");
+        result = LLVMBuildInsertValue(codegen->builder, result, new_data, 0, "str_data");
+        result = LLVMBuildInsertValue(codegen->builder, result, new_len, 1, "str_len");
+    } else {
+        // TYPE_SLICE: element-scaled GEP; cap shrinks by low.
+        Type* elem = base_type->data.slice.element_type;
+        LLVMTypeRef elem_ty = codegen_type_to_llvm(codegen, elem);
+        LLVMValueRef new_data = LLVMBuildGEP2(codegen->builder, elem_ty,
+                                              data_ptr, &low64, 1, "resl_data");
+        LLVMValueRef old_cap = LLVMBuildExtractValue(codegen->builder, base_struct, 2, "old_cap");
+        LLVMValueRef new_cap = LLVMBuildSub(codegen->builder, old_cap, low64, "new_cap");
+        result = LLVMBuildInsertValue(codegen->builder, result, new_data, 0, "sl_data");
+        result = LLVMBuildInsertValue(codegen->builder, result, new_len, 1, "sl_len");
+        result = LLVMBuildInsertValue(codegen->builder, result, new_cap, 2, "sl_cap");
+    }
+
+    ValueInfo* out = value_info_new(NULL, result, base_type);
+    out->is_lvalue = 0;  // a fresh header value (rvalue)
+    value_info_free(base_val);
+    value_info_free(low_val);
+    value_info_free(high_val);
+    return out;
+#endif
+}
+
 ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");

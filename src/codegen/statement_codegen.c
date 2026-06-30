@@ -103,6 +103,86 @@ static void defer_entry_store_zero(CodeGenerator* cg, LLVMValueRef flag, LLVMTyp
 }
 #endif
 
+// F6: `a, b := v1, v2` / `a, b = v1, v2`. Simultaneous-evaluation semantics:
+// pass 1 evaluates EVERY right-hand side to an rvalue (loading lvalue operands
+// now, before any store), pass 2 binds/stores. So `a, b = b, a` swaps — both
+// rvalues are read before either target is written.
+int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_MULTI_ASSIGN) return 0;
+    MultiAssignNode* ma = (MultiAssignNode*)stmt;
+
+    // Pass 1: evaluate all RHS values up front (the load-bearing step).
+    LLVMValueRef rvals[2];
+    Type* rtypes[2];
+    size_t n = 0;
+    for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
+        ValueInfo* vi = codegen_generate_expression(codegen, checker, v);
+        if (!vi) {
+            codegen_error(codegen, stmt->pos, "Failed to evaluate multi-assign value");
+            return 0;
+        }
+        // Read the current value of an lvalue operand NOW, before any store.
+        if (vi->is_lvalue && vi->goo_type) {
+            LLVMTypeRef vt = codegen_type_to_llvm(codegen, vi->goo_type);
+            if (vt) {
+                vi->llvm_value = LLVMBuildLoad2(codegen->builder, vt, vi->llvm_value, "ma_rval");
+                vi->is_lvalue = 0;
+            }
+        }
+        rvals[n] = vi->llvm_value;
+        rtypes[n] = vi->goo_type;
+        n++;
+        value_info_free(vi);
+    }
+
+    // Pass 2: bind (`:=`) or store (`=`) each target.
+    size_t i = 0;
+    for (ASTNode* t = ma->targets; t; t = t->next, i++) {
+        if (i >= n) {
+            codegen_error(codegen, stmt->pos, "multi-assign target/value count mismatch");
+            return 0;
+        }
+
+        if (ma->is_short_decl) {
+            const char* nm = ((IdentifierNode*)t)->name;
+            LLVMTypeRef llty = codegen_type_to_llvm(codegen, rtypes[i]);
+            if (!llty) {
+                codegen_error(codegen, t->pos, "multi-assign: no type for '%s'", nm);
+                return 0;
+            }
+            LLVMValueRef slot = codegen_alloc_local(codegen, llty, nm);
+            LLVMBuildStore(codegen->builder, rvals[i], slot);
+            ValueInfo* vi = value_info_new(nm, slot, rtypes[i]);
+            vi->is_lvalue = 1;
+            vi->is_initialized = 1;
+            codegen_add_value(codegen, vi);
+            // Mirror the var-decl path: keep the checker scope populated so
+            // later codegen re-checks of `nm` resolve (ignore dup failures).
+            Variable* tv = variable_new(nm, rtypes[i], t->pos);
+            if (tv) {
+                tv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, tv);
+            }
+        } else {
+            ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
+            if (!target || !target->is_lvalue) {
+                codegen_error(codegen, t->pos,
+                              "multi-assign target must be an addressable lvalue");
+                return 0;
+            }
+            // Do NOT free `target`: for an identifier it aliases the live
+            // value-table entry (freeing it would undefine the variable).
+            LLVMBuildStore(codegen->builder, rvals[i], target->llvm_value);
+        }
+    }
+    return 1;
+#endif
+}
+
 int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
     if (!codegen || !checker || !stmt) return 0;
     
@@ -113,6 +193,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_expr_stmt(codegen, checker, stmt);
         case AST_VAR_DECL:
             return codegen_generate_var_decl(codegen, checker, stmt);
+        case AST_MULTI_ASSIGN:
+            return codegen_generate_multi_assign(codegen, checker, stmt);
         case AST_IF_STMT:
             return codegen_generate_if_stmt(codegen, checker, stmt);
         case AST_IF_LET_STMT: {
@@ -497,10 +579,20 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "range_data");
         LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "range_len");
 
-        Type* elem_type = range_val->goo_type && range_val->goo_type->kind == TYPE_SLICE
-            ? range_val->goo_type->data.slice.element_type
-            : NULL;
-        LLVMTypeRef llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        // F7: range over a string iterates its bytes — the value var is an
+        // int32 rune (v1 byte-wise), so the backing i8 byte is zero-extended
+        // into it in the body below. Slices/arrays use their element type.
+        int is_string_range = range_val->goo_type
+                           && range_val->goo_type->kind == TYPE_STRING;
+        Type* elem_type = NULL;
+        LLVMTypeRef llvm_elem = NULL;
+        if (range_val->goo_type && range_val->goo_type->kind == TYPE_SLICE) {
+            elem_type = range_val->goo_type->data.slice.element_type;
+            llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        } else if (is_string_range) {
+            elem_type = type_checker_get_builtin(checker, TYPE_INT32);
+            llvm_elem = LLVMInt32TypeInContext(codegen->context);
+        }
 
         // Allocate index var; register it in scope under key_name.
         LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
@@ -558,12 +650,23 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // body: optionally load element, then run body
         codegen_set_insert_point(codegen, rbody);
         if (val_alloca && llvm_elem) {
-            // elem_ptr = GEP data_ptr, i
             LLVMValueRef indices[] = { i_loaded };
-            LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem,
-                                                  data_ptr, indices, 1, "elem_ptr");
-            LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "elem");
-            LLVMBuildStore(codegen->builder, elem_val, val_alloca);
+            if (is_string_range) {
+                // F7: load the i8 byte at data_ptr[i] and zero-extend it into
+                // the int32 value var (byte is unsigned, 0..255).
+                LLVMTypeRef i8t = LLVMInt8TypeInContext(codegen->context);
+                LLVMValueRef byte_ptr = LLVMBuildGEP2(codegen->builder, i8t,
+                                                      data_ptr, indices, 1, "byte_ptr");
+                LLVMValueRef byte_val = LLVMBuildLoad2(codegen->builder, i8t, byte_ptr, "byte");
+                LLVMValueRef rune_val = LLVMBuildZExt(codegen->builder, byte_val, llvm_elem, "rune");
+                LLVMBuildStore(codegen->builder, rune_val, val_alloca);
+            } else {
+                // Slice/array: load the element directly.
+                LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem,
+                                                      data_ptr, indices, 1, "elem_ptr");
+                LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "elem");
+                LLVMBuildStore(codegen->builder, elem_val, val_alloca);
+            }
         }
         // break exits to rexit; continue jumps to rpost (the increment block).
         if (!codegen_push_loop(codegen, rexit, rpost)) {

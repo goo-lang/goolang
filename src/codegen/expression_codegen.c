@@ -21,6 +21,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_call_expr(codegen, checker, expr);
         case AST_INDEX_EXPR:
             return codegen_generate_index_expr(codegen, checker, expr);
+        case AST_SLICE_INDEX_EXPR:
+            return codegen_generate_slice_index_expr(codegen, checker, expr);
         case AST_SELECTOR_EXPR:
             return codegen_generate_selector_expr(codegen, checker, expr);
         case AST_TRY_EXPR:
@@ -540,6 +542,23 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     
     // Special handling for assignment
     if (binary->operator == TOKEN_ASSIGN) {
+        // Blank identifier `_` as a plain-assignment target (F1): `_ = rhs`
+        // evaluates the RHS for its side effects but stores nowhere. Intercept
+        // before lvalue resolution (which has no storage for `_`).
+        if (binary->left && binary->left->type == AST_IDENTIFIER &&
+            strcmp(((IdentifierNode*)binary->left)->name, "_") == 0) {
+            ValueInfo* value = codegen_generate_expression(codegen, checker, binary->right);
+            if (!value) return NULL;
+            if (value->is_lvalue && value->goo_type) {
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, value->goo_type);
+                if (vt) {
+                    value->llvm_value = LLVMBuildLoad2(codegen->builder, vt, value->llvm_value, "rval");
+                    value->is_lvalue = 0;
+                }
+            }
+            return value;  // discarded — nothing is stored
+        }
+
         // Map element assignment `m[k] = v` has no addressable lvalue — it
         // lowers to a goo_map_set_sv call. Intercept before lvalue resolution
         // (which rejects map index targets). Only the map case is handled

@@ -1,0 +1,22 @@
+// multi_assign_probe (F6): multiple assignment with N independent RHS values.
+//
+// Before F6 only `a, b := f()` (one multi-value RHS, destructured) parsed;
+// `a, b := 1, 2` and the swap `a, b = b, a` were parse errors.
+//
+// The swap is the load-bearing case: Go evaluates ALL right-hand sides before
+// any store, so `a, b = b, a` exchanges the two without a temp. If codegen
+// stored a:=b before reading a for b, both would end up 2. Printing after the
+// swap proves the simultaneous-evaluation semantics.
+//
+//   a, b := 1, 2   ->  a==1, b==2
+//   a, b = b, a    ->  a==2, b==1   (simultaneous)
+package main
+
+import "fmt"
+
+func main() {
+	a, b := 1, 2
+	fmt.Println(a, b) // 1 2
+	a, b = b, a
+	fmt.Println(a, b) // 2 1
+}

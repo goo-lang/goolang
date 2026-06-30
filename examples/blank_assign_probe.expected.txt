@@ -1,0 +1,2 @@
+PASS: side effect ran
+PASS: blank assign discards value

@@ -1,0 +1,21 @@
+// error_type_probe (F8): Go's `error` builtin interface type.
+//
+// Before F8, `func f() error` failed with "Unknown type 'error'". v1 makes
+// `error` a nameable type that accepts nil and supports `== nil`; it is
+// represented as a nullable pointer. Method dispatch (`err.Error()`) and a
+// non-nil error value are deferred to Phase 6 (interface vtables).
+//
+// Note: `error` is Go's interface type — distinct from Goo's `!T` error
+// unions, which are a separate mechanism.
+package main
+
+import "fmt"
+
+func f() error { return nil }
+
+func main() {
+	e := f()
+	if e == nil {
+		fmt.Println("ok")
+	}
+}
