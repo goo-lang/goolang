@@ -1,0 +1,9 @@
+package main
+import (
+	"fmt"
+	"errors"
+)
+func main() {
+	e := errors.New("boom")
+	if e != nil { fmt.Println("got") } else { fmt.Println("nil") }
+}

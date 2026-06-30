@@ -408,6 +408,32 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(pkg->name, "strconv") == 0 && strcmp(sel->selector, "Atoi") == 0) {
                 return codegen_generate_atoi_call(codegen, checker, expr);
             }
+            if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "New") == 0) {
+                // errors.New(string) -> ?*int8 (non-nil error marker).
+                // For v1, the message string arg is evaluated (for side-effects
+                // and type-check pass-through) but not stored — message-carrying
+                // .Error() is deferred to Phase 6. We return a non-nil nullable
+                // {is_null=0, ptr=inttoptr(1)} matching the layout Task 1 builds
+                // for the !T destructure error arm so `if e != nil` reads it correctly.
+                if (call->args) {
+                    ValueInfo* msg = codegen_generate_expression(codegen, checker, call->args);
+                    if (msg) value_info_free(msg); // evaluated, not stored (v1)
+                }
+                Type* err_type = type_nullable(
+                    type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+                LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
+                LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                // is_null = 0 (present / non-nil)
+                LLVMValueRef is_null = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+                // ptr = inttoptr(1) — same non-null marker as !T error arm
+                LLVMValueRef non_null = LLVMBuildIntToPtr(codegen->builder,
+                    LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0),
+                    i8pt, "errors_new_marker");
+                LLVMValueRef err_val = LLVMGetUndef(err_llvm);
+                err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "en.is_null");
+                err_val = LLVMBuildInsertValue(codegen->builder, err_val, non_null, 1, "en.ptr");
+                return value_info_new(NULL, err_val, err_type);
+            }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
                 // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
                 // Spill the []string value to a slot and pass its address — a
