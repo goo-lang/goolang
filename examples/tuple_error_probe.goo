@@ -1,0 +1,21 @@
+// tuple_error_probe: a Go-style `(int, error)` function — `return v, nil` into a
+// result tuple whose 2nd field is nullable (error is ?*int8). Previously emitted
+// malformed IR that crashed the LLVM backend; now the nil is built as a typed
+// nullable. Exercises producing (return v, nil) + consuming (a, e := f()) + the
+// nil-check.
+package main
+
+import "fmt"
+
+func parse(n int) (int, error) {
+	return n * 2, nil
+}
+
+func main() {
+	a, e := parse(21)
+	if e != nil {
+		fmt.Println("unexpected error")
+	} else {
+		fmt.Println(a) // 42
+	}
+}
