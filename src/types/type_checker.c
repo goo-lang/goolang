@@ -861,13 +861,31 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     // a guard. Shared scalar builtins (TYPE_INT32 etc.) are returned as
     // singletons by type_checker_get_builtin; mutating them would corrupt the
     // type table. We distinguish fresh allocations from shared singletons by
-    // pointer identity: if resolved IS the builtin singleton for its kind, skip.
+    // pointer identity:
+    //   - resolved != builtin → fresh compound allocation (TYPE_SLICE/ARRAY/MAP
+    //     are never registered in builtin_types; their slot is NULL from the
+    //     memset in type_checker_init_builtins, so type_checker_get_builtin
+    //     returns NULL and this branch always fires for them). Stamp in place.
+    //   - resolved == builtin → shared scalar singleton. Clone it first so the
+    //     singleton is not mutated, then stamp the clone's name and redirect
+    //     resolved to the clone so downstream alias-registration uses the clone.
     if (resolved->kind != TYPE_STRUCT && resolved->kind != TYPE_ENUM &&
         resolved->kind != TYPE_INTERFACE) {
         Type* builtin = type_checker_get_builtin(checker, resolved->kind);
         if (resolved != builtin) {
+            // Fresh compound allocation — stamp in place.
             free(resolved->name);
             resolved->name = strdup(td->name);
+        } else {
+            // Shared scalar singleton — clone to avoid corrupting the type table.
+            Type* named_clone = type_copy(resolved);
+            if (!named_clone) {
+                type_error(checker, decl->pos, "Out of memory cloning type for '%s'", td->name);
+                return 0;
+            }
+            free(named_clone->name);
+            named_clone->name = strdup(td->name);
+            resolved = named_clone;
         }
     }
 
