@@ -1,0 +1,34 @@
+// bitwise_probe: binary bitwise operators `<< >> & | ^`.
+//
+// The lexer already produced LSHIFT/RSHIFT/BIT_AND/BIT_OR/BIT_XOR tokens, the
+// type checker accepted them, and codegen emitted Shl/AShr/LShr/And/Or/Xor —
+// but the grammar had no `expression OP expression` productions, so every use
+// was a parse error. This probe exercises each operator with values whose
+// result changes if the wrong opcode is emitted, plus the canonical
+// `1 << iota` flag block (bitwise + F4 grouped-const iota together).
+//
+//   1 << 4   -> 16   shift left
+//   48 >> 2  -> 12   shift right (arithmetic for signed `int`)
+//   12 & 10  -> 8    AND  (1100 & 1010 = 1000)
+//   12 | 10  -> 14   OR   (1100 | 1010 = 1110)
+//   12 ^ 10  -> 6    XOR  (1100 ^ 1010 = 0110)
+//   1<<iota  -> 1,2,4,8  flag constants
+package main
+
+import "fmt"
+
+const (
+	FlagA = 1 << iota // iota=0 -> 1
+	FlagB             // iota=1 -> 2
+	FlagC             // iota=2 -> 4
+	FlagD             // iota=3 -> 8
+)
+
+func main() {
+	fmt.Println(1 << 4)                     // 16
+	fmt.Println(48 >> 2)                    // 12
+	fmt.Println(12 & 10)                    // 8
+	fmt.Println(12 | 10)                    // 14
+	fmt.Println(12 ^ 10)                    // 6
+	fmt.Println(FlagA, FlagB, FlagC, FlagD) // 1 2 4 8
+}

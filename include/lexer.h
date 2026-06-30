@@ -35,6 +35,7 @@ char* lexer_read_identifier(Lexer* lexer, size_t* length);
 char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float);
 char* lexer_read_string(Lexer* lexer, size_t* length);
 char* lexer_read_char_literal(Lexer* lexer, size_t* length);
+int lexer_decode_char_value(const char* body, size_t len, long* out);
 
 // Utility functions
 int lexer_is_letter(char ch);

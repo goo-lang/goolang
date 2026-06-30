@@ -411,6 +411,97 @@ cap-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# F2 gate: builtin numeric type conversions `T(x)`. Non-vacuous w.r.t. the cast
+# semantics — exercises ZExt vs SExt (int(byte(200))==200, not -56), a SExt
+# contrast (int(int8(200))==-56), and a value-dropping Trunc (int(byte(300))==44),
+# so a regression to SExt-for-unsigned or a botched truncation fails here.
+conv-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/conv_probe examples/conv_probe.goo
+	@./build/conv_probe > build/conv_probe.actual.txt
+	@if diff -u examples/conv_probe.expected.txt build/conv_probe.actual.txt; then \
+	  echo "conv-probe: PASS"; \
+	else \
+	  echo "conv-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# F3 gate: char/rune literals `'x'`. A rune literal is an untyped integer
+# constant (rune = int32 = `int` today), so the lexer decodes `'A'`/`'\n'`/`'\''`
+# to its integer value and emits an INT token — no new grammar terminal, so the
+# parser conflict count is unaffected. Covers basic ASCII, char arithmetic
+# ('0'+5), the common escapes (\n \t \\ \'), and rune subtraction ('a'-'A').
+charlit-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/charlit_probe examples/charlit_probe.goo
+	@./build/charlit_probe > build/charlit_probe.actual.txt
+	@if diff -u examples/charlit_probe.expected.txt build/charlit_probe.actual.txt; then \
+	  echo "charlit-probe: PASS"; \
+	else \
+	  echo "charlit-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# F3 negative gate: a MALFORMED char literal must be rejected cleanly, NOT
+# silently dropped. The lexer emits TOKEN_ERROR for ''/'\z'/unterminated 'a),
+# which the Bison bridge maps to an unknown token and skips — so before the fix
+# the literal vanished and the surrounding program compiled to a running binary
+# with exit 0 and no diagnostic. Each case below must now: (a) fail to compile
+# (rc != 0, no binary emitted), and (b) print a positioned lexer diagnostic.
+# Guards the "rejected cleanly" claim the plan (Step 3) and commit asserted.
+charlit-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== charlit-reject-probe: malformed char literals must reject, not silently drop ==="
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tfmt.Println('\'''\'')\n}\n' > build/charlit_reject_empty.goo
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tfmt.Println('\''\\z'\'')\n}\n' > build/charlit_reject_badescape.goo
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tfmt.Println('\''a)\n}\n' > build/charlit_reject_unterminated.goo
+	@for name in empty badescape unterminated; do \
+	  rm -f build/charlit_reject_$$name; \
+	  $(COMPILER) -o build/charlit_reject_$$name build/charlit_reject_$$name.goo > build/charlit_reject_$$name.out 2> build/charlit_reject_$$name.err; \
+	  rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "charlit-reject-probe: FAIL ($$name compiled rc=0 — malformed literal silently accepted)"; cat build/charlit_reject_$$name.err; exit 1; fi; \
+	  if [ -x build/charlit_reject_$$name ]; then echo "charlit-reject-probe: FAIL ($$name emitted a binary despite the error)"; exit 1; fi; \
+	  if ! grep -qiE "error:" build/charlit_reject_$$name.err; then echo "charlit-reject-probe: FAIL ($$name produced no diagnostic)"; cat build/charlit_reject_$$name.err; exit 1; fi; \
+	  echo "charlit-reject-probe: $$name rejected (rc=$$rc)"; \
+	done
+	@echo "charlit-reject-probe: PASS"
+
+# F2 boundary gate for `T(x)` conversions: the SOUNDNESS + clean-rejection
+# properties that conv-probe (positive numeric cases) does NOT guard.
+#  1. Function-shadowing soundness (the fix in 6d69e2a): a user `func int`
+#     shadows the predeclared type, so `int(5)` must CALL the function (prints
+#     105), NOT convert (would print 5). A regression to name-only gating in
+#     codegen — the exact bug 6d69e2a fixed — fails here.
+#  2. Clean rejection of unsupported `string`/`bool` conversions (plan F2 Step 3
+#     "reject cleanly if unsupported"): a single conversion-specific diagnostic
+#     ("cannot convert ... only numeric conversions are supported in v1"), NOT
+#     the misleading "Undefined variable 'string'" cascade, and never an invalid
+#     IR reaching the LLVM verifier.
+#  3. No over-rejection: a plain numeric conversion still compiles + runs.
+conv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== conv-reject-probe: T(x) shadowing soundness + clean rejection ==="
+	@printf 'package main\nimport "fmt"\nfunc int(n int) int { return n + 100 }\nfunc main(){ fmt.Println(int(5)) }\n' > build/cr_shadow.goo
+	@printf 'package main\nfunc main(){ _ = string(byte(66)) }\n' > build/cr_string.goo
+	@printf 'package main\nfunc main(){ _ = bool(1) }\n' > build/cr_bool.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(int(byte(200))) }\n' > build/cr_numok.goo
+	@"$(COMPILER)" build/cr_shadow.goo -o build/cr_shadow.out 2>build/cr_shadow.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "conv-reject-probe: FAIL (user 'func int' + int(5) wrongly rejected)"; cat build/cr_shadow.err; exit 1; fi; \
+	  out="$$(./build/cr_shadow.out)"; if [ "$$out" != "105" ]; then echo "conv-reject-probe: FAIL (shadowing soundness: int(5) printed '$$out' != 105 — gate regressed to name-only, converting instead of calling the user func)"; exit 1; fi
+	@"$(COMPILER)" build/cr_string.goo -o build/cr_string.out 2>build/cr_string.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "conv-reject-probe: FAIL (string(b) compiled — unsupported conversion not rejected)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cr_string.err; then echo "conv-reject-probe: FAIL (invalid IR reached verifier for string(b))"; cat build/cr_string.err; exit 1; fi; \
+	  if grep -qiE "Undefined variable" build/cr_string.err; then echo "conv-reject-probe: FAIL (string(b) gave misleading 'Undefined variable' cascade, not a clean conversion diagnostic)"; cat build/cr_string.err; exit 1; fi; \
+	  if ! grep -qiE "cannot convert to string" build/cr_string.err; then echo "conv-reject-probe: FAIL (no clean 'cannot convert to string' diagnostic)"; cat build/cr_string.err; exit 1; fi
+	@"$(COMPILER)" build/cr_bool.goo -o build/cr_bool.out 2>build/cr_bool.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "conv-reject-probe: FAIL (bool(1) compiled — unsupported conversion not rejected)"; exit 1; fi; \
+	  if grep -qiE "Undefined variable" build/cr_bool.err; then echo "conv-reject-probe: FAIL (bool(1) gave misleading 'Undefined variable', not a clean conversion diagnostic)"; cat build/cr_bool.err; exit 1; fi; \
+	  if ! grep -qiE "cannot convert to bool" build/cr_bool.err; then echo "conv-reject-probe: FAIL (no clean 'cannot convert to bool' diagnostic)"; cat build/cr_bool.err; exit 1; fi
+	@"$(COMPILER)" build/cr_numok.goo -o build/cr_numok.out 2>build/cr_numok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "conv-reject-probe: FAIL (numeric int(byte(200)) wrongly rejected — over-rejection)"; cat build/cr_numok.err; exit 1; fi; \
+	  out="$$(./build/cr_numok.out)"; if [ "$$out" != "200" ]; then echo "conv-reject-probe: FAIL (numeric conversion output '$$out' != 200)"; exit 1; fi
+	@echo "conv-reject-probe: PASS"
+
 # M2-maps gate: general map[string]V on an 8-byte value slot. Covers int and
 # pointer value types, m[k]=v insert/overwrite, and missing-key zero value.
 map-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -933,7 +1024,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

@@ -1,4 +1,5 @@
 #include "types.h"
+#include "comptime.h"  // comptime_context_lookup_func: order-independent func registry
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -21,6 +22,8 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_call_expr(checker, expr);
         case AST_INDEX_EXPR:
             return type_check_index_expr(checker, expr);
+        case AST_SLICE_INDEX_EXPR:
+            return type_check_slice_index_expr(checker, expr);
         case AST_SELECTOR_EXPR:
             return type_check_selector_expr(checker, expr);
         case AST_TRY_EXPR:
@@ -366,7 +369,21 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
     
     BinaryExprNode* binary = (BinaryExprNode*)expr;
-    
+
+    // Blank identifier `_` as a plain-assignment target (F1): `_ = rhs`
+    // discards the value. The LHS `_` is not a real variable, so type-checking
+    // it as an expression would wrongly report "Undefined variable '_'".
+    // Skip the LHS lookup, type-check the RHS for its side effects/validity,
+    // and yield the RHS type as the assignment's result.
+    if (binary->operator == TOKEN_ASSIGN &&
+        binary->left && binary->left->type == AST_IDENTIFIER &&
+        strcmp(((IdentifierNode*)binary->left)->name, "_") == 0) {
+        Type* rhs_type = type_check_expression(checker, binary->right);
+        if (!rhs_type) return NULL;
+        expr->node_type = rhs_type;
+        return rhs_type;
+    }
+
     Type* left_type = type_check_expression(checker, binary->left);
     Type* right_type = type_check_expression(checker, binary->right);
     
@@ -552,9 +569,85 @@ Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNod
     return chan_type;
 }
 
+// Builtin numeric/char type-conversion target (F2). Returns the named
+// builtin Type for a conversion `T(x)`, or NULL if `name` is not a
+// *supported* conversion type. Mirrors the type-name table in
+// type_from_ast() but scoped to the numeric kinds a value conversion can
+// produce. `string`/`bool` are deliberately NOT here — string conversions
+// need byte/rune lowering (deferred) and bool has no numeric conversion in
+// Go — but they ARE recognized as conversion *names* (see
+// name_is_builtin_conv_name) so the call gate can reject them with a clean
+// conversion-specific diagnostic instead of letting them fall through to
+// ordinary identifier resolution (a misleading "Undefined variable 'string'"
+// plus a follow-on cascade).
+// Does a user-declared symbol shadow the predeclared type `name`? Go permits
+// shadowing predeclared identifiers, so a value or function named `int`/`byte`
+// makes `int(x)` an ordinary reference/call, not a conversion. Two sources:
+//   1. scope_lookup_variable — a variable, or a top-level function declared
+//      *before* this use (functions are registered in scope as decls are
+//      processed in order).
+//   2. comptime_context_lookup_func — every top-level function, bound in the
+//      program pre-pass regardless of source order, so a *forward*-declared
+//      `func int(...)` is honored too. Methods (receiver != NULL) belong to a
+//      type's method set and do NOT shadow the conversion, so they are
+//      excluded — otherwise a method coincidentally named `int` would
+//      over-reject legitimate `int(x)` conversions.
+// Codegen mirrors this via type_checker_lookup_variable so the two stages agree
+// (avoids the silent miscompile where the checker calls through but codegen
+// still converts).
+static int name_is_user_shadowed(TypeChecker* checker, const char* name) {
+    if (!checker || !name) return 0;
+    if (scope_lookup_variable(checker->current_scope, name)) return 1;
+    if (checker->comptime_type_ctx && checker->comptime_type_ctx->comptime_ctx) {
+        ASTNode* fn = comptime_context_lookup_func(
+            checker->comptime_type_ctx->comptime_ctx, name);
+        if (fn && fn->type == AST_FUNC_DECL && !((FuncDeclNode*)fn)->receiver)
+            return 1;
+    }
+    return 0;
+}
+
+static Type* builtin_conversion_target(TypeChecker* checker, const char* name) {
+    if (!name) return NULL;
+    if (strcmp(name, "int") == 0)     return type_checker_get_builtin(checker, TYPE_INT32);
+    if (strcmp(name, "int8") == 0)    return type_checker_get_builtin(checker, TYPE_INT8);
+    if (strcmp(name, "int16") == 0)   return type_checker_get_builtin(checker, TYPE_INT16);
+    if (strcmp(name, "int32") == 0)   return type_checker_get_builtin(checker, TYPE_INT32);
+    if (strcmp(name, "int64") == 0)   return type_checker_get_builtin(checker, TYPE_INT64);
+    if (strcmp(name, "uint") == 0)    return type_checker_get_builtin(checker, TYPE_UINT32);
+    if (strcmp(name, "uint8") == 0)   return type_checker_get_builtin(checker, TYPE_UINT8);
+    if (strcmp(name, "uint16") == 0)  return type_checker_get_builtin(checker, TYPE_UINT16);
+    if (strcmp(name, "uint32") == 0)  return type_checker_get_builtin(checker, TYPE_UINT32);
+    if (strcmp(name, "uint64") == 0)  return type_checker_get_builtin(checker, TYPE_UINT64);
+    if (strcmp(name, "byte") == 0)    return type_checker_get_builtin(checker, TYPE_UINT8);
+    if (strcmp(name, "float32") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT32);
+    if (strcmp(name, "float64") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);
+    return NULL;
+}
+
+// Is `name` a builtin type-conversion name `T(x)` recognizes (F2)? This is the
+// FULL recognized set the plan (F2 Step 3) lists — the numeric kinds plus
+// `string`/`bool`. It is a superset of builtin_conversion_target(): numeric
+// names produce a value conversion; `string`/`bool` are recognized only so the
+// call gate rejects them cleanly (unsupported in v1) rather than mis-resolving
+// them as undefined variables. Used solely to route a call onto the conversion
+// gate; the gate then asks builtin_conversion_target() what to actually do.
+static int name_is_builtin_conv_name(const char* name) {
+    if (!name) return 0;
+    static const char* names[] = {
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64",
+        "byte", "float32", "float64", "string", "bool",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(name, names[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
-    
+
     CallExprNode* call = (CallExprNode*)expr;
     
     // Special handling for make_chan
@@ -562,6 +655,52 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         IdentifierNode* func_ident = (IdentifierNode*)call->function;
         if (strcmp(func_ident->name, "make_chan") == 0) {
             return type_check_make_chan_call(checker, call, expr);
+        }
+        // Builtin type conversion `T(x)` (F2): a call whose callee names a
+        // builtin conversion type is a conversion, not a function call. Gate on
+        // the name NOT being shadowed by a user variable OR function (Go
+        // permits shadowing predeclared identifiers), so a user `func int` /
+        // `var int` still calls/references through. Type names are not
+        // registered in scope, so an unshadowed name takes the conversion path,
+        // where numeric targets convert and `string`/`bool` are rejected cleanly.
+        if (name_is_builtin_conv_name(func_ident->name) &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
+            {
+                Type* conv_target = builtin_conversion_target(checker, func_ident->name);
+                // Recognized-but-unsupported conversion target (`string`/`bool`):
+                // reject cleanly here with a conversion-specific diagnostic. The
+                // name is no longer left to fall through to identifier resolution,
+                // which emitted a misleading "Undefined variable '<name>'" plus a
+                // follow-on cascade. v1 supports numeric conversions only.
+                if (!conv_target) {
+                    type_error(checker, expr->pos,
+                               "cannot convert to %s (only numeric conversions "
+                               "are supported in v1)",
+                               func_ident->name);
+                    return NULL;
+                }
+                if (!call->args || call->args->next) {
+                    type_error(checker, expr->pos,
+                               "conversion %s() expects exactly one argument",
+                               func_ident->name);
+                    return NULL;
+                }
+                Type* src = type_check_expression(checker, call->args);
+                if (!src) return NULL;
+                // Only numeric/char sources are convertible in v1. char (rune)
+                // is an integer value, so it converts like one. string/bool
+                // and aggregate sources are rejected cleanly here rather than
+                // miscompiling at the LLVM verifier.
+                if (!type_is_numeric(src) && src->kind != TYPE_CHAR) {
+                    type_error(checker, expr->pos,
+                               "cannot convert %s to %s (only numeric conversions "
+                               "are supported in v1)",
+                               type_to_string(src), func_ident->name);
+                    return NULL;
+                }
+                expr->node_type = conv_target;
+                return conv_target;
+            }
         }
         // new(T) -> *T. The sole argument is a type name (e.g. `new(int)`),
         // resolved as a type rather than typechecked as a value expression.
@@ -845,6 +984,45 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     
     expr->node_type = element_type;
     return element_type;
+}
+
+// F5: `base[low:high]` slice/substring. Result keeps the base's type — a
+// substring is a string, a reslice is the same slice type. Array slicing
+// (which yields a slice in Go) is deferred: the by-value array codegen needs
+// the array materialised to a pointer first, so it is rejected cleanly here
+// rather than accepted and then failing in codegen.
+Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_SLICE_INDEX_EXPR) return NULL;
+
+    SliceIndexExprNode* slice = (SliceIndexExprNode*)expr;
+
+    Type* base_type = type_check_expression(checker, slice->expr);
+    Type* low_type = type_check_expression(checker, slice->low);
+    Type* high_type = type_check_expression(checker, slice->high);
+    if (!base_type || !low_type || !high_type) return NULL;
+
+    if (!type_is_integer(low_type)) {
+        type_error(checker, slice->low->pos,
+                   "Slice low bound must be integer, got %s", type_to_string(low_type));
+        return NULL;
+    }
+    if (!type_is_integer(high_type)) {
+        type_error(checker, slice->high->pos,
+                   "Slice high bound must be integer, got %s", type_to_string(high_type));
+        return NULL;
+    }
+
+    switch (base_type->kind) {
+        case TYPE_STRING:   // substring shares the byte buffer
+        case TYPE_SLICE:    // reslice shares the backing array
+            expr->node_type = base_type;
+            return base_type;
+        default:
+            type_error(checker, slice->expr->pos,
+                       "Cannot slice type %s (v1 supports string and slice)",
+                       type_to_string(base_type));
+            return NULL;
+    }
 }
 
 // stdlib_package_lookup returns a function Type for a (package, name) pair

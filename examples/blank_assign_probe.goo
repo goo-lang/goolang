@@ -1,0 +1,28 @@
+// blank_assign_probe (F1): the blank identifier `_` as a plain-assignment
+// target discards the RHS value while still evaluating it for side effects.
+//
+// `a, _ := f()` (decl) and `for _, v := range` already work; this probe
+// covers the plain-assignment form `_ = f()`, which previously failed with
+// "Undefined variable '_'" because the LHS was type-checked as an expression.
+//
+// `bump` prints once and returns a value. `_ = bump()` must run the print
+// exactly once and throw the result away — so we see the side effect line
+// but never use the return.
+package main
+
+import "fmt"
+
+func bump() int {
+    fmt.Println("PASS: side effect ran")
+    return 7
+}
+
+func main() {
+    // Discard the return value; the side-effect print must still happen once.
+    _ = bump()
+
+    // Discarding a pure expression is a no-op but must compile.
+    _ = 1 + 2
+
+    fmt.Println("PASS: blank assign discards value")
+}

@@ -1,0 +1,21 @@
+// range_string_probe (F7): `for i, c := range "hi"`.
+//
+// Before F7, ranging a string errored ("for-range supported only on
+// slice/array types"). v1 iterates BYTES (rune decoding deferred): the key is
+// the byte index, the value is the byte zero-extended to int32 (rune today).
+//
+//   i=0, c='h' (104)
+//   i=1, c='i' (105)
+//
+// int32 (not uint8) so fmt.Println accepts the value; the byte is unsigned so
+// it zero-extends. Reuses the slice-range desugar (string {data,len} shares
+// the field-0/field-1 layout) with a byte-load + zext for the element.
+package main
+
+import "fmt"
+
+func main() {
+	for i, c := range "hi" {
+		fmt.Println(i, c)
+	}
+}

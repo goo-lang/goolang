@@ -1,0 +1,23 @@
+// slice_expr_probe (F5): slice/substring expressions `s[i:j]`.
+//
+// Before F5 only single-element indexing `s[i]` parsed; `s[i:j]` was a parse
+// error. A slice expression shares the base's backing storage — no copy — so
+// codegen just synthesizes a new header:
+//   string s[low:high]  -> { data+low, high-low }            (2-word goo_string)
+//   slice  xs[low:high] -> { data+low*esz, high-low, cap-low } (3-word goo_slice)
+//
+// Probe cases:
+//   "hello"[1:3]        -> "el"   substring shares the byte buffer
+//   xs[1:3] of [10..40] -> ys[0]==20, len(ys)==2   reslice header math
+package main
+
+import "fmt"
+
+func main() {
+	s := "hello"
+	fmt.Println(s[1:3]) // el
+
+	xs := [10, 20, 30, 40]
+	ys := xs[1:3]
+	fmt.Println(ys[0], len(ys)) // 20 2
+}
