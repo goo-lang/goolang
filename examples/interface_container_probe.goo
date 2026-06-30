@@ -1,0 +1,39 @@
+// interface_container_probe (Phase 4 gap): a concrete implementer used as a
+// slice element or struct field of interface type is boxed into the interface's
+// {vtable, data} value, then dispatches polymorphically. This is the
+// []Interface / "struct holds an Interface" shape (sort.Stable, reverse-wrap).
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+}
+
+type Sq struct {
+	side int
+}
+
+func (s Sq) Area() int { return s.side * s.side }
+
+type Rect struct {
+	w int
+	h int
+}
+
+func (r Rect) Area() int { return r.w * r.h }
+
+type Holder struct {
+	sh Shape
+}
+
+func main() {
+	// Interface elements in a slice literal — heterogeneous concretes.
+	shapes := []Shape{Sq{side: 3}, Rect{w: 2, h: 3}}
+	fmt.Println(shapes[0].Area())  // 9
+	fmt.Println(shapes[1].Area())  // 6
+
+	// Interface field in a struct literal.
+	h := Holder{sh: Sq{side: 5}}
+	fmt.Println(h.sh.Area())       // 25
+}

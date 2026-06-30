@@ -425,6 +425,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             ValueInfo* iv = codegen_generate_expression(codegen, checker, msel->expr);
             if (!iv) return NULL;
             LLVMValueRef iface_val = iv->llvm_value;
+            // A selector/index receiver (h.sh, shapes[0]) is returned as an
+            // lvalue — the field/element address. Load the {vtable, data}
+            // value before dispatch (which ExtractValues it); an identifier
+            // receiver is already a loaded rvalue.
+            if (iv->is_lvalue) {
+                LLVMTypeRef ity = codegen_type_to_llvm(codegen, recv_type);
+                if (ity) {
+                    iface_val = LLVMBuildLoad2(codegen->builder, ity, iface_val,
+                                               "ifc.recv");
+                }
+            }
             value_info_free(iv);
 
             size_t argc = 0;

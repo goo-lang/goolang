@@ -115,9 +115,16 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                                    i, type_to_string(want));
                         return NULL;
                     }
-                    // type_compatible permits numeric widening (so
-                    // []int64{1, 2} is fine) but rejects e.g. string vs int.
-                    if (!type_compatible(et, want)) {
+                    // An interface element type accepts any concrete implementer
+                    // (boxed at codegen); check_interface_assign emits its own
+                    // "does not implement" diagnostic.
+                    if (want->kind == TYPE_INTERFACE) {
+                        if (!check_interface_assign(checker, et, want, e->pos)) {
+                            return NULL;
+                        }
+                    } else if (!type_compatible(et, want)) {
+                        // type_compatible permits numeric widening (so
+                        // []int64{1, 2} is fine) but rejects e.g. string vs int.
                         type_error(checker, e->pos,
                                    "Slice literal element %zu type '%s' is not "
                                    "compatible with declared element type '%s'",
@@ -256,7 +263,11 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
             }
             Type* vt = type_check_expression(checker, v);
             if (!vt) return NULL;
-            if (!type_compatible(vt, field->type)) {
+            if (field->type && field->type->kind == TYPE_INTERFACE) {
+                if (!check_interface_assign(checker, vt, field->type, v->pos)) {
+                    return NULL;
+                }
+            } else if (!type_compatible(vt, field->type)) {
                 type_error(checker, v->pos,
                            "Cannot use %s as field '%s' of type %s",
                            type_to_string(vt), name, type_to_string(field->type));
@@ -274,7 +285,11 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
         for (ASTNode* v = lit->field_values; v; v = v->next, i++) {
             Type* vt = type_check_expression(checker, v);
             if (!vt) return NULL;
-            if (!type_compatible(vt, fields[i].type)) {
+            if (fields[i].type && fields[i].type->kind == TYPE_INTERFACE) {
+                if (!check_interface_assign(checker, vt, fields[i].type, v->pos)) {
+                    return NULL;
+                }
+            } else if (!type_compatible(vt, fields[i].type)) {
                 type_error(checker, v->pos,
                            "Cannot use %s as field '%s' of type %s",
                            type_to_string(vt), fields[i].name,
