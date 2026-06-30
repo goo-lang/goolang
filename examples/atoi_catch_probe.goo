@@ -1,0 +1,21 @@
+// atoi_catch_probe: strconv.Atoi(string) -> !int, consumed via catch.
+// Success path unwraps and prints; error path is caught and prints "caught".
+package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func main() {
+	x := strconv.Atoi("42") catch e {
+		fmt.Println("FAIL")
+		return
+	}
+	fmt.Println(x)
+	strconv.Atoi("nope") catch e {
+		fmt.Println("caught")
+		return
+	}
+	fmt.Println("FAIL: nope should have been caught")
+}

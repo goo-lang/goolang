@@ -13,6 +13,7 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                                TypeKind return_kind, int unused_extra);
 static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 // Defined in expression_codegen.c: storage address of an addressable
 // expression (no load). Used here for pointer-receiver auto-address-of (P2-3).
@@ -403,6 +404,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef res = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 1, "itoa");
                 value_info_free(a);
                 return value_info_new(NULL, res, type_checker_get_builtin(checker, TYPE_STRING));
+            }
+            if (strcmp(pkg->name, "strconv") == 0 && strcmp(sel->selector, "Atoi") == 0) {
+                return codegen_generate_atoi_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
                 // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
@@ -824,6 +828,98 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
 #else
     codegen_error(codegen, expr->pos, "Channel creation requires LLVM");
     return NULL;
+#endif
+}
+
+// strconv.Atoi(string) -> !int
+// Calls the runtime goo_string_to_int(goo_string_t s, int64_t* out) -> int.
+// On success (ok!=0) wraps *out as a !int success union; on failure wraps
+// "strconv.Atoi: invalid syntax" as the error string.
+static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available for strconv.Atoi");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+    if (!call->args) {
+        codegen_error(codegen, expr->pos, "strconv.Atoi: expected one string argument");
+        return NULL;
+    }
+
+    // The !int result type is in expr->node_type (set by type_check_call_expr).
+    Type* result_type = expr->node_type;
+    if (!result_type || !type_is_error_union(result_type)) {
+        codegen_error(codegen, expr->pos, "strconv.Atoi: no !int type context");
+        return NULL;
+    }
+    LLVMTypeRef union_llvm = codegen_type_to_llvm(codegen, result_type);
+    if (!union_llvm) return NULL;
+
+    // Locate the pre-declared runtime function.
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_to_int");
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "goo_string_to_int not found in module");
+        return NULL;
+    }
+
+    // Evaluate the string argument; load through lvalue if needed.
+    ValueInfo* str_vi = codegen_generate_expression(codegen, checker, call->args);
+    if (!str_vi) return NULL;
+    LLVMValueRef str_val = str_vi->llvm_value;
+    if (str_vi->is_lvalue && str_vi->goo_type) {
+        LLVMTypeRef st = codegen_type_to_llvm(codegen, str_vi->goo_type);
+        if (st) str_val = LLVMBuildLoad2(codegen->builder, st, str_val, "atoi_str");
+    }
+    value_info_free(str_vi);
+
+    // alloca i64 out — receives the parsed value on success.
+    LLVMTypeRef i64_type = LLVMInt64TypeInContext(codegen->context);
+    LLVMValueRef out_ptr = codegen_create_entry_alloca(codegen, i64_type, "atoi_out");
+
+    // ok = goo_string_to_int(str_val, out_ptr)
+    LLVMValueRef call_args[] = { str_val, out_ptr };
+    LLVMValueRef ok = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                     fn, call_args, 2, "atoi_ok");
+
+    // Branch on ok != 0.
+    LLVMValueRef zero_i32 = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    LLVMValueRef cond = LLVMBuildICmp(codegen->builder, LLVMIntNE, ok, zero_i32, "atoi_cond");
+
+    LLVMBasicBlockRef success_block = codegen_create_block(codegen, "atoi.success");
+    LLVMBasicBlockRef error_block   = codegen_create_block(codegen, "atoi.error");
+    LLVMBasicBlockRef merge_block   = codegen_create_block(codegen, "atoi.merge");
+    LLVMBuildCondBr(codegen->builder, cond, success_block, error_block);
+
+    // Success block: load *out, wrap in !int success union.
+    codegen_set_insert_point(codegen, success_block);
+    LLVMValueRef int_val = LLVMBuildLoad2(codegen->builder, i64_type, out_ptr, "atoi_val");
+    Type* int_type = result_type->data.error_union.value_type;
+    LLVMValueRef succ = codegen_create_error_union_success(codegen, union_llvm, int_val, int_type);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef success_exit = LLVMGetInsertBlock(codegen->builder);
+
+    // Error block: build a goo_string_t from the literal message and wrap in !int error union.
+    codegen_set_insert_point(codegen, error_block);
+    const char* err_msg = "strconv.Atoi: invalid syntax";
+    LLVMValueRef msg_ptr = LLVMBuildGlobalStringPtr(codegen->builder, err_msg, "atoi_err_ptr");
+    LLVMTypeRef str_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+    LLVMValueRef msg_val = LLVMGetUndef(str_llvm);
+    msg_val = LLVMBuildInsertValue(codegen->builder, msg_val, msg_ptr, 0, "atoi_err_data");
+    LLVMValueRef msg_len = LLVMConstInt(i64_type,
+                                        (unsigned long long)strlen(err_msg), 0);
+    msg_val = LLVMBuildInsertValue(codegen->builder, msg_val, msg_len, 1, "atoi_err_len");
+    LLVMValueRef errv = codegen_create_error_union_error(codegen, union_llvm, msg_val);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef error_exit = LLVMGetInsertBlock(codegen->builder);
+
+    // Merge block: PHI the two !int union values.
+    codegen_set_insert_point(codegen, merge_block);
+    LLVMValueRef phi = LLVMBuildPhi(codegen->builder, union_llvm, "atoi_result");
+    LLVMAddIncoming(phi, &succ, &success_exit, 1);
+    LLVMAddIncoming(phi, &errv, &error_exit, 1);
+
+    return value_info_new(NULL, phi, result_type);
 #endif
 }
 

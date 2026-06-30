@@ -1,0 +1,24 @@
+// atoi_bridge_probe: strconv.Atoi consumed via Task 1's !T -> (value, ?error) bridge.
+// n, err := strconv.Atoi("42") -> n=42, err==nil.
+// n2, err2 := strconv.Atoi("bad") -> err2 != nil.
+package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func main() {
+	n, err := strconv.Atoi("42")
+	if err != nil {
+		fmt.Println("FAIL ok-path")
+	} else {
+		fmt.Println(n)
+	}
+	_, err2 := strconv.Atoi("bad")
+	if err2 != nil {
+		fmt.Println("caught")
+	} else {
+		fmt.Println("FAIL err-path")
+	}
+}
