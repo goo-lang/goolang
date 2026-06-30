@@ -474,6 +474,48 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         SelectorExprNode* msel = (SelectorExprNode*)call->function;
         Type* recv_type = type_check_expression(checker, msel->expr);
 
+        // error.Error(): nil-guarded read of the boxed message (Phase 6 Task 3).
+        // The error type is a tagged nullable handle, not a struct — it has no
+        // method set, so it must be special-cased before the struct/interface
+        // dispatch below (which would resolve "error__Error", find nothing, and
+        // fall through to the generic call path's "Undefined identifier").
+        if (recv_type && recv_type->name && strcmp(recv_type->name, "error") == 0 &&
+            strcmp(msel->selector, "Error") == 0) {
+            ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
+            if (!rv) return NULL;
+            LLVMValueRef recv_val = rv->llvm_value;
+            if (rv->is_lvalue) {
+                LLVMTypeRef rt = codegen_type_to_llvm(codegen, recv_type);
+                if (rt) {
+                    recv_val = LLVMBuildLoad2(codegen->builder, rt, recv_val, "err.recv");
+                }
+            }
+            value_info_free(rv);
+
+            // recv_val is the loaded nullable {i1 is_null, i8* handle}.
+            LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, recv_val, 0, "err.is_null");
+            LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, recv_val, 1, "err.handle");
+            LLVMValueRef msgfn = LLVMGetNamedFunction(codegen->module, "goo_error_message");
+            if (!msgfn) {
+                codegen_error(codegen, expr->pos, "goo_error_message not found in module");
+                return NULL;
+            }
+            LLVMTypeRef msgfn_ty = LLVMGlobalGetValueType(msgfn);
+            LLVMValueRef cargs[] = { handle };
+            LLVMValueRef msg = LLVMBuildCall2(codegen->builder, msgfn_ty, msgfn, cargs, 1, "err.msg");
+            // nil-guard: empty goo_string {null,0} when is_null. goo_error_message
+            // itself null-checks its arg too, so calling it on the null arm is
+            // harmless — only the select()'d result matters.
+            LLVMTypeRef str_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+            LLVMValueRef empty = LLVMGetUndef(str_llvm);
+            empty = LLVMBuildInsertValue(codegen->builder, empty,
+                LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0)), 0, "empty.data");
+            empty = LLVMBuildInsertValue(codegen->builder, empty,
+                LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 0, 0), 1, "empty.len");
+            LLVMValueRef result = LLVMBuildSelect(codegen->builder, is_null, empty, msg, "err.error_result");
+            return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+        }
+
         // Interface dispatch (P4-5): when the receiver is an interface value,
         // lower the call to a vtable dispatch instead of a direct mangled call.
         if (recv_type && recv_type->kind == TYPE_INTERFACE) {

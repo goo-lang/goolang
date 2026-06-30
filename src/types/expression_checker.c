@@ -848,7 +848,28 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             return ret;
         }
     }
-    
+
+    // error.Error() -> string (Phase 6 Task 3). `e.Error()` is a real CALL
+    // expression, not just a selector: type_check_selector_expr resolves the
+    // callee `e.Error` to `string` directly (the error type has no actual
+    // "Error" function — see the matching special case there), so the
+    // generic "callee must be TYPE_FUNCTION" check just below would reject
+    // it. Recognize the receiver here too and short-circuit before that.
+    if (call->function && call->function->type == AST_SELECTOR_EXPR) {
+        SelectorExprNode* esel = (SelectorExprNode*)call->function;
+        Type* erecv_t = type_check_expression(checker, esel->expr);
+        if (erecv_t && erecv_t->name && strcmp(erecv_t->name, "error") == 0 &&
+            strcmp(esel->selector, "Error") == 0) {
+            if (call->args) {
+                type_error(checker, expr->pos, "error.Error() takes no arguments");
+                return NULL;
+            }
+            Type* ret = type_checker_get_builtin(checker, TYPE_STRING);
+            expr->node_type = ret;
+            return ret;
+        }
+    }
+
     // Check function expression
     Type* func_type = type_check_expression(checker, call->function);
     if (!func_type) return NULL;
@@ -1304,6 +1325,18 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
                                                   : "interface",
                    selector->selector);
         return NULL;
+    }
+
+    // error.Error() -> string (Phase 6 Task 3). The error type is the tagged
+    // nullable handle (name=="error"); it carries no method set, so it must
+    // be special-cased here BEFORE the named-type method lookup below (which
+    // would look for a nonexistent "error__Error" function and fall through
+    // to the generic rejection).
+    if (expr_type->name && strcmp(expr_type->name, "error") == 0 &&
+        strcmp(selector->selector, "Error") == 0) {
+        Type* ret = type_checker_get_builtin(checker, TYPE_STRING);
+        expr->node_type = ret;
+        return ret;
     }
 
     // Named non-struct type (e.g. `type IntSlice []int`) method call: resolve
