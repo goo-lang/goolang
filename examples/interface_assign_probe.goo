@@ -1,0 +1,40 @@
+// interface_assign_probe (Phase 4 gap): plain `=` assignment into an
+// interface-typed variable — both concrete→interface and interface→interface.
+// var-decl init boxing already works (interface_dispatch_probe); this isolates
+// the REASSIGNMENT path (AST_MULTI_ASSIGN with one target/value).
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+}
+
+type Sq struct {
+	side int
+}
+
+func (s Sq) Area() int { return s.side * s.side }
+
+type Rect struct {
+	w int
+	h int
+}
+
+func (r Rect) Area() int { return r.w * r.h }
+
+func main() {
+	var s Shape = Sq{side: 2}  // init boxing (already supported)
+	s = Sq{side: 3}            // GAP 1: concrete→interface via plain `=`
+	fmt.Println(s.Area())      // 9
+
+	var t Shape = Rect{w: 1, h: 1}  // init boxing (already supported)
+	t = s                           // GAP 2: interface→interface via plain `=`
+	fmt.Println(t.Area())           // 9
+
+	var a Shape = Sq{side: 1}
+	var b Shape = Sq{side: 1}
+	a, b = Sq{side: 4}, Rect{w: 2, h: 3}  // GAP 3: multi-assign concrete→interface
+	fmt.Println(a.Area())                 // 16
+	fmt.Println(b.Area())                 // 6
+}

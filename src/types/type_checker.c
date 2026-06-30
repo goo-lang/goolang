@@ -526,8 +526,8 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
 // interface, accept iff `src` is that interface (or a concrete implementer);
 // otherwise fall back to ordinary type_compatible. Emits the implementation
 // diagnostic itself on failure (returns 0). `pos` anchors the error.
-static int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
-                                  Position pos) {
+int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
+                           Position pos) {
     if (!target || target->kind != TYPE_INTERFACE) {
         return type_compatible(src, target);
     }
@@ -937,7 +937,15 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
         } else {
             Type* tt = type_check_expression(checker, t);
             if (!tt) return 0;
-            if (!type_compatible(vt, tt)) {
+            // An interface-typed target accepts any concrete implementer
+            // (P4-3) and any interface (permissive). check_interface_assign
+            // emits its own "X does not implement Y" diagnostic; for non-
+            // interface targets it falls back to type_compatible.
+            if (tt->kind == TYPE_INTERFACE) {
+                if (!check_interface_assign(checker, vt, tt, t->pos)) {
+                    return 0;
+                }
+            } else if (!type_compatible(vt, tt)) {
                 type_error(checker, t->pos,
                            "Cannot assign %s to %s in multiple assignment",
                            type_to_string(vt), type_to_string(tt));

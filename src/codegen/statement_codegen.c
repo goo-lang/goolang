@@ -174,9 +174,26 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                               "multi-assign target must be an addressable lvalue");
                 return 0;
             }
+            // Box a concrete implementer into the interface's {vtable, data}
+            // value when assigning into an interface-typed lvalue (mirrors the
+            // var-decl init / call-arg boxing). interface→interface needs no
+            // box — same layout, store the struct directly.
+            LLVMValueRef sval = rvals[i];
+            if (target->goo_type && target->goo_type->kind == TYPE_INTERFACE &&
+                rtypes[i] && rtypes[i]->kind != TYPE_INTERFACE) {
+                LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                           target->goo_type,
+                                                           rtypes[i], rvals[i]);
+                if (!boxed) {
+                    codegen_error(codegen, t->pos,
+                                  "failed to box value into interface on assignment");
+                    return 0;
+                }
+                sval = boxed;
+            }
             // Do NOT free `target`: for an identifier it aliases the live
             // value-table entry (freeing it would undefine the variable).
-            LLVMBuildStore(codegen->builder, rvals[i], target->llvm_value);
+            LLVMBuildStore(codegen->builder, sval, target->llvm_value);
         }
     }
     return 1;
