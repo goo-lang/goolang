@@ -384,6 +384,9 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     ValueInfo* tag_vi = codegen_generate_expression(codegen, checker, sw->tag);
     if (!tag_vi) return 0;
     LLVMValueRef tag_val = switch_rvalue(codegen, tag_vi);
+    // P1-4: a string tag can't be compared with icmp ({ptr,i64} is an invalid
+    // ICmp operand); each case is matched with goo_string_eq instead.
+    int tag_is_string = tag_vi->goo_type && tag_vi->goo_type->kind == TYPE_STRING;
     value_info_free(tag_vi);
 
     LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "switch.merge");
@@ -414,9 +417,21 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         for (ASTNode* e = clause->exprs; e; e = e->next) {
             ValueInfo* ev = codegen_generate_expression(codegen, checker, e);
             if (!ev) { free(body_blocks); return 0; }
-            LLVMValueRef cmp = LLVMBuildICmp(codegen->builder, LLVMIntEQ,
-                                             tag_val, switch_rvalue(codegen, ev), "switch.cmp");
+            LLVMValueRef ev_rv = switch_rvalue(codegen, ev);
             value_info_free(ev);
+            LLVMValueRef cmp;
+            if (tag_is_string) {
+                // P1-4: match via goo_string_eq (returns i32 0/1) -> i1.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_eq");
+                if (!fn) { codegen_error(codegen, stmt->pos, "goo_string_eq not found in module"); free(body_blocks); return 0; }
+                LLVMValueRef args[2] = { tag_val, ev_rv };
+                LLVMValueRef eqi = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                                  fn, args, 2, "switch.streq");
+                LLVMValueRef z = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+                cmp = LLVMBuildICmp(codegen->builder, LLVMIntNE, eqi, z, "switch.cmp");
+            } else {
+                cmp = LLVMBuildICmp(codegen->builder, LLVMIntEQ, tag_val, ev_rv, "switch.cmp");
+            }
             LLVMBasicBlockRef next_test = codegen_create_block(codegen, "switch.test");
             LLVMBuildCondBr(codegen->builder, cmp, body_blocks[i], next_test);
             codegen_set_insert_point(codegen, next_test);
