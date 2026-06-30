@@ -1,0 +1,41 @@
+// const_group_probe (F4): grouped `const ( ... )` blocks + `iota`.
+//
+// Before F4, a grouped const block was a parse error — only the single
+// `const NAME TYPE = expr` form parsed. This probe exercises the three
+// patterns that pervade Go stdlib const blocks:
+//
+//   1. an `iota` sequence with bare specs (A=iota; B; C -> 0,1,2)
+//   2. a block of explicit values (X=10; Y=20)
+//   3. `iota` inside a larger constant expression with bare repetition
+//      (iota*10 -> 0,10,20) — proves iota is substituted everywhere in the
+//      spec's value template, not just when it stands alone. (The canonical
+//      `1 << iota` flag idiom awaits bitwise operators, a separate gap.)
+//
+// Each printed line guards one pattern: a regression in iota sequencing,
+// bare-spec repetition, or expression substitution changes the output.
+package main
+
+import "fmt"
+
+const (
+	A = iota // 0
+	B        // 1
+	C        // 2
+)
+
+const (
+	X = 10
+	Y = 20
+)
+
+const (
+	T0 = iota * 10 // iota=0 -> 0
+	T1             // iota=1 -> 10
+	T2             // iota=2 -> 20
+)
+
+func main() {
+	fmt.Println(A, B, C)     // 0 1 2
+	fmt.Println(X, Y)        // 10 20
+	fmt.Println(T0, T1, T2)  // 0 10 20
+}

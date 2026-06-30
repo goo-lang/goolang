@@ -35,6 +35,70 @@ static LLVMValueRef codegen_arg_as_cstr(CodeGenerator* codegen, TypeChecker* che
     value_info_free(v);
     return val;
 }
+
+// Builtin numeric type-conversion name (F2): mirrors
+// builtin_conversion_target() in the type checker — the names that produce an
+// actual value conversion. This set is intentionally numeric-only: the checker
+// recognizes `string`/`bool` as conversion names too (full set in
+// name_is_builtin_conv_name) but REJECTS them as unsupported in v1, so a
+// `string(x)`/`bool(x)` program fails type-check and never reaches codegen.
+// Codegen therefore only ever needs the names it can actually lower.
+static int is_builtin_conv_name(const char* name) {
+    if (!name) return 0;
+    static const char* kinds[] = {
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64",
+        "byte", "float32", "float64",
+    };
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        if (strcmp(name, kinds[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+// Emit a numeric value conversion `T(x)` (F2). Picks the LLVM cast from the
+// source/target LLVM kinds and the SOURCE signedness (so int(byte(200)) is
+// 200, not -56): widen with SExt for signed sources, ZExt for unsigned;
+// narrow with Trunc; int<->float via {S,U}IToFP / FPTo{S,U}I; float<->float
+// via FPExt/FPTrunc. `from`/`to` are the Goo types; `to_l` the target LLVM type.
+static LLVMValueRef codegen_numeric_convert(CodeGenerator* codegen, LLVMValueRef v,
+                                            Type* from, Type* to, LLVMTypeRef to_l) {
+    LLVMTypeRef from_l = LLVMTypeOf(v);
+    if (from_l == to_l) return v;
+    LLVMTypeKind fk = LLVMGetTypeKind(from_l), tk = LLVMGetTypeKind(to_l);
+    int from_signed = type_is_signed(from);
+    int to_signed = type_is_signed(to);
+
+    if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
+        unsigned fb = LLVMGetIntTypeWidth(from_l), tb = LLVMGetIntTypeWidth(to_l);
+        if (fb < tb) {
+            return from_signed
+                ? LLVMBuildSExt(codegen->builder, v, to_l, "conv_sext")
+                : LLVMBuildZExt(codegen->builder, v, to_l, "conv_zext");
+        }
+        if (fb > tb) return LLVMBuildTrunc(codegen->builder, v, to_l, "conv_trunc");
+        return v;  // same width: signedness is not represented in LLVM ints
+    }
+    if (fk == LLVMIntegerTypeKind && (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
+        return from_signed
+            ? LLVMBuildSIToFP(codegen->builder, v, to_l, "conv_sitofp")
+            : LLVMBuildUIToFP(codegen->builder, v, to_l, "conv_uitofp");
+    }
+    if ((fk == LLVMFloatTypeKind || fk == LLVMDoubleTypeKind) && tk == LLVMIntegerTypeKind) {
+        return to_signed
+            ? LLVMBuildFPToSI(codegen->builder, v, to_l, "conv_fptosi")
+            : LLVMBuildFPToUI(codegen->builder, v, to_l, "conv_fptoui");
+    }
+    if ((fk == LLVMFloatTypeKind || fk == LLVMDoubleTypeKind) &&
+        (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
+        if (fk == LLVMFloatTypeKind && tk == LLVMDoubleTypeKind)
+            return LLVMBuildFPExt(codegen->builder, v, to_l, "conv_fpext");
+        if (fk == LLVMDoubleTypeKind && tk == LLVMFloatTypeKind)
+            return LLVMBuildFPTrunc(codegen->builder, v, to_l, "conv_fptrunc");
+        return v;
+    }
+    return v;
+}
 #endif
 
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -51,6 +115,40 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         IdentifierNode* func_name = (IdentifierNode*)call->function;
         if (strcmp(func_name->name, "make_chan") == 0) {
             return codegen_generate_make_chan_call(codegen, checker, expr);
+        }
+        // Builtin numeric type conversion `T(x)` (F2). The type checker has
+        // already validated the single numeric/char argument and stamped the
+        // target type on expr->node_type. Evaluate the operand and emit the
+        // appropriate cast.
+        //
+        // Mirror the checker's shadowing gate: Go permits a user symbol to
+        // shadow a predeclared type name, so `func int(n int) int` makes
+        // `int(5)` a CALL, not a conversion. The name alone is not enough to
+        // decide — consult the symbol table. At codegen time every top-level
+        // function lives in the (persisted) global scope regardless of source
+        // order, so a non-NULL lookup means the name is shadowed: fall through
+        // to the ordinary call path instead of silently converting. Without
+        // this, `int(5)` printed 5 (conversion) rather than 105 (the user's
+        // function) — a silent miscompile of code that is legal in Go.
+        if (is_builtin_conv_name(func_name->name) && call->args && !call->args->next
+            && !type_checker_lookup_variable(checker, func_name->name)) {
+            Type* target = expr->node_type;
+            if (!target) {
+                codegen_error(codegen, expr->pos, "conversion: missing resolved target type");
+                return NULL;
+            }
+            ValueInfo* src = codegen_generate_expression(codegen, checker, call->args);
+            if (!src) return NULL;
+            LLVMValueRef sval = src->llvm_value;
+            if (src->is_lvalue && src->goo_type) {
+                LLVMTypeRef st = codegen_type_to_llvm(codegen, src->goo_type);
+                if (st) sval = LLVMBuildLoad2(codegen->builder, st, sval, "conv_load");
+            }
+            LLVMTypeRef to_l = codegen_type_to_llvm(codegen, target);
+            if (!to_l) { value_info_free(src); return NULL; }
+            LLVMValueRef out = codegen_numeric_convert(codegen, sval, src->goo_type, target, to_l);
+            value_info_free(src);
+            return value_info_new(NULL, out, target);
         }
         if (strcmp(func_name->name, "new") == 0) {
             // new(T) -> heap-allocated *T. The type checker stored the result
@@ -796,10 +894,20 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
 
         TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);
         if (kind == TYPE_STRING) {
-            LLVMValueRef ptr = LLVMBuildExtractValue(codegen->builder, arg_val->llvm_value, 0, "str_ptr");
-            LLVMValueRef args[] = { ptr };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
-                          print_func, args, 1, "");
+            // Pass the whole goo_string struct to the length-aware printer.
+            // Extracting just the data ptr and calling goo_print (strlen) is
+            // wrong for a substring (F5): a shared-buffer slice like
+            // "hello"[1:3] has no '\0' after "el", so strlen would read past
+            // the logical length. goo_print_string honours the length field.
+            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+            if (!str_fn) {
+                codegen_error(codegen, a->pos, "goo_print_string not found in module");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef args[] = { arg_val->llvm_value };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                          str_fn, args, 1, "");
         } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
             LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_print_int");
             LLVMValueRef widened = LLVMBuildSExt(codegen->builder, arg_val->llvm_value,

@@ -254,7 +254,18 @@ void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type
 
 int type_check_program(TypeChecker* checker, ASTNode* program) {
     if (!checker || !program) return 0;
-    
+
+    // A lexical error (e.g. a malformed char literal '', '\z', or an
+    // unterminated 'a) is mapped to an unknown token and SILENTLY SKIPPED by the
+    // Bison bridge, so the parse can succeed with the bad token simply gone and
+    // the program would otherwise compile to a running binary. Refuse to emit
+    // code when the lexer flagged any such error — this is the clean rejection.
+    // The lexer already printed a positioned diagnostic for each one.
+    extern int goo_lexer_error_count;
+    if (goo_lexer_error_count > 0) {
+        return 0;
+    }
+
     if (program->type != AST_PROGRAM) {
         type_error(checker, program->pos, "Expected program node");
         return 0;
@@ -800,6 +811,60 @@ int type_check_concept_decl(TypeChecker* checker, ASTNode* decl) {
     return 1;
 }
 
+// F6: `a, b := v1, v2` / `a, b = v1, v2`. Two passes so RHS is evaluated in
+// the pre-assignment scope (Go semantics): pass 1 type-checks every value
+// (before any `:=` name comes into scope); pass 2 binds new names (`:=`) or
+// validates assignment compatibility against existing lvalues (`=`).
+int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_MULTI_ASSIGN) return 0;
+    MultiAssignNode* ma = (MultiAssignNode*)stmt;
+
+    Type* vtypes[2];   // v1 grammar produces exactly count==2
+    size_t n = 0;
+    for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
+        Type* vt = type_check_expression(checker, v);
+        if (!vt) return 0;
+        vtypes[n++] = vt;
+    }
+
+    size_t i = 0;
+    for (ASTNode* t = ma->targets; t; t = t->next, i++) {
+        if (i >= n) {
+            type_error(checker, stmt->pos,
+                       "Multiple assignment: more targets than values");
+            return 0;
+        }
+        Type* vt = vtypes[i];
+
+        if (ma->is_short_decl) {
+            if (t->type != AST_IDENTIFIER) {
+                type_error(checker, t->pos, "Left side of := must be an identifier");
+                return 0;
+            }
+            t->node_type = vt;
+            Variable* var = variable_new(((IdentifierNode*)t)->name, vt, t->pos);
+            if (var) {
+                var->is_initialized = 1;
+                // Tolerate redeclaration in the same scope (Go permits := when
+                // at least one name is new); an existing binding keeps its slot.
+                if (!scope_add_variable(checker->current_scope, var)) {
+                    variable_free(var);
+                }
+            }
+        } else {
+            Type* tt = type_check_expression(checker, t);
+            if (!tt) return 0;
+            if (!type_compatible(vt, tt)) {
+                type_error(checker, t->pos,
+                           "Cannot assign %s to %s in multiple assignment",
+                           type_to_string(vt), type_to_string(tt));
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt) return 0;
     switch (stmt->type) {
@@ -809,6 +874,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_expr_stmt(checker, stmt);
         case AST_VAR_DECL:
             return type_check_var_decl(checker, stmt);
+        case AST_MULTI_ASSIGN:
+            return type_check_multi_assign(checker, stmt);
         case AST_IF_STMT:
             return type_check_if_stmt(checker, stmt);
         case AST_IF_LET_STMT: {
@@ -965,9 +1032,15 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             elem_type = range_type->data.slice.element_type;
         } else if (range_type->kind == TYPE_ARRAY) {
             elem_type = range_type->data.array.element_type;
+        } else if (range_type->kind == TYPE_STRING) {
+            // F7: range over a string. v1 iterates BYTES (rune decoding is
+            // deferred): key is the byte index, value is the byte widened to
+            // int32 (rune today). int32 — not uint8 — so fmt.Println accepts
+            // the value, and codegen zero-extends the i8 byte into it.
+            elem_type = type_checker_get_builtin(checker, TYPE_INT32);
         } else {
             type_error(checker, for_stmt->range_expr->pos,
-                      "for-range supported only on slice/array types in M8");
+                      "for-range supported only on slice/array/string types");
             scope_pop(checker);
             return 0;
         }
@@ -1312,6 +1385,11 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(ident->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(ident->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(ident->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
+            // F8: Go's `error` interface. v1 represents it as a nullable
+            // pointer — nameable in signatures, accepts nil, and `== nil`
+            // works. Method dispatch (`.Error()`) is deferred to Phase 6.
+            if (strcmp(ident->name, "error") == 0)
+                return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
 
             // User-defined named type (e.g. `new(Point)`): `type Foo ...` is
             // registered as a Variable whose `type` field is the named Type
@@ -1349,6 +1427,9 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "string") == 0) return type_checker_get_builtin(checker, TYPE_STRING);
             if (strcmp(basic->name, "char") == 0) return type_checker_get_builtin(checker, TYPE_CHAR);
             if (strcmp(basic->name, "byte") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
+            // F8: Go's `error` interface — see the AST_IDENTIFIER branch above.
+            if (strcmp(basic->name, "error") == 0)
+                return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
 
             // User-defined named type? type_check_type_decl registers
             // `type Foo = ...` aliases by piggybacking on the variable
