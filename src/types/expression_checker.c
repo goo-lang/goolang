@@ -1207,9 +1207,15 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, string_t);
     }
 
-    // strconv.Atoi(string) -> !int  (error union: success=int64, error=string)
+    // strconv.Atoi(string) -> !int  (error union: success=int, error=string).
+    // The value arm MUST be the language's `int` (TYPE_INT32 — see the `int`
+    // keyword resolution in this file and type_checker.c), not int64: the
+    // bridge binds `n` from this value type, and `n` then has to round-trip
+    // through an `int`-typed slot (e.g. `func parse(s) (int, error)`). Using
+    // int64 here made `!int`'s value i64 while the language `int` is i32,
+    // crashing the LLVM backend on `return n, …` (i64 into an i32 tuple slot).
     if (strcmp(package, "strconv") == 0 && strcmp(name, "Atoi") == 0) {
-        Type* int_t = type_checker_get_builtin(checker, TYPE_INT64);
+        Type* int_t = type_checker_get_builtin(checker, TYPE_INT32);
         Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
         return type_function(NULL, 0, type_error_union(int_t, err_t));
     }

@@ -1,0 +1,35 @@
+// error_roundtrip_probe: the milestone capstone — `(int, error)` == `!int`.
+// A user-defined `parse(s string) (int, error)` consumes strconv.Atoi's !int via
+// Task 1's destructure bridge (n, err := <!T>), then RETURNS the bridge-synthesized
+// ?error through a Go-style multi-value return. The caller re-destructures it
+// (v, e := parse(s)) and checks `e != nil`. This is the round-trip the earlier
+// probes never exercised: the error crosses a function boundary as a real tuple.
+package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func parse(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func main() {
+	v, e := parse("42")
+	if e != nil {
+		fmt.Println("FAIL ok-path")
+	} else {
+		fmt.Println(v) // 42
+	}
+	_, e2 := parse("bad")
+	if e2 != nil {
+		fmt.Println("caught")
+	} else {
+		fmt.Println("FAIL err-path")
+	}
+}
