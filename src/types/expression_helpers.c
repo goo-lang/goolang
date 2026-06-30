@@ -95,6 +95,17 @@ Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_t
 Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos) {
     if (!checker || !target || !target_type || !value_type) return NULL;
 
+    // The grammar accepts any expression as an assignment LHS; enforce
+    // addressability here. Lvalues are identifiers, index, selector, and deref
+    // (`*p`, parsed as AST_UNARY_EXPR with TOKEN_MULTIPLY).
+    if (target->type != AST_IDENTIFIER && target->type != AST_INDEX_EXPR &&
+        target->type != AST_SELECTOR_EXPR &&
+        !(target->type == AST_UNARY_EXPR &&
+          ((UnaryExprNode*)target)->operator == TOKEN_MULTIPLY)) {
+        type_error(checker, pos, "cannot assign to a non-addressable expression");
+        return NULL;
+    }
+
     // An interface-typed target accepts any concrete implementer and any
     // interface (check_interface_assign emits its own diagnostic). Mirrors the
     // var-decl init path so `s = Sq{}` / `t = s` behave like `var s Shape = …`.

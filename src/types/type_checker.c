@@ -974,6 +974,17 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
                 }
             }
         } else {
+            // The grammar accepts any expression as a tuple-assign target;
+            // enforce addressability here (mirrors type_check_assignment_op).
+            // Lvalues are identifiers, index, selector, and deref (`*p`).
+            if (t->type != AST_IDENTIFIER && t->type != AST_INDEX_EXPR &&
+                t->type != AST_SELECTOR_EXPR &&
+                !(t->type == AST_UNARY_EXPR &&
+                  ((UnaryExprNode*)t)->operator == TOKEN_MULTIPLY)) {
+                type_error(checker, t->pos,
+                           "cannot assign to a non-addressable expression");
+                return 0;
+            }
             Type* tt = type_check_expression(checker, t);
             if (!tt) return 0;
             // An interface-typed target accepts any concrete implementer

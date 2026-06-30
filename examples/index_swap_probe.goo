@@ -1,0 +1,15 @@
+// index_swap_probe: multi-assign to INDEXED lvalues — the sort Swap idiom.
+// Go evaluates all RHS before any store, so the swap is correct.
+package main
+
+import "fmt"
+
+func main() {
+	s := []int{10, 20, 30}
+	i := 0
+	j := 2
+	s[i], s[j] = s[j], s[i] // -> 30 20 10
+	fmt.Println(s[0])       // 30
+	fmt.Println(s[1])       // 20
+	fmt.Println(s[2])       // 10
+}
