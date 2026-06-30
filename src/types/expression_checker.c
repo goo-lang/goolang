@@ -22,6 +22,8 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_call_expr(checker, expr);
         case AST_INDEX_EXPR:
             return type_check_index_expr(checker, expr);
+        case AST_SLICE_INDEX_EXPR:
+            return type_check_slice_index_expr(checker, expr);
         case AST_SELECTOR_EXPR:
             return type_check_selector_expr(checker, expr);
         case AST_TRY_EXPR:
@@ -982,6 +984,45 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     
     expr->node_type = element_type;
     return element_type;
+}
+
+// F5: `base[low:high]` slice/substring. Result keeps the base's type — a
+// substring is a string, a reslice is the same slice type. Array slicing
+// (which yields a slice in Go) is deferred: the by-value array codegen needs
+// the array materialised to a pointer first, so it is rejected cleanly here
+// rather than accepted and then failing in codegen.
+Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_SLICE_INDEX_EXPR) return NULL;
+
+    SliceIndexExprNode* slice = (SliceIndexExprNode*)expr;
+
+    Type* base_type = type_check_expression(checker, slice->expr);
+    Type* low_type = type_check_expression(checker, slice->low);
+    Type* high_type = type_check_expression(checker, slice->high);
+    if (!base_type || !low_type || !high_type) return NULL;
+
+    if (!type_is_integer(low_type)) {
+        type_error(checker, slice->low->pos,
+                   "Slice low bound must be integer, got %s", type_to_string(low_type));
+        return NULL;
+    }
+    if (!type_is_integer(high_type)) {
+        type_error(checker, slice->high->pos,
+                   "Slice high bound must be integer, got %s", type_to_string(high_type));
+        return NULL;
+    }
+
+    switch (base_type->kind) {
+        case TYPE_STRING:   // substring shares the byte buffer
+        case TYPE_SLICE:    // reslice shares the backing array
+            expr->node_type = base_type;
+            return base_type;
+        default:
+            type_error(checker, slice->expr->pos,
+                       "Cannot slice type %s (v1 supports string and slice)",
+                       type_to_string(base_type));
+            return NULL;
+    }
 }
 
 // stdlib_package_lookup returns a function Type for a (package, name) pair

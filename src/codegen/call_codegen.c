@@ -894,10 +894,20 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
 
         TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);
         if (kind == TYPE_STRING) {
-            LLVMValueRef ptr = LLVMBuildExtractValue(codegen->builder, arg_val->llvm_value, 0, "str_ptr");
-            LLVMValueRef args[] = { ptr };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
-                          print_func, args, 1, "");
+            // Pass the whole goo_string struct to the length-aware printer.
+            // Extracting just the data ptr and calling goo_print (strlen) is
+            // wrong for a substring (F5): a shared-buffer slice like
+            // "hello"[1:3] has no '\0' after "el", so strlen would read past
+            // the logical length. goo_print_string honours the length field.
+            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+            if (!str_fn) {
+                codegen_error(codegen, a->pos, "goo_print_string not found in module");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef args[] = { arg_val->llvm_value };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                          str_fn, args, 1, "");
         } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
             LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_print_int");
             LLVMValueRef widened = LLVMBuildSExt(codegen->builder, arg_val->llvm_value,

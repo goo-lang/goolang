@@ -1361,6 +1361,20 @@ index_expr:
         index->index = $3;
         $$ = (ASTNode*)index;
     }
+    // F5: slice/substring expression `expr[low:high]`. The COLON after the
+    // first bound distinguishes it from plain indexing on one lookahead token
+    // (RBRACKET vs COLON). Both bounds required in v1.
+    | primary_expr LBRACKET expression COLON expression RBRACKET {
+        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
+        slice->base.type = AST_SLICE_INDEX_EXPR;
+        slice->base.pos = get_current_position();
+        slice->base.node_type = NULL;
+        slice->base.next = NULL;
+        slice->expr = $1;
+        slice->low = $3;
+        slice->high = $5;
+        $$ = (ASTNode*)slice;
+    }
     ;
 
 selector_expr:

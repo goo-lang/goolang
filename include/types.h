@@ -437,6 +437,7 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_make_chan_call(TypeChecker* checker, CallExprNode* call, ASTNode* expr);
 Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr);
+Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr);
 Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr);
 Type* type_check_match_expr(TypeChecker* checker, ASTNode* expr);

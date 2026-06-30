@@ -126,6 +126,13 @@ typedef enum {
     AST_ENUM_TYPE,         // type X enum { Variant{...} ... }
     AST_ENUM_VARIANT,      // a single enum variant: Name{ field: T ... }
 
+    // F5: `s[low:high]` slice/substring. Appended at the tail (per the M10
+    // convention above) so it doesn't shift any pre-existing enum value —
+    // important because the Makefile lacks header dependencies, so an
+    // incremental rebuild after a mid-list insertion leaves un-recompiled
+    // objects with stale enum values and silently misidentifies nodes.
+    AST_SLICE_INDEX_EXPR,  // expr[low:high]
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -446,6 +453,16 @@ typedef struct {
     struct ASTNode* expr;
     struct ASTNode* index;
 } IndexExprNode;
+
+// F5: slice/substring expression `expr[low:high]`. Both bounds required in v1
+// (the `[i:]`/`[:j]`/`[:]` shorthands are deferred). Shares the base's backing
+// storage — codegen synthesizes a new string/slice header, no copy.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* expr;
+    struct ASTNode* low;
+    struct ASTNode* high;
+} SliceIndexExprNode;
 
 // Selector expression (dot notation)
 typedef struct {

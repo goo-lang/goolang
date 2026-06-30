@@ -21,6 +21,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_call_expr(codegen, checker, expr);
         case AST_INDEX_EXPR:
             return codegen_generate_index_expr(codegen, checker, expr);
+        case AST_SLICE_INDEX_EXPR:
+            return codegen_generate_slice_index_expr(codegen, checker, expr);
         case AST_SELECTOR_EXPR:
             return codegen_generate_selector_expr(codegen, checker, expr);
         case AST_TRY_EXPR:
