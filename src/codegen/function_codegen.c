@@ -514,8 +514,8 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     // Must precede the generic struct-destructure: a !T is a 2-field
     // {i1 is_error, union} aggregate, and ExtractValue'ing its raw fields would
     // hand the is_error flag to name0 and the union payload to name1.
-    if (var_decl->name_count == 2 && var_type->kind == TYPE_ERROR_UNION &&
-        var_decl->values) {
+    if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+        var_type->kind == TYPE_ERROR_UNION && var_decl->values) {
         ValueInfo* rhs = codegen_generate_expression(codegen, checker, var_decl->values);
         if (!rhs) {
             codegen_error(codegen, decl->pos, "Failed to generate !T destructure RHS");
