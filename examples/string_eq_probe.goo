@@ -1,0 +1,20 @@
+// string_eq_probe (P1-1): string ==/!= via the goo_string_eq runtime helper.
+//
+// Before P1-1, TOKEN_EQ/NE only handled int/float; string operands are
+// {ptr,i64} structs, so an icmp on them was invalid IR (verifier failure).
+// Value equality now lowers to goo_string_eq (length + memcmp) -> i1.
+package main
+
+import "fmt"
+
+func main() {
+	a := "hello"
+	b := "hello"
+	c := "world"
+	fmt.Println(a == b) // true  (equal content)
+	fmt.Println(a == c) // false
+	fmt.Println(a != c) // true
+	fmt.Println(a != b) // false
+	d := "hell"
+	fmt.Println(a == d) // false (different length)
+}

@@ -464,6 +464,28 @@ static void coerce_int_literal_operand(CodeGenerator* codegen,
     }
 }
 
+#if LLVM_AVAILABLE
+// P1-1: lower a string `==`/`!=` to a goo_string_eq call plus an i1 conversion.
+// goo_string_eq returns i32 (0/1); `want_equal` selects `== `(true iff equal,
+// eqi != 0) vs `!=` (true iff not equal, eqi == 0). Returns NULL (after a
+// source-located error) if the runtime symbol is missing.
+static LLVMValueRef codegen_string_eq_to_i1(CodeGenerator* codegen,
+                                            LLVMValueRef a, LLVMValueRef b,
+                                            int want_equal, ASTNode* expr) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_string_eq");
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "goo_string_eq not found in module");
+        return NULL;
+    }
+    LLVMValueRef args[2] = { a, b };
+    LLVMValueRef eqi = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                      fn, args, 2, "streq");
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    return LLVMBuildICmp(codegen->builder, want_equal ? LLVMIntNE : LLVMIntEQ,
+                         eqi, zero, want_equal ? "streq_b" : "strne_b");
+}
+#endif
+
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -778,6 +800,12 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_BOOL) {
                 // P1-3: bools are i1 — integer-equality is the right lowering.
                 result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "booleq");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // P1-1: string value equality via goo_string_eq (returns i32
+                // 0/1); convert to i1 with `!= 0` (true iff equal).
+                result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
+                                                 /*want_equal=*/1, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
 
@@ -789,6 +817,11 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_BOOL) {
                 // P1-3: bool inequality.
                 result = LLVMBuildICmp(codegen->builder, LLVMIntNE, left_llvm, right_llvm, "boolne");
+            } else if (left_val->goo_type && left_val->goo_type->kind == TYPE_STRING) {
+                // P1-1: string inequality — true iff goo_string_eq == 0.
+                result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
+                                                 /*want_equal=*/0, expr);
+                if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
             }
             break;
             
