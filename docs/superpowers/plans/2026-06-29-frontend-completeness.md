@@ -13,7 +13,7 @@
 ## Global Constraints
 - **Build env:** `eval $(opam env --switch=default)` before any `make`; ignore `parser.tab.c` recipe-override warnings.
 - **Gates:** `make verify` (incl. `test-golden`) + `make test` (76/1) stay green; every existing golden case keeps passing.
-- **Grammar changes (F4/F5/F6) must NOT increase the parser conflict count** (currently 68 s/r + 156 r/r) — rebuild with bison and compare. If a change adds conflicts, resolve or escalate; do not introduce fragile grammar.
+- **Grammar changes (F4/F5/F6) must NOT increase the parser conflict count** (baseline 71 s/r + 219 r/r as of the bitwise-operators follow-up; was 68 s/r + 156 r/r through F4) — rebuild with bison and compare. If a change adds conflicts, resolve or escalate; do not introduce fragile grammar. NB: the bitwise-operators commit deliberately raised the baseline (+3 s/r, +63 r/r) with explicit owner sign-off — all 76 tests + 61 goldens still pass; the new r/r conflicts are in `expression`/`unary_expr` and resolve correctly under yacc's first-rule default.
 - `int` is i32 today (separate milestone) — small-valued fixtures.
 - Each gap is verified by a golden probe (positive feature) and where relevant a negative probe (clean rejection). TDD: RED first.
 - Commit discipline: conventional commits, `--no-gpg-sign`, stage only named files; never `git add .`/`.superpowers/`/`build/`.

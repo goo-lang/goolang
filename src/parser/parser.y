@@ -1279,6 +1279,31 @@ binary_expr:
         BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(ARROW), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
+    // Binary bitwise operators. Tokens, precedence (see the %left block),
+    // type-checking, and codegen (Shl/AShr/LShr/And/Or/Xor) already existed;
+    // only these productions were missing. BIT_AND is also the unary
+    // address-of operator (`&x`), exactly like MULTIPLY's unary-deref dual
+    // role above — the unary_expr level and operator precedence disambiguate.
+    | expression LSHIFT expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(LSHIFT), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression RSHIFT expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(RSHIFT), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression BIT_AND expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_AND), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression BIT_OR expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_OR), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression BIT_XOR expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_XOR), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
     ;
 
 primary_expr:
