@@ -255,7 +255,10 @@ static char* get_output_filename(const char* input_file, const char* output_file
     // Generate default output name
     char* base = strdup(input_file);
     char* dot = strrchr(base, '.');
-    if (dot && strcmp(dot, ".goo") == 0) {
+    // Accept both Goo's own `.goo` and real Go's `.go` so the compiler can be
+    // pointed at actual Go source files (Go-compatibility). Strip either so
+    // `foo.go`/`foo.goo` default to the `foo.out` executable name.
+    if (dot && (strcmp(dot, ".goo") == 0 || strcmp(dot, ".go") == 0)) {
         *dot = '\0';
     }
     

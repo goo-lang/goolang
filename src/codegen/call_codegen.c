@@ -390,6 +390,20 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, out, "split_slice");
                 return value_info_new(NULL, slice_val, ret_type);
             }
+            if (strcmp(pkg->name, "strconv") == 0 && strcmp(sel->selector, "Itoa") == 0) {
+                // strconv.Itoa(int) -> string via goo_int_to_string(int64_t)
+                // SExt the int arg to i64 since goo_int_to_string takes int64_t.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_int_to_string");
+                if (!fn) { codegen_error(codegen, expr->pos, "goo_int_to_string not found"); return NULL; }
+                ValueInfo* a = codegen_generate_expression(codegen, checker, call->args);
+                if (!a) return NULL;
+                LLVMValueRef v = LLVMBuildSExt(codegen->builder, a->llvm_value,
+                                               LLVMInt64TypeInContext(codegen->context), "itoa_arg");
+                LLVMValueRef args[] = { v };
+                LLVMValueRef res = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 1, "itoa");
+                value_info_free(a);
+                return value_info_new(NULL, res, type_checker_get_builtin(checker, TYPE_STRING));
+            }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
                 // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
                 // Spill the []string value to a slot and pass its address — a

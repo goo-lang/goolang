@@ -80,6 +80,7 @@ int goo_string_cmp(goo_string_t a, goo_string_t b);
 goo_string_t goo_int_to_string(int64_t value);
 goo_string_t goo_float_to_string(double value);
 goo_string_t goo_bool_to_string(int value);
+int goo_string_to_int(goo_string_t s, int64_t* out);
 
 // Stdlib package backings (used by codegen to lower fmt.*, os.*,
 // strings.*, math.* calls into runtime symbols)

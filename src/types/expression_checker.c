@@ -1201,6 +1201,12 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, string_t);
     }
 
+    // strconv.Itoa(int) -> string
+    if (strcmp(package, "strconv") == 0 && strcmp(name, "Itoa") == 0) {
+        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+        return type_function(NULL, 0, string_t);
+    }
+
     return NULL;
 }
 

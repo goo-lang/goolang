@@ -240,6 +240,11 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { i32_type };
         add_runtime_function(codegen, "goo_bool_to_string", string_type, params, 1);
     }
+    // int goo_string_to_int(goo_string_t s, int64_t* out)
+    {
+        LLVMTypeRef params[] = { string_type, LLVMPointerType(i64_type, 0) };
+        add_runtime_function(codegen, "goo_string_to_int", i32_type, params, 2);
+    }
 
     // Stdlib package backings
     // int goo_strings_contains(const char* haystack, const char* needle)

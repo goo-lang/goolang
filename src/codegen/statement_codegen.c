@@ -821,12 +821,39 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             LLVMValueRef agg = LLVMGetUndef(ret_llvm);
             size_t i = 0;
             for (ASTNode* v = return_stmt->values; v; v = v->next, i++) {
+                // The tuple slot's declared type. A nullable slot (e.g. `error`
+                // is ?*int8, so `(int, error)` has a nullable 2nd field) needs a
+                // context-typed value: a bare `nil`/value lowered without it is
+                // an i8* null / scalar that mismatches the {i1,T} slot and emits
+                // malformed IR (crashes the LLVM backend). Mirrors the single-
+                // return nil intercept and composite-literal nullable auto-wrap.
+                Type* field_type = (function_return_type->kind == TYPE_STRUCT &&
+                                    i < function_return_type->data.struct_type.field_count)
+                                   ? function_return_type->data.struct_type.fields[i].type : NULL;
+
+                if (field_type && field_type->kind == TYPE_NULLABLE &&
+                    v->type == AST_LITERAL &&
+                    ((LiteralNode*)v)->literal_type == TOKEN_NIL) {
+                    ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, field_type);
+                    if (!nil_vi) return 0;
+                    agg = LLVMBuildInsertValue(codegen->builder, agg, nil_vi->llvm_value, (unsigned)i, "ret_field");
+                    value_info_free(nil_vi);
+                    continue;
+                }
+
                 ValueInfo* vv = codegen_generate_expression(codegen, checker, v);
                 if (!vv) return 0;
                 LLVMValueRef raw = vv->llvm_value;
                 if (vv->is_lvalue && vv->goo_type) {
                     LLVMTypeRef lt = codegen_type_to_llvm(codegen, vv->goo_type);
                     if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "ret_load");
+                }
+                // Auto-wrap a bare `T` into a `?T` slot (e.g. `return 1, x` where
+                // the field is nullable and x is a bare value).
+                if (field_type && field_type->kind == TYPE_NULLABLE &&
+                    vv->goo_type && vv->goo_type->kind != TYPE_NULLABLE) {
+                    LLVMTypeRef nty = codegen_type_to_llvm(codegen, field_type);
+                    if (nty) raw = codegen_create_nullable_with_value(codegen, nty, raw, vv->goo_type);
                 }
                 agg = LLVMBuildInsertValue(codegen->builder, agg, raw, (unsigned)i, "ret_field");
                 value_info_free(vv);
