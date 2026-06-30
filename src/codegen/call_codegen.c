@@ -1135,7 +1135,49 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
         }
 
         TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);
-        if (kind == TYPE_STRING) {
+
+        // error (Phase 6 Task 4): tagged nullable, not one of fmt's primitive
+        // kinds, so it must be special-cased before the kind switch below (it
+        // would otherwise fall into the "unsupported argument type" error).
+        // Print "<nil>" when null, else the boxed message — same nil-guard/
+        // extract/goo_error_message shape as .Error() (Task 3, ~line 495).
+        if (arg_val->goo_type && arg_val->goo_type->name &&
+            strcmp(arg_val->goo_type->name, "error") == 0) {
+            LLVMValueRef errv = arg_val->llvm_value;  // already loaded above
+            LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, errv, 0, "perr.is_null");
+            LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, errv, 1, "perr.handle");
+
+            LLVMValueRef msgfn = LLVMGetNamedFunction(codegen->module, "goo_error_message");
+            if (!msgfn) {
+                codegen_error(codegen, a->pos, "goo_error_message not found in module");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMTypeRef msgfn_ty = LLVMGlobalGetValueType(msgfn);
+            LLVMValueRef cargs[] = { handle };
+            // goo_error_message null-guards its arg, so calling it on the
+            // null arm is harmless — only the select()'d result matters.
+            LLVMValueRef msg = LLVMBuildCall2(codegen->builder, msgfn_ty, msgfn, cargs, 1, "perr.msg");
+
+            LLVMTypeRef str_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+            LLVMValueRef nil_ptr = LLVMBuildGlobalStringPtr(codegen->builder, "<nil>", "perr.nilstr");
+            LLVMValueRef nil_str = LLVMGetUndef(str_llvm);
+            nil_str = LLVMBuildInsertValue(codegen->builder, nil_str, nil_ptr, 0, "perr.nil.data");
+            nil_str = LLVMBuildInsertValue(codegen->builder, nil_str,
+                LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 5, 0), 1, "perr.nil.len");
+
+            LLVMValueRef to_print = LLVMBuildSelect(codegen->builder, is_null, nil_str, msg, "perr.result");
+
+            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+            if (!str_fn) {
+                codegen_error(codegen, a->pos, "goo_print_string not found in module");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef pargs[] = { to_print };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                          str_fn, pargs, 1, "");
+        } else if (kind == TYPE_STRING) {
             // Pass the whole goo_string struct to the length-aware printer.
             // Extracting just the data ptr and calling goo_print (strlen) is
             // wrong for a substring (F5): a shared-buffer slice like
