@@ -109,9 +109,10 @@
 
 ---
 
-## Final verification
-- [ ] `_ = expr` discards (F1); `int(x)`/`byte(n)` convert (F2); `'A'` is 65 (F3); grouped const + iota work (F4); `s[i:j]` substring/reslice (F5); `a,b := 1,2` + swap (F6); `range` over string (F7); `error` is a nil-comparable type (F8).
-- [ ] `make verify` ALL GREEN (incl. `test-golden`); `make test` 76/1; parser conflict count NOT increased.
+## Final verification — COMPLETE (2026-06-30)
+- [x] `_ = expr` discards (F1); `int(x)`/`byte(n)` convert (F2); `'A'` is 65 (F3); grouped const + iota work (F4); `s[i:j]` substring/reslice (F5); `a,b := 1,2` + swap (F6); `range` over string (F7); `error` is a nil-comparable type (F8).
+- [x] `make verify` ALL GREEN (incl. `test-golden`, golden 65/0); `make test` 76/1. Parser conflict count: held at baseline through every F-task EXCEPT the out-of-plan bitwise-operators follow-up, which raised it +3 s/r/+63 r/r with explicit owner sign-off (see the Global Constraints note); all F-grammar tasks (F4/F5/F6) were conflict-neutral.
+- Bonus shipped: binary bitwise operators `<< >> & | ^` (needed for the `1 << iota` flag idiom). Probes: const_group, bitwise, slice_expr, multi_assign, range_string, error_type.
 
 ## Deferred to Phase F2 (bigger features)
 Closures / func literals; variadic params `...T`; interface declarations + `interface{}` + dynamic dispatch (roadmap Phase 6); generics; `&T{...}` address-of composite literals (if not already working); rune-decoded range. These unblock the rest of the stdlib but are larger, conflict-prone, or depend on interfaces.
