@@ -1,0 +1,59 @@
+// erru_catch_value_probe (P2-2): the catch handler block is VALUE-PRODUCING.
+//
+// When the handler's final statement is an expression whose type is assignable
+// to the error union's value type T, that expression's value becomes the
+// recovery result on the error path (instead of the zero value of T). A
+// value-producing handler thus lets `!T` express a real fallback, completing
+// the headline differentiator's failure path end-to-end.
+//
+// Contrast with erru_catch_err_probe (void-trailing handler -> zero recovery):
+// here the trailing expression yields the recovery value, not zero. The success
+// path is unchanged (the unwrapped value flows through the merge).
+//
+// Covers three trailing-expression shapes so the PHI receives a loaded scalar
+// in each: an integer literal (rvalue), a field selector and an indexed element
+// (lvalues whose codegen yields a storage pointer that must be loaded before it
+// can feed the merge PHI).
+package main
+
+import "fmt"
+
+type Box struct {
+	n int
+}
+
+func f(bad bool) !int {
+	if bad {
+		return error("nope")
+	}
+	return 100
+}
+
+func main() {
+	// error path, literal handler: recovery value is -1.
+	a := f(true) catch err {
+		-1
+	}
+	fmt.Println(a)
+
+	// success path: unwrapped 100 flows through the merge; handler skipped.
+	b := f(false) catch err {
+		-1
+	}
+	fmt.Println(b)
+
+	box := Box{n: 42}
+	xs := []int{7, 8, 9}
+
+	// error path, field-selector handler (lvalue -> must be loaded): yields 42.
+	c := f(true) catch err {
+		box.n
+	}
+	fmt.Println(c)
+
+	// error path, indexed-element handler (lvalue -> must be loaded): yields 9.
+	d := f(true) catch err {
+		xs[2]
+	}
+	fmt.Println(d)
+}

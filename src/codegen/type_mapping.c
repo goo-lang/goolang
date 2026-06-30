@@ -407,8 +407,12 @@ LLVMValueRef codegen_convert_value(CodeGenerator* codegen, LLVMValueRef value,
         unsigned to_bits = LLVMGetIntTypeWidth(to_type);
         
         if (from_bits < to_bits) {
-            // Sign extend or zero extend (assume zero extend for now)
-            return LLVMBuildZExt(codegen->builder, value, to_type, "zext");
+            // Sign-extend on widening: signed-bias convention, consistent with
+            // this function's float branches (SIToFP/FPToSI) and every other
+            // integer-widening site in codegen (erru_sext, ret_sext). Zero-
+            // extending would turn a narrow negative (e.g. int32 -1) into a
+            // large positive on widening to int64.
+            return LLVMBuildSExt(codegen->builder, value, to_type, "sext");
         } else if (from_bits > to_bits) {
             // Truncate
             return LLVMBuildTrunc(codegen->builder, value, to_type, "trunc");

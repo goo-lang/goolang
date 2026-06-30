@@ -1,0 +1,45 @@
+// erru_method_probe (P2-3): an !T METHOD compiles, links, runs, and both its
+// success and error paths are observable through `catch`.
+//
+// Before P2-3 the error-union function codegen looked up the function type info
+// (and emitted the LLVM symbol) under the bare method name, but the type checker
+// registers — and call sites call — a method under its mangled name "T__m" with
+// the receiver spliced in as params[0]. The bare-name lookup missed, so the
+// receiver/param binding loop never ran and the body failed with "Undefined
+// identifier" for the first parameter. Now the codegen mangles the emit name for
+// methods (mirroring function_codegen.c), so receiver + params bind.
+//
+// Combined with P2-2 (value-producing catch handler): the error path recovers
+// with the handler's trailing value (-1), not the zero value.
+package main
+
+import "fmt"
+
+type Calc struct {
+	base int
+}
+
+func (c Calc) Div(d int) !int {
+	if d == 0 {
+		return error("divide by zero")
+	}
+	return c.base / d
+}
+
+func main() {
+	c := Calc{base: 20}
+
+	// success path: receiver (c.base=20) and param (d=4) both bind -> 5.
+	x := c.Div(4) catch e {
+		fmt.Println("caught:", e)
+		-1
+	}
+	fmt.Println("x:", x)
+
+	// error path: handler prints the bound error and recovers with -1.
+	y := c.Div(0) catch e {
+		fmt.Println("caught:", e)
+		-1
+	}
+	fmt.Println("y:", y)
+}

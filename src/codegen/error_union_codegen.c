@@ -176,9 +176,76 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
 }
 
 // Generate code for catch expression: handle error or use value
+// Generate the catch handler block on the error path. Statements run for their
+// side effects; if the block's final statement is a value-producing expression
+// (non-void) its value is returned via *out_value (coerced to the value type's
+// LLVM type) to serve as the recovery result. *out_value is left untouched when
+// the handler is side-effect-only (void trailing expr or a non-expression
+// terminator) or when the block already terminated (e.g. `return`). Returns 0
+// on a codegen failure. Mirrors codegen_generate_block's value-table scope
+// teardown so inner `x := ...` bindings do not leak past the handler.
+static int generate_catch_body_value(CodeGenerator* codegen, TypeChecker* checker,
+                                     ASTNode* body, Type* value_type,
+                                     LLVMValueRef* out_value) {
+    // Grammar guarantees a block; fall back to a plain statement for safety.
+    if (!body || body->type != AST_BLOCK_STMT) {
+        return codegen_generate_statement(codegen, checker, body);
+    }
+
+    ASTNode* trailing = ast_block_trailing_expr(body);
+    BlockStmtNode* block = (BlockStmtNode*)body;
+    size_t pre_block_vt_size = codegen->value_table_size;
+
+    for (ASTNode* s = block->statements; s; s = s->next) {
+        // Once the block has a terminator, appending more would be invalid.
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+            break;
+
+        // The final statement supplies the recovery value when it is a
+        // value-producing expression (non-void). A void trailing call is a
+        // side-effect-only handler and recovers with the zero value of T.
+        int is_trailing_value =
+            s->next == NULL && s->type == AST_EXPR_STMT &&
+            ((ExprStmtNode*)s)->expr == trailing &&
+            trailing->node_type && trailing->node_type->kind != TYPE_VOID;
+
+        if (is_trailing_value) {
+            ValueInfo* vi = codegen_generate_expression(codegen, checker, trailing);
+            if (!vi) {
+                codegen->value_table_size = pre_block_vt_size;
+                return 0;
+            }
+            // A handler that ends in a named location (field selector, indexed
+            // element) yields an lvalue whose llvm_value is the storage pointer,
+            // not the scalar. Load it first so the PHI receives a value of T's
+            // type, not a pointer (mirrors the if-let load in statement_codegen.c).
+            if (vi->is_lvalue && vi->goo_type) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, vi->goo_type);
+                if (lt) {
+                    vi->llvm_value = LLVMBuildLoad2(codegen->builder, lt,
+                                                    vi->llvm_value, "catch_trail_load");
+                    vi->is_lvalue = 0;
+                }
+            }
+            LLVMTypeRef from = LLVMTypeOf(vi->llvm_value);
+            LLVMTypeRef to = codegen_type_to_llvm(codegen, value_type);
+            *out_value = (from == to)
+                ? vi->llvm_value
+                : codegen_convert_value(codegen, vi->llvm_value, from, to);
+            value_info_free(vi);
+        } else if (!codegen_generate_statement(codegen, checker, s)) {
+            codegen->value_table_size = pre_block_vt_size;
+            return 0;
+        }
+    }
+
+    codegen->value_table_size = pre_block_vt_size;
+    return 1;
+}
+
 ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
     if (!codegen || !checker || !expr || expr->type != AST_CATCH_EXPR) return NULL;
-    
+
     CatchExprNode* catch_expr = (CatchExprNode*)expr;
     
     // Generate the expression that should be an error union
@@ -238,14 +305,19 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
         }
     }
 
-    // Generate the catch body as a statement (grammar guarantees a block).
-    // Track whether it emits a terminator (e.g. `return`) so we only add a
-    // PHI incoming from the error side when the block falls through.
+    // Generate the catch body (grammar guarantees a block). A value-producing
+    // handler (final statement is a non-void expression) supplies the recovery
+    // value via body_value; a side-effect-only handler leaves it NULL. Track
+    // whether the body emits a terminator (e.g. `return`) so we only add a PHI
+    // incoming from the error side when the block falls through.
     LLVMValueRef catch_value = NULL;
+    LLVMValueRef body_value = NULL;
     LLVMBasicBlockRef error_exit_block = NULL;
+    Type* vtype = operand_info->goo_type->data.error_union.value_type;
 
     if (catch_expr->catch_body) {
-        if (!codegen_generate_statement(codegen, checker, catch_expr->catch_body)) {
+        if (!generate_catch_body_value(codegen, checker, catch_expr->catch_body,
+                                       vtype, &body_value)) {
             value_info_free(operand_info);
             return NULL;
         }
@@ -253,13 +325,12 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
 
     // Recovery merge: if the error block fell through (the body did not end in
     // a terminator such as `return`, or there was no body), the catch recovers
-    // and the merged result is the zero value of the union's value type T. A
-    // body that already terminated contributes no incoming to the merge PHI.
-    // (Single path — previously duplicated across the body / no-body branches.)
+    // and the merged result is the value-producing handler's value when present,
+    // otherwise the zero value of the union's value type T. A body that already
+    // terminated contributes no incoming to the merge PHI.
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
-        Type* vtype = operand_info->goo_type->data.error_union.value_type;
         LLVMTypeRef vllvm = codegen_type_to_llvm(codegen, vtype);
-        catch_value = LLVMConstNull(vllvm);
+        catch_value = body_value ? body_value : LLVMConstNull(vllvm);
         LLVMBuildBr(codegen->builder, merge_block);
         error_exit_block = LLVMGetInsertBlock(codegen->builder);
     }
@@ -305,9 +376,28 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
         codegen_error(codegen, func_decl->base.pos, "Failed to generate LLVM type for error union");
         return 0;
     }
-    
+
+    // P2-3: an !T method is registered by the type checker — and called — under
+    // its mangled name "T__m", with the receiver spliced in as params[0]. Use
+    // that mangled name for the type-info lookup and the emitted symbol (mirrors
+    // function_codegen.c:218-228); without it the bare-name lookup misses, the
+    // param/receiver binding loop never runs, and the body fails with an
+    // "Undefined identifier" for the first parameter. func_decl->name stays the
+    // bare method name for diagnostics.
+    char* mangled = NULL;
+    const char* emit_name = func_decl->name;
+    if (func_decl->receiver) {
+        VarDeclNode* recv = (VarDeclNode*)func_decl->receiver;
+        Type* recv_type = recv->type ? type_from_ast(checker, recv->type) : NULL;
+        const char* tn = type_receiver_name(recv_type);
+        if (tn) {
+            mangled = type_method_mangled_name(tn, func_decl->name);
+            if (mangled) emit_name = mangled;
+        }
+    }
+
     // Get function type info from type checker
-    Variable* func_var = type_checker_lookup_variable(checker, func_decl->name);
+    Variable* func_var = type_checker_lookup_variable(checker, emit_name);
     Type* func_type_info = NULL;
     if (func_var && func_var->type->kind == TYPE_FUNCTION) {
         func_type_info = func_var->type;
@@ -332,18 +422,21 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
     }
     
     LLVMTypeRef function_type = LLVMFunctionType(error_union_type, param_types, param_count, 0);
-    
-    // Create the function
-    LLVMValueRef function = LLVMAddFunction(codegen->module, func_decl->name, function_type);
-    
+
+    // Create the function under its emitted (possibly mangled) name so method
+    // call sites, which emit a call to "T__m", resolve to this definition.
+    LLVMValueRef function = LLVMAddFunction(codegen->module, emit_name, function_type);
+
     // Create function info
-    FunctionInfo* func_info = function_info_new(func_decl->name, function, return_type);
+    FunctionInfo* func_info = function_info_new(emit_name, function, return_type);
     if (!func_info) {
         codegen_error(codegen, func_decl->base.pos, "Failed to create function info");
         if (param_types) free(param_types);
+        free(mangled);
         return 0;
     }
-    
+    free(mangled);  // emit_name was copied by LLVMAddFunction and function_info_new
+
     // Create entry basic block
     func_info->entry_block = LLVMAppendBasicBlockInContext(codegen->context, function, "entry");
     

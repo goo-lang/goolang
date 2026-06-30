@@ -1117,4 +1117,12 @@ void ast_add_child(ASTNode* parent, ASTNode* child);
 const char* ast_node_type_string(ASTNodeType type);
 void ast_print(const ASTNode* node, int indent);
 
+// Return the inner expression of a block's final statement when that statement
+// is an expression statement; otherwise NULL. Used to give a block a "result
+// value" (e.g. the catch handler's recovery value). The argument must be an
+// AST_BLOCK_STMT; any other node (or an empty/non-expression-terminated block)
+// yields NULL. Shared by the type checker and codegen so both phases agree on
+// what counts as a value-producing block.
+ASTNode* ast_block_trailing_expr(const ASTNode* block);
+
 #endif // AST_H

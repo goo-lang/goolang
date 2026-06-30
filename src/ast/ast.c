@@ -665,6 +665,20 @@ const char* ast_node_type_string(ASTNodeType type) {
     return "Unknown";
 }
 
+ASTNode* ast_block_trailing_expr(const ASTNode* block) {
+    if (!block || block->type != AST_BLOCK_STMT) return NULL;
+
+    const BlockStmtNode* b = (const BlockStmtNode*)block;
+    ASTNode* last = NULL;
+    for (ASTNode* s = b->statements; s; s = s->next) {
+        last = s;
+    }
+    if (last && last->type == AST_EXPR_STMT) {
+        return ((ExprStmtNode*)last)->expr;
+    }
+    return NULL;
+}
+
 void ast_print(const ASTNode* node, int indent) {
     if (!node) return;
     

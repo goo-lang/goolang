@@ -1073,7 +1073,7 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1184,6 +1184,28 @@ return-type-erru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/rt_erru_ok.goo -o build/rt_erru_ok.out 2>build/rt_erru_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "return-type-erru-probe: FAIL (valid !T returns rejected)"; cat build/rt_erru_ok.err; exit 1; fi
 	@echo "return-type-erru-probe: PASS"
+
+# P2-1: a value-producing catch handler (final statement is a non-void
+# expression) recovers with that expression's value, so its type must be
+# assignable to the error union's value type T. A string handler over an !int
+# union is rejected here with a clean type error, NOT an LLVM-verifier crash.
+# Over-rejection guard: a void trailing handler (fmt.Println) and an int-typed
+# value handler over !int must both still compile.
+erru-catch-type-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== erru-catch-type-reject-probe: catch handler value type must be assignable to T ==="
+	@printf 'package main\nimport "fmt"\nfunc f(b bool) !int { if b { return error("x") }\n return 1 }\nfunc main() { x := f(true) catch e { "wrong" }\n fmt.Println(x) }\n' > build/catch_type_bad.goo
+	@printf 'package main\nimport "fmt"\nfunc f(b bool) !int { if b { return error("x") }\n return 1 }\nfunc main() { x := f(true) catch e { fmt.Println(e) }\n fmt.Println(x) }\n' > build/catch_type_void.goo
+	@printf 'package main\nimport "fmt"\nfunc f(b bool) !int { if b { return error("x") }\n return 1 }\nfunc main() { x := f(true) catch e { -1 }\n fmt.Println(x) }\n' > build/catch_type_ok.goo
+	@"$(COMPILER)" build/catch_type_bad.goo -o build/catch_type_bad.out 2>build/catch_type_bad.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "erru-catch-type-reject-probe: FAIL (string handler over !int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/catch_type_bad.err; then echo "erru-catch-type-reject-probe: FAIL (invalid IR reached verifier)"; cat build/catch_type_bad.err; exit 1; fi; \
+	  if ! grep -qiE "catch handler value of type .* is not assignable" build/catch_type_bad.err; then echo "erru-catch-type-reject-probe: FAIL (no clean catch-handler-type diagnostic)"; cat build/catch_type_bad.err; exit 1; fi
+	@"$(COMPILER)" build/catch_type_void.goo -o build/catch_type_void.out 2>build/catch_type_void.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "erru-catch-type-reject-probe: FAIL (void trailing handler over-rejected)"; cat build/catch_type_void.err; exit 1; fi
+	@"$(COMPILER)" build/catch_type_ok.goo -o build/catch_type_ok.out 2>build/catch_type_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "erru-catch-type-reject-probe: FAIL (int value handler over !int over-rejected)"; cat build/catch_type_ok.err; exit 1; fi
+	@echo "erru-catch-type-reject-probe: PASS"
 
 # P1-5: `try` propagates the real error in an !T function; reject `try` whose
 # enclosing function does NOT return an error union. Before Phase 1 a `try` in a
