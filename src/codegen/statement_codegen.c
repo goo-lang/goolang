@@ -115,6 +115,37 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
     if (!codegen || !checker || !stmt || stmt->type != AST_MULTI_ASSIGN) return 0;
     MultiAssignNode* ma = (MultiAssignNode*)stmt;
 
+    // Destructuring assignment `a, b = f()`: a SINGLE multi-return value (a
+    // struct) spread across the two targets. Detected by a values chain shorter
+    // than the target count. Evaluate the struct once, ExtractValue each field,
+    // and store into the corresponding target lvalue. (The `:=` two-target
+    // single-value form is a VarDeclNode, handled elsewhere — this is the `=`
+    // assignment form.)
+    size_t vcount = 0;
+    for (ASTNode* v = ma->values; v; v = v->next) vcount++;
+    if (vcount == 1 && ma->count == 2 && !ma->is_short_decl) {
+        ValueInfo* rhs = codegen_generate_expression(codegen, checker, ma->values);
+        if (!rhs) {
+            codegen_error(codegen, stmt->pos, "Failed to evaluate destructure RHS");
+            return 0;
+        }
+        size_t i = 0;
+        for (ASTNode* t = ma->targets; t; t = t->next, i++) {
+            ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
+            if (!target || !target->is_lvalue) {
+                codegen_error(codegen, t->pos,
+                              "destructure target must be an addressable lvalue");
+                value_info_free(rhs);
+                return 0;
+            }
+            LLVMValueRef field = LLVMBuildExtractValue(codegen->builder,
+                                                       rhs->llvm_value, (unsigned)i, "destr");
+            LLVMBuildStore(codegen->builder, field, target->llvm_value);
+        }
+        value_info_free(rhs);
+        return 1;
+    }
+
     // Pass 1: evaluate all RHS values up front (the load-bearing step).
     LLVMValueRef rvals[2];
     Type* rtypes[2];
