@@ -1,0 +1,36 @@
+package main
+
+// bits_uint_probe: the `uint` variants of math/bits (Len/LeadingZeros/
+// TrailingZeros/OnesCount/RotateLeft/Reverse/ReverseBytes), vendored verbatim.
+// Each selects a 32- or 64-bit implementation via the const UintSize =
+// 32 << (^uint(0) >> 63), which folds to 64 here (uint is 64-bit + unary ^).
+// Now that int/uint are 64-bit, these delegate to the *64 variants. Marker
+// pattern avoids sequential different-width prints.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.Len(255) == 8 {
+		fmt.Println("len")
+	}
+	if bits.LeadingZeros(1) == 63 {
+		fmt.Println("lz")
+	}
+	if bits.TrailingZeros(8) == 3 {
+		fmt.Println("tz")
+	}
+	if bits.OnesCount(255) == 8 {
+		fmt.Println("oc")
+	}
+	if bits.RotateLeft(1, 1) == 2 {
+		fmt.Println("rot")
+	}
+	if bits.Reverse(1) == 9223372036854775808 {
+		fmt.Println("rev") // 1 -> 1<<63
+	}
+	if bits.ReverseBytes(1) == 72057594037927936 {
+		fmt.Println("revb") // 1 -> 1<<56
+	}
+}

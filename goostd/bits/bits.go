@@ -5,6 +5,10 @@
 // upstream-verbatim, never edit real Go source).
 package bits
 
+// UintSize is the size of a uint in bits (from upstream bits.go). On this
+// 64-bit target it folds to 64: ^uint(0) is all-ones, >>63 is 1, 32<<1 == 64.
+const UintSize = 32 << (^uint(0) >> 63) // 32 or 64
+
 // Bit-manipulation masks (from OnesCount/ReverseBytes in upstream bits.go).
 const m0 = 0x5555555555555555 // 01010101 ...
 const m1 = 0x3333333333333333 // 00110011 ...
@@ -423,4 +427,61 @@ func Mul64(x, y uint64) (hi, lo uint64) {
 	hi = x1*y1 + w2 + w1>>32
 	lo = x * y
 	return
+}
+
+// --- uint (word-size) variants ---
+// Each dispatches to the 32- or 64-bit implementation on the const UintSize.
+
+// Len returns the minimum number of bits required to represent x; the result is 0 for x == 0.
+func Len(x uint) int {
+	if UintSize == 32 {
+		return Len32(uint32(x))
+	}
+	return Len64(uint64(x))
+}
+
+// LeadingZeros returns the number of leading zero bits in x; the result is UintSize for x == 0.
+func LeadingZeros(x uint) int { return UintSize - Len(x) }
+
+// TrailingZeros returns the number of trailing zero bits in x; the result is UintSize for x == 0.
+func TrailingZeros(x uint) int {
+	if UintSize == 32 {
+		return TrailingZeros32(uint32(x))
+	}
+	return TrailingZeros64(uint64(x))
+}
+
+// OnesCount returns the number of one bits ("population count") in x.
+func OnesCount(x uint) int {
+	if UintSize == 32 {
+		return OnesCount32(uint32(x))
+	}
+	return OnesCount64(uint64(x))
+}
+
+// RotateLeft returns the value of x rotated left by (k mod UintSize) bits.
+// To rotate x right by k bits, call RotateLeft(x, -k).
+func RotateLeft(x uint, k int) uint {
+	if UintSize == 32 {
+		return uint(RotateLeft32(uint32(x), k))
+	}
+	return uint(RotateLeft64(uint64(x), k))
+}
+
+// Reverse returns the value of x with its bits in reversed order.
+func Reverse(x uint) uint {
+	if UintSize == 32 {
+		return uint(Reverse32(uint32(x)))
+	}
+	return uint(Reverse64(uint64(x)))
+}
+
+// ReverseBytes returns the value of x with its bytes in reversed order.
+//
+// This function's execution time does not depend on the inputs.
+func ReverseBytes(x uint) uint {
+	if UintSize == 32 {
+		return uint(ReverseBytes32(uint32(x)))
+	}
+	return uint(ReverseBytes64(uint64(x)))
 }
