@@ -6,6 +6,30 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+// stdlib Phase 0 (Task 4): compute the LLVM symbol name for a top-level symbol
+// emitted while codegenning a non-main package. For the main package
+// (checker->current_package == NULL) this returns NULL and callers keep the
+// BARE name, so the no-import path is byte-identical. Otherwise it returns a
+// malloc'd `goo_pkg__<pkg>__<base>` (caller frees). `base` is the type-checker
+// lookup key — the bare function name for a plain/top-level function, or the
+// method-mangled `T__m` for a method — so BOTH plain functions and methods (and
+// any future top-level symbol) get the package prefix and never collide with
+// main's bare symbols. This is the single source of truth for cross-package
+// mangling, shared by function_codegen.c and error_union_codegen.c.
+char* codegen_package_symbol_name(TypeChecker* checker, const char* base) {
+    if (!checker || !checker->current_package
+                 || !checker->current_package->name || !base) {
+        return NULL;
+    }
+    const char* pkg = checker->current_package->name;
+    size_t need = strlen("goo_pkg__") + strlen(pkg) + strlen("__")
+                + strlen(base) + 1;
+    char* out = malloc(need);
+    if (!out) return NULL;
+    snprintf(out, need, "goo_pkg__%s__%s", pkg, base);
+    return out;
+}
+
 // Code generator initialization and cleanup
 
 // WebAssembly target configuration

@@ -280,20 +280,37 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, error_var);
     }
 
-    // Stdlib package identifiers. Registered globally for now (matching the
-    // pattern above) — the type checker is lenient about whether `import`
-    // was actually written. Selector access (e.g. fmt.Println) resolves
-    // through type_check_selector_expr's package-table fallback.
-    static const char* const stdlib_packages[] = {"fmt", "os", "strings", "math", "strconv", "errors"};
-    for (size_t i = 0; i < sizeof(stdlib_packages) / sizeof(stdlib_packages[0]); i++) {
-        Type* pkg_type = type_new(TYPE_PACKAGE);
-        Variable* pkg_var = variable_new(stdlib_packages[i], pkg_type, (Position){0, 0, 0, "builtin"});
-        if (pkg_var) {
-            pkg_var->is_builtin = 1;
-            pkg_var->is_initialized = 1;
-            scope_add_variable(checker->current_scope, pkg_var);
-        }
+    // NOTE (stdlib Phase 0, Task 4): TYPE_PACKAGE markers for the stdlib-shim
+    // packages ({fmt,os,strings,math,strconv,errors}) are NO LONGER seeded here
+    // unconditionally. They are now seeded CONDITIONALLY on a real `import` by
+    // the driver (src/compiler/goo.c) via type_checker_seed_package_marker,
+    // carrying a Package*. This matches Go semantics (a symbol is in scope only
+    // if its package is imported) and unifies stdlib + user-package marker
+    // handling through one code path. Backward compat is preserved: no `.goo`
+    // program uses a stdlib selector without importing its package, so a
+    // no-import program is unaffected.
+}
+
+// Seed a TYPE_PACKAGE marker for an imported package into the current scope,
+// carrying the resolved Package* so selector resolution can reach its exports.
+// Single seeding path for BOTH conditional stdlib-shim markers and real user
+// packages (goo.c), replacing the old always-on seeding above. A duplicate name
+// (e.g. the same package imported twice) is freed and ignored. Returns the
+// marker Variable on success, NULL otherwise.
+Variable* type_checker_seed_package_marker(TypeChecker* checker,
+                                           const char* name, Package* package) {
+    if (!checker || !checker->current_scope || !name) return NULL;
+    Type* pkg_type = type_new(TYPE_PACKAGE);
+    Variable* marker = variable_new(name, pkg_type, (Position){0, 0, 0, "import"});
+    if (!marker) return NULL;
+    marker->is_builtin = 1;
+    marker->is_initialized = 1;
+    marker->package = package;  // resolved Package* (may be NULL for pure markers)
+    if (!scope_add_variable(checker->current_scope, marker)) {
+        variable_free(marker);  // duplicate import of same name — harmless
+        return NULL;
     }
+    return marker;
 }
 
 // Scope management

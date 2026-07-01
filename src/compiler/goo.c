@@ -446,6 +446,29 @@ static bool is_stdlib_shim_import(const char* path) {
     return false;
 }
 
+// stdlib Phase 0 (Task 4): seed a TYPE_PACKAGE marker for each stdlib-shim
+// package that main ACTUALLY imports. This replaces the former always-on
+// seeding in type_checker.c — markers are now CONDITIONAL on a real `import`
+// (Go semantics) and carry a Package* (created via type_checker_add_package),
+// unifying stdlib and user-package marker handling. Must run BEFORE main is
+// type-checked so `fmt.Println` etc. resolve. Selector resolution for shim
+// packages still flows through stdlib_package_lookup (by name), so the empty
+// exports scope on the seeded Package is harmless. Returns false on OOM.
+static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports) {
+    for (ASTNode* imp = imports; imp; imp = imp->next) {
+        if (imp->type != AST_IMPORT_SPEC) continue;
+        ImportSpecNode* spec = (ImportSpecNode*)imp;
+        if (!spec->path || !is_stdlib_shim_import(spec->path)) continue;
+        // Shim import paths are single-word (fmt, os, ...) so path == name;
+        // honour an explicit alias if the program wrote one.
+        const char* short_name = spec->alias ? spec->alias : spec->path;
+        Package* p = type_checker_add_package(checker, spec->path, short_name);
+        if (!p) return false;
+        type_checker_seed_package_marker(checker, short_name, p);
+    }
+    return true;
+}
+
 // Walk every import spec in a ProgramNode's import list.
 static int walk_program_imports(PkgGraph* g, ASTNode* imports) {
     for (ASTNode* imp = imports; imp; imp = imp->next) {
@@ -556,19 +579,10 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
 
         // Register the package identifier as a TYPE_PACKAGE marker in the
         // current (global) scope, carrying the Package* so Task 5's selector
-        // resolution can reach p->exports. This marker is conditional on a REAL
-        // import (only resolved packages reach here), unlike the always-on
-        // hardcoded stdlib markers seeded in type_checker.c.
-        Type* pkg_type = type_new(TYPE_PACKAGE);
-        Variable* marker = variable_new(e->name, pkg_type, (Position){0, 0, 0, "import"});
-        if (marker) {
-            marker->is_builtin = 1;
-            marker->is_initialized = 1;
-            marker->package = p;
-            if (!scope_add_variable(checker->current_scope, marker)) {
-                variable_free(marker);  // duplicate import of same name — harmless
-            }
-        }
+        // resolution can reach p->exports. Conditional on a REAL import (only
+        // resolved packages reach here). Uses the same single seeding path as
+        // the stdlib-shim markers (see seed_imported_stdlib_markers).
+        type_checker_seed_package_marker(checker, e->name, p);
 
         // type_check_package leaves the package scope pushed and current_package
         // set (its LIFETIME CONTRACT) so codegen can recover each function's
@@ -686,6 +700,18 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         return false;
     }
     
+    // stdlib Phase 0 (Task 4): seed TYPE_PACKAGE markers for the stdlib-shim
+    // packages main actually imports, BEFORE type-checking main (so its
+    // `fmt.Println` etc. resolve). Conditional on real imports — a no-import
+    // program seeds nothing and type-checks exactly as before.
+    if (!seed_imported_stdlib_markers(type_checker, ((ProgramNode*)ast)->imports)) {
+        type_checker_free(type_checker);
+        ast_node_free(ast);
+        lexer_free(lexer);
+        free(source);
+        return false;
+    }
+
     if (!type_check_program(type_checker, ast)) {
         type_checker_free(type_checker);
         ast_node_free(ast);

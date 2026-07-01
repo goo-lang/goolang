@@ -227,27 +227,18 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
 
-    // stdlib Phase 0 (Task 4): a non-main package's top-level (non-method)
-    // functions are emitted under a mangled symbol `goo_pkg__<pkg>__<name>` so
-    // they never collide with main's bare names in the shared module. The main
-    // package (checker->current_package == NULL) is UNCHANGED — bare names —
-    // which is what keeps the no-import path byte-identical. `emit_name` stays
-    // the BARE name (the type-checker registered the package function under its
-    // bare name in the package scope, so the lookup below must use it); only the
-    // LLVM SYMBOL name is mangled.
+    // stdlib Phase 0 (Task 4): a non-main package's top-level functions (plain
+    // AND methods) are emitted under a mangled symbol `goo_pkg__<pkg>__<base>`
+    // so they never collide with main's bare names in the shared module. The
+    // main package (checker->current_package == NULL) is UNCHANGED — bare names
+    // — which keeps the no-import path byte-identical. `emit_name` (the bare
+    // function name, or the method-mangled `T__m`) stays the type-checker lookup
+    // key below; only the LLVM SYMBOL name is package-prefixed. Using emit_name
+    // as the base means methods are prefixed too (fixes the earlier gap where a
+    // package method emitted under the bare `T__m` and collided with main).
     const char* symbol_name = emit_name;
-    char* pkg_mangled = NULL;
-    if (checker->current_package && checker->current_package->name
-                                 && !func_decl->receiver && func_decl->name) {
-        const char* pkg = checker->current_package->name;
-        size_t need = strlen("goo_pkg__") + strlen(pkg) + strlen("__")
-                    + strlen(func_decl->name) + 1;
-        pkg_mangled = malloc(need);
-        if (pkg_mangled) {
-            snprintf(pkg_mangled, need, "goo_pkg__%s__%s", pkg, func_decl->name);
-            symbol_name = pkg_mangled;
-        }
-    }
+    char* pkg_mangled = codegen_package_symbol_name(checker, emit_name);
+    if (pkg_mangled) symbol_name = pkg_mangled;
 
     // Get function type from AST
     Type* return_type = NULL;

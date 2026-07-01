@@ -160,6 +160,12 @@ void codegen_free(CodeGenerator* codegen);
 int codegen_set_target(CodeGenerator* codegen, const char* triple, const char* cpu, const char* features);
 int codegen_initialize_target(CodeGenerator* codegen);
 
+// stdlib Phase 0 (Task 4): cross-package symbol mangling. Returns a malloc'd
+// `goo_pkg__<pkg>__<base>` when codegenning a non-main package, or NULL for the
+// main package (callers keep the bare `base`). Single source of truth shared by
+// the plain-function and error-union codegen paths. Caller frees the result.
+char* codegen_package_symbol_name(TypeChecker* checker, const char* base);
+
 // Code generation entry points
 int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNode* program);
 int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl);

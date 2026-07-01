@@ -436,6 +436,14 @@ Package* type_checker_find_package(TypeChecker* checker, const char* import_path
 Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name);
 void package_export_filter(Scope* pkg_scope, Scope* exports);
 
+// Seed a TYPE_PACKAGE marker for an imported package into the current scope,
+// carrying the resolved Package*. This is the SINGLE seeding path for both the
+// conditional stdlib-shim markers (driver, on real `import`) and user-package
+// markers, replacing the former always-on seeding in
+// type_checker_add_builtin_functions. Returns the marker or NULL.
+Variable* type_checker_seed_package_marker(TypeChecker* checker,
+                                           const char* name, Package* package);
+
 // Scope management
 Scope* scope_new(Scope* parent);
 void scope_free(Scope* scope);
