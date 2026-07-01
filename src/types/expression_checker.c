@@ -605,9 +605,10 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
             result_type = operand_type;
             break;
             
-        case TOKEN_BIT_NOT:
+        case TOKEN_BIT_NOT:   // ~x
+        case TOKEN_BIT_XOR:   // ^x  (Go bitwise complement; same token as binary XOR)
             if (!type_is_integer(operand_type)) {
-                type_error(checker, expr->pos, 
+                type_error(checker, expr->pos,
                           "Bitwise not requires integer type, got %s",
                           type_to_string(operand_type));
                 return NULL;

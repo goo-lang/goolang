@@ -1233,6 +1233,14 @@ unary_expr:
         UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_NOT), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
+    | BIT_XOR unary_expr %prec BIT_NOT {
+        // Go spells bitwise complement `^x` with the same token as binary XOR.
+        // %prec BIT_NOT gives the PREFIX form the high unary precedence (not
+        // BIT_XOR's low binary precedence), which is what keeps this from
+        // introducing the reduce/reduce conflicts a bare rule would.
+        UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(BIT_XOR), $2, get_current_position());
+        $$ = (ASTNode*)unary;
+    }
     | MINUS unary_expr {
         UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(MINUS), $2, get_current_position());
         $$ = (ASTNode*)unary;

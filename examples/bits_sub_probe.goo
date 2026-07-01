@@ -1,0 +1,34 @@
+package main
+
+// bits_sub_probe: math/bits Sub32/Sub64 (subtract-with-borrow, vendored
+// verbatim). The borrow formula uses unary complement `^x` and `^(x ^ y)`, so
+// this is the first vendored function to exercise the new unary `^` operator.
+// Marker pattern (uint compares) avoids the int() display quirk for high
+// unsigned values.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	d, b := bits.Sub32(0, 1, 0) // 0-1 underflow -> diff all-ones, borrow 1
+	if d == 4294967295 && b == 1 {
+		fmt.Println("s32u")
+	}
+	d2, b2 := bits.Sub32(10, 3, 0)
+	if d2 == 7 && b2 == 0 {
+		fmt.Println("s32n")
+	}
+	d3, b3 := bits.Sub32(0, 0, 1) // borrow-in underflow
+	if d3 == 4294967295 && b3 == 1 {
+		fmt.Println("s32b")
+	}
+	e, f := bits.Sub64(0, 1, 0)
+	if e == 18446744073709551615 && f == 1 {
+		fmt.Println("s64u")
+	}
+	e2, f2 := bits.Sub64(5, 3, 0)
+	if e2 == 2 && f2 == 0 {
+		fmt.Println("s64n")
+	}
+}

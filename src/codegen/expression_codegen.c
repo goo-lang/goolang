@@ -1312,6 +1312,11 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
         case TOKEN_NOT:
             result = LLVMBuildNot(codegen->builder, operand_llvm, "not");
             break;
+
+        case TOKEN_BIT_XOR:   // ^x  (Go bitwise complement)
+        case TOKEN_BIT_NOT:   // ~x
+            result = LLVMBuildNot(codegen->builder, operand_llvm, "bitnot");
+            break;
             
         case TOKEN_MULTIPLY:
             // Dereference pointer. operand_llvm is the pointer value; the
