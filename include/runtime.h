@@ -52,6 +52,8 @@ goo_error_t* goo_new_error(const char* message);
 goo_error_t* goo_new_error_with_code(const char* message, int code);
 goo_error_t* goo_error_from_string(goo_string_t msg);
 goo_string_t goo_error_message(goo_error_t* e);
+goo_error_t* goo_error_wrap(goo_string_t msg, goo_error_t* cause);
+goo_error_t* goo_error_unwrap(goo_error_t* e);
 void goo_error_free(goo_error_t* error);
 
 // I/O functions

@@ -103,9 +103,10 @@ goo_error_t* goo_new_error_with_code(const char* message, int code) {
     return error;
 }
 
-// Build a heap goo_error from a goo_string message. Copies length bytes plus a
-// trailing NUL (goo_string.data is not assumed NUL-terminated). code=-1, no cause.
-goo_error_t* goo_error_from_string(goo_string_t msg) {
+// Build a heap goo_error from a goo_string message with an explicit cause.
+// Copies length bytes plus a trailing NUL (goo_string.data is not assumed
+// NUL-terminated). code=-1.
+goo_error_t* goo_error_wrap(goo_string_t msg, goo_error_t* cause) {
     goo_error_t* error = goo_alloc(sizeof(goo_error_t));
     size_t len = msg.length;
     char* copy = goo_alloc(len + 1);
@@ -115,8 +116,18 @@ goo_error_t* goo_error_from_string(goo_string_t msg) {
     copy[len] = '\0';
     error->message = copy;
     error->code = -1;
-    error->cause = NULL;
+    error->cause = cause;
     return error;
+}
+
+// Unchanged behavior: box a message with no cause.
+goo_error_t* goo_error_from_string(goo_string_t msg) {
+    return goo_error_wrap(msg, NULL);
+}
+
+// Return the wrapped cause (or NULL if none / e is NULL).
+goo_error_t* goo_error_unwrap(goo_error_t* e) {
+    return e ? e->cause : NULL;
 }
 
 // Return the message as a goo_string. strlen on read (embedded-NUL truncates —
