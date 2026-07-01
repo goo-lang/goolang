@@ -904,7 +904,24 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
     CallExprNode* call = (CallExprNode*)expr;
-    
+
+    // A type in call-argument position (map_type/slice_type — the grammar
+    // alternative added for `make(...)`) only means something when the
+    // callee is the `make` builtin. Any other callee reaching here with one
+    // (e.g. `foo(map[string]int)`) is rejected here with a clean, specific
+    // diagnostic. Without this guard the argument would fall through to the
+    // generic type_check_expression() call in the argument-checking loop
+    // below, whose switch has no case for AST_MAP_TYPE/AST_SLICE_TYPE and
+    // would instead emit the far less useful "Unknown expression type".
+    if (call->args && (call->args->type == AST_MAP_TYPE || call->args->type == AST_SLICE_TYPE)) {
+        int callee_is_make = call->function && call->function->type == AST_IDENTIFIER &&
+                              strcmp(((IdentifierNode*)call->function)->name, "make") == 0;
+        if (!callee_is_make) {
+            type_error(checker, expr->pos, "type used as value");
+            return NULL;
+        }
+    }
+
     // Special handling for make_chan
     if (call->function && call->function->type == AST_IDENTIFIER) {
         IdentifierNode* func_ident = (IdentifierNode*)call->function;
@@ -969,6 +986,57 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             Type* ptr = type_pointer(elem);
             expr->node_type = ptr;
             return ptr;
+        }
+        // make(map[K]V[, hint]) -> map value; make([]T, n[, cap]) -> slice
+        // value (the slice case is stubbed here and lands in a later
+        // change). arg1 is a type — either the map_type/slice_type grammar
+        // alternative above, or an identifier naming a type — resolved via
+        // type_from_ast rather than typechecked as a value expression, same
+        // as `new`.
+        if (strcmp(func_ident->name, "make") == 0) {
+            if (!call->args) {
+                type_error(checker, expr->pos, "make() requires a map or slice type");
+                return NULL;
+            }
+            Type* made = type_from_ast(checker, call->args);
+            if (!made) return NULL; // type_from_ast reports the error
+            if (made->kind == TYPE_MAP) {
+                // type_from_ast() already rejects a non-string map key type
+                // (the runtime map is string-keyed) with its own clean
+                // error before returning here, so `made` never carries a
+                // non-string key at this point.
+                size_t hint_count = 0;
+                for (ASTNode* a = call->args->next; a; a = a->next) hint_count++;
+                if (hint_count > 1) {
+                    type_error(checker, expr->pos,
+                               "make(map[K]V, ...) takes at most one size hint argument");
+                    return NULL;
+                }
+                if (call->args->next) {
+                    // Size hint: type-checked and required to be an integer,
+                    // but otherwise ignored — the list-backed map runtime
+                    // has no notion of pre-sizing.
+                    Type* hint_t = type_check_expression(checker, call->args->next);
+                    if (!hint_t) return NULL;
+                    if (!type_is_integer(hint_t)) {
+                        type_error(checker, call->args->next->pos,
+                                   "make: size hint must be an integer, got %s",
+                                   type_to_string(hint_t));
+                        return NULL;
+                    }
+                }
+                expr->node_type = made;
+                return made;
+            }
+            if (made->kind == TYPE_SLICE) {
+                // Task 4 replaces this stub with the real length/cap check
+                // and codegen; keep the error honest in the meantime.
+                type_error(checker, expr->pos,
+                           "make([]T, ...) is implemented in a later change");
+                return NULL;
+            }
+            type_error(checker, expr->pos, "make() requires a map or slice type");
+            return NULL;
         }
         // append(slice, elem) -> slice. The result type is the first arg's
         // slice type (dynamic), so it can't ride the generic builtin path;

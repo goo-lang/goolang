@@ -230,6 +230,35 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                                             alloc_fn, &size, 1, "new");
             return value_info_new(NULL, p, ptr_type);
         }
+        if (strcmp(func_name->name, "make") == 0) {
+            // make(map[K]V[, hint]) -> GooMapSV* (map-literal codegen's
+            // path, minus the key/value inserts: src/codegen/
+            // expression_codegen.c's AST_PAREN_EXPR/MapLitNode case).
+            // make([]T, ...) type-checks to a hard error today (Task 4
+            // replaces the stub), so expr->node_type is never TYPE_SLICE
+            // here — only TYPE_MAP can reach codegen.
+            Type* made_type = expr->node_type;
+            if (!made_type || made_type->kind != TYPE_MAP) {
+                codegen_error(codegen, expr->pos, "make: missing resolved map type");
+                return NULL;
+            }
+            // The optional size hint is evaluated for side effects (Go
+            // allows an arbitrary expression there) and discarded — the
+            // list-backed map runtime has no pre-sizing to apply it to.
+            if (call->args && call->args->next) {
+                ValueInfo* hint = codegen_generate_expression(codegen, checker, call->args->next);
+                if (!hint) return NULL;
+                value_info_free(hint);
+            }
+            LLVMValueRef new_fn = LLVMGetNamedFunction(codegen->module, "goo_map_new_sv");
+            if (!new_fn) {
+                codegen_error(codegen, expr->pos, "make: goo_map_new_sv unavailable");
+                return NULL;
+            }
+            LLVMValueRef m = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(new_fn),
+                                            new_fn, NULL, 0, "make_map");
+            return value_info_new(NULL, m, made_type);
+        }
         if (strcmp(func_name->name, "println") == 0) {
             return codegen_generate_println_call(codegen, checker, expr);
         }
