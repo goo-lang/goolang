@@ -367,6 +367,12 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer_read_char(lexer);
                 lexer_read_char(lexer);
                 token = token_new(TOKEN_AND, "&&", 2, current_pos);
+            } else if (lexer_peek_char(lexer) == '^') {
+                // Go's bit-clear operator `&^` (AND NOT). Lexed as one token so
+                // it does not split into `&` then unary `^`.
+                lexer_read_char(lexer);
+                lexer_read_char(lexer);
+                token = token_new(TOKEN_AND_NOT, "&^", 2, current_pos);
             } else if (lexer_peek_char(lexer) == '=') {
                 lexer_read_char(lexer);
                 lexer_read_char(lexer);

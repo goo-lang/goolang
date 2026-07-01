@@ -47,6 +47,7 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
                 case TOKEN_LSHIFT:   *out = (r >= 64) ? 0 : (l << r); return 1;
                 case TOKEN_RSHIFT:   *out = (r >= 64) ? 0 : (l >> r); return 1;
                 case TOKEN_BIT_AND:  *out = l & r; return 1;
+                case TOKEN_AND_NOT:  *out = l & ~r; return 1; // &^ bit-clear
                 case TOKEN_BIT_OR:   *out = l | r; return 1;
                 case TOKEN_BIT_XOR:  *out = l ^ r; return 1;
                 default: return 0;

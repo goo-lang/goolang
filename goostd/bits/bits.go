@@ -345,3 +345,57 @@ func OnesCount16(x uint16) int {
 func OnesCount32(x uint32) int {
 	return int(pop8tab[x>>24] + pop8tab[x>>16&0xff] + pop8tab[x>>8&0xff] + pop8tab[x&0xff])
 }
+
+// --- Add with carry ---
+
+// Add32 returns the sum with carry of x, y and carry: sum = x + y + carry.
+// The carry input must be 0 or 1; otherwise the behavior is undefined.
+// The carryOut output is guaranteed to be 0 or 1.
+func Add32(x, y, carry uint32) (sum, carryOut uint32) {
+	sum64 := uint64(x) + uint64(y) + uint64(carry)
+	sum = uint32(sum64)
+	carryOut = uint32(sum64 >> 32)
+	return
+}
+
+// Add64 returns the sum with carry of x, y and carry: sum = x + y + carry.
+// The carry input must be 0 or 1; otherwise the behavior is undefined.
+// The carryOut output is guaranteed to be 0 or 1.
+func Add64(x, y, carry uint64) (sum, carryOut uint64) {
+	sum = x + y + carry
+	// The sum will overflow if both top bits are set (x & y) or if one of them
+	// is (x | y), and a carry from the lower place happened. If such a carry
+	// happens, the top bit will be 1 + 0 + 1 = 0 (&^ sum).
+	carryOut = ((x & y) | ((x | y) &^ sum)) >> 63
+	return
+}
+
+// --- Full-width multiply ---
+
+// Mul32 returns the 64-bit product of x and y: (hi, lo) = x * y
+// with the product bits' upper half returned in hi and the lower
+// half returned in lo.
+func Mul32(x, y uint32) (hi, lo uint32) {
+	tmp := uint64(x) * uint64(y)
+	hi, lo = uint32(tmp>>32), uint32(tmp)
+	return
+}
+
+// Mul64 returns the 128-bit product of x and y: (hi, lo) = x * y
+// with the product bits' upper half returned in hi and the lower
+// half returned in lo.
+func Mul64(x, y uint64) (hi, lo uint64) {
+	const mask32 = 1<<32 - 1
+	x0 := x & mask32
+	x1 := x >> 32
+	y0 := y & mask32
+	y1 := y >> 32
+	w0 := x0 * y0
+	t := x1*y0 + w0>>32
+	w1 := t & mask32
+	w2 := t >> 32
+	w1 += x0 * y1
+	hi = x1*y1 + w2 + w1>>32
+	lo = x * y
+	return
+}

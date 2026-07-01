@@ -167,7 +167,11 @@ typedef enum {
     TOKEN_NEWLINE,      // \n
     TOKEN_ERROR,        // Error token
     TOKEN_UNKNOWN,      // Unknown token
-    
+
+    // Appended at the tail (see memory: new enum values go last so existing
+    // object files don't silently miscompile against a shifted enum).
+    TOKEN_AND_NOT,      // &^  (Go bit-clear / and-not)
+
     TOKEN_COUNT         // Total number of token types
 } TokenType;
 
