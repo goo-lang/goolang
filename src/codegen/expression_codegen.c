@@ -1220,7 +1220,14 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         case TOKEN_BIT_AND:
             result = LLVMBuildAnd(codegen->builder, left_llvm, right_llvm, "bitand");
             break;
-            
+
+        case TOKEN_AND_NOT: {
+            // Go bit-clear `a &^ b` == `a & ~b`.
+            LLVMValueRef notr = LLVMBuildNot(codegen->builder, right_llvm, "andnot_not");
+            result = LLVMBuildAnd(codegen->builder, left_llvm, notr, "andnot");
+            break;
+        }
+
         case TOKEN_BIT_OR:
             result = LLVMBuildOr(codegen->builder, left_llvm, right_llvm, "bitor");
             break;

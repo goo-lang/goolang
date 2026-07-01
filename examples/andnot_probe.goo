@@ -1,0 +1,23 @@
+// andnot_probe: Go's bit-clear operator `a &^ b` == `a & ~b`. Lexed as a single
+// token (&^, not & then unary ^), binary precedence at the multiplicative level
+// (same as &). Guards runtime values and compile-time const folding.
+//   12 &^ 10 = 1100 &^ 1010 = 0100 = 4
+//    5 &^ 3  = 0101 &^ 0011 = 0100 = 4
+//    7 &^ 0  = 7            (clear nothing)
+//    7 &^ 7  = 0            (clear everything)
+// const fold: 0xFF &^ 0x0F = 0xF0 = 240
+package main
+
+import "fmt"
+
+const cleared = 0xFF &^ 0x0F
+
+func main() {
+	var a uint32 = 12
+	var b uint32 = 10
+	fmt.Println(int(a &^ b)) // 4
+	fmt.Println(5 &^ 3)      // 4
+	fmt.Println(7 &^ 0)      // 7
+	fmt.Println(7 &^ 7)      // 0
+	fmt.Println(cleared)     // 240
+}

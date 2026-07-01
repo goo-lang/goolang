@@ -531,6 +531,7 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
             
         // Bitwise operators
         case TOKEN_BIT_AND:
+        case TOKEN_AND_NOT:   // &^  (bit-clear: a & ~b)
         case TOKEN_BIT_OR:
         case TOKEN_BIT_XOR:
         case TOKEN_LSHIFT:

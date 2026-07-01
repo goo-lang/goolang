@@ -87,6 +87,7 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
 %token EQ NE LT LE GT GE
 %token AND OR NOT
 %token BIT_AND BIT_OR BIT_XOR BIT_NOT LSHIFT RSHIFT
+%token AND_NOT  // &^  (Go bit-clear / and-not)
 %token INCREMENT DECREMENT
 %token ARROW
 
@@ -167,7 +168,7 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
 %left AND                                     // &&   (prec 2)
 %left EQ NE LT LE GT GE                       // == != < <= > >=  (prec 3)
 %left PLUS MINUS BIT_OR BIT_XOR               // + - | ^  (prec 4)
-%left MULTIPLY DIVIDE MODULO LSHIFT RSHIFT BIT_AND  // * / % << >> &  (prec 5)
+%left MULTIPLY DIVIDE MODULO LSHIFT RSHIFT BIT_AND AND_NOT  // * / % << >> & &^  (prec 5)
 %left ARROW  // Channel operations
 %right NOT BIT_NOT BANG  // Unary operators
 %right INCREMENT DECREMENT  // Postfix
@@ -1341,6 +1342,10 @@ binary_expr:
     }
     | expression BIT_AND expression {
         BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(BIT_AND), $3, get_current_position());
+        $$ = (ASTNode*)binary;
+    }
+    | expression AND_NOT expression {
+        BinaryExprNode* binary = ast_binary_expr_new($1, bison_token_to_token_type(AND_NOT), $3, get_current_position());
         $$ = (ASTNode*)binary;
     }
     | expression BIT_OR expression {
@@ -2794,6 +2799,7 @@ static TokenType bison_token_to_token_type(int bison_token) {
         case OR: return TOKEN_OR;
         case NOT: return TOKEN_NOT;
         case BIT_AND: return TOKEN_BIT_AND;
+        case AND_NOT: return TOKEN_AND_NOT;
         case BIT_OR: return TOKEN_BIT_OR;
         case BIT_XOR: return TOKEN_BIT_XOR;
         case BIT_NOT: return TOKEN_BIT_NOT;

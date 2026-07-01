@@ -211,6 +211,7 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_NOT: return NOT;
         
         case TOKEN_BIT_AND: return BIT_AND;
+        case TOKEN_AND_NOT: return AND_NOT;
         case TOKEN_BIT_OR: return BIT_OR;
         case TOKEN_BIT_XOR: return BIT_XOR;
         case TOKEN_BIT_NOT: return BIT_NOT;
