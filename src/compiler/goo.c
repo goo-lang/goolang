@@ -439,7 +439,12 @@ static int walk_import(PkgGraph* g, const char* import_path);
 // the per-package pre-pass is a no-op. Keep in sync with the marker list in
 // type_checker.c and stdlib_package_lookup in expression_checker.c.
 static bool is_stdlib_shim_import(const char* path) {
-    static const char* const shim[] = {"fmt", "os", "strings", "math", "strconv", "errors"};
+    // `strings` is NOT here: it now has a source package (goostd/strings/) with
+    // vendored functions (HasPrefix/HasSuffix). It is walked as a source package
+    // so those resolve via its exports; the codegen/type-check shim path stays a
+    // per-symbol FALLBACK for the functions still implemented as shims
+    // (Contains/ToUpper/Split/Join) — resolution is exports-first, then shim.
+    static const char* const shim[] = {"fmt", "os", "math", "strconv", "errors"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }

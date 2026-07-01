@@ -1,0 +1,6 @@
+hp_yes
+hp_no
+hs_yes
+hs_no
+hp_eq
+hp_short

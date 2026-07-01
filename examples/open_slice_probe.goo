@@ -1,0 +1,15 @@
+// open_slice_probe: open-ended slice expressions on strings — s[low:], s[:high],
+// s[:] (an omitted bound defaults to 0 / len). Common in Go (e.g. HasSuffix's
+// s[len(s)-n:]). Each line is a distinct substring.
+package main
+
+import "fmt"
+
+func main() {
+	s := "hello"
+	fmt.Println(s[1:])        // ello
+	fmt.Println(s[:2])        // he
+	fmt.Println(s[:])         // hello
+	fmt.Println(s[len(s)-2:]) // lo
+	fmt.Println(s[2:])        // llo
+}
