@@ -1,0 +1,9 @@
+package main
+import (
+	"fmt"
+	"errors"
+)
+func main() {
+	e := fmt.Errorf("outer: %w", errors.New("inner"))
+	fmt.Println(e.Error())
+}

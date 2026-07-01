@@ -1,0 +1,13 @@
+package main
+import (
+	"fmt"
+	"errors"
+)
+func main() {
+	u := errors.Unwrap(errors.New("x"))
+	if u == nil {
+		fmt.Println("nil")
+	} else {
+		fmt.Println("notnil")
+	}
+}

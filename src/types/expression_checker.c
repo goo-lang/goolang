@@ -1252,6 +1252,11 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, err_t);
     }
 
+    // errors.Unwrap(error) -> error  (returns the wrapped cause, or nil)
+    if (strcmp(package, "errors") == 0 && strcmp(name, "Unwrap") == 0) {
+        return type_function(NULL, 0, type_checker_error_type(checker));
+    }
+
     return NULL;
 }
 
