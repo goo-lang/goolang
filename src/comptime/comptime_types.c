@@ -171,7 +171,7 @@ Type* comptime_type_from_value(ComptimeValue* value) {
         case COMPTIME_VALUE_STRING: {
             // String values can represent type names
             const char* type_name = value->string_value;
-            if (strcmp(type_name, "int") == 0) return type_int(32, 1);
+            if (strcmp(type_name, "int") == 0) return type_int(64, 1);
             if (strcmp(type_name, "int64") == 0) return type_int(64, 1);
             if (strcmp(type_name, "float") == 0) return type_float(32);
             if (strcmp(type_name, "float64") == 0) return type_float(64);

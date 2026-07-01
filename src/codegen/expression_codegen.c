@@ -248,7 +248,7 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             // (which auto-promotes to i64 past INT32_MAX — an unadapted untyped
             // constant must preserve its full magnitude, e.g. 9000000000).
             Type* nt = expr->node_type;
-            if (nt && type_is_integer(nt) && nt->kind != TYPE_INT32) {
+            if (nt && type_is_integer(nt) && nt->kind != TYPE_INT64) {
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
                 if (lt) {
                     llvm_value = LLVMConstInt(lt, value, type_is_signed(nt));
@@ -256,15 +256,11 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
                     break;
                 }
             }
-            if (value > 2147483647ULL) {
-                llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
-                                         value, 1);
-                goo_type = type_checker_get_builtin(checker, TYPE_INT64);
-            } else {
-                llvm_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
-                                         value, 1);
-                goo_type = type_checker_get_builtin(checker, TYPE_INT32);
-            }
+            // Default: an untyped integer constant is `int` (int64 here), which
+            // holds the full magnitude of any literal.
+            llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                     value, 1);
+            goo_type = type_checker_get_builtin(checker, TYPE_INT64);
             break;
         }
         
@@ -1031,16 +1027,40 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
              LLVMGetTypeKind(LLVMTypeOf(right_llvm)) == LLVMIntegerTypeKind) {
         unsigned lw = LLVMGetIntTypeWidth(LLVMTypeOf(left_llvm));
         unsigned rw = LLVMGetIntTypeWidth(LLVMTypeOf(right_llvm));
-        if (lw < rw) {
+        // For arithmetic/bitwise ops, reconcile BOTH operands to the RESULT
+        // type's width, so the operation happens at the width Go computes it at.
+        // This is load-bearing for multiply/subtract where a 64-bit vs 32-bit op
+        // differs: the deBruijn hash `uint32(x&-x) * deBruijn32` must wrap mod
+        // 2^32 even though the untyped const deBruijn32 is int64 here (the type
+        // checker already types the result uint32). Comparisons are excluded —
+        // their result is bool, so they keep the widen-narrower-to-wider rule.
+        int is_cmp = (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE ||
+                      binary->operator == TOKEN_LT || binary->operator == TOKEN_LE ||
+                      binary->operator == TOKEN_GT || binary->operator == TOKEN_GE);
+        unsigned target_w = 0;
+        LLVMTypeRef target_t = NULL;
+        if (!is_cmp && result_type && type_is_integer(result_type)) {
+            target_t = codegen_type_to_llvm(codegen, result_type);
+            if (target_t && LLVMGetTypeKind(target_t) == LLVMIntegerTypeKind)
+                target_w = LLVMGetIntTypeWidth(target_t);
+        }
+        if (target_w == 0) { // comparison / non-integer result: widen to the wider
+            target_w = (lw > rw) ? lw : rw;
+            target_t = (lw > rw) ? LLVMTypeOf(left_llvm) : LLVMTypeOf(right_llvm);
+        }
+        if (lw != target_w) {
             int sgn = left_val->goo_type && type_is_signed(left_val->goo_type);
-            left_llvm = sgn
-                ? LLVMBuildSExt(codegen->builder, left_llvm, LLVMTypeOf(right_llvm), "binl.sext")
-                : LLVMBuildZExt(codegen->builder, left_llvm, LLVMTypeOf(right_llvm), "binl.zext");
-        } else if (rw < lw) {
+            left_llvm = (lw > target_w)
+                ? LLVMBuildTrunc(codegen->builder, left_llvm, target_t, "binl.trunc")
+                : (sgn ? LLVMBuildSExt(codegen->builder, left_llvm, target_t, "binl.sext")
+                       : LLVMBuildZExt(codegen->builder, left_llvm, target_t, "binl.zext"));
+        }
+        if (rw != target_w) {
             int sgn = right_val->goo_type && type_is_signed(right_val->goo_type);
-            right_llvm = sgn
-                ? LLVMBuildSExt(codegen->builder, right_llvm, LLVMTypeOf(left_llvm), "binr.sext")
-                : LLVMBuildZExt(codegen->builder, right_llvm, LLVMTypeOf(left_llvm), "binr.zext");
+            right_llvm = (rw > target_w)
+                ? LLVMBuildTrunc(codegen->builder, right_llvm, target_t, "binr.trunc")
+                : (sgn ? LLVMBuildSExt(codegen->builder, right_llvm, target_t, "binr.sext")
+                       : LLVMBuildZExt(codegen->builder, right_llvm, target_t, "binr.zext"));
         }
     }
 

@@ -112,10 +112,13 @@ int goo_fold_const_string(ASTNode* expr, char** out, size_t* out_len) {
 static Type* integer_binop_result_type(Type* left, Type* right, int is_shift) {
     if (is_shift) return left;                    // Go: shift result = left type
     if (left->kind == right->kind) return left;
-    // One side is the default int32 an untyped integer literal receives: adopt
-    // the other, sized operand — the common `uint64 op 1` / `1 op uint64` case.
-    if (left->kind == TYPE_INT32) return right;
-    if (right->kind == TYPE_INT32) return left;
+    // One side is int64 — the default type of an untyped integer constant (Go's
+    // `int`). Adopt the other, sized operand, the common `uint64 op 1` /
+    // `1 op uint64` case. (The shape-based literal adaptation in
+    // type_check_binary_expr handles most of these earlier; this is the
+    // fallback for a constant that reached here still int64-typed.)
+    if (left->kind == TYPE_INT64) return right;
+    if (right->kind == TYPE_INT64) return left;
     // Two distinct sized integer types (rare without an explicit conversion in
     // well-typed Go): widen to the larger; on a tie keep the left operand.
     return (type_size(right) > type_size(left)) ? right : left;

@@ -150,9 +150,9 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             // Goo-native untyped form `[1, 2, 3]`: element type inferred from
             // the first element; subsequent elements must be compatible.
             if (!lit->elements) {
-                // Empty untyped slice — element type defaults to int32 (no
-                // declared type and no elements to infer from).
-                Type* def = type_checker_get_builtin(checker, TYPE_INT32);
+                // Empty untyped slice — element type defaults to int (int64,
+                // Go's default integer type) with no elements to infer from.
+                Type* def = type_checker_get_builtin(checker, TYPE_INT64);
                 Type* st = type_slice(def);
                 expr->node_type = st;
                 return st;
@@ -388,8 +388,10 @@ Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
     
     switch (lit->literal_type) {
         case TOKEN_INT:
-            // TODO: Better integer type inference based on value
-            type = type_checker_get_builtin(checker, TYPE_INT32);
+            // Go: an untyped integer constant's default type is `int` (64-bit
+            // here). The shape-based literal adaptation retypes it to a sized
+            // context (param/operand) where one applies; this is the fallback.
+            type = type_checker_get_builtin(checker, TYPE_INT64);
             break;
         case TOKEN_FLOAT:
             type = type_checker_get_builtin(checker, TYPE_FLOAT64);
@@ -737,12 +739,12 @@ static int name_is_user_shadowed(TypeChecker* checker, const char* name) {
 
 static Type* builtin_conversion_target(TypeChecker* checker, const char* name) {
     if (!name) return NULL;
-    if (strcmp(name, "int") == 0)     return type_checker_get_builtin(checker, TYPE_INT32);
+    if (strcmp(name, "int") == 0)     return type_checker_get_builtin(checker, TYPE_INT64);
     if (strcmp(name, "int8") == 0)    return type_checker_get_builtin(checker, TYPE_INT8);
     if (strcmp(name, "int16") == 0)   return type_checker_get_builtin(checker, TYPE_INT16);
     if (strcmp(name, "int32") == 0)   return type_checker_get_builtin(checker, TYPE_INT32);
     if (strcmp(name, "int64") == 0)   return type_checker_get_builtin(checker, TYPE_INT64);
-    if (strcmp(name, "uint") == 0)    return type_checker_get_builtin(checker, TYPE_UINT32);
+    if (strcmp(name, "uint") == 0)    return type_checker_get_builtin(checker, TYPE_UINT64);
     if (strcmp(name, "uint8") == 0)   return type_checker_get_builtin(checker, TYPE_UINT8);
     if (strcmp(name, "uint16") == 0)  return type_checker_get_builtin(checker, TYPE_UINT16);
     if (strcmp(name, "uint32") == 0)  return type_checker_get_builtin(checker, TYPE_UINT32);
@@ -885,8 +887,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                            "cap: argument must be a slice, got %s", type_to_string(slice_t));
                 return NULL;
             }
-            expr->node_type = checker->builtin_types[TYPE_INT32];
-            return checker->builtin_types[TYPE_INT32];
+            expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: cap -> int (64-bit)
+            return checker->builtin_types[TYPE_INT64];
         }
         // error(msg) -> !T. Constructs the error case of the enclosing function's
         // return type. The argument must be a string; the call is only valid inside
@@ -1353,14 +1355,12 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
     }
 
     // strconv.Atoi(string) -> !int  (error union: success=int, error=string).
-    // The value arm MUST be the language's `int` (TYPE_INT32 — see the `int`
-    // keyword resolution in this file and type_checker.c), not int64: the
-    // bridge binds `n` from this value type, and `n` then has to round-trip
-    // through an `int`-typed slot (e.g. `func parse(s) (int, error)`). Using
-    // int64 here made `!int`'s value i64 while the language `int` is i32,
-    // crashing the LLVM backend on `return n, …` (i64 into an i32 tuple slot).
+    // The value arm is the language's `int`, which is now int64 (Go: int is
+    // 64-bit here). The bridge binds `n` from this value type, and `n` then
+    // round-trips through an `int`-typed slot (e.g. `func parse(s) (int, error)`);
+    // both are int64, so the tuple slot matches.
     if (strcmp(package, "strconv") == 0 && strcmp(name, "Atoi") == 0) {
-        Type* int_t = type_checker_get_builtin(checker, TYPE_INT32);
+        Type* int_t = type_checker_get_builtin(checker, TYPE_INT64);
         Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
         return type_function(NULL, 0, type_error_union(int_t, err_t));
     }

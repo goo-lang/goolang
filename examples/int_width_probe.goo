@@ -1,0 +1,26 @@
+// int_width_probe: `int`/`uint` are 64-bit here (Go spec: int is the size of
+// uint, which is 32 or 64 bits — 64 on this target). Guards the migration:
+//   var x int = 3000000000  -> 3000000000   (would overflow a 32-bit int)
+//   int(uint32(0xFFFFFFFF)) -> 4294967295   (zero-extend, not -1)
+//   len(s)                  -> 5            (len returns int, now 64-bit)
+//   2e9 + 2e9               -> 4000000000    (arithmetic stays 64-bit, no wrap)
+// All prints are int-width (avoids the mixed-width sequential-print bug).
+package main
+
+import "fmt"
+
+func main() {
+	var x int = 3000000000
+	fmt.Println(x) // 3000000000
+
+	var u uint32 = 4294967295
+	fmt.Println(int(u)) // 4294967295
+
+	s := "hello"
+	var n int = len(s)
+	fmt.Println(n) // 5
+
+	var a int = 2000000000
+	var b int = 2000000000
+	fmt.Println(a + b) // 4000000000
+}

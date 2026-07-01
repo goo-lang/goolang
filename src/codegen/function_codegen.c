@@ -1074,10 +1074,9 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 Variable* known = type_checker_lookup_variable(checker, const_name);
                 Type* ct = known ? known->type : NULL;
                 if (!ct) {
-                    // Untyped local const: type by the folded value's magnitude.
-                    ct = (folded <= 2147483647ULL)
-                             ? type_checker_get_builtin(checker, TYPE_INT32)
-                         : (folded <= 9223372036854775807ULL)
+                    // Untyped int const default type is `int` (int64 here);
+                    // a value past int64's signed range takes uint64.
+                    ct = (folded <= 9223372036854775807ULL)
                              ? type_checker_get_builtin(checker, TYPE_INT64)
                              : type_checker_get_builtin(checker, TYPE_UINT64);
                 }
