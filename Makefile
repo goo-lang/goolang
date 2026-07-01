@@ -1085,7 +1085,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1489,6 +1489,27 @@ pkg-argcheck-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -ne 0 ]; then echo "pkg-argcheck-probe: FAIL (valid pkgcheck.Double(21) rejected)"; cat build/pac_ok.err; exit 1; fi; \
 	  out=$$(./build/pac_ok.out); if [ "$$out" != "42" ]; then echo "pkg-argcheck-probe: FAIL (pkgcheck.Double(21) printed '$$out', want 42)"; exit 1; fi
 	@echo "pkg-argcheck-probe: PASS"
+
+# Forward references (Go package-scope semantics): a function body may call a
+# function declared LATER in the same file/package. Requires the type checker's
+# two-pass signature hoist AND the codegen prototype pre-pass; for a package it
+# additionally requires intra-package calls to resolve the package-mangled
+# symbol. Regression guard: neither a clean "Undefined" type error nor an LLVM
+# verifier failure is acceptable — the programs must compile and run.
+# main_fwd: main -> helper -> leaf, both declared below main.
+# Package case: goostd/fwdref (Triple declared before the Double it calls).
+forward-ref-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== forward-ref-probe: forward references in main + packages ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println(helper(20)) }\nfunc helper(x int) int { return leaf(x) + 1 }\nfunc leaf(x int) int { return x * 2 }\n' > build/fr_main.goo
+	@printf 'package main\nimport ("fmt"\n"fwdref")\nfunc main() { fmt.Println(fwdref.Triple(14)) }\n' > build/fr_pkg.goo
+	@"$(COMPILER)" build/fr_main.goo -o build/fr_main.out 2>build/fr_main.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "forward-ref-probe: FAIL (main-file forward ref rejected)"; cat build/fr_main.err; exit 1; fi; \
+	  out=$$(./build/fr_main.out); if [ "$$out" != "41" ]; then echo "forward-ref-probe: FAIL (main forward ref printed '$$out', want 41)"; exit 1; fi
+	@"$(COMPILER)" build/fr_pkg.goo -o build/fr_pkg.out 2>build/fr_pkg.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "forward-ref-probe: FAIL (package forward ref rejected)"; cat build/fr_pkg.err; exit 1; fi; \
+	  out=$$(./build/fr_pkg.out); if [ "$$out" != "42" ]; then echo "forward-ref-probe: FAIL (package forward ref printed '$$out', want 42)"; exit 1; fi
+	@echo "forward-ref-probe: PASS"
 
 # P2-4: printing an AGGREGATE nullable (?T) or error-union (!T) value must be a
 # clean, source-located compile error, NOT invalid IR that crashes the LLVM

@@ -201,6 +201,102 @@ LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const
 int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* checker, 
                                          FuncDeclNode* func_decl, Type* return_type);
 
+#if LLVM_AVAILABLE
+// Prototype pre-pass (forward-reference support): declare a plain function's
+// LLVM prototype in the module BEFORE any body is emitted, so a call to a
+// function defined later in the file/package resolves — call sites look the
+// callee up with LLVMGetNamedFunction (see expression_codegen.c), so the
+// prototype merely needs to exist. This mirrors the type checker's
+// hoist_function_signatures. The symbol-name mangling and the LLVM function-type
+// construction deliberately parallel codegen_generate_function_decl below (which
+// now find-or-creates the same prototype, then fills in the body); keeping them
+// in step is what makes the two passes agree on name and signature.
+//
+// Error-union functions are skipped: their prototype is built by
+// codegen_generate_error_union_function when the decl is reached, and no plain
+// leaf package forward-references one (that case is deferred). Returns 1 on
+// success (including the skip), 0 on failure.
+static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* checker,
+                                       FuncDeclNode* func_decl) {
+    Type* return_type = func_decl->return_type
+        ? type_from_ast(checker, func_decl->return_type)
+        : type_checker_get_builtin(checker, TYPE_VOID);
+    if (!return_type || type_is_error_union(return_type)) return 1;
+
+    // Skip functions whose return type lowers to an aggregate (tuple/multi-
+    // return, named-return struct): codegen_type_to_llvm mints a FRESH anonymous
+    // struct on each call, so a prototype declared here and the body's return
+    // value would be two distinct {..} literal types and fail the verifier
+    // ("return type does not match operand type of return inst"). Such functions
+    // keep their original single-pass emission — self-consistent, just without
+    // forward-reference support (no plain leaf package needs a forward call into
+    // a tuple-returning function; that case is deferred).
+    LLVMTypeRef lowered_ret = codegen_type_to_llvm(codegen, return_type);
+    if (!lowered_ret || LLVMGetTypeKind(lowered_ret) == LLVMStructTypeKind) return 1;
+
+    // Method mangling (T__m) then package prefixing (goo_pkg__<pkg>__...).
+    char* mangled = NULL;
+    const char* emit_name = func_decl->name;
+    if (func_decl->receiver) {
+        VarDeclNode* recv = (VarDeclNode*)func_decl->receiver;
+        Type* recv_type = recv->type ? type_from_ast(checker, recv->type) : NULL;
+        const char* tn = type_receiver_name(recv_type);
+        if (tn) {
+            mangled = type_method_mangled_name(tn, func_decl->name);
+            if (mangled) emit_name = mangled;
+        }
+    }
+    const char* symbol_name = emit_name;
+    char* pkg_mangled = codegen_package_symbol_name(checker, emit_name);
+    if (pkg_mangled) symbol_name = pkg_mangled;
+
+    // Idempotent: only create if not already present (a later reached decl, or a
+    // repeat pass, must not add a duplicate that LLVM would rename).
+    if (!LLVMGetNamedFunction(codegen->module, symbol_name)) {
+        LLVMTypeRef llvm_return_type = lowered_ret;
+        int is_entry_main = (!func_decl->receiver &&
+                             strcmp(func_decl->name, "main") == 0 &&
+                             return_type->kind == TYPE_VOID);
+        if (is_entry_main) llvm_return_type = LLVMInt32TypeInContext(codegen->context);
+
+        LLVMTypeRef* param_types = NULL;
+        int param_count = 0;
+        Variable* func_var = type_checker_lookup_variable(checker, emit_name);
+        if (func_var && func_var->type->kind == TYPE_FUNCTION &&
+            func_var->type->data.function.param_count > 0) {
+            param_count = func_var->type->data.function.param_count;
+            param_types = malloc(sizeof(LLVMTypeRef) * param_count);
+            for (int i = 0; i < param_count; i++) {
+                param_types[i] = codegen_type_to_llvm(
+                    codegen, func_var->type->data.function.param_types[i]);
+            }
+        }
+        if (llvm_return_type) {
+            LLVMTypeRef function_type =
+                LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
+            LLVMAddFunction(codegen->module, symbol_name, function_type);
+        }
+        if (param_types) free(param_types);
+    }
+
+    free(mangled);
+    free(pkg_mangled);
+    return 1;
+}
+#endif
+
+int codegen_predeclare_functions(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decls) {
+    if (!codegen || !checker) return 0;
+#if LLVM_AVAILABLE
+    for (ASTNode* d = decls; d; d = d->next) {
+        if (d->type == AST_FUNC_DECL) {
+            if (!codegen_predeclare_function(codegen, checker, (FuncDeclNode*)d)) return 0;
+        }
+    }
+#endif
+    return 1;
+}
+
 int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, decl->pos, "LLVM support not available");
@@ -301,9 +397,16 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     }
     
     LLVMTypeRef function_type = LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
-    
-    // Create the function (mangled symbol for non-main packages; bare for main)
-    LLVMValueRef function = LLVMAddFunction(codegen->module, symbol_name, function_type);
+
+    // Create the function (mangled symbol for non-main packages; bare for main),
+    // or reuse the prototype the forward-reference pre-pass
+    // (codegen_predeclare_function) already declared — creating a second
+    // LLVMAddFunction under the same name would make LLVM rename it and break
+    // call resolution.
+    LLVMValueRef function = LLVMGetNamedFunction(codegen->module, symbol_name);
+    if (!function) {
+        function = LLVMAddFunction(codegen->module, symbol_name, function_type);
+    }
     
     // Handle WebAssembly exports/imports based on function attributes
     if (codegen_is_wasm_target(codegen)) {
