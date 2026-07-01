@@ -258,23 +258,19 @@ func TrailingZeros8(x uint8) int {
 
 const deBruijn32 = 0x077CB531
 
-// deBruijn32tab is upstream's `var deBruijn32tab = [32]byte{...}` (bits.go),
-// stored here as a const string because array literals are not yet supported.
-// The bytes are unchanged; indexing a const string yields the same byte, so the
-// function body below is verbatim. (Localized exception to the verbatim rule.)
-const deBruijn32tab = "" +
-	"\x00\x01\x1c\x02\x1d\x0e\x18\x03\x1e\x16\x14\x0f\x19\x11\x04\x08" +
-	"\x1f\x1b\x0d\x17\x15\x13\x10\x07\x1a\x0c\x12\x06\x0b\x05\x0a\x09"
+var deBruijn32tab = [32]byte{
+	0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+	31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9,
+}
 
 const deBruijn64 = 0x03f79d71b4ca8b09
 
-// deBruijn64tab is upstream's `var deBruijn64tab = [64]byte{...}` (bits.go),
-// stored here as a const string (see deBruijn32tab). Bytes unchanged.
-const deBruijn64tab = "" +
-	"\x00\x01\x38\x02\x39\x31\x1c\x03\x3d\x3a\x2a\x32\x26\x1d\x11\x04" +
-	"\x3e\x2f\x3b\x24\x2d\x2b\x33\x16\x35\x27\x21\x1e\x18\x12\x0c\x05" +
-	"\x3f\x37\x30\x1b\x3c\x29\x25\x10\x2e\x23\x2c\x15\x34\x20\x17\x0b" +
-	"\x36\x1a\x28\x0f\x22\x14\x1f\x0a\x19\x0e\x13\x09\x0d\x08\x07\x06"
+var deBruijn64tab = [64]byte{
+	0, 1, 56, 2, 57, 49, 28, 3, 61, 58, 42, 50, 38, 29, 17, 4,
+	62, 47, 59, 36, 45, 43, 51, 22, 53, 39, 33, 30, 24, 18, 12, 5,
+	63, 55, 48, 27, 60, 41, 37, 16, 46, 35, 44, 21, 52, 32, 23, 11,
+	54, 26, 40, 15, 34, 20, 31, 10, 25, 14, 19, 9, 13, 8, 7, 6,
+}
 
 // TrailingZeros16 returns the number of trailing zero bits in x; the result is 16 for x == 0.
 func TrailingZeros16(x uint16) int {

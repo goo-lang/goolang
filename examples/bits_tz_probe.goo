@@ -1,12 +1,10 @@
 package main
 
-// bits_tz_probe: math/bits TrailingZeros16/32/64 (vendored). Function bodies are
-// upstream-verbatim; only the deBruijn lookup tables are stored as const strings
-// instead of upstream's `var [N]byte{...}` array literals (array literals are not
-// yet supported — a documented, localized exception to the verbatim rule). The
-// bytes and behavior are byte-identical. Exercises `x & -x` (unsigned negate),
-// the deBruijn multiply/shift hash, and indexing by the computed value.
-// Marker pattern avoids sequential different-width prints.
+// bits_tz_probe: math/bits TrailingZeros16/32/64 (vendored verbatim, including
+// the deBruijn lookup tables as `var [N]byte{...}` array literals — now that
+// array literals are supported). Exercises `x & -x` (unsigned negate), the
+// deBruijn multiply/shift hash, and indexing a package-global byte array by the
+// computed value. Marker pattern avoids sequential different-width prints.
 import (
 	"fmt"
 	"bits"
