@@ -447,6 +447,104 @@ charlit-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# Stdlib table enabler A: string indexing `s[i]` -> byte (uint8). The const
+# lookup tables in math/bits (len8tab etc.) are indexed strings, so this is a
+# prerequisite for the table-based Len8/LeadingZeros family. Guards both the
+# read path (correct byte value) and that byte values flow through int() and
+# arithmetic. String-index ASSIGNMENT stays rejected (immutable) — covered by
+# strindex-reject-probe.
+strindex-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/strindex_probe examples/strindex_probe.goo
+	@./build/strindex_probe > build/strindex_probe.actual.txt
+	@if diff -u examples/strindex_probe.expected.txt build/strindex_probe.actual.txt; then \
+	  echo "strindex-probe: PASS"; \
+	else \
+	  echo "strindex-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# Stdlib table enabler A, negative gate: strings are immutable, so `s[i] = x`
+# must be REJECTED (rc != 0, no binary), not silently write into the string's
+# backing bytes. Guards that adding the read-side TYPE_STRING index case did
+# not open a write hole (codegen_emit_lvalue_address has no string case).
+strindex-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== strindex-reject-probe: string index assignment must reject ==="
+	@printf 'package main\nfunc main(){ s := "ABC"; s[1] = 90; _ = s }\n' > build/strindex_reject.goo
+	@rm -f build/strindex_reject
+	@$(COMPILER) -o build/strindex_reject build/strindex_reject.goo > build/strindex_reject.out 2> build/strindex_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "strindex-reject-probe: FAIL (compiled rc=0 — string write silently accepted)"; exit 1; fi; \
+	if [ -x build/strindex_reject ]; then echo "strindex-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -qiE "error" build/strindex_reject.err; then echo "strindex-reject-probe: FAIL (no diagnostic)"; cat build/strindex_reject.err; exit 1; fi; \
+	echo "strindex-reject-probe: PASS (rejected rc=$$rc)"
+
+# Stdlib table enabler B: hex byte escapes `\xNN` in string literals. The const
+# lookup tables in math/bits are strings of raw bytes written as `\x00\x01...`,
+# so correct two-hex-digit decoding is a prerequisite. Guards byte values AND
+# length (the pre-fix bug got both wrong: `\x05` -> 'x','0','5').
+hexesc-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/hexesc_probe examples/hexesc_probe.goo
+	@./build/hexesc_probe > build/hexesc_probe.actual.txt
+	@if diff -u examples/hexesc_probe.expected.txt build/hexesc_probe.actual.txt; then \
+	  echo "hexesc-probe: PASS"; \
+	else \
+	  echo "hexesc-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# Stdlib table enabler B, negative gate: a MALFORMED hex escape (fewer than two
+# hex digits, or a non-hex digit) must be REJECTED, not silently mis-decoded.
+# Before the fix `\xG1`/`\x` fell through the forgiving default and produced
+# garbage bytes with exit 0. Now the lexer returns NULL -> TOKEN_ERROR, so the
+# program fails to compile (rc != 0, no binary, diagnostic emitted).
+hexesc-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== hexesc-reject-probe: malformed hex escapes must reject, not mis-decode ==="
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println("\\xG1") }\n' > build/hexesc_reject_nonhex.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println("ab\\x") }\n' > build/hexesc_reject_short.goo
+	@for name in nonhex short; do \
+	  rm -f build/hexesc_reject_$$name; \
+	  $(COMPILER) -o build/hexesc_reject_$$name build/hexesc_reject_$$name.goo > build/hexesc_reject_$$name.out 2> build/hexesc_reject_$$name.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "hexesc-reject-probe: FAIL ($$name compiled rc=0 — malformed hex silently accepted)"; exit 1; fi; \
+	  if [ -x build/hexesc_reject_$$name ]; then echo "hexesc-reject-probe: FAIL ($$name emitted a binary despite the error)"; exit 1; fi; \
+	  if ! grep -qiE "error" build/hexesc_reject_$$name.err; then echo "hexesc-reject-probe: FAIL ($$name produced no diagnostic)"; cat build/hexesc_reject_$$name.err; exit 1; fi; \
+	  echo "hexesc-reject-probe: $$name rejected (rc=$$rc)"; \
+	done
+	@echo "hexesc-reject-probe: PASS"
+
+# Stdlib table enabler C (parts 1+2): a package-level const string with embedded
+# NUL bytes, no concatenation. Guards C1 (no crash at global scope) and C2 (the
+# embedded NUL does not truncate — len is 4 though byte 0 is NUL), independently
+# of the concat folding exercised by conststr-probe.
+conststr-nul-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/conststr_nul_probe examples/conststr_nul_probe.goo
+	@./build/conststr_nul_probe > build/conststr_nul_probe.actual.txt
+	@if diff -u examples/conststr_nul_probe.expected.txt build/conststr_nul_probe.actual.txt; then \
+	  echo "conststr-nul-probe: PASS"; \
+	else \
+	  echo "conststr-nul-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# Stdlib table enabler C: package-level const strings with embedded NUL bytes
+# and compile-time concatenation — the exact shape of the math/bits lookup
+# tables (const len8tab = "" + "\x00\x01..." + ...). Guards all three fixes at
+# once: C1 no crash at global scope, C2 embedded-NUL length preserved (len == 5
+# though byte 0 is NUL), C3 the "+" concatenation folds to a compile-time const.
+conststr-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/conststr_probe examples/conststr_probe.goo
+	@./build/conststr_probe > build/conststr_probe.actual.txt
+	@if diff -u examples/conststr_probe.expected.txt build/conststr_probe.actual.txt; then \
+	  echo "conststr-probe: PASS"; \
+	else \
+	  echo "conststr-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # F3 negative gate: a MALFORMED char literal must be rejected cleanly, NOT
 # silently dropped. The lexer emits TOKEN_ERROR for ''/'\z'/unterminated 'a),
 # which the Bison bridge maps to an unknown token and skips — so before the fix
@@ -1085,7 +1183,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

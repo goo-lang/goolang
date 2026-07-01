@@ -1,0 +1,38 @@
+package main
+
+// bits_reverse_bits_probe: math/bits Reverse8/16/32/64 (bit reversal, vendored
+// verbatim). Reverse8/16 index the rev8tab const string (verbatim — upstream
+// rev8tab is itself a const string). Reverse32/64 reuse the m0..m2 masks and
+// ReverseBytes32/64 already vendored. Marker pattern avoids sequential
+// different-width prints.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.Reverse8(1) == 128 {
+		fmt.Println("r8a")
+	}
+	if bits.Reverse8(15) == 240 {
+		fmt.Println("r8b") // 0x0f -> 0xf0
+	}
+	if bits.Reverse16(1) == 32768 {
+		fmt.Println("r16a")
+	}
+	if bits.Reverse16(65280) == 255 {
+		fmt.Println("r16b") // 0xff00 -> 0x00ff
+	}
+	if bits.Reverse32(1) == 2147483648 {
+		fmt.Println("r32a")
+	}
+	if bits.Reverse32(4294967295) == 4294967295 {
+		fmt.Println("r32b") // all ones -> all ones
+	}
+	if bits.Reverse64(1) == 9223372036854775808 {
+		fmt.Println("r64a")
+	}
+	if bits.Reverse64(18446744073709551615) == 18446744073709551615 {
+		fmt.Println("r64b")
+	}
+}

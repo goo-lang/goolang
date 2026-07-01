@@ -1,0 +1,8 @@
+t16z
+t16h
+t32z
+t32m
+t32h
+t64z
+t64m
+t64h

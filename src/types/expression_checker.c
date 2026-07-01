@@ -420,6 +420,40 @@ Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
     return type;
 }
 
+// Is `n` an untyped-integer-constant-rooted operand — a bare int literal, or a
+// shift whose (recursively) left operand is one? A shift's Go result type is its
+// LEFT operand's type, so `1<<32` is untyped-rooted through the `1`. Used to
+// decide whether an operand can adapt to the other, sized operand's type.
+static int is_untyped_int_rooted(ASTNode* n) {
+    if (!n) return 0;
+    if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT)
+        return 1;
+    if (n->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)n;
+        if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT)
+            return is_untyped_int_rooted(b->left);
+    }
+    return 0;
+}
+
+// Retype an untyped-int-rooted operand (and, for a shift, the shift node and its
+// left operand recursively) to `target`. This makes `1<<32` in `x >= 1<<32`
+// (x uint64) compute at 64 bits instead of overflowing an int32 shift to 0.
+static void adapt_untyped_int_operand(ASTNode* n, Type* target) {
+    if (!n) return;
+    if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT) {
+        n->node_type = target;
+        return;
+    }
+    if (n->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)n;
+        if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT) {
+            adapt_untyped_int_operand(b->left, target); // shift type = left type
+            n->node_type = target;
+        }
+    }
+}
+
 Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
     
@@ -452,17 +486,17 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     // `x + 1`, `x >> 8`, `x & m` compute in uint64 rather than mixing widths.
     if (type_is_integer(left_type) && type_is_integer(right_type) &&
         left_type->kind != right_type->kind) {
-        ASTNode* ln = binary->left;
-        ASTNode* rn = binary->right;
-        int left_lit  = (ln->type == AST_LITERAL &&
-                         ((LiteralNode*)ln)->literal_type == TOKEN_INT);
-        int right_lit = (rn->type == AST_LITERAL &&
-                         ((LiteralNode*)rn)->literal_type == TOKEN_INT);
-        if (right_lit && !left_lit) {
-            rn->node_type = left_type;
+        // An operand adapts if it is untyped-integer-constant-rooted: a bare int
+        // literal OR a shift through to one (`1<<32`). Adapt it to the other,
+        // sized operand's type so both compute at the same width — this is what
+        // stops `1<<32` in `x >= 1<<32` from overflowing an int32 shift to 0.
+        int left_adaptable  = is_untyped_int_rooted(binary->left);
+        int right_adaptable = is_untyped_int_rooted(binary->right);
+        if (right_adaptable && !left_adaptable) {
+            adapt_untyped_int_operand(binary->right, left_type);
             right_type = left_type;
-        } else if (left_lit && !right_lit) {
-            ln->node_type = right_type;
+        } else if (left_adaptable && !right_adaptable) {
+            adapt_untyped_int_operand(binary->left, right_type);
             left_type = right_type;
         }
     }
@@ -1157,6 +1191,13 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
                 return NULL;
             }
             element_type = expr_type->data.map.value_type;
+            break;
+        case TYPE_STRING:
+            // Go: s[i] yields the i-th byte (type byte == uint8). The result
+            // is a value, not an addressable lvalue — strings are immutable, so
+            // `s[i] = x` is rejected separately in the assignment checker. The
+            // matching codegen lives in codegen_generate_index_expr (TYPE_STRING).
+            element_type = type_checker_get_builtin(checker, TYPE_UINT8);
             break;
         default:
             type_error(checker, index->expr->pos, 

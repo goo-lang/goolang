@@ -300,9 +300,21 @@ static int bridge_next_mapped(void) {
     // Set the semantic value based on token type
     switch (token->type) {
         case TOKEN_IDENT:
-        case TOKEN_STRING:
             yylval.string = strdup(token->literal);
             break;
+        case TOKEN_STRING: {
+            // Carry the exact byte length so embedded NUL bytes survive the
+            // boundary (strdup would truncate at the first NUL). The parser's
+            // STRING_LITERAL action copies data+len into the AST literal.
+            char* buf = malloc(token->length + 1);
+            if (buf) {
+                if (token->length > 0) memcpy(buf, token->literal, token->length);
+                buf[token->length] = '\0';
+            }
+            yylval.strlit.data = buf;
+            yylval.strlit.len = token->length;
+            break;
+        }
         case TOKEN_INT: {
             // Parse the full unsigned 64-bit range (strtoull, not strtoll); the
             // bit pattern is preserved through the union's long long and the

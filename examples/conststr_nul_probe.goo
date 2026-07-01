@@ -1,0 +1,24 @@
+// conststr_nul_probe (stdlib table enabler C, parts 1+2): a package-level
+// (global-scope) const string that contains embedded NUL bytes, WITHOUT
+// concatenation. Isolates two fixes from the concat folding (conststr_probe):
+//   C1  global-scope string constants no longer crash codegen — string literals
+//       lower to a builder-free constant { i8* data, i64 len } instead of the
+//       LLVMBuildGlobalStringPtr path that had no basic-block insert point.
+//   C2  the byte length is threaded lexer -> parser -> AST -> codegen, so an
+//       embedded NUL no longer truncates the string (len is 4, not 0).
+//
+// Bytes are read back with string indexing (enabler A) wrapped in int() so
+// every print is int-width (side-steps the mixed-width print bug).
+package main
+
+import "fmt"
+
+const tab = "\x00\x0aZ\xff"
+
+func main() {
+	fmt.Println(len(tab))    // 4   (NUL at index 0 does not truncate)
+	fmt.Println(int(tab[0])) // 0
+	fmt.Println(int(tab[1])) // 10
+	fmt.Println(int(tab[2])) // 90  ('Z')
+	fmt.Println(int(tab[3])) // 255
+}

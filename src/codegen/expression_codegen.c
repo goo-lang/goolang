@@ -196,6 +196,31 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
 #endif
 }
 
+#if LLVM_AVAILABLE
+LLVMValueRef codegen_const_string_value(CodeGenerator* codegen, const char* bytes, size_t len) {
+    // Emit the bytes as a private global constant array, then build a constant
+    // { i8* data, i64 len } struct. Builder-free (no LLVMBuild*), so it is valid
+    // at global scope where there is no basic block. The explicit length keeps
+    // embedded NULs (e.g. the math/bits tables that start with "\x00").
+    LLVMValueRef arr = LLVMConstStringInContext(codegen->context, bytes,
+                                                (unsigned)len, /*DontNullTerminate=*/0);
+    LLVMTypeRef arr_type = LLVMTypeOf(arr); // [len+1 x i8]
+    LLVMValueRef global = LLVMAddGlobal(codegen->module, arr_type, "str");
+    LLVMSetInitializer(global, arr);
+    LLVMSetGlobalConstant(global, 1);
+    LLVMSetLinkage(global, LLVMPrivateLinkage);
+    LLVMSetUnnamedAddr(global, 1);
+
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    LLVMValueRef idx[2] = { zero, zero };
+    LLVMValueRef data_ptr = LLVMConstInBoundsGEP2(arr_type, global, idx, 2);
+
+    LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), len, 0);
+    LLVMValueRef fields[2] = { data_ptr, len_val };
+    return LLVMConstStructInContext(codegen->context, fields, 2, /*packed=*/0);
+}
+#endif
+
 ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -252,22 +277,11 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
         }
         
         case TOKEN_STRING: {
-            // Create global string constant
-            LLVMValueRef str_const = LLVMBuildGlobalStringPtr(codegen->builder, literal->value, "str");
-
-            // Create string struct { ptr, len }
-            LLVMTypeRef string_type = codegen_get_basic_type(codegen, TYPE_STRING);
-            LLVMValueRef string_val = LLVMGetUndef(string_type);
-
-            // Set pointer
-            string_val = LLVMBuildInsertValue(codegen->builder, string_val, str_const, 0, "");
-
-            // Set length
-            size_t len = strlen(literal->value);
-            LLVMValueRef len_val = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), len, 0);
-            string_val = LLVMBuildInsertValue(codegen->builder, string_val, len_val, 1, "");
-
-            llvm_value = string_val;
+            // Builder-free constant { i8* data, i64 len } (see
+            // codegen_const_string_value). Works at global scope — the old
+            // LLVMBuildGlobalStringPtr path dereferenced a NULL insert point
+            // there and crashed. literal->length preserves embedded NULs.
+            llvm_value = codegen_const_string_value(codegen, literal->value, literal->length);
             goo_type = type_checker_get_builtin(checker, TYPE_STRING);
             break;
         }
@@ -387,12 +401,15 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
                 index_val->is_lvalue = 0;
             }
         }
+        // Signed-correct 64-bit offset so a uint8 index (255) does not
+        // sign-extend to -1 on the write path (matches the read path).
+        LLVMValueRef idx64 = codegen_widen_index(codegen, index_val);
 
         if (base_type->kind == TYPE_ARRAY) {
             // base->llvm_value is a pointer to the array; GEP the element.
             LLVMValueRef indices[] = {
                 LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
-                index_val->llvm_value
+                idx64
             };
             LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
                                                   codegen_type_to_llvm(codegen, base_type),
@@ -412,7 +429,7 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
             LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, slice_val, 0, "slice_ptr");
             LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
                                                   codegen_type_to_llvm(codegen, elem_type),
-                                                  data_ptr, &index_val->llvm_value, 1, "slice_elem");
+                                                  data_ptr, &idx64, 1, "slice_elem");
             ValueInfo* out = value_info_new(NULL, elem_ptr, elem_type);
             out->is_lvalue = 1;
             return out;

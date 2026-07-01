@@ -1,0 +1,34 @@
+// conststr_probe (stdlib table enabler C): package-level const strings, with
+// embedded NUL bytes and compile-time concatenation — the exact shape of the
+// math/bits lookup tables, e.g.
+//   const len8tab = "" + "\x00\x01\x01\x02..." + "..."
+//
+// Three blockers were fixed together:
+//   C1  package-level (global-scope) string constants crashed codegen, because
+//       string-literal codegen used the IR builder (LLVMBuildGlobalStringPtr),
+//       which has no basic-block insert point at global scope. Now string
+//       literals lower to a builder-free constant { i8* data, i64 len }.
+//   C2  embedded NUL bytes were truncated: the byte length was lost at the
+//       lexer->parser boundary (strdup), never reached the AST (LiteralNode had
+//       no length), and codegen used strlen. Now the length is threaded end to
+//       end, so "\x00..." keeps its true length.
+//   C3  const string concatenation ("a" + "b") was not folded at compile time.
+//       Now goo_fold_const_string folds a tree of string-literal '+' into one
+//       constant, so a const initialised by concatenation is compile-time.
+//
+// Bytes are read back with string indexing (enabler A) wrapped in int(), so
+// every print is int-width (side-steps the mixed-width print bug).
+package main
+
+import "fmt"
+
+const tab = "" + "\x00\x01\x02" + "\x03\xff"
+
+func main() {
+	fmt.Println(len(tab))    // 5
+	fmt.Println(int(tab[0])) // 0   (embedded NUL, position 0)
+	fmt.Println(int(tab[1])) // 1
+	fmt.Println(int(tab[2])) // 2
+	fmt.Println(int(tab[3])) // 3
+	fmt.Println(int(tab[4])) // 255
+}

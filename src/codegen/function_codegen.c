@@ -1114,6 +1114,49 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
         }
     }
 
+    // Compile-time string constant folding: a const initialised by string-
+    // literal concatenation ("" + "\x00..." + ...) — the math/bits table shape.
+    // Fold it to one byte buffer and emit a constant goo_string global, so the
+    // const is compile-time. The `+` otherwise lowers to a runtime
+    // goo_string_concat call, which is not an LLVM constant (the const-decl
+    // rejects it below with "must be compile-time constant"). Works at both
+    // package and local scope. Placed after the integer fold so int constants
+    // (which never fold as strings) keep their existing path.
+    {
+        char* sbuf = NULL;
+        size_t slen = 0;
+        if (goo_fold_const_string(const_decl->values, &sbuf, &slen)) {
+            LLVMValueRef sval = codegen_const_string_value(codegen, sbuf, slen);
+            free(sbuf);
+            Type* st = type_checker_get_builtin(checker, TYPE_STRING);
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, st);
+            for (size_t i = 0; i < const_decl->name_count; i++) {
+                const char* const_name = const_decl->names[i];
+                LLVMValueRef g = LLVMAddGlobal(codegen->module, lt, const_name);
+                LLVMSetInitializer(g, sval);
+                LLVMSetGlobalConstant(g, 1);
+                ValueInfo* vi = value_info_new(const_name, g, st);
+                if (!vi) { codegen_error(codegen, decl->pos, "value info alloc failed"); return 0; }
+                vi->is_lvalue = 0;
+                vi->is_initialized = 1;
+                if (!codegen_add_value(codegen, vi)) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to add constant '%s' to symbol table", const_name);
+                    value_info_free(vi);
+                    return 0;
+                }
+                if (!type_checker_lookup_variable(checker, const_name)) {
+                    Variable* tcv = variable_new(const_name, st, decl->pos);
+                    if (tcv) {
+                        tcv->is_initialized = 1;
+                        scope_add_variable(checker->current_scope, tcv);
+                    }
+                }
+            }
+            return 1;
+        }
+    }
+
     // M11-codegen-const: comptime fast path. If type_check_const_decl
     // attached a comptime-evaluated value to the Variable (see
     // include/types.h Variable.comptime_value + lesson-1778812208-594aea),

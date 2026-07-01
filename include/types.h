@@ -533,6 +533,15 @@ Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* targ
 // their true value instead of a width-truncated LLVM shift.
 int goo_fold_const_int(ASTNode* expr, uint64_t* out);
 
+// Fold a compile-time string constant — string literals joined by `+` — into a
+// freshly malloc'd byte buffer. On success returns 1, writes *out (the buffer,
+// which the caller must free) and *out_len (the byte length, embedded NULs
+// preserved). Returns 0 for anything that is not a pure string-literal
+// concatenation. Enables package/local `const` string tables built by `+`
+// (e.g. the math/bits len8tab), which otherwise lower to a runtime
+// goo_string_concat call that is not a compile-time constant.
+int goo_fold_const_string(ASTNode* expr, char** out, size_t* out_len);
+
 // Error reporting
 void type_error(TypeChecker* checker, Position pos, const char* format, ...);
 void type_warning(TypeChecker* checker, Position pos, const char* format, ...);

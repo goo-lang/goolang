@@ -1,0 +1,34 @@
+package main
+
+// bits_len8_probe: math/bits.Len8 and LeadingZeros8 (vendored verbatim). These
+// are the first TABLE-based bits functions — Len8 indexes the const string
+// len8tab (a 256-byte table built by "" + "\x00\x01..." + ...), exercising the
+// whole enabler stack: hex escapes, embedded NULs, const string concatenation,
+// package-level const strings, and string indexing.
+//   Len8:         0->0, 1->1, 2->2, 127->7, 128->8, 255->8
+//   LeadingZeros8 (= 8 - Len8): 0->8, 1->7, 128->0, 255->0
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.Len8(0) == 0 {
+		fmt.Println("L0")
+	}
+	if bits.Len8(1) == 1 {
+		fmt.Println("L1")
+	}
+	if bits.Len8(127) == 7 {
+		fmt.Println("L127")
+	}
+	if bits.Len8(255) == 8 {
+		fmt.Println("L255")
+	}
+	if bits.LeadingZeros8(0) == 8 {
+		fmt.Println("Z0")
+	}
+	if bits.LeadingZeros8(128) == 0 {
+		fmt.Println("Z128")
+	}
+}

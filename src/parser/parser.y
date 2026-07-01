@@ -45,13 +45,18 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
 %union {
     struct ASTNode* node;
     char* string;
+    // String literals carry an explicit byte length so embedded NUL bytes
+    // survive the lexer->parser boundary (strdup would truncate at the first
+    // NUL). Only STRING_LITERAL uses this member; IDENTIFIER stays `string`.
+    struct { char* data; size_t len; } strlit;
     long long integer;
     double real;
     int token;
 }
 
 // Token declarations with types
-%token <string> IDENTIFIER STRING_LITERAL
+%token <string> IDENTIFIER
+%token <strlit> STRING_LITERAL
 %token <integer> INT_LITERAL
 %token <real> FLOAT_LITERAL
 %token <token> CHAR_LITERAL
@@ -231,15 +236,15 @@ import_spec_list:
 
 import_spec:
     STRING_LITERAL {
-        ImportSpecNode* imp = ast_import_spec_new($1, NULL, get_current_position());
-        free($1);
+        ImportSpecNode* imp = ast_import_spec_new($1.data, NULL, get_current_position());
+        free($1.data);
         $$ = (ASTNode*)imp;
     }
     | identifier STRING_LITERAL {
         IdentifierNode* ident = (IdentifierNode*)$1;
-        ImportSpecNode* imp = ast_import_spec_new($2, ident->name, ident->base.pos);
+        ImportSpecNode* imp = ast_import_spec_new($2.data, ident->name, ident->base.pos);
         ast_node_free($1);
-        free($2);
+        free($2.data);
         $$ = (ASTNode*)imp;
     }
     ;
@@ -2025,8 +2030,8 @@ unsafe_stmt:
 
 asm_stmt:
     ASM LBRACE STRING_LITERAL RBRACE {
-        AsmStmtNode* asm_node = ast_asm_stmt_new($3, get_current_position());
-        free($3);
+        AsmStmtNode* asm_node = ast_asm_stmt_new($3.data, get_current_position());
+        free($3.data);
         $$ = (ASTNode*)asm_node;
     }
     ;
@@ -2041,17 +2046,17 @@ extern_decl:
     EXTERN STRING_LITERAL identifier func_signature {
         // extern "C" function_name(params) -> return_type
         IdentifierNode* ident = (IdentifierNode*)$3;
-        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, $4, NULL, NULL, get_current_position());
-        free($2);
+        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2.data, $4, NULL, NULL, get_current_position());
+        free($2.data);
         ast_node_free($3);
         $$ = (ASTNode*)extern_node;
     }
     | EXTERN STRING_LITERAL identifier func_signature FROM STRING_LITERAL {
         // extern "C" function_name(params) -> return_type from "library"
         IdentifierNode* ident = (IdentifierNode*)$3;
-        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2, $4, NULL, $6, get_current_position());
-        free($2);
-        free($6);
+        ExternDeclNode* extern_node = ast_extern_decl_new(ident->name, $2.data, $4, NULL, $6.data, get_current_position());
+        free($2.data);
+        free($6.data);
         ast_node_free($3);
         $$ = (ASTNode*)extern_node;
     }
@@ -2124,8 +2129,8 @@ barrier_call:
     }
     | BARRIER LPAREN STRING_LITERAL RPAREN {
         // barrier("barrier_name")
-        BarrierCallNode* barrier_node = ast_barrier_call_new($3, get_current_position());
-        free($3);
+        BarrierCallNode* barrier_node = ast_barrier_call_new($3.data, get_current_position());
+        free($3.data);
         $$ = (ASTNode*)barrier_node;
     }
     ;
@@ -2187,8 +2192,8 @@ literal:
         $$ = (ASTNode*)lit;
     }
     | STRING_LITERAL {
-        LiteralNode* lit = ast_literal_new(TOKEN_STRING, $1, get_current_position());
-        free($1);
+        LiteralNode* lit = ast_string_literal_new($1.data, $1.len, get_current_position());
+        free($1.data);
         $$ = (ASTNode*)lit;
     }
     | TRUE {
@@ -2430,8 +2435,8 @@ wasm_export:
     EXPORT STRING_LITERAL identifier {
         // export "functionName" myFunction
         IdentifierNode* item = (IdentifierNode*)$3;
-        WasmExportNode* export_node = ast_wasm_export_new($2, $3, "func", get_current_position());
-        free($2);
+        WasmExportNode* export_node = ast_wasm_export_new($2.data, $3, "func", get_current_position());
+        free($2.data);
         $$ = (ASTNode*)export_node;
     }
     ;
@@ -2440,9 +2445,9 @@ wasm_import:
     IMPORT STRING_LITERAL STRING_LITERAL identifier {
         // import "module" "function" localName
         IdentifierNode* local = (IdentifierNode*)$4;
-        WasmImportNode* import_node = ast_wasm_import_new($2, $3, local->name, "func", NULL, get_current_position());
-        free($2);
-        free($3);
+        WasmImportNode* import_node = ast_wasm_import_new($2.data, $3.data, local->name, "func", NULL, get_current_position());
+        free($2.data);
+        free($3.data);
         ast_node_free($4);
         $$ = (ASTNode*)import_node;
     }
@@ -2581,6 +2586,10 @@ static ASTNode* clone_const_value(const ASTNode* n) {
         }
         case AST_LITERAL: {
             LiteralNode* src = (LiteralNode*)n;
+            // Preserve the exact byte length so a repeated const string spec
+            // keeps embedded NULs (ast_literal_new's str_dup would truncate).
+            if (src->literal_type == TOKEN_STRING)
+                return (ASTNode*)ast_string_literal_new(src->value, src->length, n->pos);
             return (ASTNode*)ast_literal_new(src->literal_type, src->value, n->pos);
         }
         case AST_BINARY_EXPR: {

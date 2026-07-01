@@ -1,0 +1,8 @@
+r8a
+r8b
+r16a
+r16b
+r32a
+r32b
+r64a
+r64b
