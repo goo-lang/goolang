@@ -1,0 +1,11 @@
+package main
+import (
+	"fmt"
+	"errors"
+)
+func main() {
+	e := errors.New("boom")
+	fmt.Printf("err=%v\n", e)
+	s := fmt.Sprintf("[%v]", e)
+	fmt.Println(s)
+}
