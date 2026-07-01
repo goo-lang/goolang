@@ -1,0 +1,37 @@
+package main
+
+import "fmt"
+
+// The exact verbatim shape of Go's unicode/utf8 acceptRanges table: a
+// [16]struct with keyed sparse indices and elided struct-literal values.
+type acceptRange struct {
+	lo uint8
+	hi uint8
+}
+
+const (
+	locb = 0x80
+	hicb = 0xBF
+)
+
+var acceptRanges = [16]acceptRange{
+	0: {locb, hicb},
+	1: {0xA0, hicb},
+	2: {locb, 0x9F},
+	3: {0x90, hicb},
+	4: {locb, 0x8F},
+}
+
+func main() {
+	fmt.Println(int(acceptRanges[0].lo)) // locb = 128
+	fmt.Println(int(acceptRanges[1].lo)) // 0xA0 = 160
+	fmt.Println(int(acceptRanges[4].hi)) // 0x8F = 143
+	fmt.Println(int(acceptRanges[9].lo)) // gap => 0
+
+	// keyed + unkeyed continuation, plain int element type
+	nums := [6]int{3: 100, 200, 5: 500}
+	fmt.Println(nums[0]) // 0
+	fmt.Println(nums[3]) // 100
+	fmt.Println(nums[4]) // 200 (continues from key 3)
+	fmt.Println(nums[5]) // 500
+}
