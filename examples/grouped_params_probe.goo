@@ -1,0 +1,42 @@
+// grouped_params_probe: Go's grouped function parameters `(x, y T)` shorthand
+// for `(x T, y T)`. The func_param machinery parses a leading `x` (no type of
+// its own) as an anonymous entry whose "type" is the bare name; a post-parse
+// pass reinterprets it as a NAME borrowing the next explicitly-typed entry's
+// type — the same reinterpretation already used for grouped named RESULTS.
+//   add(x, y int)            -> both int
+//   mix(a, b int, c string)  -> a,b int; c string  (mixed group + separate)
+//   trip(a, b, c int)        -> all three int
+package main
+
+import "fmt"
+
+func add(x, y int) int {
+	return x + y
+}
+
+func mix(a, b int, c string) int {
+	return a*b + len(c)
+}
+
+func trip(a, b, c int) int {
+	return a + b + c
+}
+
+type point struct {
+	x int
+	y int
+}
+
+// Grouped params on a method (with a receiver) go through a different grammar
+// rule than top-level funcs, so exercise that path too.
+func (p point) span(a, b int) int {
+	return p.x + p.y + a + b
+}
+
+func main() {
+	fmt.Println(add(3, 4))          // 7
+	fmt.Println(mix(2, 5, "abc"))   // 10 + 3 = 13
+	fmt.Println(trip(1, 2, 3))      // 6
+	q := point{x: 1, y: 2}
+	fmt.Println(q.span(3, 4))       // 1+2+3+4 = 10
+}
