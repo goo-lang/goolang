@@ -1456,6 +1456,42 @@ index_expr:
         slice->high = $5;
         $$ = (ASTNode*)slice;
     }
+    /* Open-ended slices: `s[low:]` (high defaults to len), `s[:high]` (low
+       defaults to 0), `s[:]` (whole). A NULL low/high is filled in by codegen.
+       Common in Go, e.g. strings.HasSuffix's `s[len(s)-n:]`. */
+    | primary_expr LBRACKET expression COLON RBRACKET {
+        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
+        slice->base.type = AST_SLICE_INDEX_EXPR;
+        slice->base.pos = get_current_position();
+        slice->base.node_type = NULL;
+        slice->base.next = NULL;
+        slice->expr = $1;
+        slice->low = $3;
+        slice->high = NULL;
+        $$ = (ASTNode*)slice;
+    }
+    | primary_expr LBRACKET COLON expression RBRACKET {
+        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
+        slice->base.type = AST_SLICE_INDEX_EXPR;
+        slice->base.pos = get_current_position();
+        slice->base.node_type = NULL;
+        slice->base.next = NULL;
+        slice->expr = $1;
+        slice->low = NULL;
+        slice->high = $4;
+        $$ = (ASTNode*)slice;
+    }
+    | primary_expr LBRACKET COLON RBRACKET {
+        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
+        slice->base.type = AST_SLICE_INDEX_EXPR;
+        slice->base.pos = get_current_position();
+        slice->base.node_type = NULL;
+        slice->base.next = NULL;
+        slice->expr = $1;
+        slice->low = NULL;
+        slice->high = NULL;
+        $$ = (ASTNode*)slice;
+    }
     ;
 
 selector_expr:

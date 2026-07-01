@@ -1,0 +1,30 @@
+// strings_probe: unicode... no — strings.HasPrefix/HasSuffix (vendored). First
+// functions from a THIRD stdlib package. Uses open-ended slices (s[:n], s[n:]),
+// len, and string ==. Marker pattern.
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	if strings.HasPrefix("hello world", "hello") {
+		fmt.Println("hp_yes")
+	}
+	if strings.HasPrefix("hello", "world") == false {
+		fmt.Println("hp_no")
+	}
+	if strings.HasSuffix("hello world", "world") {
+		fmt.Println("hs_yes")
+	}
+	if strings.HasSuffix("hello", "world") == false {
+		fmt.Println("hs_no")
+	}
+	if strings.HasPrefix("hi", "hi") {
+		fmt.Println("hp_eq")
+	}
+	if strings.HasPrefix("h", "hello") == false {
+		fmt.Println("hp_short")
+	}
+}

@@ -1280,19 +1280,27 @@ Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
     SliceIndexExprNode* slice = (SliceIndexExprNode*)expr;
 
     Type* base_type = type_check_expression(checker, slice->expr);
-    Type* low_type = type_check_expression(checker, slice->low);
-    Type* high_type = type_check_expression(checker, slice->high);
-    if (!base_type || !low_type || !high_type) return NULL;
+    if (!base_type) return NULL;
 
-    if (!type_is_integer(low_type)) {
-        type_error(checker, slice->low->pos,
-                   "Slice low bound must be integer, got %s", type_to_string(low_type));
-        return NULL;
+    // Bounds are optional (open-ended slices `s[low:]`, `s[:high]`, `s[:]`);
+    // codegen defaults an omitted low to 0 and an omitted high to len.
+    if (slice->low) {
+        Type* low_type = type_check_expression(checker, slice->low);
+        if (!low_type) return NULL;
+        if (!type_is_integer(low_type)) {
+            type_error(checker, slice->low->pos,
+                       "Slice low bound must be integer, got %s", type_to_string(low_type));
+            return NULL;
+        }
     }
-    if (!type_is_integer(high_type)) {
-        type_error(checker, slice->high->pos,
-                   "Slice high bound must be integer, got %s", type_to_string(high_type));
-        return NULL;
+    if (slice->high) {
+        Type* high_type = type_check_expression(checker, slice->high);
+        if (!high_type) return NULL;
+        if (!type_is_integer(high_type)) {
+            type_error(checker, slice->high->pos,
+                       "Slice high bound must be integer, got %s", type_to_string(high_type));
+            return NULL;
+        }
     }
 
     switch (base_type->kind) {

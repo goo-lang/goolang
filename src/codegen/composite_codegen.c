@@ -255,16 +255,6 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
         codegen_error(codegen, expr->pos, "Failed to generate slice base");
         return NULL;
     }
-    ValueInfo* low_val = codegen_generate_expression(codegen, checker, sl->low);
-    ValueInfo* high_val = codegen_generate_expression(codegen, checker, sl->high);
-    if (!low_val || !high_val) {
-        codegen_error(codegen, expr->pos, "Failed to generate slice bounds");
-        value_info_free(base_val);
-        if (low_val) value_info_free(low_val);
-        if (high_val) value_info_free(high_val);
-        return NULL;
-    }
-
     Type* base_type = base_val->goo_type;
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
     LLVMTypeRef struct_ty = codegen_type_to_llvm(codegen, base_type);
@@ -276,17 +266,35 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
         base_struct = LLVMBuildLoad2(codegen->builder, struct_ty,
                                      base_val->llvm_value, "slice_base_load");
     }
+    // Length is field 1 in both the string and slice headers — the default for
+    // an omitted high bound (`s[low:]`).
+    LLVMValueRef base_len = LLVMBuildExtractValue(codegen->builder, base_struct, 1, "base_len");
 
-    // Widen both bounds to i64 (header fields are size_t). Bounds are
-    // integer-typed (the checker enforces it), so width is well-defined.
-    LLVMValueRef low64 = low_val->llvm_value;
-    LLVMValueRef high64 = high_val->llvm_value;
-    unsigned low_w = LLVMGetIntTypeWidth(LLVMTypeOf(low64));
-    unsigned high_w = LLVMGetIntTypeWidth(LLVMTypeOf(high64));
-    if (low_w < 64)  low64  = LLVMBuildSExt(codegen->builder, low64, i64, "low64");
-    else if (low_w > 64)  low64  = LLVMBuildTrunc(codegen->builder, low64, i64, "low64");
-    if (high_w < 64) high64 = LLVMBuildSExt(codegen->builder, high64, i64, "high64");
-    else if (high_w > 64) high64 = LLVMBuildTrunc(codegen->builder, high64, i64, "high64");
+    // Bounds, widened to i64. An omitted low defaults to 0; an omitted high to
+    // the length (open-ended slices `s[low:]`, `s[:high]`, `s[:]`).
+    LLVMValueRef low64, high64;
+    if (sl->low) {
+        ValueInfo* lv = codegen_generate_expression(codegen, checker, sl->low);
+        if (!lv) { value_info_free(base_val); return NULL; }
+        low64 = lv->llvm_value;
+        unsigned w = LLVMGetIntTypeWidth(LLVMTypeOf(low64));
+        if (w < 64) low64 = LLVMBuildSExt(codegen->builder, low64, i64, "low64");
+        else if (w > 64) low64 = LLVMBuildTrunc(codegen->builder, low64, i64, "low64");
+        value_info_free(lv);
+    } else {
+        low64 = LLVMConstInt(i64, 0, 0);
+    }
+    if (sl->high) {
+        ValueInfo* hv = codegen_generate_expression(codegen, checker, sl->high);
+        if (!hv) { value_info_free(base_val); return NULL; }
+        high64 = hv->llvm_value;
+        unsigned w = LLVMGetIntTypeWidth(LLVMTypeOf(high64));
+        if (w < 64) high64 = LLVMBuildSExt(codegen->builder, high64, i64, "high64");
+        else if (w > 64) high64 = LLVMBuildTrunc(codegen->builder, high64, i64, "high64");
+        value_info_free(hv);
+    } else {
+        high64 = base_len;
+    }
 
     LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, base_struct, 0, "base_data");
     LLVMValueRef new_len = LLVMBuildSub(codegen->builder, high64, low64, "new_len");
@@ -315,8 +323,6 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
     ValueInfo* out = value_info_new(NULL, result, base_type);
     out->is_lvalue = 0;  // a fresh header value (rvalue)
     value_info_free(base_val);
-    value_info_free(low_val);
-    value_info_free(high_val);
     return out;
 #endif
 }
