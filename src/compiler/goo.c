@@ -444,7 +444,7 @@ static bool is_stdlib_shim_import(const char* path) {
     // so those resolve via its exports; the codegen/type-check shim path stays a
     // per-symbol FALLBACK for the functions still implemented as shims
     // (Contains/ToUpper/Split/Join) — resolution is exports-first, then shim.
-    static const char* const shim[] = {"fmt", "os", "math", "strconv", "errors"};
+    static const char* const shim[] = {"fmt", "os", "math", "errors"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }

@@ -1,0 +1,15 @@
+// strconv_probe: strconv.FormatBool (vendored). First source function from the
+// strconv package (which keeps its Atoi shim as a fallback). Each line is a result.
+package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func main() {
+	fmt.Println(strconv.FormatBool(true))  // true
+	fmt.Println(strconv.FormatBool(false)) // false
+	b := 1 < 2
+	fmt.Println(strconv.FormatBool(b))     // true
+}
