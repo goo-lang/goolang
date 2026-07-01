@@ -28,8 +28,10 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
             uint64_t v;
             if (!goo_fold_const_int(u->operand, &v)) return 0;
             switch (u->operator) {
-                case TOKEN_MINUS: *out = (uint64_t)(-(int64_t)v); return 1;
-                case TOKEN_PLUS:  *out = v; return 1;
+                case TOKEN_MINUS:   *out = (uint64_t)(-(int64_t)v); return 1;
+                case TOKEN_PLUS:    *out = v; return 1;
+                case TOKEN_BIT_XOR: *out = ~v; return 1; // ^x complement
+                case TOKEN_BIT_NOT: *out = ~v; return 1; // ~x
                 default: return 0;
             }
         }
