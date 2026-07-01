@@ -892,7 +892,7 @@ static int name_is_builtin_conv_name(const char* name) {
     static const char* names[] = {
         "int", "int8", "int16", "int32", "int64",
         "uint", "uint8", "uint16", "uint32", "uint64",
-        "byte", "float32", "float64", "string", "bool",
+        "byte", "rune", "float32", "float64", "string", "bool",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if (strcmp(name, names[i]) == 0) return 1;
