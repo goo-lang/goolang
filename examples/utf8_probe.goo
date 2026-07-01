@@ -1,0 +1,43 @@
+package main
+
+// utf8_probe: unicode/utf8 RuneLen and ValidRune (vendored verbatim). First
+// vendored function from a SECOND stdlib package. Exercises rune (= int32),
+// � / \U0010FFFF char escapes in the package consts, tagless switch, and
+// negative-literal args. Marker pattern avoids mixed-width prints.
+import (
+	"fmt"
+	"utf8"
+)
+
+func main() {
+	if utf8.RuneLen(65) == 1 {
+		fmt.Println("l1")
+	}
+	if utf8.RuneLen(1000) == 2 {
+		fmt.Println("l2")
+	}
+	if utf8.RuneLen(50000) == 3 {
+		fmt.Println("l3")
+	}
+	if utf8.RuneLen(70000) == 4 {
+		fmt.Println("l4")
+	}
+	if utf8.RuneLen(55296) == -1 {
+		fmt.Println("lsurr") // 0xD800 surrogate
+	}
+	if utf8.RuneLen(-1) == -1 {
+		fmt.Println("lneg")
+	}
+	if utf8.ValidRune(65) {
+		fmt.Println("vok")
+	}
+	if utf8.ValidRune(55296) == false {
+		fmt.Println("vsurr") // surrogate invalid
+	}
+	if utf8.ValidRune(1114111) {
+		fmt.Println("vmax") // 0x10FFFF
+	}
+	if utf8.ValidRune(1114112) == false {
+		fmt.Println("vover") // > MaxRune
+	}
+}

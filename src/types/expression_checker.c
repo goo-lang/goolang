@@ -760,6 +760,7 @@ static Type* builtin_conversion_target(TypeChecker* checker, const char* name) {
     if (strcmp(name, "int8") == 0)    return type_checker_get_builtin(checker, TYPE_INT8);
     if (strcmp(name, "int16") == 0)   return type_checker_get_builtin(checker, TYPE_INT16);
     if (strcmp(name, "int32") == 0)   return type_checker_get_builtin(checker, TYPE_INT32);
+    if (strcmp(name, "rune") == 0)    return type_checker_get_builtin(checker, TYPE_INT32); // Go: rune = int32
     if (strcmp(name, "int64") == 0)   return type_checker_get_builtin(checker, TYPE_INT64);
     if (strcmp(name, "uint") == 0)    return type_checker_get_builtin(checker, TYPE_UINT64);
     if (strcmp(name, "uint8") == 0)   return type_checker_get_builtin(checker, TYPE_UINT8);

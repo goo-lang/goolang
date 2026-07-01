@@ -1786,6 +1786,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(ident->name, "int8") == 0) return type_checker_get_builtin(checker, TYPE_INT8);
             if (strcmp(ident->name, "int16") == 0) return type_checker_get_builtin(checker, TYPE_INT16);
             if (strcmp(ident->name, "int32") == 0) return type_checker_get_builtin(checker, TYPE_INT32);
+            if (strcmp(ident->name, "rune") == 0) return type_checker_get_builtin(checker, TYPE_INT32); // Go: rune = int32
             if (strcmp(ident->name, "int64") == 0) return type_checker_get_builtin(checker, TYPE_INT64);
             if (strcmp(ident->name, "int") == 0) return type_checker_get_builtin(checker, TYPE_INT64);  // Default int (Go: int is 64-bit here)
             if (strcmp(ident->name, "uint8") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
@@ -1828,6 +1829,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "int8") == 0) return type_checker_get_builtin(checker, TYPE_INT8);
             if (strcmp(basic->name, "int16") == 0) return type_checker_get_builtin(checker, TYPE_INT16);
             if (strcmp(basic->name, "int32") == 0) return type_checker_get_builtin(checker, TYPE_INT32);
+            if (strcmp(basic->name, "rune") == 0) return type_checker_get_builtin(checker, TYPE_INT32); // Go: rune = int32
             if (strcmp(basic->name, "int64") == 0) return type_checker_get_builtin(checker, TYPE_INT64);
             if (strcmp(basic->name, "int") == 0) return type_checker_get_builtin(checker, TYPE_INT64);  // Default int (Go: int is 64-bit here)
             if (strcmp(basic->name, "uint8") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);

@@ -695,6 +695,21 @@ int lexer_decode_char_value(const char* body, size_t len, long* out) {
         *out = (unsigned char)body[0];
         return 1;
     }
+    // Numeric code-point escapes: \xNN (2 hex), \uXXXX (4 hex), \UXXXXXXXX
+    // (8 hex). A rune is int32, so these produce the code point value directly
+    // (e.g. '�' -> 65533). Needed by utf8's RuneError/MaxRune consts.
+    if (body[1] == 'x' || body[1] == 'u' || body[1] == 'U') {
+        size_t ndig = (body[1] == 'x') ? 2 : (body[1] == 'u') ? 4 : 8;
+        if (len != 2 + ndig) return 0;
+        long v = 0;
+        for (size_t i = 0; i < ndig; i++) {
+            int d = hex_digit_value(body[2 + i]);
+            if (d < 0) return 0;
+            v = (v << 4) | d;
+        }
+        *out = v;
+        return 1;
+    }
     if (len != 2) return 0; // escape is exactly backslash + one selector char
     switch (body[1]) {
         case 'n':  *out = '\n'; break;
@@ -718,9 +733,17 @@ char* lexer_read_char_literal(Lexer* lexer, size_t* length) {
     size_t start_pos = lexer->position;
     
     if (lexer->ch == '\\') {
-        lexer_read_char(lexer); // skip escape character
-        if (lexer->ch != 0) {
-            lexer_read_char(lexer); // skip escaped character
+        lexer_read_char(lexer); // skip backslash
+        char esc = lexer->ch;
+        if (esc != 0) {
+            lexer_read_char(lexer); // skip the escape selector (n, t, x, u, U, ...)
+        }
+        // Numeric escapes carry hex digits after the selector: \xNN, \uXXXX,
+        // \UXXXXXXXX. Read them into the body so lexer_decode_char_value can
+        // reconstruct the code point (e.g. '�').
+        size_t ndig = (esc == 'x') ? 2 : (esc == 'u') ? 4 : (esc == 'U') ? 8 : 0;
+        for (size_t i = 0; i < ndig && lexer->ch != 0 && lexer->ch != '\''; i++) {
+            lexer_read_char(lexer);
         }
     } else if (lexer->ch != 0) {
         lexer_read_char(lexer);
