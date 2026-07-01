@@ -166,6 +166,10 @@ typedef struct goo_type_info {
 // Bounds checking (for safe mode)
 void goo_bounds_check(size_t index, size_t length, const char* file, int line);
 
+// Decode the UTF-8 rune at data[i] (i < len); writes *rune_out, returns byte
+// width (1..4). Used by rune-aware for-range-over-string. See runtime.c.
+int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out);
+
 // Null checking (for nullable types)
 void goo_null_check(void* ptr, const char* file, int line);
 

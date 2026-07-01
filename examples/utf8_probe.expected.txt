@@ -11,3 +11,5 @@ vover
 rs_ascii
 rs_cont
 rs_lead
+rc_ascii
+rc_multi

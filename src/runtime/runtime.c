@@ -75,6 +75,31 @@ void goo_free(void* ptr) {
 
 // Error handling
 
+// Decode the UTF-8 rune at data[i] (caller guarantees i < len). Writes the rune
+// to *rune_out and returns its byte width (1..4). On an invalid lead byte,
+// truncated sequence, or bad continuation byte, writes 0xFFFD (utf8.RuneError)
+// and returns width 1 — matching Go's for-range-over-string behavior. v1
+// limitation: overlong encodings and surrogate halves are decoded as-is rather
+// than mapped to RuneError; valid UTF-8 (the common case) is exact.
+int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out) {
+    unsigned char b0 = (unsigned char)data[i];
+    if (b0 < 0x80) { *rune_out = (int32_t)b0; return 1; }
+    int n;
+    int32_t r;
+    if ((b0 & 0xE0) == 0xC0)      { n = 2; r = b0 & 0x1F; }
+    else if ((b0 & 0xF0) == 0xE0) { n = 3; r = b0 & 0x0F; }
+    else if ((b0 & 0xF8) == 0xF0) { n = 4; r = b0 & 0x07; }
+    else { *rune_out = 0xFFFD; return 1; }          // invalid lead byte
+    if (i + n > len) { *rune_out = 0xFFFD; return 1; } // truncated
+    for (int k = 1; k < n; k++) {
+        unsigned char bk = (unsigned char)data[i + k];
+        if ((bk & 0xC0) != 0x80) { *rune_out = 0xFFFD; return 1; } // bad continuation
+        r = (r << 6) | (bk & 0x3F);
+    }
+    *rune_out = r;
+    return (int32_t)n;
+}
+
 void goo_panic(const char* message) {
     fprintf(stderr, "panic: %s\n", message ? message : "unknown error");
     fflush(stderr);

@@ -391,6 +391,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_bounds_check", void_type, params, 4);
     }
     
+    // int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out)
+    // -> rune byte width; used by rune-aware for-range-over-string.
+    {
+        LLVMTypeRef i64_type = LLVMInt64TypeInContext(codegen->context);
+        LLVMTypeRef params[] = { ptr_type, i64_type, i64_type, ptr_type };
+        add_runtime_function(codegen, "goo_utf8_decode", i32_type, params, 4);
+    }
+
     // void goo_null_check(void* ptr, const char* file, int line)
     {
         LLVMTypeRef params[] = { ptr_type, ptr_type, i32_type };

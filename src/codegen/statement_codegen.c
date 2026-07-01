@@ -640,6 +640,18 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             codegen_add_value(codegen, vv);
         }
 
+        // Rune-aware string range (Go semantics): each iteration decodes the
+        // UTF-8 rune at the current byte index and advances by its byte width,
+        // NOT by 1. width_alloca carries the width from the body to the post
+        // (increment) block; rune_slot receives the decoded rune. Both are
+        // needed even when the value var is unused (`for i := range s`) because
+        // the byte-index advance still depends on the rune width.
+        LLVMValueRef width_alloca = NULL, rune_slot = NULL;
+        if (is_string_range) {
+            width_alloca = codegen_alloc_local(codegen, i32, "range_w");
+            rune_slot = codegen_alloc_local(codegen, i32, "range_rune");
+        }
+
         // Mirror loop vars to type-checker scope.
         scope_push(checker);
         if (for_stmt->key_name) {
@@ -671,24 +683,27 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
         // body: optionally load element, then run body
         codegen_set_insert_point(codegen, rbody);
-        if (val_alloca && llvm_elem) {
-            LLVMValueRef indices[] = { i_loaded };
-            if (is_string_range) {
-                // F7: load the i8 byte at data_ptr[i] and zero-extend it into
-                // the int32 value var (byte is unsigned, 0..255).
-                LLVMTypeRef i8t = LLVMInt8TypeInContext(codegen->context);
-                LLVMValueRef byte_ptr = LLVMBuildGEP2(codegen->builder, i8t,
-                                                      data_ptr, indices, 1, "byte_ptr");
-                LLVMValueRef byte_val = LLVMBuildLoad2(codegen->builder, i8t, byte_ptr, "byte");
-                LLVMValueRef rune_val = LLVMBuildZExt(codegen->builder, byte_val, llvm_elem, "rune");
-                LLVMBuildStore(codegen->builder, rune_val, val_alloca);
-            } else {
-                // Slice/array: load the element directly.
-                LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem,
-                                                      data_ptr, indices, 1, "elem_ptr");
-                LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "elem");
-                LLVMBuildStore(codegen->builder, elem_val, val_alloca);
+        if (is_string_range) {
+            // Rune-aware (Go): decode the UTF-8 rune at data_ptr[i]. Always run
+            // (even with no value var) because the post block advances i by the
+            // returned byte width. width -> width_alloca; rune -> value var.
+            LLVMValueRef dec = LLVMGetNamedFunction(codegen->module, "goo_utf8_decode");
+            if (!dec) { codegen_error(codegen, stmt->pos, "goo_utf8_decode missing"); scope_pop(checker); value_info_free(range_val); return 0; }
+            LLVMValueRef args[4] = { data_ptr, len64, i64_widened, rune_slot };
+            LLVMValueRef width = LLVMBuildCall2(codegen->builder,
+                                                LLVMGlobalGetValueType(dec), dec, args, 4, "rune_w");
+            LLVMBuildStore(codegen->builder, width, width_alloca);
+            if (val_alloca) {
+                LLVMValueRef r = LLVMBuildLoad2(codegen->builder, i32, rune_slot, "rune");
+                LLVMBuildStore(codegen->builder, r, val_alloca);
             }
+        } else if (val_alloca && llvm_elem) {
+            // Slice/array: load the element directly.
+            LLVMValueRef indices[] = { i_loaded };
+            LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem,
+                                                  data_ptr, indices, 1, "elem_ptr");
+            LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "elem");
+            LLVMBuildStore(codegen->builder, elem_val, val_alloca);
         }
         // break exits to rexit; continue jumps to rpost (the increment block).
         if (!codegen_push_loop(codegen, rexit, rpost)) {
@@ -708,11 +723,15 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
             LLVMBuildBr(codegen->builder, rpost);
 
-        // post: i = i + 1, then back to the condition.
+        // post: advance the byte index. A string range advances by the decoded
+        // rune's byte WIDTH (Go semantics); slices/arrays advance by 1.
         codegen_set_insert_point(codegen, rpost);
         LLVMValueRef i_now = LLVMBuildLoad2(codegen->builder, i32, idx_alloca, "i_inc");
-        LLVMValueRef i_next = LLVMBuildAdd(codegen->builder, i_now,
-                                           LLVMConstInt(i32, 1, 0), "i_next");
+        LLVMValueRef step = LLVMConstInt(i32, 1, 0);
+        if (is_string_range) {
+            step = LLVMBuildLoad2(codegen->builder, i32, width_alloca, "range_step");
+        }
+        LLVMValueRef i_next = LLVMBuildAdd(codegen->builder, i_now, step, "i_next");
         LLVMBuildStore(codegen->builder, i_next, idx_alloca);
         LLVMBuildBr(codegen->builder, rcond);
 

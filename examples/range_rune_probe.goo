@@ -1,0 +1,20 @@
+// range_rune_probe: rune-aware `for i, c := range s` (Go semantics). The value
+// is the decoded UTF-8 RUNE (not a byte) and the index advances by the rune's
+// byte width. The string uses \x escapes for portability:
+//   "a" 1 byte (0x61=97), "é" 2 bytes (U+00E9=233), "中" 3 bytes (U+4E2D=20013)
+// So 3 runes over 6 bytes; the value var yields the code points.
+package main
+
+import "fmt"
+
+func main() {
+	s := "a\xc3\xa9\xe4\xb8\xad"
+	n := 0
+	for i, c := range s {
+		_ = i
+		n++
+		fmt.Println(int(c)) // 97, 233, 20013
+	}
+	fmt.Println(n)      // 3 runes
+	fmt.Println(len(s)) // 6 bytes
+}
