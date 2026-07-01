@@ -1332,6 +1332,8 @@ static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMVal
 //   args         — the ASTNode list of verb arguments (format arg NOT included)
 //   sprintf_mode — 0 for Printf, 1 for Sprintf
 //   out_str      — (sprintf_mode=1 only) receives the built goo_string_t
+//   wrap_out     — non-NULL only for fmt.Errorf; enables the %w verb and
+//                  receives the wrapped error's handle (the cause) if seen
 //   call_pos     — source position of the call site, used for non-arg error messages
 //
 // Returns 1 on success, 0 after codegen_error on any mismatch.
@@ -1339,6 +1341,7 @@ static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMVal
 static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                               const char* fmt_str, ASTNode* args,
                               int sprintf_mode, LLVMValueRef* out_str,
+                              LLVMValueRef* wrap_out,
                               Position call_pos) {
 
     // -- Printf-mode runtime functions --
@@ -1702,6 +1705,28 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                 break;
             }
 
+        } else if (verb == 'w') {
+            // %w — wrap an error (fmt.Errorf only). Renders the wrapped error's
+            // message like %v AND records its handle as the cause via wrap_out.
+            if (!wrap_out) {
+                codegen_error(c, arg_cursor->pos, "fmt: %%w is only valid in fmt.Errorf");
+                value_info_free(arg_val); ok = 0; break;
+            }
+            if (!type_is_error(arg_val->goo_type)) {
+                codegen_error(c, arg_cursor->pos, "fmt.Errorf: %%w requires an error argument");
+                value_info_free(arg_val); ok = 0; break;
+            }
+            if (*wrap_out) {
+                codegen_error(c, arg_cursor->pos, "fmt.Errorf: multiple %%w not supported (v1)");
+                value_info_free(arg_val); ok = 0; break;
+            }
+            LLVMValueRef disp = codegen_error_display_string(c, arg_val->llvm_value, arg_cursor->pos);
+            if (!disp) { value_info_free(arg_val); ok = 0; break; }
+            LLVMValueRef cargs[] = { acc, disp };
+            acc = LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, cargs, 2, "sp_acc");
+            // Record the wrapped error's handle (field 1 of the loaded nullable) as the cause.
+            *wrap_out = LLVMBuildExtractValue(c->builder, arg_val->llvm_value, 1, "w.cause");
+
         } else {
             codegen_error(c, call_pos,
                           sprintf_mode
@@ -1765,7 +1790,7 @@ static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen,
 
     // Walk the format string, emitting print calls for each segment.
     // Pass fmt_arg->next so the walker sees only the verb arguments.
-    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 0, NULL, expr->pos)) {
+    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 0, NULL, NULL, expr->pos)) {
         return NULL;
     }
 
@@ -1803,7 +1828,7 @@ static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen,
 
     // Walk the format string, accumulating a goo_string_t in sprintf_mode=1.
     LLVMValueRef result = NULL;
-    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 1, &result, expr->pos)) {
+    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 1, &result, NULL, expr->pos)) {
         return NULL;
     }
 
@@ -1834,14 +1859,22 @@ static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen,
     }
     const char* fmt_str = ((LiteralNode*)fmt_arg)->value;
     LLVMValueRef msg_str = NULL;
-    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 1, &msg_str, expr->pos)) {
+    LLVMValueRef cause = NULL;
+    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 1, &msg_str, &cause, expr->pos)) {
         return NULL;
     }
-    LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
-    if (!from_str) { codegen_error(codegen, expr->pos, "goo_error_from_string not found in module"); return NULL; }
-    LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
-    LLVMValueRef bargs[] = { msg_str };
-    LLVMValueRef handle = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, bargs, 1, "errorf_box");
+    LLVMValueRef handle;
+    if (cause) {
+        LLVMValueRef wrap_fn = LLVMGetNamedFunction(codegen->module, "goo_error_wrap");
+        if (!wrap_fn) { codegen_error(codegen, expr->pos, "goo_error_wrap not found in module"); return NULL; }
+        LLVMValueRef wargs[] = { msg_str, cause };
+        handle = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(wrap_fn), wrap_fn, wargs, 2, "errorf_wrap");
+    } else {
+        LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+        if (!from_str) { codegen_error(codegen, expr->pos, "goo_error_from_string not found in module"); return NULL; }
+        LLVMValueRef bargs[] = { msg_str };
+        handle = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(from_str), from_str, bargs, 1, "errorf_box");
+    }
     Type* err_type = type_checker_error_type(checker);
     LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
     LLVMValueRef err_val = LLVMGetUndef(err_llvm);
