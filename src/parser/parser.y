@@ -1862,6 +1862,28 @@ slice_lit:
         lit->elem_type = $1;
         $$ = (ASTNode*)lit;
     }
+    /* Array composite literal `[N]T{e...}`. Mirrors the slice-literal rules but
+       stores the full array_type ($1, an AST_ARRAY_TYPE carrying N + T). */
+    | array_type LBRACE expression_list RBRACE {
+        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
+        lit->base.type = AST_ARRAY_LITERAL;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = $3;
+        lit->array_type = $1;
+        $$ = (ASTNode*)lit;
+    }
+    | array_type LBRACE RBRACE {
+        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
+        lit->base.type = AST_ARRAY_LITERAL;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = NULL;
+        lit->array_type = $1;
+        $$ = (ASTNode*)lit;
+    }
     ;
 
 type_name:

@@ -1,0 +1,28 @@
+// array_literal_probe: array composite literals `[N]T{e...}`, local and
+// package-global. Covers element indexing, partial literals (Go zero-fills the
+// tail), width coercion of untyped-int elements to the element type, and a
+// uint8 index (reuses the unsigned-index fix). The package-global case emits a
+// constant array initializer (builder-free), the shape stdlib byte tables use.
+package main
+
+import "fmt"
+
+var gtab = [4]byte{10, 20, 30, 40}
+
+func main() {
+	a := [3]int{100, 200, 300}
+	fmt.Println(a[0]) // 100
+	fmt.Println(a[2]) // 300
+
+	i := 1
+	fmt.Println(a[i]) // 200
+
+	b := [4]byte{1, 2, 3} // b[3] zero-filled
+	fmt.Println(int(b[1])) // 2
+	fmt.Println(int(b[3])) // 0
+
+	fmt.Println(int(gtab[0])) // 10
+	fmt.Println(int(gtab[3])) // 40
+	var u uint8 = 2
+	fmt.Println(int(gtab[u])) // 30
+}

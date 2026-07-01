@@ -178,6 +178,45 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
         }
         case AST_STRUCT_LITERAL:
             return type_check_struct_literal(checker, expr);
+        case AST_ARRAY_LITERAL: {
+            // `[N]T{e...}`: element type T from the declared array type, length
+            // N const-folded; each element must be compatible with T (codegen
+            // coerces widths), and at most N elements (Go zero-fills the rest).
+            ArrayLitNode* lit = (ArrayLitNode*)expr;
+            ArrayTypeNode* at = (ArrayTypeNode*)lit->array_type;
+            if (!at || at->base.type != AST_ARRAY_TYPE) return NULL;
+            Type* want = type_from_ast(checker, at->element_type);
+            if (!want) {
+                type_error(checker, expr->pos, "array literal: unknown element type");
+                return NULL;
+            }
+            uint64_t n = 0;
+            if (!at->length || !goo_fold_const_int(at->length, &n)) {
+                type_error(checker, expr->pos,
+                           "array literal: length must be a constant expression");
+                return NULL;
+            }
+            size_t count = 0;
+            for (ASTNode* e = lit->elements; e; e = e->next, count++) {
+                Type* et = type_check_expression(checker, e);
+                if (!et) return NULL;
+                if (!type_compatible(et, want)) {
+                    type_error(checker, e->pos,
+                               "array literal element %zu: cannot use %s as %s",
+                               count, type_to_string(et), type_to_string(want));
+                    return NULL;
+                }
+            }
+            if (count > n) {
+                type_error(checker, expr->pos,
+                           "array literal has %zu elements but length is %llu",
+                           count, (unsigned long long)n);
+                return NULL;
+            }
+            Type* arr = type_array(want, (size_t)n);
+            expr->node_type = arr;
+            return arr;
+        }
         case AST_MATCH_EXPR:
             return type_check_match_expr(checker, expr);
         default:

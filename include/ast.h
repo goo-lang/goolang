@@ -138,6 +138,10 @@ typedef enum {
     // which stays a VarDeclNode). Tail-appended per the convention above.
     AST_MULTI_ASSIGN,
 
+    // Array composite literal `[N]T{e...}`. Tail-appended per the convention
+    // above (Makefile has no header deps).
+    AST_ARRAY_LITERAL,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -608,6 +612,15 @@ typedef struct {
     // `[1, 2, 3]`, where the element type is inferred from the elements.
     struct ASTNode* elem_type;
 } SliceLitNode;
+
+// Array composite literal `[N]T{e...}` (AST_ARRAY_LITERAL). array_type is the
+// declared AST_ARRAY_TYPE (carrying the length N and element type T); elements
+// is the `next`-chained value list (fewer than N is allowed — Go zero-fills).
+typedef struct {
+    ASTNode base;
+    struct ASTNode* elements;
+    struct ASTNode* array_type;  // AST_ARRAY_TYPE (length + element_type)
+} ArrayLitNode;
 
 // Map literal: `map[K]V{k: v, …}`. Tagged AST_PAREN_EXPR — that
 // enum slot was reserved for parenthesized expressions (which Goo
