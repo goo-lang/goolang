@@ -1,0 +1,39 @@
+package main
+
+import "fmt"
+
+type pair struct {
+	lo int
+	hi int
+}
+
+// Elided struct literals in a package-level slice table (the utf8/unicode
+// table shape). Type name is inferred from the []pair element type.
+var table = []pair{
+	{1, 2},
+	{3, 4},
+	{5, 6},
+}
+
+func main() {
+	// positional elided, local slice
+	ps := []pair{ {10, 20}, {30, 40} }
+	fmt.Println(ps[0].lo)
+	fmt.Println(ps[1].hi)
+
+	// keyed elided (omitted field takes zero value)
+	ks := []pair{ {lo: 7, hi: 8}, {hi: 9} }
+	fmt.Println(ks[0].lo)
+	fmt.Println(ks[1].lo)
+
+	// array of elided struct literals
+	arr := [2]pair{ {100, 200}, {300, 400} }
+	fmt.Println(arr[1].lo)
+
+	// range over the global elided table
+	sum := 0
+	for _, p := range table {
+		sum += p.lo + p.hi
+	}
+	fmt.Println(sum)
+}

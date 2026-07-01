@@ -13,6 +13,12 @@ static int check_slice_elements(TypeChecker* checker, ASTNode* elements,
     (void)pos; // reserved; per-element errors use e->pos for precision
     size_t i = 0;
     for (ASTNode* e = elements; e; e = e->next, i++) {
+        // Elided composite element `{...}`: thread the declared element type
+        // into the literal so type_check_struct_literal can resolve it.
+        if (e->type == AST_STRUCT_LITERAL &&
+            ((StructLiteralNode*)e)->type_name == NULL) {
+            e->node_type = want_elem;
+        }
         Type* et = type_check_expression(checker, e);
         if (!et) return 0;
         // A float element in an integer slice would silently truncate
@@ -198,6 +204,12 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             }
             size_t count = 0;
             for (ASTNode* e = lit->elements; e; e = e->next, count++) {
+                // Elided composite element `{...}`: thread the declared array
+                // element type in so the struct-literal checker can resolve it.
+                if (e->type == AST_STRUCT_LITERAL &&
+                    ((StructLiteralNode*)e)->type_name == NULL) {
+                    e->node_type = want;
+                }
                 Type* et = type_check_expression(checker, e);
                 if (!et) return NULL;
                 if (!type_compatible(et, want)) {
@@ -234,15 +246,37 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
 
     StructLiteralNode* lit = (StructLiteralNode*)expr;
 
-    // Named types are registered in the variable scope by
-    // type_check_type_decl (the Variable's type IS the named Type).
-    Variable* named = type_checker_lookup_variable(checker, lit->type_name);
-    if (!named || !named->type) {
-        type_error(checker, expr->pos, "Unknown type '%s' in struct literal",
-                   lit->type_name);
-        return NULL;
+    // Elided composite literal `{...}`: the type name is omitted and the target
+    // type is inferred from context (the enclosing array/slice element type),
+    // which the caller pre-stamps on expr->node_type before dispatching here.
+    // Resolve the target struct type from that stamp instead of a by-name
+    // lookup. Only struct element types are supported (the common table case).
+    Type* named_type;
+    if (lit->type_name == NULL) {
+        named_type = expr->node_type;
+        if (!named_type) {
+            type_error(checker, expr->pos,
+                       "elided composite literal '{...}' has no inferable type "
+                       "in this context");
+            return NULL;
+        }
+        if (named_type->kind != TYPE_STRUCT) {
+            type_error(checker, expr->pos,
+                       "elided composite literal '{...}' requires a struct "
+                       "element type, got '%s'", type_to_string(named_type));
+            return NULL;
+        }
+    } else {
+        // Named types are registered in the variable scope by
+        // type_check_type_decl (the Variable's type IS the named Type).
+        Variable* named = type_checker_lookup_variable(checker, lit->type_name);
+        if (!named || !named->type) {
+            type_error(checker, expr->pos, "Unknown type '%s' in struct literal",
+                       lit->type_name);
+            return NULL;
+        }
+        named_type = named->type;
     }
-    Type* named_type = named->type;
 
     // For enum variant construction (e.g. `Circle{radius: 5}` where Circle is
     // a variant of enum Shape): resolve the variant and use its payload struct
