@@ -44,6 +44,11 @@ func RuneLen(r rune) int {
 	return -1
 }
 
+// RuneStart reports whether the byte could be the first byte of an encoded,
+// possibly invalid rune. Second and subsequent bytes always have the top two
+// bits set to 10.
+func RuneStart(b byte) bool { return b&0xC0 != 0x80 }
+
 // ValidRune reports whether r can be legally encoded as UTF-8.
 // Code points that are out of range or a surrogate half are illegal.
 func ValidRune(r rune) bool {
