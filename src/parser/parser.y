@@ -1188,6 +1188,17 @@ switch_stmt:
     | SWITCH expression LBRACE case_clause_list RBRACE {
         $$ = (ASTNode*)ast_switch_stmt_new($2, $4, get_current_position());
     }
+    /* Tagless switch `switch { case cond: ... }` (switch-true): synthesize a
+       `true` tag so the existing icmp-eq lowering matches the first case whose
+       boolean condition is true. Pervasive in the stdlib (e.g. utf8.RuneLen). */
+    | SWITCH LBRACE_BODY case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        $$ = (ASTNode*)ast_switch_stmt_new(t, $3, get_current_position());
+    }
+    | SWITCH LBRACE case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        $$ = (ASTNode*)ast_switch_stmt_new(t, $3, get_current_position());
+    }
     ;
 
 case_clause_list:

@@ -430,6 +430,15 @@ static int is_untyped_int_rooted(ASTNode* n) {
     if (!n) return 0;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT)
         return 1;
+    if (n->type == AST_UNARY_EXPR) {
+        // Unary -/+/^ result type is the operand's type, so `-1`, `^0` are
+        // untyped-rooted through the operand (lets a negative literal arg like
+        // `f(-1)` adapt to an int32/rune parameter).
+        UnaryExprNode* u = (UnaryExprNode*)n;
+        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS ||
+            u->operator == TOKEN_BIT_XOR)
+            return is_untyped_int_rooted(u->operand);
+    }
     if (n->type == AST_BINARY_EXPR) {
         BinaryExprNode* b = (BinaryExprNode*)n;
         if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT)
@@ -446,6 +455,14 @@ static void adapt_untyped_int_operand(ASTNode* n, Type* target) {
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT) {
         n->node_type = target;
         return;
+    }
+    if (n->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)n;
+        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS ||
+            u->operator == TOKEN_BIT_XOR) {
+            adapt_untyped_int_operand(u->operand, target); // unary result = operand type
+            n->node_type = target;
+        }
     }
     if (n->type == AST_BINARY_EXPR) {
         BinaryExprNode* b = (BinaryExprNode*)n;
@@ -1076,10 +1093,9 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             // honoring path in codegen_generate_literal); the width guard below
             // then sees matching types. This is what lets `RotateLeft64(1, 4)`
             // pass `1` to a uint64 parameter.
-            if (arg && arg->type == AST_LITERAL &&
-                ((LiteralNode*)arg)->literal_type == TOKEN_INT &&
-                param_type && type_is_integer(param_type)) {
-                arg->node_type = param_type;
+            if (arg && param_type && type_is_integer(param_type) &&
+                is_untyped_int_rooted(arg)) {
+                adapt_untyped_int_operand(arg, param_type);
                 arg_type = param_type;
             }
 
