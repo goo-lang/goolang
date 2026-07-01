@@ -173,6 +173,11 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
 ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 // Declaration generation
+// Forward-reference pre-pass: declare every plain function's LLVM prototype in
+// the module before any body is emitted, so a call to a function defined later
+// resolves. Mirrors the type checker's hoist_function_signatures. Call once,
+// before the body-emitting declaration loop. Returns 1 on success, 0 on failure.
+int codegen_predeclare_functions(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decls);
 int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl);
 int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl);
 int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);

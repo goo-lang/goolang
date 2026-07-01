@@ -1,0 +1,20 @@
+package main
+
+// uint_print_probe: fmt.Println of unsigned integer values. Unsigned values
+// route to goo_print_uint (zero-extend, not sign-extend) so a value above
+// INT64_MAX prints as its true magnitude, not a negative number — the case that
+// matters for math/bits results. (This uses uint64 throughout; a separate
+// latent codegen bug mishandles ≥3 sequential prints of MIXED integer widths —
+// it predates this change and affects signed ints identically, so it is tracked
+// separately, not exercised here.)
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	var a uint64 = 42
+	fmt.Println(a)
+	// A computed value above INT64_MAX (2^63) must print unsigned, not negative.
+	fmt.Println(bits.RotateLeft64(1, 63))
+}

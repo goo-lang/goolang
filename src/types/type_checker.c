@@ -368,6 +368,12 @@ void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type
 
 // Type checking entry points
 
+// Register one function/method signature without checking its body (defined
+// below, near type_check_function_decl). Used by the two-pass declaration walk
+// so every top-level signature is in scope before any body is checked —
+// enabling forward references between functions.
+static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func);
+
 int type_check_program(TypeChecker* checker, ASTNode* program) {
     if (!checker || !program) return 0;
 
@@ -418,14 +424,24 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
         }
     }
 
-    // Type check declarations
-    if (prog->decls) {
-        ASTNode* decl = prog->decls;
-        while (decl) {
-            if (!type_check_declaration(checker, decl)) {
-                return 0;
-            }
-            decl = decl->next;
+    // Two-pass declaration walk (Go package-scope semantics: a function body may
+    // reference any function declared anywhere in the file, not just above it).
+    //   Pass 1: register every declaration's SIGNATURE in source order — types,
+    //   vars and consts fully (type_check_declaration), function/method
+    //   signatures via declare_function_signature. Processing in order means a
+    //   signature still resolves the types declared before it, exactly as Go
+    //   requires.
+    //   Pass 2: check function BODIES, with every sibling signature now visible.
+    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+        if (decl->type == AST_FUNC_DECL) {
+            if (!declare_function_signature(checker, (FuncDeclNode*)decl)) return 0;
+        } else if (!type_check_declaration(checker, decl)) {
+            return 0;
+        }
+    }
+    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+        if (decl->type == AST_FUNC_DECL) {
+            if (!type_check_function_decl(checker, decl)) return 0;
         }
     }
 
@@ -473,11 +489,25 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
         }
     }
 
-    // The EXISTING declaration loop, unchanged — registers each top-level decl
-    // into the package scope we just pushed.
+    // Two-pass declaration walk (same as type_check_program): register all
+    // signatures in source order (pass 1), then check function bodies (pass 2),
+    // so a package function may reference another regardless of declaration
+    // order — the case that pervades real upstream Go source (e.g.
+    // bits.LeadingZeros calls Len, defined far below it).
     for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
-        if (!type_check_declaration(checker, decl)) {
+        if (decl->type == AST_FUNC_DECL) {
+            if (!declare_function_signature(checker, (FuncDeclNode*)decl)) {
+                return 0;  // scope/current_package left set; caller aborts the build
+            }
+        } else if (!type_check_declaration(checker, decl)) {
             return 0;  // scope/current_package left set; caller aborts the build
+        }
+    }
+    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+        if (decl->type == AST_FUNC_DECL) {
+            if (!type_check_function_decl(checker, decl)) {
+                return 0;  // scope/current_package left set; caller aborts the build
+            }
         }
     }
 
@@ -519,16 +549,17 @@ int is_synthetic_result_name(const char* n) {
     return 1;
 }
 
-int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
-    if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
-    
-    FuncDeclNode* func = (FuncDeclNode*)decl;
-
-    // Build the function's parameter type vector and resolve its return
-    // type. Previously this was a `() -> void` stub with a year-old TODO,
-    // so every call site saw `void` and any comparison against the call
-    // result failed type-checking. Now mirror what func_decl actually
-    // declared.
+// Register one function's signature (its Type and a scope Variable) WITHOUT
+// checking its body. Factored out of type_check_function_decl so the hoist
+// pre-pass (hoist_function_signatures) can register every top-level plain
+// function up front — letting bodies forward-reference functions declared later
+// in the file or in a later file of the same package (Go's package-scope
+// visibility: declaration order is irrelevant). A method is registered under
+// its mangled name "T__m" so selector resolution (p.m) and the call site find
+// it via a plain variable lookup; the receiver is params[0] (spliced by the
+// parser), so func_type already carries it. Returns 1 on success, 0 on a
+// duplicate definition in the current scope.
+static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) {
     size_t param_count = 0;
     for (ASTNode* p = func->params; p; p = p->next) {
         if (p->type == AST_VAR_DECL) param_count++;
@@ -549,11 +580,6 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         ? type_from_ast(checker, func->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
 
-    // Add function to global scope first (for recursive calls and forward
-    // references). A method is registered under its mangled name "T__m" so
-    // that selector resolution (p.m) and the call site find it via a plain
-    // variable lookup. The receiver is params[0] (spliced by the parser), so
-    // func_type already carries it.
     Type* func_type = type_function(param_types, param_count, return_type);
     char* mangled = NULL;
     const char* reg_name = func->name;
@@ -576,7 +602,23 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
             return 0;
         }
     }
-    
+    return 1;
+}
+
+int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
+    if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
+
+    FuncDeclNode* func = (FuncDeclNode*)decl;
+
+    // Body-checking pass only. The function's signature (its scope Variable, and
+    // for a method its receiver mangling) was already registered by pass 1 of
+    // the declaration walk (declare_function_signature) — re-registering here
+    // would report a forward-referenceable function as a duplicate of its own
+    // entry. We only need the return type for the body's return context.
+    Type* return_type = func->return_type
+        ? type_from_ast(checker, func->return_type)
+        : type_checker_get_builtin(checker, TYPE_VOID);
+
     // Create new scope for function
     scope_push(checker);
 
@@ -1199,6 +1241,10 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_expr_stmt(checker, stmt);
         case AST_VAR_DECL:
             return type_check_var_decl(checker, stmt);
+        case AST_CONST_DECL:
+            // Local const inside a function body (`const n = 64`). Same checker
+            // as a package-level const; the enclosing function scope holds it.
+            return type_check_const_decl(checker, stmt);
         case AST_MULTI_ASSIGN:
             return type_check_multi_assign(checker, stmt);
         case AST_IF_STMT:

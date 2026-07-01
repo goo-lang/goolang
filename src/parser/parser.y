@@ -678,6 +678,28 @@ const_decl:
         ast_node_free($2);
         $$ = (ASTNode*)const_node;
     }
+    | CONST identifier ASSIGN expression {
+        // Untyped single const: `const n = 64`. The type is inferred from the
+        // initializer by type_check_const_decl (type == NULL), exactly as the
+        // grouped-const desugaring already relies on. Real Go source (and
+        // math/bits especially) uses untyped consts pervasively.
+        ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
+        const_node->base.type = AST_CONST_DECL;
+        const_node->base.pos = get_current_position();
+        const_node->base.node_type = NULL;
+        const_node->base.next = NULL;
+
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        const_node->names = malloc(sizeof(char*));
+        const_node->names[0] = strdup(ident->name);
+        const_node->name_count = 1;
+        const_node->type = NULL;   // inferred from the initializer
+        const_node->values = $4;
+        const_node->is_comptime = 0;
+
+        ast_node_free($2);
+        $$ = (ASTNode*)const_node;
+    }
     | COMPTIME CONST identifier type ASSIGN expression {
         ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
         const_node->base.type = AST_CONST_DECL;
@@ -913,6 +935,7 @@ simple_stmt:
     }
     | short_var_decl { $$ = $1; }
     | var_decl { $$ = $1; }
+    | const_decl { $$ = $1; }  // local const: `const n = 64` inside a function body
     // Single assignment to any lvalue: `x = e`, `s[i] = e`, `p.f = e`. Was an
     // expression-level rule (expression ASSIGN expression); moved here so the
     // LHS shares the `expression` reduction and tuple assignment below has no

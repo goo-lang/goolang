@@ -248,6 +248,14 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         }
     }
     
+    // Forward-reference pre-pass: declare all plain-function prototypes before
+    // emitting any body, so a call to a function defined later in the file
+    // resolves (call sites use LLVMGetNamedFunction). Mirrors the type checker's
+    // hoist_function_signatures.
+    if (!codegen_predeclare_functions(codegen, checker, prog->decls)) {
+        return 0;
+    }
+
     // Generate declarations
     if (prog->decls) {
         ASTNode* decl = prog->decls;

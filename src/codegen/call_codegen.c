@@ -1276,6 +1276,16 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
             LLVMValueRef args[] = { widened };
             LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
                           int_fn, args, 1, "");
+        } else if (kind == TYPE_UINT8 || kind == TYPE_UINT16 || kind == TYPE_UINT32 || kind == TYPE_UINT64) {
+            // Unsigned: zero-extend (not sign-extend) to u64 and use the unsigned
+            // printer so large values print correctly (uint64 above INT64_MAX
+            // would show negative through goo_print_int).
+            LLVMValueRef uint_fn = LLVMGetNamedFunction(codegen->module, "goo_print_uint");
+            LLVMValueRef widened = LLVMBuildZExt(codegen->builder, arg_val->llvm_value,
+                                                 LLVMInt64TypeInContext(codegen->context), "zext");
+            LLVMValueRef args[] = { widened };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(uint_fn),
+                          uint_fn, args, 1, "");
         } else if (kind == TYPE_BOOL) {
             LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_print_bool");
             LLVMValueRef widened = LLVMBuildZExt(codegen->builder, arg_val->llvm_value,

@@ -199,6 +199,15 @@ void goo_println_bool(int value) {
     fflush(stdout);
 }
 
+// Unsigned integer printers: a uint64 value above INT64_MAX would print as a
+// negative number through the signed goo_print_int, so unsigned types
+// (uint/uint8/16/32/64, byte) route here. Codegen zero-extends the value to
+// u64 before the call.
+void goo_println_uint(uint64_t value) {
+    printf("%llu\n", (unsigned long long)value);
+    fflush(stdout);
+}
+
 void goo_println_float(double value) {
     printf("%g\n", value);
     fflush(stdout);
@@ -215,6 +224,11 @@ void goo_print_int(int64_t value) {
 
 void goo_print_bool(int value) {
     printf("%s", value ? "true" : "false");
+    fflush(stdout);
+}
+
+void goo_print_uint(uint64_t value) {
+    printf("%llu", (unsigned long long)value);
     fflush(stdout);
 }
 

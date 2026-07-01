@@ -441,9 +441,32 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
 
     Type* left_type = type_check_expression(checker, binary->left);
     Type* right_type = type_check_expression(checker, binary->right);
-    
+
     if (!left_type || !right_type) return NULL;
-    
+
+    // Narrow integer-literal adaptation for binary ops: if exactly one operand
+    // is an untyped integer literal and the other is a differently-sized integer,
+    // retype the literal to the other operand's type. LLVM binary ops (and
+    // shifts) require both operands to share a type, and codegen emits a retyped
+    // literal at that width (see codegen_generate_literal). This is what lets
+    // `x + 1`, `x >> 8`, `x & m` compute in uint64 rather than mixing widths.
+    if (type_is_integer(left_type) && type_is_integer(right_type) &&
+        left_type->kind != right_type->kind) {
+        ASTNode* ln = binary->left;
+        ASTNode* rn = binary->right;
+        int left_lit  = (ln->type == AST_LITERAL &&
+                         ((LiteralNode*)ln)->literal_type == TOKEN_INT);
+        int right_lit = (rn->type == AST_LITERAL &&
+                         ((LiteralNode*)rn)->literal_type == TOKEN_INT);
+        if (right_lit && !left_lit) {
+            rn->node_type = left_type;
+            right_type = left_type;
+        } else if (left_lit && !right_lit) {
+            ln->node_type = right_type;
+            left_type = right_type;
+        }
+    }
+
     Type* result_type = NULL;
     
     switch (binary->operator) {
@@ -994,6 +1017,20 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         if (check_signature && (arg_count + recv_offset) < param_count && param_types) {
             Type* param_type = param_types[arg_count + recv_offset];
 
+            // Narrow integer-literal adaptation: an untyped integer literal
+            // adapts to an integer parameter's type (Go's untyped-constant rule,
+            // restricted to literals). Retype the literal node so codegen emits
+            // it at the parameter's width and signedness (see the node_type-
+            // honoring path in codegen_generate_literal); the width guard below
+            // then sees matching types. This is what lets `RotateLeft64(1, 4)`
+            // pass `1` to a uint64 parameter.
+            if (arg && arg->type == AST_LITERAL &&
+                ((LiteralNode*)arg)->literal_type == TOKEN_INT &&
+                param_type && type_is_integer(param_type)) {
+                arg->node_type = param_type;
+                arg_type = param_type;
+            }
+
             // type_compatible() permits ANY numeric->numeric pair (it allows
             // implicit conversions), but call_codegen passes each argument to
             // the callee with NO trunc/ext/fptosi inserted (unlike the return
@@ -1003,9 +1040,8 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             // into an integer (e.g. `add(1.5, 2)`) — slips past type_compatible
             // and crashes the LLVM verifier with "Call parameter type does not
             // match function signature!". Reject those here, mirroring P2-1's
-            // return guard. No int-constant-widen exemption applies: codegen
-            // does not widen arguments, so even an untyped literal into a wider
-            // param would reach the verifier as invalid IR.
+            // return guard. (An integer LITERAL is exempt — it was just adapted
+            // to the parameter type above, and codegen emits it at that width.)
             if (param_type && type_is_numeric(arg_type) && type_is_numeric(param_type)) {
                 int same_kind  = (type_is_float(arg_type) == type_is_float(param_type));
                 int same_width = (type_size(arg_type) == type_size(param_type));
