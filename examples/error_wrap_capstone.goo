@@ -1,0 +1,13 @@
+package main
+import (
+	"fmt"
+	"errors"
+)
+func main() {
+	a := errors.New("root")
+	b := fmt.Errorf("mid: %w", a)
+	c := fmt.Errorf("top: %w", b)
+	fmt.Println(c.Error())
+	fmt.Println(errors.Unwrap(c).Error())
+	fmt.Println(errors.Unwrap(errors.Unwrap(c)).Error())
+}
