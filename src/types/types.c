@@ -707,6 +707,13 @@ int type_is_error_union(const Type* type) {
     return type->kind == TYPE_ERROR_UNION;
 }
 
+// A Goo v1 `error` value is the nullable pointer tagged name=="error" by
+// type_checker_error_type(). Central predicate so .Error() dispatch and fmt
+// error-printing recognize errors identically.
+int type_is_error(const Type* t) {
+    return t && t->name && strcmp(t->name, "error") == 0;
+}
+
 // Method name mangling: `func (T) m()` is lowered to an ordinary function
 // named "T__m". The declaration and every call site derive the same name
 // from the receiver's type, so a plain function/variable lookup resolves

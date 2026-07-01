@@ -861,7 +861,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (call->function->type == AST_SELECTOR_EXPR && func_type->kind == TYPE_STRING) {
         SelectorExprNode* esel = (SelectorExprNode*)call->function;
         Type* erecv_t = esel->expr->node_type;
-        if (erecv_t && erecv_t->name && strcmp(erecv_t->name, "error") == 0 &&
+        if (type_is_error(erecv_t) &&
             strcmp(esel->selector, "Error") == 0) {
             if (call->args) {
                 type_error(checker, expr->pos, "error.Error() takes no arguments");
@@ -1335,7 +1335,7 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     // be special-cased here BEFORE the named-type method lookup below (which
     // would look for a nonexistent "error__Error" function and fall through
     // to the generic rejection).
-    if (expr_type->name && strcmp(expr_type->name, "error") == 0 &&
+    if (type_is_error(expr_type) &&
         strcmp(selector->selector, "Error") == 0) {
         Type* ret = type_checker_get_builtin(checker, TYPE_STRING);
         expr->node_type = ret;

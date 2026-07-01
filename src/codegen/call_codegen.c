@@ -483,7 +483,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         // method set, so it must be special-cased before the struct/interface
         // dispatch below (which would resolve "error__Error", find nothing, and
         // fall through to the generic call path's "Undefined identifier").
-        if (recv_type && recv_type->name && strcmp(recv_type->name, "error") == 0 &&
+        if (type_is_error(recv_type) &&
             strcmp(msel->selector, "Error") == 0) {
             ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
             if (!rv) return NULL;
@@ -1145,8 +1145,7 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
         // would otherwise fall into the "unsupported argument type" error).
         // Print "<nil>" when null, else the boxed message — same nil-guard/
         // extract/goo_error_message shape as .Error() (Task 3, ~line 495).
-        if (arg_val->goo_type && arg_val->goo_type->name &&
-            strcmp(arg_val->goo_type->name, "error") == 0) {
+        if (type_is_error(arg_val->goo_type)) {
             LLVMValueRef errv = arg_val->llvm_value;  // already loaded above
             LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, errv, 0, "perr.is_null");
             LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, errv, 1, "perr.handle");
