@@ -12,6 +12,20 @@ const m2 = 0x0f0f0f0f0f0f0f0f // 00001111 ...
 const m3 = 0x00ff00ff00ff00ff // etc.
 const m4 = 0x0000ffff0000ffff
 
+// OnesCount64 returns the number of one bits ("population count") in x.
+func OnesCount64(x uint64) int {
+	// Implementation: Parallel summing of adjacent bits.
+	// See "Hacker's Delight", Chap. 5: Counting Bits.
+	const m = 1<<64 - 1
+	x = x>>1&(m0&m) + x&(m0&m)
+	x = x>>2&(m1&m) + x&(m1&m)
+	x = (x>>4 + x) & (m2 & m)
+	x += x >> 8
+	x += x >> 16
+	x += x >> 32
+	return int(x) & (1<<7 - 1)
+}
+
 // ReverseBytes16 returns the value of x with its bytes in reversed order.
 //
 // This function's execution time does not depend on the inputs.

@@ -573,7 +573,68 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     if (!codegen || !checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
     
     BinaryExprNode* binary = (BinaryExprNode*)expr;
-    
+
+    // Compound assignment (x += e, x &= e, ...): lower to load-op-store. Resolve
+    // the target address, then temporarily retype this node to the BASE operator
+    // and recurse — that reuses the full binary-op codegen (operand width
+    // coercion, signedness) to compute `x <op> e`, loading x from the same
+    // lvalue. Store the result back, coerced to the target's width like a plain
+    // assignment.
+    {
+        TokenType base_op = TOKEN_UNKNOWN;
+        switch (binary->operator) {
+            case TOKEN_PLUS_ASSIGN:   base_op = TOKEN_PLUS; break;
+            case TOKEN_MINUS_ASSIGN:  base_op = TOKEN_MINUS; break;
+            case TOKEN_MUL_ASSIGN:    base_op = TOKEN_MULTIPLY; break;
+            case TOKEN_DIV_ASSIGN:    base_op = TOKEN_DIVIDE; break;
+            case TOKEN_MOD_ASSIGN:    base_op = TOKEN_MODULO; break;
+            case TOKEN_AND_ASSIGN:    base_op = TOKEN_BIT_AND; break;
+            case TOKEN_OR_ASSIGN:     base_op = TOKEN_BIT_OR; break;
+            case TOKEN_XOR_ASSIGN:    base_op = TOKEN_BIT_XOR; break;
+            case TOKEN_LSHIFT_ASSIGN: base_op = TOKEN_LSHIFT; break;
+            case TOKEN_RSHIFT_ASSIGN: base_op = TOKEN_RSHIFT; break;
+            default: break;
+        }
+        if (base_op != TOKEN_UNKNOWN) {
+            ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, binary->left);
+            if (!target || !target->is_lvalue) {
+                codegen_error(codegen, expr->pos,
+                              "Compound-assignment target must be an addressable lvalue");
+                return NULL;
+            }
+            binary->operator = base_op;
+            ValueInfo* newval = codegen_generate_binary_expr(codegen, checker, expr);
+            binary->operator = (base_op == TOKEN_PLUS)     ? TOKEN_PLUS_ASSIGN
+                             : (base_op == TOKEN_MINUS)    ? TOKEN_MINUS_ASSIGN
+                             : (base_op == TOKEN_MULTIPLY) ? TOKEN_MUL_ASSIGN
+                             : (base_op == TOKEN_DIVIDE)   ? TOKEN_DIV_ASSIGN
+                             : (base_op == TOKEN_MODULO)   ? TOKEN_MOD_ASSIGN
+                             : (base_op == TOKEN_BIT_AND)  ? TOKEN_AND_ASSIGN
+                             : (base_op == TOKEN_BIT_OR)   ? TOKEN_OR_ASSIGN
+                             : (base_op == TOKEN_BIT_XOR)  ? TOKEN_XOR_ASSIGN
+                             : (base_op == TOKEN_LSHIFT)   ? TOKEN_LSHIFT_ASSIGN
+                                                           : TOKEN_RSHIFT_ASSIGN;
+            if (!newval) return NULL;
+            LLVMValueRef sval = newval->llvm_value;
+            if (target->goo_type &&
+                LLVMGetTypeKind(LLVMTypeOf(sval)) == LLVMIntegerTypeKind) {
+                LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+                if (tt && LLVMGetTypeKind(tt) == LLVMIntegerTypeKind) {
+                    unsigned sw = LLVMGetIntTypeWidth(LLVMTypeOf(sval));
+                    unsigned tw = LLVMGetIntTypeWidth(tt);
+                    if (sw > tw)
+                        sval = LLVMBuildTrunc(codegen->builder, sval, tt, "casn.trunc");
+                    else if (sw < tw)
+                        sval = (newval->goo_type && type_is_signed(newval->goo_type))
+                            ? LLVMBuildSExt(codegen->builder, sval, tt, "casn.sext")
+                            : LLVMBuildZExt(codegen->builder, sval, tt, "casn.zext");
+                }
+            }
+            LLVMBuildStore(codegen->builder, sval, target->llvm_value);
+            return newval;
+        }
+    }
+
     // Special handling for assignment
     if (binary->operator == TOKEN_ASSIGN) {
         // Blank identifier `_` as a plain-assignment target (F1): `_ = rhs`

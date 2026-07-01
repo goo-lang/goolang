@@ -505,7 +505,21 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
             break;
             
         // Assignment operators
+        // Plain and compound assignment. A compound assign `x op= e` is checked
+        // like `x = e` (target addressable, e compatible with the target's
+        // type); codegen lowers it to `x = x op e`. The narrow literal
+        // adaptation above already retyped an int literal RHS to the target.
         case TOKEN_ASSIGN:
+        case TOKEN_PLUS_ASSIGN:
+        case TOKEN_MINUS_ASSIGN:
+        case TOKEN_MUL_ASSIGN:
+        case TOKEN_DIV_ASSIGN:
+        case TOKEN_MOD_ASSIGN:
+        case TOKEN_AND_ASSIGN:
+        case TOKEN_OR_ASSIGN:
+        case TOKEN_XOR_ASSIGN:
+        case TOKEN_LSHIFT_ASSIGN:
+        case TOKEN_RSHIFT_ASSIGN:
             result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, expr->pos);
             break;
             

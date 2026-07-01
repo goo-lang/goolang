@@ -1,0 +1,25 @@
+package main
+
+// bits_onescount_probe: math/bits.OnesCount64 (vendored verbatim). Exercises
+// compound assignment (`x += x >> 8`), the `int(x)` conversion, the `1<<64 - 1`
+// and `1<<7 - 1` folded consts, and the m0..m2 masks — the full Phase-1 arith
+// stack. Popcount: 0->0, 255->8, 1023->10, uint64 max (0xFFFF...F)->64.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.OnesCount64(0) == 0 {
+		fmt.Println("c0")
+	}
+	if bits.OnesCount64(255) == 8 {
+		fmt.Println("c8")
+	}
+	if bits.OnesCount64(1023) == 10 {
+		fmt.Println("c10")
+	}
+	if bits.OnesCount64(18446744073709551615) == 64 {
+		fmt.Println("c64")
+	}
+}
