@@ -1150,29 +1150,33 @@ fallback:;
     for (size_t i = 0; i < const_decl->name_count; i++) {
         const char* const_name = const_decl->names[i];
         
-        // Get type from type checker
+        // Get the constant's type. A package-level const has a persisted
+        // type-checker Variable; a LOCAL const (inside a function body) does not
+        // — its type-check scope was torn down after that function was checked —
+        // so fall back to the type inferred for the initializer during codegen.
         Variable* var = type_checker_lookup_variable(checker, const_name);
-        if (!var) {
-            codegen_error(codegen, decl->pos, "Constant '%s' not found in type checker", const_name);
+        Type* const_type = var ? var->type : const_value->goo_type;
+        if (!const_type) {
+            codegen_error(codegen, decl->pos, "Cannot determine type for constant '%s'", const_name);
             value_info_free(const_value);
             return 0;
         }
-        
+
         // Convert type to LLVM type
-        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, var->type);
+        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, const_type);
         if (!llvm_type) {
             codegen_error(codegen, decl->pos, "Failed to convert type for constant '%s'", const_name);
             value_info_free(const_value);
             return 0;
         }
-        
+
         // Create global constant
         LLVMValueRef global_const = LLVMAddGlobal(codegen->module, llvm_type, const_name);
         LLVMSetInitializer(global_const, const_value->llvm_value);
         LLVMSetGlobalConstant(global_const, 1);  // Mark as constant
-        
+
         // Add to symbol table
-        ValueInfo* value_info = value_info_new(const_name, global_const, var->type);
+        ValueInfo* value_info = value_info_new(const_name, global_const, const_type);
         if (!value_info) {
             codegen_error(codegen, decl->pos, "Failed to create value info for constant '%s'", const_name);
             value_info_free(const_value);

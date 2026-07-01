@@ -1,0 +1,31 @@
+package main
+
+// local_const_probe: const declarations inside function bodies (typed and
+// untyped) plus an untyped package-level single const — all pervasive in real
+// Go stdlib source (math/bits especially). Also checks that identically named
+// local consts in different functions do not collide.
+import "fmt"
+
+const pkgUntyped = 7
+
+func withTyped() int {
+	const n int = 64
+	return n
+}
+
+func withUntyped() int {
+	const n = 100
+	return n
+}
+
+func other() int {
+	const n = 5 // same name, different function — must not collide
+	return n
+}
+
+func main() {
+	fmt.Println(pkgUntyped)
+	fmt.Println(withTyped())
+	fmt.Println(withUntyped())
+	fmt.Println(other())
+}

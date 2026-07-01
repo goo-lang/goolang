@@ -210,6 +210,11 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_expr_stmt(codegen, checker, stmt);
         case AST_VAR_DECL:
             return codegen_generate_var_decl(codegen, checker, stmt);
+        case AST_CONST_DECL:
+            // Local const inside a function body (`const n = 64`). Reuses the
+            // package-const emitter; the resulting ValueInfo is added to the
+            // function-scoped value table so reads within the body resolve it.
+            return codegen_generate_const_decl(codegen, checker, stmt);
         case AST_MULTI_ASSIGN:
             return codegen_generate_multi_assign(codegen, checker, stmt);
         case AST_IF_STMT:
