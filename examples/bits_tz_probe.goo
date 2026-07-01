@@ -1,0 +1,40 @@
+package main
+
+// bits_tz_probe: math/bits TrailingZeros16/32/64 (vendored). Function bodies are
+// upstream-verbatim; only the deBruijn lookup tables are stored as const strings
+// instead of upstream's `var [N]byte{...}` array literals (array literals are not
+// yet supported — a documented, localized exception to the verbatim rule). The
+// bytes and behavior are byte-identical. Exercises `x & -x` (unsigned negate),
+// the deBruijn multiply/shift hash, and indexing by the computed value.
+// Marker pattern avoids sequential different-width prints.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.TrailingZeros16(0) == 16 {
+		fmt.Println("t16z")
+	}
+	if bits.TrailingZeros16(32768) == 15 {
+		fmt.Println("t16h")
+	}
+	if bits.TrailingZeros32(0) == 32 {
+		fmt.Println("t32z")
+	}
+	if bits.TrailingZeros32(1024) == 10 {
+		fmt.Println("t32m")
+	}
+	if bits.TrailingZeros32(2147483648) == 31 {
+		fmt.Println("t32h")
+	}
+	if bits.TrailingZeros64(0) == 64 {
+		fmt.Println("t64z")
+	}
+	if bits.TrailingZeros64(4294967296) == 32 {
+		fmt.Println("t64m")
+	}
+	if bits.TrailingZeros64(9223372036854775808) == 63 {
+		fmt.Println("t64h")
+	}
+}

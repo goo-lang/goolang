@@ -202,6 +202,63 @@ func TrailingZeros8(x uint8) int {
 	return int(ntz8tab[x])
 }
 
+const deBruijn32 = 0x077CB531
+
+// deBruijn32tab is upstream's `var deBruijn32tab = [32]byte{...}` (bits.go),
+// stored here as a const string because array literals are not yet supported.
+// The bytes are unchanged; indexing a const string yields the same byte, so the
+// function body below is verbatim. (Localized exception to the verbatim rule.)
+const deBruijn32tab = "" +
+	"\x00\x01\x1c\x02\x1d\x0e\x18\x03\x1e\x16\x14\x0f\x19\x11\x04\x08" +
+	"\x1f\x1b\x0d\x17\x15\x13\x10\x07\x1a\x0c\x12\x06\x0b\x05\x0a\x09"
+
+const deBruijn64 = 0x03f79d71b4ca8b09
+
+// deBruijn64tab is upstream's `var deBruijn64tab = [64]byte{...}` (bits.go),
+// stored here as a const string (see deBruijn32tab). Bytes unchanged.
+const deBruijn64tab = "" +
+	"\x00\x01\x38\x02\x39\x31\x1c\x03\x3d\x3a\x2a\x32\x26\x1d\x11\x04" +
+	"\x3e\x2f\x3b\x24\x2d\x2b\x33\x16\x35\x27\x21\x1e\x18\x12\x0c\x05" +
+	"\x3f\x37\x30\x1b\x3c\x29\x25\x10\x2e\x23\x2c\x15\x34\x20\x17\x0b" +
+	"\x36\x1a\x28\x0f\x22\x14\x1f\x0a\x19\x0e\x13\x09\x0d\x08\x07\x06"
+
+// TrailingZeros16 returns the number of trailing zero bits in x; the result is 16 for x == 0.
+func TrailingZeros16(x uint16) int {
+	if x == 0 {
+		return 16
+	}
+	// see comment in TrailingZeros64
+	return int(deBruijn32tab[uint32(x&-x)*deBruijn32>>27])
+}
+
+// TrailingZeros32 returns the number of trailing zero bits in x; the result is 32 for x == 0.
+func TrailingZeros32(x uint32) int {
+	if x == 0 {
+		return 32
+	}
+	// see comment in TrailingZeros64
+	return int(deBruijn32tab[(x&-x)*deBruijn32>>27])
+}
+
+// TrailingZeros64 returns the number of trailing zero bits in x; the result is 64 for x == 0.
+func TrailingZeros64(x uint64) int {
+	if x == 0 {
+		return 64
+	}
+	// If popcount is fast, replace code below with return popcount(^x & (x - 1)).
+	//
+	// x & -x leaves only the right-most bit set in the word. Let k be the
+	// index of that bit. Since only a single bit is set, the value is two
+	// to the power of k. Multiplying by a power of two is equivalent to
+	// left shifting, in this case by k bits. The de Bruijn (64 bit) constant
+	// is such that all six bit, consecutive substrings are distinct.
+	// Therefore, if we have a left shifted version of this constant we can
+	// find by how many bits it was shifted by looking at which six bit
+	// substring ended up at the top of the word.
+	// (Knuth, volume 4, section 7.3.1)
+	return int(deBruijn64tab[(x&-x)*deBruijn64>>58])
+}
+
 // --- OnesCount ---
 
 // pop8tab is vendored verbatim from Go 1.26 math/bits (src/math/bits/bits_tab.go),
