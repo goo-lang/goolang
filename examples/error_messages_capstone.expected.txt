@@ -1,0 +1,2 @@
+42
+parse bad: strconv.Atoi: invalid syntax
