@@ -436,6 +436,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 value_info_free(msg);
 
                 LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+                if (!from_str) { codegen_error(codegen, expr->pos, "goo_error_from_string not found in module"); return NULL; }
                 LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
                 LLVMValueRef args1[] = { msg_val };
                 LLVMValueRef handle = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, args1, 1, "errnew_box");
@@ -1837,6 +1838,7 @@ static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen,
         return NULL;
     }
     LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+    if (!from_str) { codegen_error(codegen, expr->pos, "goo_error_from_string not found in module"); return NULL; }
     LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
     LLVMValueRef bargs[] = { msg_str };
     LLVMValueRef handle = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, bargs, 1, "errorf_box");
