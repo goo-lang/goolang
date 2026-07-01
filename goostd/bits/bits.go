@@ -370,6 +370,31 @@ func Add64(x, y, carry uint64) (sum, carryOut uint64) {
 	return
 }
 
+// --- Subtract with borrow ---
+
+// Sub32 returns the difference of x, y and borrow, diff = x - y - borrow.
+// The borrow input must be 0 or 1; otherwise the behavior is undefined.
+// The borrowOut output is guaranteed to be 0 or 1.
+func Sub32(x, y, borrow uint32) (diff, borrowOut uint32) {
+	diff = x - y - borrow
+	// The difference will underflow if the top bit of x is not set and the top
+	// bit of y is set (^x & y) or if they are the same (^(x ^ y)) and a borrow
+	// from the lower place happens. If that borrow happens, the result will be
+	// 1 - 1 - 1 = 0 - 0 - 1 = 1 (& diff).
+	borrowOut = ((^x & y) | (^(x ^ y) & diff)) >> 31
+	return
+}
+
+// Sub64 returns the difference of x, y and borrow: diff = x - y - borrow.
+// The borrow input must be 0 or 1; otherwise the behavior is undefined.
+// The borrowOut output is guaranteed to be 0 or 1.
+func Sub64(x, y, borrow uint64) (diff, borrowOut uint64) {
+	diff = x - y - borrow
+	// See Sub32 for the derivation of this formula.
+	borrowOut = ((^x & y) | (^(x ^ y) & diff)) >> 63
+	return
+}
+
 // --- Full-width multiply ---
 
 // Mul32 returns the 64-bit product of x and y: (hi, lo) = x * y
