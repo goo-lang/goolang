@@ -1,0 +1,7 @@
+len
+lz
+tz
+oc
+rot
+rev
+revb
