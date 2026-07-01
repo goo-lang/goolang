@@ -1,0 +1,43 @@
+package main
+
+import "fmt"
+
+type P struct {
+	a int
+	b int
+}
+
+func slow() (int, int) { return 7, 8 }
+
+// The DecodeRune shape: named returns + `r, size = f()` + naked return.
+func decode() (r int, size int) {
+	r, size = slow()
+	return
+}
+
+func main() {
+	// tuple assignment from a single multi-return call
+	var x int
+	var y int
+	x, y = slow()
+	fmt.Println(x) // 7
+	fmt.Println(y) // 8
+
+	// named-return + naked-return destructure
+	r, s := decode()
+	fmt.Println(r) // 7
+	fmt.Println(s) // 8
+
+	// lvalue (selector) targets
+	var p P
+	p.a, p.b = slow()
+	fmt.Println(p.a) // 7
+	fmt.Println(p.b) // 8
+
+	// regression: two independent RHS values still work
+	var m int
+	var n int
+	m, n = 3, 4
+	fmt.Println(m) // 3
+	fmt.Println(n) // 4
+}

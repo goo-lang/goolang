@@ -1204,6 +1204,19 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
         vtypes[n++] = vt;
     }
 
+    // Destructuring assignment `a, b = f()`: a SINGLE multi-return value whose
+    // result is a struct is spread across the targets (the call returns a
+    // struct of the result types). Expand the one struct value into per-field
+    // value types so the target loop binds/stores each field.
+    if (n == 1 && ma->count == 2 && vtypes[0] &&
+        vtypes[0]->kind == TYPE_STRUCT &&
+        vtypes[0]->data.struct_type.field_count >= 2) {
+        Type* s = vtypes[0];
+        vtypes[0] = s->data.struct_type.fields[0].type;
+        vtypes[1] = s->data.struct_type.fields[1].type;
+        n = 2;
+    }
+
     size_t i = 0;
     for (ASTNode* t = ma->targets; t; t = t->next, i++) {
         if (i >= n) {

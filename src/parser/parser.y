@@ -35,6 +35,11 @@ static ASTNode* desugar_const_group(ASTNode* spec_chain);
 // F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` / `a,b = v1,v2`).
 static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
                                    ASTNode* v1, ASTNode* v2, int is_short_decl);
+/* `a, b = f()` — tuple assignment to two existing lvalues from a SINGLE
+   multi-return call. Builds a MultiAssignNode with two targets and one value
+   (chain length 1, count 2); the type checker and codegen detect the
+   values<targets shape and destructure the call's result struct fields. */
+static ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call);
 static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
 /* Build a StructLiteralNode from an owned type-name string (or NULL for an
    elided composite literal `{...}` whose type is inferred from context) and a
@@ -960,10 +965,21 @@ simple_stmt:
     | identifier COMMA identifier ASSIGN expression COMMA expression {
         $$ = multi_assign_2_new($1, $3, $5, $7, 0);
     }
+    // `a, b = f()` — tuple assignment from a SINGLE multi-return call. The
+    // absence of a trailing `COMMA expression` (present in the rule above)
+    // distinguishes this destructuring form. Declared before the general
+    // expression-LHS variant so a bare-identifier LHS reduces here.
+    | identifier COMMA identifier ASSIGN expression {
+        $$ = multi_assign_call_new($1, $3, $5);
+    }
     // Tuple assignment to any lvalues: `s[i], s[j] = s[j], s[i]`, `p.a, p.b = …`.
     // Targets are full expressions (addressability checked in the typechecker).
     | expression COMMA expression ASSIGN expression COMMA expression {
         $$ = multi_assign_2_new($1, $3, $5, $7, 0);
+    }
+    // `p.a, s[i] = f()` — single-call destructure to general lvalue targets.
+    | expression COMMA expression ASSIGN expression {
+        $$ = multi_assign_call_new($1, $3, $5);
     }
     ;
 
@@ -2882,6 +2898,24 @@ static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
     ma->values = v1;
     ma->count = 2;
     ma->is_short_decl = is_short_decl;
+    return (ASTNode*)ma;
+}
+
+static ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call) {
+    MultiAssignNode* ma = (MultiAssignNode*)malloc(sizeof(MultiAssignNode));
+    ma->base.type = AST_MULTI_ASSIGN;
+    ma->base.pos = get_current_position();
+    ma->base.node_type = NULL;
+    ma->base.next = NULL;
+
+    t1->next = t2;
+    t2->next = NULL;
+    call->next = NULL;      /* single value; codegen destructures its fields */
+
+    ma->targets = t1;
+    ma->values = call;
+    ma->count = 2;
+    ma->is_short_decl = 0;
     return (ASTNode*)ma;
 }
 
