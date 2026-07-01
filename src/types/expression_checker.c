@@ -999,7 +999,31 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = slice_t;
             return slice_t;
         }
-        // cap(slice) -> int. The slice's capacity (header field 2).
+        // len(slice|string|map) -> int. Codegen dispatches on the arg's
+        // TypeKind (map routes through goo_map_len_sv; slice/string extract
+        // the header's length field) — gate the accepted kinds here so an
+        // unsupported argument (e.g. an array) is a clean error instead of
+        // reaching codegen's ExtractValue path, which assumes an aggregate
+        // and segfaults on anything else.
+        if (strcmp(func_ident->name, "len") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "len expects exactly one argument");
+                return NULL;
+            }
+            Type* arg_t = type_check_expression(checker, call->args);
+            if (!arg_t) return NULL;
+            if (arg_t->kind != TYPE_SLICE && arg_t->kind != TYPE_STRING && arg_t->kind != TYPE_MAP) {
+                type_error(checker, expr->pos,
+                           "len() requires a slice, string, or map argument");
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: len -> int (64-bit)
+            return checker->builtin_types[TYPE_INT64];
+        }
+        // cap(slice) -> int. The slice's capacity (header field 2). TYPE_MAP
+        // falls into the `!= TYPE_SLICE` branch below, which already rejects
+        // it cleanly — maps lower to an opaque i8* with no capacity field,
+        // so codegen's ExtractValue would segfault if this let one through.
         if (strcmp(func_ident->name, "cap") == 0) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "cap expects exactly one argument");
@@ -1007,6 +1031,10 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* slice_t = type_check_expression(checker, call->args);
             if (!slice_t) return NULL;
+            if (slice_t->kind == TYPE_MAP) {
+                type_error(checker, expr->pos, "cap() is not defined for maps");
+                return NULL;
+            }
             if (slice_t->kind != TYPE_SLICE) {
                 type_error(checker, expr->pos,
                            "cap: argument must be a slice, got %s", type_to_string(slice_t));

@@ -279,6 +279,22 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
                 if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "len_load");
             }
+            // TYPE_MAP lowers to an opaque i8* (GooMapSV*), not the
+            // {ptr,len,cap}/{ptr,len} aggregate slices/strings share —
+            // ExtractValue below would segfault on it. Route through the
+            // runtime entry-count helper instead.
+            if (arg->goo_type && arg->goo_type->kind == TYPE_MAP) {
+                LLVMValueRef len_fn = LLVMGetNamedFunction(codegen->module, "goo_map_len_sv");
+                if (!len_fn) {
+                    codegen_error(codegen, expr->pos, "len: goo_map_len_sv unavailable");
+                    value_info_free(arg);
+                    return NULL;
+                }
+                LLVMValueRef map_len = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(len_fn),
+                                                      len_fn, &raw, 1, "map_len");
+                value_info_free(arg);
+                return value_info_new(NULL, map_len, type_checker_get_builtin(checker, TYPE_INT64));
+            }
             // Go: len returns `int` (i64 here) — the slice header already
             // stores the length as i64, so no truncation.
             LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "len");

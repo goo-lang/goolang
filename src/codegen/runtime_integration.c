@@ -347,6 +347,12 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, ptr_type, ptr_type, ptr_type };
         add_runtime_function(codegen, "goo_map_get_sv_ok", void_type, params, 4);
     }
+    // int64_t goo_map_len_sv(GooMapSV*) — entry count. Backs len(m).
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_map_len_sv",
+                             LLVMInt64TypeInContext(codegen->context), params, 1);
+    }
 
     // Slice operations.
     // WARNING: goo_slice_new/free/get below pass/return goo_slice_t BY VALUE.

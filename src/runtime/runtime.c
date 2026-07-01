@@ -556,6 +556,19 @@ void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found) {
     }
 }
 
+// Entry count: backs len(m). Linear scan (same cost model as the rest of
+// this list-based map — correctness over performance).
+int64_t goo_map_len_sv(GooMapSV* m) {
+    if (!m) return 0;
+    int64_t n = 0;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
+    while (e) {
+        n++;
+        e = e->next;
+    }
+    return n;
+}
+
 // Slice operations
 
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {

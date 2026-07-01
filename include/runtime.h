@@ -126,6 +126,8 @@ int64_t goo_map_get_sv(GooMapSV* m, const char* k);
 // Presence-returning read: *found=1 and *out=value if k is present, else
 // *found=0 and *out=0. Backs comma-ok map reads (v, ok := m[k]).
 void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found);
+// Entry count. Backs len(m); linear scan of the linked list.
+int64_t goo_map_len_sv(GooMapSV* m);
 
 // Slice operations
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity);
