@@ -223,16 +223,22 @@ static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* chec
         : type_checker_get_builtin(checker, TYPE_VOID);
     if (!return_type || type_is_error_union(return_type)) return 1;
 
-    // Skip functions whose return type lowers to an aggregate (tuple/multi-
-    // return, named-return struct): codegen_type_to_llvm mints a FRESH anonymous
-    // struct on each call, so a prototype declared here and the body's return
-    // value would be two distinct {..} literal types and fail the verifier
-    // ("return type does not match operand type of return inst"). Such functions
-    // keep their original single-pass emission — self-consistent, just without
-    // forward-reference support (no plain leaf package needs a forward call into
-    // a tuple-returning function; that case is deferred).
+    // Skip functions returning a NAMED LLVM struct (a user struct returned by
+    // value): its LLVM type is keyed on the Type* pointer, and the prototype's
+    // and body's independent type_from_ast() results are distinct pointers, so
+    // the two would mint `anon`/`anon.1` named types and fail the verifier.
+    // Anonymous tuple/multi-return structs now lower to a uniqued LITERAL struct
+    // (codegen_get_struct_type), which is identical across calls — so those we
+    // DO predeclare, giving forward-reference support for multi-return functions
+    // (e.g. utf8 DecodeRune calling decodeRuneSlow, defined later). LLVM's own
+    // literal-vs-named distinction (LLVMGetStructName == NULL for literals) is
+    // the reliable discriminator.
     LLVMTypeRef lowered_ret = codegen_type_to_llvm(codegen, return_type);
-    if (!lowered_ret || LLVMGetTypeKind(lowered_ret) == LLVMStructTypeKind) return 1;
+    if (!lowered_ret) return 1;
+    if (LLVMGetTypeKind(lowered_ret) == LLVMStructTypeKind &&
+        LLVMGetStructName(lowered_ret) != NULL) {
+        return 1;
+    }
 
     // Method mangling (T__m) then package prefixing (goo_pkg__<pkg>__...).
     char* mangled = NULL;
