@@ -203,6 +203,12 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(lit->field_values);
             break;
         }
+        case AST_KEYED_ELEMENT: {
+            KeyedElementNode* ke = (KeyedElementNode*)node;
+            ast_node_free(ke->key);
+            ast_node_free(ke->value);
+            break;
+        }
         case AST_UNARY_EXPR: {
             UnaryExprNode* unary = (UnaryExprNode*)node;
             ast_node_free(unary->operand);

@@ -141,6 +141,7 @@ typedef enum {
     // Array composite literal `[N]T{e...}`. Tail-appended per the convention
     // above (Makefile has no header deps).
     AST_ARRAY_LITERAL,
+    AST_KEYED_ELEMENT,     // `index: value` element inside an array/slice literal
 
     AST_NODE_COUNT
 } ASTNodeType;
@@ -621,6 +622,18 @@ typedef struct {
     struct ASTNode* elements;
     struct ASTNode* array_type;  // AST_ARRAY_TYPE (length + element_type)
 } ArrayLitNode;
+
+// Keyed element `index: value` inside an array/slice composite literal, e.g.
+// `[16]acceptRange{ 0: {locb, hicb}, 4: {locb, 0x8F} }` (AST_KEYED_ELEMENT).
+// The node appears IN the literal's `elements` chain in place of a bare value;
+// `key` is a constant integer index expression, `value` is the element (which
+// may itself be an elided composite literal). Unkeyed elements remain bare
+// values in the same chain and continue at previous-index + 1 (Go semantics).
+typedef struct {
+    ASTNode base;
+    struct ASTNode* key;    // constant integer index expression
+    struct ASTNode* value;  // the element value at that index
+} KeyedElementNode;
 
 // Map literal: `map[K]V{k: v, …}`. Tagged AST_PAREN_EXPR — that
 // enum slot was reserved for parenthesized expressions (which Goo

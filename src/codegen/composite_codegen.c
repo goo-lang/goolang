@@ -1131,12 +1131,26 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
     {
         LLVMValueRef* consts = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (n ? n : 1));
         if (consts) {
+            // Pre-fill every slot with the zero value; keyed elements leave
+            // gaps that are NOT just trailing (Go zero-fills them).
+            for (size_t z = 0; z < n; z++) consts[z] = LLVMConstNull(llvm_elem);
             int all_const = 1;
-            size_t j = 0;
             unsigned ew = (LLVMGetTypeKind(llvm_elem) == LLVMIntegerTypeKind)
                         ? LLVMGetIntTypeWidth(llvm_elem) : 0;
-            for (ASTNode* e = lit->elements; e && j < n; e = e->next, j++) {
-                ValueInfo* ev = codegen_generate_expression(codegen, checker, e);
+            int64_t cur = -1;  // effective index: keyed sets it, unkeyed is prev+1
+            for (ASTNode* e = lit->elements; e; e = e->next) {
+                ASTNode* value = e;
+                if (e->type == AST_KEYED_ELEMENT) {
+                    KeyedElementNode* ke = (KeyedElementNode*)e;
+                    uint64_t k = 0;
+                    if (!goo_fold_const_int(ke->key, &k)) { all_const = 0; break; }
+                    cur = (int64_t)k;
+                    value = ke->value;
+                } else {
+                    cur += 1;
+                }
+                if (cur < 0 || (uint64_t)cur >= n) { all_const = 0; break; }
+                ValueInfo* ev = codegen_generate_expression(codegen, checker, value);
                 if (!ev) { all_const = 0; break; }
                 LLVMValueRef v = ev->llvm_value;
                 int is_c = v && LLVMIsConstant(v) && !ev->is_lvalue;
@@ -1150,10 +1164,9 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
                 }
                 value_info_free(ev);
                 if (!is_c) { all_const = 0; break; }
-                consts[j] = v;
+                consts[cur] = v;
             }
             if (all_const) {
-                for (; j < n; j++) consts[j] = LLVMConstNull(llvm_elem);
                 LLVMValueRef arr = LLVMConstArray(llvm_elem, consts, (unsigned)n);
                 free(consts);
                 ValueInfo* out = value_info_new(NULL, arr, arr_type);
@@ -1167,9 +1180,34 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef arr_alloca = codegen_create_alloca(codegen, arr_llvm, "arraylit");
     LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
 
-    size_t i = 0;
-    for (ASTNode* e = lit->elements; e; e = e->next, i++) {
-        ValueInfo* ev = codegen_generate_expression(codegen, checker, e);
+    // Zero the whole array first: with keyed elements the assigned indices are
+    // sparse, so unset slots (not just trailing ones) must be zero-valued.
+    for (size_t z = 0; z < n; z++) {
+        LLVMValueRef idx[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), z, 0) };
+        LLVMValueRef gep = LLVMBuildGEP2(codegen->builder, arr_llvm, arr_alloca, idx, 2, "arr_zero");
+        LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_elem), gep);
+    }
+
+    int64_t cur = -1;  // effective index: keyed sets it, unkeyed is prev+1
+    for (ASTNode* e = lit->elements; e; e = e->next) {
+        ASTNode* value = e;
+        if (e->type == AST_KEYED_ELEMENT) {
+            KeyedElementNode* ke = (KeyedElementNode*)e;
+            uint64_t k = 0;
+            if (!goo_fold_const_int(ke->key, &k)) {
+                codegen_error(codegen, e->pos, "array literal: non-constant element index");
+                return NULL;
+            }
+            cur = (int64_t)k;
+            value = ke->value;
+        } else {
+            cur += 1;
+        }
+        if (cur < 0 || (uint64_t)cur >= n) {
+            codegen_error(codegen, e->pos, "array literal: element index out of bounds");
+            return NULL;
+        }
+        ValueInfo* ev = codegen_generate_expression(codegen, checker, value);
         if (!ev) return NULL;
         LLVMValueRef v = ev->llvm_value;
         if (ev->is_lvalue && ev->goo_type) {
@@ -1177,16 +1215,10 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
             if (et) v = LLVMBuildLoad2(codegen->builder, et, v, "elem_load");
         }
         v = slice_coerce_elem(codegen, v, llvm_elem);
-        LLVMValueRef idx[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), i, 0) };
+        LLVMValueRef idx[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), (unsigned long long)cur, 0) };
         LLVMValueRef gep = LLVMBuildGEP2(codegen->builder, arr_llvm, arr_alloca, idx, 2, "arr_elem");
         LLVMBuildStore(codegen->builder, v, gep);
         value_info_free(ev);
-    }
-    // Zero-fill the omitted trailing elements.
-    for (; i < n; i++) {
-        LLVMValueRef idx[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), i, 0) };
-        LLVMValueRef gep = LLVMBuildGEP2(codegen->builder, arr_llvm, arr_alloca, idx, 2, "arr_zero");
-        LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_elem), gep);
     }
 
     LLVMValueRef arr_val = LLVMBuildLoad2(codegen->builder, arr_llvm, arr_alloca, "arrval");

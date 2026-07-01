@@ -149,7 +149,7 @@ static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
 %type <node> slice_lit
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
-%type <node> composite_elem composite_elem_list
+%type <node> composite_elem composite_elem_list composite_value
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -1938,18 +1938,34 @@ slice_lit:
     }
     ;
 
-/* An element of a typed array/slice composite literal. Either an ordinary
-   expression, or an ELIDED composite literal `{...}` whose type is inferred
-   from the enclosing element type T (Go's elided-type rule). The elided form
-   reuses struct_lit_inits and produces a StructLiteralNode with type_name=NULL;
-   the type checker resolves and stamps its type from the element type T.
-   `LBRACE` is not a valid expression start, so the two alternatives have
-   disjoint first-sets (no conflict). */
-composite_elem:
+/* The VALUE of a typed array/slice composite-literal element: either an
+   ordinary expression, or an ELIDED composite literal `{...}` whose type is
+   inferred from the enclosing element type T (Go's elided-type rule). The
+   elided form reuses struct_lit_inits and produces a StructLiteralNode with
+   type_name=NULL; the type checker resolves and stamps its type from T.
+   `LBRACE` is not a valid expression start, so the alternatives have disjoint
+   first-sets (no conflict). */
+composite_value:
     expression { $$ = $1; }
     | LBRACE struct_lit_inits RBRACE { $$ = struct_literal_new(NULL, $2); }
     | LBRACE struct_lit_inits COMMA RBRACE { $$ = struct_literal_new(NULL, $2); }
     | LBRACE RBRACE { $$ = struct_literal_new(NULL, NULL); }
+    ;
+
+/* An element of a typed array/slice composite literal: a bare value, or a
+   KEYED element `index: value` (Go sparse-table form, e.g. the utf8
+   `[16]acceptRange{ 0: {locb, hicb}, 4: {locb, 0x8F} }` table). The key is a
+   constant integer index; unkeyed elements continue at previous-index + 1. */
+composite_elem:
+    composite_value { $$ = $1; }
+    | expression COLON composite_value {
+        KeyedElementNode* k = (KeyedElementNode*)calloc(1, sizeof(KeyedElementNode));
+        k->base.type = AST_KEYED_ELEMENT;
+        k->base.pos = get_current_position();
+        k->key = $1;
+        k->value = $3;
+        $$ = (ASTNode*)k;
+    }
     ;
 
 composite_elem_list:

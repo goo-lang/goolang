@@ -13,6 +13,16 @@ static int check_slice_elements(TypeChecker* checker, ASTNode* elements,
     (void)pos; // reserved; per-element errors use e->pos for precision
     size_t i = 0;
     for (ASTNode* e = elements; e; e = e->next, i++) {
+        // Keyed elements (`index: value`) are supported for array literals but
+        // not yet for slices (a slice's backing length would grow to max
+        // index + 1). Reject cleanly rather than fall through to a confusing
+        // "Unknown expression type".
+        if (e->type == AST_KEYED_ELEMENT) {
+            type_error(checker, e->pos,
+                       "keyed elements in slice literals are not yet supported "
+                       "(use an array literal `[N]T{...}`)");
+            return 0;
+        }
         // Elided composite element `{...}`: thread the declared element type
         // into the literal so type_check_struct_literal can resolve it.
         if (e->type == AST_STRUCT_LITERAL &&
@@ -202,28 +212,52 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                            "array literal: length must be a constant expression");
                 return NULL;
             }
-            size_t count = 0;
-            for (ASTNode* e = lit->elements; e; e = e->next, count++) {
-                // Elided composite element `{...}`: thread the declared array
-                // element type in so the struct-literal checker can resolve it.
-                if (e->type == AST_STRUCT_LITERAL &&
-                    ((StructLiteralNode*)e)->type_name == NULL) {
-                    e->node_type = want;
+            // Elements may be keyed (`index: value`, a sparse Go table like
+            // utf8 acceptRanges) or bare. A keyed element places its value at
+            // the const index; an unkeyed element continues at previous + 1
+            // (Go semantics). Gaps are zero-filled by codegen.
+            int64_t cur = -1;               // last assigned index
+            uint64_t max_idx_plus1 = 0;     // highest index + 1 seen
+            for (ASTNode* e = lit->elements; e; e = e->next) {
+                ASTNode* value = e;
+                if (e->type == AST_KEYED_ELEMENT) {
+                    KeyedElementNode* ke = (KeyedElementNode*)e;
+                    uint64_t k = 0;
+                    if (!goo_fold_const_int(ke->key, &k)) {
+                        type_error(checker, e->pos,
+                                   "array literal: element index must be a "
+                                   "constant integer expression");
+                        return NULL;
+                    }
+                    cur = (int64_t)k;
+                    value = ke->value;
+                } else {
+                    cur += 1;
                 }
-                Type* et = type_check_expression(checker, e);
+                if (cur < 0 || (uint64_t)cur >= n) {
+                    type_error(checker, e->pos,
+                               "array literal: index %lld out of bounds for "
+                               "length %llu",
+                               (long long)cur, (unsigned long long)n);
+                    return NULL;
+                }
+                if ((uint64_t)cur + 1 > max_idx_plus1) max_idx_plus1 = (uint64_t)cur + 1;
+
+                // Elided composite value `{...}`: thread the declared array
+                // element type in so the struct-literal checker can resolve it.
+                if (value->type == AST_STRUCT_LITERAL &&
+                    ((StructLiteralNode*)value)->type_name == NULL) {
+                    value->node_type = want;
+                }
+                Type* et = type_check_expression(checker, value);
                 if (!et) return NULL;
                 if (!type_compatible(et, want)) {
                     type_error(checker, e->pos,
-                               "array literal element %zu: cannot use %s as %s",
-                               count, type_to_string(et), type_to_string(want));
+                               "array literal element at index %lld: cannot use "
+                               "%s as %s",
+                               (long long)cur, type_to_string(et), type_to_string(want));
                     return NULL;
                 }
-            }
-            if (count > n) {
-                type_error(checker, expr->pos,
-                           "array literal has %zu elements but length is %llu",
-                           count, (unsigned long long)n);
-                return NULL;
             }
             Type* arr = type_array(want, (size_t)n);
             expr->node_type = arr;
