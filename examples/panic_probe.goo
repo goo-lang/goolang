@@ -1,0 +1,19 @@
+// panic_probe: the builtin panic(v). Here the panic branch is NOT taken, so the
+// program runs to completion — this exercises that panic type-checks and
+// codegens (the branch is emitted) without aborting. The abort behavior itself
+// (prints "panic: <msg>", non-zero exit) is guarded by panic-abort-probe.
+package main
+
+import "fmt"
+
+func checked(x int) int {
+	if x < 0 {
+		panic("negative")
+	}
+	return x * 2
+}
+
+func main() {
+	fmt.Println(checked(5))  // 10
+	fmt.Println(checked(21)) // 42
+}

@@ -233,6 +233,40 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         if (strcmp(func_name->name, "println") == 0) {
             return codegen_generate_println_call(codegen, checker, expr);
         }
+        if (strcmp(func_name->name, "panic") == 0) {
+            // panic(v) -> goo_panic(message); the runtime prints "panic: <msg>"
+            // and abort()s. A string arg passes its data pointer; any other arg
+            // uses a generic message (structured panic values are future work).
+            // goo_panic never returns, so terminate the block with `unreachable`.
+            LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+            if (!fn) {
+                codegen_error(codegen, expr->pos, "goo_panic not found in module");
+                return NULL;
+            }
+            LLVMValueRef msg = NULL;
+            if (call->args) {
+                ValueInfo* v = codegen_generate_expression(codegen, checker, call->args);
+                if (v && v->goo_type && v->goo_type->kind == TYPE_STRING) {
+                    LLVMValueRef sv = v->llvm_value;
+                    if (v->is_lvalue) {
+                        LLVMTypeRef st = codegen_type_to_llvm(codegen, v->goo_type);
+                        if (st) sv = LLVMBuildLoad2(codegen->builder, st, sv, "panic_load");
+                    }
+                    msg = LLVMBuildExtractValue(codegen->builder, sv, 0, "panic_msg");
+                }
+                if (v) value_info_free(v);
+            }
+            if (!msg) {
+                msg = LLVMBuildGlobalStringPtr(codegen->builder, "panic", "panic_generic");
+            }
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, &msg, 1, "");
+            // goo_panic abort()s at runtime, so code after it is dead — but we do
+            // NOT emit `unreachable` here: the surrounding statement (if-body,
+            // function epilogue) adds the block terminator, and a second
+            // terminator would be invalid IR. Post-panic code is emitted and
+            // never executed, same as any void builtin call.
+            return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+        }
         if (strcmp(func_name->name, "len") == 0 && call->args) {
             // len(arg) — extract field 1 (the length) from a slice or
             // string struct. Both share the `{ ptr, i64 }` layout, so
