@@ -1,0 +1,34 @@
+package main
+
+// bits_arith_probe: math/bits Add32/Add64 and Mul32/Mul64 (multi-word add and
+// multiply, vendored verbatim). Exercises multi-value returns with named
+// results + bare return, grouped params, uint64 intermediate arithmetic, the
+// &^ bit-clear (Add64), and tuple assignment `hi, lo = a, b` (Mul). Marker
+// pattern avoids sequential different-width prints.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	s32, c32 := bits.Add32(4294967295, 1, 0)
+	if s32 == 0 && c32 == 1 {
+		fmt.Println("a32")
+	}
+	s64, c64 := bits.Add64(18446744073709551615, 1, 0)
+	if s64 == 0 && c64 == 1 {
+		fmt.Println("a64")
+	}
+	hi32, lo32 := bits.Mul32(65536, 65536)
+	if hi32 == 1 && lo32 == 0 {
+		fmt.Println("m32a")
+	}
+	hh, ll := bits.Mul32(4294967295, 4294967295)
+	if hh == 4294967294 && ll == 1 {
+		fmt.Println("m32b")
+	}
+	hi64, lo64 := bits.Mul64(4294967296, 4294967296)
+	if hi64 == 1 && lo64 == 0 {
+		fmt.Println("m64")
+	}
+}
