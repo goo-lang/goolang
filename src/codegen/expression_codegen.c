@@ -181,6 +181,19 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
     // the contents. Reading it as an expression must load through that address
     // — otherwise `os.Exit(X)` passes `ptr @X` to a function expecting `i32`
     // and module verification rejects it (M9-const-ref-load).
+    // A reference to a CONSTANT global (a folded const like `const two32 =
+    // 1<<32`) resolves to its constant initializer, not a runtime load. This
+    // keeps const-folding transitive: `const mask32 = two32 - 1` then lowers to
+    // `sub <const>, 1`, which LLVM folds, so it passes the compile-time-constant
+    // check for a subsequent const. (Loads are never constant expressions.)
+    if (!value_info->is_lvalue && LLVMIsAGlobalVariable(value_info->llvm_value)
+        && LLVMIsGlobalConstant(value_info->llvm_value)) {
+        LLVMValueRef init = LLVMGetInitializer(value_info->llvm_value);
+        if (init && LLVMIsConstant(init)) {
+            return value_info_new(ident->name, init, value_info->goo_type);
+        }
+    }
+
     bool needs_load = value_info->is_lvalue
         || (LLVMIsAGlobalVariable(value_info->llvm_value) && value_info->goo_type);
     if (needs_load) {

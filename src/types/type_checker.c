@@ -1587,6 +1587,14 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
         return 1;
     }
 
+    // Type-check EVERY returned expression (the values are a ->next list for a
+    // multi-value return), so codegen sees a resolved node_type on each — e.g.
+    // the T(x) conversions in `return uint(a), uint(b)`. The single-value
+    // compatibility logic below still keys off the first value / the tuple.
+    for (ASTNode* v = ret_stmt->values; v; v = v->next) {
+        if (!type_check_expression(checker, v)) return 0;
+    }
+
     // Check return value if present
     {
         Type* return_type = type_check_expression(checker, ret_stmt->values);
