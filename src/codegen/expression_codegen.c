@@ -209,7 +209,12 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
     
     switch (literal->literal_type) {
         case TOKEN_INT: {
-            long long value = atoll(literal->value);
+            // strtoull with base 0 auto-detects the prefix (0x hex, 0o octal,
+            // 0b binary, else decimal) and parses the FULL unsigned 64-bit range
+            // — atoll couldn't do either (hex parsed as 0, and a value above
+            // INT64_MAX clamped). Integer literals are non-negative (a leading
+            // `-` is a separate unary op), so unsigned parsing is exact.
+            unsigned long long value = strtoull(literal->value, NULL, 0);
             // Narrow integer-literal adaptation: when type-checking retyped this
             // literal to a specific integer type OTHER than the default int32
             // (e.g. a uint64 parameter/operand/return context), emit the
@@ -221,19 +226,18 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             if (nt && type_is_integer(nt) && nt->kind != TYPE_INT32) {
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
                 if (lt) {
-                    llvm_value = LLVMConstInt(lt, (unsigned long long)value,
-                                              type_is_signed(nt));
+                    llvm_value = LLVMConstInt(lt, value, type_is_signed(nt));
                     goo_type = nt;
                     break;
                 }
             }
-            if (value > 2147483647LL || value < -2147483648LL) {
+            if (value > 2147483647ULL) {
                 llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
-                                         (unsigned long long)value, 1);
+                                         value, 1);
                 goo_type = type_checker_get_builtin(checker, TYPE_INT64);
             } else {
                 llvm_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
-                                         (unsigned long long)value, 1);
+                                         value, 1);
                 goo_type = type_checker_get_builtin(checker, TYPE_INT32);
             }
             break;

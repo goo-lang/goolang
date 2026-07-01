@@ -528,9 +528,32 @@ char* lexer_read_identifier(Lexer* lexer, size_t* length) {
 char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float) {
     size_t start_pos = lexer->position;
     *is_float = 0;
-    
-    // Read integer part
-    while (lexer_is_digit(lexer->ch)) {
+
+    // Non-decimal integer bases (Go): 0x/0X hex, 0o/0O octal, 0b/0B binary.
+    // These are always integers (no fractional/exponent part) — read the prefix
+    // then the base-appropriate digits and return early. Real stdlib source
+    // (math/bits masks, tables) is full of hex constants like 0x5555555555555555.
+    int non_decimal = 0;
+    if (lexer->ch == '0') {
+        char next = lexer_peek_char(lexer);
+        if (next == 'x' || next == 'X' || next == 'b' || next == 'B' ||
+            next == 'o' || next == 'O') {
+            non_decimal = 1;
+            lexer_read_char(lexer);      // consume '0'
+            char base = lexer->ch;
+            lexer_read_char(lexer);      // consume the base letter
+            if (base == 'x' || base == 'X') {
+                while (lexer_is_hex_digit(lexer->ch)) lexer_read_char(lexer);
+            } else if (base == 'b' || base == 'B') {
+                while (lexer->ch == '0' || lexer->ch == '1') lexer_read_char(lexer);
+            } else {  // octal
+                while (lexer->ch >= '0' && lexer->ch <= '7') lexer_read_char(lexer);
+            }
+        }
+    }
+
+    // Read integer part (decimal)
+    while (!non_decimal && lexer_is_digit(lexer->ch)) {
         lexer_read_char(lexer);
     }
     

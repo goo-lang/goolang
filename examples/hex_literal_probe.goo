@@ -1,0 +1,14 @@
+package main
+
+// hex_literal_probe: non-decimal integer literals — 0x hex, 0o octal, 0b binary
+// — which pervade real stdlib source (math/bits masks, tables). All values here
+// are small (int32, same width) to avoid the unrelated mixed-width sequential-
+// print bug. 0x1234=4660, 0xFF=255, 0o17=15, 0b1010=10.
+import "fmt"
+
+func main() {
+	fmt.Println(0x1234)
+	fmt.Println(0xFF)
+	fmt.Println(0o17)
+	fmt.Println(0b1010)
+}

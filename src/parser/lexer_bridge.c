@@ -303,11 +303,22 @@ static int bridge_next_mapped(void) {
         case TOKEN_STRING:
             yylval.string = strdup(token->literal);
             break;
-        case TOKEN_INT:
-            // Use strtoll so that values > INT32_MAX (e.g. 9000000000) are
-            // preserved without truncation into the long-long union field.
-            yylval.integer = strtoll(token->literal, NULL, 10);
+        case TOKEN_INT: {
+            // Parse the full unsigned 64-bit range (strtoull, not strtoll); the
+            // bit pattern is preserved through the union's long long and the
+            // parser's %lld reconstruction, so a value above INT64_MAX round-
+            // trips exactly (e.g. 0xFFFFFFFFFFFFFFFF). Base 0 auto-detects 0x
+            // hex, 0b binary (glibc), and decimal — but C's octal is a leading
+            // zero, not Go's `0o`, so parse the digits after a 0o/0O prefix in
+            // base 8 explicitly. Real stdlib source is full of these constants.
+            const char* s = token->literal;
+            if (s[0] == '0' && (s[1] == 'o' || s[1] == 'O')) {
+                yylval.integer = (long long)strtoull(s + 2, NULL, 8);
+            } else {
+                yylval.integer = (long long)strtoull(s, NULL, 0);
+            }
             break;
+        }
         case TOKEN_FLOAT:
             yylval.real = atof(token->literal);
             break;
