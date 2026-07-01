@@ -1874,6 +1874,18 @@ slice_lit:
         lit->array_type = $1;
         $$ = (ASTNode*)lit;
     }
+    /* Trailing comma: Go allows (and gofmt adds) a trailing comma in a
+       composite literal, e.g. the multi-line deBruijn tables `[32]byte{0, 1,}`. */
+    | array_type LBRACE expression_list COMMA RBRACE {
+        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
+        lit->base.type = AST_ARRAY_LITERAL;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = $3;
+        lit->array_type = $1;
+        $$ = (ASTNode*)lit;
+    }
     | array_type LBRACE RBRACE {
         ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
         lit->base.type = AST_ARRAY_LITERAL;
