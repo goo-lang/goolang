@@ -526,6 +526,13 @@ Type* type_check_logical_op(TypeChecker* checker, Type* left_type, Type* right_t
 Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos);
 
+// Fold an integer constant expression at 128-bit precision (see
+// expression_helpers.c). Returns 1 and sets *out on success; 0 if the
+// expression is not a pure compile-time integer constant. Used by const-decl
+// type-checking and codegen so masks like `1<<32 - 1` / `1<<64 - 1` evaluate to
+// their true value instead of a width-truncated LLVM shift.
+int goo_fold_const_int(ASTNode* expr, uint64_t* out);
+
 // Error reporting
 void type_error(TypeChecker* checker, Position pos, const char* format, ...);
 void type_warning(TypeChecker* checker, Position pos, const char* format, ...);

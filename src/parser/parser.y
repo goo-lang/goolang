@@ -158,9 +158,8 @@ static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
 %left BIT_AND
 %left EQ NE
 %left LT LE GT GE
-%left LSHIFT RSHIFT
 %left PLUS MINUS
-%left MULTIPLY DIVIDE MODULO
+%left MULTIPLY DIVIDE MODULO LSHIFT RSHIFT  // Go: shift is multiplicative-level, tighter than +/- (so `1<<32 - 1` = (1<<32)-1)
 %left ARROW  // Channel operations
 %right NOT BIT_NOT BANG  // Unary operators
 %right INCREMENT DECREMENT  // Postfix

@@ -1060,6 +1060,60 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
         return 0;
     }
 
+    // Compile-time integer constant folding (128-bit): a mask like `1<<32 - 1`
+    // must evaluate to its true value (4294967295), but codegen_generate_
+    // expression below would emit a width-truncated `shl i32 1, 32` and get it
+    // wrong. Fold pure integer constant expressions here and emit the value
+    // directly. Works for both package and local consts (no type-checker
+    // Variable required — a local const's is already torn down by codegen time).
+    {
+        uint64_t folded;
+        if (goo_fold_const_int(const_decl->values, &folded)) {
+            for (size_t i = 0; i < const_decl->name_count; i++) {
+                const char* const_name = const_decl->names[i];
+                Variable* known = type_checker_lookup_variable(checker, const_name);
+                Type* ct = known ? known->type : NULL;
+                if (!ct) {
+                    // Untyped local const: type by the folded value's magnitude.
+                    ct = (folded <= 2147483647ULL)
+                             ? type_checker_get_builtin(checker, TYPE_INT32)
+                         : (folded <= 9223372036854775807ULL)
+                             ? type_checker_get_builtin(checker, TYPE_INT64)
+                             : type_checker_get_builtin(checker, TYPE_UINT64);
+                }
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, ct);
+                if (!lt) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to convert type for constant '%s'", const_name);
+                    return 0;
+                }
+                LLVMValueRef cv = LLVMConstInt(lt, (unsigned long long)(uint64_t)folded,
+                                               type_is_signed(ct));
+                LLVMValueRef g = LLVMAddGlobal(codegen->module, lt, const_name);
+                LLVMSetInitializer(g, cv);
+                LLVMSetGlobalConstant(g, 1);
+                ValueInfo* vi = value_info_new(const_name, g, ct);
+                if (!vi) { codegen_error(codegen, decl->pos, "value info alloc failed"); return 0; }
+                vi->is_lvalue = 0;
+                vi->is_initialized = 1;
+                if (!codegen_add_value(codegen, vi)) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to add constant '%s' to symbol table", const_name);
+                    value_info_free(vi);
+                    return 0;
+                }
+                if (!known) {
+                    Variable* tcv = variable_new(const_name, ct, decl->pos);
+                    if (tcv) {
+                        tcv->is_initialized = 1;
+                        scope_add_variable(checker->current_scope, tcv);
+                    }
+                }
+            }
+            return 1;
+        }
+    }
+
     // M11-codegen-const: comptime fast path. If type_check_const_decl
     // attached a comptime-evaluated value to the Variable (see
     // include/types.h Variable.comptime_value + lesson-1778812208-594aea),

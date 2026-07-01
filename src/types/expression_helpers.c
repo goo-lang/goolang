@@ -4,6 +4,59 @@
 
 // Helper functions for expression type checking
 
+// Fold an integer constant expression to its low 64 bits and report success.
+// Go's untyped constants have arbitrary precision, but the result is always
+// truncated to the target's ≤64-bit type, so 64-bit modular arithmetic gives the
+// correct answer PROVIDED a shift by ≥64 yields 0 (matching truncation): then
+// `1<<64 - 1` folds as `0 - 1` = all-ones = 2^64-1, exactly Go's uint64 result.
+// (uint64_t, not __int128 — the latter is not accepted by the CompCert ccomp
+// build.) Handles integer literals and the integer binary/unary operators;
+// returns 0 for anything that is not a compile-time integer constant
+// (identifiers, calls, floats) so callers fall back to ordinary codegen.
+// Pure-literal only — const-identifier references are not folded here yet.
+int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
+    if (!expr || !out) return 0;
+    switch (expr->type) {
+        case AST_LITERAL: {
+            LiteralNode* lit = (LiteralNode*)expr;
+            if (lit->literal_type != TOKEN_INT) return 0;
+            *out = strtoull(lit->value, NULL, 0);
+            return 1;
+        }
+        case AST_UNARY_EXPR: {
+            UnaryExprNode* u = (UnaryExprNode*)expr;
+            uint64_t v;
+            if (!goo_fold_const_int(u->operand, &v)) return 0;
+            switch (u->operator) {
+                case TOKEN_MINUS: *out = (uint64_t)(-(int64_t)v); return 1;
+                case TOKEN_PLUS:  *out = v; return 1;
+                default: return 0;
+            }
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            uint64_t l, r;
+            if (!goo_fold_const_int(b->left, &l) || !goo_fold_const_int(b->right, &r))
+                return 0;
+            switch (b->operator) {
+                case TOKEN_PLUS:     *out = l + r; return 1;
+                case TOKEN_MINUS:    *out = l - r; return 1;
+                case TOKEN_MULTIPLY: *out = l * r; return 1;
+                case TOKEN_DIVIDE:   if (r == 0) return 0; *out = l / r; return 1;
+                case TOKEN_MODULO:   if (r == 0) return 0; *out = l % r; return 1;
+                case TOKEN_LSHIFT:   *out = (r >= 64) ? 0 : (l << r); return 1;
+                case TOKEN_RSHIFT:   *out = (r >= 64) ? 0 : (l >> r); return 1;
+                case TOKEN_BIT_AND:  *out = l & r; return 1;
+                case TOKEN_BIT_OR:   *out = l | r; return 1;
+                case TOKEN_BIT_XOR:  *out = l ^ r; return 1;
+                default: return 0;
+            }
+        }
+        default:
+            return 0;
+    }
+}
+
 // Result type of an integer binary operation. Go requires both operands to
 // share a type (untyped constants adapt to the other operand); Goo approximates
 // that adaptation and — crucially — preserves the operand's WIDTH and SIGNEDNESS

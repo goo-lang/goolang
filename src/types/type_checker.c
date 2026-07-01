@@ -940,7 +940,24 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         }
         value_type = declared_type;
     }
-    
+
+    // Compile-time integer constant folding: an untyped const whose RHS is a
+    // pure integer constant expression takes its type from the folded value's
+    // magnitude. Without this `const m = 1<<32 - 1` would be int32 (the width-
+    // naive bitwise-op result type), but 4294967295 doesn't fit int32 — so a
+    // later `var v uint64 = m` would wrongly see an int32. Matches the value
+    // codegen emits (function_codegen.c folds the same expression).
+    if (!const_decl->type) {
+        uint64_t folded;
+        if (goo_fold_const_int(const_decl->values, &folded)) {
+            value_type = (folded <= 2147483647ULL)
+                             ? type_checker_get_builtin(checker, TYPE_INT32)
+                         : (folded <= 9223372036854775807ULL)
+                             ? type_checker_get_builtin(checker, TYPE_INT64)
+                             : type_checker_get_builtin(checker, TYPE_UINT64);
+        }
+    }
+
     // M11-types-const-integrate: if the const is marked `comptime`,
     // evaluate the RHS through the comptime engine and attach the
     // result to the Variable so codegen can read it (M11-codegen-const).
