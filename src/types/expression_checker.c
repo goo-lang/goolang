@@ -1272,6 +1272,24 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     // identifier, resolve the selector against the stdlib symbol table.
     if (expr_type->kind == TYPE_PACKAGE && selector->expr->type == AST_IDENTIFIER) {
         IdentifierNode* pkg_ident = (IdentifierNode*)selector->expr;
+
+        // stdlib Phase 0 (Task 5): for a source-compiled package the marker
+        // Variable carries a real Package* whose `exports` scope holds fresh
+        // copies of its A-Z top-level symbols with their real signatures. Resolve
+        // the selector against those FIRST, so `mypkg.Double(21)` type-checks
+        // against `func Double(int) int` and gets real argument checking. The
+        // hardcoded stdlib shim (below) stays the per-symbol FALLBACK for shim
+        // packages, whose markers carry an empty exports scope.
+        Variable* pkg_marker = type_checker_lookup_variable(checker, pkg_ident->name);
+        if (pkg_marker && pkg_marker->package) {
+            Variable* exp = scope_lookup_variable(pkg_marker->package->exports,
+                                                  selector->selector);
+            if (exp && exp->type) {
+                expr->node_type = exp->type;
+                return exp->type;
+            }
+        }
+
         Type* fn_type = stdlib_package_lookup(checker, pkg_ident->name, selector->selector);
         if (fn_type) {
             expr->node_type = fn_type;

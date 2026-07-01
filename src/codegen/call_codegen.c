@@ -47,6 +47,53 @@ static LLVMValueRef codegen_arg_as_cstr(CodeGenerator* codegen, TypeChecker* che
     return val;
 }
 
+// stdlib Phase 0 (Task 5): lower a call into a source-compiled package, e.g.
+// `mypkg.Double(21)`. A package's exported functions are emitted into this
+// module under the mangled symbol goo_pkg__<pkg>__<name> (see
+// codegen_package_symbol_name). If that symbol exists this is a real package
+// call: evaluate the args and emit a direct call. If it does NOT exist we are
+// not a source-package selector — `*handled` stays 0 so the caller falls
+// through to the hardcoded stdlib shim arms (fmt/os/math/...), which remain the
+// per-symbol FALLBACK. `*handled` becomes 1 once we own the call (whether the
+// emit succeeds or errors, in which case NULL is returned).
+static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
+                                                     TypeChecker* checker,
+                                                     ASTNode* expr,
+                                                     const char* pkg_name,
+                                                     const char* sel_name,
+                                                     int* handled) {
+    *handled = 0;
+    size_t n = strlen("goo_pkg__") + strlen(pkg_name) + strlen("__")
+             + strlen(sel_name) + 1;
+    char* sym = malloc(n);
+    if (!sym) return NULL;
+    snprintf(sym, n, "goo_pkg__%s__%s", pkg_name, sel_name);
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, sym);
+    free(sym);
+    if (!fn) return NULL;  // not a real package symbol → shim fallback
+
+    *handled = 1;
+    CallExprNode* call = (CallExprNode*)expr;
+    size_t argc = 0;
+    for (ASTNode* a = call->args; a; a = a->next) argc++;
+    LLVMValueRef* args = argc ? malloc(sizeof(LLVMValueRef) * argc) : NULL;
+    if (argc && !args) return NULL;
+    size_t i = 0;
+    for (ASTNode* a = call->args; a; a = a->next, i++) {
+        // codegen_generate_expression loads scalar lvalues to a value, so the
+        // raw llvm_value already matches the callee's parameter type (same
+        // pattern as the struct-method call path below).
+        ValueInfo* av = codegen_generate_expression(codegen, checker, a);
+        if (!av) { free(args); return NULL; }
+        args[i] = av->llvm_value;
+        value_info_free(av);
+    }
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder,
+        LLVMGlobalGetValueType(fn), fn, args, (unsigned)argc, "");
+    free(args);
+    return value_info_new(NULL, result, type_check_call_expr(checker, expr));
+}
+
 // Builtin numeric type-conversion name (F2): mirrors
 // builtin_conversion_target() in the type checker — the names that produce an
 // actual value conversion. This set is intentionally numeric-only: the checker
@@ -311,6 +358,16 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         SelectorExprNode* sel = (SelectorExprNode*)call->function;
         if (sel->expr && sel->expr->type == AST_IDENTIFIER) {
             IdentifierNode* pkg = (IdentifierNode*)sel->expr;
+            // stdlib Phase 0 (Task 5): a call into a source-compiled package
+            // (exports emitted as goo_pkg__<pkg>__<name>) routes here FIRST. If
+            // no such symbol exists we fall through to the hardcoded stdlib shim
+            // arms below (the per-symbol FALLBACK, left untouched).
+            {
+                int handled = 0;
+                ValueInfo* pv = codegen_generate_pkg_selector_call(
+                    codegen, checker, expr, pkg->name, sel->selector, &handled);
+                if (handled) return pv;
+            }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
                 // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
                 return codegen_generate_println_call(codegen, checker, expr);

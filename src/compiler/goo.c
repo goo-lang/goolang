@@ -712,20 +712,11 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         return false;
     }
 
-    if (!type_check_program(type_checker, ast)) {
-        type_checker_free(type_checker);
-        ast_node_free(ast);
-        lexer_free(lexer);
-        free(source);
-        return false;
-    }
-    
-    // Phase 4: Code Generation
-    if (options->verbose) {
-        printf("Phase 4: Code generation...\n");
-    }
-    
 #if LLVM_AVAILABLE
+    // stdlib Phase 0 (Task 5): create the output module and compile the packages
+    // main imports BEFORE main is type-checked, so main can resolve cross-package
+    // selectors (e.g. mypkg.Double) against the real exported signatures that
+    // package compilation publishes into pkg->exports.
     CodeGenerator* codegen = codegen_new(basename(options->output_file));
     if (!codegen) {
         type_checker_free(type_checker);
@@ -758,8 +749,30 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
             return false;
         }
     }
+#endif
 
-    // Generate code
+    // Phase 3: Type Checking (main). Runs AFTER package compilation so that a
+    // cross-package selector like `mypkg.Double(21)` resolves against the real
+    // exported signature published into pkg->exports above. With no non-shim
+    // imports the packages block is a no-op and this stays byte-identical.
+    if (!type_check_program(type_checker, ast)) {
+#if LLVM_AVAILABLE
+        codegen_free(codegen);
+#endif
+        type_checker_free(type_checker);
+        ast_node_free(ast);
+        lexer_free(lexer);
+        free(source);
+        return false;
+    }
+
+    // Phase 4: Code Generation
+    if (options->verbose) {
+        printf("Phase 4: Code generation...\n");
+    }
+
+#if LLVM_AVAILABLE
+    // Generate code for main
     if (!codegen_generate_program(codegen, type_checker, ast)) {
         codegen_free(codegen);
         type_checker_free(type_checker);
