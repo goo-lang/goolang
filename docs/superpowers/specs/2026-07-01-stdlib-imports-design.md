@@ -38,9 +38,25 @@ The approved plan was refined twice after this doc's first capture. Consolidated
   std package's state (`compiles` / `passes-probe` / `partial` / `deferred`), one golden
   probe per landed package (`examples/std_<pkg>_probe.goo`, diffed against real `go run`).
 
-The full v3 text (import-graph deps per package, tier lists) lives in the session history;
-this doc keeps the durable design + the ladder. **Current execution:** M1 (Phase 0 +
-`errors`), Phase 0 in progress.
+**v4 additions (canonical spec + version pin):**
+- **The authoritative definition of "the whole std" is Go's own `api/*.txt` manifest** —
+  the union of `$GOROOT/api/go1.txt`, `go1.1.txt`, … `go1.26.txt`. Each line is one promised
+  exported symbol (`pkg PKG, {func|type|method|var|const} NAME SIGNATURE`). Per-version files
+  list only that version's additions; the cumulative union is the full contract.
+- **Pin one upstream Go version as the north star: Go 1.26 / master** (per the user). Vendor
+  from that tag for consistency — the only exception is the temporary bootstrap of vendoring
+  a few generics-free core packages from ≤1.20 until generics land (the `iter`/`slices` fork).
+- **Coverage scoreboard is symbol-exact:** `make std-status` (script under `scripts/`) parses
+  every `pkg PKG, KIND NAME …` line from `$GOROOT/api/go1*.txt` into a symbol set, records per
+  landed `goostd/<pkg>` which symbols compile and which have a passing probe, and emits
+  `goostd/STATUS.md` with per-package + overall percentages (`symbols-compiling` /
+  `symbols-probed` / `deferred`). Progress = % of the manifest symbol set at `probed`. This
+  doubles as a regression gate. A package is "done" only when its `api/*.txt` exported symbols
+  compile AND its `examples/std_<pkg>_probe.goo` matches real `go run` output.
+
+The full v3/v4 text (import-graph deps per package, tier lists, api-manifest format) lives in
+the session history; this doc keeps the durable design + the ladder. **Current execution:** M1
+(Phase 0 + `errors`), Phase 0 in progress.
 
 ## Keystone spike result (verified before execution)
 
