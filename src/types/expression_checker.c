@@ -1158,6 +1158,13 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
             }
             element_type = expr_type->data.map.value_type;
             break;
+        case TYPE_STRING:
+            // Go: s[i] yields the i-th byte (type byte == uint8). The result
+            // is a value, not an addressable lvalue — strings are immutable, so
+            // `s[i] = x` is rejected separately in the assignment checker. The
+            // matching codegen lives in codegen_generate_index_expr (TYPE_STRING).
+            element_type = type_checker_get_builtin(checker, TYPE_UINT8);
+            break;
         default:
             type_error(checker, index->expr->pos, 
                       "Cannot index type %s", type_to_string(expr_type));
