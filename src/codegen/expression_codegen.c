@@ -209,7 +209,12 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
     
     switch (literal->literal_type) {
         case TOKEN_INT: {
-            long long value = atoll(literal->value);
+            // strtoull with base 0 auto-detects the prefix (0x hex, 0o octal,
+            // 0b binary, else decimal) and parses the FULL unsigned 64-bit range
+            // — atoll couldn't do either (hex parsed as 0, and a value above
+            // INT64_MAX clamped). Integer literals are non-negative (a leading
+            // `-` is a separate unary op), so unsigned parsing is exact.
+            unsigned long long value = strtoull(literal->value, NULL, 0);
             // Narrow integer-literal adaptation: when type-checking retyped this
             // literal to a specific integer type OTHER than the default int32
             // (e.g. a uint64 parameter/operand/return context), emit the
@@ -221,19 +226,18 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             if (nt && type_is_integer(nt) && nt->kind != TYPE_INT32) {
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
                 if (lt) {
-                    llvm_value = LLVMConstInt(lt, (unsigned long long)value,
-                                              type_is_signed(nt));
+                    llvm_value = LLVMConstInt(lt, value, type_is_signed(nt));
                     goo_type = nt;
                     break;
                 }
             }
-            if (value > 2147483647LL || value < -2147483648LL) {
+            if (value > 2147483647ULL) {
                 llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
-                                         (unsigned long long)value, 1);
+                                         value, 1);
                 goo_type = type_checker_get_builtin(checker, TYPE_INT64);
             } else {
                 llvm_value = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
-                                         (unsigned long long)value, 1);
+                                         value, 1);
                 goo_type = type_checker_get_builtin(checker, TYPE_INT32);
             }
             break;
@@ -569,7 +573,68 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     if (!codegen || !checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
     
     BinaryExprNode* binary = (BinaryExprNode*)expr;
-    
+
+    // Compound assignment (x += e, x &= e, ...): lower to load-op-store. Resolve
+    // the target address, then temporarily retype this node to the BASE operator
+    // and recurse — that reuses the full binary-op codegen (operand width
+    // coercion, signedness) to compute `x <op> e`, loading x from the same
+    // lvalue. Store the result back, coerced to the target's width like a plain
+    // assignment.
+    {
+        TokenType base_op = TOKEN_UNKNOWN;
+        switch (binary->operator) {
+            case TOKEN_PLUS_ASSIGN:   base_op = TOKEN_PLUS; break;
+            case TOKEN_MINUS_ASSIGN:  base_op = TOKEN_MINUS; break;
+            case TOKEN_MUL_ASSIGN:    base_op = TOKEN_MULTIPLY; break;
+            case TOKEN_DIV_ASSIGN:    base_op = TOKEN_DIVIDE; break;
+            case TOKEN_MOD_ASSIGN:    base_op = TOKEN_MODULO; break;
+            case TOKEN_AND_ASSIGN:    base_op = TOKEN_BIT_AND; break;
+            case TOKEN_OR_ASSIGN:     base_op = TOKEN_BIT_OR; break;
+            case TOKEN_XOR_ASSIGN:    base_op = TOKEN_BIT_XOR; break;
+            case TOKEN_LSHIFT_ASSIGN: base_op = TOKEN_LSHIFT; break;
+            case TOKEN_RSHIFT_ASSIGN: base_op = TOKEN_RSHIFT; break;
+            default: break;
+        }
+        if (base_op != TOKEN_UNKNOWN) {
+            ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, binary->left);
+            if (!target || !target->is_lvalue) {
+                codegen_error(codegen, expr->pos,
+                              "Compound-assignment target must be an addressable lvalue");
+                return NULL;
+            }
+            binary->operator = base_op;
+            ValueInfo* newval = codegen_generate_binary_expr(codegen, checker, expr);
+            binary->operator = (base_op == TOKEN_PLUS)     ? TOKEN_PLUS_ASSIGN
+                             : (base_op == TOKEN_MINUS)    ? TOKEN_MINUS_ASSIGN
+                             : (base_op == TOKEN_MULTIPLY) ? TOKEN_MUL_ASSIGN
+                             : (base_op == TOKEN_DIVIDE)   ? TOKEN_DIV_ASSIGN
+                             : (base_op == TOKEN_MODULO)   ? TOKEN_MOD_ASSIGN
+                             : (base_op == TOKEN_BIT_AND)  ? TOKEN_AND_ASSIGN
+                             : (base_op == TOKEN_BIT_OR)   ? TOKEN_OR_ASSIGN
+                             : (base_op == TOKEN_BIT_XOR)  ? TOKEN_XOR_ASSIGN
+                             : (base_op == TOKEN_LSHIFT)   ? TOKEN_LSHIFT_ASSIGN
+                                                           : TOKEN_RSHIFT_ASSIGN;
+            if (!newval) return NULL;
+            LLVMValueRef sval = newval->llvm_value;
+            if (target->goo_type &&
+                LLVMGetTypeKind(LLVMTypeOf(sval)) == LLVMIntegerTypeKind) {
+                LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+                if (tt && LLVMGetTypeKind(tt) == LLVMIntegerTypeKind) {
+                    unsigned sw = LLVMGetIntTypeWidth(LLVMTypeOf(sval));
+                    unsigned tw = LLVMGetIntTypeWidth(tt);
+                    if (sw > tw)
+                        sval = LLVMBuildTrunc(codegen->builder, sval, tt, "casn.trunc");
+                    else if (sw < tw)
+                        sval = (newval->goo_type && type_is_signed(newval->goo_type))
+                            ? LLVMBuildSExt(codegen->builder, sval, tt, "casn.sext")
+                            : LLVMBuildZExt(codegen->builder, sval, tt, "casn.zext");
+                }
+            }
+            LLVMBuildStore(codegen->builder, sval, target->llvm_value);
+            return newval;
+        }
+    }
+
     // Special handling for assignment
     if (binary->operator == TOKEN_ASSIGN) {
         // Blank identifier `_` as a plain-assignment target (F1): `_ = rhs`
@@ -710,6 +775,27 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 return NULL;
             }
             sval = boxed;
+        }
+
+        // Coerce a mismatched-width integer RHS to the target variable's width
+        // before storing. A mixed-width binary op widens to its larger operand,
+        // so `x = x & int64Const` (x uint32) yields an i64 — storing that into
+        // the i32 slot would write 8 bytes over a 4-byte alloca and corrupt the
+        // stack. Truncate a wider value; extend a narrower one by its signedness.
+        if (target->goo_type && value->goo_type &&
+            LLVMGetTypeKind(LLVMTypeOf(sval)) == LLVMIntegerTypeKind) {
+            LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+            if (tt && LLVMGetTypeKind(tt) == LLVMIntegerTypeKind) {
+                unsigned sw = LLVMGetIntTypeWidth(LLVMTypeOf(sval));
+                unsigned tw = LLVMGetIntTypeWidth(tt);
+                if (sw > tw) {
+                    sval = LLVMBuildTrunc(codegen->builder, sval, tt, "asn.trunc");
+                } else if (sw < tw) {
+                    sval = type_is_signed(value->goo_type)
+                        ? LLVMBuildSExt(codegen->builder, sval, tt, "asn.sext")
+                        : LLVMBuildZExt(codegen->builder, sval, tt, "asn.zext");
+                }
+            }
         }
 
         // Store the value into the target's address.
@@ -915,6 +1001,29 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         } else if (rw > lw) {
             right_llvm = LLVMBuildTrunc(codegen->builder, right_llvm,
                                         LLVMTypeOf(left_llvm), "shcnt.trunc");
+        }
+    }
+    // Other integer binary ops (arithmetic, bitwise, comparison) require both
+    // operands at the same LLVM width. A mixed-width integer expression can
+    // survive type checking (the checker's result type is the wider operand) —
+    // e.g. `x & (m3 & m)` with a uint32 x and an int64 const mask in
+    // bits.ReverseBytes32. Widen the narrower operand to the wider, extending by
+    // ITS OWN signedness (sext signed / zext unsigned). String `+` is untouched:
+    // a goo_string is a struct, not an integer LLVM type, so the guard skips it.
+    else if (LLVMGetTypeKind(LLVMTypeOf(left_llvm)) == LLVMIntegerTypeKind &&
+             LLVMGetTypeKind(LLVMTypeOf(right_llvm)) == LLVMIntegerTypeKind) {
+        unsigned lw = LLVMGetIntTypeWidth(LLVMTypeOf(left_llvm));
+        unsigned rw = LLVMGetIntTypeWidth(LLVMTypeOf(right_llvm));
+        if (lw < rw) {
+            int sgn = left_val->goo_type && type_is_signed(left_val->goo_type);
+            left_llvm = sgn
+                ? LLVMBuildSExt(codegen->builder, left_llvm, LLVMTypeOf(right_llvm), "binl.sext")
+                : LLVMBuildZExt(codegen->builder, left_llvm, LLVMTypeOf(right_llvm), "binl.zext");
+        } else if (rw < lw) {
+            int sgn = right_val->goo_type && type_is_signed(right_val->goo_type);
+            right_llvm = sgn
+                ? LLVMBuildSExt(codegen->builder, right_llvm, LLVMTypeOf(left_llvm), "binr.sext")
+                : LLVMBuildZExt(codegen->builder, right_llvm, LLVMTypeOf(left_llvm), "binr.zext");
         }
     }
 

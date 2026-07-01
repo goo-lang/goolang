@@ -1,0 +1,21 @@
+package main
+
+// const_fold_probe: compile-time folding of integer constant expressions, and
+// the shift-precedence fix that goes with it. `1<<32 - 1` must be (1<<32)-1 =
+// 4294967295 (shift binds tighter than minus, Go semantics), NOT 1<<(32-1);
+// `1<<64 - 1` folds to the uint64 max via 64-bit modular arithmetic; `1<<4 - 1`
+// = 15 pins the precedence. uint64 throughout (same width) to avoid the
+// unrelated mixed-width print bug.
+import "fmt"
+
+func main() {
+	const m32 = 1<<32 - 1
+	const m64 = 1<<64 - 1
+	const p = 1<<4 - 1
+	var a uint64 = m32
+	var b uint64 = m64
+	var c uint64 = p
+	fmt.Println(a)
+	fmt.Println(b)
+	fmt.Println(c)
+}

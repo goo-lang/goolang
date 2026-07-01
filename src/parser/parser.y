@@ -32,6 +32,7 @@ static ASTNode* desugar_const_group(ASTNode* spec_chain);
 // F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` / `a,b = v1,v2`).
 static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
                                    ASTNode* v1, ASTNode* v2, int is_short_decl);
+static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
 %}
 
 // Union type for semantic values
@@ -151,16 +152,14 @@ static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
 %right TRY CATCH  // Try/catch expressions (low precedence)
 %right ASSIGN SHORT_ASSIGN PLUS_ASSIGN MINUS_ASSIGN MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN AND_ASSIGN OR_ASSIGN XOR_ASSIGN LSHIFT_ASSIGN RSHIFT_ASSIGN
 %right QUESTION COLON  // Ternary operator (if we add it)
-%left OR
-%left AND
-%left BIT_OR
-%left BIT_XOR
-%left BIT_AND
-%left EQ NE
-%left LT LE GT GE
-%left LSHIFT RSHIFT
-%left PLUS MINUS
-%left MULTIPLY DIVIDE MODULO
+// Binary operator precedence matches Go exactly (go.dev/ref/spec#Operator_precedence),
+// lowest to highest. Getting this right is a hard requirement for compiling real
+// Go source: e.g. `x & m << 8` is `(x & m) << 8` and `1<<32 - 1` is (1<<32)-1.
+%left OR                                      // ||   (prec 1)
+%left AND                                     // &&   (prec 2)
+%left EQ NE LT LE GT GE                       // == != < <= > >=  (prec 3)
+%left PLUS MINUS BIT_OR BIT_XOR               // + - | ^  (prec 4)
+%left MULTIPLY DIVIDE MODULO LSHIFT RSHIFT BIT_AND  // * / % << >> &  (prec 5)
 %left ARROW  // Channel operations
 %right NOT BIT_NOT BANG  // Unary operators
 %right INCREMENT DECREMENT  // Postfix
@@ -950,6 +949,19 @@ simple_stmt:
         es->expr = (ASTNode*)binary;
         $$ = (ASTNode*)es;
     }
+    // Compound assignment: `x += e`, `x -= e`, ... The compound operator is kept
+    // on the BinaryExpr and lowered to load-op-store in codegen (see
+    // compound_assign_stmt). Pervasive in real Go source (e.g. bits.OnesCount).
+    | expression PLUS_ASSIGN expression   { $$ = compound_assign_stmt($1, TOKEN_PLUS_ASSIGN, $3); }
+    | expression MINUS_ASSIGN expression  { $$ = compound_assign_stmt($1, TOKEN_MINUS_ASSIGN, $3); }
+    | expression MUL_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_MUL_ASSIGN, $3); }
+    | expression DIV_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_DIV_ASSIGN, $3); }
+    | expression MOD_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_MOD_ASSIGN, $3); }
+    | expression AND_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_AND_ASSIGN, $3); }
+    | expression OR_ASSIGN expression     { $$ = compound_assign_stmt($1, TOKEN_OR_ASSIGN, $3); }
+    | expression XOR_ASSIGN expression    { $$ = compound_assign_stmt($1, TOKEN_XOR_ASSIGN, $3); }
+    | expression LSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_LSHIFT_ASSIGN, $3); }
+    | expression RSHIFT_ASSIGN expression { $$ = compound_assign_stmt($1, TOKEN_RSHIFT_ASSIGN, $3); }
     // F6: `a, b = v1, v2` — tuple assignment to two existing identifiers. Kept
     // as an `identifier`-prefixed rule (alongside the `expression`-prefixed rule
     // below) because short_var_decl uses `identifier COMMA identifier ...`; for a
@@ -2711,6 +2723,22 @@ static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
     ma->count = 2;
     ma->is_short_decl = is_short_decl;
     return (ASTNode*)ma;
+}
+
+// Build a compound-assignment statement (`x += e`, `x &= e`, ...). The compound
+// operator token (TOKEN_PLUS_ASSIGN etc.) is kept on the BinaryExprNode and
+// lowered in codegen to load-op-store — this avoids duplicating the LHS AST
+// (there is no safe deep-copy: ast_node_copy under-allocates). Wrapped in an
+// ExprStmt to match the plain-assignment shape.
+static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs) {
+    BinaryExprNode* binary = ast_binary_expr_new(lhs, op, rhs, get_current_position());
+    ExprStmtNode* es = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
+    es->base.type = AST_EXPR_STMT;
+    es->base.pos = get_current_position();
+    es->base.node_type = NULL;
+    es->base.next = NULL;
+    es->expr = (ASTNode*)binary;
+    return (ASTNode*)es;
 }
 
 // Helper function to get current position

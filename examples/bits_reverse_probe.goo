@@ -1,0 +1,24 @@
+package main
+
+// bits_reverse_probe: math/bits.ReverseBytes{16,32,64}, vendored verbatim.
+// ReverseBytes32/64 exercise the full constant-folding + mixed-width machinery
+// (local const `1<<N-1`, package masks m3/m4, `x & (m3&m) << 8` at mixed widths,
+// Go bitwise precedence). Compared, not printed (unsigned 64-bit results).
+// 4660=0x1234 -> 13330=0x3412; 305419896=0x12345678 -> 2018915346=0x78563412;
+// ReverseBytes64(1) = 2^56 = 72057594037927936.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.ReverseBytes16(4660) == 13330 {
+		fmt.Println("rb16")
+	}
+	if bits.ReverseBytes32(305419896) == 2018915346 {
+		fmt.Println("rb32")
+	}
+	if bits.ReverseBytes64(1) == 72057594037927936 {
+		fmt.Println("rb64")
+	}
+}
