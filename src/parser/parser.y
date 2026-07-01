@@ -25,6 +25,9 @@ static TokenType bison_token_to_token_type(int bison_token);
 //   const_spec_new    — build one ConstDeclNode for a grouped-const spec
 //   desugar_const_group — turn the spec chain into ordinary single const decls
 static ASTNode* clone_const_value(const ASTNode* n);
+// Go grouped-name shorthand `(x, y int)` == `(x int, y int)` for a parsed
+// parameter/result list (see definition). Shared by func params and results.
+static void reinterpret_grouped_names(ASTNode* list);
 static void substitute_iota(ASTNode** slot, long idx);
 static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value);
 static ASTNode* desugar_const_group(ASTNode* spec_chain);
@@ -295,6 +298,7 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$2;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $6;
+        reinterpret_grouped_names($4); // Go grouped params `(x, y int)`
         func->params = $4;
         func->return_type = NULL;
         ast_node_free($2);
@@ -317,6 +321,7 @@ func_decl:
         IdentifierNode* ident = (IdentifierNode*)$2;
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $7;
+        reinterpret_grouped_names($4); // Go grouped params `(x, y int)`
         func->params = $4;
         func->return_type = $6;
         ast_node_free($2);
@@ -401,6 +406,7 @@ func_decl:
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $9;
         func->return_type = NULL;
+        reinterpret_grouped_names($7); // Go grouped params `(x, y int)`
         ((ASTNode*)$3)->next = $7;
         func->params = $3;
         func->receiver = $3;
@@ -423,6 +429,7 @@ func_decl:
         FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
         func->body = $10;
         func->return_type = $9;
+        reinterpret_grouped_names($7); // Go grouped params `(x, y int)`
         ((ASTNode*)$3)->next = $7;
         func->params = $3;
         func->receiver = $3;
@@ -436,12 +443,14 @@ func_signature:
         $$ = NULL; // No parameters, no return type
     }
     | LPAREN func_params RPAREN {
+        reinterpret_grouped_names($2); // Go grouped params `(x, y int)`
         $$ = $2; // Parameters, no return type
     }
     | LPAREN RPAREN func_result {
         $$ = $3; // No parameters, has return type
     }
     | LPAREN func_params RPAREN func_result {
+        reinterpret_grouped_names($2); // Go grouped params `(x, y int)`
         // TODO: Combine params and result
         $$ = $2;
     }
@@ -505,43 +514,9 @@ func_result:
         //    must be a scalar, not a 1-field struct — while still binding the
         //    name; a >=2-field tuple keeps the multi-return struct ABI.
         ASTNode* list = $2;
-        // Grouped named results: Go's `(x, y int)` shorthand for `(x int,
-        // y int)`. The func_param machinery has no comma-shared-type rule, so
-        // a leading `x` (no type of its own) parses as an ANONYMOUS entry whose
-        // `type` is the bare type-name `x`. Reinterpret each such entry as a
-        // NAME that borrows the type of the next explicitly-typed named entry
-        // to its right — matching Go's `IdentifierList Type` parameter group.
-        // Only run this when the list already has a truly-named entry, so a
-        // genuinely anonymous result list `(int, int)` is left untouched. Each
-        // borrowed type is DEEP-CLONED so every VarDecl owns its own node (AST
-        // teardown frees each ->type once). This is an action-only change — the
-        // grammar is unchanged, so the parser conflict count is unaffected.
-        int grp_has_named = 0;
-        for (ASTNode* p = list; p; p = p->next) {
-            VarDeclNode* vd = (VarDeclNode*)p;
-            if (vd->name_count > 0 && vd->names && vd->names[0]) { grp_has_named = 1; break; }
-        }
-        if (grp_has_named) {
-            for (ASTNode* p = list; p; p = p->next) {
-                VarDeclNode* vd = (VarDeclNode*)p;
-                if (vd->name_count > 0) continue;              // already a name
-                if (!vd->type || vd->type->type != AST_BASIC_TYPE) continue; // not a bare name candidate
-                ASTNode* shared = NULL;                        // the group's declared type
-                for (ASTNode* q = p->next; q; q = q->next) {
-                    VarDeclNode* qd = (VarDeclNode*)q;
-                    if (qd->name_count > 0 && qd->type) { shared = qd->type; break; }
-                }
-                if (!shared) continue;                         // no group type to the right
-                ASTNode* cloned = ast_type_clone(shared);
-                if (!cloned) continue;                         // unclonable shared type: leave as-is
-                BasicTypeNode* bt = (BasicTypeNode*)vd->type;  // misparsed type-name == the intended name
-                vd->names = (char**)malloc(sizeof(char*));
-                vd->names[0] = strdup(bt->name);
-                vd->name_count = 1;
-                ast_node_free(vd->type);                       // drop the misparsed bare type-name
-                vd->type = cloned;
-            }
-        }
+        // Grouped named results: Go's `(x, y int)` shorthand. Shared with the
+        // parameter path via reinterpret_grouped_names (see its definition).
+        reinterpret_grouped_names(list);
         size_t count = 0; int any_named = 0;
         for (ASTNode* p = list; p; p = p->next) {
             count++;
@@ -1588,6 +1563,7 @@ interface_method:
     | identifier LPAREN func_params RPAREN {
         IdentifierNode* ident = (IdentifierNode*)$1;
         FuncDeclNode* m = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($3); // Go grouped params `(x, y int)`
         m->params = $3; m->return_type = NULL; m->body = NULL;
         ast_node_free($1);
         $$ = (ASTNode*)m;
@@ -1595,6 +1571,7 @@ interface_method:
     | identifier LPAREN func_params RPAREN func_result {
         IdentifierNode* ident = (IdentifierNode*)$1;
         FuncDeclNode* m = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($3); // Go grouped params `(x, y int)`
         m->params = $3; m->return_type = $5; m->body = NULL;
         ast_node_free($1);
         $$ = (ASTNode*)m;
@@ -2566,6 +2543,44 @@ void yyerror(const char* msg) {
                 msg);
     } else {
         fprintf(stderr, "Parse error: %s\n", msg);
+    }
+}
+
+// Go grouped-name shorthand `(x, y int)` == `(x int, y int)`, applied to a
+// parsed parameter or result list. The func_param machinery has no comma-
+// shared-type rule, so a leading `x` (no type of its own) parses as an
+// ANONYMOUS entry whose `type` is the bare type-name `x`. Reinterpret each such
+// entry as a NAME borrowing the type of the next explicitly-typed named entry
+// to its right — matching Go's `IdentifierList Type` group. Only runs when the
+// list already has a truly-named entry, so a genuinely anonymous list
+// `(int, int)` is left untouched. Each borrowed type is DEEP-CLONED so every
+// VarDecl owns its own node (AST teardown frees each ->type once). Action-only
+// (grammar unchanged), so the parser conflict count is unaffected.
+static void reinterpret_grouped_names(ASTNode* list) {
+    int grp_has_named = 0;
+    for (ASTNode* p = list; p; p = p->next) {
+        VarDeclNode* vd = (VarDeclNode*)p;
+        if (vd->name_count > 0 && vd->names && vd->names[0]) { grp_has_named = 1; break; }
+    }
+    if (!grp_has_named) return;
+    for (ASTNode* p = list; p; p = p->next) {
+        VarDeclNode* vd = (VarDeclNode*)p;
+        if (vd->name_count > 0) continue;              // already a name
+        if (!vd->type || vd->type->type != AST_BASIC_TYPE) continue; // not a bare-name candidate
+        ASTNode* shared = NULL;                        // the group's declared type
+        for (ASTNode* q = p->next; q; q = q->next) {
+            VarDeclNode* qd = (VarDeclNode*)q;
+            if (qd->name_count > 0 && qd->type) { shared = qd->type; break; }
+        }
+        if (!shared) continue;                         // no group type to the right
+        ASTNode* cloned = ast_type_clone(shared);
+        if (!cloned) continue;                         // unclonable shared type: leave as-is
+        BasicTypeNode* bt = (BasicTypeNode*)vd->type;  // misparsed type-name == the intended name
+        vd->names = (char**)malloc(sizeof(char*));
+        vd->names[0] = strdup(bt->name);
+        vd->name_count = 1;
+        ast_node_free(vd->type);                       // drop the misparsed bare type-name
+        vd->type = cloned;
     }
 }
 
