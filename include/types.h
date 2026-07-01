@@ -260,6 +260,19 @@ struct Scope {
     int scope_id;
 };
 
+// Imported package namespace. Each imported package owns an `exports` scope
+// holding fresh Variable copies of its capitalised (A-Z) top-level symbols.
+// `state` drives cycle detection during resolution: 0=unvisited, 1=in-progress,
+// 2=done. `import_path`/`name` are owned (str_dup'd) and freed in
+// type_checker_free.
+typedef struct Package {
+    char* import_path;      // canonical import path (owned)
+    char* name;             // package identifier used at call sites (owned)
+    Scope* exports;         // fresh Variable copies of exported symbols (owned)
+    int state;              // 0=unvisited 1=in-progress 2=done
+    struct Package* next;   // intrusive list link
+} Package;
+
 // Forward declarations for enhanced interface system
 struct ConstraintInferenceEngine;
 struct ConceptRegistry;
@@ -326,6 +339,13 @@ struct TypeChecker {
     // Return type of the enclosing function — set when entering a function body
     // so that context-sensitive builtins (e.g. error()) can look it up.
     Type* current_return_type;
+
+    // Imported-package registry (stdlib Phase 0 scaffolding). `packages` is the
+    // head of a linked list of resolved packages; `current_package` is the
+    // package whose body is being checked (NULL == the main package). Both are
+    // NULL until Task 3 wires import resolution in.
+    Package* packages;
+    Package* current_package;
 };
 
 // Type creation functions
@@ -399,6 +419,15 @@ int type_is_error(const Type* type);
 // Type checker functions
 TypeChecker* type_checker_new(void);
 void type_checker_free(TypeChecker* checker);
+
+// Package registry (stdlib Phase 0). find is a linear search by import path;
+// add str_dup's both strings, allocates a fresh exports scope, and pushes onto
+// the checker's package list. package_export_filter copies every A-Z-leading
+// top-level symbol of `pkg_scope` into `exports` as a FRESH Variable (so the two
+// scopes never share ownership of the same Variable node).
+Package* type_checker_find_package(TypeChecker* checker, const char* import_path);
+Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name);
+void package_export_filter(Scope* pkg_scope, Scope* exports);
 
 // Scope management
 Scope* scope_new(Scope* parent);

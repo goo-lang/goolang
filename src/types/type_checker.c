@@ -5,6 +5,17 @@
 #include <string.h>
 #include <stdio.h>
 
+// Helper function to duplicate strings (per-file str_dup idiom under -std=c23).
+static char* str_dup(const char* str) {
+    if (!str) return NULL;
+    size_t len = strlen(str);
+    char* dup = malloc(len + 1);
+    if (dup) {
+        strcpy(dup, str);
+    }
+    return dup;
+}
+
 // Type checker initialization and cleanup
 
 TypeChecker* type_checker_new(void) {
@@ -20,6 +31,10 @@ TypeChecker* type_checker_new(void) {
     checker->type_cache = NULL;
     checker->type_cache_size = 0;
     checker->type_cache_capacity = 0;
+
+    // stdlib Phase 0: package registry empty; NULL current_package == main.
+    checker->packages = NULL;
+    checker->current_package = NULL;
 
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
@@ -69,8 +84,75 @@ void type_checker_free(TypeChecker* checker) {
         if (raw) comptime_context_free(raw);
     }
 
+    // Free the imported-package registry. Each Package owns its two strings and
+    // its exports scope; scope_free tears down the fresh Variable copies (their
+    // shared Type* pointers are NOT owned by the Variable, so no double-free).
+    Package* pkg = checker->packages;
+    while (pkg) {
+        Package* next = pkg->next;
+        free(pkg->import_path);
+        free(pkg->name);
+        scope_free(pkg->exports);
+        free(pkg);
+        pkg = next;
+    }
+
     free(checker->current_file);
     free(checker);
+}
+
+// Linear search of the package registry by canonical import path.
+Package* type_checker_find_package(TypeChecker* checker, const char* import_path) {
+    if (!checker || !import_path) return NULL;
+    for (Package* pkg = checker->packages; pkg; pkg = pkg->next) {
+        if (pkg->import_path && strcmp(pkg->import_path, import_path) == 0) {
+            return pkg;
+        }
+    }
+    return NULL;
+}
+
+// Create a package namespace and push it onto the registry. Strings are copied
+// (str_dup); the exports scope starts empty and is filled by the caller via
+// package_export_filter once the package body has been checked.
+Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name) {
+    if (!checker || !import_path || !name) return NULL;
+
+    Package* pkg = malloc(sizeof(Package));
+    if (!pkg) return NULL;
+
+    pkg->import_path = str_dup(import_path);
+    pkg->name = str_dup(name);
+    pkg->exports = scope_new(NULL);
+    pkg->state = 0;  // unvisited
+    pkg->next = checker->packages;
+    checker->packages = pkg;
+
+    return pkg;
+}
+
+// Copy every capitalised (A-Z leading) top-level symbol of `pkg_scope` into
+// `exports`. Each export is a FRESH Variable (variable_new) so that pkg_scope
+// and exports never co-own a Variable node — variable_free frees only the name
+// (str_dup'd copy) and the comptime value, never the shared Type*, so sharing
+// the Type* pointer across the two scopes is safe.
+void package_export_filter(Scope* pkg_scope, Scope* exports) {
+    if (!pkg_scope || !exports) return;
+
+    for (Variable* v = pkg_scope->variables; v; v = v->next) {
+        if (!v->name || v->name[0] < 'A' || v->name[0] > 'Z') {
+            continue;  // only exported (capitalised) top-level symbols
+        }
+        Variable* copy = variable_new(v->name, v->type, v->declared_pos);
+        if (!copy) continue;
+        copy->is_initialized = v->is_initialized;
+        copy->mutability = v->mutability;
+        copy->is_builtin = v->is_builtin;
+        if (!scope_add_variable(exports, copy)) {
+            // Duplicate name already present in exports — discard the copy.
+            variable_free(copy);
+        }
+    }
 }
 
 void type_checker_init_builtins(TypeChecker* checker) {
