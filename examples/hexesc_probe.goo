@@ -1,0 +1,34 @@
+// hexesc_probe (stdlib table enabler B): hex byte escapes `\xNN` in strings.
+//
+// Go string literals may embed raw bytes via `\xNN` (exactly two hex digits ->
+// one byte). Before the fix the lexer's escape switch had no 'x' case, so
+// `\x05` fell through the forgiving default and decoded to the literal char
+// 'x' followed by "05" — wrong length AND wrong bytes. This is a hard
+// prerequisite for the const string lookup tables in math/bits, e.g.
+// len8tab = "\x00\x01\x01\x02..." indexed by a byte.
+//
+// Bytes are read back with string indexing (enabler A) and wrapped in int()
+// so every print is int-width (side-steps the mixed-width print bug).
+//   "\x05\x41\xff" -> len 3, bytes 5,65,255   basic two-digit decode
+//   "\x0a\x0A\xaB" -> 10,10,171                lower/upper-case hex digits
+//   "A\x42C"       -> len 3, byte[1] 66        escape mixed with plain chars
+package main
+
+import "fmt"
+
+func main() {
+	s := "\x05\x41\xff"
+	fmt.Println(len(s))    // 3
+	fmt.Println(int(s[0])) // 5
+	fmt.Println(int(s[1])) // 65
+	fmt.Println(int(s[2])) // 255
+
+	t := "\x0a\x0A\xaB"
+	fmt.Println(int(t[0])) // 10
+	fmt.Println(int(t[1])) // 10
+	fmt.Println(int(t[2])) // 171
+
+	u := "A\x42C"
+	fmt.Println(len(u))    // 3
+	fmt.Println(int(u[1])) // 66
+}

@@ -594,6 +594,14 @@ char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float) {
     return number;
 }
 
+// Hex-digit value for `\xNN` string escapes, or -1 if `c` is not a hex digit.
+static int hex_digit_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 char* lexer_read_string(Lexer* lexer, size_t* length) {
     lexer_read_char(lexer); // consume opening quote
     size_t start_pos = lexer->position;
@@ -638,6 +646,22 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
             case '"':  out[out_len++] = '"';  break;
             case '\'': out[out_len++] = '\''; break;
             case '0':  out[out_len++] = '\0'; break;
+            case 'x': {
+                // Hex byte escape `\xNN`: exactly two hex digits -> one byte.
+                // The two digits sit at raw offsets i+1 and i+2 (i already
+                // points at 'x'). Anything else (fewer than two digits, or a
+                // non-hex digit) is malformed: return NULL so the caller emits
+                // TOKEN_ERROR and the program is rejected — never silently
+                // mis-decoded. This is the enabler for the const string
+                // lookup tables in math/bits (len8tab = "\x00\x01...").
+                if (i + 2 >= raw_len) { free(out); return NULL; }
+                int hi = hex_digit_value(lexer->input[start_pos + i + 1]);
+                int lo = hex_digit_value(lexer->input[start_pos + i + 2]);
+                if (hi < 0 || lo < 0) { free(out); return NULL; }
+                out[out_len++] = (char)((hi << 4) | lo);
+                i += 2; // consume the two hex digits
+                break;
+            }
             default:   out[out_len++] = next; break; // forgiving: drop backslash
         }
     }

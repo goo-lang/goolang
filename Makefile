@@ -479,6 +479,41 @@ strindex-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -qiE "error" build/strindex_reject.err; then echo "strindex-reject-probe: FAIL (no diagnostic)"; cat build/strindex_reject.err; exit 1; fi; \
 	echo "strindex-reject-probe: PASS (rejected rc=$$rc)"
 
+# Stdlib table enabler B: hex byte escapes `\xNN` in string literals. The const
+# lookup tables in math/bits are strings of raw bytes written as `\x00\x01...`,
+# so correct two-hex-digit decoding is a prerequisite. Guards byte values AND
+# length (the pre-fix bug got both wrong: `\x05` -> 'x','0','5').
+hexesc-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/hexesc_probe examples/hexesc_probe.goo
+	@./build/hexesc_probe > build/hexesc_probe.actual.txt
+	@if diff -u examples/hexesc_probe.expected.txt build/hexesc_probe.actual.txt; then \
+	  echo "hexesc-probe: PASS"; \
+	else \
+	  echo "hexesc-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# Stdlib table enabler B, negative gate: a MALFORMED hex escape (fewer than two
+# hex digits, or a non-hex digit) must be REJECTED, not silently mis-decoded.
+# Before the fix `\xG1`/`\x` fell through the forgiving default and produced
+# garbage bytes with exit 0. Now the lexer returns NULL -> TOKEN_ERROR, so the
+# program fails to compile (rc != 0, no binary, diagnostic emitted).
+hexesc-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== hexesc-reject-probe: malformed hex escapes must reject, not mis-decode ==="
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println("\\xG1") }\n' > build/hexesc_reject_nonhex.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println("ab\\x") }\n' > build/hexesc_reject_short.goo
+	@for name in nonhex short; do \
+	  rm -f build/hexesc_reject_$$name; \
+	  $(COMPILER) -o build/hexesc_reject_$$name build/hexesc_reject_$$name.goo > build/hexesc_reject_$$name.out 2> build/hexesc_reject_$$name.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "hexesc-reject-probe: FAIL ($$name compiled rc=0 — malformed hex silently accepted)"; exit 1; fi; \
+	  if [ -x build/hexesc_reject_$$name ]; then echo "hexesc-reject-probe: FAIL ($$name emitted a binary despite the error)"; exit 1; fi; \
+	  if ! grep -qiE "error" build/hexesc_reject_$$name.err; then echo "hexesc-reject-probe: FAIL ($$name produced no diagnostic)"; cat build/hexesc_reject_$$name.err; exit 1; fi; \
+	  echo "hexesc-reject-probe: $$name rejected (rc=$$rc)"; \
+	done
+	@echo "hexesc-reject-probe: PASS"
+
 # F3 negative gate: a MALFORMED char literal must be rejected cleanly, NOT
 # silently dropped. The lexer emits TOKEN_ERROR for ''/'\z'/unterminated 'a),
 # which the Bison bridge maps to an unknown token and skips — so before the fix
@@ -1117,7 +1152,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
