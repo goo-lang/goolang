@@ -421,6 +421,12 @@ typedef struct {
     ASTNode base;
     TokenType literal_type;
     char* value;
+    // Byte length of `value`. For non-string literals this equals strlen(value)
+    // (set by ast_literal_new). For strings it is the true decoded length, which
+    // may exceed strlen when the literal contains embedded NUL bytes (e.g. the
+    // math/bits lookup tables begin with "\x00..."). Codegen must use this, not
+    // strlen, to emit the correct string length.
+    size_t length;
 } LiteralNode;
 
 // Binary expression
@@ -1062,6 +1068,11 @@ InterfaceTypeNode* ast_interface_type_new(struct ASTNode* methods, Position pos)
 EnumVariantNode* ast_enum_variant_new(const char* name, struct ASTNode* fields, Position pos);
 IdentifierNode* ast_identifier_new(const char* name, Position pos);
 LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos);
+// String-literal constructor that preserves the exact byte length, including
+// embedded NUL bytes (which ast_literal_new's str_dup would truncate). Copies
+// `length` bytes from `data` and NUL-terminates for callers that still treat
+// the value as a C string. literal_type is TOKEN_STRING.
+LiteralNode* ast_string_literal_new(const char* data, size_t length, Position pos);
 BinaryExprNode* ast_binary_expr_new(ASTNode* left, TokenType op, ASTNode* right, Position pos);
 UnaryExprNode* ast_unary_expr_new(TokenType op, ASTNode* operand, Position pos);
 PostfixExprNode* ast_postfix_expr_new(ASTNode* operand, TokenType op, Position pos);

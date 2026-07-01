@@ -57,6 +57,48 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
     }
 }
 
+// Fold a compile-time string constant — string literals joined by `+` — into a
+// freshly malloc'd byte buffer (see header). Recurses over `+` binary nodes and
+// concatenates the decoded bytes, preserving embedded NULs via each literal's
+// stored length. Returns 0 (and allocates nothing kept) for any non-string-
+// literal-concatenation node, so callers fall back to ordinary codegen.
+int goo_fold_const_string(ASTNode* expr, char** out, size_t* out_len) {
+    if (!expr || !out || !out_len) return 0;
+    switch (expr->type) {
+        case AST_LITERAL: {
+            LiteralNode* lit = (LiteralNode*)expr;
+            if (lit->literal_type != TOKEN_STRING) return 0;
+            char* buf = (char*)malloc(lit->length + 1);
+            if (!buf) return 0;
+            if (lit->length > 0) memcpy(buf, lit->value, lit->length);
+            buf[lit->length] = '\0';
+            *out = buf;
+            *out_len = lit->length;
+            return 1;
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            if (b->operator != TOKEN_PLUS) return 0; // only concatenation folds
+            char *lbuf = NULL, *rbuf = NULL;
+            size_t llen = 0, rlen = 0;
+            if (!goo_fold_const_string(b->left, &lbuf, &llen)) return 0;
+            if (!goo_fold_const_string(b->right, &rbuf, &rlen)) { free(lbuf); return 0; }
+            char* buf = (char*)malloc(llen + rlen + 1);
+            if (!buf) { free(lbuf); free(rbuf); return 0; }
+            if (llen > 0) memcpy(buf, lbuf, llen);
+            if (rlen > 0) memcpy(buf + llen, rbuf, rlen);
+            buf[llen + rlen] = '\0';
+            free(lbuf);
+            free(rbuf);
+            *out = buf;
+            *out_len = llen + rlen;
+            return 1;
+        }
+        default:
+            return 0;
+    }
+}
+
 // Result type of an integer binary operation. Go requires both operands to
 // share a type (untyped constants adapt to the other operand); Goo approximates
 // that adaptation and — crucially — preserves the operand's WIDTH and SIGNEDNESS

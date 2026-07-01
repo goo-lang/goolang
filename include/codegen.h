@@ -212,6 +212,11 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
 // Expression generation
 ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+// Build a *constant* goo_string { i8* data, i64 len } value from `len` raw bytes
+// (embedded NULs preserved). Builder-free, so it is valid at global scope — used
+// by both string-literal codegen and folded const-string tables. The bytes are
+// copied into a private unnamed_addr global constant array.
+LLVMValueRef codegen_const_string_value(CodeGenerator* codegen, const char* bytes, size_t len);
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);

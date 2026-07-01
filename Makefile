@@ -514,6 +514,37 @@ hexesc-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	done
 	@echo "hexesc-reject-probe: PASS"
 
+# Stdlib table enabler C (parts 1+2): a package-level const string with embedded
+# NUL bytes, no concatenation. Guards C1 (no crash at global scope) and C2 (the
+# embedded NUL does not truncate — len is 4 though byte 0 is NUL), independently
+# of the concat folding exercised by conststr-probe.
+conststr-nul-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/conststr_nul_probe examples/conststr_nul_probe.goo
+	@./build/conststr_nul_probe > build/conststr_nul_probe.actual.txt
+	@if diff -u examples/conststr_nul_probe.expected.txt build/conststr_nul_probe.actual.txt; then \
+	  echo "conststr-nul-probe: PASS"; \
+	else \
+	  echo "conststr-nul-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# Stdlib table enabler C: package-level const strings with embedded NUL bytes
+# and compile-time concatenation — the exact shape of the math/bits lookup
+# tables (const len8tab = "" + "\x00\x01..." + ...). Guards all three fixes at
+# once: C1 no crash at global scope, C2 embedded-NUL length preserved (len == 5
+# though byte 0 is NUL), C3 the "+" concatenation folds to a compile-time const.
+conststr-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/conststr_probe examples/conststr_probe.goo
+	@./build/conststr_probe > build/conststr_probe.actual.txt
+	@if diff -u examples/conststr_probe.expected.txt build/conststr_probe.actual.txt; then \
+	  echo "conststr-probe: PASS"; \
+	else \
+	  echo "conststr-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # F3 negative gate: a MALFORMED char literal must be rejected cleanly, NOT
 # silently dropped. The lexer emits TOKEN_ERROR for ''/'\z'/unterminated 'a),
 # which the Bison bridge maps to an unknown token and skips — so before the fix
@@ -1152,7 +1183,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
