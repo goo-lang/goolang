@@ -40,4 +40,13 @@ func main() {
 	if utf8.ValidRune(1114112) == false {
 		fmt.Println("vover") // > MaxRune
 	}
+	if utf8.RuneStart(65) {
+		fmt.Println("rs_ascii") // 0x41 lead byte
+	}
+	if utf8.RuneStart(128) == false {
+		fmt.Println("rs_cont") // 0x80 continuation byte
+	}
+	if utf8.RuneStart(195) {
+		fmt.Println("rs_lead") // 0xC3 lead byte
+	}
 }

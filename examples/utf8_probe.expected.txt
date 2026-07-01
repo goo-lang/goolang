@@ -8,3 +8,6 @@ vok
 vsurr
 vmax
 vover
+rs_ascii
+rs_cont
+rs_lead
