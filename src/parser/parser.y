@@ -1056,6 +1056,16 @@ for_stmt:
         ast_node_free($2);
         $$ = (ASTNode*)for_node;
     }
+    | FOR RANGE expression block {
+        // `for range expr { … }` — no index/value (Go allows it; used by e.g.
+        // utf8.RuneCountInString to count iterations). key/value stay NULL.
+        ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));
+        for_node->base.type = AST_FOR_STMT;
+        for_node->base.pos = get_current_position();
+        for_node->range_expr = $3;
+        for_node->body = $4;
+        $$ = (ASTNode*)for_node;
+    }
     | FOR identifier COMMA identifier SHORT_ASSIGN RANGE expression block {
         // `for k, v := range expr { … }` — key+value form.
         ForStmtNode* for_node = (ForStmtNode*)calloc(1, sizeof(ForStmtNode));

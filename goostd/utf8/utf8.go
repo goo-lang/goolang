@@ -60,3 +60,11 @@ func ValidRune(r rune) bool {
 	}
 	return false
 }
+
+// RuneCountInString is like [RuneCount] but its input is a string.
+func RuneCountInString(s string) (n int) {
+	for range s {
+		n++
+	}
+	return n
+}

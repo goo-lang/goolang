@@ -49,4 +49,10 @@ func main() {
 	if utf8.RuneStart(195) {
 		fmt.Println("rs_lead") // 0xC3 lead byte
 	}
+	if utf8.RuneCountInString("hello") == 5 {
+		fmt.Println("rc_ascii")
+	}
+	if utf8.RuneCountInString("a\xc3\xa9\xe4\xb8\xad") == 3 {
+		fmt.Println("rc_multi") // 3 runes over 6 bytes
+	}
 }
