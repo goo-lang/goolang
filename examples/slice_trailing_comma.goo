@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+func main() {
+	// gofmt emits a trailing comma on every multi-line slice literal.
+	nums := []int{
+		10,
+		20,
+		30,
+	}
+	fmt.Println(nums[0])
+	fmt.Println(nums[2])
+	// inline trailing comma
+	inline := []int{1, 2, 3,}
+	fmt.Println(inline[1])
+}

@@ -1895,6 +1895,20 @@ slice_lit:
         lit->elem_type = $1;
         $$ = (ASTNode*)lit;
     }
+    | slice_type LBRACE expression_list COMMA RBRACE {
+        // Trailing comma in a typed slice literal: `[]int{1, 2, 3,}`.
+        // gofmt emits a trailing comma on every multi-line slice literal,
+        // so this is required to parse real vendored Go source. Mirrors the
+        // array-literal trailing-comma rule below.
+        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+        lit->base.type = AST_SLICE_EXPR;
+        lit->base.pos = get_current_position();
+        lit->base.node_type = NULL;
+        lit->base.next = NULL;
+        lit->elements = $3;
+        lit->elem_type = $1;
+        $$ = (ASTNode*)lit;
+    }
     | slice_type LBRACE RBRACE {
         // Empty typed slice literal: `[]int{}`. The declared element type
         // ($1) is stored so the checker stamps the correct slice type
