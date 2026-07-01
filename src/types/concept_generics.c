@@ -1400,7 +1400,7 @@ Type* type_lookup_by_name(const char* name, TypeChecker* checker) {
     if (!name || !checker) return NULL;
     
     // Basic type mapping
-    if (strcmp(name, "int") == 0) return type_int(32, 1);
+    if (strcmp(name, "int") == 0) return type_int(64, 1);
     if (strcmp(name, "float") == 0) return type_float(64);
     if (strcmp(name, "bool") == 0) return type_bool();
     if (strcmp(name, "string") == 0) return type_string_type();

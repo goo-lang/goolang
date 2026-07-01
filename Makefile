@@ -1405,7 +1405,7 @@ return-mismatch-probe: $(COMPILER) $(RUNTIME_LIB)
 	@printf 'package main\nfunc f() int { return "str" }\nfunc main() {}\n' > build/rt_mm_str.goo
 	@printf 'package main\nfunc f() { return 5 }\nfunc main() {}\n' > build/rt_mm_void.goo
 	@printf 'package main\nfunc f() int { return 3.9 }\nfunc main() {}\n' > build/rt_mm_float.goo
-	@printf 'package main\nfunc big() int64 { return 9 }\nfunc f() int { return big() }\nfunc main() {}\n' > build/rt_mm_width.goo
+	@printf 'package main\nfunc big() uint32 { return 9 }\nfunc f() int { return big() }\nfunc main() {}\n' > build/rt_mm_width.goo
 	@printf 'package main\nfunc f() byte { return 65 }\nfunc main() {}\n' > build/rt_mm_narrow.goo
 	@printf 'package main\nimport "fmt"\nfunc i() int { return 42 }\nfunc w() int64 { return 42 }\nfunc c() int64 { return 1 + 1 }\nfunc s() string { return "ok" }\nfunc n() ?int { return 5 }\nfunc divmod(a int, b int) (int, int) { return a / b, a % b }\nfunc main() { fmt.Println(i()); fmt.Println(w()); fmt.Println(c()) }\n' > build/rt_mm_ok.goo
 	@"$(COMPILER)" build/rt_mm_str.goo -o build/rt_mm_str.out 2>build/rt_mm_str.err; rc=$$?; \
@@ -1421,9 +1421,9 @@ return-mismatch-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_float.err; then echo "return-mismatch-probe: FAIL (float->int reached verifier)"; cat build/rt_mm_float.err; exit 1; fi; \
 	  if ! grep -qiE "return type mismatch" build/rt_mm_float.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for float->int)"; cat build/rt_mm_float.err; exit 1; fi
 	@"$(COMPILER)" build/rt_mm_width.goo -o build/rt_mm_width.out 2>build/rt_mm_width.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return int64 from int compiled — expected a type error)"; exit 1; fi; \
-	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (int64->int reached verifier)"; cat build/rt_mm_width.err; exit 1; fi; \
-	  if ! grep -qiE "return type mismatch" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for int64->int)"; cat build/rt_mm_width.err; exit 1; fi
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return uint32 from int compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (uint32->int reached verifier)"; cat build/rt_mm_width.err; exit 1; fi; \
+	  if ! grep -qiE "return type mismatch" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for uint32->int)"; cat build/rt_mm_width.err; exit 1; fi
 	@"$(COMPILER)" build/rt_mm_narrow.goo -o build/rt_mm_narrow.out 2>build/rt_mm_narrow.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (narrowing int literal return byte<-65 compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_narrow.err; then echo "return-mismatch-probe: FAIL (narrowing int-literal return reached verifier)"; cat build/rt_mm_narrow.err; exit 1; fi; \

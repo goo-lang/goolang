@@ -245,11 +245,11 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
                 if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "len_load");
             }
+            // Go: len returns `int` (i64 here) — the slice header already
+            // stores the length as i64, so no truncation.
             LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "len");
-            LLVMValueRef len32 = LLVMBuildTrunc(codegen->builder, len64,
-                                                LLVMInt32TypeInContext(codegen->context), "len_i32");
             value_info_free(arg);
-            return value_info_new(NULL, len32, type_checker_get_builtin(checker, TYPE_INT32));
+            return value_info_new(NULL, len64, type_checker_get_builtin(checker, TYPE_INT64));
         }
         if (strcmp(func_name->name, "cap") == 0 && call->args) {
             // cap(slice) — extract field 2 (capacity) from the 3-field slice
@@ -261,11 +261,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
                 if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "cap_load");
             }
+            // Go: cap returns `int` (i64 here) — no truncation.
             LLVMValueRef cap64 = LLVMBuildExtractValue(codegen->builder, raw, 2, "cap");
-            LLVMValueRef cap32 = LLVMBuildTrunc(codegen->builder, cap64,
-                                                LLVMInt32TypeInContext(codegen->context), "cap_i32");
             value_info_free(arg);
-            return value_info_new(NULL, cap32, type_checker_get_builtin(checker, TYPE_INT32));
+            return value_info_new(NULL, cap64, type_checker_get_builtin(checker, TYPE_INT64));
         }
         if (strcmp(func_name->name, "append") == 0 && call->args && call->args->next) {
             // append(slice, elem) -> slice. goo_slice_append grows the slice
@@ -1161,6 +1160,23 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
             LLVMGetTypeKind(param_types[i]) == LLVMDoubleTypeKind &&
             LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMIntegerTypeKind) {
             val = LLVMBuildSIToFP(codegen->builder, val, param_types[i], "sitofp");
+        }
+        // Coerce an integer arg to the runtime param's width. Now that untyped
+        // literals default to i64, a literal like the offset in
+        // os.ReadByte(path, 0) must narrow to a runtime fn's i32 param (and a
+        // narrow value widens with the arg's signedness).
+        else if (i < param_count &&
+                 LLVMGetTypeKind(param_types[i]) == LLVMIntegerTypeKind &&
+                 LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMIntegerTypeKind) {
+            unsigned pw = LLVMGetIntTypeWidth(param_types[i]);
+            unsigned vw = LLVMGetIntTypeWidth(LLVMTypeOf(val));
+            if (vw > pw) {
+                val = LLVMBuildTrunc(codegen->builder, val, param_types[i], "arg_trunc");
+            } else if (vw < pw) {
+                val = (v->goo_type && !type_is_signed(v->goo_type))
+                    ? LLVMBuildZExt(codegen->builder, val, param_types[i], "arg_zext")
+                    : LLVMBuildSExt(codegen->builder, val, param_types[i], "arg_sext");
+            }
         }
         args[i] = val;
         value_info_free(v);

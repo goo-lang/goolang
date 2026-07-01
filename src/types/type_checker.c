@@ -240,7 +240,7 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
 
     // len(slice|array|string) -> int  (single-arg builtin; the codegen
     // path dispatches on the arg's TypeKind)
-    Type* len_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT32]);
+    Type* len_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT64]); // Go: len -> int (64-bit)
     Variable* len_var = variable_new("len", len_type, (Position){0, 0, 0, "builtin"});
     if (len_var) {
         len_var->is_builtin = 1;
@@ -252,7 +252,7 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
     // special-cased in type_check_call_expr (cap returns int; append's
     // result type is the first arg's slice type); registered here so the
     // bare identifiers resolve consistently with len.
-    Type* cap_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT32]);
+    Type* cap_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT64]); // Go: cap -> int (64-bit)
     Variable* cap_var = variable_new("cap", cap_type, (Position){0, 0, 0, "builtin"});
     if (cap_var) {
         cap_var->is_builtin = 1;
@@ -950,9 +950,9 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     if (!const_decl->type) {
         uint64_t folded;
         if (goo_fold_const_int(const_decl->values, &folded)) {
-            value_type = (folded <= 2147483647ULL)
-                             ? type_checker_get_builtin(checker, TYPE_INT32)
-                         : (folded <= 9223372036854775807ULL)
+            // Untyped int const default type is `int` (int64 here); a value past
+            // int64's signed range takes uint64. Mirrors function_codegen.c.
+            value_type = (folded <= 9223372036854775807ULL)
                              ? type_checker_get_builtin(checker, TYPE_INT64)
                              : type_checker_get_builtin(checker, TYPE_UINT64);
         }
@@ -1767,12 +1767,12 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(ident->name, "int16") == 0) return type_checker_get_builtin(checker, TYPE_INT16);
             if (strcmp(ident->name, "int32") == 0) return type_checker_get_builtin(checker, TYPE_INT32);
             if (strcmp(ident->name, "int64") == 0) return type_checker_get_builtin(checker, TYPE_INT64);
-            if (strcmp(ident->name, "int") == 0) return type_checker_get_builtin(checker, TYPE_INT32);  // Default int
+            if (strcmp(ident->name, "int") == 0) return type_checker_get_builtin(checker, TYPE_INT64);  // Default int (Go: int is 64-bit here)
             if (strcmp(ident->name, "uint8") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
             if (strcmp(ident->name, "uint16") == 0) return type_checker_get_builtin(checker, TYPE_UINT16);
             if (strcmp(ident->name, "uint32") == 0) return type_checker_get_builtin(checker, TYPE_UINT32);
             if (strcmp(ident->name, "uint64") == 0) return type_checker_get_builtin(checker, TYPE_UINT64);
-            if (strcmp(ident->name, "uint") == 0) return type_checker_get_builtin(checker, TYPE_UINT32);  // Default uint
+            if (strcmp(ident->name, "uint") == 0) return type_checker_get_builtin(checker, TYPE_UINT64);  // Default uint (Go: uint is 64-bit here)
             if (strcmp(ident->name, "float32") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT32);
             if (strcmp(ident->name, "float64") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);
             if (strcmp(ident->name, "float") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);  // Default float
@@ -1809,12 +1809,12 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "int16") == 0) return type_checker_get_builtin(checker, TYPE_INT16);
             if (strcmp(basic->name, "int32") == 0) return type_checker_get_builtin(checker, TYPE_INT32);
             if (strcmp(basic->name, "int64") == 0) return type_checker_get_builtin(checker, TYPE_INT64);
-            if (strcmp(basic->name, "int") == 0) return type_checker_get_builtin(checker, TYPE_INT32);  // Default int
+            if (strcmp(basic->name, "int") == 0) return type_checker_get_builtin(checker, TYPE_INT64);  // Default int (Go: int is 64-bit here)
             if (strcmp(basic->name, "uint8") == 0) return type_checker_get_builtin(checker, TYPE_UINT8);
             if (strcmp(basic->name, "uint16") == 0) return type_checker_get_builtin(checker, TYPE_UINT16);
             if (strcmp(basic->name, "uint32") == 0) return type_checker_get_builtin(checker, TYPE_UINT32);
             if (strcmp(basic->name, "uint64") == 0) return type_checker_get_builtin(checker, TYPE_UINT64);
-            if (strcmp(basic->name, "uint") == 0) return type_checker_get_builtin(checker, TYPE_UINT32);  // Default uint
+            if (strcmp(basic->name, "uint") == 0) return type_checker_get_builtin(checker, TYPE_UINT64);  // Default uint (Go: uint is 64-bit here)
             if (strcmp(basic->name, "float32") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT32);
             if (strcmp(basic->name, "float64") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);
             if (strcmp(basic->name, "float") == 0) return type_checker_get_builtin(checker, TYPE_FLOAT64);  // Default float
