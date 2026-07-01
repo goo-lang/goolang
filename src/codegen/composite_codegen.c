@@ -969,6 +969,51 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
     }
 
     LLVMTypeRef arr_type = LLVMArrayType(llvm_elem, count);
+
+    // Global scope (package-level `var s = []T{...}`): there is no active
+    // builder insertion point (codegen->current_function is NULL), so every
+    // builder call below would dereference an unpositioned builder and crash
+    // (this was a segfault on `var n = []int{...}`). Instead produce a fully
+    // CONSTANT slice value — a { ptr, len, cap } struct whose ptr field points
+    // at a private constant global backing array. Mirrors the array-literal
+    // const fast path. Elements must be LLVM constants at global scope.
+    if (codegen->current_function == NULL) {
+        for (size_t i = 0; i < count; i++) {
+            if (!elem_vals[i] || !LLVMIsConstant(elem_vals[i])) {
+                free(elem_vals);
+                codegen_error(codegen, pos,
+                    "global slice literal requires constant elements");
+                return NULL;
+            }
+            // Rebuild integer constants at the element width (LLVM 22 dropped
+            // the const-expr int casts, and slice_coerce_elem needs a builder).
+            LLVMTypeRef ft = LLVMTypeOf(elem_vals[i]);
+            if (LLVMGetTypeKind(ft) == LLVMIntegerTypeKind &&
+                LLVMGetTypeKind(llvm_elem) == LLVMIntegerTypeKind && ft != llvm_elem) {
+                elem_vals[i] = LLVMConstInt(llvm_elem,
+                    LLVMConstIntGetZExtValue(elem_vals[i]),
+                    type_is_signed(elem_type));
+            }
+        }
+        LLVMValueRef backing;
+        if (count > 0) {
+            LLVMValueRef arr_const = LLVMConstArray(llvm_elem, elem_vals, (unsigned)count);
+            backing = LLVMAddGlobal(codegen->module, arr_type, "slice_lit");
+            LLVMSetInitializer(backing, arr_const);
+            LLVMSetLinkage(backing, LLVMPrivateLinkage);
+            LLVMSetGlobalConstant(backing, 1);
+        } else {
+            // Empty slice literal: null data pointer, len/cap 0.
+            backing = LLVMConstNull(LLVMPointerType(llvm_elem, 0));
+        }
+        free(elem_vals);
+        LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
+        LLVMValueRef len_c = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
+        LLVMValueRef fields[3] = { backing, len_c, len_c };
+        LLVMValueRef slice_const = LLVMConstNamedStruct(slice_llvm, fields, 3);
+        return value_info_new(NULL, slice_const, slice_type);
+    }
+
     LLVMValueRef data_ptr;
     LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
     if (alloc_fn) {
