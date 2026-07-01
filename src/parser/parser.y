@@ -151,15 +151,14 @@ static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
 %right TRY CATCH  // Try/catch expressions (low precedence)
 %right ASSIGN SHORT_ASSIGN PLUS_ASSIGN MINUS_ASSIGN MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN AND_ASSIGN OR_ASSIGN XOR_ASSIGN LSHIFT_ASSIGN RSHIFT_ASSIGN
 %right QUESTION COLON  // Ternary operator (if we add it)
-%left OR
-%left AND
-%left BIT_OR
-%left BIT_XOR
-%left BIT_AND
-%left EQ NE
-%left LT LE GT GE
-%left PLUS MINUS
-%left MULTIPLY DIVIDE MODULO LSHIFT RSHIFT  // Go: shift is multiplicative-level, tighter than +/- (so `1<<32 - 1` = (1<<32)-1)
+// Binary operator precedence matches Go exactly (go.dev/ref/spec#Operator_precedence),
+// lowest to highest. Getting this right is a hard requirement for compiling real
+// Go source: e.g. `x & m << 8` is `(x & m) << 8` and `1<<32 - 1` is (1<<32)-1.
+%left OR                                      // ||   (prec 1)
+%left AND                                     // &&   (prec 2)
+%left EQ NE LT LE GT GE                       // == != < <= > >=  (prec 3)
+%left PLUS MINUS BIT_OR BIT_XOR               // + - | ^  (prec 4)
+%left MULTIPLY DIVIDE MODULO LSHIFT RSHIFT BIT_AND  // * / % << >> &  (prec 5)
 %left ARROW  // Channel operations
 %right NOT BIT_NOT BANG  // Unary operators
 %right INCREMENT DECREMENT  // Postfix

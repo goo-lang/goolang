@@ -5,11 +5,37 @@
 // upstream-verbatim, never edit real Go source).
 package bits
 
+// Bit-manipulation masks (from OnesCount/ReverseBytes in upstream bits.go).
+const m0 = 0x5555555555555555 // 01010101 ...
+const m1 = 0x3333333333333333 // 00110011 ...
+const m2 = 0x0f0f0f0f0f0f0f0f // 00001111 ...
+const m3 = 0x00ff00ff00ff00ff // etc.
+const m4 = 0x0000ffff0000ffff
+
 // ReverseBytes16 returns the value of x with its bytes in reversed order.
 //
 // This function's execution time does not depend on the inputs.
 func ReverseBytes16(x uint16) uint16 {
 	return x>>8 | x<<8
+}
+
+// ReverseBytes32 returns the value of x with its bytes in reversed order.
+//
+// This function's execution time does not depend on the inputs.
+func ReverseBytes32(x uint32) uint32 {
+	const m = 1<<32 - 1
+	x = x>>8&(m3&m) | x&(m3&m)<<8
+	return x>>16 | x<<16
+}
+
+// ReverseBytes64 returns the value of x with its bytes in reversed order.
+//
+// This function's execution time does not depend on the inputs.
+func ReverseBytes64(x uint64) uint64 {
+	const m = 1<<64 - 1
+	x = x>>8&(m3&m) | x&(m3&m)<<8
+	x = x>>16&(m4&m) | x&(m4&m)<<16
+	return x>>32 | x<<32
 }
 
 // RotateLeft8 returns the value of x rotated left by (k mod 8) bits.

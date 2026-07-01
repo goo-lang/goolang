@@ -716,6 +716,27 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             sval = boxed;
         }
 
+        // Coerce a mismatched-width integer RHS to the target variable's width
+        // before storing. A mixed-width binary op widens to its larger operand,
+        // so `x = x & int64Const` (x uint32) yields an i64 — storing that into
+        // the i32 slot would write 8 bytes over a 4-byte alloca and corrupt the
+        // stack. Truncate a wider value; extend a narrower one by its signedness.
+        if (target->goo_type && value->goo_type &&
+            LLVMGetTypeKind(LLVMTypeOf(sval)) == LLVMIntegerTypeKind) {
+            LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+            if (tt && LLVMGetTypeKind(tt) == LLVMIntegerTypeKind) {
+                unsigned sw = LLVMGetIntTypeWidth(LLVMTypeOf(sval));
+                unsigned tw = LLVMGetIntTypeWidth(tt);
+                if (sw > tw) {
+                    sval = LLVMBuildTrunc(codegen->builder, sval, tt, "asn.trunc");
+                } else if (sw < tw) {
+                    sval = type_is_signed(value->goo_type)
+                        ? LLVMBuildSExt(codegen->builder, sval, tt, "asn.sext")
+                        : LLVMBuildZExt(codegen->builder, sval, tt, "asn.zext");
+                }
+            }
+        }
+
         // Store the value into the target's address.
         LLVMBuildStore(codegen->builder, sval, target->llvm_value);
 
@@ -919,6 +940,29 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         } else if (rw > lw) {
             right_llvm = LLVMBuildTrunc(codegen->builder, right_llvm,
                                         LLVMTypeOf(left_llvm), "shcnt.trunc");
+        }
+    }
+    // Other integer binary ops (arithmetic, bitwise, comparison) require both
+    // operands at the same LLVM width. A mixed-width integer expression can
+    // survive type checking (the checker's result type is the wider operand) —
+    // e.g. `x & (m3 & m)` with a uint32 x and an int64 const mask in
+    // bits.ReverseBytes32. Widen the narrower operand to the wider, extending by
+    // ITS OWN signedness (sext signed / zext unsigned). String `+` is untouched:
+    // a goo_string is a struct, not an integer LLVM type, so the guard skips it.
+    else if (LLVMGetTypeKind(LLVMTypeOf(left_llvm)) == LLVMIntegerTypeKind &&
+             LLVMGetTypeKind(LLVMTypeOf(right_llvm)) == LLVMIntegerTypeKind) {
+        unsigned lw = LLVMGetIntTypeWidth(LLVMTypeOf(left_llvm));
+        unsigned rw = LLVMGetIntTypeWidth(LLVMTypeOf(right_llvm));
+        if (lw < rw) {
+            int sgn = left_val->goo_type && type_is_signed(left_val->goo_type);
+            left_llvm = sgn
+                ? LLVMBuildSExt(codegen->builder, left_llvm, LLVMTypeOf(right_llvm), "binl.sext")
+                : LLVMBuildZExt(codegen->builder, left_llvm, LLVMTypeOf(right_llvm), "binl.zext");
+        } else if (rw < lw) {
+            int sgn = right_val->goo_type && type_is_signed(right_val->goo_type);
+            right_llvm = sgn
+                ? LLVMBuildSExt(codegen->builder, right_llvm, LLVMTypeOf(left_llvm), "binr.sext")
+                : LLVMBuildZExt(codegen->builder, right_llvm, LLVMTypeOf(left_llvm), "binr.zext");
         }
     }
 
