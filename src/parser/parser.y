@@ -36,6 +36,12 @@ static ASTNode* desugar_const_group(ASTNode* spec_chain);
 static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
                                    ASTNode* v1, ASTNode* v2, int is_short_decl);
 static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
+/* Build a StructLiteralNode from an owned type-name string (or NULL for an
+   elided composite literal `{...}` whose type is inferred from context) and a
+   struct_lit_inits chain. Extracts the field-name piggyback each
+   struct_lit_init stashed on its node_type slot. Shared by the `struct_lit`
+   rule and the elided-composite element rule. */
+static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
 %}
 
 // Union type for semantic values
@@ -143,6 +149,7 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
 %type <node> slice_lit
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
+%type <node> composite_elem composite_elem_list
 %type <node> identifier literal
 %type <node> expression_list
 
@@ -1754,35 +1761,8 @@ map_lit:
 struct_lit:
     identifier LBRACE struct_lit_inits RBRACE {
         IdentifierNode* type_ident = (IdentifierNode*)$1;
-        StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
-        lit->base.type = AST_STRUCT_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->type_name = strdup(type_ident->name);
+        $$ = struct_literal_new(strdup(type_ident->name), $3);
         ast_node_free($1);
-        ASTNode* head = $3;
-        lit->field_values = head;
-        lit->field_count = 0;
-        for (ASTNode* a = head; a; a = a->next) lit->field_count++;
-        /* Collect the field names struct_lit_init stashed on each init's
-           node_type (map_entry_list precedent). NULL entry = positional
-           init. is_keyed = any name present; a keyed literal with NULL
-           holes is the mixed form, rejected at type-check. */
-        lit->is_keyed = 0;
-        lit->field_names = NULL;
-        if (lit->field_count > 0) {
-            lit->field_names = calloc(lit->field_count, sizeof(char*));
-            size_t i = 0;
-            for (ASTNode* a = head; a; a = a->next, i++) {
-                lit->field_names[i] = (char*)a->node_type;
-                a->node_type = NULL;
-                if (lit->field_names[i]) lit->is_keyed = 1;
-            }
-            if (!lit->is_keyed) {
-                free(lit->field_names);
-                lit->field_names = NULL;
-            }
-        }
-        $$ = (ASTNode*)lit;
     }
     | identifier LBRACE RBRACE {
         IdentifierNode* type_ident = (IdentifierNode*)$1;
@@ -1880,7 +1860,7 @@ slice_lit:
         lit->elem_type = NULL;  // native empty form: element type inferred
         $$ = (ASTNode*)lit;
     }
-    | slice_type LBRACE expression_list RBRACE {
+    | slice_type LBRACE composite_elem_list RBRACE {
         // Go-standard typed slice composite literal: `[]int{1, 2, 3}`.
         // The declared slice_type ($1, an AST_SLICE_TYPE) is STORED on the
         // node so the type checker validates each element against the
@@ -1895,7 +1875,7 @@ slice_lit:
         lit->elem_type = $1;
         $$ = (ASTNode*)lit;
     }
-    | slice_type LBRACE expression_list COMMA RBRACE {
+    | slice_type LBRACE composite_elem_list COMMA RBRACE {
         // Trailing comma in a typed slice literal: `[]int{1, 2, 3,}`.
         // gofmt emits a trailing comma on every multi-line slice literal,
         // so this is required to parse real vendored Go source. Mirrors the
@@ -1924,7 +1904,7 @@ slice_lit:
     }
     /* Array composite literal `[N]T{e...}`. Mirrors the slice-literal rules but
        stores the full array_type ($1, an AST_ARRAY_TYPE carrying N + T). */
-    | array_type LBRACE expression_list RBRACE {
+    | array_type LBRACE composite_elem_list RBRACE {
         ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
         lit->base.type = AST_ARRAY_LITERAL;
         lit->base.pos = get_current_position();
@@ -1936,7 +1916,7 @@ slice_lit:
     }
     /* Trailing comma: Go allows (and gofmt adds) a trailing comma in a
        composite literal, e.g. the multi-line deBruijn tables `[32]byte{0, 1,}`. */
-    | array_type LBRACE expression_list COMMA RBRACE {
+    | array_type LBRACE composite_elem_list COMMA RBRACE {
         ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
         lit->base.type = AST_ARRAY_LITERAL;
         lit->base.pos = get_current_position();
@@ -1955,6 +1935,28 @@ slice_lit:
         lit->elements = NULL;
         lit->array_type = $1;
         $$ = (ASTNode*)lit;
+    }
+    ;
+
+/* An element of a typed array/slice composite literal. Either an ordinary
+   expression, or an ELIDED composite literal `{...}` whose type is inferred
+   from the enclosing element type T (Go's elided-type rule). The elided form
+   reuses struct_lit_inits and produces a StructLiteralNode with type_name=NULL;
+   the type checker resolves and stamps its type from the element type T.
+   `LBRACE` is not a valid expression start, so the two alternatives have
+   disjoint first-sets (no conflict). */
+composite_elem:
+    expression { $$ = $1; }
+    | LBRACE struct_lit_inits RBRACE { $$ = struct_literal_new(NULL, $2); }
+    | LBRACE struct_lit_inits COMMA RBRACE { $$ = struct_literal_new(NULL, $2); }
+    | LBRACE RBRACE { $$ = struct_literal_new(NULL, NULL); }
+    ;
+
+composite_elem_list:
+    composite_elem { $$ = $1; }
+    | composite_elem_list COMMA composite_elem {
+        ast_add_child($1, $3);
+        $$ = $1;
     }
     ;
 
@@ -2881,6 +2883,34 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs) {
     es->base.next = NULL;
     es->expr = (ASTNode*)binary;
     return (ASTNode*)es;
+}
+
+static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits) {
+    StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
+    lit->base.type = AST_STRUCT_LITERAL;
+    lit->base.pos = get_current_position();
+    lit->type_name = type_name_owned;  /* NULL => elided (type inferred) */
+    lit->field_values = inits;
+    lit->field_count = 0;
+    for (ASTNode* a = inits; a; a = a->next) lit->field_count++;
+    /* Recover the field names struct_lit_init stashed on each init's node_type
+       slot. NULL entry = positional init. is_keyed = any name present. */
+    lit->is_keyed = 0;
+    lit->field_names = NULL;
+    if (lit->field_count > 0) {
+        lit->field_names = (char**)calloc(lit->field_count, sizeof(char*));
+        size_t i = 0;
+        for (ASTNode* a = inits; a; a = a->next, i++) {
+            lit->field_names[i] = (char*)a->node_type;
+            a->node_type = NULL;
+            if (lit->field_names[i]) lit->is_keyed = 1;
+        }
+        if (!lit->is_keyed) {
+            free(lit->field_names);
+            lit->field_names = NULL;
+        }
+    }
+    return (ASTNode*)lit;
 }
 
 // Helper function to get current position
