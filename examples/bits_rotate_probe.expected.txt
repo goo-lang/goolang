@@ -1,3 +1,7 @@
 rot16
 rot1
 rot65280
+r8
+r16
+r32
+r8wrap

@@ -21,4 +21,17 @@ func main() {
 	if bits.RotateLeft64(255, 8) == 65280 {
 		fmt.Println("rot65280")
 	}
+	// The full rotate family (8/16/32-bit) shares the same body shape.
+	if bits.RotateLeft8(1, 4) == 16 {
+		fmt.Println("r8")
+	}
+	if bits.RotateLeft16(1, 4) == 16 {
+		fmt.Println("r16")
+	}
+	if bits.RotateLeft32(1, 4) == 16 {
+		fmt.Println("r32")
+	}
+	if bits.RotateLeft8(255, 4) == 255 {
+		fmt.Println("r8wrap")
+	}
 }
