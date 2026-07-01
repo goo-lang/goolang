@@ -1,0 +1,33 @@
+package main
+
+// bits_div_probe: math/bits Div/Div32/Div64 (double-word division, vendored).
+// Non-panic paths only; the y==0 / y<=hi panics are guarded by the abort probe.
+// Values verified against Go semantics. Marker pattern avoids mixed-width prints.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	q, r := bits.Div32(0, 100, 7) // 100/7
+	if q == 14 && r == 2 {
+		fmt.Println("d32")
+	}
+	q2, r2 := bits.Div64(0, 100, 7) // hi==0 fast path
+	if q2 == 14 && r2 == 2 {
+		fmt.Println("d64fast")
+	}
+	q3, r3 := bits.Div64(1, 0, 3) // 2^64 / 3
+	if q3 == 6148914691236517205 && r3 == 1 {
+		fmt.Println("d64big")
+	}
+	// s==0 path: y >= 2^63 with hi != 0. 2^64 / 2^63 = 2, rem 0.
+	q4, r4 := bits.Div64(1, 0, 9223372036854775808)
+	if q4 == 2 && r4 == 0 {
+		fmt.Println("d64s0")
+	}
+	qd, rd := bits.Div(0, 100, 7) // uint variant -> Div64
+	if qd == 14 && rd == 2 {
+		fmt.Println("dU")
+	}
+}

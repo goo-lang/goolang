@@ -479,6 +479,24 @@ strindex-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -qiE "error" build/strindex_reject.err; then echo "strindex-reject-probe: FAIL (no diagnostic)"; cat build/strindex_reject.err; exit 1; fi; \
 	echo "strindex-reject-probe: PASS (rejected rc=$$rc)"
 
+# math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
+# that both taken panics abort with the runtime-error message (the non-panic
+# paths are in bits_div_probe).
+bits-div-abort-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== bits-div-abort-probe: Div y==0 / y<=hi abort ==="
+	@printf 'package main\nimport "bits"\nfunc main(){ bits.Div64(0, 10, 0) }\n' > build/div_dz.goo
+	@printf 'package main\nimport "bits"\nfunc main(){ bits.Div64(5, 0, 3) }\n' > build/div_of.goo
+	@$(COMPILER) -o build/div_dz build/div_dz.goo >/dev/null 2>build/div_dz.cerr || (echo "bits-div-abort-probe: FAIL (dz did not compile)"; cat build/div_dz.cerr; exit 1)
+	@$(COMPILER) -o build/div_of build/div_of.goo >/dev/null 2>build/div_of.cerr || (echo "bits-div-abort-probe: FAIL (of did not compile)"; cat build/div_of.cerr; exit 1)
+	@./build/div_dz >/dev/null 2>build/div_dz.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "bits-div-abort-probe: FAIL (divide-by-zero did not abort)"; exit 1; fi; \
+	if ! grep -qiE "integer divide by zero" build/div_dz.err; then echo "bits-div-abort-probe: FAIL (no divide-by-zero message)"; cat build/div_dz.err; exit 1; fi
+	@./build/div_of >/dev/null 2>build/div_of.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "bits-div-abort-probe: FAIL (overflow did not abort)"; exit 1; fi; \
+	if ! grep -qiE "integer overflow" build/div_of.err; then echo "bits-div-abort-probe: FAIL (no overflow message)"; cat build/div_of.err; exit 1; fi
+	@echo "bits-div-abort-probe: PASS"
+
 # panic(v) builtin: a taken panic must abort — print "panic: <msg>" to stderr
 # and exit non-zero (the runtime goo_panic calls abort()). Guards the runtime
 # behavior that panic_probe (untaken branch) cannot.
@@ -1196,7 +1214,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
