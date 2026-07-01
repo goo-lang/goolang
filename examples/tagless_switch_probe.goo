@@ -1,0 +1,33 @@
+// tagless_switch_probe: Go's tagless switch `switch { case cond: ... }`
+// (switch-true) — the first case whose boolean condition holds runs. Modeled on
+// unicode/utf8.RuneLen. Also exercises a negative literal argument (`rl(-1)`),
+// which requires the unary-minus form to adapt to the int32 (rune) parameter.
+package main
+
+import "fmt"
+
+const rune1Max = 1<<7 - 1
+const rune2Max = 1<<11 - 1
+const rune3Max = 1<<16 - 1
+
+func rl(r int32) int {
+	switch {
+	case r < 0:
+		return -1
+	case r <= rune1Max:
+		return 1
+	case r <= rune2Max:
+		return 2
+	case r <= rune3Max:
+		return 3
+	}
+	return 4
+}
+
+func main() {
+	fmt.Println(rl(65))    // 1
+	fmt.Println(rl(1000))  // 2
+	fmt.Println(rl(50000)) // 3
+	fmt.Println(rl(70000)) // 4
+	fmt.Println(rl(-1))    // -1  (negative literal arg -> int32 param)
+}
