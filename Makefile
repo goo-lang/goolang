@@ -1085,7 +1085,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -1461,6 +1461,34 @@ call-argtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/cat_ok.goo -o build/cat_ok.out 2>build/cat_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "call-argtype-probe: FAIL (valid typed calls rejected)"; cat build/cat_ok.err; exit 1; fi
 	@echo "call-argtype-probe: PASS"
+
+# Stdlib Phase 1: a CROSS-PACKAGE call (`pkg.Fn(args)`) into a source-compiled
+# package must type-check its arguments against the export's real signature —
+# a width mismatch (i32 literal into an int64 param) or wrong arity must be
+# rejected at type-check with a clean diagnostic, NOT reach the LLVM verifier
+# ("Call parameter type does not match function signature!"). The hardcoded
+# stdlib shims (fmt.Println etc.) carry param-less stubs and must stay UNchecked
+# — the happy-path arm below drives fmt.Println to prove they are untouched.
+# Fixture package: goostd/pkgcheck (Half(int64) int64, Double(int) int); imports
+# resolve via the ./goostd cwd fallback (compiler run from the repo root).
+pkg-argcheck-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== pkg-argcheck-probe: cross-package call args type-checked ==="
+	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { fmt.Println(pkgcheck.Half(84)) }\n' > build/pac_width.goo
+	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { fmt.Println(pkgcheck.Double(1, 2)) }\n' > build/pac_arity.goo
+	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { fmt.Println(pkgcheck.Double(21)) }\n' > build/pac_ok.goo
+	@"$(COMPILER)" build/pac_width.goo -o build/pac_width.out 2>build/pac_width.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "pkg-argcheck-probe: FAIL (Half(84) i32-into-int64 compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/pac_width.err; then echo "pkg-argcheck-probe: FAIL (invalid IR reached verifier for width mismatch)"; cat build/pac_width.err; exit 1; fi; \
+	  if ! grep -qiE "cannot use int32 as int64" build/pac_width.err; then echo "pkg-argcheck-probe: FAIL (no clean arg-type diagnostic for width mismatch)"; cat build/pac_width.err; exit 1; fi
+	@"$(COMPILER)" build/pac_arity.goo -o build/pac_arity.out 2>build/pac_arity.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "pkg-argcheck-probe: FAIL (Double(1, 2) too-many-args compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/pac_arity.err; then echo "pkg-argcheck-probe: FAIL (invalid IR reached verifier for arity)"; cat build/pac_arity.err; exit 1; fi; \
+	  if ! grep -qiE "wrong number of arguments" build/pac_arity.err; then echo "pkg-argcheck-probe: FAIL (no clean arity diagnostic)"; cat build/pac_arity.err; exit 1; fi
+	@"$(COMPILER)" build/pac_ok.goo -o build/pac_ok.out 2>build/pac_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "pkg-argcheck-probe: FAIL (valid pkgcheck.Double(21) rejected)"; cat build/pac_ok.err; exit 1; fi; \
+	  out=$$(./build/pac_ok.out); if [ "$$out" != "42" ]; then echo "pkg-argcheck-probe: FAIL (pkgcheck.Double(21) printed '$$out', want 42)"; exit 1; fi
+	@echo "pkg-argcheck-probe: PASS"
 
 # P2-4: printing an AGGREGATE nullable (?T) or error-union (!T) value must be a
 # clean, source-located compile error, NOT invalid IR that crashes the LLVM

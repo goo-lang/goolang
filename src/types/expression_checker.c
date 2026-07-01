@@ -947,6 +947,34 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         break;
                     }
                 }
+            } else if (st->kind == TYPE_PACKAGE &&
+                       sel->expr->type == AST_IDENTIFIER) {
+                // Source-compiled package function call (stdlib Phase 1):
+                // `pkg.Fn(args)`. Unlike the hardcoded stdlib shims — whose
+                // markers carry no Package* (or an empty exports scope) and
+                // whose func_type is a param-less stub that must NOT be
+                // arity-checked (else `fmt.Println("x")` would false-reject) —
+                // a source-package export carries a real signature. Without
+                // this branch a `pkg.Fn` selector matches neither the struct-
+                // method nor interface-method case above, so its args slip past
+                // type checking and a width mismatch (int32 arg into an int64
+                // param) reaches the LLVM verifier as invalid IR. Enable
+                // checking only when the selector resolves in the package's
+                // exports scope to THIS func_type (identity) — true for source
+                // exports, false for shim lookups (which are not in exports).
+                // recv_offset=0: package functions carry no spliced receiver.
+                IdentifierNode* pkg_ident = (IdentifierNode*)sel->expr;
+                Variable* pkg_marker =
+                    type_checker_lookup_variable(checker, pkg_ident->name);
+                if (pkg_marker && pkg_marker->package) {
+                    Variable* exp = scope_lookup_variable(
+                        pkg_marker->package->exports, sel->selector);
+                    if (exp && exp->type == func_type) {
+                        check_signature = 1;
+                        recv_offset = 0;
+                        callee_name = sel->selector;
+                    }
+                }
             }
         }
     }
