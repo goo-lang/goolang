@@ -1043,6 +1043,34 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: cap -> int (64-bit)
             return checker->builtin_types[TYPE_INT64];
         }
+        // delete(m, k) -> void. Removes key k from map m (no-op if absent).
+        // Exactly two args: the first must be a map, the second assignable
+        // to its key type (string only, today — the runtime map is
+        // string-keyed). Codegen lowers to goo_map_delete_sv, passing the
+        // key's data pointer like the map-write path does.
+        if (strcmp(func_ident->name, "delete") == 0) {
+            if (!call->args || !call->args->next || call->args->next->next) {
+                type_error(checker, expr->pos, "delete expects exactly two arguments (map, key)");
+                return NULL;
+            }
+            Type* map_t = type_check_expression(checker, call->args);
+            if (!map_t) return NULL;
+            if (map_t->kind != TYPE_MAP) {
+                type_error(checker, expr->pos,
+                           "delete() requires a map as its first argument");
+                return NULL;
+            }
+            Type* key_t = type_check_expression(checker, call->args->next);
+            if (!key_t) return NULL;
+            if (!type_compatible(key_t, map_t->data.map.key_type)) {
+                type_error(checker, expr->pos,
+                           "delete: cannot use %s as key of %s",
+                           type_to_string(key_t), type_to_string(map_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_VOID];
+            return checker->builtin_types[TYPE_VOID];
+        }
         // error(msg) -> !T. Constructs the error case of the enclosing function's
         // return type. The argument must be a string; the call is only valid inside
         // a function whose return type is an error union (!T).

@@ -260,6 +260,18 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, len_var);
     }
 
+    // delete(m, k) -> void. Removes k from map m (no-op if absent); codegen
+    // lowers to goo_map_delete_sv. Registered like panic (void-returning,
+    // predeclared) so the bare identifier resolves before the call is
+    // special-cased in type_check_call_expr.
+    Type* delete_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* delete_var = variable_new("delete", delete_type, (Position){0, 0, 0, "builtin"});
+    if (delete_var) {
+        delete_var->is_builtin = 1;
+        delete_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, delete_var);
+    }
+
     // cap(slice) -> int and append(slice, elem) -> slice. Both are
     // special-cased in type_check_call_expr (cap returns int; append's
     // result type is the first arg's slice type); registered here so the

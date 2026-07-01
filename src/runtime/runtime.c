@@ -569,6 +569,33 @@ int64_t goo_map_len_sv(GooMapSV* m) {
     return n;
 }
 
+// Unlinks and frees the entry for key k, if present (no-op if absent or
+// m/k is NULL). Backs delete(m, k).
+//
+// Key ownership: goo_map_set_sv above stores the caller's pointer verbatim
+// (`e->key = k;`) rather than duplicating it — the map never owns key
+// storage. So this frees only the entry node itself (allocated via
+// goo_alloc in goo_map_set_sv); freeing dead->key would free memory the
+// map doesn't own (e.g. a string literal's constant data).
+void goo_map_delete_sv(GooMapSV* m, const char* k) {
+    if (!m || !k) return;
+    GooMapEntrySV* prev = NULL;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
+    while (e) {
+        if (strcmp(e->key, k) == 0) {
+            if (prev) {
+                prev->next = e->next;
+            } else {
+                m->head = e->next;
+            }
+            goo_free(e);
+            return;
+        }
+        prev = e;
+        e = e->next;
+    }
+}
+
 // Slice operations
 
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {

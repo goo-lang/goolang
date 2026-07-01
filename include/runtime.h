@@ -128,6 +128,9 @@ int64_t goo_map_get_sv(GooMapSV* m, const char* k);
 void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found);
 // Entry count. Backs len(m); linear scan of the linked list.
 int64_t goo_map_len_sv(GooMapSV* m);
+// Deletes the entry for key k, if present. Backs delete(m, k). Does not
+// free k: the map never owns key storage (see goo_map_set_sv above).
+void goo_map_delete_sv(GooMapSV* m, const char* k);
 
 // Slice operations
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity);

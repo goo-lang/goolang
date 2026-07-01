@@ -301,6 +301,38 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(arg);
             return value_info_new(NULL, len64, type_checker_get_builtin(checker, TYPE_INT64));
         }
+        if (strcmp(func_name->name, "delete") == 0 && call->args && call->args->next) {
+            // delete(m, k) — unlink the entry for k from m via
+            // goo_map_delete_sv. Map handling mirrors the len() arm above
+            // (load the map pointer if it's an lvalue); the key's data
+            // pointer is extracted the same way the map-write path does
+            // (m[k] = v, src/codegen/expression_codegen.c).
+            ValueInfo* map_arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!map_arg) return NULL;
+            LLVMValueRef map_raw = map_arg->llvm_value;
+            if (map_arg->is_lvalue && map_arg->goo_type) {
+                LLVMTypeRef mt = codegen_type_to_llvm(codegen, map_arg->goo_type);
+                if (mt) map_raw = LLVMBuildLoad2(codegen->builder, mt, map_raw, "delete_map_load");
+            }
+            ValueInfo* key_arg = codegen_generate_expression(codegen, checker, call->args->next);
+            if (!key_arg) { value_info_free(map_arg); return NULL; }
+            LLVMValueRef key_ptr = key_arg->llvm_value;
+            if (key_arg->goo_type && key_arg->goo_type->kind == TYPE_STRING) {
+                key_ptr = LLVMBuildExtractValue(codegen->builder, key_ptr, 0, "k_ptr");
+            }
+            LLVMValueRef del_fn = LLVMGetNamedFunction(codegen->module, "goo_map_delete_sv");
+            if (!del_fn) {
+                codegen_error(codegen, expr->pos, "delete: goo_map_delete_sv unavailable");
+                value_info_free(map_arg);
+                value_info_free(key_arg);
+                return NULL;
+            }
+            LLVMValueRef args[2] = { map_raw, key_ptr };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(del_fn), del_fn, args, 2, "");
+            value_info_free(map_arg);
+            value_info_free(key_arg);
+            return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+        }
         if (strcmp(func_name->name, "cap") == 0 && call->args) {
             // cap(slice) — extract field 2 (capacity) from the 3-field slice
             // header. Mirrors len() but reads field 2 instead of field 1.

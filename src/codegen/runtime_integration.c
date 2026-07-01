@@ -353,6 +353,12 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_map_len_sv",
                              LLVMInt64TypeInContext(codegen->context), params, 1);
     }
+    // void goo_map_delete_sv(GooMapSV*, const char*) — unlinks the entry for
+    // the given key, if present. Backs delete(m, k).
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_map_delete_sv", void_type, params, 2);
+    }
 
     // Slice operations.
     // WARNING: goo_slice_new/free/get below pass/return goo_slice_t BY VALUE.
