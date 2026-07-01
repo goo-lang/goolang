@@ -250,6 +250,13 @@ typedef struct Variable {
     // (e.g., user-defined function calls — see M11-engine-recursion).
     // Owned by the Variable; freed in variable_free.
     struct ComptimeValue* comptime_value;
+    // stdlib Phase 0: for a TYPE_PACKAGE marker Variable (an imported package
+    // identifier such as `mypkg`), this points at the resolved Package whose
+    // `exports` scope holds its A-Z top-level symbols, so cross-package
+    // selector resolution (Task 5) can reach them. NULL for every ordinary
+    // variable and for the hardcoded stdlib markers (handled by the shim).
+    // NOT owned — the Package is owned by TypeChecker.packages.
+    struct Package* package;
     struct Variable* next;  // For linked list in scope
 } Variable;
 
@@ -444,6 +451,19 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
 
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);
+
+// stdlib Phase 0 (Task 4): type-check one imported package's body. Sets
+// checker->current_package = pkg, pushes a fresh package scope, runs the same
+// declaration loop as type_check_program, then publishes the package's A-Z
+// top-level symbols into pkg->exports via package_export_filter.
+//
+// LIFETIME CONTRACT (asymmetric BY DESIGN): on success this returns with the
+// package scope STILL PUSHED and current_package STILL SET. The caller codegens
+// the package while that scope is live (codegen recovers each function's
+// signature by looking it up under its bare name in this scope) and only then
+// calls scope_pop() and clears current_package. Popping here would hide the
+// package's functions from codegen and drop their parameters.
+int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);

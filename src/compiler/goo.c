@@ -431,12 +431,28 @@ static char* concat_package_sources(const PackageSource* ps) {
 // Forward decl for mutual recursion.
 static int walk_import(PkgGraph* g, const char* import_path);
 
+// The stdlib packages served by the hardcoded C shim (stdlib_package_lookup +
+// the codegen goo_* if-chain). These have NO source under GOOROOT, so the
+// import-graph walk must SKIP them — otherwise every existing program that does
+// `import "fmt"` would fail to resolve. This preserves the sacred backward-compat
+// guarantee: a program importing only shim packages walks to an empty graph and
+// the per-package pre-pass is a no-op. Keep in sync with the marker list in
+// type_checker.c and stdlib_package_lookup in expression_checker.c.
+static bool is_stdlib_shim_import(const char* path) {
+    static const char* const shim[] = {"fmt", "os", "strings", "math", "strconv", "errors"};
+    for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
+        if (strcmp(path, shim[i]) == 0) return true;
+    }
+    return false;
+}
+
 // Walk every import spec in a ProgramNode's import list.
 static int walk_program_imports(PkgGraph* g, ASTNode* imports) {
     for (ASTNode* imp = imports; imp; imp = imp->next) {
         if (imp->type != AST_IMPORT_SPEC) continue;
         ImportSpecNode* spec = (ImportSpecNode*)imp;
         if (!spec->path) continue;
+        if (is_stdlib_shim_import(spec->path)) continue;  // handled by the shim
         if (walk_import(g, spec->path) != 0) return -1;
     }
     return 0;
@@ -517,6 +533,59 @@ static bool dump_package_graph(ProgramNode* main_prog) {
 
     pkg_graph_free(&g);
     return ok;
+}
+
+// stdlib Phase 0 (Task 4): type-check and codegen every resolved package (in
+// topological, leaves-first order) INTO THE SHARED module. Each package's
+// top-level (non-method) functions land under a mangled symbol
+// goo_pkg__<pkg>__<name> (see function_codegen.c) and its A-Z top-level symbols
+// are published into pkg->exports. A TYPE_PACKAGE marker carrying the Package*
+// is registered in the current (global) scope so cross-package selector
+// resolution (Task 5) can find it. Returns true on success. With zero resolved
+// packages the caller never invokes this, keeping the no-import path identical.
+static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
+                                      CodeGenerator* codegen) {
+    for (size_t i = 0; i < g->ordered_count; i++) {
+        PkgEntry* e = g->ordered[i];
+        Package* p = type_checker_add_package(checker, e->import_path, e->name);
+        if (!p) {
+            fprintf(stderr, "Error: out of memory registering package \"%s\"\n",
+                    e->import_path);
+            return false;
+        }
+
+        // Register the package identifier as a TYPE_PACKAGE marker in the
+        // current (global) scope, carrying the Package* so Task 5's selector
+        // resolution can reach p->exports. This marker is conditional on a REAL
+        // import (only resolved packages reach here), unlike the always-on
+        // hardcoded stdlib markers seeded in type_checker.c.
+        Type* pkg_type = type_new(TYPE_PACKAGE);
+        Variable* marker = variable_new(e->name, pkg_type, (Position){0, 0, 0, "import"});
+        if (marker) {
+            marker->is_builtin = 1;
+            marker->is_initialized = 1;
+            marker->package = p;
+            if (!scope_add_variable(checker->current_scope, marker)) {
+                variable_free(marker);  // duplicate import of same name — harmless
+            }
+        }
+
+        // type_check_package leaves the package scope pushed and current_package
+        // set (its LIFETIME CONTRACT) so codegen can recover each function's
+        // signature and emit it under the mangled symbol; we tear both down
+        // right after codegen so main compiles in the global scope with bare
+        // names (current_package == NULL).
+        bool ok = type_check_package(checker, p, e->ast)
+               && codegen_generate_program(codegen, checker, e->ast);
+        scope_pop(checker);
+        checker->current_package = NULL;
+        if (!ok) {
+            fprintf(stderr, "Error: failed to compile package \"%s\"\n",
+                    e->import_path);
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool compile_file(const char* filename, CompilerOptions* options) {
@@ -639,7 +708,31 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         free(source);
         return false;
     }
-    
+
+    // stdlib Phase 0 (Task 4): if main imports non-shim packages, resolve+parse
+    // them (topological, leaves-first) and compile each INTO THIS module before
+    // main, so their exported functions exist under their mangled symbols. With
+    // no such imports the graph is empty, compile_resolved_packages' loop never
+    // runs, and main's codegen below is byte-identical to the no-import path.
+    // (`ast` — main — was snapshotted above, so the walk clobbering global
+    // ast_root while parsing sub-packages is harmless.)
+    {
+        PkgGraph pkg_graph;
+        memset(&pkg_graph, 0, sizeof(pkg_graph));
+        bool pkgs_ok =
+            (walk_program_imports(&pkg_graph, ((ProgramNode*)ast)->imports) == 0)
+            && compile_resolved_packages(&pkg_graph, type_checker, codegen);
+        pkg_graph_free(&pkg_graph);
+        if (!pkgs_ok) {
+            codegen_free(codegen);
+            type_checker_free(type_checker);
+            ast_node_free(ast);
+            lexer_free(lexer);
+            free(source);
+            return false;
+        }
+    }
+
     // Generate code
     if (!codegen_generate_program(codegen, type_checker, ast)) {
         codegen_free(codegen);

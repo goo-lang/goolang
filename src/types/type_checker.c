@@ -415,6 +415,62 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
     return checker->error_count == 0;
 }
 
+// stdlib Phase 0 (Task 4): type-check one imported package in its own scope,
+// then publish its exported (A-Z) top-level symbols into pkg->exports.
+//
+// See the LIFETIME CONTRACT note on the declaration in types.h: on success this
+// leaves the package scope pushed and current_package set so the caller can
+// codegen the package (with cross-package name mangling) before tearing the
+// scope down. This deliberately mirrors type_check_program's decl loop rather
+// than calling it, because we must NOT re-run the lexer-error guard (already
+// checked for the whole build) and must run inside the pushed package scope.
+int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
+    if (!checker || !pkg || !program) return 0;
+
+    // Push the package scope and set current_package FIRST, before any failable
+    // work, so that EVERY return past this point leaves exactly one scope pushed
+    // and current_package set — the caller unconditionally scope_pop()s and
+    // clears current_package, so the push/pop must always balance.
+    checker->current_package = pkg;
+    scope_push(checker);
+
+    if (program->type != AST_PROGRAM) {
+        type_error(checker, program->pos, "Expected program node");
+        return 0;
+    }
+
+    ProgramNode* prog = (ProgramNode*)program;
+
+    // Mirror type_check_program's comptime pre-pass so an intra-package
+    // `is_comptime` const RHS can resolve forward-declared calls.
+    if (prog->decls && checker->comptime_type_ctx
+                    && checker->comptime_type_ctx->comptime_ctx) {
+        ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
+        for (ASTNode* d = prog->decls; d; d = d->next) {
+            if (d->type == AST_FUNC_DECL) {
+                FuncDeclNode* func = (FuncDeclNode*)d;
+                if (func->name) {
+                    comptime_context_bind_func(ctx, func->name, d);
+                }
+            }
+        }
+    }
+
+    // The EXISTING declaration loop, unchanged — registers each top-level decl
+    // into the package scope we just pushed.
+    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+        if (!type_check_declaration(checker, decl)) {
+            return 0;  // scope/current_package left set; caller aborts the build
+        }
+    }
+
+    // Publish the package's exported (capitalised) top-level symbols so
+    // cross-package selector resolution (Task 5) can reach them by name.
+    package_export_filter(checker->current_scope, pkg->exports);
+
+    return checker->error_count == 0;
+}
+
 int type_check_declaration(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl) return 0;
     

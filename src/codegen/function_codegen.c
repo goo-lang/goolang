@@ -227,6 +227,28 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
 
+    // stdlib Phase 0 (Task 4): a non-main package's top-level (non-method)
+    // functions are emitted under a mangled symbol `goo_pkg__<pkg>__<name>` so
+    // they never collide with main's bare names in the shared module. The main
+    // package (checker->current_package == NULL) is UNCHANGED — bare names —
+    // which is what keeps the no-import path byte-identical. `emit_name` stays
+    // the BARE name (the type-checker registered the package function under its
+    // bare name in the package scope, so the lookup below must use it); only the
+    // LLVM SYMBOL name is mangled.
+    const char* symbol_name = emit_name;
+    char* pkg_mangled = NULL;
+    if (checker->current_package && checker->current_package->name
+                                 && !func_decl->receiver && func_decl->name) {
+        const char* pkg = checker->current_package->name;
+        size_t need = strlen("goo_pkg__") + strlen(pkg) + strlen("__")
+                    + strlen(func_decl->name) + 1;
+        pkg_mangled = malloc(need);
+        if (pkg_mangled) {
+            snprintf(pkg_mangled, need, "goo_pkg__%s__%s", pkg, func_decl->name);
+            symbol_name = pkg_mangled;
+        }
+    }
+
     // Get function type from AST
     Type* return_type = NULL;
     if (func_decl->return_type) {
@@ -289,8 +311,8 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     
     LLVMTypeRef function_type = LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
     
-    // Create the function
-    LLVMValueRef function = LLVMAddFunction(codegen->module, emit_name, function_type);
+    // Create the function (mangled symbol for non-main packages; bare for main)
+    LLVMValueRef function = LLVMAddFunction(codegen->module, symbol_name, function_type);
     
     // Handle WebAssembly exports/imports based on function attributes
     if (codegen_is_wasm_target(codegen)) {
@@ -317,9 +339,11 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
     
-    // Create function info
-    FunctionInfo* func_info = function_info_new(emit_name, function, return_type);
-    free(mangled);  // emit_name was copied by LLVMAddFunction and function_info_new
+    // Create function info under the SAME (possibly mangled) symbol name used
+    // for LLVMAddFunction, so intra-package call resolution stays consistent.
+    FunctionInfo* func_info = function_info_new(symbol_name, function, return_type);
+    free(mangled);     // emit_name was copied by LLVMAddFunction / function_info_new
+    free(pkg_mangled); // symbol_name likewise copied; safe to free the mangled buffer
     if (!func_info) {
         codegen_error(codegen, decl->pos, "Failed to create function info");
         if (param_types) free(param_types);
