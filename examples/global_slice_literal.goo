@@ -1,0 +1,31 @@
+package main
+
+import "fmt"
+
+// Package-level slice tables are pervasive in real Go. These previously
+// segfaulted (the slice lowering used the LLVM builder with no active
+// insertion point at global scope).
+var ints = []int{10, 20, 30}
+var bytes = []byte{1, 2, 255}
+var names = []string{"go", "lang"}
+var empty = []int{}
+
+// gofmt multi-line form with trailing comma
+var table = []int{
+	100,
+	200,
+	300,
+}
+
+func main() {
+	fmt.Println(ints[0])
+	fmt.Println(ints[2])
+	fmt.Println(int(bytes[2]))
+	fmt.Println(names[1])
+	fmt.Println(len(empty))
+	sum := 0
+	for _, v := range table {
+		sum += v
+	}
+	fmt.Println(sum)
+}
