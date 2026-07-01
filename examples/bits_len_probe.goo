@@ -1,0 +1,40 @@
+package main
+
+// bits_len_probe: math/bits Len16/32/64 and LeadingZeros16/32/64 (vendored
+// verbatim). These build on len8tab with named returns (n int), compound
+// assignment, and `if x >= 1<<k` narrowing. Marker pattern (if-compare then
+// print) avoids sequential different-width prints.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.Len16(0) == 0 {
+		fmt.Println("l16a")
+	}
+	if bits.Len16(65535) == 16 {
+		fmt.Println("l16b")
+	}
+	if bits.Len32(65536) == 17 {
+		fmt.Println("l32a")
+	}
+	if bits.Len32(4294967295) == 32 {
+		fmt.Println("l32b")
+	}
+	if bits.Len64(4294967296) == 33 {
+		fmt.Println("l64a")
+	}
+	if bits.Len64(18446744073709551615) == 64 {
+		fmt.Println("l64b")
+	}
+	if bits.LeadingZeros16(1) == 15 {
+		fmt.Println("z16")
+	}
+	if bits.LeadingZeros32(1) == 31 {
+		fmt.Println("z32")
+	}
+	if bits.LeadingZeros64(1) == 63 {
+		fmt.Println("z64")
+	}
+}
