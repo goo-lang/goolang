@@ -28,6 +28,26 @@ static void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index
     LLVMValueRef args[4] = { idx64, length, file, line };
     LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 4, "");
 }
+
+// Widen an integer index to a 64-bit offset with the correct signedness. Go
+// array/string/slice indices are non-negative offsets, so an UNSIGNED narrow
+// index (e.g. a uint8 of 255, as in the math/bits table lookup len8tab[x]) must
+// be ZERO-extended. LLVM's GEP default sign-extends, turning 255 into -1 and
+// reading before the buffer — the silent bug the table probe exposed. Signed
+// indices sign-extend (a genuinely negative index is a bounds panic, not a
+// wrap). The result feeds every element GEP and the bounds check, so they agree.
+LLVMValueRef codegen_widen_index(CodeGenerator* codegen, ValueInfo* idx) {
+    LLVMValueRef v = idx->llvm_value;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+    LLVMTypeRef vt = LLVMTypeOf(v);
+    if (vt == i64) return v;
+    unsigned w = LLVMGetIntTypeWidth(vt);
+    if (w > 64) return LLVMBuildTrunc(codegen->builder, v, i64, "idx.trunc");
+    if (w == 64) return v;
+    int is_unsigned = idx->goo_type && !type_is_signed(idx->goo_type);
+    return is_unsigned ? LLVMBuildZExt(codegen->builder, v, i64, "idx.zext")
+                       : LLVMBuildSExt(codegen->builder, v, i64, "idx.sext");
+}
 #endif
 
 ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -82,15 +102,20 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         return value_info_new(NULL, result, val_type);
     }
 
+    // Normalize the index to a signed-correct 64-bit offset before any element
+    // GEP or bounds check (see codegen_widen_index). Done after the map
+    // fast-path, which returned above — map keys are strings, not integers.
+    LLVMValueRef idx64 = codegen_widen_index(codegen, index_val);
+
     // Handle different indexed types
     switch (base_type->kind) {
         case TYPE_ARRAY: {
             element_type = base_type->data.array.element_type;
-            
+
             // For arrays, generate GEP
             LLVMValueRef indices[] = {
                 LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),  // Array base
-                index_val->llvm_value  // Array index
+                idx64  // Array index
             };
             
             if (base_val->is_lvalue) {
@@ -134,12 +159,12 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             // panics ("bounds check failed") if index >= length, so out-of-range
             // access aborts instead of reading/writing past the buffer. The
             // comparison lives in the runtime fn, so no IR branching here.
-            codegen_emit_bounds_check(codegen, index_val->llvm_value, slice_len, expr);
+            codegen_emit_bounds_check(codegen, idx64, slice_len, expr);
 
             // Index into the slice data
             result = LLVMBuildGEP2(codegen->builder,
                                   codegen_type_to_llvm(codegen, element_type),
-                                  slice_ptr, &index_val->llvm_value, 1, "slice_elem");
+                                  slice_ptr, &idx64, 1, "slice_elem");
             break;
         }
         
@@ -161,7 +186,7 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             // Index into the string data
             result = LLVMBuildGEP2(codegen->builder,
                                   LLVMInt8TypeInContext(codegen->context),
-                                  string_ptr, &index_val->llvm_value, 1, "string_char");
+                                  string_ptr, &idx64, 1, "string_char");
             break;
         }
         
@@ -187,7 +212,7 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             
             result = LLVMBuildGEP2(codegen->builder,
                                   codegen_type_to_llvm(codegen, element_type),
-                                  ptr_val, &index_val->llvm_value, 1, "ptr_elem");
+                                  ptr_val, &idx64, 1, "ptr_elem");
             break;
         }
         

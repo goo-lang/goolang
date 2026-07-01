@@ -401,12 +401,15 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
                 index_val->is_lvalue = 0;
             }
         }
+        // Signed-correct 64-bit offset so a uint8 index (255) does not
+        // sign-extend to -1 on the write path (matches the read path).
+        LLVMValueRef idx64 = codegen_widen_index(codegen, index_val);
 
         if (base_type->kind == TYPE_ARRAY) {
             // base->llvm_value is a pointer to the array; GEP the element.
             LLVMValueRef indices[] = {
                 LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
-                index_val->llvm_value
+                idx64
             };
             LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
                                                   codegen_type_to_llvm(codegen, base_type),
@@ -426,7 +429,7 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
             LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, slice_val, 0, "slice_ptr");
             LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
                                                   codegen_type_to_llvm(codegen, elem_type),
-                                                  data_ptr, &index_val->llvm_value, 1, "slice_elem");
+                                                  data_ptr, &idx64, 1, "slice_elem");
             ValueInfo* out = value_info_new(NULL, elem_ptr, elem_type);
             out->is_lvalue = 1;
             return out;
