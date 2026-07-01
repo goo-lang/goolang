@@ -1,0 +1,30 @@
+package main
+
+import "fmt"
+
+// A function may call a multi-return function defined LATER in the file
+// (Go package-scope forward reference). Previously the codegen prototype
+// pre-pass skipped aggregate (tuple) returns, so this failed with
+// "Undefined identifier". Anonymous tuple returns now lower to a uniqued
+// literal struct, so the forward prototype and the body agree.
+func caller() (int, int) {
+	return callee()
+}
+
+func viaAssign() (r int, s int) {
+	r, s = callee()
+	return
+}
+
+func callee() (int, int) {
+	return 11, 22
+}
+
+func main() {
+	a, b := caller()
+	fmt.Println(a)
+	fmt.Println(b)
+	c, d := viaAssign()
+	fmt.Println(c)
+	fmt.Println(d)
+}

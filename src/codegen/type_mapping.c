@@ -146,6 +146,27 @@ LLVMTypeRef codegen_get_array_type(CodeGenerator* codegen, const Type* type) {
 LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type) {
     if (!codegen || !type || type->kind != TYPE_STRUCT) return NULL;
 
+    // Anonymous structs (multi-return tuples and named-return result structs
+    // have no user name) lower to a LITERAL struct type, which LLVM uniques by
+    // structure: two independent type_from_ast() results with identical fields
+    // yield the SAME LLVMTypeRef. This is what lets a forward-reference
+    // prototype and the function body agree on a tuple return type — a named
+    // struct would mint distinct `anon`/`anon.1` types keyed on the (differing)
+    // Type* pointer and fail the verifier. Anonymous structs cannot be recursive
+    // (no name to refer back to), so the opaque-cache cycle break is unneeded.
+    if (!type->data.struct_type.name && type->data.struct_type.field_count > 0) {
+        size_t fc = type->data.struct_type.field_count;
+        LLVMTypeRef* fts = malloc(sizeof(LLVMTypeRef) * fc);
+        if (!fts) return NULL;
+        for (size_t i = 0; i < fc; i++) {
+            fts[i] = codegen_type_to_llvm(codegen, type->data.struct_type.fields[i].type);
+            if (!fts[i]) { free(fts); return NULL; }
+        }
+        LLVMTypeRef lit = LLVMStructTypeInContext(codegen->context, fts, (unsigned)fc, 0);
+        free(fts);
+        return lit;
+    }
+
     // Consult the struct cache first. The cache stores (Type* -> LLVMTypeRef)
     // pairs. For recursive struct types (e.g. `type Node struct { next *Node }`)
     // the cache entry is inserted BEFORE resolving the field types, so that
