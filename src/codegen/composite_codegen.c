@@ -1049,3 +1049,99 @@ ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* check
 #endif
 }
 
+// Array composite literal `[N]T{e...}`. Lowers to an alloca of [N x T], stores
+// each element (coerced to T's width) at its index, and zero-fills the omitted
+// trailing elements (Go semantics). Returns the array BY VALUE (a load of the
+// alloca); the index/len paths handle a by-value array. Package-level array
+// globals (constant initializers) are a follow-up — this covers local literals.
+ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_ARRAY_LITERAL) return NULL;
+
+    ArrayLitNode* lit = (ArrayLitNode*)expr;
+    Type* arr_type = expr->node_type;  // TYPE_ARRAY, stamped by the type checker
+    if (!arr_type || arr_type->kind != TYPE_ARRAY) {
+        codegen_error(codegen, expr->pos, "array literal missing TYPE_ARRAY node_type");
+        return NULL;
+    }
+    Type* elem_type = arr_type->data.array.element_type;
+    size_t n = arr_type->data.array.length;
+    LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
+    if (!llvm_elem) { codegen_error(codegen, expr->pos, "array literal: bad element type"); return NULL; }
+    LLVMTypeRef arr_llvm = LLVMArrayType(llvm_elem, (unsigned)n);
+
+    // All-constant fast path: build a constant [N x T] with LLVMConst* casts,
+    // which is BUILDER-FREE and therefore valid at global scope (a package-level
+    // `var tab = [256]byte{...}`, the table shape). Falls back to the alloca
+    // path below if any element is not an LLVM constant (local literals only).
+    {
+        LLVMValueRef* consts = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (n ? n : 1));
+        if (consts) {
+            int all_const = 1;
+            size_t j = 0;
+            unsigned ew = (LLVMGetTypeKind(llvm_elem) == LLVMIntegerTypeKind)
+                        ? LLVMGetIntTypeWidth(llvm_elem) : 0;
+            for (ASTNode* e = lit->elements; e && j < n; e = e->next, j++) {
+                ValueInfo* ev = codegen_generate_expression(codegen, checker, e);
+                if (!ev) { all_const = 0; break; }
+                LLVMValueRef v = ev->llvm_value;
+                int is_c = v && LLVMIsConstant(v) && !ev->is_lvalue;
+                if (is_c && ew && LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMIntegerTypeKind
+                          && LLVMTypeOf(v) != llvm_elem) {
+                    // Rebuild the constant at the element width (LLVM 22 dropped
+                    // the LLVMConst{ZExt,IntCast} const-expr casts). Taking the
+                    // low bits truncates; a fresh ConstInt zero/sign-extends.
+                    v = LLVMConstInt(llvm_elem, LLVMConstIntGetZExtValue(v),
+                                     type_is_signed(elem_type));
+                }
+                value_info_free(ev);
+                if (!is_c) { all_const = 0; break; }
+                consts[j] = v;
+            }
+            if (all_const) {
+                for (; j < n; j++) consts[j] = LLVMConstNull(llvm_elem);
+                LLVMValueRef arr = LLVMConstArray(llvm_elem, consts, (unsigned)n);
+                free(consts);
+                ValueInfo* out = value_info_new(NULL, arr, arr_type);
+                if (out) out->is_lvalue = 0;
+                return out;
+            }
+            free(consts);
+        }
+    }
+
+    LLVMValueRef arr_alloca = codegen_create_alloca(codegen, arr_llvm, "arraylit");
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+
+    size_t i = 0;
+    for (ASTNode* e = lit->elements; e; e = e->next, i++) {
+        ValueInfo* ev = codegen_generate_expression(codegen, checker, e);
+        if (!ev) return NULL;
+        LLVMValueRef v = ev->llvm_value;
+        if (ev->is_lvalue && ev->goo_type) {
+            LLVMTypeRef et = codegen_type_to_llvm(codegen, ev->goo_type);
+            if (et) v = LLVMBuildLoad2(codegen->builder, et, v, "elem_load");
+        }
+        v = slice_coerce_elem(codegen, v, llvm_elem);
+        LLVMValueRef idx[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), i, 0) };
+        LLVMValueRef gep = LLVMBuildGEP2(codegen->builder, arr_llvm, arr_alloca, idx, 2, "arr_elem");
+        LLVMBuildStore(codegen->builder, v, gep);
+        value_info_free(ev);
+    }
+    // Zero-fill the omitted trailing elements.
+    for (; i < n; i++) {
+        LLVMValueRef idx[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), i, 0) };
+        LLVMValueRef gep = LLVMBuildGEP2(codegen->builder, arr_llvm, arr_alloca, idx, 2, "arr_zero");
+        LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_elem), gep);
+    }
+
+    LLVMValueRef arr_val = LLVMBuildLoad2(codegen->builder, arr_llvm, arr_alloca, "arrval");
+    ValueInfo* out = value_info_new(NULL, arr_val, arr_type);
+    if (out) out->is_lvalue = 0;
+    return out;
+#endif
+}
+

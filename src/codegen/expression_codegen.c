@@ -41,6 +41,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_mmio_access(codegen, checker, expr);
         case AST_SLICE_EXPR:
             return codegen_generate_slice_lit(codegen, checker, expr);
+        case AST_ARRAY_LITERAL:
+            return codegen_generate_array_lit(codegen, checker, expr);
         case AST_STRUCT_LITERAL:
             return codegen_generate_struct_lit(codegen, checker, expr);
         case AST_MATCH_EXPR:
