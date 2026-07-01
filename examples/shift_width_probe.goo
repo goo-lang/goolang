@@ -1,0 +1,29 @@
+// shift_width_probe: an untyped shift constant compared against a wide operand,
+// `x >= 1<<32` with x uint64. The shift `1<<32` must adopt uint64 from x and
+// compute at 64 bits (= 4294967296); before the fix its untyped `1` stayed
+// int32 and `shl i32 1, 32` overflowed to 0, making `x >= 0` always true. This
+// is the exact construct math/bits Len64 uses (`if x >= 1<<32`). Marker pattern
+// avoids sequential different-width prints.
+package main
+
+import "fmt"
+
+func main() {
+	var small uint64 = 1
+	if small >= 1<<32 {
+		fmt.Println("BUG-small-ge") // must NOT print: 1 < 2^32
+	} else {
+		fmt.Println("small-lt")
+	}
+
+	var big uint64 = 5000000000 // > 2^32
+	if big >= 1<<32 {
+		fmt.Println("big-ge")
+	}
+
+	// nested shifts: 1<<16 within a uint32 comparison stays correct too
+	var m uint32 = 70000 // > 2^16
+	if m >= 1<<16 {
+		fmt.Println("mid-ge")
+	}
+}
