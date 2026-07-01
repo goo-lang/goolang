@@ -185,6 +185,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_print_int", void_type, params, 1);
     }
     {
+        // Unsigned integer printers (uint/uint8/16/32/64, byte): value is
+        // zero-extended to u64 before the call so magnitudes above INT64_MAX
+        // print correctly (the signed printer would show them negative).
+        LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_print_uint", void_type, params, 1);
+        add_runtime_function(codegen, "goo_println_uint", void_type, params, 1);
+    }
+    {
         LLVMTypeRef params[] = { LLVMInt32TypeInContext(codegen->context) };
         add_runtime_function(codegen, "goo_print_bool", void_type, params, 1);
     }
