@@ -1,0 +1,24 @@
+package main
+
+// bits_rotate_probe: the first REAL upstream Go function (math/bits.RotateLeft64,
+// vendored verbatim in goostd/bits) compiled, linked, and run by Goo. Exercises
+// the Phase-1 frontend enablers together: cross-package import, forward-free
+// call, local untyped const, uint arithmetic, narrow integer-literal adaptation,
+// and shift-count width coercion. Results are compared (unsigned printing is a
+// separate feature) and a marker printed per case.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.RotateLeft64(1, 4) == 16 {
+		fmt.Println("rot16")
+	}
+	if bits.RotateLeft64(1, 0) == 1 {
+		fmt.Println("rot1")
+	}
+	if bits.RotateLeft64(255, 8) == 65280 {
+		fmt.Println("rot65280")
+	}
+}

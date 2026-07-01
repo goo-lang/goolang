@@ -209,10 +209,24 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
     
     switch (literal->literal_type) {
         case TOKEN_INT: {
-            // Parse integer value from string. Auto-promote to i64 when the
-            // value overflows signed int32 — untyped integer constants must
-            // preserve their full magnitude (e.g. 9000000000 > INT32_MAX).
             long long value = atoll(literal->value);
+            // Narrow integer-literal adaptation: when type-checking retyped this
+            // literal to a specific integer type OTHER than the default int32
+            // (e.g. a uint64 parameter/operand/return context), emit the
+            // constant at THAT width and signedness so it matches with no later
+            // coercion. int32-typed literals keep the magnitude-based path below
+            // (which auto-promotes to i64 past INT32_MAX — an unadapted untyped
+            // constant must preserve its full magnitude, e.g. 9000000000).
+            Type* nt = expr->node_type;
+            if (nt && type_is_integer(nt) && nt->kind != TYPE_INT32) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
+                if (lt) {
+                    llvm_value = LLVMConstInt(lt, (unsigned long long)value,
+                                              type_is_signed(nt));
+                    goo_type = nt;
+                    break;
+                }
+            }
             if (value > 2147483647LL || value < -2147483648LL) {
                 llvm_value = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
                                          (unsigned long long)value, 1);
@@ -884,7 +898,26 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     LLVMValueRef result = NULL;
     LLVMValueRef left_llvm = left_val->llvm_value;
     LLVMValueRef right_llvm = right_val->llvm_value;
-    
+
+    // A shift requires both operands to share an LLVM integer width, but Go
+    // allows the count to have any integer type (and Goo's uint is 32-bit while
+    // the shifted value is often 64-bit, e.g. bits.RotateLeft64's `x >> s`).
+    // Coerce the count to the shifted value's width — zero-extend or truncate,
+    // a shift count is non-negative — so the shift verifies.
+    if ((binary->operator == TOKEN_LSHIFT || binary->operator == TOKEN_RSHIFT) &&
+        LLVMGetTypeKind(LLVMTypeOf(left_llvm)) == LLVMIntegerTypeKind &&
+        LLVMGetTypeKind(LLVMTypeOf(right_llvm)) == LLVMIntegerTypeKind) {
+        unsigned lw = LLVMGetIntTypeWidth(LLVMTypeOf(left_llvm));
+        unsigned rw = LLVMGetIntTypeWidth(LLVMTypeOf(right_llvm));
+        if (rw < lw) {
+            right_llvm = LLVMBuildZExt(codegen->builder, right_llvm,
+                                       LLVMTypeOf(left_llvm), "shcnt.zext");
+        } else if (rw > lw) {
+            right_llvm = LLVMBuildTrunc(codegen->builder, right_llvm,
+                                        LLVMTypeOf(left_llvm), "shcnt.trunc");
+        }
+    }
+
     // Generate operation based on operator and types
     switch (binary->operator) {
         // Arithmetic operators

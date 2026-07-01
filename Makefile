@@ -1463,22 +1463,25 @@ call-argtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "call-argtype-probe: PASS"
 
 # Stdlib Phase 1: a CROSS-PACKAGE call (`pkg.Fn(args)`) into a source-compiled
-# package must type-check its arguments against the export's real signature —
-# a width mismatch (i32 literal into an int64 param) or wrong arity must be
-# rejected at type-check with a clean diagnostic, NOT reach the LLVM verifier
-# ("Call parameter type does not match function signature!"). The hardcoded
-# stdlib shims (fmt.Println etc.) carry param-less stubs and must stay UNchecked
-# — the happy-path arm below drives fmt.Println to prove they are untouched.
+# package must type-check its arguments against the export's real signature. A
+# width mismatch from a NON-LITERAL operand (an int32 variable into an int64
+# param) or wrong arity must be rejected at type-check with a clean diagnostic,
+# NOT reach the LLVM verifier ("Call parameter type does not match function
+# signature!"). An untyped integer LITERAL, by contrast, ADAPTS to the parameter
+# type (narrow integer-literal adaptation) — pac_lit below proves Half(84) both
+# compiles and computes. The hardcoded stdlib shims (fmt.Println etc.) carry
+# param-less stubs and stay UNchecked — the happy-path arm drives fmt.Println.
 # Fixture package: goostd/pkgcheck (Half(int64) int64, Double(int) int); imports
 # resolve via the ./goostd cwd fallback (compiler run from the repo root).
 pkg-argcheck-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== pkg-argcheck-probe: cross-package call args type-checked ==="
-	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { fmt.Println(pkgcheck.Half(84)) }\n' > build/pac_width.goo
+	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { var v int32 = 84; fmt.Println(pkgcheck.Half(v)) }\n' > build/pac_width.goo
 	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { fmt.Println(pkgcheck.Double(1, 2)) }\n' > build/pac_arity.goo
 	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { fmt.Println(pkgcheck.Double(21)) }\n' > build/pac_ok.goo
+	@printf 'package main\nimport ("fmt"\n"pkgcheck")\nfunc main() { var r int64 = pkgcheck.Half(84); if r == 42 { fmt.Println(42) } else { fmt.Println(0) } }\n' > build/pac_lit.goo
 	@"$(COMPILER)" build/pac_width.goo -o build/pac_width.out 2>build/pac_width.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "pkg-argcheck-probe: FAIL (Half(84) i32-into-int64 compiled — expected a type error)"; exit 1; fi; \
+	  if [ $$rc -eq 0 ]; then echo "pkg-argcheck-probe: FAIL (Half(int32 var) compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/pac_width.err; then echo "pkg-argcheck-probe: FAIL (invalid IR reached verifier for width mismatch)"; cat build/pac_width.err; exit 1; fi; \
 	  if ! grep -qiE "cannot use int32 as int64" build/pac_width.err; then echo "pkg-argcheck-probe: FAIL (no clean arg-type diagnostic for width mismatch)"; cat build/pac_width.err; exit 1; fi
 	@"$(COMPILER)" build/pac_arity.goo -o build/pac_arity.out 2>build/pac_arity.err; rc=$$?; \
@@ -1488,6 +1491,9 @@ pkg-argcheck-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/pac_ok.goo -o build/pac_ok.out 2>build/pac_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "pkg-argcheck-probe: FAIL (valid pkgcheck.Double(21) rejected)"; cat build/pac_ok.err; exit 1; fi; \
 	  out=$$(./build/pac_ok.out); if [ "$$out" != "42" ]; then echo "pkg-argcheck-probe: FAIL (pkgcheck.Double(21) printed '$$out', want 42)"; exit 1; fi
+	@"$(COMPILER)" build/pac_lit.goo -o build/pac_lit.out 2>build/pac_lit.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "pkg-argcheck-probe: FAIL (literal-adapt Half(84) rejected — expected int64 adaptation)"; cat build/pac_lit.err; exit 1; fi; \
+	  out=$$(./build/pac_lit.out); if [ "$$out" != "42" ]; then echo "pkg-argcheck-probe: FAIL (Half(84) literal-adapt printed '$$out', want 42)"; exit 1; fi
 	@echo "pkg-argcheck-probe: PASS"
 
 # Forward references (Go package-scope semantics): a function body may call a

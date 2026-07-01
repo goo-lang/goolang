@@ -1192,8 +1192,24 @@ fallback:;
             value_info_free(const_value);
             return 0;
         }
+
+        // Mirror the constant into the type-checker scope so codegen-time
+        // re-type-checks of later expressions that reference it resolve the
+        // name. Codegen re-invokes type_check_* for e.g. a binary operand
+        // (`n - 1`), and only params are mirrored into the type-checker scope on
+        // function entry — a LOCAL const would otherwise read as "Undefined
+        // variable". A package-level const's Variable already persists from the
+        // type-check pass, so only register when the name is not already in
+        // scope (avoids a duplicate).
+        if (!type_checker_lookup_variable(checker, const_name)) {
+            Variable* tcv = variable_new(const_name, const_type, decl->pos);
+            if (tcv) {
+                tcv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, tcv);
+            }
+        }
     }
-    
+
     value_info_free(const_value);
     return 1;
 #endif

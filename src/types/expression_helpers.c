@@ -4,6 +4,25 @@
 
 // Helper functions for expression type checking
 
+// Result type of an integer binary operation. Go requires both operands to
+// share a type (untyped constants adapt to the other operand); Goo approximates
+// that adaptation and — crucially — preserves the operand's WIDTH and SIGNEDNESS
+// rather than collapsing everything that isn't int64 to int32, which silently
+// turned uint64/uint arithmetic into int32 and broke every unsigned stdlib
+// function. For a shift, Go fixes the result type to the LEFT operand's type
+// regardless of the (count) right operand.
+static Type* integer_binop_result_type(Type* left, Type* right, int is_shift) {
+    if (is_shift) return left;                    // Go: shift result = left type
+    if (left->kind == right->kind) return left;
+    // One side is the default int32 an untyped integer literal receives: adopt
+    // the other, sized operand — the common `uint64 op 1` / `1 op uint64` case.
+    if (left->kind == TYPE_INT32) return right;
+    if (right->kind == TYPE_INT32) return left;
+    // Two distinct sized integer types (rare without an explicit conversion in
+    // well-typed Go): widen to the larger; on a tie keep the left operand.
+    return (type_size(right) > type_size(left)) ? right : left;
+}
+
 Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos) {
     if (!checker || !left_type || !right_type) return NULL;
 
@@ -30,12 +49,9 @@ Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* righ
             return type_checker_get_builtin(checker, TYPE_FLOAT32);
         }
     } else {
-        // Integer arithmetic
-        if (left_type->kind == TYPE_INT64 || right_type->kind == TYPE_INT64) {
-            return type_checker_get_builtin(checker, TYPE_INT64);
-        } else {
-            return type_checker_get_builtin(checker, TYPE_INT32);
-        }
+        // Integer arithmetic — preserve operand width AND signedness (uint64
+        // arithmetic stays uint64, not collapsed to int32).
+        return integer_binop_result_type(left_type, right_type, 0);
     }
 }
 
@@ -75,21 +91,21 @@ Type* type_check_logical_op(TypeChecker* checker, Type* left_type, Type* right_t
     return type_checker_get_builtin(checker, TYPE_BOOL);
 }
 
-Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op __attribute__((unused)), Position pos) {
+Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos) {
     if (!checker || !left_type || !right_type) return NULL;
-    
+
     // Bitwise operations require integer operands
     if (!type_is_integer(left_type) || !type_is_integer(right_type)) {
         type_error(checker, pos, "Bitwise operation requires integer operands");
         return NULL;
     }
-    
-    // Return the "larger" integer type
-    if (left_type->kind == TYPE_INT64 || right_type->kind == TYPE_INT64) {
-        return type_checker_get_builtin(checker, TYPE_INT64);
-    } else {
-        return type_checker_get_builtin(checker, TYPE_INT32);
-    }
+
+    // A shift keeps the LEFT operand's type (Go: the count operand does not
+    // affect the result type); other bitwise ops take the common integer type.
+    // Both preserve unsigned width — `uint64 & uint64` is uint64, and
+    // `x << s` for a uint64 x stays uint64 rather than collapsing to int32.
+    int is_shift = (op == TOKEN_LSHIFT || op == TOKEN_RSHIFT);
+    return integer_binop_result_type(left_type, right_type, is_shift);
 }
 
 Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos) {
