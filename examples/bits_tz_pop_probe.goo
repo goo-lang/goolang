@@ -1,0 +1,38 @@
+package main
+
+// bits_tz_pop_probe: math/bits TrailingZeros8 and OnesCount8/16/32 (vendored
+// verbatim). TrailingZeros8 indexes ntz8tab; OnesCount8/16/32 index pop8tab,
+// with 16/32 summing byte-slices via x>>k and x&0xff (shift/mask precedence,
+// and uint16/uint32 values used as string indices). Marker pattern avoids
+// sequential different-width prints.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.TrailingZeros8(0) == 8 {
+		fmt.Println("tz0")
+	}
+	if bits.TrailingZeros8(8) == 3 {
+		fmt.Println("tz8")
+	}
+	if bits.TrailingZeros8(128) == 7 {
+		fmt.Println("tz128")
+	}
+	if bits.OnesCount8(255) == 8 {
+		fmt.Println("p8")
+	}
+	if bits.OnesCount16(65535) == 16 {
+		fmt.Println("p16a")
+	}
+	if bits.OnesCount16(3855) == 8 {
+		fmt.Println("p16b") // 0x0F0F
+	}
+	if bits.OnesCount32(4294967295) == 32 {
+		fmt.Println("p32a")
+	}
+	if bits.OnesCount32(1) == 1 {
+		fmt.Println("p32b")
+	}
+}
