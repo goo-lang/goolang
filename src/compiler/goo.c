@@ -17,6 +17,7 @@
 #include "codegen.h"
 // #include "errors/error.h"  // TODO: Update to use new error API
 #include "runtime.h"
+#include "import_resolver.h"
 
 // Compiler version
 #define GOO_VERSION "0.1.0"
@@ -33,6 +34,7 @@ typedef struct CompilerOptions {
     bool debug_info;
     bool verbose;
     bool run_after_compile;
+    bool dump_packages;   // hidden debug flag: print import-graph in topo order
     char** link_libs;
     int link_lib_count;
 } CompilerOptions;
@@ -120,6 +122,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[]) {
         {"emit-llvm", no_argument, 0, 0},
         {"emit-ast", no_argument, 0, 0},
         {"emit-tokens", no_argument, 0, 0},
+        {"dump-packages", no_argument, 0, 0},
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 0},
         {0, 0, 0, 0}
@@ -138,6 +141,8 @@ static CompilerOptions* parse_arguments(int argc, char* argv[]) {
                     options->emit_ast = true;
                 } else if (strcmp(long_options[option_index].name, "emit-tokens") == 0) {
                     options->emit_tokens = true;
+                } else if (strcmp(long_options[option_index].name, "dump-packages") == 0) {
+                    options->dump_packages = true;
                 } else if (strcmp(long_options[option_index].name, "version") == 0) {
                     print_version();
                     free(options);
@@ -270,6 +275,250 @@ static char* get_output_filename(const char* input_file, const char* output_file
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Import-graph walk (Task 3, stdlib Phase 0)
+//
+// Before type-checking main, resolve every transitively-imported package,
+// parse it, detect import cycles, and produce a topological (leaves-first)
+// ordering. No type-checking/codegen of packages is wired here yet (Tasks
+// 4/5): the walk is exercised via the hidden `--dump-packages` flag.
+//
+// The parser is global-state (lexer_bridge.c: parse_input is self-contained
+// — its own lexer, state reset on entry, sets global `ast_root`). We snapshot
+// `ast_root` immediately after each parse and detach it (ast_root = NULL) so a
+// later parse can't clobber a package AST we already own. AST constructors
+// str_dup every stored string, so each source buffer is independent of its
+// AST; we nonetheless keep every buffer alive until the walk is torn down
+// (belt-and-suspenders, per the task brief).
+// ---------------------------------------------------------------------------
+
+extern ASTNode* ast_root;
+
+// Per-file static strdup — house idiom (see import_resolver.c, ast/*.c)
+// rather than POSIX strdup, to avoid -std=c23 feature-macro friction.
+static char* str_dup(const char* str) {
+    if (!str) return NULL;
+    size_t len = strlen(str);
+    char* dup = malloc(len + 1);
+    if (dup) memcpy(dup, str, len + 1);
+    return dup;
+}
+
+// Tri-color state for cycle detection: unvisited -> in-progress -> done.
+typedef enum { PKG_UNVISITED = 0, PKG_IN_PROGRESS = 1, PKG_DONE = 2 } PkgState;
+
+typedef struct {
+    char* import_path;   // registry key (owned)
+    char* name;          // package short name (owned)
+    ASTNode* ast;        // parsed ProgramNode snapshot (owned)
+    PkgState state;
+} PkgEntry;
+
+typedef struct {
+    PkgEntry** entries;     // registry: one per unique import path
+    size_t entry_count;
+    size_t entry_cap;
+
+    PkgEntry** ordered;     // topological finish order (leaves first)
+    size_t ordered_count;
+
+    char** sources;         // every source buffer, freed at teardown
+    size_t source_count;
+    size_t source_cap;
+} PkgGraph;
+
+static PkgEntry* pkg_graph_find(PkgGraph* g, const char* import_path) {
+    for (size_t i = 0; i < g->entry_count; i++) {
+        if (strcmp(g->entries[i]->import_path, import_path) == 0) {
+            return g->entries[i];
+        }
+    }
+    return NULL;
+}
+
+static PkgEntry* pkg_graph_add(PkgGraph* g, const char* import_path) {
+    if (g->entry_count == g->entry_cap) {
+        size_t new_cap = g->entry_cap ? g->entry_cap * 2 : 4;
+        PkgEntry** grown = realloc(g->entries, new_cap * sizeof(PkgEntry*));
+        if (!grown) return NULL;
+        g->entries = grown;
+        g->entry_cap = new_cap;
+    }
+    PkgEntry* e = calloc(1, sizeof(PkgEntry));
+    if (!e) return NULL;
+    e->import_path = str_dup(import_path);
+    if (!e->import_path) { free(e); return NULL; }
+    e->state = PKG_UNVISITED;
+    g->entries[g->entry_count++] = e;
+    return e;
+}
+
+// Keep a source buffer alive for the lifetime of the walk.
+static int pkg_graph_keep_source(PkgGraph* g, char* buf) {
+    if (g->source_count == g->source_cap) {
+        size_t new_cap = g->source_cap ? g->source_cap * 2 : 4;
+        char** grown = realloc(g->sources, new_cap * sizeof(char*));
+        if (!grown) return -1;
+        g->sources = grown;
+        g->source_cap = new_cap;
+    }
+    g->sources[g->source_count++] = buf;
+    return 0;
+}
+
+static int pkg_graph_append_ordered(PkgGraph* g, PkgEntry* e) {
+    // ordered never exceeds entry_count; entries[] is already grown, so a
+    // parallel array of the same capacity is safe to (re)allocate lazily.
+    PkgEntry** grown = realloc(g->ordered, (g->ordered_count + 1) * sizeof(PkgEntry*));
+    if (!grown) return -1;
+    g->ordered = grown;
+    g->ordered[g->ordered_count++] = e;
+    return 0;
+}
+
+static void pkg_graph_free(PkgGraph* g) {
+    for (size_t i = 0; i < g->entry_count; i++) {
+        PkgEntry* e = g->entries[i];
+        if (!e) continue;
+        if (e->ast) ast_node_free(e->ast);
+        free(e->import_path);
+        free(e->name);
+        free(e);
+    }
+    free(g->entries);
+    free(g->ordered);
+    for (size_t i = 0; i < g->source_count; i++) free(g->sources[i]);
+    free(g->sources);
+    memset(g, 0, sizeof(*g));
+}
+
+// Concatenate a package's *.go files into a single source buffer (Go
+// semantics: a package is the union of its files). Returns a malloc'd
+// NUL-terminated buffer the caller owns, or NULL on error.
+static char* concat_package_sources(const PackageSource* ps) {
+    size_t total = 1;  // trailing NUL
+    char** parts = calloc(ps->file_count, sizeof(char*));
+    if (!parts) return NULL;
+    for (size_t i = 0; i < ps->file_count; i++) {
+        parts[i] = read_file(ps->files[i]);
+        if (!parts[i]) {
+            for (size_t j = 0; j < i; j++) free(parts[j]);
+            free(parts);
+            return NULL;
+        }
+        total += strlen(parts[i]) + 1;  // +1 for a joining newline
+    }
+    char* buf = malloc(total);
+    if (!buf) {
+        for (size_t i = 0; i < ps->file_count; i++) free(parts[i]);
+        free(parts);
+        return NULL;
+    }
+    buf[0] = '\0';
+    size_t off = 0;
+    for (size_t i = 0; i < ps->file_count; i++) {
+        size_t len = strlen(parts[i]);
+        memcpy(buf + off, parts[i], len);
+        off += len;
+        buf[off++] = '\n';
+        free(parts[i]);
+    }
+    buf[off] = '\0';
+    free(parts);
+    return buf;
+}
+
+// Forward decl for mutual recursion.
+static int walk_import(PkgGraph* g, const char* import_path);
+
+// Walk every import spec in a ProgramNode's import list.
+static int walk_program_imports(PkgGraph* g, ASTNode* imports) {
+    for (ASTNode* imp = imports; imp; imp = imp->next) {
+        if (imp->type != AST_IMPORT_SPEC) continue;
+        ImportSpecNode* spec = (ImportSpecNode*)imp;
+        if (!spec->path) continue;
+        if (walk_import(g, spec->path) != 0) return -1;
+    }
+    return 0;
+}
+
+// Resolve, parse, and topologically place `import_path`. Returns 0 on success,
+// -1 on cycle / resolve / parse failure (message already printed to stderr).
+static int walk_import(PkgGraph* g, const char* import_path) {
+    PkgEntry* existing = pkg_graph_find(g, import_path);
+    if (existing) {
+        if (existing->state == PKG_DONE) return 0;        // diamond: already placed
+        if (existing->state == PKG_IN_PROGRESS) {
+            fprintf(stderr,
+                    "Error: import cycle detected involving package \"%s\"\n",
+                    import_path);
+            return -1;
+        }
+    }
+
+    PkgEntry* e = pkg_graph_add(g, import_path);
+    if (!e) { fprintf(stderr, "Error: out of memory resolving imports\n"); return -1; }
+    e->state = PKG_IN_PROGRESS;
+
+    PackageSource ps;
+    if (resolve_import(import_path, &ps) != 0) {
+        fprintf(stderr, "Error: cannot resolve import \"%s\"\n", import_path);
+        return -1;
+    }
+    e->name = str_dup(ps.name);
+
+    char* buf = concat_package_sources(&ps);
+    package_source_free(&ps);
+    if (!buf) {
+        fprintf(stderr, "Error: cannot read sources for package \"%s\"\n", import_path);
+        return -1;
+    }
+    if (pkg_graph_keep_source(g, buf) != 0) {
+        free(buf);
+        fprintf(stderr, "Error: out of memory resolving imports\n");
+        return -1;
+    }
+
+    ast_root = NULL;
+    if (parse_input(buf, import_path) != 0 || !ast_root) {
+        fprintf(stderr, "Error: failed to parse package \"%s\"\n", import_path);
+        return -1;
+    }
+    e->ast = ast_root;   // snapshot immediately
+    ast_root = NULL;     // detach so a later parse can't clobber it
+
+    if (e->ast->type == AST_PROGRAM) {
+        ProgramNode* prog = (ProgramNode*)e->ast;
+        if (walk_program_imports(g, prog->imports) != 0) return -1;
+    }
+
+    e->state = PKG_DONE;
+    if (pkg_graph_append_ordered(g, e) != 0) {
+        fprintf(stderr, "Error: out of memory resolving imports\n");
+        return -1;
+    }
+    return 0;
+}
+
+// Drive the import-graph walk from main's import list and, for --dump-packages,
+// print the resolved packages in topological order (leaves first) followed by
+// "main". Returns true on success.
+static bool dump_package_graph(ProgramNode* main_prog) {
+    PkgGraph g;
+    memset(&g, 0, sizeof(g));
+
+    bool ok = (walk_program_imports(&g, main_prog->imports) == 0);
+    if (ok) {
+        for (size_t i = 0; i < g.ordered_count; i++) {
+            printf("%s\n", g.ordered[i]->import_path);
+        }
+        printf("main\n");
+    }
+
+    pkg_graph_free(&g);
+    return ok;
+}
+
 static bool compile_file(const char* filename, CompilerOptions* options) {
     if (options->verbose) {
         printf("Compiling %s...\n", filename);
@@ -341,7 +590,20 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         ast_print(ast, 0);
         printf("\n");
     }
-    
+
+    // Hidden debug flag: walk the import graph from main and print the
+    // resolved packages in topological order (leaves first), then "main".
+    // Short-circuits before type-checking/codegen — packages are not yet
+    // fed into later phases (Tasks 4/5). `ast` (main) was snapshotted above,
+    // so the walk clobbering global ast_root is harmless.
+    if (options->dump_packages) {
+        bool ok = dump_package_graph((ProgramNode*)ast);
+        ast_node_free(ast);
+        lexer_free(lexer);
+        free(source);
+        return ok;
+    }
+
     // Phase 3: Type Checking
     if (options->verbose) {
         printf("Phase 3: Type checking...\n");
