@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+// rune(x) conversions are pervasive in unicode/utf8 (e.g. `return rune(b), 1`).
+// rune is an alias for int32; the conversion must widen/narrow like any numeric.
+func decodeFirst(p []byte) (rune, int) {
+	if len(p) == 0 {
+		return rune(0xFFFD), 0
+	}
+	if p[0] < 128 {
+		return rune(p[0]), 1
+	}
+	return rune(0xFFFD), 1
+}
+
+func main() {
+	r, n := decodeFirst([]byte{72})
+	fmt.Println(int(r)) // 72
+	fmt.Println(n)      // 1
+
+	bad, m := decodeFirst([]byte{200})
+	fmt.Println(int(bad)) // 65533 (0xFFFD)
+	fmt.Println(m)        // 1
+
+	// rune from a string byte, and back to int
+	s := "Z"
+	fmt.Println(int(rune(s[0]))) // 90
+}
