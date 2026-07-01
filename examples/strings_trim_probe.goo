@@ -1,0 +1,16 @@
+// strings_trim_probe: strings.TrimPrefix/TrimSuffix (vendored). Build on
+// HasPrefix/HasSuffix (same package) + open-ended slices. Each line is a result.
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	fmt.Println(strings.TrimPrefix("hello world", "hello ")) // world
+	fmt.Println(strings.TrimPrefix("hello", "xyz"))          // hello (unchanged)
+	fmt.Println(strings.TrimSuffix("hello world", " world")) // hello
+	fmt.Println(strings.TrimSuffix("hello", "xyz"))          // hello (unchanged)
+	fmt.Println(strings.TrimPrefix("aaa", "a"))              // aa
+}
