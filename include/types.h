@@ -250,6 +250,13 @@ typedef struct Variable {
     // (e.g., user-defined function calls — see M11-engine-recursion).
     // Owned by the Variable; freed in variable_free.
     struct ComptimeValue* comptime_value;
+    // stdlib Phase 0: for a TYPE_PACKAGE marker Variable (an imported package
+    // identifier such as `mypkg`), this points at the resolved Package whose
+    // `exports` scope holds its A-Z top-level symbols, so cross-package
+    // selector resolution (Task 5) can reach them. NULL for every ordinary
+    // variable and for the hardcoded stdlib markers (handled by the shim).
+    // NOT owned — the Package is owned by TypeChecker.packages.
+    struct Package* package;
     struct Variable* next;  // For linked list in scope
 } Variable;
 
@@ -259,6 +266,19 @@ struct Scope {
     struct Scope* parent;
     int scope_id;
 };
+
+// Imported package namespace. Each imported package owns an `exports` scope
+// holding fresh Variable copies of its capitalised (A-Z) top-level symbols.
+// `state` drives cycle detection during resolution: 0=unvisited, 1=in-progress,
+// 2=done. `import_path`/`name` are owned (str_dup'd) and freed in
+// type_checker_free.
+typedef struct Package {
+    char* import_path;      // canonical import path (owned)
+    char* name;             // package identifier used at call sites (owned)
+    Scope* exports;         // fresh Variable copies of exported symbols (owned)
+    int state;              // 0=unvisited 1=in-progress 2=done
+    struct Package* next;   // intrusive list link
+} Package;
 
 // Forward declarations for enhanced interface system
 struct ConstraintInferenceEngine;
@@ -326,6 +346,13 @@ struct TypeChecker {
     // Return type of the enclosing function — set when entering a function body
     // so that context-sensitive builtins (e.g. error()) can look it up.
     Type* current_return_type;
+
+    // Imported-package registry (stdlib Phase 0 scaffolding). `packages` is the
+    // head of a linked list of resolved packages; `current_package` is the
+    // package whose body is being checked (NULL == the main package). Both are
+    // NULL until Task 3 wires import resolution in.
+    Package* packages;
+    Package* current_package;
 };
 
 // Type creation functions
@@ -400,6 +427,23 @@ int type_is_error(const Type* type);
 TypeChecker* type_checker_new(void);
 void type_checker_free(TypeChecker* checker);
 
+// Package registry (stdlib Phase 0). find is a linear search by import path;
+// add str_dup's both strings, allocates a fresh exports scope, and pushes onto
+// the checker's package list. package_export_filter copies every A-Z-leading
+// top-level symbol of `pkg_scope` into `exports` as a FRESH Variable (so the two
+// scopes never share ownership of the same Variable node).
+Package* type_checker_find_package(TypeChecker* checker, const char* import_path);
+Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name);
+void package_export_filter(Scope* pkg_scope, Scope* exports);
+
+// Seed a TYPE_PACKAGE marker for an imported package into the current scope,
+// carrying the resolved Package*. This is the SINGLE seeding path for both the
+// conditional stdlib-shim markers (driver, on real `import`) and user-package
+// markers, replacing the former always-on seeding in
+// type_checker_add_builtin_functions. Returns the marker or NULL.
+Variable* type_checker_seed_package_marker(TypeChecker* checker,
+                                           const char* name, Package* package);
+
 // Scope management
 Scope* scope_new(Scope* parent);
 void scope_free(Scope* scope);
@@ -415,6 +459,19 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
 
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);
+
+// stdlib Phase 0 (Task 4): type-check one imported package's body. Sets
+// checker->current_package = pkg, pushes a fresh package scope, runs the same
+// declaration loop as type_check_program, then publishes the package's A-Z
+// top-level symbols into pkg->exports via package_export_filter.
+//
+// LIFETIME CONTRACT (asymmetric BY DESIGN): on success this returns with the
+// package scope STILL PUSHED and current_package STILL SET. The caller codegens
+// the package while that scope is live (codegen recovers each function's
+// signature by looking it up under its bare name in this scope) and only then
+// calls scope_pop() and clears current_package. Popping here would hide the
+// package's functions from codegen and drop their parameters.
+int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);

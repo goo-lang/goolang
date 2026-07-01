@@ -5,6 +5,17 @@
 #include <string.h>
 #include <stdio.h>
 
+// Helper function to duplicate strings (per-file str_dup idiom under -std=c23).
+static char* str_dup(const char* str) {
+    if (!str) return NULL;
+    size_t len = strlen(str);
+    char* dup = malloc(len + 1);
+    if (dup) {
+        strcpy(dup, str);
+    }
+    return dup;
+}
+
 // Type checker initialization and cleanup
 
 TypeChecker* type_checker_new(void) {
@@ -20,6 +31,10 @@ TypeChecker* type_checker_new(void) {
     checker->type_cache = NULL;
     checker->type_cache_size = 0;
     checker->type_cache_capacity = 0;
+
+    // stdlib Phase 0: package registry empty; NULL current_package == main.
+    checker->packages = NULL;
+    checker->current_package = NULL;
 
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
@@ -69,8 +84,75 @@ void type_checker_free(TypeChecker* checker) {
         if (raw) comptime_context_free(raw);
     }
 
+    // Free the imported-package registry. Each Package owns its two strings and
+    // its exports scope; scope_free tears down the fresh Variable copies (their
+    // shared Type* pointers are NOT owned by the Variable, so no double-free).
+    Package* pkg = checker->packages;
+    while (pkg) {
+        Package* next = pkg->next;
+        free(pkg->import_path);
+        free(pkg->name);
+        scope_free(pkg->exports);
+        free(pkg);
+        pkg = next;
+    }
+
     free(checker->current_file);
     free(checker);
+}
+
+// Linear search of the package registry by canonical import path.
+Package* type_checker_find_package(TypeChecker* checker, const char* import_path) {
+    if (!checker || !import_path) return NULL;
+    for (Package* pkg = checker->packages; pkg; pkg = pkg->next) {
+        if (pkg->import_path && strcmp(pkg->import_path, import_path) == 0) {
+            return pkg;
+        }
+    }
+    return NULL;
+}
+
+// Create a package namespace and push it onto the registry. Strings are copied
+// (str_dup); the exports scope starts empty and is filled by the caller via
+// package_export_filter once the package body has been checked.
+Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name) {
+    if (!checker || !import_path || !name) return NULL;
+
+    Package* pkg = malloc(sizeof(Package));
+    if (!pkg) return NULL;
+
+    pkg->import_path = str_dup(import_path);
+    pkg->name = str_dup(name);
+    pkg->exports = scope_new(NULL);
+    pkg->state = 0;  // unvisited
+    pkg->next = checker->packages;
+    checker->packages = pkg;
+
+    return pkg;
+}
+
+// Copy every capitalised (A-Z leading) top-level symbol of `pkg_scope` into
+// `exports`. Each export is a FRESH Variable (variable_new) so that pkg_scope
+// and exports never co-own a Variable node — variable_free frees only the name
+// (str_dup'd copy) and the comptime value, never the shared Type*, so sharing
+// the Type* pointer across the two scopes is safe.
+void package_export_filter(Scope* pkg_scope, Scope* exports) {
+    if (!pkg_scope || !exports) return;
+
+    for (Variable* v = pkg_scope->variables; v; v = v->next) {
+        if (!v->name || v->name[0] < 'A' || v->name[0] > 'Z') {
+            continue;  // only exported (capitalised) top-level symbols
+        }
+        Variable* copy = variable_new(v->name, v->type, v->declared_pos);
+        if (!copy) continue;
+        copy->is_initialized = v->is_initialized;
+        copy->mutability = v->mutability;
+        copy->is_builtin = v->is_builtin;
+        if (!scope_add_variable(exports, copy)) {
+            // Duplicate name already present in exports — discard the copy.
+            variable_free(copy);
+        }
+    }
 }
 
 void type_checker_init_builtins(TypeChecker* checker) {
@@ -198,20 +280,37 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, error_var);
     }
 
-    // Stdlib package identifiers. Registered globally for now (matching the
-    // pattern above) — the type checker is lenient about whether `import`
-    // was actually written. Selector access (e.g. fmt.Println) resolves
-    // through type_check_selector_expr's package-table fallback.
-    static const char* const stdlib_packages[] = {"fmt", "os", "strings", "math", "strconv", "errors"};
-    for (size_t i = 0; i < sizeof(stdlib_packages) / sizeof(stdlib_packages[0]); i++) {
-        Type* pkg_type = type_new(TYPE_PACKAGE);
-        Variable* pkg_var = variable_new(stdlib_packages[i], pkg_type, (Position){0, 0, 0, "builtin"});
-        if (pkg_var) {
-            pkg_var->is_builtin = 1;
-            pkg_var->is_initialized = 1;
-            scope_add_variable(checker->current_scope, pkg_var);
-        }
+    // NOTE (stdlib Phase 0, Task 4): TYPE_PACKAGE markers for the stdlib-shim
+    // packages ({fmt,os,strings,math,strconv,errors}) are NO LONGER seeded here
+    // unconditionally. They are now seeded CONDITIONALLY on a real `import` by
+    // the driver (src/compiler/goo.c) via type_checker_seed_package_marker,
+    // carrying a Package*. This matches Go semantics (a symbol is in scope only
+    // if its package is imported) and unifies stdlib + user-package marker
+    // handling through one code path. Backward compat is preserved: no `.goo`
+    // program uses a stdlib selector without importing its package, so a
+    // no-import program is unaffected.
+}
+
+// Seed a TYPE_PACKAGE marker for an imported package into the current scope,
+// carrying the resolved Package* so selector resolution can reach its exports.
+// Single seeding path for BOTH conditional stdlib-shim markers and real user
+// packages (goo.c), replacing the old always-on seeding above. A duplicate name
+// (e.g. the same package imported twice) is freed and ignored. Returns the
+// marker Variable on success, NULL otherwise.
+Variable* type_checker_seed_package_marker(TypeChecker* checker,
+                                           const char* name, Package* package) {
+    if (!checker || !checker->current_scope || !name) return NULL;
+    Type* pkg_type = type_new(TYPE_PACKAGE);
+    Variable* marker = variable_new(name, pkg_type, (Position){0, 0, 0, "import"});
+    if (!marker) return NULL;
+    marker->is_builtin = 1;
+    marker->is_initialized = 1;
+    marker->package = package;  // resolved Package* (may be NULL for pure markers)
+    if (!scope_add_variable(checker->current_scope, marker)) {
+        variable_free(marker);  // duplicate import of same name — harmless
+        return NULL;
     }
+    return marker;
 }
 
 // Scope management
@@ -329,6 +428,62 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
             decl = decl->next;
         }
     }
+
+    return checker->error_count == 0;
+}
+
+// stdlib Phase 0 (Task 4): type-check one imported package in its own scope,
+// then publish its exported (A-Z) top-level symbols into pkg->exports.
+//
+// See the LIFETIME CONTRACT note on the declaration in types.h: on success this
+// leaves the package scope pushed and current_package set so the caller can
+// codegen the package (with cross-package name mangling) before tearing the
+// scope down. This deliberately mirrors type_check_program's decl loop rather
+// than calling it, because we must NOT re-run the lexer-error guard (already
+// checked for the whole build) and must run inside the pushed package scope.
+int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
+    if (!checker || !pkg || !program) return 0;
+
+    // Push the package scope and set current_package FIRST, before any failable
+    // work, so that EVERY return past this point leaves exactly one scope pushed
+    // and current_package set — the caller unconditionally scope_pop()s and
+    // clears current_package, so the push/pop must always balance.
+    checker->current_package = pkg;
+    scope_push(checker);
+
+    if (program->type != AST_PROGRAM) {
+        type_error(checker, program->pos, "Expected program node");
+        return 0;
+    }
+
+    ProgramNode* prog = (ProgramNode*)program;
+
+    // Mirror type_check_program's comptime pre-pass so an intra-package
+    // `is_comptime` const RHS can resolve forward-declared calls.
+    if (prog->decls && checker->comptime_type_ctx
+                    && checker->comptime_type_ctx->comptime_ctx) {
+        ComptimeContext* ctx = checker->comptime_type_ctx->comptime_ctx;
+        for (ASTNode* d = prog->decls; d; d = d->next) {
+            if (d->type == AST_FUNC_DECL) {
+                FuncDeclNode* func = (FuncDeclNode*)d;
+                if (func->name) {
+                    comptime_context_bind_func(ctx, func->name, d);
+                }
+            }
+        }
+    }
+
+    // The EXISTING declaration loop, unchanged — registers each top-level decl
+    // into the package scope we just pushed.
+    for (ASTNode* decl = prog->decls; decl; decl = decl->next) {
+        if (!type_check_declaration(checker, decl)) {
+            return 0;  // scope/current_package left set; caller aborts the build
+        }
+    }
+
+    // Publish the package's exported (capitalised) top-level symbols so
+    // cross-package selector resolution (Task 5) can reach them by name.
+    package_export_filter(checker->current_scope, pkg->exports);
 
     return checker->error_count == 0;
 }

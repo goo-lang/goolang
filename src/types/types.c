@@ -757,6 +757,7 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->is_builtin = 0;
     var->declared_pos = pos;
     var->comptime_value = NULL;  // populated by type_check_const_decl for is_comptime consts
+    var->package = NULL;  // set only on TYPE_PACKAGE markers (stdlib Phase 0)
     var->next = NULL;
 
     return var;

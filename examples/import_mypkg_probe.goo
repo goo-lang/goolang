@@ -1,0 +1,10 @@
+package main
+
+import (
+	"fmt"
+	"mypkg"
+)
+
+func main() {
+	fmt.Println(mypkg.Double(21))
+}

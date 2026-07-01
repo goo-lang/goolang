@@ -73,7 +73,7 @@ IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/perform
 # No core compiler code (compiler/, parser/, types/, codegen/, lexer/, ast/)
 # depends on package/, so we exclude the subsystem from the compiler build.
 # Repair lives in a separate task.
-PACKAGE_SRCS =
+PACKAGE_SRCS = $(SRCDIR)/package/import_resolver.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
 COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c $(SRCDIR)/comptime/optimization.c $(SRCDIR)/comptime/profile_guided_optimization.c $(SRCDIR)/comptime/advanced_optimization.c $(SRCDIR)/comptime/hardware_aware.c $(SRCDIR)/comptime/code_specialization.c $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
@@ -105,7 +105,7 @@ TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp gmod coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units
+.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp gmod coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units goostd-resolver-probe
 
 all: lexer
 
@@ -224,7 +224,7 @@ CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -f
 # libjson-c, libz remain trusted external deps.
 CCOMP_LLVM_LIB := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --libdir 2>/dev/null || llvm-config --libdir 2>/dev/null || echo /opt/homebrew/lib)
 CCOMP_LDLIBS = -lm -lpthread -ljson-c -lcurl -lz -L/opt/homebrew/lib -L$(CCOMP_LLVM_LIB) -lLLVM-22
-CCOMP_ESSENTIAL_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS) $(COMPILER_SRCS) $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
+CCOMP_ESSENTIAL_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(IDE_SRCS) $(COMPTIME_SRCS) $(PACKAGE_SRCS) $(COMPILER_SRCS) $(SRCDIR)/advanced_macro_system.c $(SRCDIR)/derive_macros.c $(SRCDIR)/template_macros.c
 
 ccomp-build:
 	@command -v $(CCOMP) >/dev/null || (echo "ccomp not installed — see V1-ccomp-install" && exit 1)
@@ -1063,6 +1063,18 @@ ptr-recv-nonaddr-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "ptr-recv-nonaddr-probe: FAIL (compiled a non-addressable pointer-recv call — expected an error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/ptr_recv_nonaddr.err; then echo "ptr-recv-nonaddr-probe: FAIL (invalid IR reached the verifier)"; cat build/ptr_recv_nonaddr.err; exit 1; fi; \
 	  if grep -qiE "non-addressable" build/ptr_recv_nonaddr.err; then echo "ptr-recv-nonaddr-probe: PASS"; else echo "ptr-recv-nonaddr-probe: FAIL (no clean source-located diagnostic)"; cat build/ptr_recv_nonaddr.err; exit 1; fi
+
+# stdlib Phase 0 Task 1: import resolver (GOOROOT + package .go discovery).
+# Plain C probe — NOT a .goo golden (no compiler pipeline involvement yet),
+# so it compiles/links resolver_probe.c directly against import_resolver.c
+# rather than going through $(COMPILER)/$(RUNTIME_LIB) like the .goo probes
+# above. Not part of `verify`: this task is self-contained groundwork, no
+# compiler-pipeline change to gate yet.
+goostd-resolver-probe:
+	@mkdir -p build
+	@echo "=== goostd-resolver-probe: GOOROOT resolution + package .go file discovery ==="
+	$(CC) $(CFLAGS) tests/package/resolver_probe.c $(SRCDIR)/package/import_resolver.c -o build/resolver_probe
+	./build/resolver_probe
 
 # Aggregate verification net per `verification_gates.md`. Runs the
 # green gates in sequence: baseline-probe, smoke-stdlib,

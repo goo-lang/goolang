@@ -423,19 +423,33 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
     
     LLVMTypeRef function_type = LLVMFunctionType(error_union_type, param_types, param_count, 0);
 
+    // stdlib Phase 0 (Task 4): mirror function_codegen.c — a non-main package's
+    // error-union functions (and methods) must ALSO be emitted under the
+    // package-mangled symbol `goo_pkg__<pkg>__<base>`, not the bare `emit_name`.
+    // Without this a package `func TryParse(x int) !int` would emit `@TryParse`,
+    // colliding with a same-named main symbol and diverging from pkg->exports /
+    // Task 5's mangled-name call resolution. `emit_name` (bare, or method `T__m`)
+    // stays the type-checker lookup key; only the LLVM symbol is prefixed. For
+    // the main package the helper returns NULL, so the symbol stays bare.
+    const char* symbol_name = emit_name;
+    char* pkg_mangled = codegen_package_symbol_name(checker, emit_name);
+    if (pkg_mangled) symbol_name = pkg_mangled;
+
     // Create the function under its emitted (possibly mangled) name so method
     // call sites, which emit a call to "T__m", resolve to this definition.
-    LLVMValueRef function = LLVMAddFunction(codegen->module, emit_name, function_type);
+    LLVMValueRef function = LLVMAddFunction(codegen->module, symbol_name, function_type);
 
     // Create function info
-    FunctionInfo* func_info = function_info_new(emit_name, function, return_type);
+    FunctionInfo* func_info = function_info_new(symbol_name, function, return_type);
     if (!func_info) {
         codegen_error(codegen, func_decl->base.pos, "Failed to create function info");
         if (param_types) free(param_types);
         free(mangled);
+        free(pkg_mangled);
         return 0;
     }
-    free(mangled);  // emit_name was copied by LLVMAddFunction and function_info_new
+    free(mangled);       // emit_name was copied by LLVMAddFunction / function_info_new
+    free(pkg_mangled);   // symbol_name likewise copied; safe to free the mangled buffer
 
     // Create entry basic block
     func_info->entry_block = LLVMAppendBasicBlockInContext(codegen->context, function, "entry");
