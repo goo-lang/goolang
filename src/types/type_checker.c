@@ -238,6 +238,18 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, print_var);
     }
 
+    // panic(v) -> void (does not return; codegen lowers to goo_panic). Marked
+    // variadic so the signature check is skipped — the single arg may be any
+    // type (a string message, or an error value whose message is extracted).
+    Type* panic_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    panic_type->data.function.is_variadic = 1;
+    Variable* panic_var = variable_new("panic", panic_type, (Position){0, 0, 0, "builtin"});
+    if (panic_var) {
+        panic_var->is_builtin = 1;
+        panic_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, panic_var);
+    }
+
     // len(slice|array|string) -> int  (single-arg builtin; the codegen
     // path dispatches on the arg's TypeKind)
     Type* len_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT64]); // Go: len -> int (64-bit)
