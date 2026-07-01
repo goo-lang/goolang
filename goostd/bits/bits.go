@@ -5,6 +5,13 @@
 // upstream-verbatim, never edit real Go source).
 package bits
 
+// ReverseBytes16 returns the value of x with its bytes in reversed order.
+//
+// This function's execution time does not depend on the inputs.
+func ReverseBytes16(x uint16) uint16 {
+	return x>>8 | x<<8
+}
+
 // RotateLeft8 returns the value of x rotated left by (k mod 8) bits.
 // To rotate x right by k bits, call RotateLeft8(x, -k).
 //

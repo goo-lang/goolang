@@ -1,0 +1,20 @@
+package main
+
+// bits_reverse_probe: math/bits.ReverseBytes16 (vendored verbatim), the
+// const-free member of the byte-reversal family. Decimal literals only —
+// ReverseBytes32/64 (and hex literals like 0x1234) need features not yet in the
+// frontend (big const expressions, package consts, hex lexing). 4660 = 0x1234,
+// 13330 = 0x3412.
+import (
+	"fmt"
+	"bits"
+)
+
+func main() {
+	if bits.ReverseBytes16(1) == 256 {
+		fmt.Println("rb256")
+	}
+	if bits.ReverseBytes16(4660) == 13330 {
+		fmt.Println("rbswap")
+	}
+}
