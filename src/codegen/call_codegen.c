@@ -449,6 +449,37 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
             }
+            if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
+                // errors.Unwrap(error) -> error: read goo_error.cause via the runtime
+                // helper, rebuild the nullable {is_null = cause==null, ptr = cause}.
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "errors.Unwrap: expected an error argument");
+                    return NULL;
+                }
+                ValueInfo* ev = codegen_generate_expression(codegen, checker, call->args);
+                if (!ev) return NULL;
+                LLVMValueRef err_loaded = ev->llvm_value;
+                if (ev->is_lvalue && ev->goo_type) {
+                    LLVMTypeRef et = codegen_type_to_llvm(codegen, ev->goo_type);
+                    if (et) err_loaded = LLVMBuildLoad2(codegen->builder, et, err_loaded, "unwrap_load");
+                }
+                value_info_free(ev);
+
+                LLVMValueRef handle2 = LLVMBuildExtractValue(codegen->builder, err_loaded, 1, "unwrap.handle");
+                LLVMValueRef unwrap_fn = LLVMGetNamedFunction(codegen->module, "goo_error_unwrap");
+                if (!unwrap_fn) { codegen_error(codegen, expr->pos, "goo_error_unwrap not found in module"); return NULL; }
+                LLVMValueRef uargs[] = { handle2 };
+                LLVMValueRef cause = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(unwrap_fn), unwrap_fn, uargs, 1, "unwrap.cause");
+
+                LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                LLVMValueRef uw_is_null = LLVMBuildICmp(codegen->builder, LLVMIntEQ, cause, LLVMConstNull(i8pt), "unwrap.isnull");
+                Type* uw_err_type = type_checker_error_type(checker);
+                LLVMTypeRef uw_err_llvm = codegen_type_to_llvm(codegen, uw_err_type);
+                LLVMValueRef uw_err_val = LLVMGetUndef(uw_err_llvm);
+                uw_err_val = LLVMBuildInsertValue(codegen->builder, uw_err_val, uw_is_null, 0, "uw.is_null");
+                uw_err_val = LLVMBuildInsertValue(codegen->builder, uw_err_val, cause, 1, "uw.ptr");
+                return value_info_new(NULL, uw_err_val, uw_err_type);
+            }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
                 // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
                 // Spill the []string value to a slot and pass its address — a
