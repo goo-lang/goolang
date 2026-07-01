@@ -1222,6 +1222,16 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                          return_kind == TYPE_VOID ? "" : "stdlib_ret");
     free(args);
 
+    // Bool-returning shims (e.g. goo_strings_contains) return an i32 0/1 from
+    // the C runtime, but TYPE_BOOL is i1 — so the raw result can't drive a
+    // branch (`if strings.Contains(...)` emitted `br i32`). Coerce to i1.
+    if (return_kind == TYPE_BOOL &&
+        LLVMGetTypeKind(LLVMTypeOf(result)) == LLVMIntegerTypeKind &&
+        LLVMGetIntTypeWidth(LLVMTypeOf(result)) != 1) {
+        LLVMValueRef zero = LLVMConstInt(LLVMTypeOf(result), 0, 0);
+        result = LLVMBuildICmp(codegen->builder, LLVMIntNE, result, zero, "shim_bool_i1");
+    }
+
     // Non-builtin returns (e.g. []string from strings.Split) can't be
     // expressed as a TypeKind — carry the type checker's resolved call
     // type instead. Builtin returns keep the explicit kind so codegen

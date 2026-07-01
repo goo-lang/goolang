@@ -1,0 +1,25 @@
+// shim_bool_probe: a bool-returning stdlib SHIM (strings.Contains) used in
+// boolean contexts. The C runtime returns i32 0/1 but TYPE_BOOL is i1; the
+// result is now coerced, so `if strings.Contains(...)` no longer emits an
+// invalid `br i32`. Covers direct-if (true/false) and assign-then-if.
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	if strings.Contains("hello", "ell") {
+		fmt.Println("c_true")
+	}
+	if strings.Contains("hello", "xyz") {
+		fmt.Println("bad")
+	} else {
+		fmt.Println("c_false")
+	}
+	b := strings.Contains("goolang", "goo")
+	if b {
+		fmt.Println("c_var")
+	}
+}
