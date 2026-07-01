@@ -1,0 +1,11 @@
+package main
+import (
+	"fmt"
+	"errors"
+)
+func main() {
+	var a error = nil
+	fmt.Println(a)
+	b := errors.New("kaboom")
+	fmt.Println(b)
+}

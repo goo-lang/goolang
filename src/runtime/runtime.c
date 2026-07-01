@@ -103,6 +103,36 @@ goo_error_t* goo_new_error_with_code(const char* message, int code) {
     return error;
 }
 
+// Build a heap goo_error from a goo_string message. Copies length bytes plus a
+// trailing NUL (goo_string.data is not assumed NUL-terminated). code=-1, no cause.
+goo_error_t* goo_error_from_string(goo_string_t msg) {
+    goo_error_t* error = goo_alloc(sizeof(goo_error_t));
+    size_t len = msg.length;
+    char* copy = goo_alloc(len + 1);
+    if (msg.data && len > 0) {
+        memcpy(copy, msg.data, len);
+    }
+    copy[len] = '\0';
+    error->message = copy;
+    error->code = -1;
+    error->cause = NULL;
+    return error;
+}
+
+// Return the message as a goo_string. strlen on read (embedded-NUL truncates —
+// accepted v1 edge; error messages are ASCII in practice).
+goo_string_t goo_error_message(goo_error_t* e) {
+    goo_string_t s;
+    if (e && e->message) {
+        s.data = (char*)e->message;
+        s.length = strlen(e->message);
+    } else {
+        s.data = NULL;
+        s.length = 0;
+    }
+    return s;
+}
+
 void goo_error_free(goo_error_t* error) {
     if (!error) return;
     

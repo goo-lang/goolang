@@ -554,13 +554,57 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
         LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
         LLVMValueRef is_null = LLVMBuildNot(codegen->builder, is_error, "err_is_null");
-        // Non-null marker so `!= nil` consumers that only read is_null are
-        // unaffected; inttoptr(1) keeps a distinguishable non-null pointer.
-        LLVMValueRef non_null = LLVMBuildIntToPtr(codegen->builder,
-            LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0), i8pt, "err_marker");
+
+        // Branch: box the union's goo_string error arm only when is_error (keeps the
+        // common success path allocation-free). PHI the resulting i8* handle.
+        LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+        LLVMBasicBlockRef box_bb   = LLVMAppendBasicBlockInContext(codegen->context, fn, "err.box");
+        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(codegen->context, fn, "err.box.merge");
+        LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildCondBr(codegen->builder, is_error, box_bb, merge_bb);
+
+        // box_bb: extract the error arm goo_string and box it — but only when
+        // the union's error arm is string-shaped (goo_string_t {i8*, i64}).
+        // That's true both when error_type == NULL (falls back to the default
+        // TYPE_STRING, per codegen_get_error_union_type/type_mapping.c:272-277)
+        // AND when error_type is explicitly the builtin TYPE_STRING — which is
+        // what strconv.Atoi's `!int` return actually carries (expression_checker.c
+        // ~1243: `type_error_union(int_t, err_t)` with err_t = builtin TYPE_STRING,
+        // not NULL). Checking only `== NULL` misclassifies that real case as
+        // "non-default" and segfaults destructure_error_msg_probe (the marker
+        // path replaces the boxed message, so .Error() dereferences inttoptr(1)
+        // as if it were a goo_error). A genuinely non-string explicit error arm
+        // (e.g. a custom !T error type — not constructible in current v1 syntax)
+        // isn't a goo_string, so codegen_error_union_get_error/goo_error_from_string
+        // would build invalid IR for it; keep a non-null marker instead (spec
+        // Task 5's promised degradation): `err != nil` still holds, .Error()
+        // yields "" (no message).
+        Type* err_arm_type = var_type->data.error_union.error_type;
+        int default_arm = (err_arm_type == NULL) || (err_arm_type->kind == TYPE_STRING);
+        codegen_set_insert_point(codegen, box_bb);
+        LLVMValueRef boxed;
+        if (default_arm) {
+            LLVMValueRef arm = codegen_error_union_get_error(codegen, rhs->llvm_value);
+            LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+            if (!from_str) { codegen_error(codegen, decl->pos, "goo_error_from_string not found in module"); value_info_free(rhs); return 0; }
+            LLVMValueRef fargs[] = { arm };
+            boxed = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(from_str), from_str, fargs, 1, "err.boxed");
+        } else {
+            // Explicit non-string error arm: not goo_string, can't box a message in v1.
+            // Keep a non-null marker so `err != nil` holds; .Error() yields "" (no message).
+            boxed = LLVMBuildIntToPtr(codegen->builder,
+                LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0), i8pt, "err_marker");
+        }
+        LLVMBuildBr(codegen->builder, merge_bb);
+        LLVMBasicBlockRef box_exit = LLVMGetInsertBlock(codegen->builder);
+
+        // merge_bb: PHI null (success) vs boxed (error).
+        codegen_set_insert_point(codegen, merge_bb);
+        LLVMValueRef err_ptr = LLVMBuildPhi(codegen->builder, i8pt, "err_ptr");
         LLVMValueRef null_ptr = LLVMConstNull(i8pt);
-        LLVMValueRef err_ptr  = LLVMBuildSelect(codegen->builder, is_error,
-            non_null, null_ptr, "err_ptr");
+        LLVMAddIncoming(err_ptr, &null_ptr, &entry_bb, 1);
+        LLVMAddIncoming(err_ptr, &boxed, &box_exit, 1);
+
         LLVMValueRef err_val = LLVMGetUndef(err_llvm);
         err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "err.is_null");
         err_val = LLVMBuildInsertValue(codegen->builder, err_val, err_ptr, 1, "err.ptr");

@@ -848,13 +848,32 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             return ret;
         }
     }
-    
+
     // Check function expression
     Type* func_type = type_check_expression(checker, call->function);
     if (!func_type) return NULL;
-    
+
+    // error.Error() -> string (Phase 6 Task 3). `e.Error` resolves (via the
+    // selector special case) to TYPE_STRING, so the generic TYPE_FUNCTION
+    // check below would reject the call. Recognize it here using the receiver
+    // type already computed during the call->function check above (no
+    // re-evaluation — avoids double type-checking/double-diagnostics).
+    if (call->function->type == AST_SELECTOR_EXPR && func_type->kind == TYPE_STRING) {
+        SelectorExprNode* esel = (SelectorExprNode*)call->function;
+        Type* erecv_t = esel->expr->node_type;
+        if (type_is_error(erecv_t) &&
+            strcmp(esel->selector, "Error") == 0) {
+            if (call->args) {
+                type_error(checker, expr->pos, "error.Error() takes no arguments");
+                return NULL;
+            }
+            expr->node_type = func_type; // string
+            return func_type;
+        }
+    }
+
     if (func_type->kind != TYPE_FUNCTION) {
-        type_error(checker, expr->pos, 
+        type_error(checker, expr->pos,
                   "Cannot call non-function type %s", type_to_string(func_type));
         return NULL;
     }
@@ -1137,6 +1156,11 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, string_t);
     }
 
+    // fmt.Errorf(format string, args...) -> error  (Sprintf + box)
+    if (strcmp(package, "fmt") == 0 && strcmp(name, "Errorf") == 0) {
+        return type_function(NULL, 0, type_checker_error_type(checker));
+    }
+
     // os.Exit(int) -> void
     if (strcmp(package, "os") == 0 && strcmp(name, "Exit") == 0) {
         return type_function(NULL, 0, void_t);
@@ -1304,6 +1328,18 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
                                                   : "interface",
                    selector->selector);
         return NULL;
+    }
+
+    // error.Error() -> string (Phase 6 Task 3). The error type is the tagged
+    // nullable handle (name=="error"); it carries no method set, so it must
+    // be special-cased here BEFORE the named-type method lookup below (which
+    // would look for a nonexistent "error__Error" function and fall through
+    // to the generic rejection).
+    if (type_is_error(expr_type) &&
+        strcmp(selector->selector, "Error") == 0) {
+        Type* ret = type_checker_get_builtin(checker, TYPE_STRING);
+        expr->node_type = ret;
+        return ret;
     }
 
     // Named non-struct type (e.g. `type IntSlice []int`) method call: resolve

@@ -112,7 +112,17 @@ Type* type_checker_get_builtin(TypeChecker* checker, TypeKind kind) {
 // `error` keyword, the n,err destructure, and errors.New stay in lockstep —
 // Phase 6's real error struct / `.Error()` changes only this.
 Type* type_checker_error_type(TypeChecker* checker) {
-    return type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+    Type* t = type_nullable(type_pointer(type_checker_get_builtin(checker, TYPE_INT8)));
+    // Phase 6 Task 3: tag the nullable so `.Error()` dispatch (type checker +
+    // codegen) can recognize "this is the error type" without re-deriving its
+    // shape. type_nullable() always auto-derives a name (e.g. "?*int8" here),
+    // so it is never NULL at this point — overwrite it unconditionally rather
+    // than guarding on !t->name (which would never fire).
+    if (t) {
+        free(t->name);
+        t->name = strdup("error");
+    }
+    return t;
 }
 
 void type_checker_add_builtin_functions(TypeChecker* checker) {

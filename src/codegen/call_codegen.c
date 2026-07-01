@@ -13,7 +13,15 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                                TypeKind return_kind, int unused_extra);
 static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+
+#if LLVM_AVAILABLE
+// Given a loaded `error` value {i1 is_null, i8* handle}, produce the goo_string
+// to display: "<nil>" when null, else goo_error_message(handle). Shared by
+// fmt.Println's error case and the %v verb (defined below, near fmt_emit_segments).
+static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMValueRef err_loaded, Position pos);
+#endif
 
 // Defined in expression_codegen.c: storage address of an addressable
 // expression (no load). Used here for pointer-receiver auto-address-of (P2-3).
@@ -313,6 +321,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
                 return codegen_generate_sprintf_call(codegen, checker, expr);
             }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
+                return codegen_generate_errorf_call(codegen, checker, expr);
+            }
             if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_exit", TYPE_VOID, 0);
@@ -409,28 +420,33 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_atoi_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "New") == 0) {
-                // errors.New(string) -> ?*int8 (non-nil error marker).
-                // For v1, the message string arg is evaluated (for side-effects
-                // and type-check pass-through) but not stored — message-carrying
-                // .Error() is deferred to Phase 6. We return a non-nil nullable
-                // {is_null=0, ptr=inttoptr(1)} matching the layout Task 1 builds
-                // for the !T destructure error arm so `if e != nil` reads it correctly.
-                if (call->args) {
-                    ValueInfo* msg = codegen_generate_expression(codegen, checker, call->args);
-                    if (msg) value_info_free(msg); // evaluated, not stored (v1)
+                // errors.New(string) -> error. Box the message into a heap goo_error and
+                // store its pointer (as i8*) in the nullable error handle.
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "errors.New: expected a string argument");
+                    return NULL;
                 }
+                ValueInfo* msg = codegen_generate_expression(codegen, checker, call->args);
+                if (!msg) return NULL;
+                LLVMValueRef msg_val = msg->llvm_value;
+                if (msg->is_lvalue && msg->goo_type) {
+                    LLVMTypeRef mt = codegen_type_to_llvm(codegen, msg->goo_type);
+                    if (mt) msg_val = LLVMBuildLoad2(codegen->builder, mt, msg_val, "errnew_msg");
+                }
+                value_info_free(msg);
+
+                LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+                if (!from_str) { codegen_error(codegen, expr->pos, "goo_error_from_string not found in module"); return NULL; }
+                LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
+                LLVMValueRef args1[] = { msg_val };
+                LLVMValueRef handle = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, args1, 1, "errnew_box");
+
                 Type* err_type = type_checker_error_type(checker);
                 LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
-                LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
-                // is_null = 0 (present / non-nil)
                 LLVMValueRef is_null = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
-                // ptr = inttoptr(1) — same non-null marker as !T error arm
-                LLVMValueRef non_null = LLVMBuildIntToPtr(codegen->builder,
-                    LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0),
-                    i8pt, "errors_new_marker");
                 LLVMValueRef err_val = LLVMGetUndef(err_llvm);
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "en.is_null");
-                err_val = LLVMBuildInsertValue(codegen->builder, err_val, non_null, 1, "en.ptr");
+                err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
             }
             if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
@@ -469,6 +485,48 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     if (call->function->type == AST_SELECTOR_EXPR) {
         SelectorExprNode* msel = (SelectorExprNode*)call->function;
         Type* recv_type = type_check_expression(checker, msel->expr);
+
+        // error.Error(): nil-guarded read of the boxed message (Phase 6 Task 3).
+        // The error type is a tagged nullable handle, not a struct — it has no
+        // method set, so it must be special-cased before the struct/interface
+        // dispatch below (which would resolve "error__Error", find nothing, and
+        // fall through to the generic call path's "Undefined identifier").
+        if (type_is_error(recv_type) &&
+            strcmp(msel->selector, "Error") == 0) {
+            ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
+            if (!rv) return NULL;
+            LLVMValueRef recv_val = rv->llvm_value;
+            if (rv->is_lvalue) {
+                LLVMTypeRef rt = codegen_type_to_llvm(codegen, recv_type);
+                if (rt) {
+                    recv_val = LLVMBuildLoad2(codegen->builder, rt, recv_val, "err.recv");
+                }
+            }
+            value_info_free(rv);
+
+            // recv_val is the loaded nullable {i1 is_null, i8* handle}.
+            LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, recv_val, 0, "err.is_null");
+            LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, recv_val, 1, "err.handle");
+            LLVMValueRef msgfn = LLVMGetNamedFunction(codegen->module, "goo_error_message");
+            if (!msgfn) {
+                codegen_error(codegen, expr->pos, "goo_error_message not found in module");
+                return NULL;
+            }
+            LLVMTypeRef msgfn_ty = LLVMGlobalGetValueType(msgfn);
+            LLVMValueRef cargs[] = { handle };
+            LLVMValueRef msg = LLVMBuildCall2(codegen->builder, msgfn_ty, msgfn, cargs, 1, "err.msg");
+            // nil-guard: empty goo_string {null,0} when is_null. goo_error_message
+            // itself null-checks its arg too, so calling it on the null arm is
+            // harmless — only the select()'d result matters.
+            LLVMTypeRef str_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+            LLVMValueRef empty = LLVMGetUndef(str_llvm);
+            empty = LLVMBuildInsertValue(codegen->builder, empty,
+                LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0)), 0, "empty.data");
+            empty = LLVMBuildInsertValue(codegen->builder, empty,
+                LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 0, 0), 1, "empty.len");
+            LLVMValueRef result = LLVMBuildSelect(codegen->builder, is_null, empty, msg, "err.error_result");
+            return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+        }
 
         // Interface dispatch (P4-5): when the receiver is an interface value,
         // lower the call to a vtable dispatch instead of a direct mangled call.
@@ -1089,7 +1147,26 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
         }
 
         TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);
-        if (kind == TYPE_STRING) {
+
+        // error (Phase 6 Task 4): tagged nullable, not one of fmt's primitive
+        // kinds, so it must be special-cased before the kind switch below (it
+        // would otherwise fall into the "unsupported argument type" error).
+        // Print "<nil>" when null, else the boxed message — same nil-guard/
+        // extract/goo_error_message shape as .Error() (Task 3, ~line 495).
+        if (type_is_error(arg_val->goo_type)) {
+            LLVMValueRef to_print = codegen_error_display_string(codegen, arg_val->llvm_value, a->pos);
+            if (!to_print) { value_info_free(arg_val); return NULL; }
+
+            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+            if (!str_fn) {
+                codegen_error(codegen, a->pos, "goo_print_string not found in module");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef pargs[] = { to_print };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                          str_fn, pargs, 1, "");
+        } else if (kind == TYPE_STRING) {
             // Pass the whole goo_string struct to the length-aware printer.
             // Extracting just the data ptr and calling goo_print (strlen) is
             // wrong for a substring (F5): a shared-buffer slice like
@@ -1219,6 +1296,28 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
     return result;
 #endif
 }
+
+#if LLVM_AVAILABLE
+// Given a loaded `error` value {i1 is_null, i8* handle}, produce the goo_string
+// to display: "<nil>" when null, else goo_error_message(handle). Shared by
+// fmt.Println's error case and the %v verb. Returns NULL (after emitting a
+// codegen_error) if a required runtime symbol is missing.
+static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMValueRef err_loaded, Position pos) {
+    LLVMValueRef is_null = LLVMBuildExtractValue(codegen->builder, err_loaded, 0, "edisp.is_null");
+    LLVMValueRef handle  = LLVMBuildExtractValue(codegen->builder, err_loaded, 1, "edisp.handle");
+    LLVMValueRef msgfn = LLVMGetNamedFunction(codegen->module, "goo_error_message");
+    if (!msgfn) { codegen_error(codegen, pos, "goo_error_message not found in module"); return NULL; }
+    LLVMValueRef cargs[] = { handle };
+    LLVMValueRef msg = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(msgfn), msgfn, cargs, 1, "edisp.msg");
+    LLVMTypeRef str_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+    LLVMValueRef nil_ptr = LLVMBuildGlobalStringPtr(codegen->builder, "<nil>", "edisp.nilstr");
+    LLVMValueRef nil_str = LLVMGetUndef(str_llvm);
+    nil_str = LLVMBuildInsertValue(codegen->builder, nil_str, nil_ptr, 0, "edisp.nil.data");
+    nil_str = LLVMBuildInsertValue(codegen->builder, nil_str,
+        LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 5, 0), 1, "edisp.nil.len");
+    return LLVMBuildSelect(codegen->builder, is_null, nil_str, msg, "edisp.result");
+}
+#endif
 
 // fmt_emit_segments: shared format-string walker used by Printf (sprintf_mode=0)
 // and Sprintf (sprintf_mode=1).  For Printf mode it emits
@@ -1510,7 +1609,23 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
 
         } else if (verb == 'v') {
             // %v — default format: dispatch on arg kind, matching Println's dispatch.
-            if (kind == TYPE_STRING) {
+            if (type_is_error(arg_val->goo_type)) {
+                // error: not one of the primitive kinds below, so it must be
+                // special-cased first — same display shape as Println's error
+                // case (Task 4), shared via codegen_error_display_string.
+                LLVMValueRef disp = codegen_error_display_string(c, arg_val->llvm_value, arg_cursor->pos);
+                if (!disp) { value_info_free(arg_val); ok = 0; break; }
+                if (!sprintf_mode) {
+                    LLVMValueRef pargs[] = { disp };
+                    LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
+                                   print_str_fn, pargs, 1, "");
+                } else {
+                    LLVMValueRef cargs[] = { acc, disp };
+                    acc = LLVMBuildCall2(c->builder,
+                                         LLVMGlobalGetValueType(concat_fn),
+                                         concat_fn, cargs, 2, "sp_acc");
+                }
+            } else if (kind == TYPE_STRING) {
                 if (!sprintf_mode) {
                     LLVMValueRef pargs[] = { arg_val->llvm_value };
                     LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
@@ -1693,5 +1808,46 @@ static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen,
     }
 
     return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+#endif
+}
+
+// codegen_generate_errorf_call: entry point for fmt.Errorf. Mirrors
+// codegen_generate_sprintf_call (compile-time format walker via
+// fmt_emit_segments, sprintf_mode=1) to build a goo_string_t message, then
+// boxes it into a heap goo_error via goo_error_from_string and wraps the
+// resulting handle into the nullable error representation, matching the
+// errors.New boxing path.
+static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen,
+                                               TypeChecker* checker,
+                                               ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+    ASTNode* fmt_arg = call->args;
+    if (!fmt_arg || fmt_arg->type != AST_LITERAL ||
+        ((LiteralNode*)fmt_arg)->literal_type != TOKEN_STRING) {
+        codegen_error(codegen, expr->pos, "fmt.Errorf: format must be a string literal");
+        return NULL;
+    }
+    const char* fmt_str = ((LiteralNode*)fmt_arg)->value;
+    LLVMValueRef msg_str = NULL;
+    if (!fmt_emit_segments(codegen, checker, fmt_str, fmt_arg->next, 1, &msg_str, expr->pos)) {
+        return NULL;
+    }
+    LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+    if (!from_str) { codegen_error(codegen, expr->pos, "goo_error_from_string not found in module"); return NULL; }
+    LLVMTypeRef from_str_ty = LLVMGlobalGetValueType(from_str);
+    LLVMValueRef bargs[] = { msg_str };
+    LLVMValueRef handle = LLVMBuildCall2(codegen->builder, from_str_ty, from_str, bargs, 1, "errorf_box");
+    Type* err_type = type_checker_error_type(checker);
+    LLVMTypeRef err_llvm = codegen_type_to_llvm(codegen, err_type);
+    LLVMValueRef err_val = LLVMGetUndef(err_llvm);
+    err_val = LLVMBuildInsertValue(codegen->builder, err_val,
+        LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0), 0, "ef.is_null");
+    err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "ef.ptr");
+    return value_info_new(NULL, err_val, err_type);
 #endif
 }

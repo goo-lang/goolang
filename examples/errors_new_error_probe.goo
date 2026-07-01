@@ -1,0 +1,9 @@
+package main
+import (
+	"fmt"
+	"errors"
+)
+func main() {
+	e := errors.New("boom")
+	fmt.Println(e.Error())
+}
