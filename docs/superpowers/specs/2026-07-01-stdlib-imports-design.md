@@ -5,6 +5,43 @@
 **Source:** Approved ultraplan (cloud session), pasted verbatim below.
 **Status:** Keystone de-risked (see note); executing the minimal first shippable milestone (Phase 0 + Phase 1 on `errors`).
 
+## UPDATE — plan refined to v3 (broad-coverage thesis + real-import-graph ladder)
+
+The approved plan was refined twice after this doc's first capture. Consolidated deltas
+(Phase 0 is **byte-identical** across all versions — only downstream framing changed):
+
+- **Strategic thesis:** the target is **broad std coverage** (jumpstart the language by
+  running real programs), not one demo package. `errors` is only the first rung. "The whole
+  std" is a ladder, not a switch: measure progress as the growing % of std packages that
+  compile + pass a behavior probe.
+- **Execution context (env reconciliation):** the plan's Phase 0.0 "unblock the build"
+  notes (gcc 13.3 rejecting `-std=c23`, LLVM header gating) were observed in the *planning
+  sandbox*. This local machine is gcc 16.1.1 / clang 22.1.8 / LLVM 22.1.8 — all accept
+  `-std=c23`, `bin/goo` builds and runs, and two milestones (#57/#58) merged green this
+  session. **M0 is already satisfied here; Phase 0.0 is skipped locally.** (Apply the
+  toolchain-aware `-std` flag only as a portability nicety if touched.)
+- **Phase 1 precedence = reverse-topological, leaf-first** (from the real Go 1.24 import
+  graph): step 0 `errors` (deps none; land plain `New`/`Unwrap` first — `Is`/`As`/`Join`
+  pull `internal/reflectlite`, defer) → step 1 `unicode/utf8`, `unicode`, `math/bits`,
+  `sync/atomic` (deps none) → step 2 `math` → `strconv` (**first major hub reachable from
+  leaves alone** — the visible jumpstart) → step 3 `io` (needs the `sync`→`runtime` shim) →
+  step 4 `bytes`, `strings` → `bufio` → step 5 `sort` (**gated on generics**) → step 6
+  `fmt` (heaviest — pulls `reflect`/`os`; keep the C-shim fallback until then).
+- **Generics/`iter` fork (decide before step 4):** on Go ≥1.21 the classic text/number core
+  is NOT generics-free (`sort→slices`, `bytes`/`strings`→`iter`). Recommended: **(a)**
+  vendor the core from **≤ Go 1.20** upstream to stay generics-free; revisit **(b)** stubs +
+  generics-first when Tier-3 generic packages become the goal.
+- **Milestone ladder:** M0 = clean build (green here). M1 = Phase 0 + `errors` (machinery
+  proven). M2 = steps 1–2 (leaves → `math` → `strconv`, the visible jumpstart). M3 = steps
+  3–4. M4+ = `sort`/`fmt` + beyond as generics/reflect mature.
+- **Coverage scoreboard:** a `goostd/STATUS.md` / `make std-status` manifest tracks every
+  std package's state (`compiles` / `passes-probe` / `partial` / `deferred`), one golden
+  probe per landed package (`examples/std_<pkg>_probe.goo`, diffed against real `go run`).
+
+The full v3 text (import-graph deps per package, tier lists) lives in the session history;
+this doc keeps the durable design + the ladder. **Current execution:** M1 (Phase 0 +
+`errors`), Phase 0 in progress.
+
 ## Keystone spike result (verified before execution)
 
 The one unknown that could have forced a redesign — **string/source lifetime across multiple
