@@ -913,6 +913,23 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         
         // Generate initializer if present
         if (var_decl->values) {
+            // Global initializers must be compile-time constants: a call
+            // (including a builtin like append/make) executes at function
+            // scope, but codegen->current_function is NULL here (module
+            // scope) — the builder has no positioned insertion block. Some
+            // builtins' codegen issues LLVMBuildXxx calls unconditionally,
+            // which dereferences that null insert block and SIGSEGVs before
+            // ever reaching the generic "requires constant initializer"
+            // backstop at the store site below (:1089 is unreachable for
+            // calls: they never produce an LLVMIsConstant value). Catch
+            // AST_CALL_EXPR here, before generation, and reject cleanly.
+            if (!codegen->current_function && var_decl->values->type == AST_CALL_EXPR) {
+                codegen_error(codegen, decl->pos,
+                    "Global variable '%s' requires constant initializer (calls, including builtins, run at function scope)",
+                    var_name);
+                return 0;
+            }
+
             ValueInfo* init_value;
 
             // `var b ?T = nil` — intercept here so codegen_generate_null_literal
