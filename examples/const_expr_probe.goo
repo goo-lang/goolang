@@ -1,0 +1,32 @@
+// const_expr_probe: rootedness recurses through arithmetic binops, so a
+// parenthesized/chained untyped constant expression adapts to a float
+// context AS A UNIT, not just at its leaf literals. Covers untyped×untyped
+// cross-kind (0.1*10), a chained float*float*floatvar product, that result
+// flowing into a call parameter, int+float, a var-decl float32 context,
+// int-only parenthesized arithmetic feeding a float multiply, float+float,
+// a negative-literal cross-kind comparison, and a unary-^-rooted cross-kind
+// comparison.
+package main
+
+import "fmt"
+
+func takesF32(x float32) float32 {
+	return x
+}
+
+func main() {
+	fmt.Println(0.1*10 == 1.0)
+	g := float32(2.5)
+	c := 2.0 * 3.0 * g
+	fmt.Println(c == float32(15.0))
+	fmt.Println(takesF32(c) == float32(15.0))
+	e := 1 + 0.5
+	fmt.Println(e == 1.5)
+	var w float32 = 2.0 * 2.0
+	fmt.Println(w == float32(4.0))
+	h := (1 + 2) * g
+	fmt.Println(h == float32(7.5))
+	fmt.Println(0.5+0.25 == 0.75)
+	fmt.Println(g > -1)
+	fmt.Println(g > ^1)
+}
