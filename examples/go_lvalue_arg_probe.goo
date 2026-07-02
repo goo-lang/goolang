@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+type T struct {
+	V int
+}
+
+func show(n int) {
+	fmt.Println(n)
+}
+
+func main() {
+	p := &T{V: 7}
+	go show(p.V)
+	p.V = 9
+}

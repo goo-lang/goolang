@@ -1,0 +1,39 @@
+package main
+
+import "fmt"
+
+type T struct {
+	N int32
+	Pad int32
+	W int64
+}
+
+func main() {
+	ch := make_chan(int64, 2)
+	t := T{N: 5, Pad: 6, W: 100}
+	ch <- t.N
+	t.N = 50
+	ch <- t.W
+	a := <-ch
+	fmt.Println(int(a))
+	b := <-ch
+	fmt.Println(int(b))
+	c2 := make_chan(int64, 1)
+	// one/zero are pre-converted outside the select statement: select-case
+	// bodies and comm expressions are never type-checked (type_check_select_stmt
+	// in src/types/type_checker.c is a TODO stub that walks the case list but
+	// checks nothing), so a `T(x)` conversion call written INSIDE a select
+	// statement fails to compile ("conversion: missing resolved target type")
+	// regardless of this fix. Pre-existing, unrelated to the lvalue-send bug,
+	// outside the two files this task may touch — worked around here, not fixed.
+	one := int64(1)
+	zero := int64(0)
+	select {
+	case c2 <- t.N:
+		fmt.Println(one)
+	default:
+		fmt.Println(zero)
+	}
+	d := <-c2
+	fmt.Println(int(d))
+}
