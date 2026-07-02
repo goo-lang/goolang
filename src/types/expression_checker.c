@@ -743,6 +743,37 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
             break;
             
         case TOKEN_BIT_AND:  // & - take reference/borrow
+            // Go allows & on any composite literal; Goo supports only the
+            // struct case (heap-allocated by codegen). Reject the other
+            // literal kinds here with a specific error — without this they
+            // pass typecheck (this arm makes a pointer to ANY operand) and die in
+            // codegen with the unhelpful "Cannot take address of non-lvalue".
+            if (unary->operand->type == AST_SLICE_EXPR ||
+                unary->operand->type == AST_ARRAY_LITERAL ||
+                unary->operand->type == AST_PAREN_EXPR) {
+                // AST_PAREN_EXPR is the map-literal tag (grouping parens
+                // parse as identity and never produce a node — ast.h:638).
+                const char* kind = unary->operand->type == AST_SLICE_EXPR ? "slice"
+                                 : unary->operand->type == AST_ARRAY_LITERAL ? "array"
+                                 : "map";
+                type_error(checker, expr->pos,
+                          "cannot take the address of a %s literal (only struct literals are supported)",
+                          kind);
+                return NULL;
+            }
+            if (unary->operand->type == AST_STRUCT_LITERAL &&
+                operand_type->kind != TYPE_STRUCT) {
+                // A named-slice/array composite literal parses as
+                // AST_STRUCT_LITERAL and resolves to its underlying kind —
+                // it must not reach the struct-only codegen path.
+                // type_to_string can hand back a NULL name for unnamed
+                // types (e.g. an enum-variant literal) — %s on NULL is UB.
+                const char* tn = type_to_string(operand_type);
+                type_error(checker, expr->pos,
+                          "cannot take the address of a %s composite literal (only struct literals are supported)",
+                          tn ? tn : "non-struct");
+                return NULL;
+            }
             // Check if we can borrow this value
             if (unary->operand->type == AST_IDENTIFIER) {
                 IdentifierNode* ident = (IdentifierNode*)unary->operand;

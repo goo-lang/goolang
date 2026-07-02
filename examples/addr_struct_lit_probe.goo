@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+	Y int
+}
+
+func (p *Point) Sum() int {
+	return p.X + p.Y
+}
+
+func newPoint(x int, y int) *Point {
+	return &Point{X: x, Y: y}
+}
+
+func main() {
+	p := newPoint(3, 4)
+	fmt.Println(p.X)
+	fmt.Println(p.Y)
+	q := &Point{7, 9}
+	fmt.Println(q.X)
+	q.X = 21
+	fmt.Println(q.X)
+	fmt.Println(p.X)
+	fmt.Println(p.Sum())
+	fmt.Println(q.Sum())
+}
