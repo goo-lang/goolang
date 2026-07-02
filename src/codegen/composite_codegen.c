@@ -359,17 +359,26 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     // Get the type of the base expression
     Type* base_type = base_val->goo_type;
     
-    // Handle pointer to struct
+    // Handle pointer to struct: resolve to the struct's address, then GEP.
+    // Two shapes arrive here:
+    //   - lvalue: llvm_value is the address of the POINTER SLOT (a chained
+    //     selector like o.P, or any pointer field) — load the pointer out
+    //     of the slot; the loaded value is the struct's address.
+    //   - rvalue: llvm_value IS the pointer (an auto-loaded identifier like
+    //     p) — it is already the struct's address; no load.
+    // Either way the result is the struct's address, so mark it lvalue and
+    // let the GEP fork below index the real struct storage directly. (The
+    // old code had this inverted — it skipped the load for lvalues, GEPing
+    // into the pointer slot itself and reading garbage, and for rvalues
+    // loaded the whole struct and spilled it to a temp copy.)
     if (base_type->kind == TYPE_POINTER && base_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
-        base_type = base_type->data.pointer.pointee_type;
-        // Load through the pointer if needed
-        if (!base_val->is_lvalue) {
-            // If it's not an lvalue, we need to load it first
-            LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, 
-                                                codegen_type_to_llvm(codegen, base_type),
-                                                base_val->llvm_value, "ptr_load");
-            base_val->llvm_value = loaded;
+        if (base_val->is_lvalue) {
+            base_val->llvm_value = LLVMBuildLoad2(codegen->builder,
+                                                  LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                                                  base_val->llvm_value, "struct_ptr");
         }
+        base_type = base_type->data.pointer.pointee_type;
+        base_val->is_lvalue = 1;
     }
     
     if (base_type->kind != TYPE_STRUCT) {

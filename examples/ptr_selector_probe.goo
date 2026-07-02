@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+type Inner struct {
+	V int
+	W int
+}
+
+type Outer struct {
+	P *Inner
+	N int
+}
+
+func main() {
+	q := &Inner{V: 7, W: 11}
+	o := Outer{P: q, N: 1}
+	fmt.Println(o.P.V)
+	fmt.Println(o.P.W)
+	tmp := o.P
+	fmt.Println(tmp.V)
+	p := &Inner{V: 20, W: 22}
+	fmt.Println(p.V)
+	p.V = 30
+	fmt.Println(p.V)
+	oo := &Outer{P: p, N: 2}
+	fmt.Println(oo.P.V)
+	fmt.Println(oo.N)
+}
