@@ -598,6 +598,25 @@ void goo_map_delete_sv(GooMapSV* m, const char* k) {
 
 // Slice operations
 
+// Zero-initialized backing store for make([]T, n[, cap]). calloc (not
+// goo_alloc/malloc) because Go guarantees zero values for made elements.
+// Never returns NULL: count 0 still yields a valid 1-byte allocation so a
+// zero-length slice keeps a non-NULL data pointer (matches the runtime's
+// "null slice" panic convention in goo_slice_get), and OOM panics the way
+// goo_alloc does rather than handing codegen a NULL to dereference.
+void* goo_slice_alloc(int64_t count, int64_t elem_size) {
+    void* data;
+    if (count <= 0 || elem_size <= 0) {
+        data = calloc(1, 1);
+    } else {
+        data = calloc((size_t)count, (size_t)elem_size);
+    }
+    if (!data) {
+        goo_panic("Out of memory");
+    }
+    return data;
+}
+
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {
     if (capacity == 0 || element_size == 0) {
         return (goo_slice_t){NULL, 0, 0};

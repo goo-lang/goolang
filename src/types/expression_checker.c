@@ -1029,11 +1029,42 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 return made;
             }
             if (made->kind == TYPE_SLICE) {
-                // Task 4 replaces this stub with the real length/cap check
-                // and codegen; keep the error honest in the meantime.
-                type_error(checker, expr->pos,
-                           "make([]T, ...) is implemented in a later change");
-                return NULL;
+                // make([]T, n[, cap]): length required, capacity optional,
+                // both integers. No compile-time len<=cap relation is
+                // enforced (Go checks it at runtime; a runtime check here
+                // is a noted follow-up — no panic-with-format infra yet).
+                ASTNode* len_arg = call->args->next;
+                if (!len_arg) {
+                    type_error(checker, expr->pos,
+                               "make([]T) requires a length argument");
+                    return NULL;
+                }
+                ASTNode* cap_arg = len_arg->next;
+                if (cap_arg && cap_arg->next) {
+                    type_error(checker, expr->pos,
+                               "make([]T, len, cap) takes at most three arguments");
+                    return NULL;
+                }
+                Type* len_t = type_check_expression(checker, len_arg);
+                if (!len_t) return NULL;
+                if (!type_is_integer(len_t)) {
+                    type_error(checker, len_arg->pos,
+                               "make: length must be an integer, got %s",
+                               type_to_string(len_t));
+                    return NULL;
+                }
+                if (cap_arg) {
+                    Type* cap_t = type_check_expression(checker, cap_arg);
+                    if (!cap_t) return NULL;
+                    if (!type_is_integer(cap_t)) {
+                        type_error(checker, cap_arg->pos,
+                                   "make: capacity must be an integer, got %s",
+                                   type_to_string(cap_t));
+                        return NULL;
+                    }
+                }
+                expr->node_type = made;
+                return made;
             }
             type_error(checker, expr->pos, "make() requires a map or slice type");
             return NULL;

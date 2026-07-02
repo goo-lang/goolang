@@ -234,12 +234,71 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // make(map[K]V[, hint]) -> GooMapSV* (map-literal codegen's
             // path, minus the key/value inserts: src/codegen/
             // expression_codegen.c's AST_PAREN_EXPR/MapLitNode case).
-            // make([]T, ...) type-checks to a hard error today (Task 4
-            // replaces the stub), so expr->node_type is never TYPE_SLICE
-            // here — only TYPE_MAP can reach codegen.
+            // make([]T, n[, cap]) -> {ptr,len,cap} slice header built in IR
+            // over a goo_slice_alloc'd zeroed backing store (calloc = Go
+            // zero values), same aggregate shape as the slice-literal path.
             Type* made_type = expr->node_type;
+            if (made_type && made_type->kind == TYPE_SLICE) {
+                LLVMTypeRef elem_llvm = codegen_type_to_llvm(
+                    codegen, made_type->data.slice.element_type);
+                if (!elem_llvm) {
+                    codegen_error(codegen, expr->pos, "make: cannot lower slice element type");
+                    return NULL;
+                }
+                // Length (2nd arg; the type checker guarantees it exists
+                // and is an integer). Load if lvalue, then widen to i64
+                // with signedness-correct extension.
+                ValueInfo* lv = codegen_generate_expression(codegen, checker, call->args->next);
+                if (!lv) return NULL;
+                if (lv->is_lvalue && lv->goo_type) {
+                    LLVMTypeRef lt = codegen_type_to_llvm(codegen, lv->goo_type);
+                    if (lt) {
+                        lv->llvm_value = LLVMBuildLoad2(codegen->builder, lt,
+                                                        lv->llvm_value, "make_len_load");
+                        lv->is_lvalue = 0;
+                    }
+                }
+                LLVMValueRef len64 = codegen_widen_index(codegen, lv);
+                value_info_free(lv);
+                // Capacity (optional 3rd arg) defaults to the length.
+                LLVMValueRef cap64 = len64;
+                if (call->args->next->next) {
+                    ValueInfo* cv = codegen_generate_expression(codegen, checker,
+                                                                call->args->next->next);
+                    if (!cv) return NULL;
+                    if (cv->is_lvalue && cv->goo_type) {
+                        LLVMTypeRef ct = codegen_type_to_llvm(codegen, cv->goo_type);
+                        if (ct) {
+                            cv->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                            cv->llvm_value, "make_cap_load");
+                            cv->is_lvalue = 0;
+                        }
+                    }
+                    cap64 = codegen_widen_index(codegen, cv);
+                    value_info_free(cv);
+                }
+                LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_slice_alloc");
+                if (!alloc_fn) {
+                    codegen_error(codegen, expr->pos, "make: goo_slice_alloc unavailable");
+                    return NULL;
+                }
+                // Allocate CAP elements (not len) so writes within capacity
+                // after a future reslice stay in bounds. No len>cap runtime
+                // check yet — noted follow-up.
+                LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
+                LLVMValueRef alloc_args[2] = { cap64, elem_size };
+                LLVMValueRef data = LLVMBuildCall2(codegen->builder,
+                                                   LLVMGlobalGetValueType(alloc_fn),
+                                                   alloc_fn, alloc_args, 2, "make_slice_data");
+                LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, made_type);
+                LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
+                slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, data, 0, "slice_ptr");
+                slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, len64, 1, "slice_len");
+                slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, cap64, 2, "slice_cap");
+                return value_info_new(NULL, slice_val, made_type);
+            }
             if (!made_type || made_type->kind != TYPE_MAP) {
-                codegen_error(codegen, expr->pos, "make: missing resolved map type");
+                codegen_error(codegen, expr->pos, "make: missing resolved map or slice type");
                 return NULL;
             }
             // The optional size hint is evaluated for side effects (Go

@@ -133,6 +133,12 @@ int64_t goo_map_len_sv(GooMapSV* m);
 void goo_map_delete_sv(GooMapSV* m, const char* k);
 
 // Slice operations
+// Zero-initialized backing store for make([]T, n[, cap]). Returns a bare
+// pointer (never NULL, even for count 0) rather than a goo_slice_t: the
+// 24-byte header cannot cross the codegen<->C boundary by value (SysV
+// MEMORY class — see the goo_slice_new warning in runtime_integration.c),
+// so codegen builds the {ptr,len,cap} aggregate itself in IR.
+void* goo_slice_alloc(int64_t count, int64_t elem_size);
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity);
 void goo_slice_free(goo_slice_t slice);
 void* goo_slice_get(goo_slice_t slice, size_t index, size_t element_size);
