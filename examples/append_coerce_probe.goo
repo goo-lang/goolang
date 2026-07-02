@@ -1,0 +1,22 @@
+package main
+
+import "fmt"
+
+func main() {
+	s := []int64{1}
+	y := int8(0 - 5)
+	s = append(s, y)
+	fmt.Println(int(s[1]))
+	u := uint8(200)
+	s = append(s, u)
+	fmt.Println(int(s[2]))
+	w := uint16(40000)
+	s = append(s, w)
+	fmt.Println(int(s[3]))
+	fmt.Println(int(s[0]))
+	fmt.Println(len(s))
+	f := []float64{1.5}
+	n := int32(0 - 2)
+	f = append(f, n)
+	fmt.Println(f[1] == 0.0 - 2.0)
+}
