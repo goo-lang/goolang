@@ -1051,6 +1051,28 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                             LLVMBool loses_info;
                             double d = LLVMConstRealGetDouble(init_value->llvm_value, &loses_info);
                             init_value->llvm_value = LLVMConstReal(llvm_type, d);
+                        } else if (fk == LLVMIntegerTypeKind &&
+                                   (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
+                            // `var gi float64 = 1`: an untyped integer
+                            // literal folds to an i64 constant; the declared
+                            // type is float, so there is no int->int or
+                            // FP->FP arm above to catch it, and the mismatch
+                            // reaches LLVMSetInitializer below as an i64
+                            // constant in a double slot — caught by the
+                            // module verifier ("Global variable initializer
+                            // type does not match global variable type!").
+                            // LLVMConstSIToFP/UIToFP need a positioned
+                            // builder (unavailable at global scope), so
+                            // extract the raw value by the SOURCE's
+                            // signedness and rebuild directly as a float
+                            // constant. Unsigned sources must route through
+                            // an unsigned long long before the double cast
+                            // so a large unsigned value's top bit isn't
+                            // reinterpreted as a sign.
+                            double d = use_sext
+                                ? (double)LLVMConstIntGetSExtValue(init_value->llvm_value)
+                                : (double)(unsigned long long)LLVMConstIntGetZExtValue(init_value->llvm_value);
+                            init_value->llvm_value = LLVMConstReal(llvm_type, d);
                         }
                     }
                 }

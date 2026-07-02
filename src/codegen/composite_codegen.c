@@ -1243,6 +1243,24 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
                         ? (unsigned long long)LLVMConstIntGetSExtValue(v)
                         : LLVMConstIntGetZExtValue(v);
                     v = LLVMConstInt(llvm_elem, raw, src_signed);
+                } else if (is_c && LLVMTypeOf(v) != llvm_elem) {
+                    // Float counterpart of the int-constant rebuild above:
+                    // `[2]float32{1.5, 0.25}` — the untyped literals fold to
+                    // double constants, which must be rebuilt at the
+                    // element's width before landing in the [N x float]
+                    // initializer below. Without this the const array holds
+                    // 8-byte double bit patterns in 4-byte float slots, so
+                    // every float32 element compares false at runtime.
+                    // Mirrors the slice-collection-loop rebuild (Task 2).
+                    LLVMTypeKind vk = LLVMGetTypeKind(LLVMTypeOf(v));
+                    LLVMTypeKind ek = LLVMGetTypeKind(llvm_elem);
+                    int v_is_fp = (vk == LLVMFloatTypeKind || vk == LLVMDoubleTypeKind);
+                    int e_is_fp = (ek == LLVMFloatTypeKind || ek == LLVMDoubleTypeKind);
+                    if (v_is_fp && e_is_fp) {
+                        LLVMBool loses_info;
+                        double d = LLVMConstRealGetDouble(v, &loses_info);
+                        v = LLVMConstReal(llvm_elem, d);
+                    }
                 }
                 value_info_free(ev);
                 if (!is_c) { all_const = 0; break; }

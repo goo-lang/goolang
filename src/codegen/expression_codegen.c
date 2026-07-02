@@ -865,24 +865,27 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             sval = boxed;
         }
 
-        // Coerce a mismatched-width integer RHS to the target variable's width
-        // before storing. A mixed-width binary op widens to its larger operand,
-        // so `x = x & int64Const` (x uint32) yields an i64 — storing that into
-        // the i32 slot would write 8 bytes over a 4-byte alloca and corrupt the
-        // stack. Truncate a wider value; extend a narrower one by its signedness.
-        if (target->goo_type && value->goo_type &&
-            LLVMGetTypeKind(LLVMTypeOf(sval)) == LLVMIntegerTypeKind) {
+        // Coerce a mismatched-width RHS (int or float) to the target
+        // variable's width before storing. A mixed-width binary op widens to
+        // its larger operand, so `x = x & int64Const` (x uint32) yields an
+        // i64 — storing that into the i32 slot would write 8 bytes over a
+        // 4-byte alloca and corrupt the stack. The float counterpart: `g :=
+        // float32(2.5); var y float64; y = g * 2.0` — the constant-adapts
+        // binop rule (Task 3) keeps the product at float32, so storing it
+        // into the float64 slot needs an FPExt. Before this fix the block
+        // was int-only, so the float case silently wrote a 4-byte float
+        // pattern into an 8-byte double slot (a failure-mode downgrade from
+        // the binop fix: it used to be a loud verifier type mismatch).
+        // Delegate to the shared width-coercion helper (int<->int,
+        // int->float, float<->float); it no-ops on kinds it doesn't handle
+        // (aggregates, pointers, already-matching types), so it's safe to
+        // call unconditionally here. Assignments are always statements, so
+        // the builder is guaranteed positioned.
+        if (target->goo_type && value->goo_type) {
             LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
-            if (tt && LLVMGetTypeKind(tt) == LLVMIntegerTypeKind) {
-                unsigned sw = LLVMGetIntTypeWidth(LLVMTypeOf(sval));
-                unsigned tw = LLVMGetIntTypeWidth(tt);
-                if (sw > tw) {
-                    sval = LLVMBuildTrunc(codegen->builder, sval, tt, "asn.trunc");
-                } else if (sw < tw) {
-                    sval = type_is_signed(value->goo_type)
-                        ? LLVMBuildSExt(codegen->builder, sval, tt, "asn.sext")
-                        : LLVMBuildZExt(codegen->builder, sval, tt, "asn.zext");
-                }
+            if (tt) {
+                sval = codegen_coerce_to_type(codegen, sval,
+                                              type_is_signed(value->goo_type), tt);
             }
         }
 
