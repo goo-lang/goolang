@@ -850,7 +850,14 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
                     (p->pattern_type == PATTERN_WILDCARD) ? merge : guard_fallback_bb;
                 LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
                     codegen->context, fn, "guard_body");
-                LLVMBuildCondBr(codegen->builder, g->llvm_value,
+                // Auto-load lvalue guard conditions (bare field selectors) —
+                // same as the if/for paths.
+                LLVMValueRef cond_val = g->llvm_value;
+                if (g->is_lvalue && g->goo_type) {
+                    LLVMTypeRef ct = codegen_type_to_llvm(codegen, g->goo_type);
+                    if (ct) cond_val = LLVMBuildLoad2(codegen->builder, ct, cond_val, "cond_load");
+                }
+                LLVMBuildCondBr(codegen->builder, cond_val,
                                 body_bb, arm_fallback);
                 LLVMPositionBuilderAtEnd(codegen->builder, body_bb);
                 value_info_free(g);

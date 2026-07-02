@@ -7,6 +7,10 @@ type T struct {
 	N int
 }
 
+type Box enum {
+	Val{n: int}
+}
+
 func main() {
 	p := &T{A: true, N: 3}
 	if p.A {
@@ -35,4 +39,23 @@ func main() {
 	}
 	fmt.Println(-p.N)
 	fmt.Println(^v.N)
+	// Match-arm GUARD with a bare selector condition: same bug class as
+	// if/for — the guard's ValueInfo is an lvalue (field ADDRESS) and the
+	// guard site must load it before LLVMBuildCondBr. One true guard
+	// (p.A, reset to true above the match) and one false guard (v.A).
+	p.A = true
+	b := new(Box)
+	*b = Val{n: 4}
+	match *b {
+	case Val{n} if p.A:
+		fmt.Println(n)
+	default:
+		fmt.Println(9)
+	}
+	match *b {
+	case Val{n} if v.A:
+		fmt.Println(n)
+	default:
+		fmt.Println(9)
+	}
 }
