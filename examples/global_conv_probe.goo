@@ -1,0 +1,23 @@
+// global_conv_probe: builtin numeric conversions in package-level var
+// initializers must compile and fold to constants. Conversions parse as
+// AST_CALL_EXPR, so the global-initializer call guard in function_codegen.c
+// must exempt conversion-shaped calls (see global_init_is_conversion_call)
+// rather than rejecting them alongside genuine calls — a regression here
+// means `var gi = int64(5)` fails with "requires constant initializer".
+// Prints use int() wraps so every Println argument is int-width (avoids the
+// mixed-width sequential-print bug); the float is checked via bool compare.
+package main
+
+import "fmt"
+
+var gi = int64(5)
+var gf = float64(1)
+var gu = uint8(65)
+var gn = int32(0 - 7)
+
+func main() {
+	fmt.Println(int(gi))   // 5
+	fmt.Println(gf == 1.0) // true
+	fmt.Println(int(gu))   // 65
+	fmt.Println(int(gn))   // -7
+}
