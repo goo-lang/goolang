@@ -1368,6 +1368,41 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
             break;
 
         case TOKEN_BIT_AND: {
+            // &StructType{...}: Go's addressable-rvalue special case. The
+            // literal has no storage — give it leaked heap storage
+            // (goo_alloc, the same lifetime model as escaping locals in
+            // function_codegen.c) and yield the pointer. The generic
+            // operand generation above already produced the aggregate
+            // value; reuse it rather than re-generating (re-generation
+            // would double-evaluate side effects in field expressions).
+            if (unary->operand->type == AST_STRUCT_LITERAL &&
+                operand->goo_type && operand->goo_type->kind == TYPE_STRUCT) {
+                LLVMTypeRef struct_llvm = codegen_type_to_llvm(codegen, operand->goo_type);
+                if (!struct_llvm) {
+                    codegen_error(codegen, expr->pos, "&literal: cannot lower struct type");
+                    value_info_free(operand);
+                    return NULL;
+                }
+                LLVMValueRef lit_val = operand_llvm;
+                if (operand->is_lvalue) {
+                    lit_val = LLVMBuildLoad2(codegen->builder, struct_llvm,
+                                             lit_val, "addr_lit_load");
+                }
+                LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+                if (!alloc_fn) {
+                    codegen_error(codegen, expr->pos, "&literal: goo_alloc unavailable");
+                    value_info_free(operand);
+                    return NULL;
+                }
+                LLVMValueRef size = LLVMSizeOf(struct_llvm);
+                LLVMValueRef heap_ptr = LLVMBuildCall2(codegen->builder,
+                                                       LLVMGlobalGetValueType(alloc_fn),
+                                                       alloc_fn, &size, 1, "addr_lit");
+                LLVMBuildStore(codegen->builder, lit_val, heap_ptr);
+                result = heap_ptr;
+                result_type = type_pointer(operand->goo_type);
+                break;
+            }
             // Address-of (`&x`). The generic operand above was loaded (an
             // identifier auto-loads), so use the lvalue-address helper to get
             // the operand's storage address rather than its value.
