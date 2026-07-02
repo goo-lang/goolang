@@ -988,8 +988,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             return ptr;
         }
         // make(map[K]V[, hint]) -> map value; make([]T, n[, cap]) -> slice
-        // value (the slice case is stubbed here and lands in a later
-        // change). arg1 is a type — either the map_type/slice_type grammar
+        // value. arg1 is a type — either the map_type/slice_type grammar
         // alternative above, or an identifier naming a type — resolved via
         // type_from_ast rather than typechecked as a value expression, same
         // as `new`.
