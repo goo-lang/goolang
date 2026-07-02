@@ -1,0 +1,26 @@
+package main
+
+import "fmt"
+
+func main() {
+	x := 1111
+	var a int32 = 7
+	y := 2222
+	fmt.Println(x)
+	fmt.Println(int(a))
+	fmt.Println(y)
+	var b int8 = 5
+	var c int16 = 300
+	fmt.Println(int(b))
+	fmt.Println(int(c))
+	var neg int32 = 0 - 9
+	fmt.Println(int(neg))
+	var w int64 = 44
+	small := int32(6)
+	var wide int64 = small
+	fmt.Println(int(w))
+	fmt.Println(int(wide))
+	ub := uint32(4000000000)
+	var uw uint64 = ub
+	fmt.Println(uw == uint64(4000000000))
+}
