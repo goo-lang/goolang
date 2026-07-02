@@ -468,31 +468,14 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
 
             // Coerce the element to the slice's element type — the slot below
             // is elem_llvm-sized and goo_slice_append copies elem_llvm's size,
-            // so a narrower value stored raw leaves undef upper bytes (an
-            // int8 -5 appended onto []int64 read back as 251). Same source-
+            // so a mismatched-width value stored raw either leaves undef upper
+            // bytes (an int8 -5 appended onto []int64 read back as 251) or
+            // OOB-writes past a narrower slot (a float64 appended onto
+            // []float32 stores 8 bytes into a 4-byte slot). Same source-
             // signedness rule as the var-decl, constant-rebuild, and literal-
-            // element fixes (SExt/ZExt + SIToFP/UIToFP by the source type).
-            {
-                LLVMTypeRef from = LLVMTypeOf(elem_val);
-                if (from != elem_llvm) {
-                    int src_signed = ev->goo_type ? type_is_signed(ev->goo_type) : 1;
-                    LLVMTypeKind fk = LLVMGetTypeKind(from), tk = LLVMGetTypeKind(elem_llvm);
-                    if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
-                        unsigned fb = LLVMGetIntTypeWidth(from), tb = LLVMGetIntTypeWidth(elem_llvm);
-                        if (fb < tb)
-                            elem_val = src_signed
-                                ? LLVMBuildSExt(codegen->builder, elem_val, elem_llvm, "append_sext")
-                                : LLVMBuildZExt(codegen->builder, elem_val, elem_llvm, "append_zext");
-                        else if (fb > tb)
-                            elem_val = LLVMBuildTrunc(codegen->builder, elem_val, elem_llvm, "append_trunc");
-                    } else if (fk == LLVMIntegerTypeKind &&
-                               (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
-                        elem_val = src_signed
-                            ? LLVMBuildSIToFP(codegen->builder, elem_val, elem_llvm, "append_sitofp")
-                            : LLVMBuildUIToFP(codegen->builder, elem_val, elem_llvm, "append_uitofp");
-                    }
-                }
-            }
+            // element fixes, now centralized in codegen_coerce_to_type.
+            int append_src_signed = ev->goo_type ? type_is_signed(ev->goo_type) : 1;
+            elem_val = codegen_coerce_to_type(codegen, elem_val, append_src_signed, elem_llvm);
             value_info_free(ev);
 
             LLVMValueRef slice_slot = codegen_create_entry_alloca(codegen, slice_llvm, "append_slice_slot");

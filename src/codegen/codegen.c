@@ -895,7 +895,47 @@ int codegen_configure_wasm_concurrency(CodeGenerator* codegen) {
     // Add import attributes
     codegen_add_wasm_import(codegen, create_promise, "js", "create_promise");
     codegen_add_wasm_import(codegen, resolve_promise, "js", "resolve_promise");
-    
+
     return 1;
+}
+#endif
+
+// Coerce a VALUE to the target LLVM type using the source type's
+// signedness — the single home for the width-coercion rule that was
+// previously inlined (and repeatedly re-broken) at the var-decl,
+// literal-element, append, and channel-send sites:
+//   int -> int      : SExt/ZExt by src_signed when widening, Trunc when narrowing
+//   int -> float    : SIToFP/UIToFP by src_signed
+//   float -> float  : FPExt widening, FPTrunc narrowing
+// Anything else (matching types, aggregates, pointers) returns v unchanged.
+// REQUIRES a positioned builder — callers on constant/global paths must keep
+// their LLVMConstInt/LLVMConstReal rebuilds instead.
+#if LLVM_AVAILABLE
+LLVMValueRef codegen_coerce_to_type(CodeGenerator* codegen, LLVMValueRef v,
+                                    int src_signed, LLVMTypeRef to) {
+    LLVMTypeRef from = LLVMTypeOf(v);
+    if (from == to) return v;
+    LLVMTypeKind fk = LLVMGetTypeKind(from), tk = LLVMGetTypeKind(to);
+    int f_is_fp = (fk == LLVMFloatTypeKind || fk == LLVMDoubleTypeKind);
+    int t_is_fp = (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind);
+    if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
+        unsigned fb = LLVMGetIntTypeWidth(from), tb = LLVMGetIntTypeWidth(to);
+        if (fb < tb) return src_signed
+            ? LLVMBuildSExt(codegen->builder, v, to, "coerce_sext")
+            : LLVMBuildZExt(codegen->builder, v, to, "coerce_zext");
+        if (fb > tb) return LLVMBuildTrunc(codegen->builder, v, to, "coerce_trunc");
+        return v;
+    }
+    if (fk == LLVMIntegerTypeKind && t_is_fp) return src_signed
+        ? LLVMBuildSIToFP(codegen->builder, v, to, "coerce_sitofp")
+        : LLVMBuildUIToFP(codegen->builder, v, to, "coerce_uitofp");
+    if (f_is_fp && t_is_fp) {
+        // float32<->float64 only; kind order: Float < Double.
+        if (fk == LLVMFloatTypeKind && tk == LLVMDoubleTypeKind)
+            return LLVMBuildFPExt(codegen->builder, v, to, "coerce_fpext");
+        if (fk == LLVMDoubleTypeKind && tk == LLVMFloatTypeKind)
+            return LLVMBuildFPTrunc(codegen->builder, v, to, "coerce_fptrunc");
+    }
+    return v;
 }
 #endif

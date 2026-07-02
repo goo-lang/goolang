@@ -226,6 +226,19 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
 // index (e.g. uint8 255) from sign-extending to -1 in an element GEP. Used by
 // both the index read path and the index-assignment lvalue path.
 LLVMValueRef codegen_widen_index(CodeGenerator* codegen, ValueInfo* idx);
+// Coerce a VALUE to the target LLVM type using the source type's
+// signedness — the single home for the width-coercion rule that was
+// previously inlined (and repeatedly re-broken) at the var-decl,
+// literal-element, append, and channel-send sites:
+//   int -> int      : SExt/ZExt by src_signed when widening, Trunc when narrowing
+//   int -> float    : SIToFP/UIToFP by src_signed
+//   float -> float  : FPExt widening, FPTrunc narrowing
+// Anything else (matching types, aggregates, pointers) returns v unchanged.
+// REQUIRES a positioned builder — only valid on local/function codegen paths.
+// Constant/global paths (e.g. folded literals) must keep their
+// LLVMConstInt/LLVMConstReal rebuilds instead of calling this.
+LLVMValueRef codegen_coerce_to_type(CodeGenerator* codegen, LLVMValueRef v,
+                                    int src_signed, LLVMTypeRef to);
 ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
