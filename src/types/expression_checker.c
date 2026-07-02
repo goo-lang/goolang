@@ -766,9 +766,12 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
                 // A named-slice/array composite literal parses as
                 // AST_STRUCT_LITERAL and resolves to its underlying kind —
                 // it must not reach the struct-only codegen path.
+                // type_to_string can hand back a NULL name for unnamed
+                // types (e.g. an enum-variant literal) — %s on NULL is UB.
+                const char* tn = type_to_string(operand_type);
                 type_error(checker, expr->pos,
                           "cannot take the address of a %s composite literal (only struct literals are supported)",
-                          type_to_string(operand_type));
+                          tn ? tn : "non-struct");
                 return NULL;
             }
             // Check if we can borrow this value
