@@ -1723,9 +1723,11 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 
         LLVMPositionBuilderAtEnd(codegen->builder, case_blocks[case_index]);
 
-        // Generate case body
-        if (select_case->body) {
-            if (!codegen_generate_statement(codegen, checker, select_case->body)) {
+        // Generate case body. The body is a ->next statement chain — loop it
+        // like switch codegen does (a single codegen_generate_statement call
+        // silently dropped every statement after the first).
+        for (ASTNode* s = select_case->body; s; s = s->next) {
+            if (!codegen_generate_statement(codegen, checker, s)) {
                 codegen_pop_loop(codegen);
                 free(case_blocks);
                 return 0;
