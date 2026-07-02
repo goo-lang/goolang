@@ -636,6 +636,17 @@ int type_compatible(const Type* from, const Type* to) {
     
     // Handle implicit conversions
     if (type_is_numeric(from) && type_is_numeric(to)) {
+        // Reject implicit FLOAT -> INT: codegen has no narrowing/truncation
+        // path for this direction, so an accepted float->int assignment
+        // silently bit-stores the float's raw bit pattern into the int slot
+        // (`var i int64 = float32(2.5)` produced 1075838976, not 2) instead
+        // of converting the value. int->float and float->float stay
+        // permitted (PR #99 probes depend on int->float: `var y float64 =
+        // x`, `[]float64{1, 2.5}`); an explicit conversion (`int64(g)`) is
+        // still the way to get a float->int narrowing.
+        if (type_is_float(from) && type_is_integer(to)) {
+            return 0;
+        }
         // Allow numeric conversions (with potential warnings)
         return 1;
     }

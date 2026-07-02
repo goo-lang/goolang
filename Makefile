@@ -540,6 +540,38 @@ globalcall-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -q "requires constant initializer" build/globalcall_reject.err; then echo "globalcall-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/globalcall_reject.err; exit 1; fi; \
 	echo "globalcall-reject-probe: PASS (rejected rc=$$rc)"
 
+# Implicit float->int is a silent bit-store, not a conversion: codegen has no
+# narrowing path for this direction, so it reinterprets the float's raw bits
+# as an int (`var i int64 = float32(2.5)` produced 1075838976, not 2). Guards
+# the type_compatible() float->int asymmetry across the three shapes that
+# used to silently accept it (var-decl init, plain assignment, append elem),
+# plus a positive control confirming int->float stays permitted (PR #99
+# probes depend on it: `var y float64 = x`, `[]float64{1, 2.5}`).
+floatint-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== floatint-reject-probe: implicit float->int must reject, int->float stays permitted ==="
+	@printf 'package main\nfunc main(){ g := float32(2.5); var i int64 = g; _ = i }\n' > build/fi_vardecl.goo
+	@printf 'package main\nfunc main(){ g := float32(2.5); var i int64; i = g; _ = i }\n' > build/fi_assign.goo
+	@printf 'package main\nfunc main(){ g := float32(2.5); s := append([]int64{1}, g); _ = s }\n' > build/fi_append.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ x := int64(3); var y float64 = x; s := []float64{1, 2.5}; fmt.Println(y, s[0], s[1]) }\n' > build/fi_int2float.goo
+	@rm -f build/fi_vardecl build/fi_assign build/fi_append build/fi_int2float
+	@$(COMPILER) -o build/fi_vardecl build/fi_vardecl.goo > build/fi_vardecl.out 2> build/fi_vardecl.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "floatint-reject-probe: FAIL (var-decl init: float32->int64 silently accepted)"; exit 1; fi; \
+	if [ -x build/fi_vardecl ]; then echo "floatint-reject-probe: FAIL (var-decl init: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "Cannot assign float32 to int64" build/fi_vardecl.err; then echo "floatint-reject-probe: FAIL (var-decl init: wrong/missing diagnostic)"; cat build/fi_vardecl.err; exit 1; fi
+	@$(COMPILER) -o build/fi_assign build/fi_assign.goo > build/fi_assign.out 2> build/fi_assign.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "floatint-reject-probe: FAIL (assignment: float32->int64 silently accepted)"; exit 1; fi; \
+	if [ -x build/fi_assign ]; then echo "floatint-reject-probe: FAIL (assignment: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "Cannot assign float32 to int64" build/fi_assign.err; then echo "floatint-reject-probe: FAIL (assignment: wrong/missing diagnostic)"; cat build/fi_assign.err; exit 1; fi
+	@$(COMPILER) -o build/fi_append build/fi_append.goo > build/fi_append.out 2> build/fi_append.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "floatint-reject-probe: FAIL (append elem: float32->int64 silently accepted)"; exit 1; fi; \
+	if [ -x build/fi_append ]; then echo "floatint-reject-probe: FAIL (append elem: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "append: cannot use float32 as element of \[\]int64" build/fi_append.err; then echo "floatint-reject-probe: FAIL (append elem: wrong/missing diagnostic)"; cat build/fi_append.err; exit 1; fi
+	@$(COMPILER) -o build/fi_int2float build/fi_int2float.goo > build/fi_int2float.out 2> build/fi_int2float.err; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "floatint-reject-probe: FAIL (int->float positive control wrongly rejected)"; cat build/fi_int2float.err; exit 1; fi; \
+	out="$$(./build/fi_int2float)"; if [ "$$out" != "3 1 2.5" ]; then echo "floatint-reject-probe: FAIL (int->float positive control output '$$out' != '3 1 2.5')"; exit 1; fi
+	@echo "floatint-reject-probe: PASS (all three float->int shapes rejected; int->float still permitted)"
+
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
 # that both taken panics abort with the runtime-error message (the non-panic
 # paths are in bits_div_probe).
@@ -1275,7 +1307,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-reject-probe floatint-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
