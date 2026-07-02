@@ -1,0 +1,27 @@
+package main
+
+import "fmt"
+
+func main() {
+	ch := make_chan(int, 1)
+	total := 0
+	select {
+	case ch <- 5:
+		fmt.Println(1)
+		total = total + 10
+		fmt.Println(2)
+	default:
+		fmt.Println(0)
+	}
+	fmt.Println(total)
+	select {
+	case ch <- 9:
+		fmt.Println(3)
+	default:
+		fmt.Println(4)
+		total = total + 100
+		fmt.Println(total)
+	}
+	v := <-ch
+	fmt.Println(v + total)
+}

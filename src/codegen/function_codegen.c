@@ -977,24 +977,70 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 init_value->goo_type = var_type;
             }
 
-            // Widen a narrower integer initializer to the declared target type.
-            // Intentionally NOT gated to literals: Goo's type checker permits
-            // cross-width assignments (e.g. `var y int64 = x`, x an int32),
-            // and SExt is the correct lowering for both literal and variable
-            // initializers — gating to literals-only would miscompile a negative
-            // variable initializer (the upper bits would stay zero, turning -5
-            // into 4294967291 when read back as i64). Narrowing (from > to) is
-            // not handled here because wider→narrower is not reached for the
-            // supported integer types.
+            // Match the initializer's integer width to the declared type.
+            // Untyped literals arrive at the default (widest) width, so BOTH
+            // directions occur here:
+            //   narrowing (var n int32 = 4): the literal is i64 — without a
+            //     Trunc the store below writes 8 bytes into a 4-byte alloca,
+            //     silently clobbering the adjacent stack slot (found as
+            //     "select recv corruption"; the select was a bystander).
+            //   widening (var y int64 = x32): extend with the signedness of
+            //     the SOURCE type — SExt for signed, ZExt for unsigned (a
+            //     uint32 4e9 must not sign-extend negative), same rule as the
+            //     channel-send coercion in lowlevel_codegen.c.
             {
                 LLVMTypeRef init_ty = LLVMTypeOf(init_value->llvm_value);
                 if (LLVMGetTypeKind(init_ty) == LLVMIntegerTypeKind &&
                     LLVMGetTypeKind(llvm_type) == LLVMIntegerTypeKind) {
                     unsigned from_bits = LLVMGetIntTypeWidth(init_ty);
                     unsigned to_bits   = LLVMGetIntTypeWidth(llvm_type);
-                    if (from_bits < to_bits)
-                        init_value->llvm_value = LLVMBuildSExt(
-                            codegen->builder, init_value->llvm_value, llvm_type, "init_sext");
+                    if (from_bits != to_bits) {
+                        int use_sext = init_value->goo_type
+                                     ? type_is_signed(init_value->goo_type) : 1;
+                        if (codegen->current_function) {
+                            // Normal function-body path: the builder is
+                            // positioned inside the current block.
+                            if (from_bits < to_bits) {
+                                init_value->llvm_value = use_sext
+                                    ? LLVMBuildSExt(codegen->builder, init_value->llvm_value,
+                                                    llvm_type, "init_sext")
+                                    : LLVMBuildZExt(codegen->builder, init_value->llvm_value,
+                                                    llvm_type, "init_zext");
+                            } else {
+                                init_value->llvm_value = LLVMBuildTrunc(
+                                    codegen->builder, init_value->llvm_value, llvm_type, "init_trunc");
+                            }
+                        } else if (LLVMIsConstant(init_value->llvm_value)) {
+                            // Global initializer (package-level `var g int32 = 7`):
+                            // codegen->current_function is NULL here, so the
+                            // builder has no insertion point positioned —
+                            // LLVMBuildTrunc/SExt/ZExt would dereference a null
+                            // insert block on LLVM 22 (this API used to fold
+                            // constant operands without touching the builder;
+                            // it no longer does). Rebuild the constant at the
+                            // target width directly, mirroring the workaround
+                            // composite_codegen.c uses for global array/slice
+                            // literals hitting the same hazard.
+                            //
+                            // Extract by the SOURCE's signedness, not just for
+                            // widening's sake: narrowing only keeps the low
+                            // `to_bits` bits so either extraction is equivalent
+                            // there, but composite_codegen.c's own rebuild
+                            // helper always uses GetZExtValue — verified by
+                            // direct LLVM-C probing that this mishandles a
+                            // signed negative source being WIDENED (e.g. a
+                            // hypothetical `var g int64 = int32(-5)` global):
+                            // GetZExtValue returns the positive zero-extended
+                            // bit pattern (4294967291) instead of sign-extending
+                            // to -5. Not reachable by today's probe, but the
+                            // correct fix here since we're already rebuilding
+                            // this constant.
+                            unsigned long long raw = use_sext
+                                ? (unsigned long long)LLVMConstIntGetSExtValue(init_value->llvm_value)
+                                : LLVMConstIntGetZExtValue(init_value->llvm_value);
+                            init_value->llvm_value = LLVMConstInt(llvm_type, raw, use_sext);
+                        }
+                    }
                 }
             }
 
