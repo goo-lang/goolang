@@ -1228,6 +1228,18 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
                 value_info_free(func_val);
                 return 0;
             }
+            // Auto-load lvalue args (bare field selectors return the field's
+            // ADDRESS) — box the VALUE, snapshotted at the go statement (Go
+            // semantics), not a pointer into the enclosing frame. Same idiom
+            // as the if/for/unary/receiver load sites.
+            if (av->is_lvalue && av->goo_type) {
+                LLVMTypeRef at = codegen_type_to_llvm(codegen, av->goo_type);
+                if (at) {
+                    av->llvm_value = LLVMBuildLoad2(codegen->builder, at,
+                                                    av->llvm_value, "go_arg_load");
+                    av->is_lvalue = 0;
+                }
+            }
             arg_vals[i] = av->llvm_value;
             arg_types[i] = LLVMTypeOf(av->llvm_value);
             value_info_free(av);
