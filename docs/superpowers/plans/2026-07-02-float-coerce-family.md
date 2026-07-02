@@ -221,9 +221,57 @@ NOTE: `g * 2.0` — decide the RESULT type by Go rules: an untyped constant adap
 
 ---
 
+### Task 4: Close the remaining float const/store gaps (assignment store, array fast path, int-const float globals)
+
+**Files:**
+- Modify: `src/codegen/expression_codegen.c:868-890` (TOKEN_ASSIGN store reconciliation — float arm)
+- Modify: `src/codegen/composite_codegen.c:1230-1246` (array-literal all-const fast path — float constant rebuild)
+- Modify: `src/codegen/function_codegen.c` global var-decl branch (int-constant -> float global rebuild)
+- Test: `examples/float_gaps_probe.goo` + `.expected.txt`
+
+**Why (review findings, all probe-confirmed):**
+- (E — MEDIUM, failure-mode downgrade caused by Task 3): `g := float32(2.5); var y float64; y = g * 2.0` now SILENTLY stores a float into the double slot (prints garbage); pre-branch it was a loud verifier error. The assignment store's reconciliation block is integer-only — add the helper call (positioned builder guaranteed: assignments are statements).
+- (C): `a := [2]float32{1.5, 0.25}` — the array-literal all-const fast path rebuilds only int constants; double constants land in a [2 x float] initializer → false/false at both scopes.
+- (D): `var gi float64 = 1` at package level — the global var-decl rebuild has int->int and FP->FP arms but no int->FP; module verification fails. Constant path fix: extract by source signedness (GetSExt/ZExtValue) then `LLVMConstReal(llvm_type, (double)<value>)` — for unsigned sources cast via unsigned long long to double.
+
+- [ ] **Step 1: Probe** (`float_gaps_probe.goo`):
+```go
+package main
+
+import "fmt"
+
+var gi float64 = 1
+var gu float64 = 2
+
+func main() {
+	g := float32(2.5)
+	var y float64
+	y = g * 2.0
+	fmt.Println(y == 5.0)
+	a := [2]float32{1.5, 0.25}
+	fmt.Println(a[0] == float32(1.5))
+	fmt.Println(a[1] == float32(0.25))
+	fmt.Println(gi == 1.0)
+	fmt.Println(gu == 2.0)
+	var z float32
+	z = g / 2.0
+	fmt.Println(z == float32(1.25))
+}
+```
+`.expected.txt`: `true` x6, one per line.
+NOTE: `y == 5.0` depends on Task 3's constant-adapts rule producing float32(5.0) then the NEW store coercion FPExt-ing to double — trace it and record the IR. If `var gu float64 = 2` (a second int-const global) is redundant with gi, keep it anyway (guards the arm against single-use overfitting).
+
+- [ ] **Step 2: Verify failures today** — record per-line actuals (E prints garbage/false; C false/false; D is a verifier failure — record the message verbatim).
+- [ ] **Step 3: Fix all three** — (E) add a `codegen_coerce_to_type` call in the assignment store path where the int-only block sits, passing source signedness from the RHS ValueInfo goo_type (default 1); keep the existing int block or subsume it into the helper call (the helper covers int arms — subsuming is cleaner; verify int assignment goldens stay green). (C) add the float-constant rebuild arm beside the int one in the array fast path (LLVMConstRealGetDouble + LLVMConstReal — the Task 2 pattern). (D) add the int->FP arm in the global var-decl rebuild per the extraction rule above.
+- [ ] **Step 4: `make lexer`** (no header change), probe passes; int assignment/array goldens green.
+- [ ] **Step 5: Gate** — verify 177/0; test 76/1.
+- [ ] **Step 6: Commit** — three .c files + probe pair; message: "fix(codegen): float arms for assignment stores, const arrays, and int-const float globals" with a body noting (E) was a failure-mode downgrade from the binop fix, now closed.
+
+---
+
 ## Final gate (after all tasks)
 
-`make verify` → ALL GREEN (176/0). `make test` → 76/1. ccomp: opam env standalone, `make ccomp-link` → PASS.
+`make verify` → ALL GREEN (177/0). `make test` → 76/1. ccomp: opam env standalone, `make ccomp-link` → PASS.
 
 ## Self-review notes
 
