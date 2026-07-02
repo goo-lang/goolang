@@ -14,7 +14,7 @@
 
 - Branch: `feat/boolean-not` (already created off main @71eb45b — do NOT commit on main).
 - Commits: conventional style, imperative mood, `--no-gpg-sign`. Stage only named files; never stage anything under `.superpowers/`.
-- **Bison conflict baseline: 78 shift/reduce + 256 reduce/reduce.** After the grammar change, check the summary in `src/parser/parser.output`. If the count changes, STOP and report the delta with the relevant state(s) before proceeding — the interaction risk is `BANG type` (error-union) vs `BANG unary_expr` becoming viable in the same LALR state.
+- **Bison conflict baseline: 78 shift/reduce + 256 reduce/reduce.** After the grammar change, check the summary in `src/parser/parser.output`. If the count changes, STOP and report the delta with the relevant state(s) before proceeding — the interaction risk is `BANG type` (error-union) vs `BANG unary_expr` becoming viable in the same LALR state. RESOLVED during execution: count is 79 S/R (+1, BANG joins the existing shift-wins family in the func_signature states; see parser.y comment).
 - Gate: `make lexer`, run probes, then `eval "$(opam env --switch=default)"` STANDALONE, then `make verify` (all PASS; golden baseline 164/0 grows to 165/0 with the probe) and `make test` (76 pass / 1 pre-existing skip).
 - Probes print only same-width values (ints/bools) — known mixed-width Println bug.
 

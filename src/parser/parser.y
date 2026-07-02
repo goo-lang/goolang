@@ -1270,7 +1270,23 @@ expression:
 
 unary_expr:
     primary_expr { $$ = $1; }
-    | NOT unary_expr {
+    | BANG unary_expr {
+        // Boolean NOT `!x`. The lexer emits BANG for a lone `!` (TOKEN_NOT
+        // was never emitted — the old NOT production was dead grammar).
+        // BANG doubles as the error-union type marker (`!T`, the BANG type
+        // production in error_union_type). Store TOKEN_NOT so the existing
+        // typecheck (bool-only) and codegen (LLVMBuildNot) arms serve the
+        // expression unchanged.
+        //
+        // This production adds ONE shift/reduce conflict (78 -> 79): BANG
+        // joins the pre-existing 8-token shift-wins family (IDENTIFIER,
+        // FUNC, MAP, UNSAFE, MULTIPLY, BIT_AND, LPAREN, LBRACKET) in the
+        // func_signature -> func_result states (285/429 at time of
+        // writing), where the default shift resolution = "parse a result
+        // type" — the required behavior: after a func signature, `!` must
+        // start the `!T` error-union return type. The reduce alternative
+        // is unreachable in real programs (function bodies start with
+        // LBRACE, and func literals don't parse in expression position).
         UnaryExprNode* unary = ast_unary_expr_new(bison_token_to_token_type(NOT), $2, get_current_position());
         $$ = (ASTNode*)unary;
     }
