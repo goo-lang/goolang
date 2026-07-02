@@ -891,9 +891,10 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 // Coerce a slice-literal element value to the declared element LLVM type
 // before it is stored into the backing array. Mirrors the struct-literal field
 // coercion: int->int widens with SExt or ZExt / narrows with Trunc, int->float
-// uses SIToFP or UIToFP. Matching widths and other kinds (bool, string) pass
-// through unchanged. This is what lets the general []T{} case lower
-// (int64/uint/float), not just the natural-width i32/string forms.
+// uses SIToFP or UIToFP, float->float uses FPExt/FPTrunc. Matching widths and
+// other kinds (bool, string) pass through unchanged. This is what lets the
+// general []T{} case lower (int64/uint/float32/float64), not just the
+// natural-width i32/string forms.
 //
 // Widening MUST follow the SOURCE type's signedness, not an assumed-signed
 // default: a non-constant unsigned element (`x := uint8(200); []int64{x}`)
@@ -905,23 +906,13 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 // path, where the caller passes src_signed from the still-live source
 // ValueInfo/flag (see codegen_build_slice_from_elems's elem_signed[] and
 // codegen_generate_array_lit's ev->goo_type).
+//
+// This is a thin wrapper (keeps the static signature callers already use)
+// around the shared codegen_coerce_to_type helper in codegen.c, which is the
+// single home for this rule now that six call sites needed the identical
+// int/float arms.
 static LLVMValueRef slice_coerce_elem(CodeGenerator* codegen, LLVMValueRef v, LLVMTypeRef to, int src_signed) {
-    LLVMTypeRef from = LLVMTypeOf(v);
-    if (from == to) return v;
-    LLVMTypeKind fk = LLVMGetTypeKind(from), tk = LLVMGetTypeKind(to);
-    if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
-        unsigned fb = LLVMGetIntTypeWidth(from), tb = LLVMGetIntTypeWidth(to);
-        if (fb < tb) return src_signed
-            ? LLVMBuildSExt(codegen->builder, v, to, "elem_sext")
-            : LLVMBuildZExt(codegen->builder, v, to, "elem_zext");
-        if (fb > tb) return LLVMBuildTrunc(codegen->builder, v, to, "elem_trunc");
-        return v;
-    }
-    if (fk == LLVMIntegerTypeKind && (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind))
-        return src_signed
-            ? LLVMBuildSIToFP(codegen->builder, v, to, "elem_sitofp")
-            : LLVMBuildUIToFP(codegen->builder, v, to, "elem_uitofp");
-    return v;
+    return codegen_coerce_to_type(codegen, v, src_signed, to);
 }
 
 // Shared core: build a slice struct { ptr, i64 len, i64 cap } from a
@@ -1023,6 +1014,25 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
                 ? (unsigned long long)LLVMConstIntGetSExtValue(v->llvm_value)
                 : LLVMConstIntGetZExtValue(v->llvm_value);
             v->llvm_value = LLVMConstInt(llvm_elem, raw, src_signed);
+        } else if (v->llvm_value && LLVMIsConstant(v->llvm_value) && !v->is_lvalue) {
+            // Float counterpart of the int-constant normalization above:
+            // `[]float32{1.5}` — the untyped literal folds to a double
+            // constant, which must be rebuilt at the element's width before
+            // reaching the global fast path or the builder store below.
+            // Without this, `var gs = []float32{1.5}` puts an 8-byte double
+            // constant into the private backing global's 4-byte float slots
+            // (a constant-initializer type mismatch caught by the LLVM 22
+            // module verifier: "Global variable initializer type does not
+            // match global variable type!").
+            LLVMTypeKind vk = LLVMGetTypeKind(LLVMTypeOf(v->llvm_value));
+            LLVMTypeKind ek = LLVMGetTypeKind(llvm_elem);
+            int v_is_fp = (vk == LLVMFloatTypeKind || vk == LLVMDoubleTypeKind);
+            int e_is_fp = (ek == LLVMFloatTypeKind || ek == LLVMDoubleTypeKind);
+            if (v_is_fp && e_is_fp && LLVMTypeOf(v->llvm_value) != llvm_elem) {
+                LLVMBool loses_info;
+                double d = LLVMConstRealGetDouble(v->llvm_value, &loses_info);
+                v->llvm_value = LLVMConstReal(llvm_elem, d);
+            }
         }
 
         elem_vals[idx] = v->llvm_value;
@@ -1048,13 +1058,13 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
                     "global slice literal requires constant elements");
                 return NULL;
             }
-            // Integer-constant elements are already normalized to llvm_elem's
-            // width (with correct SOURCE-signedness extraction) by the
-            // collection loop above, where v->goo_type was still in scope.
-            // No rebuild needed here — redoing it from a bare LLVMValueRef
-            // with no source type would have to guess signedness from the
-            // (possibly wider) DESTINATION type and could re-mangle an
-            // already-corrected value.
+            // Integer- and float-constant elements are already normalized to
+            // llvm_elem's width (integers with correct SOURCE-signedness
+            // extraction) by the collection loop above, where v->goo_type was
+            // still in scope. No rebuild needed here — redoing the integer
+            // case from a bare LLVMValueRef with no source type would have to
+            // guess signedness from the (possibly wider) DESTINATION type and
+            // could re-mangle an already-corrected value.
         }
         LLVMValueRef backing;
         if (count > 0) {
