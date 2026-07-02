@@ -1329,7 +1329,16 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
     
     LLVMValueRef result = NULL;
     LLVMValueRef operand_llvm = operand->llvm_value;
-    
+    // Auto-load an lvalue operand (bare field selector / index result) for
+    // value-consuming operators: -x, !x, ^x, *x all need the VALUE. The
+    // address-of case is excluded — TOKEN_BIT_AND works on the unloaded
+    // operand (it resolves storage itself via codegen_emit_lvalue_address,
+    // and its struct-literal case loads explicitly).
+    if (unary->operator != TOKEN_BIT_AND && operand->is_lvalue && operand->goo_type) {
+        LLVMTypeRef ot = codegen_type_to_llvm(codegen, operand->goo_type);
+        if (ot) operand_llvm = LLVMBuildLoad2(codegen->builder, ot, operand_llvm, "unary_load");
+    }
+
     switch (unary->operator) {
         case TOKEN_PLUS:
             // Unary plus is a no-op
