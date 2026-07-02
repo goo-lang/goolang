@@ -580,6 +580,44 @@ static void adapt_untyped_int_operand(ASTNode* n, Type* target) {
     }
 }
 
+// Float analogue of is_untyped_int_rooted: is `n` an untyped-float-constant-
+// rooted operand — a bare float literal, or a unary -/+ through to one? Floats
+// have no shift/^ operators, so those legs of the int version don't apply
+// here. expression_codegen.c's coerce_float_operand_widths duplicates this
+// exact test locally (10 lines, cross-referenced by comment) rather than this
+// function being exported via a header edit — see task-2 brief for the
+// rationale.
+static int is_untyped_float_rooted(ASTNode* n) {
+    if (!n) return 0;
+    if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_FLOAT)
+        return 1;
+    if (n->type == AST_UNARY_EXPR) {
+        // Unary -/+ result type is the operand's type, so `-0.1`, `+0.1` are
+        // untyped-rooted through the operand.
+        UnaryExprNode* u = (UnaryExprNode*)n;
+        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS)
+            return is_untyped_float_rooted(u->operand);
+    }
+    return 0;
+}
+
+// Retype an untyped-float-rooted operand (and, for unary -/+, the unary node
+// and its operand recursively) to `target`. Mirrors adapt_untyped_int_operand.
+static void adapt_untyped_float_operand(ASTNode* n, Type* target) {
+    if (!n) return;
+    if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_FLOAT) {
+        n->node_type = target;
+        return;
+    }
+    if (n->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)n;
+        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS) {
+            adapt_untyped_float_operand(u->operand, target); // unary result = operand type
+            n->node_type = target;
+        }
+    }
+}
+
 Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
     
@@ -623,6 +661,32 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
             right_type = left_type;
         } else if (left_adaptable && !right_adaptable) {
             adapt_untyped_int_operand(binary->left, right_type);
+            left_type = right_type;
+        }
+    }
+
+    // Float analogue: an untyped float literal (e.g. `2.0` in `g * 2.0`, g
+    // float32) is checker-stamped FLOAT64 by type_check_literal. Without this
+    // adaptation the literal's stamped type never narrows, so
+    // type_check_arithmetic_op's "either side FLOAT64 -> FLOAT64" rule always
+    // wins and the checker stamps a float64 result for an expression codegen
+    // computes at float32 — the checker/codegen disagreement this task fixes.
+    // Adapting BEFORE result-type computation (mirroring the int block above)
+    // makes the result come out float32. Applies to both arithmetic and
+    // comparison operators (this runs before the switch on binary->operator).
+    if (type_is_float(left_type) && type_is_float(right_type) &&
+        left_type->kind != right_type->kind) {
+        // An operand adapts if it is untyped-float-constant-rooted: a bare
+        // float literal OR a unary -/+ through to one. A typed conversion
+        // like `float32(0.1)` is NOT literal-rooted (it's a call expression)
+        // and never adapts — only the untyped literal side does.
+        int left_adaptable  = is_untyped_float_rooted(binary->left);
+        int right_adaptable = is_untyped_float_rooted(binary->right);
+        if (right_adaptable && !left_adaptable) {
+            adapt_untyped_float_operand(binary->right, left_type);
+            right_type = left_type;
+        } else if (left_adaptable && !right_adaptable) {
+            adapt_untyped_float_operand(binary->left, right_type);
             left_type = right_type;
         }
     }

@@ -282,6 +282,20 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
         case TOKEN_FLOAT: {
             // Parse float value from string
             double value = atof(literal->value);
+            // Narrow float-literal adaptation (mirrors the TOKEN_INT arm
+            // above): when type-checking retyped this literal to float32
+            // (e.g. `g * 2.0` with g float32 — see
+            // is_untyped_float_rooted/adapt_untyped_float_operand in
+            // expression_checker.c), emit the constant at THAT width so
+            // codegen's computed type matches what the checker stamped.
+            // Unadapted literals default to float64 (Go's untyped-float
+            // default type), the path below.
+            Type* nt = expr->node_type;
+            if (nt && nt->kind == TYPE_FLOAT32) {
+                llvm_value = LLVMConstReal(LLVMFloatTypeInContext(codegen->context), value);
+                goo_type = nt;
+                break;
+            }
             llvm_value = LLVMConstReal(LLVMDoubleTypeInContext(codegen->context), value);
             goo_type = type_checker_get_builtin(checker, TYPE_FLOAT64);
             break;
@@ -550,11 +564,44 @@ static void coerce_int_literal_operand(CodeGenerator* codegen,
 // rule produces for arithmetic (not comparison) ops, reported rather than
 // papered over.
 //
-// `LLVMIsConstant` is the constant/typed test: a bare float literal (or a
-// constant-folded conversion of one) is an LLVMConstReal; anything loaded
-// from a variable/field/call result is a non-constant SSA value.
+// Codegen-local duplicate of expression_checker.c's static
+// is_untyped_float_rooted (checker-internal, not exported via a header edit
+// per the task-2 brief — this is 10 lines, cross-referenced by this
+// comment rather than shared through include/types.h). Is `node` an
+// untyped-float-constant-rooted AST operand: a bare float literal, or a
+// unary -/+ through to one? This is the AST-untypedness test that replaced
+// `LLVMIsConstant` below: LLVMIsConstant can't tell an untyped literal from
+// a TYPED constant conversion (`float32(0.1)` also constant-folds to an
+// LLVMConstReal), which made `float32(0.1) == 0.1` diverge from Go — the
+// typed conversion was wrongly treated as "may adapt" and got widened to
+// double instead of the untyped `0.1` narrowing to float32.
+static int is_float_literal_node(ASTNode* node) {
+    if (!node) return 0;
+    if (node->type == AST_LITERAL)
+        return ((LiteralNode*)node)->literal_type == TOKEN_FLOAT;
+    if (node->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)node;
+        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS)
+            return is_float_literal_node(u->operand);
+    }
+    return 0;
+}
+
+// With the checker now adapting an untyped float literal's stamped type to
+// match its typed operand (expression_checker.c's
+// is_untyped_float_rooted/adapt_untyped_float_operand, run before this
+// codegen pass), the TOKEN_FLOAT literal arm above already emits the
+// literal at the RIGHT width in the common literal-vs-typed case — so by
+// the time we get here `lk == rk` and this function returns early. What's
+// left for this function to handle is the backstop case the checker does
+// NOT adapt: two TYPED, differently-sized float operands (no literal on
+// either side, e.g. `d + g` with d float64, g float32) — extend the
+// narrower to the wider (documented Go-rejects-this-case above). The
+// AST-untypedness predicate (vs. LLVMIsConstant) is what keeps a typed
+// `float32(0.1)` conversion OUT of the "may adapt" path in that comparison.
 static void coerce_float_operand_widths(CodeGenerator* codegen,
-                                        ValueInfo* left, ValueInfo* right) {
+                                        ASTNode* left_ast, ValueInfo* left,
+                                        ASTNode* right_ast, ValueInfo* right) {
     if (!left || !right || !left->goo_type || !right->goo_type) return;
     if (!type_is_float(left->goo_type) || !type_is_float(right->goo_type)) return;
     LLVMTypeRef lt = LLVMTypeOf(left->llvm_value);
@@ -564,14 +611,16 @@ static void coerce_float_operand_widths(CodeGenerator* codegen,
         (rk != LLVMFloatTypeKind && rk != LLVMDoubleTypeKind)) return;
     if (lk == rk) return;  // already the same LLVM FP width
 
-    int left_const  = LLVMIsConstant(left->llvm_value);
-    int right_const = LLVMIsConstant(right->llvm_value);
+    int left_untyped  = is_float_literal_node(left_ast);
+    int right_untyped = is_float_literal_node(right_ast);
 
-    if (left_const != right_const) {
-        // Constant-vs-typed: coerce the CONSTANT to the typed operand's width
-        // (codegen_coerce_to_type FPExt/FPTrunc's either direction; src_signed
-        // is irrelevant for FP->FP so pass 1).
-        if (left_const) {
+    if (left_untyped != right_untyped) {
+        // Untyped-literal-vs-typed: coerce the UNTYPED LITERAL to the typed
+        // operand's width (codegen_coerce_to_type FPExt/FPTrunc's either
+        // direction; src_signed is irrelevant for FP->FP so pass 1). Backstop
+        // only — the checker already narrows/widens the literal's node_type
+        // itself, so this branch fires only if that adaptation didn't apply.
+        if (left_untyped) {
             left->llvm_value = codegen_coerce_to_type(codegen, left->llvm_value, 1, rt);
         } else {
             right->llvm_value = codegen_coerce_to_type(codegen, right->llvm_value, 1, lt);
@@ -579,8 +628,9 @@ static void coerce_float_operand_widths(CodeGenerator* codegen,
         return;
     }
 
-    // Both constant or both typed and differently sized: extend the narrower
-    // to the wider (documented Go-rejects-this case above).
+    // Both untyped-literal-rooted, or both typed and differently sized:
+    // extend the narrower to the wider (documented Go-rejects-this case
+    // above).
     if (lk == LLVMFloatTypeKind) {
         left->llvm_value = codegen_coerce_to_type(codegen, left->llvm_value, 1, rt);
     } else {
@@ -1064,10 +1114,12 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     coerce_int_literal_operand(codegen, binary->left, left_val,
                                binary->right, right_val);
 
-    // Float analogue: reconcile float32/float64 operand widths (constant
-    // adapts to typed operand; typed-vs-typed extends the narrower) so e.g.
-    // `g == 2.5` (g float32) compares float-to-float, not float-to-double.
-    coerce_float_operand_widths(codegen, left_val, right_val);
+    // Float analogue: reconcile float32/float64 operand widths (untyped
+    // literal adapts to typed operand; typed-vs-typed extends the narrower)
+    // so e.g. `g == 2.5` (g float32) compares float-to-float, not
+    // float-to-double.
+    coerce_float_operand_widths(codegen, binary->left, left_val,
+                                binary->right, right_val);
 
     // Get the result type from the type checker
     Type* result_type = type_check_binary_expr(checker, expr);
