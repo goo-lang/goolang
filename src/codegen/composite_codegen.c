@@ -1032,6 +1032,21 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
                 LLVMBool loses_info;
                 double d = LLVMConstRealGetDouble(v->llvm_value, &loses_info);
                 v->llvm_value = LLVMConstReal(llvm_elem, d);
+            } else if (vk == LLVMIntegerTypeKind && e_is_fp) {
+                // Int-constant element into a float slice: `[]float64{1, 2.5}`
+                // — the untyped `1` folds to an i64 constant, which neither
+                // the int->int arm above (element isn't integer kind) nor the
+                // FP->FP case catches, so it silently landed as an integer
+                // bit pattern in the float slot (gm[0] == 1.0 was false).
+                // Same rule as the var-decl global int->FP rebuild in
+                // function_codegen.c: extract by SOURCE signedness, route
+                // unsigned through unsigned long long so a large value's top
+                // bit isn't reinterpreted as a sign, rebuild via ConstReal.
+                int src_signed = v->goo_type ? type_is_signed(v->goo_type) : 1;
+                double d = src_signed
+                    ? (double)LLVMConstIntGetSExtValue(v->llvm_value)
+                    : (double)(unsigned long long)LLVMConstIntGetZExtValue(v->llvm_value);
+                v->llvm_value = LLVMConstReal(llvm_elem, d);
             }
         }
 
@@ -1259,6 +1274,23 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
                     if (v_is_fp && e_is_fp) {
                         LLVMBool loses_info;
                         double d = LLVMConstRealGetDouble(v, &loses_info);
+                        v = LLVMConstReal(llvm_elem, d);
+                    } else if (vk == LLVMIntegerTypeKind && e_is_fp) {
+                        // Int-constant element into a float array:
+                        // `[2]float64{1, 2.5}` — the untyped `1` folds to an
+                        // i64 constant; the int->int arm above requires an
+                        // integer element (ew != 0) and the FP->FP case above
+                        // requires an FP source, so it silently landed as an
+                        // integer bit pattern in the float slot (b[0] == 1.0
+                        // was false). Same rule as the var-decl global
+                        // int->FP rebuild in function_codegen.c: extract by
+                        // SOURCE signedness, route unsigned through unsigned
+                        // long long so a large value's top bit isn't
+                        // reinterpreted as a sign, rebuild via ConstReal.
+                        int src_signed = ev->goo_type ? type_is_signed(ev->goo_type) : 1;
+                        double d = src_signed
+                            ? (double)LLVMConstIntGetSExtValue(v)
+                            : (double)(unsigned long long)LLVMConstIntGetZExtValue(v);
                         v = LLVMConstReal(llvm_elem, d);
                     }
                 }
