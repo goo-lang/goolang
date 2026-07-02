@@ -1824,16 +1824,77 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
             
             ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
             if (!value_val) return 0;
-            
+
+            // Auto-load lvalue send values (a field selector returns the
+            // field's ADDRESS) — same as the plain-send path
+            // (codegen_generate_channel_send in lowlevel_codegen.c):
+            // loading here snapshots the value at evaluation time and
+            // avoids memcpy'ing extra bytes from adjacent memory when the
+            // field is narrower than the channel element.
+            if (value_val->is_lvalue && value_val->goo_type) {
+                LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_val->goo_type);
+                if (vt) {
+                    value_val->llvm_value = LLVMBuildLoad2(codegen->builder, vt,
+                                                           value_val->llvm_value, "send_load");
+                    value_val->is_lvalue = 0;
+                }
+            }
+
             // Get pointer to the value
             if (value_val->is_lvalue) {
                 data_ptr = value_val->llvm_value;
             } else {
+                // Determine the alloca type from the channel's declared
+                // element type — same as the plain-send path
+                // (codegen_generate_channel_send in lowlevel_codegen.c).
+                // Using LLVMTypeOf(value_val->llvm_value) is wrong: a loaded
+                // int32 field (or a literal 42) may arrive as i32 while the
+                // channel's element type is i64. goo_select memcpys elem_size
+                // bytes from the pointer; if the alloca is narrower, that is
+                // a stack-overread (UB). Use the channel's element LLVM type
+                // instead and widen/truncate integer values to match.
+                Type* chan_goo_s = channel_val->goo_type;
+                Type* elem_goo_s = (chan_goo_s && chan_goo_s->kind == TYPE_CHANNEL)
+                                   ? chan_goo_s->data.channel.element_type : NULL;
+                LLVMTypeRef elem_llvm_s = elem_goo_s
+                    ? codegen_type_to_llvm(codegen, elem_goo_s)
+                    : LLVMTypeOf(value_val->llvm_value);  // fallback: keep value's own type
+
+                // Widen (or truncate) integer values to match the channel's element width.
+                LLVMValueRef send_value = value_val->llvm_value;
+                {
+                    LLVMTypeRef actual_ty   = LLVMTypeOf(send_value);
+                    LLVMTypeRef expected_ty = elem_llvm_s;
+                    if (LLVMGetTypeKind(actual_ty)   == LLVMIntegerTypeKind &&
+                        LLVMGetTypeKind(expected_ty) == LLVMIntegerTypeKind) {
+                        unsigned from_bits = LLVMGetIntTypeWidth(actual_ty);
+                        unsigned to_bits   = LLVMGetIntTypeWidth(expected_ty);
+                        if (from_bits < to_bits) {
+                            // Choose ZExt for unsigned values, SExt for signed.
+                            // Primary signal: the Goo type of the value being
+                            // sent; fall back to the channel's element type
+                            // when none is attached — same as the plain-send
+                            // path.
+                            Type* widen_ty = value_val->goo_type ? value_val->goo_type
+                                                                 : elem_goo_s;
+                            int use_sext = widen_ty ? type_is_signed(widen_ty) : 1;
+                            if (use_sext)
+                                send_value = LLVMBuildSExt(codegen->builder, send_value,
+                                                           expected_ty, "send_sext");
+                            else
+                                send_value = LLVMBuildZExt(codegen->builder, send_value,
+                                                           expected_ty, "send_zext");
+                        } else if (from_bits > to_bits)
+                            send_value = LLVMBuildTrunc(codegen->builder, send_value,
+                                                        expected_ty, "send_trunc");
+                    }
+                }
+
                 // Store value temporarily
-                LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder, 
-                                                          LLVMTypeOf(value_val->llvm_value), 
+                LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder,
+                                                          elem_llvm_s,
                                                           "temp_send_value");
-                LLVMBuildStore(codegen->builder, value_val->llvm_value, temp_alloca);
+                LLVMBuildStore(codegen->builder, send_value, temp_alloca);
                 data_ptr = temp_alloca;
             }
             

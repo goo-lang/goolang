@@ -19,7 +19,23 @@ ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* ch
     
     ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
     if (!value_val) return NULL;
-    
+
+    // Auto-load lvalue send values (a field selector returns the field's
+    // ADDRESS). Loading here (a) snapshots the value at evaluation time —
+    // Go semantics; the old path memcpy'd from the field address at
+    // rendezvous — and (b) routes the value through the elem-type coercion
+    // below, which the address shortcut bypassed: sending an int32 field
+    // into a chan int64 memcpy'd 8 bytes from a 4-byte field (adjacent
+    // memory bled into the payload).
+    if (value_val->is_lvalue && value_val->goo_type) {
+        LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_val->goo_type);
+        if (vt) {
+            value_val->llvm_value = LLVMBuildLoad2(codegen->builder, vt,
+                                                   value_val->llvm_value, "send_load");
+            value_val->is_lvalue = 0;
+        }
+    }
+
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
 
