@@ -746,7 +746,7 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
             // Go allows & on any composite literal; Goo supports only the
             // struct case (heap-allocated by codegen). Reject the other
             // literal kinds here with a specific error — without this they
-            // pass typecheck (this arm points ANY operand) and die in
+            // pass typecheck (this arm makes a pointer to ANY operand) and die in
             // codegen with the unhelpful "Cannot take address of non-lvalue".
             if (unary->operand->type == AST_SLICE_EXPR ||
                 unary->operand->type == AST_ARRAY_LITERAL ||
