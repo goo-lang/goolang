@@ -255,6 +255,35 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             // INT64_MAX clamped). Integer literals are non-negative (a leading
             // `-` is a separate unary op), so unsigned parsing is exact.
             unsigned long long value = strtoull(literal->value, NULL, 0);
+            Type* nt = expr->node_type;
+            // Cross-kind float adaptation (expression_checker.c's cross-kind
+            // block in type_check_binary_expr): the `1` in `1 < g` (g
+            // float32) is an untyped-int-literal-rooted operand that met a
+            // float-kind operand, so the checker stamped this literal's
+            // node_type FLOAT32/FLOAT64 instead of leaving it INT64. Emit a
+            // float constant directly here (mirrors the TOKEN_FLOAT arm
+            // below) rather than an int constant that codegen_generate_
+            // binary_expr would later feed into an `fcmp`/`fadd` alongside a
+            // real float value — that width/kind mismatch is exactly what
+            // made the LLVM verifier abort with "Both operands to ICmp
+            // instruction are not of the same type! icmp slt i64, float"
+            // before this stamping existed.
+            // `value` is parsed by strtoull as unsigned, so it is always
+            // non-negative here — a negative literal like `-1` never reaches
+            // this arm as a negative number; it arrives as a unary MINUS
+            // node wrapping this literal (see is_untyped_int_rooted's
+            // AST_UNARY_EXPR case), with the sign applied by the unary op's
+            // own codegen above this literal. So casting the raw unsigned
+            // `value` straight to double is exact for the full range of a
+            // representable integer literal.
+            if (nt && type_is_float(nt)) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
+                if (lt) {
+                    llvm_value = LLVMConstReal(lt, (double)value);
+                    goo_type = nt;
+                    break;
+                }
+            }
             // Narrow integer-literal adaptation: when type-checking retyped this
             // literal to a specific integer type OTHER than the default int32
             // (e.g. a uint64 parameter/operand/return context), emit the
@@ -262,7 +291,6 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             // coercion. int32-typed literals keep the magnitude-based path below
             // (which auto-promotes to i64 past INT32_MAX — an unadapted untyped
             // constant must preserve its full magnitude, e.g. 9000000000).
-            Type* nt = expr->node_type;
             if (nt && type_is_integer(nt) && nt->kind != TYPE_INT64) {
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
                 if (lt) {

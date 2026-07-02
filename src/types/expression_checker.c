@@ -580,6 +580,29 @@ static void adapt_untyped_int_operand(ASTNode* n, Type* target) {
     }
 }
 
+// Like is_untyped_int_rooted, but WITHOUT the shift case: used to gate
+// int-literal -> float-context adaptation (see the cross-kind block in
+// type_check_binary_expr). is_untyped_int_rooted(1<<2) is true (a shift's
+// result type is its left operand's, recursed through), which is correct
+// for the existing int-int width adaptation — but a shift's operands are
+// integer-only (LLVM `shl`/`ashr` have no float form), so retyping a shift
+// node to float here would hand codegen an invalid float shift. Go itself
+// doesn't let a shift float-adapt in a mixed comparison either, so
+// `1<<2 > g` (g float32) stays rejected exactly like before this task —
+// this helper just omits the AST_BINARY_EXPR/shift branch to keep that.
+static int is_untyped_int_rooted_non_shift(ASTNode* n) {
+    if (!n) return 0;
+    if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT)
+        return 1;
+    if (n->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)n;
+        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS ||
+            u->operator == TOKEN_BIT_XOR)
+            return is_untyped_int_rooted_non_shift(u->operand);
+    }
+    return 0;
+}
+
 // Float analogue of is_untyped_int_rooted: is `n` an untyped-float-constant-
 // rooted operand — a bare float literal, or a unary -/+ through to one? Floats
 // have no shift/^ operators, so those legs of the int version don't apply
@@ -689,6 +712,32 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
             adapt_untyped_float_operand(binary->left, right_type);
             left_type = right_type;
         }
+    }
+
+    // Cross-kind adaptation: an untyped-int-literal-rooted operand (a bare
+    // int literal, or unary -/+/^ through to one — NOT a shift, see
+    // is_untyped_int_rooted_non_shift) meeting a float-kind operand (a typed
+    // float variable, or the other side already float-stamped by one of the
+    // two blocks above) adapts to that float type. Without this, `1 < g` (g
+    // float32) reaches codegen as (INT64, FLOAT32) and codegen_generate_
+    // binary_expr emits `icmp slt i64, float`, which the LLVM verifier
+    // rejects; `g > 1` was already a clean type_error before this task
+    // (stricter than Go, which permits both orders). Reuses
+    // adapt_untyped_int_operand — it never sees a shift node here because
+    // is_untyped_int_rooted_non_shift excludes that shape.
+    //
+    // An int VARIABLE (not literal-rooted) meeting a float is left alone —
+    // the mismatch falls through to whatever the operator's own check does
+    // (e.g. type_check_comparison_op's "incompatible types" rejection),
+    // matching Go (no implicit int-to-float conversion for typed values).
+    if (type_is_integer(left_type) && type_is_float(right_type) &&
+        is_untyped_int_rooted_non_shift(binary->left)) {
+        adapt_untyped_int_operand(binary->left, right_type);
+        left_type = right_type;
+    } else if (type_is_float(left_type) && type_is_integer(right_type) &&
+               is_untyped_int_rooted_non_shift(binary->right)) {
+        adapt_untyped_int_operand(binary->right, left_type);
+        right_type = left_type;
     }
 
     Type* result_type = NULL;
