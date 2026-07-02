@@ -1456,17 +1456,21 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 arg_type = param_type;
             }
 
-            // type_compatible() permits ANY numeric->numeric pair (it allows
-            // implicit conversions), but call_codegen passes each argument to
-            // the callee with NO trunc/ext/fptosi inserted (unlike the return
-            // path, codegen never coerces a numeric arg). So a numeric arg
-            // whose machine representation differs from the declared parameter
-            // — a wider/narrower integer (int64 into an int param) or a float
-            // into an integer (e.g. `add(1.5, 2)`) — slips past type_compatible
-            // and crashes the LLVM verifier with "Call parameter type does not
-            // match function signature!". Reject those here, mirroring P2-1's
-            // return guard. (An integer LITERAL is exempt — it was just adapted
-            // to the parameter type above, and codegen emits it at that width.)
+            // type_compatible() no longer permits ANY numeric->numeric pair —
+            // it now rejects float->int specifically (T3's asymmetric fix for
+            // the silent bit-store), while still permitting int<->int width
+            // mismatches and int->float. call_codegen's user-call arg loop
+            // (T4) now coerces a numeric argument to the callee's declared
+            // parameter width/signedness before the call, so a mismatch that
+            // slips past this checker (check_signature false above, e.g. a
+            // call through a function-valued struct field) no longer crashes
+            // the LLVM verifier. That codegen coercion doesn't relax THIS
+            // diagnostic, though: for a call we CAN verify by signature
+            // identity (check_signature true, this block), a clean type error
+            // beats silently reinterpreting bits at a different width. Reject
+            // those here, mirroring P2-1's return guard. (An integer LITERAL
+            // is exempt — it was just adapted to the parameter type above,
+            // and codegen emits it at that width.)
             if (param_type && type_is_numeric(arg_type) && type_is_numeric(param_type)) {
                 int same_kind  = (type_is_float(arg_type) == type_is_float(param_type));
                 int same_width = (type_size(arg_type) == type_size(param_type));

@@ -1,0 +1,27 @@
+package main
+
+import "fmt"
+
+// Task 4 probe. The brief's original width-mismatch lines (float32->float64,
+// uint8/int8->int64, int64->int8) are ALL checker-rejected today by the
+// pre-existing P2-2 guard in expression_checker.c/type_checker.c (predates
+// this branch — see call-argtype-probe / pkg-argcheck-probe in the Makefile),
+// not just the float32->float64 line the brief anticipated. Per the brief's
+// fallback protocol those lines are dropped; what's left validates the two
+// shapes that DO reach codegen unmodified by the checker: an untyped integer
+// literal (already checker-adapted to the param width) and an lvalue struct
+// field argument, which crashed the LLVM verifier before this fix because
+// the general arg-loop path never loaded it.
+type P struct {
+	V int64
+}
+
+func takesI64(n int64) int64 {
+	return n
+}
+
+func main() {
+	p := P{V: 42}
+	fmt.Println(int(takesI64(p.V)))
+	fmt.Println(int(takesI64(3)))
+}

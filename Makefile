@@ -543,18 +543,21 @@ globalcall-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 # Implicit float->int is a silent bit-store, not a conversion: codegen has no
 # narrowing path for this direction, so it reinterprets the float's raw bits
 # as an int (`var i int64 = float32(2.5)` produced 1075838976, not 2). Guards
-# the type_compatible() float->int asymmetry across the three shapes that
-# used to silently accept it (var-decl init, plain assignment, append elem),
-# plus a positive control confirming int->float stays permitted (PR #99
-# probes depend on it: `var y float64 = x`, `[]float64{1, 2.5}`).
+# the type_compatible() float->int asymmetry across the four shapes that used
+# to silently accept it (var-decl init, plain assignment, append elem,
+# chan-send — the last added in T4 since type_check_channel_send_op routes
+# through the same type_compatible()), plus a positive control confirming
+# int->float stays permitted (PR #99 probes depend on it: `var y float64 = x`,
+# `[]float64{1, 2.5}`).
 floatint-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== floatint-reject-probe: implicit float->int must reject, int->float stays permitted ==="
 	@printf 'package main\nfunc main(){ g := float32(2.5); var i int64 = g; _ = i }\n' > build/fi_vardecl.goo
 	@printf 'package main\nfunc main(){ g := float32(2.5); var i int64; i = g; _ = i }\n' > build/fi_assign.goo
 	@printf 'package main\nfunc main(){ g := float32(2.5); s := append([]int64{1}, g); _ = s }\n' > build/fi_append.goo
+	@printf 'package main\nfunc main(){ g := float32(2.5); ch := make_chan(int64, 1); ch <- g; _ = ch }\n' > build/fi_chansend.goo
 	@printf 'package main\nimport "fmt"\nfunc main(){ x := int64(3); var y float64 = x; s := []float64{1, 2.5}; fmt.Println(y, s[0], s[1]) }\n' > build/fi_int2float.goo
-	@rm -f build/fi_vardecl build/fi_assign build/fi_append build/fi_int2float
+	@rm -f build/fi_vardecl build/fi_assign build/fi_append build/fi_chansend build/fi_int2float
 	@$(COMPILER) -o build/fi_vardecl build/fi_vardecl.goo > build/fi_vardecl.out 2> build/fi_vardecl.err; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "floatint-reject-probe: FAIL (var-decl init: float32->int64 silently accepted)"; exit 1; fi; \
 	if [ -x build/fi_vardecl ]; then echo "floatint-reject-probe: FAIL (var-decl init: emitted a binary despite the error)"; exit 1; fi; \
@@ -567,10 +570,14 @@ floatint-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "floatint-reject-probe: FAIL (append elem: float32->int64 silently accepted)"; exit 1; fi; \
 	if [ -x build/fi_append ]; then echo "floatint-reject-probe: FAIL (append elem: emitted a binary despite the error)"; exit 1; fi; \
 	if ! grep -q "append: cannot use float32 as element of \[\]int64" build/fi_append.err; then echo "floatint-reject-probe: FAIL (append elem: wrong/missing diagnostic)"; cat build/fi_append.err; exit 1; fi
+	@$(COMPILER) -o build/fi_chansend build/fi_chansend.goo > build/fi_chansend.out 2> build/fi_chansend.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "floatint-reject-probe: FAIL (chan-send: float32->int64 silently accepted)"; exit 1; fi; \
+	if [ -x build/fi_chansend ]; then echo "floatint-reject-probe: FAIL (chan-send: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "Cannot send float32 to channel of int64" build/fi_chansend.err; then echo "floatint-reject-probe: FAIL (chan-send: wrong/missing diagnostic)"; cat build/fi_chansend.err; exit 1; fi
 	@$(COMPILER) -o build/fi_int2float build/fi_int2float.goo > build/fi_int2float.out 2> build/fi_int2float.err; rc=$$?; \
 	if [ $$rc -ne 0 ]; then echo "floatint-reject-probe: FAIL (int->float positive control wrongly rejected)"; cat build/fi_int2float.err; exit 1; fi; \
 	out="$$(./build/fi_int2float)"; if [ "$$out" != "3 1 2.5" ]; then echo "floatint-reject-probe: FAIL (int->float positive control output '$$out' != '3 1 2.5')"; exit 1; fi
-	@echo "floatint-reject-probe: PASS (all three float->int shapes rejected; int->float still permitted)"
+	@echo "floatint-reject-probe: PASS (all four float->int shapes rejected; int->float still permitted)"
 
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
 # that both taken panics abort with the runtime-error message (the non-panic
