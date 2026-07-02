@@ -980,6 +980,28 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
             v->llvm_value = boxed;
         }
 
+        if (v->llvm_value && LLVMIsConstant(v->llvm_value) && !v->is_lvalue &&
+            LLVMGetTypeKind(LLVMTypeOf(v->llvm_value)) == LLVMIntegerTypeKind &&
+            LLVMGetTypeKind(llvm_elem) == LLVMIntegerTypeKind &&
+            LLVMTypeOf(v->llvm_value) != llvm_elem) {
+            // Normalize constant-int elements to the slice's element width
+            // here, at collection time — this is the only place the source
+            // type (v->goo_type) is still in scope. The global path's late
+            // rebuild below runs after this loop on bare LLVMValueRefs with
+            // no source type available. Extraction must follow the SOURCE
+            // type's signedness (see the array fast-path rebuild / the
+            // var-decl rebuild in function_codegen.c): zero-extracting a
+            // signed-negative narrow constant loses the sign (int32 -5 became
+            // 4294967291 — the signed flag on LLVMConstInt does not re-extend
+            // an already-widened raw value).
+            int src_signed = v->goo_type ? type_is_signed(v->goo_type)
+                                          : type_is_signed(elem_type);
+            unsigned long long raw = src_signed
+                ? (unsigned long long)LLVMConstIntGetSExtValue(v->llvm_value)
+                : LLVMConstIntGetZExtValue(v->llvm_value);
+            v->llvm_value = LLVMConstInt(llvm_elem, raw, src_signed);
+        }
+
         elem_vals[idx] = v->llvm_value;
         value_info_free(v);
     }
@@ -1001,15 +1023,13 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
                     "global slice literal requires constant elements");
                 return NULL;
             }
-            // Rebuild integer constants at the element width (LLVM 22 dropped
-            // the const-expr int casts, and slice_coerce_elem needs a builder).
-            LLVMTypeRef ft = LLVMTypeOf(elem_vals[i]);
-            if (LLVMGetTypeKind(ft) == LLVMIntegerTypeKind &&
-                LLVMGetTypeKind(llvm_elem) == LLVMIntegerTypeKind && ft != llvm_elem) {
-                elem_vals[i] = LLVMConstInt(llvm_elem,
-                    LLVMConstIntGetZExtValue(elem_vals[i]),
-                    type_is_signed(elem_type));
-            }
+            // Integer-constant elements are already normalized to llvm_elem's
+            // width (with correct SOURCE-signedness extraction) by the
+            // collection loop above, where v->goo_type was still in scope.
+            // No rebuild needed here — redoing it from a bare LLVMValueRef
+            // with no source type would have to guess signedness from the
+            // (possibly wider) DESTINATION type and could re-mangle an
+            // already-corrected value.
         }
         LLVMValueRef backing;
         if (count > 0) {
@@ -1173,10 +1193,18 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
                 if (is_c && ew && LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMIntegerTypeKind
                           && LLVMTypeOf(v) != llvm_elem) {
                     // Rebuild the constant at the element width (LLVM 22 dropped
-                    // the LLVMConst{ZExt,IntCast} const-expr casts). Taking the
-                    // low bits truncates; a fresh ConstInt zero/sign-extends.
-                    v = LLVMConstInt(llvm_elem, LLVMConstIntGetZExtValue(v),
-                                     type_is_signed(elem_type));
+                    // the LLVMConst{ZExt,IntCast} const-expr casts). Extraction
+                    // must follow the SOURCE type's signedness: zero-extracting
+                    // a signed-negative narrow constant loses the sign (int32 -5
+                    // became 4294967291 — the signed flag on LLVMConstInt does
+                    // not re-extend an already-widened raw value). Same rule as
+                    // the var-decl initializer rebuild in function_codegen.c.
+                    int src_signed = ev->goo_type ? type_is_signed(ev->goo_type)
+                                                  : type_is_signed(elem_type);
+                    unsigned long long raw = src_signed
+                        ? (unsigned long long)LLVMConstIntGetSExtValue(v)
+                        : LLVMConstIntGetZExtValue(v);
+                    v = LLVMConstInt(llvm_elem, raw, src_signed);
                 }
                 value_info_free(ev);
                 if (!is_c) { all_const = 0; break; }
