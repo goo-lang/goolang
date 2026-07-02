@@ -1698,14 +1698,18 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 return 1;
             }
 
-            // type_compatible() permits ANY numeric->numeric pair (it allows
-            // implicit conversions), but a return value reaches codegen with NO
-            // trunc/ext/fptosi inserted. So a numeric return whose machine
-            // representation differs from the declared return type — a wider/
-            // narrower integer (e.g. an int64 call result from an int function)
-            // or a float into an integer (e.g. `return 3.9` from int) — would
-            // slip past type_compatible and crash the LLVM verifier with a
-            // return-operand mismatch. Reject those here. The sole exception
+            // type_compatible() no longer permits ANY numeric->numeric pair —
+            // it now rejects float->int specifically (T3's asymmetric fix for
+            // the silent bit-store: `var i int64 = float32(2.5)` used to
+            // reinterpret the float's raw bits instead of converting), while
+            // still permitting int<->int width mismatches and int->float. A
+            // return value reaches codegen with NO trunc/ext/fptosi inserted
+            // for those still-permitted numeric mismatches. So a numeric
+            // return whose machine representation differs from the declared
+            // return type — a wider/narrower integer (e.g. an int64 call
+            // result from an int function) — would slip past type_compatible
+            // and crash the LLVM verifier with a return-operand mismatch.
+            // Reject those here. The sole exception
             // codegen DOES coerce is an untyped integer constant expression
             // (literal `42`, or constant arithmetic like `1 + 1` / `1 << 3`)
             // returned into a WIDER-OR-EQUAL integer type (e.g. `return 42` or

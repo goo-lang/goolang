@@ -101,6 +101,9 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
 // name_is_builtin_conv_name) but REJECTS them as unsupported in v1, so a
 // `string(x)`/`bool(x)` program fails type-check and never reaches codegen.
 // Codegen therefore only ever needs the names it can actually lower.
+// Change-together: this set is mirrored in function_codegen.c's
+// global_init_is_conversion_call (static there too, so duplicated rather than
+// shared) — update both when the kind list changes.
 static int is_builtin_conv_name(const char* name) {
     if (!name) return 0;
     static const char* kinds[] = {
@@ -1045,12 +1048,48 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 arg_val->goo_type = param_type;
             }
 
+            // Load a scalar lvalue argument before use. The nullable/interface
+            // arms above already load internally when they fire; this is the
+            // general (non-nullable, non-interface) fallthrough, which used to
+            // pass the raw element pointer straight through. A struct-field
+            // arg like `f(p.V)` crashed the LLVM verifier ("Call parameter
+            // type does not match function signature!") instead of passing
+            // the field's loaded value — same family as the nullable/
+            // interface arms' own load-before-use step.
+            if (arg_val->is_lvalue && arg_val->goo_type) {
+                LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+                if (at) {
+                    arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "argld");
+                    arg_val->is_lvalue = 0;
+                }
+            }
+
+            // Numeric width coercion: the checker's P2-2 guard rejects a
+            // numeric argument whose width/kind differs from the declared
+            // parameter for calls it can verify by signature identity, but
+            // that guard only fires when the callee is resolved that way
+            // (see expression_checker.c's check_signature gate) — calls it
+            // cannot see through that way could still admit a numeric arg
+            // whose LLVM representation differs from the parameter's. Coerce
+            // here (a no-op when the LLVM types already match) using the
+            // shared width-coercion helper, the same idiom already applied at
+            // every other numeric sink (var-decl, append, channel-send).
+            if (param_type && type_is_numeric(param_type) &&
+                arg_val->goo_type && type_is_numeric(arg_val->goo_type)) {
+                LLVMTypeRef param_llvm = codegen_type_to_llvm(codegen, param_type);
+                if (param_llvm) {
+                    int src_signed = type_is_signed(arg_val->goo_type);
+                    arg_val->llvm_value = codegen_coerce_to_type(
+                        codegen, arg_val->llvm_value, src_signed, param_llvm);
+                }
+            }
+
             args[i] = arg_val->llvm_value;
             value_info_free(arg_val);
             arg = arg->next;
         }
     }
-    
+
     // Generate call. LLVMGetElementType doesn't work with LLVM 22 opaque
     // pointers — use LLVMGlobalGetValueType which returns the underlying
     // function type directly for any global value (functions are globals).

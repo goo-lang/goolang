@@ -615,6 +615,39 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
 #endif
 }
 
+#if LLVM_AVAILABLE
+// Conversion-shaped call expression: `T(x)` where T is a builtin numeric
+// conversion name. MUST mirror the routing predicate in call_codegen.c's
+// codegen_generate_call_expr (its static is_builtin_conv_name set + the
+// single-argument shape + the shadowing gate via type_checker_lookup_variable)
+// — that predicate decides whether an AST_CALL_EXPR lowers as a value
+// conversion or as an actual call. It is replicated here (rather than shared)
+// only because is_builtin_conv_name is static to call_codegen.c; if that set
+// ever changes, change BOTH copies. The global-initializer guard below uses
+// this to exempt conversions: `var g = int64(5)` at package scope is a
+// constant conversion that LLVM folds without a positioned builder, so it
+// must reach generation and let the LLVMIsConstant backstop decide — only
+// genuine function/builtin calls are rejected early.
+static int global_init_is_conversion_call(TypeChecker* checker, ASTNode* expr) {
+    CallExprNode* call = (CallExprNode*)expr;
+    if (!call->function || call->function->type != AST_IDENTIFIER) return 0;
+    const char* name = ((IdentifierNode*)call->function)->name;
+    if (!name) return 0;
+    // Same set as call_codegen.c:is_builtin_conv_name (see comment above).
+    static const char* kinds[] = {
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64",
+        "byte", "rune", "float32", "float64",
+    };
+    int is_conv_name = 0;
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        if (strcmp(name, kinds[i]) == 0) { is_conv_name = 1; break; }
+    }
+    return is_conv_name && call->args && !call->args->next
+        && !type_checker_lookup_variable(checker, name);
+}
+#endif
+
 int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, decl->pos, "LLVM support not available");
@@ -913,6 +946,30 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         
         // Generate initializer if present
         if (var_decl->values) {
+            // Global initializers must be compile-time constants: a call
+            // (including a builtin like append/make) executes at function
+            // scope, but codegen->current_function is NULL here (module
+            // scope) — the builder has no positioned insertion block. Some
+            // builtins' codegen issues LLVMBuildXxx calls unconditionally,
+            // which dereferences that null insert block and SIGSEGVs before
+            // ever reaching the LLVMIsConstant "requires constant
+            // initializer" backstop at the store site below (unreachable for
+            // genuine calls: they never produce an LLVMIsConstant value).
+            // Catch AST_CALL_EXPR here, before generation, and reject
+            // cleanly — EXCEPT conversion-shaped calls (`var g = int64(5)`):
+            // type conversions parse as AST_CALL_EXPR too, but a conversion
+            // of a constant folds to a constant without touching the builder,
+            // so it must proceed to generation and let the backstop decide
+            // (constant operands work; non-constant operands get the
+            // backstop's clean error). See global_init_is_conversion_call.
+            if (!codegen->current_function && var_decl->values->type == AST_CALL_EXPR &&
+                !global_init_is_conversion_call(checker, var_decl->values)) {
+                codegen_error(codegen, decl->pos,
+                    "Global variable '%s' requires constant initializer (calls, including builtins, run at function scope)",
+                    var_name);
+                return 0;
+            }
+
             ValueInfo* init_value;
 
             // `var b ?T = nil` — intercept here so codegen_generate_null_literal
