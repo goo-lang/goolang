@@ -450,10 +450,16 @@ int codegen_generate_if_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     LLVMBasicBlockRef else_block = if_stmt->else_stmt ? codegen_create_block(codegen, "if.else") : NULL;
     LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "if.merge");
     
-    // Generate conditional branch
+    // Auto-load if the condition is an lvalue (e.g. a bare field selector
+    // like `if p.A` — the selector returns the field's ADDRESS; branching
+    // on it is a verifier error, not a bool test).
     LLVMValueRef cond_val = condition->llvm_value;
+    if (condition->is_lvalue && condition->goo_type) {
+        LLVMTypeRef ct = codegen_type_to_llvm(codegen, condition->goo_type);
+        if (ct) cond_val = LLVMBuildLoad2(codegen->builder, ct, cond_val, "cond_load");
+    }
     value_info_free(condition);
-    
+
     LLVMBuildCondBr(codegen->builder, cond_val, then_block, else_block ? else_block : merge_block);
     
     // Generate then block
@@ -798,8 +804,15 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (!condition) {
             return 0;
         }
-        
-        LLVMBuildCondBr(codegen->builder, condition->llvm_value, body_block, exit_block);
+
+        // Auto-load lvalue conditions (bare field selectors) — same as the if path.
+        LLVMValueRef cond_val = condition->llvm_value;
+        if (condition->is_lvalue && condition->goo_type) {
+            LLVMTypeRef ct = codegen_type_to_llvm(codegen, condition->goo_type);
+            if (ct) cond_val = LLVMBuildLoad2(codegen->builder, ct, cond_val, "cond_load");
+        }
+
+        LLVMBuildCondBr(codegen->builder, cond_val, body_block, exit_block);
         value_info_free(condition);
     } else {
         // Infinite loop

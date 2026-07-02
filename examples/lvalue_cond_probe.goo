@@ -1,0 +1,61 @@
+package main
+
+import "fmt"
+
+type T struct {
+	A bool
+	N int
+}
+
+type Box enum {
+	Val{n: int}
+}
+
+func main() {
+	p := &T{A: true, N: 3}
+	if p.A {
+		fmt.Println(1)
+	} else {
+		fmt.Println(0)
+	}
+	v := T{A: false, N: 5}
+	if v.A {
+		fmt.Println(1)
+	} else {
+		fmt.Println(0)
+	}
+	for p.A {
+		fmt.Println(2)
+		p.A = false
+	}
+	// !p.A (boolean NOT) is not usable here: `!` only lexes into BANG,
+	// which the grammar wires solely into the `!T` error-union type
+	// syntax — there is no unary_expr production for BANG, so `!x` as a
+	// boolean-not expression fails to parse regardless of x (confirmed
+	// even for `!true`). That's a pre-existing, unrelated parser gap;
+	// this equivalent comparison exercises the same post-loop value.
+	if p.A == false {
+		fmt.Println(3)
+	}
+	fmt.Println(-p.N)
+	fmt.Println(^v.N)
+	// Match-arm GUARD with a bare selector condition: same bug class as
+	// if/for — the guard's ValueInfo is an lvalue (field ADDRESS) and the
+	// guard site must load it before LLVMBuildCondBr. One true guard
+	// (p.A, reset to true above the match) and one false guard (v.A).
+	p.A = true
+	b := new(Box)
+	*b = Val{n: 4}
+	match *b {
+	case Val{n} if p.A:
+		fmt.Println(n)
+	default:
+		fmt.Println(9)
+	}
+	match *b {
+	case Val{n} if v.A:
+		fmt.Println(n)
+	default:
+		fmt.Println(9)
+	}
+}

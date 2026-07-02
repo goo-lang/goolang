@@ -1,0 +1,54 @@
+package main
+
+import "fmt"
+
+type Inner struct {
+	V int
+	W int
+}
+
+type Outer struct {
+	P *Inner
+	N int
+}
+
+// Pointer-receiver method: mutates the pointee in place. Calling this
+// through a chained selector receiver (oo.P.Bump()) is the corruption
+// scenario under test — the receiver codegen must pass the loaded
+// pointer VALUE, not the address of the field slot that holds it.
+func (i *Inner) Bump() {
+	i.V = i.V + 1
+}
+
+// Value-receiver method: reads the receiver by value. Calling this
+// through a pointer-field selector (o.P.Get()) exercises the auto-deref
+// receiver path with the same lvalue-selector hazard.
+func (i Inner) Get() int {
+	return i.V
+}
+
+func main() {
+	q := &Inner{V: 7, W: 11}
+	o := Outer{P: q, N: 1}
+	fmt.Println(o.P.V)
+	fmt.Println(o.P.W)
+	tmp := o.P
+	fmt.Println(tmp.V)
+	p := &Inner{V: 20, W: 22}
+	fmt.Println(p.V)
+	p.V = 30
+	fmt.Println(p.V)
+	oo := &Outer{P: p, N: 2}
+	fmt.Println(oo.P.V)
+	fmt.Println(oo.N)
+
+	// Pointer-receiver method through a chained selector receiver.
+	oo.P.Bump()
+	fmt.Println(oo.P.V) // 31: p.V mutated in place
+	fmt.Println(oo.N)   // 2: oo's OWN N field must be untouched by the call
+	fmt.Println(oo.P.W) // 22: same Inner object, not a corrupted address
+
+	// Value-receiver method through a pointer-field selector.
+	g := o.P.Get()
+	fmt.Println(g) // 7: o.P (== q) is unaffected by the oo.P mutation above
+}

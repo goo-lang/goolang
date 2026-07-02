@@ -876,6 +876,16 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 ValueInfo* pv = codegen_generate_expression(codegen, checker, msel->expr);
                 if (!pv) { free(mangled); return NULL; }
                 LLVMValueRef ptr = pv->llvm_value;
+                // A selector-expression receiver (e.g. `o.P.m()`) arrives as
+                // an lvalue: llvm_value is the ADDRESS of the pointer-typed
+                // field slot, not the pointer value itself. Load the pointer
+                // out of the slot first, then dereference it below. An
+                // identifier receiver (`p.m()`) is already the loaded
+                // pointer value (is_lvalue=0) and needs no extra load here.
+                if (pv->is_lvalue && pv->goo_type) {
+                    LLVMTypeRef pt = codegen_type_to_llvm(codegen, pv->goo_type);
+                    if (pt) ptr = LLVMBuildLoad2(codegen->builder, pt, ptr, "recv_load");
+                }
                 value_info_free(pv);
                 LLVMTypeRef val_llvm = codegen_type_to_llvm(codegen, recv_param);
                 if (!val_llvm) {
@@ -887,12 +897,25 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 }
                 recv_arg = LLVMBuildLoad2(codegen->builder, val_llvm, ptr, "recv_deref");
             } else {
-                // Value receiver on a value, or pointer receiver on a pointer:
-                // codegen_generate_expression loads lvalues to a value, which
-                // already matches the param type in both cases.
+                // Value receiver on a value, or pointer receiver on a
+                // pointer. codegen_generate_expression auto-loads
+                // IDENTIFIER lvalues to a value, but a selector-expression
+                // receiver (e.g. `oo.P.Bump()`) arrives as an lvalue whose
+                // llvm_value is the field's storage ADDRESS (is_lvalue=1) —
+                // consumers own that load. Without it, the field's address
+                // itself gets passed as the receiver: a pointer-receiver
+                // call would then read/write through the field slot as if
+                // it held a struct, corrupting the field (e.g. incrementing
+                // the pointer's bit pattern in place); a value-receiver call
+                // would load garbage starting at that address.
                 ValueInfo* recv = codegen_generate_expression(codegen, checker, msel->expr);
                 if (!recv) { free(mangled); return NULL; }
-                recv_arg = recv->llvm_value;
+                LLVMValueRef rv = recv->llvm_value;
+                if (recv->is_lvalue && recv->goo_type) {
+                    LLVMTypeRef rt = codegen_type_to_llvm(codegen, recv->goo_type);
+                    if (rt) rv = LLVMBuildLoad2(codegen->builder, rt, rv, "recv_load");
+                }
+                recv_arg = rv;
                 value_info_free(recv);
             }
             size_t margc = 1;
