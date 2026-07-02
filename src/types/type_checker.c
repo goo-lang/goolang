@@ -1791,18 +1791,79 @@ int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt) {
 
 int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_SELECT_STMT) return 0;
-    
+
     SelectStmtNode* select_stmt = (SelectStmtNode*)stmt;
-    
-    // Type check each case
-    ASTNode* case_node = select_stmt->cases;
-    while (case_node) {
-        // TODO: Implement proper select case type checking
-        // For now, just accept it as valid
-        case_node = case_node->next;
+
+    int ok = 1;
+    for (ASTNode* case_node = select_stmt->cases; case_node; case_node = case_node->next) {
+        if (case_node->type != AST_SELECT_CASE) continue;
+        SelectCaseNode* sc = (SelectCaseNode*)case_node;
+
+        // Select-case bodies are a raw statement chain (grammar: CASE expression
+        // COLON statement_list — no block wrapper), so unlike an if/for body
+        // there is no nested type_check_block_stmt to push/pop a scope. Do it
+        // here ourselves, matching the AST_SWITCH_STMT clause loop above
+        // (per-case scoping, Go semantics).
+        scope_push(checker);
+
+        // comm == NULL is the default case — body only.
+        if (sc->comm) {
+            if (sc->comm->type == AST_BINARY_EXPR &&
+                ((BinaryExprNode*)sc->comm)->operator == TOKEN_ARROW) {
+                // Send comm: ch <- value. codegen_setup_select_case (statement_
+                // codegen.c) evaluates left/right individually rather than the
+                // whole binary node, so we mirror that instead of routing the
+                // comm through type_check_expression/type_check_channel_send_op
+                // (whose "Cannot send ..." message the reject-probe doesn't
+                // look for); "select send" identifies this diagnostic as the
+                // select-specific one.
+                BinaryExprNode* send = (BinaryExprNode*)sc->comm;
+                Type* chan_t = type_check_expression(checker, send->left);
+                if (!chan_t) {
+                    ok = 0;
+                } else if (chan_t->kind != TYPE_CHANNEL) {
+                    type_error(checker, send->left->pos,
+                               "select send requires a channel, got %s", type_to_string(chan_t));
+                    ok = 0;
+                } else {
+                    Type* val_t = type_check_expression(checker, send->right);
+                    if (!val_t) {
+                        ok = 0;
+                    } else if (!type_compatible(val_t, chan_t->data.channel.element_type)) {
+                        type_error(checker, send->right->pos,
+                                   "select send: cannot use %s as %s channel element",
+                                   type_to_string(val_t),
+                                   type_to_string(chan_t->data.channel.element_type));
+                        ok = 0;
+                    }
+                }
+            } else if (sc->comm->type == AST_UNARY_EXPR &&
+                       ((UnaryExprNode*)sc->comm)->operator == TOKEN_ARROW) {
+                // Receive comm: <-ch. The select_case grammar rule's comm slot is
+                // an `expression`, not a `simple_stmt`, so a binding form like
+                // `got := <-ch` cannot appear here — it's a plain unary receive.
+                // Route through the general expression checker, which already
+                // validates channel-ness via type_check_channel_receive_op and
+                // annotates the channel operand (handles conversions etc. inside
+                // it the same way any other expression would).
+                if (!type_check_expression(checker, sc->comm)) ok = 0;
+            } else {
+                type_error(checker, sc->comm->pos,
+                           "select case requires a channel send or receive operation");
+                ok = 0;
+            }
+        }
+
+        // Body: walk the statement chain like the AST_SWITCH_STMT clause loop
+        // does (not a single type_check_statement dispatch — select-case bodies
+        // are never wrapped in an AST_BLOCK_STMT).
+        for (ASTNode* s = sc->body; s; s = s->next) {
+            if (!type_check_statement(checker, s)) ok = 0;
+        }
+
+        scope_pop(checker);
     }
-    
-    return 1;
+    return ok;
 }
 
 // Forward declarations for helper functions

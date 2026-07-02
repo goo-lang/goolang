@@ -1,0 +1,40 @@
+// select_typecheck_probe: type_check_select_stmt was a no-op stub, so select
+// comm operations and case bodies were never type-annotated. Exercises the
+// motivating failure (PR #93 had to hoist int64()/int() conversions out of
+// select bodies) plus a send comm with a narrow lvalue (t.N) and a recv comm.
+//
+// NOTE: `case got := <-c2:` (a recv-binding comm) does not parse — confirmed
+// with a throwaway compile ("Parse error ... syntax error"). The select_case
+// grammar rule's comm slot is `expression`, not `simple_stmt`, so a `:=`
+// short-decl cannot appear there; only bare `ch <- v` / `<-ch` comms are
+// accepted. Substituted a bare `<-c2` recv comm per the documented fallback.
+package main
+
+import "fmt"
+
+type T struct {
+	N int32
+}
+
+func main() {
+	ch := make_chan(int64, 1)
+	t := T{N: 5}
+	sent := 0
+	select {
+	case ch <- t.N:
+		sent = int(int64(1))
+	default:
+		sent = int(int64(0))
+	}
+	fmt.Println(sent)
+	v := <-ch
+	fmt.Println(int(v))
+	c2 := make_chan(int, 1)
+	c2 <- 3
+	select {
+	case <-c2:
+		fmt.Println(13)
+	default:
+		fmt.Println(0)
+	}
+}
