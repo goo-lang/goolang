@@ -528,6 +528,66 @@ static void coerce_int_literal_operand(CodeGenerator* codegen,
     }
 }
 
+// Float analogue of coerce_int_literal_operand: unify float32/float64 operand
+// widths so LLVM float binary ops (fadd/fcmp/...) get two operands of the SAME
+// LLVM FP type — required for the instruction to verify at all (a bare
+// `g == 2.5` with g float32 built `fcmp oeq float %g, double 2.5` and failed
+// verification before this fix).
+//
+// Go rule (deliberately NOT "always widen to the bigger type" like the int
+// case above): an UNTYPED float constant adapts to the other, TYPED operand —
+// so `g == 2.5` (g float32) compares at float32 precision (the 2.5 constant
+// is narrowed), and `g * 2.0` yields a float32 product, not a float64 one.
+// Only when NEITHER side is an untyped constant (two typed, differently-sized
+// float variables/expressions) do we fall back to widening the narrower to
+// the wider — real Go actually REJECTS mixing two distinctly-typed floats in
+// a binary op without an explicit conversion (`d + g` with d float64, g
+// float32 is a compile error in real Go); Goo's checker currently admits it
+// (type_compatible treats any numeric-numeric pair as compatible), so
+// extend-the-narrower is the least-surprising codegen behavior for the
+// combination the checker lets through. See task-3-report.md for the
+// resulting checker/codegen result-type disagreement this constant-adapts
+// rule produces for arithmetic (not comparison) ops, reported rather than
+// papered over.
+//
+// `LLVMIsConstant` is the constant/typed test: a bare float literal (or a
+// constant-folded conversion of one) is an LLVMConstReal; anything loaded
+// from a variable/field/call result is a non-constant SSA value.
+static void coerce_float_operand_widths(CodeGenerator* codegen,
+                                        ValueInfo* left, ValueInfo* right) {
+    if (!left || !right || !left->goo_type || !right->goo_type) return;
+    if (!type_is_float(left->goo_type) || !type_is_float(right->goo_type)) return;
+    LLVMTypeRef lt = LLVMTypeOf(left->llvm_value);
+    LLVMTypeRef rt = LLVMTypeOf(right->llvm_value);
+    LLVMTypeKind lk = LLVMGetTypeKind(lt), rk = LLVMGetTypeKind(rt);
+    if ((lk != LLVMFloatTypeKind && lk != LLVMDoubleTypeKind) ||
+        (rk != LLVMFloatTypeKind && rk != LLVMDoubleTypeKind)) return;
+    if (lk == rk) return;  // already the same LLVM FP width
+
+    int left_const  = LLVMIsConstant(left->llvm_value);
+    int right_const = LLVMIsConstant(right->llvm_value);
+
+    if (left_const != right_const) {
+        // Constant-vs-typed: coerce the CONSTANT to the typed operand's width
+        // (codegen_coerce_to_type FPExt/FPTrunc's either direction; src_signed
+        // is irrelevant for FP->FP so pass 1).
+        if (left_const) {
+            left->llvm_value = codegen_coerce_to_type(codegen, left->llvm_value, 1, rt);
+        } else {
+            right->llvm_value = codegen_coerce_to_type(codegen, right->llvm_value, 1, lt);
+        }
+        return;
+    }
+
+    // Both constant or both typed and differently sized: extend the narrower
+    // to the wider (documented Go-rejects-this case above).
+    if (lk == LLVMFloatTypeKind) {
+        left->llvm_value = codegen_coerce_to_type(codegen, left->llvm_value, 1, rt);
+    } else {
+        right->llvm_value = codegen_coerce_to_type(codegen, right->llvm_value, 1, lt);
+    }
+}
+
 #if LLVM_AVAILABLE
 // P1-1: lower a string `==`/`!=` to a goo_string_eq call plus an i1 conversion.
 // goo_string_eq returns i32 (0/1); `want_equal` selects `== `(true iff equal,
@@ -805,24 +865,27 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             sval = boxed;
         }
 
-        // Coerce a mismatched-width integer RHS to the target variable's width
-        // before storing. A mixed-width binary op widens to its larger operand,
-        // so `x = x & int64Const` (x uint32) yields an i64 — storing that into
-        // the i32 slot would write 8 bytes over a 4-byte alloca and corrupt the
-        // stack. Truncate a wider value; extend a narrower one by its signedness.
-        if (target->goo_type && value->goo_type &&
-            LLVMGetTypeKind(LLVMTypeOf(sval)) == LLVMIntegerTypeKind) {
+        // Coerce a mismatched-width RHS (int or float) to the target
+        // variable's width before storing. A mixed-width binary op widens to
+        // its larger operand, so `x = x & int64Const` (x uint32) yields an
+        // i64 — storing that into the i32 slot would write 8 bytes over a
+        // 4-byte alloca and corrupt the stack. The float counterpart: `g :=
+        // float32(2.5); var y float64; y = g * 2.0` — the constant-adapts
+        // binop rule (Task 3) keeps the product at float32, so storing it
+        // into the float64 slot needs an FPExt. Before this fix the block
+        // was int-only, so the float case silently wrote a 4-byte float
+        // pattern into an 8-byte double slot (a failure-mode downgrade from
+        // the binop fix: it used to be a loud verifier type mismatch).
+        // Delegate to the shared width-coercion helper (int<->int,
+        // int->float, float<->float); it no-ops on kinds it doesn't handle
+        // (aggregates, pointers, already-matching types), so it's safe to
+        // call unconditionally here. Assignments are always statements, so
+        // the builder is guaranteed positioned.
+        if (target->goo_type && value->goo_type) {
             LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
-            if (tt && LLVMGetTypeKind(tt) == LLVMIntegerTypeKind) {
-                unsigned sw = LLVMGetIntTypeWidth(LLVMTypeOf(sval));
-                unsigned tw = LLVMGetIntTypeWidth(tt);
-                if (sw > tw) {
-                    sval = LLVMBuildTrunc(codegen->builder, sval, tt, "asn.trunc");
-                } else if (sw < tw) {
-                    sval = type_is_signed(value->goo_type)
-                        ? LLVMBuildSExt(codegen->builder, sval, tt, "asn.sext")
-                        : LLVMBuildZExt(codegen->builder, sval, tt, "asn.zext");
-                }
+            if (tt) {
+                sval = codegen_coerce_to_type(codegen, sval,
+                                              type_is_signed(value->goo_type), tt);
             }
         }
 
@@ -1000,6 +1063,11 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     // type so e.g. `int64_var == -1` compares i64-to-i64, not i64-to-i32.
     coerce_int_literal_operand(codegen, binary->left, left_val,
                                binary->right, right_val);
+
+    // Float analogue: reconcile float32/float64 operand widths (constant
+    // adapts to typed operand; typed-vs-typed extends the narrower) so e.g.
+    // `g == 2.5` (g float32) compares float-to-float, not float-to-double.
+    coerce_float_operand_widths(codegen, left_val, right_val);
 
     // Get the result type from the type checker
     Type* result_type = type_check_binary_expr(checker, expr);

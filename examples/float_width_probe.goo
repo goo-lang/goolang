@@ -1,0 +1,37 @@
+package main
+
+import "fmt"
+
+var gf float32 = 2.5
+var gs = []float32{1.5, 0.25}
+
+func main() {
+	var g float32 = 2.5
+	fmt.Println(g == float32(2.5))
+	fw := float32(1.5)
+	var d float64 = fw
+	fmt.Println(d == 1.5)
+	a := []float64{fw, 0.25}
+	fmt.Println(a[0] == 1.5)
+	fmt.Println(a[1] == 0.25)
+	b := []float32{fw}
+	fmt.Println(b[0] == float32(1.5))
+	ch := make_chan(float64, 1)
+	ch <- fw
+	r := <-ch
+	fmt.Println(r == 1.5)
+	c2 := make_chan(float64, 1)
+	sel := 0
+	select {
+	case c2 <- fw:
+		sel = 1
+	default:
+		sel = 2
+	}
+	fmt.Println(sel)
+	r2 := <-c2
+	fmt.Println(r2 == 1.5)
+	fmt.Println(gf == float32(2.5))
+	fmt.Println(gs[0] == float32(1.5))
+	fmt.Println(gs[1] == float32(0.25))
+}

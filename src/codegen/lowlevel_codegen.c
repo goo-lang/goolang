@@ -57,38 +57,20 @@ ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* ch
             ? codegen_type_to_llvm(codegen, elem_goo_s)
             : LLVMTypeOf(value_val->llvm_value);  // fallback: keep value's own type
 
-        // Widen (or truncate) integer values to match the channel's element width.
-        LLVMValueRef send_value = value_val->llvm_value;
-        {
-            LLVMTypeRef actual_ty   = LLVMTypeOf(send_value);
-            LLVMTypeRef expected_ty = elem_llvm_s;
-            if (LLVMGetTypeKind(actual_ty)   == LLVMIntegerTypeKind &&
-                LLVMGetTypeKind(expected_ty) == LLVMIntegerTypeKind) {
-                unsigned from_bits = LLVMGetIntTypeWidth(actual_ty);
-                unsigned to_bits   = LLVMGetIntTypeWidth(expected_ty);
-                if (from_bits < to_bits) {
-                    // Choose ZExt for unsigned values, SExt for signed.
-                    // Primary signal: the Goo type of the value being sent.
-                    // Fall back to the channel's element type when no type is
-                    // attached (e.g. untyped literal with matching width).
-                    // Goo has both signed (int/int8/16/32/64) and unsigned
-                    // (uint8/16/32/64) integers; using SExt unconditionally
-                    // was wrong for unsigned values (e.g. uint32 4000000000
-                    // would sign-extend to -294967296 instead of 4000000000).
-                    Type* widen_ty = value_val->goo_type ? value_val->goo_type
-                                                         : elem_goo_s;
-                    int use_sext = widen_ty ? type_is_signed(widen_ty) : 1;
-                    if (use_sext)
-                        send_value = LLVMBuildSExt(codegen->builder, send_value,
-                                                   expected_ty, "send_sext");
-                    else
-                        send_value = LLVMBuildZExt(codegen->builder, send_value,
-                                                   expected_ty, "send_zext");
-                } else if (from_bits > to_bits)
-                    send_value = LLVMBuildTrunc(codegen->builder, send_value,
-                                                expected_ty, "send_trunc");
-            }
-        }
+        // Coerce the value to match the channel's element width — int<->int
+        // (SExt/ZExt/Trunc), int->float, and float<->float (FPExt/FPTrunc) —
+        // via the shared width-coercion helper (codegen_coerce_to_type).
+        // Signedness signal (matters for the int<->int arm only): the Goo
+        // type of the value being sent, falling back to the channel's
+        // element type when none is attached (e.g. an untyped literal with
+        // matching width). Goo has both signed (int/int8/16/32/64) and
+        // unsigned (uint8/16/32/64) integers; using SExt unconditionally was
+        // wrong for unsigned values (e.g. uint32 4000000000 would
+        // sign-extend to -294967296 instead of 4000000000).
+        Type* widen_ty = value_val->goo_type ? value_val->goo_type : elem_goo_s;
+        int use_sext = widen_ty ? type_is_signed(widen_ty) : 1;
+        LLVMValueRef send_value = codegen_coerce_to_type(codegen, value_val->llvm_value,
+                                                          use_sext, elem_llvm_s);
 
         LLVMValueRef temp_alloca = LLVMBuildAlloca(codegen->builder, elem_llvm_s, "temp_send_value");
         LLVMBuildStore(codegen->builder, send_value, temp_alloca);

@@ -1,0 +1,27 @@
+package main
+
+import "fmt"
+
+var gi float64 = 1
+var gu float64 = 2
+var gm = []float64{1, 2.5}
+
+func main() {
+	g := float32(2.5)
+	var y float64
+	y = g * 2.0
+	fmt.Println(y == 5.0)
+	a := [2]float32{1.5, 0.25}
+	fmt.Println(a[0] == float32(1.5))
+	fmt.Println(a[1] == float32(0.25))
+	fmt.Println(gi == 1.0)
+	fmt.Println(gu == 2.0)
+	var z float32
+	z = g / 2.0
+	fmt.Println(z == float32(1.25))
+	b := [2]float64{1, 2.5}
+	fmt.Println(b[0] == 1.0)
+	fmt.Println(b[1] == 2.5)
+	fmt.Println(gm[0] == 1.0)
+	fmt.Println(gm[1] == 2.5)
+}

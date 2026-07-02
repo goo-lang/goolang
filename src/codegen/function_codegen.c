@@ -977,8 +977,8 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 init_value->goo_type = var_type;
             }
 
-            // Match the initializer's integer width to the declared type.
-            // Untyped literals arrive at the default (widest) width, so BOTH
+            // Match the initializer's width to the declared type. Untyped
+            // literals arrive at the default (widest) width, so BOTH
             // directions occur here:
             //   narrowing (var n int32 = 4): the literal is i64 — without a
             //     Trunc the store below writes 8 bytes into a 4-byte alloca,
@@ -988,40 +988,40 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             //     the SOURCE type — SExt for signed, ZExt for unsigned (a
             //     uint32 4e9 must not sign-extend negative), same rule as the
             //     channel-send coercion in lowlevel_codegen.c.
+            //   float widths (var g float32 = 2.5; var d float64 = f32var):
+            //     an untyped float literal is a double — without an FPTrunc
+            //     the store below writes 8 bytes into a 4-byte alloca (the
+            //     float analogue of the int narrowing bug above).
             {
                 LLVMTypeRef init_ty = LLVMTypeOf(init_value->llvm_value);
-                if (LLVMGetTypeKind(init_ty) == LLVMIntegerTypeKind &&
-                    LLVMGetTypeKind(llvm_type) == LLVMIntegerTypeKind) {
-                    unsigned from_bits = LLVMGetIntTypeWidth(init_ty);
-                    unsigned to_bits   = LLVMGetIntTypeWidth(llvm_type);
-                    if (from_bits != to_bits) {
-                        int use_sext = init_value->goo_type
-                                     ? type_is_signed(init_value->goo_type) : 1;
-                        if (codegen->current_function) {
-                            // Normal function-body path: the builder is
-                            // positioned inside the current block.
-                            if (from_bits < to_bits) {
-                                init_value->llvm_value = use_sext
-                                    ? LLVMBuildSExt(codegen->builder, init_value->llvm_value,
-                                                    llvm_type, "init_sext")
-                                    : LLVMBuildZExt(codegen->builder, init_value->llvm_value,
-                                                    llvm_type, "init_zext");
-                            } else {
-                                init_value->llvm_value = LLVMBuildTrunc(
-                                    codegen->builder, init_value->llvm_value, llvm_type, "init_trunc");
-                            }
-                        } else if (LLVMIsConstant(init_value->llvm_value)) {
-                            // Global initializer (package-level `var g int32 = 7`):
-                            // codegen->current_function is NULL here, so the
-                            // builder has no insertion point positioned —
-                            // LLVMBuildTrunc/SExt/ZExt would dereference a null
-                            // insert block on LLVM 22 (this API used to fold
-                            // constant operands without touching the builder;
-                            // it no longer does). Rebuild the constant at the
-                            // target width directly, mirroring the workaround
-                            // composite_codegen.c uses for global array/slice
-                            // literals hitting the same hazard.
-                            //
+                if (init_ty != llvm_type) {
+                    int use_sext = init_value->goo_type
+                                 ? type_is_signed(init_value->goo_type) : 1;
+                    if (codegen->current_function) {
+                        // Normal function-body path: the builder is
+                        // positioned inside the current block. Delegate to
+                        // the shared width-coercion helper (int<->int,
+                        // int->float, float<->float) — it safely no-ops on
+                        // kinds it doesn't handle (e.g. matching aggregates),
+                        // so it's fine to call unconditionally here.
+                        init_value->llvm_value = codegen_coerce_to_type(
+                            codegen, init_value->llvm_value, use_sext, llvm_type);
+                    } else if (LLVMIsConstant(init_value->llvm_value)) {
+                        // Global initializer (package-level `var g int32 = 7`
+                        // / `var gf float32 = 2.5`): codegen->current_function
+                        // is NULL here, so the builder has no insertion point
+                        // positioned — LLVMBuildTrunc/SExt/ZExt/FPTrunc/FPExt
+                        // would dereference a null insert block on LLVM 22
+                        // (this API used to fold constant operands without
+                        // touching the builder; it no longer does). Rebuild
+                        // the constant at the target width directly, mirroring
+                        // the workaround composite_codegen.c uses for global
+                        // array/slice literals hitting the same hazard. The
+                        // helper (codegen_coerce_to_type) REQUIRES a
+                        // positioned builder, so it cannot be reused here.
+                        LLVMTypeKind fk = LLVMGetTypeKind(init_ty);
+                        LLVMTypeKind tk = LLVMGetTypeKind(llvm_type);
+                        if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
                             // Extract by the SOURCE's signedness, not just for
                             // widening's sake: narrowing only keeps the low
                             // `to_bits` bits so either extraction is equivalent
@@ -1039,6 +1039,40 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                                 ? (unsigned long long)LLVMConstIntGetSExtValue(init_value->llvm_value)
                                 : LLVMConstIntGetZExtValue(init_value->llvm_value);
                             init_value->llvm_value = LLVMConstInt(llvm_type, raw, use_sext);
+                        } else if ((fk == LLVMFloatTypeKind || fk == LLVMDoubleTypeKind) &&
+                                   (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
+                            // `var gf float32 = 2.5`: the untyped literal
+                            // folds to a double constant; extract its value
+                            // and rebuild at the declared (possibly narrower
+                            // or wider) float width. LLVMConstRealGetDouble
+                            // round-trips float32 exactly for values in its
+                            // range (Go's float32/float64 halves/quarters
+                            // used in probes are exact either way).
+                            LLVMBool loses_info;
+                            double d = LLVMConstRealGetDouble(init_value->llvm_value, &loses_info);
+                            init_value->llvm_value = LLVMConstReal(llvm_type, d);
+                        } else if (fk == LLVMIntegerTypeKind &&
+                                   (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
+                            // `var gi float64 = 1`: an untyped integer
+                            // literal folds to an i64 constant; the declared
+                            // type is float, so there is no int->int or
+                            // FP->FP arm above to catch it, and the mismatch
+                            // reaches LLVMSetInitializer below as an i64
+                            // constant in a double slot — caught by the
+                            // module verifier ("Global variable initializer
+                            // type does not match global variable type!").
+                            // LLVMConstSIToFP/UIToFP need a positioned
+                            // builder (unavailable at global scope), so
+                            // extract the raw value by the SOURCE's
+                            // signedness and rebuild directly as a float
+                            // constant. Unsigned sources must route through
+                            // an unsigned long long before the double cast
+                            // so a large unsigned value's top bit isn't
+                            // reinterpreted as a sign.
+                            double d = use_sext
+                                ? (double)LLVMConstIntGetSExtValue(init_value->llvm_value)
+                                : (double)(unsigned long long)LLVMConstIntGetZExtValue(init_value->llvm_value);
+                            init_value->llvm_value = LLVMConstReal(llvm_type, d);
                         }
                     }
                 }

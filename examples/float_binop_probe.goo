@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+func main() {
+	g := float32(2.5)
+	if g == 2.5 {
+		fmt.Println(1)
+	} else {
+		fmt.Println(0)
+	}
+	h := g * 2.0
+	fmt.Println(h == float32(5.0))
+	d := float64(0.25)
+	if g > d {
+		fmt.Println(2)
+	}
+	sum := d + g
+	fmt.Println(sum == 2.75)
+	fmt.Println(g != 0.5)
+}
