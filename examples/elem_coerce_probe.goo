@@ -1,0 +1,23 @@
+package main
+
+import "fmt"
+
+func main() {
+	x := uint8(200)
+	s := []int64{x, 3}
+	fmt.Println(int(s[0]))
+	fmt.Println(int(s[1]))
+	a := [2]int64{x, 4}
+	fmt.Println(int(a[0]))
+	fmt.Println(int(a[1]))
+	y := int8(0 - 5)
+	t := []int64{y}
+	fmt.Println(int(t[0]))
+	b := [1]int64{y}
+	fmt.Println(int(b[0]))
+	u := uint16(40000)
+	w := []int64{u}
+	fmt.Println(int(w[0]))
+	f := []float64{x}
+	fmt.Println(f[0] == 200.0)
+}
