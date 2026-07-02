@@ -890,22 +890,37 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 
 // Coerce a slice-literal element value to the declared element LLVM type
 // before it is stored into the backing array. Mirrors the struct-literal field
-// coercion: int->int widens with SExt (Goo ints are signed) / narrows with
-// Trunc, int->float uses SIToFP. Matching widths and other kinds (bool, string)
-// pass through unchanged. This is what lets the general []T{} case lower
+// coercion: int->int widens with SExt or ZExt / narrows with Trunc, int->float
+// uses SIToFP or UIToFP. Matching widths and other kinds (bool, string) pass
+// through unchanged. This is what lets the general []T{} case lower
 // (int64/uint/float), not just the natural-width i32/string forms.
-static LLVMValueRef slice_coerce_elem(CodeGenerator* codegen, LLVMValueRef v, LLVMTypeRef to) {
+//
+// Widening MUST follow the SOURCE type's signedness, not an assumed-signed
+// default: a non-constant unsigned element (`x := uint8(200); []int64{x}`)
+// zero-extends, not sign-extends — SExt on 200 (0xC8) would sign-bit-smear
+// it into -56. Same rule as the var-decl initializer rebuild
+// (function_codegen.c) and the constant-rebuild fixes in this file (the
+// array fast-path and the slice collection-loop constant normalization
+// above) — this completes the signedness family for the builder element
+// path, where the caller passes src_signed from the still-live source
+// ValueInfo/flag (see codegen_build_slice_from_elems's elem_signed[] and
+// codegen_generate_array_lit's ev->goo_type).
+static LLVMValueRef slice_coerce_elem(CodeGenerator* codegen, LLVMValueRef v, LLVMTypeRef to, int src_signed) {
     LLVMTypeRef from = LLVMTypeOf(v);
     if (from == to) return v;
     LLVMTypeKind fk = LLVMGetTypeKind(from), tk = LLVMGetTypeKind(to);
     if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
         unsigned fb = LLVMGetIntTypeWidth(from), tb = LLVMGetIntTypeWidth(to);
-        if (fb < tb) return LLVMBuildSExt(codegen->builder, v, to, "elem_sext");
+        if (fb < tb) return src_signed
+            ? LLVMBuildSExt(codegen->builder, v, to, "elem_sext")
+            : LLVMBuildZExt(codegen->builder, v, to, "elem_zext");
         if (fb > tb) return LLVMBuildTrunc(codegen->builder, v, to, "elem_trunc");
         return v;
     }
     if (fk == LLVMIntegerTypeKind && (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind))
-        return LLVMBuildSIToFP(codegen->builder, v, to, "elem_sitofp");
+        return src_signed
+            ? LLVMBuildSIToFP(codegen->builder, v, to, "elem_sitofp")
+            : LLVMBuildUIToFP(codegen->builder, v, to, "elem_uitofp");
     return v;
 }
 
@@ -933,19 +948,26 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
     int elem_is_nullable = (elem_type && elem_type->kind == TYPE_NULLABLE);
 
     LLVMValueRef* elem_vals = count ? calloc(count, sizeof(LLVMValueRef)) : NULL;
+    // Per-element source signedness, captured at collection time (this loop is
+    // the only place the source type — v->goo_type — is still in scope; it is
+    // freed via value_info_free(v) before the builder coercion loop below
+    // runs). Consumed by slice_coerce_elem via the :1065-ish call so a
+    // non-constant unsigned element (uint8 200) zero-extends instead of
+    // sign-extending into a negative value. See slice_coerce_elem's comment.
+    int* elem_signed = count ? calloc(count, sizeof(int)) : NULL;
     size_t idx = 0;
     for (ASTNode* e = first_elem; e; e = e->next, idx++) {
         if (elem_is_nullable && e->type == AST_LITERAL &&
             ((LiteralNode*)e)->literal_type == TOKEN_NIL) {
             ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, elem_type);
-            if (!nil_val) { free(elem_vals); return NULL; }
+            if (!nil_val) { free(elem_vals); free(elem_signed); return NULL; }
             elem_vals[idx] = nil_val->llvm_value;
             value_info_free(nil_val);
             continue;
         }
 
         ValueInfo* v = codegen_generate_expression(codegen, checker, e);
-        if (!v) { free(elem_vals); return NULL; }
+        if (!v) { free(elem_vals); free(elem_signed); return NULL; }
 
         if (elem_is_nullable && v->goo_type && v->goo_type->kind != TYPE_NULLABLE) {
             if (v->is_lvalue) {
@@ -975,6 +997,7 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
                               "failed to box value into interface slice element");
                 value_info_free(v);
                 free(elem_vals);
+                free(elem_signed);
                 return NULL;
             }
             v->llvm_value = boxed;
@@ -1003,6 +1026,7 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
         }
 
         elem_vals[idx] = v->llvm_value;
+        elem_signed[idx] = v->goo_type ? type_is_signed(v->goo_type) : 1;
         value_info_free(v);
     }
 
@@ -1019,6 +1043,7 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
         for (size_t i = 0; i < count; i++) {
             if (!elem_vals[i] || !LLVMIsConstant(elem_vals[i])) {
                 free(elem_vals);
+                free(elem_signed);
                 codegen_error(codegen, pos,
                     "global slice literal requires constant elements");
                 return NULL;
@@ -1043,6 +1068,7 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
             backing = LLVMConstNull(LLVMPointerType(llvm_elem, 0));
         }
         free(elem_vals);
+        free(elem_signed);
         LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
         LLVMValueRef len_c = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), count, 0);
         LLVMValueRef fields[3] = { backing, len_c, len_c };
@@ -1062,7 +1088,7 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
             LLVMValueRef indices[2] = { zero, LLVMConstInt(i32ty, i, 0) };
             LLVMValueRef ep = LLVMBuildGEP2(codegen->builder, arr_type, data_ptr,
                                             indices, 2, "slice_elem");
-            elem_vals[i] = slice_coerce_elem(codegen, elem_vals[i], llvm_elem);
+            elem_vals[i] = slice_coerce_elem(codegen, elem_vals[i], llvm_elem, elem_signed[i]);
             LLVMBuildStore(codegen->builder, elem_vals[i], ep);
         }
     } else {
@@ -1079,6 +1105,7 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
             data_ptr = global;
         } else {
             free(elem_vals);
+            free(elem_signed);
             codegen_error(codegen, pos,
                 "slice literal with non-constant elements requires the runtime "
                 "allocator (goo_alloc), which is unavailable in this build");
@@ -1086,6 +1113,7 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
         }
     }
     free(elem_vals);
+    free(elem_signed);
 
     LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
     LLVMValueRef slice_val = LLVMGetUndef(slice_llvm);
@@ -1258,7 +1286,8 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
             LLVMTypeRef et = codegen_type_to_llvm(codegen, ev->goo_type);
             if (et) v = LLVMBuildLoad2(codegen->builder, et, v, "elem_load");
         }
-        v = slice_coerce_elem(codegen, v, llvm_elem);
+        v = slice_coerce_elem(codegen, v, llvm_elem,
+                              ev->goo_type ? type_is_signed(ev->goo_type) : 1);
         LLVMValueRef idx[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(codegen->context), (unsigned long long)cur, 0) };
         LLVMValueRef gep = LLVMBuildGEP2(codegen->builder, arr_llvm, arr_alloca, idx, 2, "arr_elem");
         LLVMBuildStore(codegen->builder, v, gep);
