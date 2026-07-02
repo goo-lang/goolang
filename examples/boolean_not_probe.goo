@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+type Flags struct {
+	On bool
+}
+
+func main() {
+	fmt.Println(!true)
+	b := false
+	fmt.Println(!b)
+	fmt.Println(!!b)
+	x := 5
+	if !(x > 10) {
+		fmt.Println(1)
+	}
+	p := &Flags{On: false}
+	if !p.On {
+		fmt.Println(2)
+	}
+	ok := true
+	if !ok {
+		fmt.Println(3)
+	} else {
+		fmt.Println(4)
+	}
+	fmt.Println(!b == true)
+}
