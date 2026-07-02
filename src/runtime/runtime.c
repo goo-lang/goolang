@@ -556,7 +556,66 @@ void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found) {
     }
 }
 
+// Entry count: backs len(m). Linear scan (same cost model as the rest of
+// this list-based map — correctness over performance).
+int64_t goo_map_len_sv(GooMapSV* m) {
+    if (!m) return 0;
+    int64_t n = 0;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
+    while (e) {
+        n++;
+        e = e->next;
+    }
+    return n;
+}
+
+// Unlinks and frees the entry for key k, if present (no-op if absent or
+// m/k is NULL). Backs delete(m, k).
+//
+// Key ownership: goo_map_set_sv above stores the caller's pointer verbatim
+// (`e->key = k;`) rather than duplicating it — the map never owns key
+// storage. So this frees only the entry node itself (allocated via
+// goo_alloc in goo_map_set_sv); freeing dead->key would free memory the
+// map doesn't own (e.g. a string literal's constant data).
+void goo_map_delete_sv(GooMapSV* m, const char* k) {
+    if (!m || !k) return;
+    GooMapEntrySV* prev = NULL;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
+    while (e) {
+        if (strcmp(e->key, k) == 0) {
+            if (prev) {
+                prev->next = e->next;
+            } else {
+                m->head = e->next;
+            }
+            goo_free(e);
+            return;
+        }
+        prev = e;
+        e = e->next;
+    }
+}
+
 // Slice operations
+
+// Zero-initialized backing store for make([]T, n[, cap]). calloc (not
+// goo_alloc/malloc) because Go guarantees zero values for made elements.
+// Never returns NULL: count 0 still yields a valid 1-byte allocation so a
+// zero-length slice keeps a non-NULL data pointer (matches the runtime's
+// "null slice" panic convention in goo_slice_get), and OOM panics the way
+// goo_alloc does rather than handing codegen a NULL to dereference.
+void* goo_slice_alloc(int64_t count, int64_t elem_size) {
+    void* data;
+    if (count <= 0 || elem_size <= 0) {
+        data = calloc(1, 1);
+    } else {
+        data = calloc((size_t)count, (size_t)elem_size);
+    }
+    if (!data) {
+        goo_panic("Out of memory");
+    }
+    return data;
+}
 
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {
     if (capacity == 0 || element_size == 0) {

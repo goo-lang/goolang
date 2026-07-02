@@ -347,8 +347,29 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, ptr_type, ptr_type, ptr_type };
         add_runtime_function(codegen, "goo_map_get_sv_ok", void_type, params, 4);
     }
+    // int64_t goo_map_len_sv(GooMapSV*) — entry count. Backs len(m).
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_map_len_sv",
+                             LLVMInt64TypeInContext(codegen->context), params, 1);
+    }
+    // void goo_map_delete_sv(GooMapSV*, const char*) — unlinks the entry for
+    // the given key, if present. Backs delete(m, k).
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_map_delete_sv", void_type, params, 2);
+    }
 
     // Slice operations.
+    // void* goo_slice_alloc(int64_t count, int64_t elem_size) — zeroed
+    // backing store for make([]T, n[, cap]). Deliberately returns a bare
+    // pointer so nothing struct-sized crosses the ABI boundary (see the
+    // WARNING below); codegen assembles the {ptr,len,cap} header itself.
+    {
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+        LLVMTypeRef params[] = { i64, i64 };
+        add_runtime_function(codegen, "goo_slice_alloc", ptr_type, params, 2);
+    }
     // WARNING: goo_slice_new/free/get below pass/return goo_slice_t BY VALUE.
     // That is sound only because they are currently DEAD — no codegen path
     // emits a call (slices are made via literals, freed by leak-it-all, and

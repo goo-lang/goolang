@@ -904,7 +904,24 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
     CallExprNode* call = (CallExprNode*)expr;
-    
+
+    // A type in call-argument position (map_type/slice_type — the grammar
+    // alternative added for `make(...)`) only means something when the
+    // callee is the `make` builtin. Any other callee reaching here with one
+    // (e.g. `foo(map[string]int)`) is rejected here with a clean, specific
+    // diagnostic. Without this guard the argument would fall through to the
+    // generic type_check_expression() call in the argument-checking loop
+    // below, whose switch has no case for AST_MAP_TYPE/AST_SLICE_TYPE and
+    // would instead emit the far less useful "Unknown expression type".
+    if (call->args && (call->args->type == AST_MAP_TYPE || call->args->type == AST_SLICE_TYPE)) {
+        int callee_is_make = call->function && call->function->type == AST_IDENTIFIER &&
+                              strcmp(((IdentifierNode*)call->function)->name, "make") == 0;
+        if (!callee_is_make) {
+            type_error(checker, expr->pos, "type used as value");
+            return NULL;
+        }
+    }
+
     // Special handling for make_chan
     if (call->function && call->function->type == AST_IDENTIFIER) {
         IdentifierNode* func_ident = (IdentifierNode*)call->function;
@@ -970,6 +987,87 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = ptr;
             return ptr;
         }
+        // make(map[K]V[, hint]) -> map value; make([]T, n[, cap]) -> slice
+        // value. arg1 is a type — either the map_type/slice_type grammar
+        // alternative above, or an identifier naming a type — resolved via
+        // type_from_ast rather than typechecked as a value expression, same
+        // as `new`.
+        if (strcmp(func_ident->name, "make") == 0) {
+            if (!call->args) {
+                type_error(checker, expr->pos, "make() requires a map or slice type");
+                return NULL;
+            }
+            Type* made = type_from_ast(checker, call->args);
+            if (!made) return NULL; // type_from_ast reports the error
+            if (made->kind == TYPE_MAP) {
+                // type_from_ast() already rejects a non-string map key type
+                // (the runtime map is string-keyed) with its own clean
+                // error before returning here, so `made` never carries a
+                // non-string key at this point.
+                size_t hint_count = 0;
+                for (ASTNode* a = call->args->next; a; a = a->next) hint_count++;
+                if (hint_count > 1) {
+                    type_error(checker, expr->pos,
+                               "make(map[K]V, ...) takes at most one size hint argument");
+                    return NULL;
+                }
+                if (call->args->next) {
+                    // Size hint: type-checked and required to be an integer,
+                    // but otherwise ignored — the list-backed map runtime
+                    // has no notion of pre-sizing.
+                    Type* hint_t = type_check_expression(checker, call->args->next);
+                    if (!hint_t) return NULL;
+                    if (!type_is_integer(hint_t)) {
+                        type_error(checker, call->args->next->pos,
+                                   "make: size hint must be an integer, got %s",
+                                   type_to_string(hint_t));
+                        return NULL;
+                    }
+                }
+                expr->node_type = made;
+                return made;
+            }
+            if (made->kind == TYPE_SLICE) {
+                // make([]T, n[, cap]): length required, capacity optional,
+                // both integers. No compile-time len<=cap relation is
+                // enforced (Go checks it at runtime; a runtime check here
+                // is a noted follow-up — no panic-with-format infra yet).
+                ASTNode* len_arg = call->args->next;
+                if (!len_arg) {
+                    type_error(checker, expr->pos,
+                               "make([]T) requires a length argument");
+                    return NULL;
+                }
+                ASTNode* cap_arg = len_arg->next;
+                if (cap_arg && cap_arg->next) {
+                    type_error(checker, expr->pos,
+                               "make([]T, len, cap) takes at most three arguments");
+                    return NULL;
+                }
+                Type* len_t = type_check_expression(checker, len_arg);
+                if (!len_t) return NULL;
+                if (!type_is_integer(len_t)) {
+                    type_error(checker, len_arg->pos,
+                               "make: length must be an integer, got %s",
+                               type_to_string(len_t));
+                    return NULL;
+                }
+                if (cap_arg) {
+                    Type* cap_t = type_check_expression(checker, cap_arg);
+                    if (!cap_t) return NULL;
+                    if (!type_is_integer(cap_t)) {
+                        type_error(checker, cap_arg->pos,
+                                   "make: capacity must be an integer, got %s",
+                                   type_to_string(cap_t));
+                        return NULL;
+                    }
+                }
+                expr->node_type = made;
+                return made;
+            }
+            type_error(checker, expr->pos, "make() requires a map or slice type");
+            return NULL;
+        }
         // append(slice, elem) -> slice. The result type is the first arg's
         // slice type (dynamic), so it can't ride the generic builtin path;
         // codegen lowers it to goo_slice_append (in-place amortized grow).
@@ -999,7 +1097,31 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = slice_t;
             return slice_t;
         }
-        // cap(slice) -> int. The slice's capacity (header field 2).
+        // len(slice|string|map) -> int. Codegen dispatches on the arg's
+        // TypeKind (map routes through goo_map_len_sv; slice/string extract
+        // the header's length field) — gate the accepted kinds here so an
+        // unsupported argument (e.g. an array) is a clean error instead of
+        // reaching codegen's ExtractValue path, which assumes an aggregate
+        // and segfaults on anything else.
+        if (strcmp(func_ident->name, "len") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "len expects exactly one argument");
+                return NULL;
+            }
+            Type* arg_t = type_check_expression(checker, call->args);
+            if (!arg_t) return NULL;
+            if (arg_t->kind != TYPE_SLICE && arg_t->kind != TYPE_STRING && arg_t->kind != TYPE_MAP) {
+                type_error(checker, expr->pos,
+                           "len() requires a slice, string, or map argument");
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: len -> int (64-bit)
+            return checker->builtin_types[TYPE_INT64];
+        }
+        // cap(slice) -> int. The slice's capacity (header field 2). TYPE_MAP
+        // falls into the `!= TYPE_SLICE` branch below, which already rejects
+        // it cleanly — maps lower to an opaque i8* with no capacity field,
+        // so codegen's ExtractValue would segfault if this let one through.
         if (strcmp(func_ident->name, "cap") == 0) {
             if (!call->args || call->args->next) {
                 type_error(checker, expr->pos, "cap expects exactly one argument");
@@ -1007,6 +1129,10 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* slice_t = type_check_expression(checker, call->args);
             if (!slice_t) return NULL;
+            if (slice_t->kind == TYPE_MAP) {
+                type_error(checker, expr->pos, "cap() is not defined for maps");
+                return NULL;
+            }
             if (slice_t->kind != TYPE_SLICE) {
                 type_error(checker, expr->pos,
                            "cap: argument must be a slice, got %s", type_to_string(slice_t));
@@ -1014,6 +1140,34 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: cap -> int (64-bit)
             return checker->builtin_types[TYPE_INT64];
+        }
+        // delete(m, k) -> void. Removes key k from map m (no-op if absent).
+        // Exactly two args: the first must be a map, the second assignable
+        // to its key type (string only, today — the runtime map is
+        // string-keyed). Codegen lowers to goo_map_delete_sv, passing the
+        // key's data pointer like the map-write path does.
+        if (strcmp(func_ident->name, "delete") == 0) {
+            if (!call->args || !call->args->next || call->args->next->next) {
+                type_error(checker, expr->pos, "delete expects exactly two arguments (map, key)");
+                return NULL;
+            }
+            Type* map_t = type_check_expression(checker, call->args);
+            if (!map_t) return NULL;
+            if (map_t->kind != TYPE_MAP) {
+                type_error(checker, expr->pos,
+                           "delete() requires a map as its first argument");
+                return NULL;
+            }
+            Type* key_t = type_check_expression(checker, call->args->next);
+            if (!key_t) return NULL;
+            if (!type_compatible(key_t, map_t->data.map.key_type)) {
+                type_error(checker, expr->pos,
+                           "delete: cannot use %s as key of %s",
+                           type_to_string(key_t), type_to_string(map_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_VOID];
+            return checker->builtin_types[TYPE_VOID];
         }
         // error(msg) -> !T. Constructs the error case of the enclosing function's
         // return type. The argument must be a string; the call is only valid inside

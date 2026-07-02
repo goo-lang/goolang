@@ -1,0 +1,19 @@
+package main
+
+import "fmt"
+
+func main() {
+	s := make([]int, 3)
+	fmt.Println(len(s))
+	fmt.Println(cap(s))
+	fmt.Println(s[0])
+	s[1] = 42
+	fmt.Println(s[1])
+	t := make([]int, 2, 8)
+	fmt.Println(len(t))
+	fmt.Println(cap(t))
+	b := make([]byte, 4)
+	fmt.Println(len(b))
+	b[3] = 200
+	fmt.Println(int(b[3]))
+}

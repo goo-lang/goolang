@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+func main() {
+	m := make(map[string]int)
+	fmt.Println(len(m))
+	m["x"] = 10
+	m["y"] = 20
+	fmt.Println(m["x"])
+	fmt.Println(m["y"])
+	fmt.Println(len(m))
+	h := make(map[string]int, 16)
+	h["k"] = 5
+	fmt.Println(h["k"])
+	fmt.Println(len(h))
+}

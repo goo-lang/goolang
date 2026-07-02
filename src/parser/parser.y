@@ -147,6 +147,7 @@ static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
 %type <node> expression primary_expr unary_expr postfix_expr binary_expr
 %type <node> call_expr index_expr selector_expr
 %type <node> type type_name array_type slice_type map_type chan_type
+%type <node> type_call_arg
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field
 %type <node> enum_type enum_variant_list enum_variant
@@ -1452,6 +1453,58 @@ call_expr:
         call->args = $3;
         $$ = (ASTNode*)call;
     }
+    // `make(map[K]V)` / `make([]T, n)`: a type in call-argument position.
+    // NOTE: the first tokens here are NOT disjoint from expression's first
+    // set — MAP also begins `map_lit` (map_type LBRACE ...) and LBRACKET
+    // also begins `slice_lit`, both of which are expressions. The parser
+    // stays conflict-free by a LATER split, not a first-token one:
+    //   - map_type: after `map[K]V` reduces, the FOLLOW token decides —
+    //     LBRACE continues into a map_lit, while RPAREN/COMMA reduce it as
+    //     a type_call_arg here. LALR resolves this on that one lookahead.
+    //   - slice_type: LBRACKET RBRACKET_SLICE type — the SECOND token,
+    //     RBRACKET_SLICE (a lexer-bridge token emitted only for an empty
+    //     `[]` immediately followed by a type), is the real disambiguator
+    //     versus slice_lit's `[` <elements> `]`.
+    // Empirically verified: adding these two alternatives leaves the bison
+    // conflict count unchanged at 78 shift/reduce + 256 reduce/reduce.
+    // `make` itself stays an ordinary identifier (not a keyword); the type
+    // checker rejects any other callee applied to a type argument.
+    | primary_expr LPAREN type_call_arg RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        call->args = $3;
+        $$ = (ASTNode*)call;
+    }
+    | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        // The type node leads the argument list; splice the rest of
+        // expression_list after it (mirrors expression_list's own
+        // left-to-right chaining via ast_add_child/->next).
+        // Invariant: type_call_arg (map_type/slice_type) produces a freshly
+        // malloc'd node whose ->next is NULL, so this direct assignment does
+        // not drop a pre-existing tail — no ast_add_child walk is needed.
+        $3->next = $5;
+        call->args = $3;
+        $$ = (ASTNode*)call;
+    }
+    ;
+
+// The type argument accepted by `make(...)` (grammar-only — the type
+// checker enforces that the callee is actually `make`). map_type/
+// slice_type are the only type forms make() needs; other type forms
+// (struct_type, chan_type, ...) are deliberately not included here.
+type_call_arg:
+    map_type { $$ = $1; }
+    | slice_type { $$ = $1; }
     ;
 
 index_expr:
