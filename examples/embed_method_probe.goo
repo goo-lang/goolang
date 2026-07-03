@@ -1,0 +1,45 @@
+package main
+
+import "fmt"
+
+type Counter struct {
+	N int
+}
+
+func (c *Counter) Inc() {
+	c.N++
+}
+
+func (c Counter) Get() int {
+	return c.N
+}
+
+type Words []string
+
+func (w Words) Len() int {
+	return len(w)
+}
+
+type Server struct {
+	Counter
+	Name string
+}
+
+type App struct {
+	*Counter
+	Words
+}
+
+func main() {
+	s := Server{}
+	s.Inc() // pointer-receiver method through VALUE embedding: must mutate s.Counter
+	s.Inc()
+	fmt.Println(s.Get())       // value receiver, promoted
+	fmt.Println(s.Counter.N)   // proof the mutation landed inside s
+
+	c := Counter{N: 10}
+	a := App{Counter: &c, Words: Words{"a", "b", "c"}}
+	a.Inc() // through POINTER embedding: mutates c
+	fmt.Println(c.N)
+	fmt.Println(a.Len()) // promoted method on embedded named non-struct type
+}

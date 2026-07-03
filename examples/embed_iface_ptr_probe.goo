@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+type Bumper interface {
+	Bump() int
+}
+
+type Base struct {
+	N int
+}
+
+func (b *Base) Bump() int {
+	b.N++
+	return b.N
+}
+
+type ViaPtr struct {
+	*Base
+}
+
+func main() {
+	shared := Base{N: 100}
+	items := []Bumper{ViaPtr{Base: &shared}, ViaPtr{Base: &shared}}
+	for _, it := range items {
+		fmt.Println(it.Bump())
+	}
+	fmt.Println(shared.N)
+}

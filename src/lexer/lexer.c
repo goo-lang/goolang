@@ -33,6 +33,8 @@ Lexer* lexer_new(const char* input, const char* filename) {
     lexer->pos.offset = 0;
     lexer->pos.filename = filename;
     lexer->prev_token_type = TOKEN_SEMICOLON; // as if after a separator
+    lexer->asi_depth = 0;
+    memset(lexer->asi_ctx, 0, sizeof(lexer->asi_ctx));
 
     // Read first character
     lexer_read_char(lexer);
@@ -153,6 +155,17 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
+            // Struct-body ASI (embedding): inside a struct body, a newline
+            // after a field-ending token ends the field — Go's semicolon rule
+            // scoped to struct bodies, so a 1-token embedded field (`Base`)
+            // stops at the line break instead of absorbing the next line.
+            if (lexer->asi_depth > 0 &&
+                lexer->asi_depth <= (int)sizeof(lexer->asi_ctx) &&
+                lexer->asi_ctx[lexer->asi_depth - 1] &&
+                token_ends_value(lexer->prev_token_type)) {
+                lexer->prev_token_type = TOKEN_SEMICOLON;
+                return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
+            }
             continue; // otherwise just get the next token (was: tail recursion)
             
         // Single character tokens
@@ -166,10 +179,16 @@ Token* lexer_next_token(Lexer* lexer) {
             break;
         case '{':
             token = token_new(TOKEN_LBRACE, "{", 1, current_pos);
+            if (lexer->asi_depth >= 0 && lexer->asi_depth < (int)sizeof(lexer->asi_ctx)) {
+                lexer->asi_ctx[lexer->asi_depth] =
+                    (lexer->prev_token_type == TOKEN_STRUCT) ? 1 : 0;
+            }
+            lexer->asi_depth++;
             lexer_read_char(lexer);
             break;
         case '}':
             token = token_new(TOKEN_RBRACE, "}", 1, current_pos);
+            if (lexer->asi_depth > 0) lexer->asi_depth--;
             lexer_read_char(lexer);
             break;
         case '[':

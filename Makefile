@@ -61,7 +61,7 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
-TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c
+TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
@@ -1735,7 +1735,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2055,6 +2055,82 @@ composite-literal-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -ne 0 ]; then echo "composite-literal-reject-probe: FAIL (bare empty [] <nl> identifier-led stmt wrongly mis-lexed as slice type — regression)"; cat build/clr_empty_ok.err; exit 1; fi; \
 	  out="$$(./build/clr_empty_ok.out)"; if [ "$$out" != "0" ]; then echo "composite-literal-reject-probe: FAIL (bare empty [] output '$$out' != '0')"; exit 1; fi
 	@echo "composite-literal-reject-probe: PASS"
+
+# Embedding: interface embedding is deferred — must reject cleanly, not crash.
+embed-iface-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== embed-iface-reject-probe: embedded interface must reject ==="
+	@printf 'package main\ntype I interface { M() int }\ntype S struct {\n\tI\n}\nfunc main(){ _ = S{} }\n' > build/embed_iface_reject.goo
+	@rm -f build/embed_iface_reject
+	@$(COMPILER) -o build/embed_iface_reject build/embed_iface_reject.goo > build/embed_iface_reject.out 2> build/embed_iface_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "embed-iface-reject-probe: FAIL (compiled rc=0)"; exit 1; fi; \
+	if ! grep -q "embedded interface types are not yet supported" build/embed_iface_reject.err; then echo "embed-iface-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/embed_iface_reject.err; exit 1; fi; \
+	echo "embed-iface-reject-probe: PASS (rejected rc=$$rc)"
+
+# Embedding: duplicate member names (Base twice, or Base + field Base) reject.
+embed-dup-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== embed-dup-reject-probe: duplicate embedded name must reject ==="
+	@printf 'package main\ntype Base struct { N int }\ntype S struct {\n\tBase\n\t*Base\n}\nfunc main(){ _ = S{} }\n' > build/embed_dup_reject.goo
+	@rm -f build/embed_dup_reject
+	@$(COMPILER) -o build/embed_dup_reject build/embed_dup_reject.goo > build/embed_dup_reject.out 2> build/embed_dup_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "embed-dup-reject-probe: FAIL (compiled rc=0)"; exit 1; fi; \
+	if ! grep -q "duplicate field name 'Base'" build/embed_dup_reject.err; then echo "embed-dup-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/embed_dup_reject.err; exit 1; fi; \
+	echo "embed-dup-reject-probe: PASS (rejected rc=$$rc)"
+
+# Embedding: only named types / pointers to named types can be embedded.
+embed-badtype-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== embed-badtype-reject-probe: value-recursive embedding must reject, not hang ==="
+	@printf 'package main\ntype A struct {\n\tB\n}\ntype B struct {\n\tA\n}\nfunc main(){ _ = A{} }\n' > build/embed_badtype_reject.goo
+	@rm -f build/embed_badtype_reject
+	@timeout 10 $(COMPILER) -o build/embed_badtype_reject build/embed_badtype_reject.goo > build/embed_badtype_reject.out 2> build/embed_badtype_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "embed-badtype-reject-probe: FAIL (compiled rc=0)"; exit 1; fi; \
+	if [ $$rc -eq 124 ]; then echo "embed-badtype-reject-probe: FAIL (compiler hung on recursive embedding)"; exit 1; fi; \
+	echo "embed-badtype-reject-probe: PASS (rejected rc=$$rc)"
+
+# Embedding: enum variant bodies share struct_field_list; embedding there is out of scope.
+embed-enum-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== embed-enum-reject-probe: embedded field in enum variant must reject ==="
+	@printf 'package main\ntype Base struct { N int }\ntype E enum { V{Base;} }\nfunc main(){ }\n' > build/embed_enum_reject.goo
+	@rm -f build/embed_enum_reject
+	@$(COMPILER) -o build/embed_enum_reject build/embed_enum_reject.goo > build/embed_enum_reject.out 2> build/embed_enum_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "embed-enum-reject-probe: FAIL (compiled rc=0)"; exit 1; fi; \
+	if ! grep -q "embedded fields are not supported in enum variants" build/embed_enum_reject.err; then echo "embed-enum-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/embed_enum_reject.err; exit 1; fi; \
+	echo "embed-enum-reject-probe: PASS (rejected rc=$$rc)"
+
+# Embedding: same-depth collision is an error only when the BARE name is used.
+embed-ambiguous-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== embed-ambiguous-reject-probe: ambiguous promoted name must reject at use ==="
+	@printf 'package main\nimport "fmt"\ntype A struct { X int }\ntype B struct { X int }\ntype S struct {\n\tA\n\tB\n}\nfunc main(){ s := S{}; s.A.X = 1; fmt.Println(s.X) }\n' > build/embed_ambig_reject.goo
+	@rm -f build/embed_ambig_reject
+	@$(COMPILER) -o build/embed_ambig_reject build/embed_ambig_reject.goo > build/embed_ambig_reject.out 2> build/embed_ambig_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "embed-ambiguous-reject-probe: FAIL (compiled rc=0 — ambiguous s.X accepted)"; exit 1; fi; \
+	if ! grep -q "ambiguous selector 'X'" build/embed_ambig_reject.err; then echo "embed-ambiguous-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/embed_ambig_reject.err; exit 1; fi; \
+	echo "embed-ambiguous-reject-probe: PASS (rejected rc=$$rc)"
+	@echo "=== declaration alone must stay LEGAL (Go rule) ==="
+	@printf 'package main\nimport "fmt"\ntype A struct { X int }\ntype B struct { X int }\ntype S struct {\n\tA\n\tB\n}\nfunc main(){ s := S{}; s.A.X = 4; fmt.Println(s.A.X) }\n' > build/embed_ambig_ok.goo
+	@$(COMPILER) -o build/embed_ambig_ok build/embed_ambig_ok.goo 2> build/embed_ambig_ok.err || (echo "embed-ambiguous-reject-probe: FAIL (declaring ambiguous struct rejected — should be use-site only)"; cat build/embed_ambig_ok.err; exit 1)
+	@out=$$(build/embed_ambig_ok); [ "$$out" = "4" ] || (echo "embed-ambiguous-reject-probe: FAIL (explicit path broken)"; exit 1)
+	@echo "embed-ambiguous-reject-probe: PASS (explicit path fine)"
+
+# Embedding: promoted names are NOT valid composite-literal keys (Go rule) —
+# only the embedded type's own name is. Pins the literal checker's flat scan.
+embed-literal-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== embed-literal-reject-probe: promoted name as literal key must reject ==="
+	@printf 'package main\ntype Base struct { N int }\ntype S struct {\n\tBase\n}\nfunc main(){ _ = S{N: 1} }\n' > build/embed_lit_reject.goo
+	@rm -f build/embed_lit_reject
+	@$(COMPILER) -o build/embed_lit_reject build/embed_lit_reject.goo > build/embed_lit_reject.out 2> build/embed_lit_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "embed-literal-reject-probe: FAIL (compiled rc=0 — S{N:1} accepted)"; exit 1; fi; \
+	echo "embed-literal-reject-probe: PASS (rejected rc=$$rc)"
+	@echo "=== keyed embedded-type name must stay LEGAL ==="
+	@printf 'package main\nimport "fmt"\ntype Base struct { N int }\ntype S struct {\n\tBase\n}\nfunc main(){ s := S{Base: Base{N: 7}}; fmt.Println(s.N) }\n' > build/embed_lit_ok.goo
+	@$(COMPILER) -o build/embed_lit_ok build/embed_lit_ok.goo 2> build/embed_lit_ok.err || (echo "embed-literal-reject-probe: FAIL (keyed Base literal rejected)"; cat build/embed_lit_ok.err; exit 1)
+	@out=$$(build/embed_lit_ok); [ "$$out" = "7" ] || (echo "embed-literal-reject-probe: FAIL (keyed literal wrong value: $$out)"; exit 1)
+	@echo "embed-literal-reject-probe: PASS (keyed Base literal fine)"
 
 # P2-2: a user-function call with the wrong number of arguments must be
 # rejected at type-check with a clean source-located diagnostic, NOT reach

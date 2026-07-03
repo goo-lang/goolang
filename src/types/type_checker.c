@@ -1,6 +1,7 @@
 #include "types.h"
 #include "comptime.h"
 #include "taint_analysis.h"
+#include "embedding.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -795,14 +796,25 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         char* mangled = type_method_mangled_name(tn, im->name);
         Variable* mv = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
         free(mangled);
+        Type* impl = NULL;
         if (!mv || !mv->type || mv->type->kind != TYPE_FUNCTION) {
-            *method_out = im->name; *reason_out = "missing"; return 0;
+            // Not directly declared — promoted method via embedding?
+            Type* impl_via_embed = NULL;
+            if (concrete->kind == TYPE_STRUCT) {
+                EmbedResult er = embedding_resolve(checker, concrete, im->name);
+                if (er.kind == EMBED_METHOD) impl_via_embed = er.type;
+            }
+            if (!impl_via_embed) {
+                *method_out = im->name; *reason_out = "missing"; return 0;
+            }
+            impl = impl_via_embed;
+        } else {
+            impl = mv->type;
         }
 
         // The registered method carries the receiver as params[0]; the interface
         // method's function type has no receiver. So a match requires
         // impl.param_count == want.param_count + 1 and the tails to be equal.
-        Type* impl = mv->type;
         Type* want = im->type;
         size_t want_params = want ? want->data.function.param_count : 0;
         if (impl->data.function.param_count != want_params + 1) {
@@ -1022,7 +1034,7 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         if (base_type && base_type->kind == TYPE_MAP) {
             Type* commaok_struct = type_new(TYPE_STRUCT);
             if (commaok_struct) {
-                commaok_struct->data.struct_type.fields = malloc(sizeof(StructField) * 2);
+                commaok_struct->data.struct_type.fields = calloc(2, sizeof(StructField));
                 if (commaok_struct->data.struct_type.fields) {
                     commaok_struct->data.struct_type.field_count = 2;
                     commaok_struct->data.struct_type.name = NULL;
@@ -2229,19 +2241,65 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             for (ASTNode* f = st->fields; f; f = f->next) {
                 if (f->type != AST_VAR_DECL) continue;
                 VarDeclNode* fd = (VarDeclNode*)f;
-                if (fd->name_count == 0) continue;
+                if (fd->name_count == 0) {
+                    type_error(checker, f->pos,
+                               "internal: struct field with no name survived parsing");
+                    free(result->data.struct_type.fields);
+                    free(result);
+                    return NULL;
+                }
                 Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
                 if (!ft) {
                     free(result->data.struct_type.fields);
                     free(result);
                     return NULL;
                 }
+                if (fd->is_embedded) {
+                    // Embedded member: must be a named type or pointer to one;
+                    // interface embedding is a deferred feature, not an error
+                    // of the user's making — say so specifically.
+                    Type* base_t = ft;
+                    if (base_t->kind == TYPE_POINTER)
+                        base_t = base_t->data.pointer.pointee_type;
+                    if (base_t && base_t->kind == TYPE_INTERFACE) {
+                        type_error(checker, f->pos,
+                                   "embedded interface types are not yet supported");
+                        free(result->data.struct_type.fields);
+                        free(result);
+                        return NULL;
+                    }
+                    int named = base_t &&
+                        ((base_t->kind == TYPE_STRUCT && base_t->data.struct_type.name) ||
+                         base_t->name);
+                    if (!named) {
+                        type_error(checker, f->pos,
+                                   "embedded field '%s' must be a named type or pointer to a named type",
+                                   fd->names[0]);
+                        free(result->data.struct_type.fields);
+                        free(result);
+                        return NULL;
+                    }
+                }
                 result->data.struct_type.fields[idx].name = strdup(fd->names[0]);
                 result->data.struct_type.fields[idx].type = ft;
                 result->data.struct_type.fields[idx].offset = total_size;
+                result->data.struct_type.fields[idx].is_embedded = fd->is_embedded;
                 total_size += ft->size ? ft->size : 8;
                 if (ft->align > max_align) max_align = ft->align;
                 idx++;
+            }
+            for (size_t a = 0; a < idx; a++) {
+                for (size_t b = a + 1; b < idx; b++) {
+                    if (strcmp(result->data.struct_type.fields[a].name,
+                               result->data.struct_type.fields[b].name) == 0) {
+                        type_error(checker, type_node->pos,
+                                   "duplicate field name '%s' in struct",
+                                   result->data.struct_type.fields[a].name);
+                        free(result->data.struct_type.fields);
+                        free(result);
+                        return NULL;
+                    }
+                }
             }
             result->size = total_size;
             result->align = max_align;
@@ -2282,6 +2340,16 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                     if (f->type != AST_VAR_DECL) continue;
                     VarDeclNode* fd = (VarDeclNode*)f;
                     if (fd->name_count == 0) continue;
+                    if (fd->is_embedded) {
+                        type_error(checker, f->pos,
+                                   "embedded fields are not supported in enum variants");
+                        free(payload->data.struct_type.name);
+                        free(payload->data.struct_type.fields);
+                        free(payload);
+                        free(result->data.enum_type.variants);
+                        free(result);
+                        return NULL;
+                    }
                     Type* ft = fd->type ? type_from_ast(checker, fd->type) : NULL;
                     if (!ft) {
                         free(payload->data.struct_type.name);
