@@ -216,6 +216,10 @@ typedef struct StructField {
     size_t offset;
     OwnershipKind ownership;
     MutabilityKind mutability;
+    // Struct embedding: 1 iff this member was declared anonymously (`Base` /
+    // `*Base`). Promotion (src/types/embedding.c) recurses only into flagged
+    // members. Appended at the tail — rebuild needs `make clean`.
+    int is_embedded;
 } StructField;
 
 // One variant of a tagged union: a named payload struct + its discriminant.

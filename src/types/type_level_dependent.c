@@ -89,7 +89,7 @@ Type* create_matrix_type(size_t rows, size_t cols, Type* element_type) {
     }
     
     // Set up the struct with the array as the only field
-    matrix_type->data.struct_type.fields = malloc(sizeof(StructField));
+    matrix_type->data.struct_type.fields = calloc(1, sizeof(StructField));
     if (matrix_type->data.struct_type.fields) {
         matrix_type->data.struct_type.field_count = 1;
         matrix_type->data.struct_type.fields[0].name = str_dup("data");
@@ -274,7 +274,7 @@ Type* create_compile_time_matrix_type(Type* element_type, TypeLevelNat* rows, Ty
     }
     
     // Set up the struct with the array as the only field
-    matrix_type->data.struct_type.fields = malloc(sizeof(StructField));
+    matrix_type->data.struct_type.fields = calloc(1, sizeof(StructField));
     if (matrix_type->data.struct_type.fields) {
         matrix_type->data.struct_type.field_count = 1;
         matrix_type->data.struct_type.fields[0].name = str_dup("data");
@@ -369,7 +369,7 @@ Type* dependent_vector_to_type(DependentVector* vec) {
     
     // Create fields for the dependent vector
     vec_type->data.struct_type.field_count = 3;
-    vec_type->data.struct_type.fields = malloc(sizeof(StructField) * 3);
+    vec_type->data.struct_type.fields = calloc(3, sizeof(StructField));
     
     if (vec_type->data.struct_type.fields) {
         // Data field
@@ -471,7 +471,7 @@ Type* create_phantom_type(const char* name, Type* phantom_param) {
     
     // Create a phantom field that doesn't affect layout
     phantom->data.struct_type.field_count = 1;
-    phantom->data.struct_type.fields = malloc(sizeof(StructField));
+    phantom->data.struct_type.fields = calloc(1, sizeof(StructField));
     if (phantom->data.struct_type.fields) {
         phantom->data.struct_type.fields[0].name = str_dup("_phantom");
         phantom->data.struct_type.fields[0].type = phantom_param;
