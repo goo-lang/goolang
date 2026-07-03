@@ -1621,6 +1621,28 @@ cwd-link-probe: $(COMPILER) $(RUNTIME_LIB)
 	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat /tmp/cwd_link_probe.err; exit 1; fi
 	@out=$$(/tmp/cwd_link_probe.out); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
 
+# port-unblockers #1: goostd resolution (GOOROOT) must be cwd-independent
+# too, not just the runtime archive (cwd-link-probe covers that half).
+# Compiled+run from build/oot (cwd != repo root) with an `import "strings"`
+# program: pass 1 unsets GOOROOT so resolution must fall through to the
+# dev-tree exe-relative branch (<exe-dir>/../goostd, mirroring how
+# cwd-link-probe's binary resolves lib/libgoo_runtime.a); pass 2 pins
+# GOOROOT explicitly to the repo root (the directory containing goostd/)
+# to prove the env-var override in goo_gooroot_dir()'s precedence works
+# standalone. See src/package/import_resolver.c: goo_gooroot_dir().
+outoftree-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build/oot
+	@echo "=== outoftree-probe: goostd (import \"strings\") resolves from a non-repo-root cwd ==="
+	@printf 'package main\n\nimport "fmt"\nimport "strings"\n\nfunc main() {\n\tparts := strings.Split("a,b,c", ",")\n\tfmt.Println(len(parts))\n}\n' > build/oot/prog.goo
+	@echo "--- pass 1: dev-tree exe-relative resolution (no GOOROOT) ---"
+	@cd build/oot && GOOROOT="" "$(abspath $(COMPILER))" prog.goo -o prog.out 2>"$(CURDIR)/build/oot/prog.err"; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "outoftree-probe: FAIL (exe-relative compile rc=$$rc)"; cat "$(CURDIR)/build/oot/prog.err"; exit 1; fi
+	@out=$$(build/oot/prog.out); if [ "$$out" = "3" ]; then echo "outoftree-probe: PASS (exe-relative)"; else echo "outoftree-probe: FAIL (exe-relative got '$$out' want 3)"; exit 1; fi
+	@echo "--- pass 2: GOOROOT env override (set to repo root) ---"
+	@cd build/oot && GOOROOT="$(CURDIR)" "$(abspath $(COMPILER))" prog.goo -o prog_env.out 2>"$(CURDIR)/build/oot/prog_env.err"; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "outoftree-probe: FAIL (GOOROOT-env compile rc=$$rc)"; cat "$(CURDIR)/build/oot/prog_env.err"; exit 1; fi
+	@out=$$(build/oot/prog_env.out); if [ "$$out" = "3" ]; then echo "outoftree-probe: PASS (GOOROOT env)"; else echo "outoftree-probe: FAIL (GOOROOT env got '$$out' want 3)"; exit 1; fi
+
 # M12 stdlib-breadth probe: compile + run examples/m12_probe.goo and
 # diff stdout against expected.txt (m10-probe pattern). Each
 # M12-stdlib-* child appends a numbered section + expected lines in
@@ -1693,7 +1715,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcsig-reject-probe loopcapture-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcsig-reject-probe loopcapture-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
