@@ -128,6 +128,27 @@ int64_t goo_map_get_sv(GooMapSV* m, const char* k);
 void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found);
 // Entry count. Backs len(m); linear scan of the linked list.
 int64_t goo_map_len_sv(GooMapSV* m);
+// Map iteration: cursor-based walk of the entry list. Init the cursor to
+// m->head (NULL map ⇒ NULL cursor ⇒ immediate end). Iteration order is the
+// list order — HEAD insertion makes that REVERSE INSERTION ORDER, which is
+// DETERMINISTIC. Documented deviation: Go deliberately randomizes map
+// iteration order; Goo does not (recorded in the decl-surface-breadth
+// spec). Entries deleted mid-iteration: unlinking a not-yet-visited entry
+// skips it (Go-consistent); deleting the CURRENT entry frees the node the
+// cursor points through — callers of the codegen'd loop cannot do that
+// today (no delete inside range bodies in generated code paths), recorded
+// as a limitation, not defended.
+//
+// GooMapEntrySV stays opaque here (only forward-declared above, as before):
+// `cursor` is typed `struct GooMapEntrySV**`, which is a legal, fully-typed
+// parameter even though the pointee is incomplete in this translation unit
+// (pointer types are always complete regardless of pointee completeness).
+// That is preferred over moving the entry struct's definition into the
+// header (would leak runtime.c-private layout to every includer) and over
+// typing the cursor as `void**` (would erase the type distinction between
+// "a map entry cursor" and "any pointer-to-pointer", inviting a mismatched
+// call at the LLVM IR call-site to go unnoticed).
+int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, const char** key_out, int64_t* val_out);
 // Deletes the entry for key k, if present. Backs delete(m, k). Does not
 // free k: the map never owns key storage (see goo_map_set_sv above).
 void goo_map_delete_sv(GooMapSV* m, const char* k);

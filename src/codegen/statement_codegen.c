@@ -610,6 +610,180 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 #endif
 }
 
+// Range-over-map codegen: cursor-based walk of the runtime's linked-list
+// map via goo_map_iter_next_sv (include/runtime.h). Mirrors the
+// slice/array/string range skeleton in codegen_generate_for_stmt below
+// (cond/body/post/exit blocks, break/continue wiring, mirrored
+// type-checker scope) but cannot share its body: that skeleton indexes a
+// {ptr,len} aggregate (extractvalue + GEP), while a map is a bare
+// GooMapSV* pointer (see type_mapping.c's TYPE_MAP case) whose entries are
+// visited by calling the iterator, not by indexing.
+//
+// `map_ptr` is the already-evaluated (and auto-loaded, if the range
+// expression was an lvalue) GooMapSV* value; `map_type` is its Goo Type
+// (TYPE_MAP), carrying key_type/value_type. Returns 0 and leaves an error
+// on codegen->diagnostics via codegen_error on failure (matching the
+// slice/array/string arm's convention), else the body's success flag.
+static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* checker,
+                                            ForStmtNode* for_stmt, ASTNode* stmt,
+                                            LLVMValueRef map_ptr, Type* map_type) {
+    Type* key_type = map_type->data.map.key_type;
+    Type* value_type = map_type->data.map.value_type;
+    if (!value_type) {
+        codegen_error(codegen, stmt->pos, "range over map: missing value type");
+        return 0;
+    }
+    // The runtime iterator's key_out is a raw `const char**` (see
+    // goo_map_iter_next_sv) — the map is string-keyed in practice (the
+    // checker's TYPE_MAP arm binds whatever key type the Type carries, but
+    // no non-string-keyed map construction path exists today), so this is
+    // the codegen-side half of that same documented limitation rather than
+    // a new one.
+    if (!key_type || key_type->kind != TYPE_STRING) {
+        codegen_error(codegen, stmt->pos,
+                      "range over map: only string-keyed maps are supported");
+        return 0;
+    }
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+
+    // Declare the two runtime externs this loop calls, if not already
+    // present in the module — same fallback-declare pattern
+    // codegen_alloc_local uses for goo_alloc (function_codegen.c): avoids
+    // adding these to runtime_integration.c's central table, which is out
+    // of scope for this change.
+    LLVMValueRef iter_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_next_sv");
+    if (!iter_fn) {
+        LLVMTypeRef pp_type = LLVMPointerType(ptr_type, 0);
+        LLVMTypeRef iter_params[] = { pp_type, pp_type, LLVMPointerType(i64, 0) };
+        LLVMTypeRef iter_fn_type = LLVMFunctionType(i32, iter_params, 3, 0);
+        iter_fn = LLVMAddFunction(codegen->module, "goo_map_iter_next_sv", iter_fn_type);
+    }
+    LLVMValueRef mkstr_fn = LLVMGetNamedFunction(codegen->module, "goo_string_new");
+    if (!mkstr_fn) {
+        LLVMTypeRef string_type = LLVMStructTypeInContext(ctx,
+            (LLVMTypeRef[]){ ptr_type, i64 }, 2, 0);
+        LLVMTypeRef mkstr_params[] = { ptr_type };
+        LLVMTypeRef mkstr_fn_type = LLVMFunctionType(string_type, mkstr_params, 1, 0);
+        mkstr_fn = LLVMAddFunction(codegen->module, "goo_string_new", mkstr_fn_type);
+    }
+
+    // Cursor slot: GooMapEntrySV* (opaque — entry layout stays private to
+    // runtime.c). Init to m->head, GooMapSV's sole field (struct GooMapSV {
+    // struct GooMapEntrySV* head; } — include/runtime.h), read via a
+    // locally-built single-pointer-field struct type mirroring that public
+    // layout (not GooMapEntrySV, which this file never needs to know).
+    LLVMTypeRef map_sv_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr_type }, 1, 0);
+    LLVMValueRef head_slot = LLVMBuildStructGEP2(codegen->builder, map_sv_ty, map_ptr, 0, "map_head_slot");
+    LLVMValueRef head_val = LLVMBuildLoad2(codegen->builder, ptr_type, head_slot, "map_head");
+
+    LLVMValueRef cursor_alloca = codegen_alloc_local(codegen, ptr_type, "range_mcursor");
+    LLVMBuildStore(codegen->builder, head_val, cursor_alloca);
+
+    // Out-param scratch for the iterator call, reused every iteration.
+    LLVMValueRef key_cstr_alloca = codegen_alloc_local(codegen, ptr_type, "range_mkey_cstr");
+    LLVMValueRef val_slot_alloca = codegen_alloc_local(codegen, i64, "range_mval_slot");
+
+    LLVMTypeRef val_llvm = codegen_type_to_llvm(codegen, value_type);
+    LLVMTypeRef key_llvm = codegen_type_to_llvm(codegen, key_type);
+    if (!val_llvm || !key_llvm) {
+        codegen_error(codegen, stmt->pos, "range over map: unresolvable key/value type");
+        return 0;
+    }
+
+    // Allocate key/value vars (per-iteration) and register with codegen's
+    // value table. `_` is bound like any other name (never looked up) —
+    // matches the slice/array/string arm's convention just above.
+    LLVMValueRef key_alloca = NULL, val_alloca = NULL;
+    if (for_stmt->key_name) {
+        key_alloca = codegen_alloc_local(codegen, key_llvm, for_stmt->key_name);
+        ValueInfo* kv = value_info_new(for_stmt->key_name, key_alloca, key_type);
+        kv->is_lvalue = 1;
+        kv->is_initialized = 1;
+        codegen_add_value(codegen, kv);
+    }
+    if (for_stmt->value_name) {
+        val_alloca = codegen_alloc_local(codegen, val_llvm, for_stmt->value_name);
+        ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, value_type);
+        vv->is_lvalue = 1;
+        vv->is_initialized = 1;
+        codegen_add_value(codegen, vv);
+    }
+
+    // Mirror loop vars to type-checker scope (parallels the slice/array/
+    // string arm below).
+    scope_push(checker);
+    if (for_stmt->key_name) {
+        Variable* kvar = variable_new(for_stmt->key_name, key_type, stmt->pos);
+        if (kvar) { kvar->is_initialized = 1; scope_add_variable(checker->current_scope, kvar); }
+    }
+    if (for_stmt->value_name) {
+        Variable* vvar = variable_new(for_stmt->value_name, value_type, stmt->pos);
+        if (vvar) { vvar->is_initialized = 1; scope_add_variable(checker->current_scope, vvar); }
+    }
+
+    LLVMBasicBlockRef rcond = codegen_create_block(codegen, "maprange.cond");
+    LLVMBasicBlockRef rbody = codegen_create_block(codegen, "maprange.body");
+    LLVMBasicBlockRef rpost = codegen_create_block(codegen, "maprange.post");
+    LLVMBasicBlockRef rexit = codegen_create_block(codegen, "maprange.exit");
+
+    LLVMBuildBr(codegen->builder, rcond);
+
+    // cond: goo_map_iter_next_sv(&cursor, &key_cstr, &val_slot) != 0. The
+    // call itself advances the cursor and fills the out-slots — there is no
+    // separate "advance" step in the post block (see below).
+    codegen_set_insert_point(codegen, rcond);
+    LLVMValueRef iter_args[3] = { cursor_alloca, key_cstr_alloca, val_slot_alloca };
+    LLVMValueRef has_next = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(iter_fn),
+                                           iter_fn, iter_args, 3, "map_has_next");
+    LLVMValueRef cond_v = LLVMBuildICmp(codegen->builder, LLVMIntNE, has_next,
+                                        LLVMConstInt(i32, 0, 0), "maprange_cond");
+    LLVMBuildCondBr(codegen->builder, cond_v, rbody, rexit);
+
+    // body: bind key (wrap the C string via goo_string_new — copies, so the
+    // binding stays valid independent of the map entry) and value (cast the
+    // int64 slot to the declared V, same convention as m[k] reads), then
+    // run the loop body.
+    codegen_set_insert_point(codegen, rbody);
+    if (key_alloca) {
+        LLVMValueRef kc = LLVMBuildLoad2(codegen->builder, ptr_type, key_cstr_alloca, "map_kcstr");
+        LLVMValueRef mkstr_args[1] = { kc };
+        LLVMValueRef kstr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(mkstr_fn),
+                                           mkstr_fn, mkstr_args, 1, "map_kstr");
+        LLVMBuildStore(codegen->builder, kstr, key_alloca);
+    }
+    if (val_alloca) {
+        LLVMValueRef slot = LLVMBuildLoad2(codegen->builder, i64, val_slot_alloca, "map_vslot");
+        LLVMValueRef v = codegen_map_slot_to_value(codegen, slot, value_type);
+        LLVMBuildStore(codegen->builder, v, val_alloca);
+    }
+
+    if (!codegen_push_loop(codegen, rexit, rpost)) {
+        codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
+        scope_pop(checker);
+        return 0;
+    }
+    int body_ok = 1;
+    if (for_stmt->body) {
+        body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
+    }
+    codegen_pop_loop(codegen);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+        LLVMBuildBr(codegen->builder, rpost);
+
+    // post: nothing to advance — goo_map_iter_next_sv already advanced the
+    // cursor in place during the cond call. Just loop back.
+    codegen_set_insert_point(codegen, rpost);
+    LLVMBuildBr(codegen->builder, rcond);
+
+    codegen_set_insert_point(codegen, rexit);
+    scope_pop(checker);
+    return body_ok;
+}
+
 int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available");
@@ -633,6 +807,18 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             LLVMTypeRef lt = codegen_type_to_llvm(codegen, range_val->goo_type);
             if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "range_load");
         }
+
+        // Map range diverges immediately: `raw` here is a bare GooMapSV*
+        // pointer (see type_mapping.c TYPE_MAP), not the {ptr,len}
+        // aggregate the extractvalue calls below assume, so it gets its
+        // own loop skeleton rather than falling through.
+        if (range_val->goo_type && range_val->goo_type->kind == TYPE_MAP) {
+            int ok = codegen_generate_map_range_loop(codegen, checker, for_stmt, stmt,
+                                                      raw, range_val->goo_type);
+            value_info_free(range_val);
+            return ok;
+        }
+
         // Extract data pointer (field 0) and length (field 1) — both
         // slices and (eventually) strings share this layout.
         LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "range_data");

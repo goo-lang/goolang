@@ -1595,8 +1595,8 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 
     // For-range: register the key as int and the value (if present)
     // as the element type of the range expression, both in scope for
-    // the body. Slice range is the supported case for M8; map/string
-    // range deferred.
+    // the body. Slice/array/string/map range are supported; other
+    // ranged types are rejected below.
     if (for_stmt->range_expr) {
         Type* range_type = type_check_expression(checker, for_stmt->range_expr);
         if (!range_type) {
@@ -1604,6 +1604,10 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             return 0;
         }
         Type* elem_type = NULL;
+        // Key type defaults to the int32 index used by slice/array/string
+        // range; TYPE_MAP overrides this below since a map's key is not an
+        // index.
+        Type* key_type = type_checker_get_builtin(checker, TYPE_INT32);
         if (range_type->kind == TYPE_SLICE) {
             elem_type = range_type->data.slice.element_type;
         } else if (range_type->kind == TYPE_ARRAY) {
@@ -1614,16 +1618,27 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             // int32 (rune today). int32 — not uint8 — so fmt.Println accepts
             // the value, and codegen zero-extends the i8 byte into it.
             elem_type = type_checker_get_builtin(checker, TYPE_INT32);
+        } else if (range_type->kind == TYPE_MAP) {
+            // Range over map: key/value bind to the map's OWN key/value
+            // types, read off the Type itself rather than hardcoded — the
+            // runtime map happens to be string-keyed today, but the checker
+            // doesn't bake that in.
+            key_type = range_type->data.map.key_type;
+            elem_type = range_type->data.map.value_type;
+            if (!key_type || !elem_type) {
+                type_error(checker, for_stmt->range_expr->pos,
+                          "range over map: missing key/value type");
+                scope_pop(checker);
+                return 0;
+            }
         } else {
             type_error(checker, for_stmt->range_expr->pos,
-                      "for-range supported only on slice/array/string types");
+                      "for-range supported only on slice/array/string/map types");
             scope_pop(checker);
             return 0;
         }
         if (for_stmt->key_name) {
-            Variable* kv = variable_new(for_stmt->key_name,
-                                       type_checker_get_builtin(checker, TYPE_INT32),
-                                       stmt->pos);
+            Variable* kv = variable_new(for_stmt->key_name, key_type, stmt->pos);
             if (kv) {
                 kv->is_initialized = 1;
                 scope_add_variable(checker->current_scope, kv);

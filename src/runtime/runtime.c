@@ -569,6 +569,20 @@ int64_t goo_map_len_sv(GooMapSV* m) {
     return n;
 }
 
+// Map iteration cursor advance. See include/runtime.h for the full contract
+// (deterministic reverse-insertion order, mid-iteration delete caveat). On
+// entry *cursor is either NULL (end) or a live GooMapEntrySV*; a NULL-map
+// caller passes an already-NULL cursor (never dereferences GooMapSV here).
+// Returns 1 with *key_out/*val_out filled and *cursor advanced to the next
+// entry; returns 0 (outs untouched) once the list is exhausted.
+int goo_map_iter_next_sv(GooMapEntrySV** cursor, const char** key_out, int64_t* val_out) {
+    if (!cursor || !*cursor) return 0;
+    if (key_out) *key_out = (*cursor)->key;
+    if (val_out) *val_out = (*cursor)->value;
+    *cursor = (*cursor)->next;
+    return 1;
+}
+
 // Unlinks and frees the entry for key k, if present (no-op if absent or
 // m/k is NULL). Backs delete(m, k).
 //
