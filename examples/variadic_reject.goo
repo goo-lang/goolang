@@ -1,0 +1,14 @@
+package main
+
+// Task 2 negative gate: a variadic parameter must be the FINAL parameter
+// (Go: "can only use ... with final parameter in list"). `a ...int` here is
+// followed by `b int`, so this must be rejected at signature-build time
+// (declare_function_signature), not silently misparsed or deferred to a
+// confusing downstream error.
+func f(a ...int, b int) int {
+	return b
+}
+
+func main() {
+	_ = f(1, 2)
+}

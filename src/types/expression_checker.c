@@ -2180,11 +2180,21 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     // Package functions (fmt.Println) are also selectors but resolve through
     // TYPE_PACKAGE, not a struct receiver, so the method branch below skips
     // them; their variadic flag would skip them regardless.
+    // Task 2: a user-defined variadic function (param_types non-NULL — its
+    // last entry is the TYPE_SLICE the checker built in
+    // declare_function_signature) DOES get its signature checked below, just
+    // with variadic-aware arity/element-type rules. Only the NULL-param
+    // builtins (println/print/panic, which are separately excluded via
+    // is_builtin below) rely on skipping this entirely — gating on
+    // param_types instead of a blanket is_variadic exclusion preserves that
+    // special case while covering the new feature.
+    int callee_is_variadic = func_type->data.function.is_variadic;
+    int skip_variadic_builtin = callee_is_variadic && !func_type->data.function.param_types;
     int check_signature = 0;
     size_t recv_offset = 0;
     const char* callee_name = NULL;
     if (call->function && call->function->type == AST_IDENTIFIER
-        && !func_type->data.function.is_variadic) {
+        && !skip_variadic_builtin) {
         IdentifierNode* callee_ident = (IdentifierNode*)call->function;
         Variable* callee = type_checker_lookup_variable(checker, callee_ident->name);
         if (callee && !callee->is_builtin) {
@@ -2192,7 +2202,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             callee_name = callee_ident->name;
         }
     } else if (call->function && call->function->type == AST_SELECTOR_EXPR
-               && !func_type->data.function.is_variadic) {
+               && !skip_variadic_builtin) {
         // Confirm the selector names a METHOD (receiver spliced into
         // params[0]), not a struct field that happens to hold a function
         // value, by re-resolving the mangled method name exactly as the
@@ -2277,9 +2287,31 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // Argument type compatibility: position-named so the diagnostic
         // points at the offending argument rather than the LLVM verifier.
         // For methods, recv_offset=1 skips the spliced receiver in params[0].
-        if (check_signature && (arg_count + recv_offset) < param_count && param_types) {
-            Type* param_type = param_types[arg_count + recv_offset];
-
+        //
+        // Task 2 (variadic): once the argument index reaches the variadic
+        // param's position (param_count - 1 — the LAST entry, guaranteed by
+        // declare_function_signature's "must be final" check), every
+        // remaining trailing argument checks/adapts against that param's
+        // ELEMENT type instead of indexing further into param_types (which
+        // has no per-arg entries beyond the slice itself). This is what lets
+        // `small(300)` into `func small(bs ...int8)` hit the same
+        // is_untyped_int_rooted/adapt_untyped_int_operand path below that
+        // "constant 300 overflows int8" already comes from for non-variadic
+        // narrow params.
+        Type* param_type = NULL;
+        if (check_signature && param_types && callee_is_variadic && param_count > 0) {
+            size_t last_idx = param_count - 1;
+            if ((arg_count + recv_offset) < last_idx) {
+                param_type = param_types[arg_count + recv_offset];
+            } else {
+                Type* slice_t = param_types[last_idx];
+                param_type = (slice_t && slice_t->kind == TYPE_SLICE)
+                    ? slice_t->data.slice.element_type : NULL;
+            }
+        } else if (check_signature && (arg_count + recv_offset) < param_count && param_types) {
+            param_type = param_types[arg_count + recv_offset];
+        }
+        if (param_type) {
             // Narrow integer-literal adaptation: an untyped integer literal
             // adapts to an integer parameter's type (Go's untyped-constant rule,
             // restricted to literals). Retype the literal node so codegen emits
@@ -2354,11 +2386,27 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     // Argument count against the declared parameter list (minus the spliced
     // receiver for methods: param_count >= 1 whenever recv_offset == 1, so the
     // subtraction never underflows).
-    if (check_signature && arg_count != param_count - recv_offset) {
-        type_error(checker, expr->pos,
-                   "call to %s: wrong number of arguments (have %zu, want %zu)",
-                   callee_name, arg_count, param_count - recv_offset);
-        return NULL;
+    if (check_signature) {
+        size_t declared = param_count - recv_offset;
+        if (callee_is_variadic) {
+            // The variadic param itself (declared's last slot) has no fixed
+            // arity — zero or more trailing args pack into it (`sum()` is
+            // valid: an empty slice). Only the FIXED prefix before it is
+            // required; declared >= 1 always holds here because a variadic
+            // signature always carries at least the slice param itself.
+            size_t min_args = declared - 1;
+            if (arg_count < min_args) {
+                type_error(checker, expr->pos,
+                           "call to %s: not enough arguments (have %zu, want at least %zu)",
+                           callee_name, arg_count, min_args);
+                return NULL;
+            }
+        } else if (arg_count != declared) {
+            type_error(checker, expr->pos,
+                       "call to %s: wrong number of arguments (have %zu, want %zu)",
+                       callee_name, arg_count, declared);
+            return NULL;
+        }
     }
 
     expr->node_type = func_type->data.function.return_type;

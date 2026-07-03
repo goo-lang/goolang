@@ -286,6 +286,17 @@ ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* chec
 ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+// Shared slice-construction core behind codegen_generate_slice_lit (`[]T{...}`)
+// and the struct-literal named-slice path: build a slice struct
+// { ptr, i64 len, i64 cap } from a next-chained ASTNode* element list and a
+// resolved TYPE_SLICE type. Exposed (non-static) for Task 2's variadic
+// call-site packing (call_codegen.c), which reuses this same lowering for the
+// trailing-args-into-a-slice construction instead of duplicating it —
+// `first_elem` there is the first trailing ARGUMENT node, not a literal's
+// element list, but the shape (next-chained ASTNode*, targets slice_type) is
+// identical.
+ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen, TypeChecker* checker,
+                                          ASTNode* first_elem, Type* slice_type, Position pos);
 
 // Interface codegen (P4-5): vtable construction, boxing, dynamic dispatch.
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,

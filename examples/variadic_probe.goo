@@ -1,0 +1,36 @@
+package main
+
+import "fmt"
+
+func sum(nums ...int) int {
+	t := 0
+	for _, n := range nums {
+		t += n
+	}
+	return t
+}
+
+func join(prefix string, nums ...int) int {
+	if prefix == "p" {
+		return sum(nums[0], nums[1])
+	}
+	return 0
+}
+
+func small(bs ...int8) int {
+	t := 0
+	for _, b := range bs {
+		t += int(b)
+	}
+	return t
+}
+
+func main() {
+	fmt.Println(sum())
+	fmt.Println(sum(41))
+	fmt.Println(sum(1, 2, 3))
+	fmt.Println(join("p", 4, 5))
+	fmt.Println(small(100, 27))
+	r := sum(1, 2) + sum(3)
+	fmt.Println(r)
+}

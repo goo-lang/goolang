@@ -281,6 +281,17 @@ typedef struct {
     struct ASTNode* values;    // Initial values
     OwnershipKind ownership;   // Goo extension: ownership qualifier
     int is_short_decl;         // True for := declarations
+    // Task 2 (variadic params): set when this VarDeclNode is a function
+    // parameter written `name ...T`. `type` still holds the ELEMENT type T
+    // as parsed (see parser.y's func_param production) — the variadic-ness
+    // is carried on this flag, not the type node, so every consumer that
+    // wraps `type` in a slice (signature building, body param binding, call-
+    // site checking) does so explicitly. Only meaningful (and only valid) on
+    // the LAST parameter of a function's param list; appended at the STRUCT
+    // TAIL per the no-header-deps convention above (see :123-133) — a
+    // mid-list field insertion would shift every field after it and silently
+    // miscompile any translation unit rebuilt without `make clean`.
+    int is_variadic_param;
 } VarDeclNode;
 
 // Constant declaration

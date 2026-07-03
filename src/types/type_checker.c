@@ -601,7 +601,28 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     for (ASTNode* p = func->params; p; p = p->next) {
         if (p->type == AST_VAR_DECL) param_count++;
     }
+
+    // Task 2: a variadic parameter (`name ...T`) must be the LAST parameter
+    // (Go: "can only use ... with final parameter in list"). Check this
+    // BEFORE building param_types below — an earlier variadic param there
+    // would otherwise just get its element type silently instead of []T,
+    // producing a confusing downstream error instead of a clean rejection.
+    {
+        size_t idx = 0, last_idx = param_count - 1;
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_variadic_param && idx != last_idx) {
+                type_error(checker, p->pos,
+                           "variadic parameter must be the final parameter");
+                return 0;
+            }
+            idx++;
+        }
+    }
+
     Type** param_types = NULL;
+    int is_variadic = 0;
     if (param_count > 0) {
         param_types = calloc(param_count, sizeof(Type*));
         size_t idx = 0;
@@ -610,6 +631,15 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
             VarDeclNode* pd = (VarDeclNode*)p;
             Type* pt = pd->type ? type_from_ast(checker, pd->type)
                                 : type_checker_get_builtin(checker, TYPE_INT32);
+            // The BODY sees a variadic param as a slice of the element type
+            // (Go's slice-sugar model — NOT C varargs); wrap it here so the
+            // signature's param_types[last] is TYPE_SLICE of T. Call sites
+            // key off func_type->data.function.is_variadic (set below) to
+            // pack trailing args into that slice.
+            if (pd->is_variadic_param && pt) {
+                pt = type_slice(pt);
+                is_variadic = 1;
+            }
             param_types[idx++] = pt;
         }
     }
@@ -618,6 +648,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         : type_checker_get_builtin(checker, TYPE_VOID);
 
     Type* func_type = type_function(param_types, param_count, return_type);
+    if (func_type) func_type->data.function.is_variadic = is_variadic;
     char* mangled = NULL;
     const char* reg_name = func->name;
     if (func->receiver) {
@@ -678,7 +709,12 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
                 } else {
                     param_type = type_checker_get_builtin(checker, TYPE_INT32); // Default type
                 }
-                
+                // Task 2: the body sees a variadic param as []T, matching the
+                // signature built by declare_function_signature above.
+                if (param_decl->is_variadic_param && param_type) {
+                    param_type = type_slice(param_type);
+                }
+
                 if (param_type) {
                     for (size_t i = 0; i < param_decl->name_count; i++) {
                         Variable* param_var = variable_new(param_decl->names[i], param_type, param_decl->base.pos);

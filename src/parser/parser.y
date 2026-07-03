@@ -502,6 +502,39 @@ func_param:
         param->values = NULL;
         $$ = (ASTNode*)param;
     }
+    | identifier ELLIPSIS type {
+        // Task 2: variadic parameter `name ...T`. `type` stores the ELEMENT
+        // type T as parsed — the checker (declare_function_signature /
+        // type_check_function_decl) wraps it in a TYPE_SLICE when building
+        // the signature and binding the body param, driven by
+        // is_variadic_param below. Go requires this be the LAST parameter;
+        // that's a semantic (not grammatical) constraint, enforced at
+        // signature-build time so `func f(a ...int, b int)` gets a clean
+        // rejection instead of silently misparsing.
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = malloc(sizeof(char*));
+        param->names[0] = strdup(ident->name);
+        param->name_count = 1;
+        param->type = $3;
+        param->is_variadic_param = 1;
+        param->values = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)param;
+    }
+    | ELLIPSIS type {
+        // Anonymous variadic parameter `...T` (Go allows an unnamed variadic
+        // param, matching the unnamed `type` alternative above). Included
+        // for symmetry since it added no grammar conflicts (verified via
+        // the bison conflict-count gate).
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = NULL;
+        param->name_count = 0;
+        param->type = $2;
+        param->is_variadic_param = 1;
+        param->values = NULL;
+        $$ = (ASTNode*)param;
+    }
     ;
 
 func_result:
