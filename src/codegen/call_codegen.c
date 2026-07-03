@@ -208,6 +208,40 @@ ValueInfo* codegen_resolve_callee(CodeGenerator* codegen, TypeChecker* checker, 
 #endif
 }
 
+#if LLVM_AVAILABLE
+// Task 3: a nil function value (`var f func(int) int`; never assigned)
+// zero-values to the fat pointer { NULL, NULL } — calling it jumps to a
+// NULL instruction pointer (raw SIGSEGV, no message). Go panics cleanly
+// ("invalid memory address or nil pointer dereference"); mirror that with
+// the SAME runtime-abort mechanism the divzero/bounds checks use
+// (codegen_emit_divzero_check, expression_codegen.c: icmp against null,
+// conditional branch to a panic block that calls goo_panic(message) and
+// terminates with `unreachable`, else fall through). Fires ONLY on this
+// INDIRECT call site — a direct named-function call (LLVMIsAFunction
+// branch above) can never be nil, so it stays unconditional and unchanged.
+static void codegen_emit_funcnil_check(CodeGenerator* codegen, LLVMValueRef fn_ptr,
+                                        ASTNode* expr) {
+    (void)expr;
+    LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+    if (!panic_fn) return;  // no panic symbol: emit the call unguarded
+
+    LLVMValueRef null_ptr = LLVMConstNull(LLVMTypeOf(fn_ptr));
+    LLVMValueRef isnil = LLVMBuildICmp(codegen->builder, LLVMIntEQ, fn_ptr, null_ptr, "funcnil");
+    LLVMBasicBlockRef panic_bb = codegen_create_block(codegen, "funcnil.panic");
+    LLVMBasicBlockRef cont_bb = codegen_create_block(codegen, "funcnil.cont");
+    LLVMBuildCondBr(codegen->builder, isnil, panic_bb, cont_bb);
+
+    codegen_set_insert_point(codegen, panic_bb);
+    LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder,
+                                                "call of nil function", "funcnil_msg");
+    LLVMValueRef args[1] = { msg };
+    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn), panic_fn, args, 1, "");
+    LLVMBuildUnreachable(codegen->builder);
+
+    codegen_set_insert_point(codegen, cont_bb);
+}
+#endif
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -1240,6 +1274,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
 
         LLVMValueRef fn_ptr  = LLVMBuildExtractValue(codegen->builder, callee_val, 0, "funcval_fn");
         LLVMValueRef env_ptr = LLVMBuildExtractValue(codegen->builder, callee_val, 1, "funcval_env");
+
+        // Task 3: guard the indirect call only — a nil func VALUE (zero-
+        // valued `var f func(...)...`, never assigned) has fn_ptr == NULL.
+        codegen_emit_funcnil_check(codegen, fn_ptr, expr);
 
         LLVMTypeRef call_type = codegen_get_funcval_call_type(codegen, func_goo_type);
         if (!call_type) {
