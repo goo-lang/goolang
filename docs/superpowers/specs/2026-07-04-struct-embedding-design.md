@@ -69,12 +69,13 @@ and shift-preference would misparse it as field `Base` of type `X` plus embedded
   the **already existing** `identifier type SEMICOLON` field productions.
 - This is a deliberately scoped pilot of the full-ASI reform on the long-standing queue.
 
-**Grammar delta** (`parser.y` `struct_field`): add embedded-field productions —
-bare `identifier` (legal when lookahead is `}`, via LALR reduce), `identifier SEMICOLON`,
-`MUL identifier`, `MUL identifier SEMICOLON`. Comma-separated Goo-style fields
-unaffected. Expected bison delta: **zero** vs the 81 S/R + 256 R/R baseline
-(the `;` productions exist; new productions decide on 1-token lookahead).
-Any drift gets shape-diffed and justified or fixed, per standing practice.
+**Grammar delta** (`parser.y` `struct_field`): add embedded-field productions.
+Embedded productions are **semicolon-terminated only** (`identifier SEMICOLON`,
+`MUL identifier SEMICOLON`) — zero bison-conflict delta. The `;` is ASI-inserted
+at newlines, so all multi-line Go source parses verbatim; the one refinement vs
+Go is that a ONE-LINE `struct { Base }` must be written `struct { Base; }`
+(same family as the documented `}; stmt` one-line quirk). A bare-identifier
+production would cost ~2 justified S/R conflicts; deferred unless it bites.
 
 Qualified embedded type names (`pkg.Type`) follow whatever the `type_name`
 grammar supports today (goostd is flat); no new surface invented for them.

@@ -309,6 +309,13 @@ typedef struct {
     // TAIL per the no-header-deps convention (see :123-133) — same rule
     // is_variadic_param documents above.
     int is_captured;
+    // Struct embedding: set by the parser on an anonymous (embedded) struct
+    // field — `Base` or `*Base` inside a struct body. The field is otherwise
+    // an ordinary named field (names[0] == the unqualified type name), so
+    // layout/literals/explicit paths need no special cases; promotion logic
+    // (src/types/embedding.c) keys off this flag. Appended at the STRUCT TAIL
+    // per the no-header-deps convention above.
+    int is_embedded;
 } VarDeclNode;
 
 // Constant declaration

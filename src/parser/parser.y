@@ -48,6 +48,39 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
    rule and the elided-composite element rule. */
 static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
 
+// Struct embedding: build the VarDeclNode for an anonymous field `Name` /
+// `*Name`. The field is stored under the type's own name (Go's rule), with
+// is_embedded set; the type node matches what type_name / pointer_type
+// reductions would have built.
+static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
+    IdentifierNode* ident = (IdentifierNode*)ident_node;
+    VarDeclNode* field = ast_var_decl_new(get_current_position());
+    field->names = malloc(sizeof(char*));
+    field->names[0] = strdup(ident->name);
+    field->name_count = 1;
+    BasicTypeNode* basic = (BasicTypeNode*)malloc(sizeof(BasicTypeNode));
+    basic->base.type = AST_BASIC_TYPE;
+    basic->base.pos = ident->base.pos;
+    basic->base.node_type = NULL;
+    basic->base.next = NULL;
+    basic->name = strdup(ident->name);
+    ASTNode* ty = (ASTNode*)basic;
+    if (is_pointer) {
+        PointerTypeNode* ptr = (PointerTypeNode*)malloc(sizeof(PointerTypeNode));
+        ptr->base.type = AST_POINTER_TYPE;
+        ptr->base.pos = ident->base.pos;
+        ptr->base.node_type = NULL;
+        ptr->base.next = NULL;
+        ptr->element_type = ty;
+        ty = (ASTNode*)ptr;
+    }
+    field->type = ty;
+    field->values = NULL;
+    field->is_embedded = 1;
+    ast_node_free(ident_node);
+    return (ASTNode*)field;
+}
+
 // func_signature's own $$ collapses params and result into a single
 // ASTNode* that can't tell "params only" (case: `(int)`) apart from
 // "result only" (case: `() int`), and its "both" case (`(int) int`)
@@ -1965,6 +1998,15 @@ struct_field:
         field->values = NULL;
         ast_node_free($1);
         $$ = (ASTNode*)field;
+    }
+    | identifier SEMICOLON {
+        // Embedded (anonymous) field `Base;` — the ';' is explicit in
+        // one-liners and ASI-inserted at newlines inside struct bodies.
+        $$ = make_embedded_field($1, 0);
+    }
+    | MULTIPLY identifier SEMICOLON {
+        // Embedded pointer field `*Base;`.
+        $$ = make_embedded_field($2, 1);
     }
     ;
 
