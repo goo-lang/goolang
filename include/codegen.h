@@ -30,6 +30,25 @@ typedef struct FunctionInfo FunctionInfo;
 typedef struct ValueInfo ValueInfo;
 
 #if LLVM_AVAILABLE
+// Deferred global initializer (Task 2 / var-init cluster): a package-level
+// `var y = x` (or any initializer needing an identifier, call, or other
+// non-constant-foldable expression) cannot be evaluated at true module scope
+// — codegen_generate_expression may issue LLVMBuildXxx calls that require a
+// positioned builder, which module scope does not have (the SIGSEGV this
+// task fixes). Such initializers are queued here during
+// codegen_generate_var_decl's module-scope pass and evaluated, in
+// declaration order, inside a synthesized goo.global_init() function called
+// as user main's first instruction. See codegen_generate_global_init_function
+// (function_codegen.c). `global`/`expr`/`declared_type` are all borrowed
+// (owned by the module / AST / type system respectively) — the array itself
+// owns no memory beyond its own storage.
+typedef struct {
+    LLVMValueRef global;   // already-created global, zero/nil-initialized
+    struct ASTNode* expr;  // initializer expression to evaluate later
+    Type* declared_type;   // the var's declared/inferred Goo type
+    Position pos;          // for diagnostics
+} DeferredGlobalInit;
+
 // LLVM-based code generator
 struct CodeGenerator {
     LLVMContextRef context;
@@ -85,6 +104,12 @@ struct CodeGenerator {
     // WebAssembly-specific configuration
     int wasm_configured;
     int is_wasm_target;
+
+    // Deferred global initializers awaiting evaluation in goo.global_init()
+    // (Task 2 / var-init cluster). Growable array; see DeferredGlobalInit.
+    DeferredGlobalInit* deferred_global_inits;
+    size_t deferred_global_init_count;
+    size_t deferred_global_init_capacity;
 };
 
 // Function information for code generation
@@ -180,6 +205,22 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
 int codegen_predeclare_functions(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decls);
 int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl);
 int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl);
+// Task 2 / var-init cluster: does `decls` (a program's top-level declaration
+// list) contain any package-level `var` whose initializer will be deferred
+// to goo.global_init() (see codegen_generate_var_decl's module-scope path)?
+// codegen_generate_program calls this BEFORE generating any function body,
+// so goo.global_init's prototype can be pre-created — a call to it inserted
+// into `main`'s prologue then resolves via LLVMGetNamedFunction regardless
+// of main's position in source order relative to the deferred var(s).
+int codegen_program_needs_global_init(ASTNode* decls);
+// Synthesize (fill in the body of the already-prototyped) goo.global_init()
+// from the deferred global-initializer list collected while generating every
+// top-level declaration. No-op (returns 1) if codegen_program_needs_global_init
+// found nothing to defer — the prototype was never created, so there is
+// nothing to fill in. Must be called once, after every top-level declaration
+// has been generated (codegen_generate_program) so every global and every
+// function this initializer might reference already exists in the module.
+int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* checker);
 int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 // Address of an assignable lvalue (identifier/field/index), unloaded.
 ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);

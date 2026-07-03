@@ -457,6 +457,25 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
 
+    // Task 2 / var-init cluster: evaluate deferred (non-constant) global
+    // initializers before any user code runs — must be main's very FIRST
+    // instruction, ahead of the escape pre-pass below (which emits no IR,
+    // so ordering against it doesn't matter) and everything else. The
+    // symbol only exists if codegen_generate_program's pre-pass
+    // (codegen_program_needs_global_init) found a deferrable global
+    // initializer anywhere in the program — main's own prologue never
+    // creates it, only looks it up, so a program with no such initializer
+    // emits no call and no goo.global_init at all. There is no other
+    // runtime-init call at main entry today to order against (goo_init in
+    // runtime_integration.c is declared but never called from codegen).
+    if (is_entry_main) {
+        LLVMValueRef global_init_fn = LLVMGetNamedFunction(codegen->module, "goo.global_init");
+        if (global_init_fn) {
+            LLVMTypeRef void_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), NULL, 0, 0);
+            LLVMBuildCall2(codegen->builder, void_ty, global_init_fn, NULL, 0, "");
+        }
+    }
+
     // M8b: compute which locals escape into a goroutine and must be heap-promoted.
     escape_prepass_compute(func_decl->body);
 
@@ -616,37 +635,215 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
 }
 
 #if LLVM_AVAILABLE
-// Conversion-shaped call expression: `T(x)` where T is a builtin numeric
-// conversion name. MUST mirror the routing predicate in call_codegen.c's
-// codegen_generate_call_expr (its static is_builtin_conv_name set + the
-// single-argument shape + the shadowing gate via type_checker_lookup_variable)
-// — that predicate decides whether an AST_CALL_EXPR lowers as a value
-// conversion or as an actual call. It is replicated here (rather than shared)
-// only because is_builtin_conv_name is static to call_codegen.c; if that set
-// ever changes, change BOTH copies. The global-initializer guard below uses
-// this to exempt conversions: `var g = int64(5)` at package scope is a
-// constant conversion that LLVM folds without a positioned builder, so it
-// must reach generation and let the LLVMIsConstant backstop decide — only
-// genuine function/builtin calls are rejected early.
-static int global_init_is_conversion_call(TypeChecker* checker, ASTNode* expr) {
-    CallExprNode* call = (CallExprNode*)expr;
-    if (!call->function || call->function->type != AST_IDENTIFIER) return 0;
-    const char* name = ((IdentifierNode*)call->function)->name;
-    if (!name) return 0;
-    // Same set as call_codegen.c:is_builtin_conv_name (see comment above).
-    static const char* kinds[] = {
-        "int", "int8", "int16", "int32", "int64",
-        "uint", "uint8", "uint16", "uint32", "uint64",
-        "byte", "rune", "float32", "float64",
-    };
-    int is_conv_name = 0;
-    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
-        if (strcmp(name, kinds[i]) == 0) { is_conv_name = 1; break; }
+// Task 2 / var-init cluster: module-scope initializer classification. Can
+// `expr` (a package-level var's initializer) be evaluated NOW, with no
+// positioned LLVM builder, as a true module constant? A bare literal (or
+// nil) is the only shape trusted to skip the builder entirely — identifiers,
+// calls, binary/unary expressions, selectors, indexing, and everything else
+// EXCEPT composite literals (see the carve-out just below) are deferred to
+// goo.global_init(), which runs with a real positioned builder before user
+// main. This subsumes the old call-rejection guard that used to sit in the
+// caller below: a call is never AST_LITERAL, so it is now deferred rather
+// than cleanly rejected — and it happens to fix the SIGSEGV root cause
+// (module-scope codegen_generate_expression touching an unpositioned
+// builder for an identifier operand), since we never attempt generation for
+// these shapes at module scope at all.
+//
+// Carve-out: a nullable global whose declared base type's numeric KIND
+// differs from the literal's own token kind (`var gq ?float64 = 5` — an int
+// literal into a float base) must ALSO defer. codegen_generate_var_decl's
+// module-scope nullable-wrap fallback does a bare InsertValue with no
+// coercion — correct only when the literal already matches the base kind.
+// Coercing the raw literal requires a positioned builder
+// (codegen_create_nullable_with_value, the function-scope path), so route
+// it through goo.global_init instead of teaching the constant path to
+// coerce in place.
+static int global_init_should_defer(ASTNode* expr, Type* var_type) {
+    if (!expr) return 0;
+
+    // Composite literals (array/slice/struct) already have their own
+    // constant-vs-clean-error handling at module scope
+    // (composite_codegen.c's "all-constant fast path" / "requires constant
+    // elements" checks) that neither crashes nor needs deferral — an
+    // all-constant literal (the goostd/bits and goostd/utf8 lookup-table
+    // shape) folds to a true LLVM constant without touching the builder.
+    // Keep them on today's path unchanged. Deferring them would need a
+    // per-package-qualified goo.global_init: codegen_generate_program runs
+    // ONCE PER IMPORTED PACKAGE in addition to once for main (see
+    // compile_resolved_packages in src/compiler/goo.c), all sharing ONE
+    // module — a second package's deferred initializer would collide with
+    // (or silently reprocess stale entries alongside) an earlier package's
+    // goo.global_init. Out of scope for this task; see the package-scope
+    // rejection in codegen_generate_var_decl below for what happens if a
+    // package ever needs this for a non-composite shape.
+    if (expr->type == AST_ARRAY_LITERAL || expr->type == AST_SLICE_EXPR ||
+        expr->type == AST_STRUCT_LITERAL) {
+        return 0;
     }
-    return is_conv_name && call->args && !call->args->next
-        && !type_checker_lookup_variable(checker, name);
+
+    if (expr->type != AST_LITERAL) return 1;
+
+    LiteralNode* lit = (LiteralNode*)expr;
+    if (lit->literal_type == TOKEN_NIL) return 0;
+
+    if (var_type && var_type->kind == TYPE_NULLABLE && var_type->data.nullable.base_type) {
+        TypeKind base_kind = var_type->data.nullable.base_type->kind;
+        int base_is_float = (base_kind == TYPE_FLOAT32 || base_kind == TYPE_FLOAT64);
+        int lit_is_float = (lit->literal_type == TOKEN_FLOAT);
+        int lit_is_int   = (lit->literal_type == TOKEN_INT);
+        if (base_is_float && lit_is_int) return 1;
+        if (!base_is_float && lit_is_float) return 1;
+    }
+    return 0;
+}
+
+// Append a module-scope initializer that global_init_should_defer flagged to
+// the deferred list, to be evaluated later by
+// codegen_generate_global_init_function. Growable array; mirrors
+// codegen_add_value's realloc pattern in codegen.c. Returns 0 on allocation
+// failure.
+static int codegen_defer_global_init(CodeGenerator* codegen, LLVMValueRef global,
+                                     ASTNode* expr, Type* declared_type, Position pos) {
+    if (codegen->deferred_global_init_count >= codegen->deferred_global_init_capacity) {
+        size_t new_cap = codegen->deferred_global_init_capacity == 0
+                        ? 8 : codegen->deferred_global_init_capacity * 2;
+        DeferredGlobalInit* grown = realloc(codegen->deferred_global_inits,
+                                            sizeof(DeferredGlobalInit) * new_cap);
+        if (!grown) return 0;
+        codegen->deferred_global_inits = grown;
+        codegen->deferred_global_init_capacity = new_cap;
+    }
+    DeferredGlobalInit* entry = &codegen->deferred_global_inits[codegen->deferred_global_init_count++];
+    entry->global = global;
+    entry->expr = expr;
+    entry->declared_type = declared_type;
+    entry->pos = pos;
+    return 1;
+}
+
+// Shared local-scope initializer pipeline (DRY: previously inlined four
+// times — once per transform — at the bottom of codegen_generate_var_decl's
+// per-name loop; #101's reviews flagged the duplication risk of copying it
+// again for goo.global_init). Used by BOTH an ordinary function-body `var`
+// declaration and each deferred global initializer evaluated inside the
+// synthesized goo.global_init() (codegen_generate_global_init_function).
+// Applies, in order: lvalue auto-load, nullable auto-wrap, interface box,
+// width-coerce. Pure code-motion extraction — behavior (including the
+// module-scope constant-rebuild arms of steps 2 and 4, reachable only via a
+// STALE positioned builder left by an earlier function, since a fresh
+// module-scope caller is now filtered out by global_init_should_defer
+// before ever reaching this helper) is unchanged from the pre-extraction
+// inline code. On failure, init_value is freed and 0 is returned — callers
+// must not free it again. On success, returns 1 with init_value mutated in
+// place, ready to store.
+static int codegen_apply_local_init_pipeline(CodeGenerator* codegen, TypeChecker* checker,
+                                              Type* var_type, LLVMTypeRef llvm_type,
+                                              ValueInfo* init_value) {
+    // 1. Auto-load an lvalue initializer to its rvalue. An index/selector
+    // initializer (e.g. `tmp := s[i]`, `x := p.field`) returns the element
+    // ADDRESS with is_lvalue=1; the store later — and the nullable/
+    // interface/sext transforms before it — all expect a VALUE.
+    if (init_value->is_lvalue && init_value->goo_type) {
+        LLVMTypeRef load_ty = codegen_type_to_llvm(codegen, init_value->goo_type);
+        if (load_ty) {
+            init_value->llvm_value = LLVMBuildLoad2(codegen->builder, load_ty,
+                                                    init_value->llvm_value, "init_load");
+            init_value->is_lvalue = 0;
+        }
+    }
+
+    // 2. Auto-wrap a plain value into a nullable struct when the declared
+    // type is TYPE_NULLABLE.
+    if (var_type && var_type->kind == TYPE_NULLABLE &&
+        init_value->goo_type && init_value->goo_type->kind != TYPE_NULLABLE) {
+        if (codegen->current_function) {
+            // Positioned builder: route through the shared nullable-wrap
+            // helper, which coerces the value to the slot's element type
+            // first (fixes e.g. a typed int value into a float nullable
+            // slot).
+            init_value->llvm_value = codegen_create_nullable_with_value(
+                codegen, llvm_type, init_value->llvm_value, init_value->goo_type);
+        } else {
+            // No positioned builder (reachable only via a stale block left
+            // by an earlier function — see this function's header comment):
+            // keep the original inline InsertValue pair, which does not
+            // coerce the value's width/kind first.
+            LLVMValueRef agg = LLVMGetUndef(llvm_type);
+            LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+            agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "null_tag");
+            agg = LLVMBuildInsertValue(codegen->builder, agg, init_value->llvm_value, 1, "null_val");
+            init_value->llvm_value = agg;
+        }
+        init_value->goo_type = var_type;
+    }
+
+    // 3. Box a concrete value into an interface value (P4-5) when the
+    // declared type is an interface.
+    if (var_type && var_type->kind == TYPE_INTERFACE &&
+        init_value->goo_type && init_value->goo_type->kind != TYPE_INTERFACE) {
+        LLVMValueRef boxed = codegen_interface_box(codegen, checker, var_type,
+                                                   init_value->goo_type,
+                                                   init_value->llvm_value);
+        if (!boxed) { value_info_free(init_value); return 0; }
+        init_value->llvm_value = boxed;
+        init_value->goo_type = var_type;
+    }
+
+    // 4. Match the initializer's width to the declared type (narrowing,
+    // widening, and float-width coercion — see the pre-extraction comment
+    // this replaced for the full narrowing/widening/float rationale).
+    {
+        LLVMTypeRef init_ty = LLVMTypeOf(init_value->llvm_value);
+        if (init_ty != llvm_type) {
+            int use_sext = init_value->goo_type
+                         ? type_is_signed(init_value->goo_type) : 1;
+            if (codegen->current_function) {
+                init_value->llvm_value = codegen_coerce_to_type(
+                    codegen, init_value->llvm_value, use_sext, llvm_type);
+            } else if (LLVMIsConstant(init_value->llvm_value)) {
+                // No positioned builder (see step 2's comment): rebuild the
+                // constant at the target width directly instead of calling
+                // the builder-requiring coercion helper.
+                LLVMTypeKind fk = LLVMGetTypeKind(init_ty);
+                LLVMTypeKind tk = LLVMGetTypeKind(llvm_type);
+                if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
+                    unsigned long long raw = use_sext
+                        ? (unsigned long long)LLVMConstIntGetSExtValue(init_value->llvm_value)
+                        : LLVMConstIntGetZExtValue(init_value->llvm_value);
+                    init_value->llvm_value = LLVMConstInt(llvm_type, raw, use_sext);
+                } else if ((fk == LLVMFloatTypeKind || fk == LLVMDoubleTypeKind) &&
+                           (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
+                    LLVMBool loses_info;
+                    double d = LLVMConstRealGetDouble(init_value->llvm_value, &loses_info);
+                    init_value->llvm_value = LLVMConstReal(llvm_type, d);
+                } else if (fk == LLVMIntegerTypeKind &&
+                           (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
+                    double d = use_sext
+                        ? (double)LLVMConstIntGetSExtValue(init_value->llvm_value)
+                        : (double)(unsigned long long)LLVMConstIntGetZExtValue(init_value->llvm_value);
+                    init_value->llvm_value = LLVMConstReal(llvm_type, d);
+                }
+            }
+        }
+    }
+    return 1;
 }
 #endif
+
+int codegen_program_needs_global_init(ASTNode* decls) {
+#if !LLVM_AVAILABLE
+    (void)decls;
+    return 0;
+#else
+    for (ASTNode* d = decls; d; d = d->next) {
+        if (d->type != AST_VAR_DECL) continue;
+        VarDeclNode* vd = (VarDeclNode*)d;
+        if (!vd->values) continue;
+        if (global_init_should_defer(vd->values, d->node_type)) return 1;
+    }
+    return 0;
+#endif
+}
 
 int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl) {
 #if !LLVM_AVAILABLE
@@ -946,230 +1143,86 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         
         // Generate initializer if present
         if (var_decl->values) {
-            // Global initializers must be compile-time constants: a call
-            // (including a builtin like append/make) executes at function
-            // scope, but codegen->current_function is NULL here (module
-            // scope) — the builder has no positioned insertion block. Some
-            // builtins' codegen issues LLVMBuildXxx calls unconditionally,
-            // which dereferences that null insert block and SIGSEGVs before
-            // ever reaching the LLVMIsConstant "requires constant
-            // initializer" backstop at the store site below (unreachable for
-            // genuine calls: they never produce an LLVMIsConstant value).
-            // Catch AST_CALL_EXPR here, before generation, and reject
-            // cleanly — EXCEPT conversion-shaped calls (`var g = int64(5)`):
-            // type conversions parse as AST_CALL_EXPR too, but a conversion
-            // of a constant folds to a constant without touching the builder,
-            // so it must proceed to generation and let the backstop decide
-            // (constant operands work; non-constant operands get the
-            // backstop's clean error). See global_init_is_conversion_call.
-            if (!codegen->current_function && var_decl->values->type == AST_CALL_EXPR &&
-                !global_init_is_conversion_call(checker, var_decl->values)) {
-                codegen_error(codegen, decl->pos,
-                    "Global variable '%s' requires constant initializer (calls, including builtins, run at function scope)",
-                    var_name);
-                return 0;
-            }
-
-            ValueInfo* init_value;
-
-            // `var b ?T = nil` — intercept here so codegen_generate_null_literal
-            // receives the declared ?T type and emits {is_null=1, zero_value}.
-            // Without this intercept the generic nil fallback (a void* null pointer)
-            // lands in the auto-wrap block below and causes an LLVM type mismatch.
-            if (var_type && var_type->kind == TYPE_NULLABLE &&
-                var_decl->values->type == AST_LITERAL &&
-                ((LiteralNode*)var_decl->values)->literal_type == TOKEN_NIL) {
-                init_value = codegen_generate_null_literal(codegen, checker, var_type);
-            } else {
-                init_value = codegen_generate_expression(codegen, checker, var_decl->values);
-            }
-
-            if (!init_value) {
-                codegen_error(codegen, decl->pos, "Failed to generate initializer for variable '%s'", var_name);
-                return 0;
-            }
-
-            // Auto-load an lvalue initializer to its rvalue before any further
-            // processing. An index/selector initializer (e.g. `tmp := s[i]`,
-            // `x := p.field`) returns the element ADDRESS with is_lvalue=1; the
-            // store below — and the nullable/interface/sext transforms that
-            // precede it — all expect a VALUE. Storing the raw address writes a
-            // pointer into the value-typed slot: the wrong value, and for an
-            // 8-byte pointer in a narrower slot (e.g. a 4-byte int element) an
-            // out-of-bounds stack write that clobbers the adjacent slot. Mirrors
-            // the load idiom used by the `=` assignment, return, range, and
-            // defer paths.
-            if (init_value->is_lvalue && init_value->goo_type) {
-                LLVMTypeRef load_ty = codegen_type_to_llvm(codegen, init_value->goo_type);
-                if (load_ty) {
-                    init_value->llvm_value = LLVMBuildLoad2(codegen->builder, load_ty,
-                                                            init_value->llvm_value, "init_load");
-                    init_value->is_lvalue = 0;
-                }
-            }
-
-            // Auto-wrap a plain value into a nullable struct when the
-            // declared type is TYPE_NULLABLE. `var hit ?int = 42`
-            // builds a {is_null=0, value=42} aggregate.
-            if (var_type && var_type->kind == TYPE_NULLABLE &&
-                init_value->goo_type && init_value->goo_type->kind != TYPE_NULLABLE) {
-                if (codegen->current_function) {
-                    // Function scope: the builder is positioned, so route
-                    // through the shared nullable-wrap helper instead of
-                    // inlining the InsertValue pair. Unlike the old inline
-                    // code, the helper coerces the value to the slot's
-                    // element type first — fixes `var q ?float64 = n`
-                    // (typed int value into a float nullable slot), which
-                    // crashed the LLVM verifier with a raw
-                    // "insertvalue { i1, double } ..., i64".
-                    init_value->llvm_value = codegen_create_nullable_with_value(
-                        codegen, llvm_type, init_value->llvm_value, init_value->goo_type);
-                } else {
-                    // Module scope: the builder has no insertion point
-                    // positioned here (see the width-coercion block below
-                    // for the same LLVM-22 hazard). The helper's coercion
-                    // path requires a positioned builder, so keep the
-                    // original inline InsertValue pair for this branch — it
-                    // already covers the constant-folding case this path
-                    // exists for (e.g. `var g ?int = 5`).
-                    LLVMValueRef agg = LLVMGetUndef(llvm_type);
-                    LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
-                    agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "null_tag");
-                    agg = LLVMBuildInsertValue(codegen->builder, agg, init_value->llvm_value, 1, "null_val");
-                    init_value->llvm_value = agg;
-                }
-                init_value->goo_type = var_type;
-            }
-
-            // Box a concrete value into an interface value (P4-5) when the
-            // declared type is an interface. The {vtable, data} box replaces the
-            // concrete value before it is stored into the interface-typed slot.
-            if (var_type && var_type->kind == TYPE_INTERFACE &&
-                init_value->goo_type && init_value->goo_type->kind != TYPE_INTERFACE) {
-                LLVMValueRef boxed = codegen_interface_box(codegen, checker, var_type,
-                                                           init_value->goo_type,
-                                                           init_value->llvm_value);
-                if (!boxed) { value_info_free(init_value); return 0; }
-                init_value->llvm_value = boxed;
-                init_value->goo_type = var_type;
-            }
-
-            // Match the initializer's width to the declared type. Untyped
-            // literals arrive at the default (widest) width, so BOTH
-            // directions occur here:
-            //   narrowing (var n int32 = 4): the literal is i64 — without a
-            //     Trunc the store below writes 8 bytes into a 4-byte alloca,
-            //     silently clobbering the adjacent stack slot (found as
-            //     "select recv corruption"; the select was a bystander).
-            //   widening (var y int64 = x32): extend with the signedness of
-            //     the SOURCE type — SExt for signed, ZExt for unsigned (a
-            //     uint32 4e9 must not sign-extend negative), same rule as the
-            //     channel-send coercion in lowlevel_codegen.c.
-            //   float widths (var g float32 = 2.5; var d float64 = f32var):
-            //     an untyped float literal is a double — without an FPTrunc
-            //     the store below writes 8 bytes into a 4-byte alloca (the
-            //     float analogue of the int narrowing bug above).
-            {
-                LLVMTypeRef init_ty = LLVMTypeOf(init_value->llvm_value);
-                if (init_ty != llvm_type) {
-                    int use_sext = init_value->goo_type
-                                 ? type_is_signed(init_value->goo_type) : 1;
-                    if (codegen->current_function) {
-                        // Normal function-body path: the builder is
-                        // positioned inside the current block. Delegate to
-                        // the shared width-coercion helper (int<->int,
-                        // int->float, float<->float) — it safely no-ops on
-                        // kinds it doesn't handle (e.g. matching aggregates),
-                        // so it's fine to call unconditionally here.
-                        init_value->llvm_value = codegen_coerce_to_type(
-                            codegen, init_value->llvm_value, use_sext, llvm_type);
-                    } else if (LLVMIsConstant(init_value->llvm_value)) {
-                        // Global initializer (package-level `var g int32 = 7`
-                        // / `var gf float32 = 2.5`): codegen->current_function
-                        // is NULL here, so the builder has no insertion point
-                        // positioned — LLVMBuildTrunc/SExt/ZExt/FPTrunc/FPExt
-                        // would dereference a null insert block on LLVM 22
-                        // (this API used to fold constant operands without
-                        // touching the builder; it no longer does). Rebuild
-                        // the constant at the target width directly, mirroring
-                        // the workaround composite_codegen.c uses for global
-                        // array/slice literals hitting the same hazard. The
-                        // helper (codegen_coerce_to_type) REQUIRES a
-                        // positioned builder, so it cannot be reused here.
-                        LLVMTypeKind fk = LLVMGetTypeKind(init_ty);
-                        LLVMTypeKind tk = LLVMGetTypeKind(llvm_type);
-                        if (fk == LLVMIntegerTypeKind && tk == LLVMIntegerTypeKind) {
-                            // Extract by the SOURCE's signedness, not just for
-                            // widening's sake: narrowing only keeps the low
-                            // `to_bits` bits so either extraction is equivalent
-                            // there, but composite_codegen.c's own rebuild
-                            // helper always uses GetZExtValue — verified by
-                            // direct LLVM-C probing that this mishandles a
-                            // signed negative source being WIDENED (e.g. a
-                            // hypothetical `var g int64 = int32(-5)` global):
-                            // GetZExtValue returns the positive zero-extended
-                            // bit pattern (4294967291) instead of sign-extending
-                            // to -5. Not reachable by today's probe, but the
-                            // correct fix here since we're already rebuilding
-                            // this constant.
-                            unsigned long long raw = use_sext
-                                ? (unsigned long long)LLVMConstIntGetSExtValue(init_value->llvm_value)
-                                : LLVMConstIntGetZExtValue(init_value->llvm_value);
-                            init_value->llvm_value = LLVMConstInt(llvm_type, raw, use_sext);
-                        } else if ((fk == LLVMFloatTypeKind || fk == LLVMDoubleTypeKind) &&
-                                   (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
-                            // `var gf float32 = 2.5`: the untyped literal
-                            // folds to a double constant; extract its value
-                            // and rebuild at the declared (possibly narrower
-                            // or wider) float width. LLVMConstRealGetDouble
-                            // round-trips float32 exactly for values in its
-                            // range (Go's float32/float64 halves/quarters
-                            // used in probes are exact either way).
-                            LLVMBool loses_info;
-                            double d = LLVMConstRealGetDouble(init_value->llvm_value, &loses_info);
-                            init_value->llvm_value = LLVMConstReal(llvm_type, d);
-                        } else if (fk == LLVMIntegerTypeKind &&
-                                   (tk == LLVMFloatTypeKind || tk == LLVMDoubleTypeKind)) {
-                            // `var gi float64 = 1`: an untyped integer
-                            // literal folds to an i64 constant; the declared
-                            // type is float, so there is no int->int or
-                            // FP->FP arm above to catch it, and the mismatch
-                            // reaches LLVMSetInitializer below as an i64
-                            // constant in a double slot — caught by the
-                            // module verifier ("Global variable initializer
-                            // type does not match global variable type!").
-                            // LLVMConstSIToFP/UIToFP need a positioned
-                            // builder (unavailable at global scope), so
-                            // extract the raw value by the SOURCE's
-                            // signedness and rebuild directly as a float
-                            // constant. Unsigned sources must route through
-                            // an unsigned long long before the double cast
-                            // so a large unsigned value's top bit isn't
-                            // reinterpreted as a sign.
-                            double d = use_sext
-                                ? (double)LLVMConstIntGetSExtValue(init_value->llvm_value)
-                                : (double)(unsigned long long)LLVMConstIntGetZExtValue(init_value->llvm_value);
-                            init_value->llvm_value = LLVMConstReal(llvm_type, d);
-                        }
-                    }
-                }
-            }
-
-            // Store the initial value
-            if (codegen->current_function) {
-                LLVMBuildStore(codegen->builder, init_value->llvm_value, alloca_inst);
-            } else {
-                // Global initializer
-                if (LLVMIsConstant(init_value->llvm_value)) {
-                    LLVMSetInitializer(alloca_inst, init_value->llvm_value);
-                } else {
-                    codegen_error(codegen, decl->pos, "Global variable '%s' requires constant initializer", var_name);
-                    value_info_free(init_value);
+            // Task 2 / var-init cluster: a module-scope initializer that
+            // global_init_should_defer flags (anything but a bare literal/
+            // nil, plus the cross-kind-nullable-literal carve-out) cannot be
+            // safely generated now — see that function's header comment for
+            // the SIGSEGV root cause. Queue it and let
+            // codegen_generate_global_init_function evaluate it later, with
+            // a real positioned builder, in a synthesized goo.global_init()
+            // called before user main. Declaration order becomes the
+            // evaluation order — a forward reference to a not-yet-declared
+            // global reads its zero value here, unlike Go's dependency-
+            // resolved order (documented in examples/global_init_probe.goo).
+            if (!codegen->current_function &&
+                global_init_should_defer(var_decl->values, var_type)) {
+                if (checker->current_package) {
+                    // Defensive boundary (see global_init_should_defer's
+                    // header comment): deferral only works for a SINGLE
+                    // program-wide goo.global_init, populated exclusively
+                    // during main's codegen_generate_program pass. No
+                    // current goostd package needs this (every package-
+                    // level var is a constant composite literal, kept on
+                    // today's path above), but a future one might — fail
+                    // cleanly here instead of silently colliding with (or
+                    // reprocessing stale entries alongside) another
+                    // package's goo.global_init.
+                    codegen_error(codegen, decl->pos,
+                        "Package-level variable '%s' requires a constant initializer "
+                        "(non-constant package-scope globals are not yet supported)",
+                        var_name);
                     return 0;
                 }
+                if (!codegen_defer_global_init(codegen, alloca_inst, var_decl->values,
+                                               var_type, decl->pos)) {
+                    codegen_error(codegen, decl->pos,
+                        "Failed to queue deferred initializer for global '%s'", var_name);
+                    return 0;
+                }
+            } else {
+                ValueInfo* init_value;
+
+                // `var b ?T = nil` — intercept here so codegen_generate_null_literal
+                // receives the declared ?T type and emits {is_null=1, zero_value}.
+                // Without this intercept the generic nil fallback (a void* null pointer)
+                // lands in the auto-wrap block below and causes an LLVM type mismatch.
+                if (var_type && var_type->kind == TYPE_NULLABLE &&
+                    var_decl->values->type == AST_LITERAL &&
+                    ((LiteralNode*)var_decl->values)->literal_type == TOKEN_NIL) {
+                    init_value = codegen_generate_null_literal(codegen, checker, var_type);
+                } else {
+                    init_value = codegen_generate_expression(codegen, checker, var_decl->values);
+                }
+
+                if (!init_value) {
+                    codegen_error(codegen, decl->pos, "Failed to generate initializer for variable '%s'", var_name);
+                    return 0;
+                }
+
+                // Shared local-scope pipeline (lvalue auto-load, nullable
+                // auto-wrap, interface box, width-coerce) — see
+                // codegen_apply_local_init_pipeline. On failure it has already
+                // freed init_value.
+                if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value)) {
+                    return 0;
+                }
+
+                // Store the initial value
+                if (codegen->current_function) {
+                    LLVMBuildStore(codegen->builder, init_value->llvm_value, alloca_inst);
+                } else {
+                    // Global initializer
+                    if (LLVMIsConstant(init_value->llvm_value)) {
+                        LLVMSetInitializer(alloca_inst, init_value->llvm_value);
+                    } else {
+                        codegen_error(codegen, decl->pos, "Global variable '%s' requires constant initializer", var_name);
+                        value_info_free(init_value);
+                        return 0;
+                    }
+                }
+
+                value_info_free(init_value);
             }
-            
-            value_info_free(init_value);
         }
         
         // Add to symbol table
@@ -1205,6 +1258,105 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     }
 
     return 1;
+#endif
+}
+
+// Task 2 / var-init cluster: fill in goo.global_init()'s body from the
+// deferred global-initializer list (see global_init_should_defer /
+// codegen_defer_global_init). No-op if codegen_program_needs_global_init
+// found nothing to defer — the prototype was never pre-created by
+// codegen_generate_program, so LLVMGetNamedFunction finds nothing and there
+// is nothing to fill in. Each deferred entry runs the SAME local-scope
+// pipeline an ordinary function-body var-decl uses
+// (codegen_apply_local_init_pipeline), just against a fresh entry generated
+// here instead of one inlined in codegen_generate_var_decl. Entries run in
+// DECLARATION order — not Go's dependency-resolved order (documented in
+// examples/global_init_probe.goo's header) — so a forward reference reads
+// the target global's zero value instead of Go's computed value.
+int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* checker) {
+#if !LLVM_AVAILABLE
+    (void)checker;
+    return codegen ? 1 : 0;
+#else
+    if (!codegen || !checker) return 0;
+
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo.global_init");
+    if (!fn) {
+        // codegen_program_needs_global_init found nothing deferrable, so
+        // codegen_generate_program never pre-created the prototype. Nothing
+        // to do (by construction, deferred_global_init_count must be 0 too:
+        // both passes apply the identical predicate to the identical decl
+        // list).
+        return 1;
+    }
+
+    FunctionInfo* func_info = function_info_new("goo.global_init", fn, NULL);
+    if (!func_info) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Failed to create function info for goo.global_init");
+        return 0;
+    }
+    func_info->entry_block = LLVMAppendBasicBlockInContext(codegen->context, fn, "entry");
+
+    // Save the ambient codegen state so this synthesis — which runs after
+    // every ordinary declaration has already been generated — leaves it
+    // exactly as it found it. Defensive: codegen_generate_program calls
+    // this last today, but preserving the invariant costs nothing and
+    // avoids surprises for any future caller.
+    LLVMValueRef saved_function = codegen->current_function;
+    FunctionInfo* saved_function_info = codegen->current_function_info;
+    LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(codegen->builder);
+
+    codegen_enter_function(codegen, func_info);
+    codegen_set_insert_point(codegen, func_info->entry_block);
+
+    int ok = 1;
+    for (size_t i = 0; i < codegen->deferred_global_init_count; i++) {
+        DeferredGlobalInit* d = &codegen->deferred_global_inits[i];
+        Type* var_type = d->declared_type;
+        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, var_type);
+        if (!llvm_type) {
+            codegen_error(codegen, d->pos, "Failed to convert type for deferred global initializer");
+            ok = 0;
+            break;
+        }
+
+        ValueInfo* init_value;
+        if (var_type && var_type->kind == TYPE_NULLABLE &&
+            d->expr->type == AST_LITERAL &&
+            ((LiteralNode*)d->expr)->literal_type == TOKEN_NIL) {
+            init_value = codegen_generate_null_literal(codegen, checker, var_type);
+        } else {
+            init_value = codegen_generate_expression(codegen, checker, d->expr);
+        }
+        if (!init_value) {
+            codegen_error(codegen, d->pos, "Failed to generate deferred global initializer");
+            ok = 0;
+            break;
+        }
+
+        if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value)) {
+            ok = 0;
+            break;
+        }
+
+        LLVMBuildStore(codegen->builder, init_value->llvm_value, d->global);
+        value_info_free(init_value);
+    }
+
+    if (ok) {
+        LLVMBuildRetVoid(codegen->builder);
+    }
+
+    codegen_exit_function(codegen);
+
+    // Restore ambient state.
+    codegen->current_function = saved_function;
+    codegen->current_function_info = saved_function_info;
+    if (saved_block) LLVMPositionBuilderAtEnd(codegen->builder, saved_block);
+
+    function_info_free(func_info);
+    return ok;
 #endif
 }
 
