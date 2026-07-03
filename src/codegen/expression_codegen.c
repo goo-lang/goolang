@@ -571,18 +571,25 @@ static void coerce_int_literal_operand(CodeGenerator* codegen,
 }
 
 // Codegen-local duplicate of expression_checker.c's static
-// is_untyped_int_rooted called with allow_shift=0 (checker-internal, not
-// exported via a header edit per the task-2 brief — change them together).
-// Is `node` an untyped-integer-constant-rooted AST operand, EXCLUDING a
-// shift: a bare int literal, or a unary -/+/^ through to one? Needed by
-// is_float_literal_node's binop leg below (task 2): an int-rooted operand
-// mixed with a float-rooted sibling in +,-,*,/ is part of a float-kind
-// constant expression as a whole (Go's kind-promotion rule), so it counts as
-// "untyped" for the width-coercion backstop the same way a bare int literal
-// already does. No shift leg here, mirroring the checker's own exclusion —
-// a shift's operands are integer-only, so a shift-rooted subtree must never
-// be treated as float-adaptable here either.
-static int is_int_literal_rooted_non_shift(ASTNode* node) {
+// is_untyped_int_rooted called with for_float_context=1 (checker-internal,
+// not exported via a header edit per the task-2 brief — change them
+// together). Is `node` an untyped-integer-constant-rooted AST operand,
+// judged for a FLOAT adaptation target: a bare int literal, a unary -/+/^
+// through to one, or a {+,-,*} binop where BOTH sides are (recursively)
+// such? Needed by is_float_literal_node's binop leg below (task 2): an
+// int-rooted operand mixed with a float-rooted sibling in +,-,*,/ is part
+// of a float-kind constant expression as a whole (Go's kind-promotion
+// rule), so it counts as "untyped" for the width-coercion backstop the same
+// way a bare int literal already does. Two shapes are excluded, mirroring
+// the checker's float-context exclusions exactly (see its
+// is_untyped_int_rooted doc comment for the full rationale): NO shift leg
+// (a shift's operands are integer-only, so a shift-rooted subtree must
+// never be treated as float-adaptable), and NO / or % in the binop leg (an
+// all-int division/modulo truncates as an INT constant in Go before any
+// float promotion, which stamp-and-compute can't reproduce — the checker
+// rejects those shapes in float contexts, so codegen must not classify
+// them as float-adaptable either).
+static int is_int_rooted_float_context(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
         return ((LiteralNode*)node)->literal_type == TOKEN_INT;
@@ -590,7 +597,14 @@ static int is_int_literal_rooted_non_shift(ASTNode* node) {
         UnaryExprNode* u = (UnaryExprNode*)node;
         if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS ||
             u->operator == TOKEN_BIT_XOR)
-            return is_int_literal_rooted_non_shift(u->operand);
+            return is_int_rooted_float_context(u->operand);
+    }
+    if (node->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)node;
+        if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
+            b->operator == TOKEN_MULTIPLY)
+            return is_int_rooted_float_context(b->left) &&
+                   is_int_rooted_float_context(b->right);
     }
     return 0;
 }
@@ -623,10 +637,14 @@ static int is_int_literal_rooted_non_shift(ASTNode* node) {
 // through include/types.h — change them together). Is `node` an untyped-
 // float-constant-rooted AST operand: a bare float literal, a unary -/+
 // through to one, or an arithmetic binop (+,-,*,/) where each side is
-// float-rooted OR int-rooted-non-shift (is_int_literal_rooted_non_shift
-// below), with at least one side float-rooted (task 2 — see the checker's
-// is_untyped_float_rooted for the full rationale, including why an all-int
-// binop like `1+2` stays OUT of this predicate)? This is the AST-untypedness
+// float-rooted OR float-context int-rooted (is_int_rooted_float_context
+// above — no shift, no / or % in the int subtree), with at least one side
+// float-rooted (task 2 — see the checker's is_untyped_float_rooted for the
+// full rationale, including why an all-int binop like `1+2` stays OUT of
+// this predicate, and why `/` is kept HERE — a division containing a float
+// literal is a float division in Go's constant arithmetic — while an
+// all-int division subtree is excluded via the int side test)? This is the
+// AST-untypedness
 // test that replaced `LLVMIsConstant` below: LLVMIsConstant can't tell an
 // untyped literal from a TYPED constant conversion (`float32(0.1)` also
 // constant-folds to an LLVMConstReal), which made `float32(0.1) == 0.1`
@@ -646,8 +664,8 @@ static int is_float_literal_node(ASTNode* node) {
         BinaryExprNode* b = (BinaryExprNode*)node;
         if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
             b->operator == TOKEN_MULTIPLY || b->operator == TOKEN_DIVIDE) {
-            int left_ok  = is_float_literal_node(b->left)  || is_int_literal_rooted_non_shift(b->left);
-            int right_ok = is_float_literal_node(b->right) || is_int_literal_rooted_non_shift(b->right);
+            int left_ok  = is_float_literal_node(b->left)  || is_int_rooted_float_context(b->left);
+            int right_ok = is_float_literal_node(b->right) || is_int_rooted_float_context(b->right);
             return left_ok && right_ok &&
                    (is_float_literal_node(b->left) || is_float_literal_node(b->right));
         }
