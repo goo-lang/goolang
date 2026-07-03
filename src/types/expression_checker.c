@@ -4,6 +4,16 @@
 #include <string.h>
 #include <stdio.h>
 
+// Forward declarations: the untyped-constant rootedness predicates and
+// adapters are defined below (near type_check_binary_expr, their primary
+// call site — see the doc comments there for the full design), but
+// type_check_struct_literal's field-init sink (task 3) needs them earlier
+// in this file, at struct-literal-loop scope.
+static int is_untyped_int_rooted(ASTNode* n, int for_float_context);
+static void adapt_untyped_int_operand(ASTNode* n, Type* target);
+static int is_untyped_float_rooted(ASTNode* n);
+static void adapt_untyped_float_operand(ASTNode* n, Type* target);
+
 // Validate each element of a slice composite literal against the declared
 // element type. Returns 1 on success; emits a type_error and returns 0 on the
 // first incompatible element. Shared by the anonymous []T{} path and the named
@@ -271,6 +281,60 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
     }
 }
 
+// Composite field-init sink (task 3): adapt an untyped numeric-rooted field
+// value (a bare literal, unary -/+/^, or arithmetic binop composed of those
+// — see is_untyped_int_rooted / is_untyped_float_rooted's doc comments) to
+// the struct field's declared type, mirroring type_check_binary_expr's
+// int-int / float-float / cross-kind blocks but for a single field-value
+// node rather than two binop operands. Without this, `Q{F: 2.5}` (F
+// float32) reaches codegen with the literal still stamped FLOAT64 (its
+// checker default) and codegen_build_struct_value only width-coerces
+// INTEGER-kind field mismatches (SExt/Trunc) — a float-kind or width
+// mismatch InsertValues the wrong-shaped constant, silently storing the
+// double's raw bit pattern into the float32 slot (verified via
+// --emit-llvm: `store %Q { double 2.5, ... }` into a `{float, double,
+// i32}` %Q — the printed "double 2.5" bytes land where a 4-byte float is
+// read back, producing 0; an int literal into a float64 field is worse,
+// landing raw integer bits that read back as a denormal near-zero double).
+//
+// Returns the field's type if adaptation happened (the compat check below
+// must use this instead of the pre-adaptation `vt`, same as `left_type =
+// right_type` in the binop blocks), or `vt` unchanged otherwise (value
+// isn't rooted — a typed variable, call, or conversion — or the field
+// isn't numeric).
+//
+// Asymmetry preserved from #100 (float->int assignment rejection): an
+// int-rooted value adapts to ANY numeric field (int or float), but a
+// float-rooted value adapts ONLY to a float field — float->int is never
+// adapted here, so `Q{N: 2.5}` (N int32) falls through to the existing
+// type_compatible rejection below instead of silently truncating.
+static Type* adapt_field_init_value(ASTNode* v, Type* field_type, Type* vt) {
+    if (!field_type || !type_is_numeric(field_type)) return vt;
+    if (type_is_float(field_type)) {
+        // for_float_context=1 on the int-rooted check: no shift, and no /
+        // or % anywhere in the subtree may stamp float (see
+        // is_untyped_int_rooted's doc comment) — `D: 1` (a bare int
+        // literal) takes this leg; `F: 1 + 0.5` (mixed rooted) is already
+        // float-rooted as a whole and takes the leg above it instead.
+        if (is_untyped_float_rooted(v)) {
+            adapt_untyped_float_operand(v, field_type);
+            return field_type;
+        }
+        if (is_untyped_int_rooted(v, 1)) {
+            adapt_untyped_int_operand(v, field_type);
+            return field_type;
+        }
+    } else if (type_is_integer(field_type)) {
+        // for_float_context=0: an integer target, so shifts and /,% are
+        // all safe to adapt (see is_untyped_int_rooted's doc comment).
+        if (is_untyped_int_rooted(v, 0)) {
+            adapt_untyped_int_operand(v, field_type);
+            return field_type;
+        }
+    }
+    return vt;
+}
+
 // `Point{x: 3, y: 4}` / `Point{3, 4}`. Omitted keyed fields take their
 // zero value (Go semantics — matches the zero-initializing alloca that
 // `var p Point` already gets in codegen); positional form must cover
@@ -410,6 +474,10 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
             }
             Type* vt = type_check_expression(checker, v);
             if (!vt) return NULL;
+            // Task 3: adapt an untyped numeric-rooted value (literal or
+            // rooted expression) to the field's declared type BEFORE the
+            // compat check — see adapt_field_init_value's doc comment.
+            vt = adapt_field_init_value(v, field->type, vt);
             if (field->type && field->type->kind == TYPE_INTERFACE) {
                 if (!check_interface_assign(checker, vt, field->type, v->pos)) {
                     return NULL;
@@ -432,6 +500,8 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
         for (ASTNode* v = lit->field_values; v; v = v->next, i++) {
             Type* vt = type_check_expression(checker, v);
             if (!vt) return NULL;
+            // Task 3: same field-value adaptation as the keyed loop above.
+            vt = adapt_field_init_value(v, fields[i].type, vt);
             if (fields[i].type && fields[i].type->kind == TYPE_INTERFACE) {
                 if (!check_interface_assign(checker, vt, fields[i].type, v->pos)) {
                     return NULL;
