@@ -643,14 +643,13 @@ static int is_int_rooted_float_context(ASTNode* node) {
 // full rationale, including why an all-int binop like `1+2` stays OUT of
 // this predicate, and why `/` is kept HERE — a division containing a float
 // literal is a float division in Go's constant arithmetic — while an
-// all-int division subtree is excluded via the int side test)? This is the
-// AST-untypedness
-// test that replaced `LLVMIsConstant` below: LLVMIsConstant can't tell an
-// untyped literal from a TYPED constant conversion (`float32(0.1)` also
-// constant-folds to an LLVMConstReal), which made `float32(0.1) == 0.1`
-// diverge from Go — the typed conversion was wrongly treated as "may adapt"
-// and got widened to double instead of the untyped `0.1` narrowing to
-// float32.
+// all-int division subtree is excluded via the int side test)? This is
+// the AST-untypedness test that replaced `LLVMIsConstant` below:
+// LLVMIsConstant can't tell an untyped literal from a TYPED constant
+// conversion (`float32(0.1)` also constant-folds to an LLVMConstReal),
+// which made `float32(0.1) == 0.1` diverge from Go — the typed conversion
+// was wrongly treated as "may adapt" and got widened to double instead of
+// the untyped `0.1` narrowing to float32.
 static int is_float_literal_node(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)

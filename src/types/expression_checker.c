@@ -311,15 +311,15 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 static Type* adapt_field_init_value(ASTNode* v, Type* field_type, Type* vt) {
     if (!field_type || !type_is_numeric(field_type)) return vt;
     if (type_is_float(field_type)) {
+        if (is_untyped_float_rooted(v)) {
+            adapt_untyped_float_operand(v, field_type);
+            return field_type;
+        }
         // for_float_context=1 on the int-rooted check: no shift, and no /
         // or % anywhere in the subtree may stamp float (see
         // is_untyped_int_rooted's doc comment) — `D: 1` (a bare int
         // literal) takes this leg; `F: 1 + 0.5` (mixed rooted) is already
         // float-rooted as a whole and takes the leg above it instead.
-        if (is_untyped_float_rooted(v)) {
-            adapt_untyped_float_operand(v, field_type);
-            return field_type;
-        }
         if (is_untyped_int_rooted(v, 1)) {
             adapt_untyped_int_operand(v, field_type);
             return field_type;
@@ -907,8 +907,8 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     // division/modulo as an INT constant before promotion, which a
     // stamp-and-compute checker can't reproduce; rejecting beats silently
     // computing 0.5 where Go gets 0. Reuses adapt_untyped_int_operand — it
-    // never sees a shift//,% node here because is_untyped_int_rooted(_, 1)
-    // excludes those shapes.
+    // never sees a shift, `/`, or `%` node here because
+    // is_untyped_int_rooted(_, 1) excludes those shapes.
     //
     // An int VARIABLE (not int-rooted) meeting a float is left alone — the
     // mismatch falls through to whatever the operator's own check does (e.g.
@@ -921,14 +921,31 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     // type_is_float(left)&&type_is_integer(right) arm below with no
     // additional code — a bare int literal is trivially int-rooted. Verified
     // this composes correctly as-is; nothing further was needed here.
-    if (type_is_integer(left_type) && type_is_float(right_type) &&
-        is_untyped_int_rooted(binary->left, 1)) {
-        adapt_untyped_int_operand(binary->left, right_type);
-        left_type = right_type;
-    } else if (type_is_float(left_type) && type_is_integer(right_type) &&
-               is_untyped_int_rooted(binary->right, 1)) {
-        adapt_untyped_int_operand(binary->right, left_type);
-        right_type = left_type;
+    //
+    // Gated against TOKEN_MODULO as the CURRENT operator (final-sweep fix):
+    // the exclusion above only looks at the operand's OWN subtree (does IT
+    // contain a shift/`/`/`%`), so a bare `1` in `1 % g` (g float32) is
+    // trivially int-rooted and would otherwise adapt here, leaving
+    // type_check_arithmetic_op to face a float×float `%` — a pre-existing
+    // hole where it returns FLOAT32 for a modulo codegen can't emit (its
+    // TOKEN_MODULO arm is integer-only), crashing with an opaque "Failed to
+    // generate binary operation" instead of a diagnostic. Go itself rejects
+    // `1 % g` (mismatched types), so skipping adaptation when `%` is the
+    // operator directly combining these two operands lets the mismatch fall
+    // through unchanged to the rejection switch below, which already has a
+    // clean TOKEN_MODULO case. `/` is deliberately NOT gated here — `1 / g`
+    // must keep adapting and computing (see the constdiv/constmod probes for
+    // the DIFFERENT, subtree-shaped exclusion that governs `(1%2) * g`).
+    if (binary->operator != TOKEN_MODULO) {
+        if (type_is_integer(left_type) && type_is_float(right_type) &&
+            is_untyped_int_rooted(binary->left, 1)) {
+            adapt_untyped_int_operand(binary->left, right_type);
+            left_type = right_type;
+        } else if (type_is_float(left_type) && type_is_integer(right_type) &&
+                   is_untyped_int_rooted(binary->right, 1)) {
+            adapt_untyped_int_operand(binary->right, left_type);
+            right_type = left_type;
+        }
     }
 
     // Cross-kind mix that did NOT adapt above — an int VARIABLE meeting a
