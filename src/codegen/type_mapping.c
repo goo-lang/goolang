@@ -61,7 +61,19 @@ LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type) {
             return codegen_get_channel_type(codegen, type);
             
         case TYPE_FUNCTION:
-            return codegen_get_function_type(codegen, type);
+            // Universal fat-pointer VALUE representation (Branch A of the
+            // closures design — docs/superpowers/specs/2026-07-03-closures-
+            // design.md "Representation"). This dispatcher case fires for
+            // every VALUE use of a function type reached generically:
+            // parameter, local, struct field, slice element, return type.
+            // It is DELIBERATELY DISTINCT from codegen_get_function_type
+            // (below), which stays the raw LLVM function type for SIGNATURE
+            // uses — a function's own declaration, and the callee of a
+            // direct call / go statement, both of which resolve their
+            // callee's Goo type via codegen_resolve_callee /
+            // codegen_lookup_global_function (call_codegen.c) and therefore
+            // never reach this dispatcher case for the callee itself.
+            return codegen_get_funcval_pair_type(codegen);
             
         case TYPE_POINTER:
             return codegen_get_pointer_type(codegen, type);
@@ -258,12 +270,70 @@ LLVMTypeRef codegen_get_function_type(CodeGenerator* codegen, const Type* type) 
         }
     }
     
-    LLVMTypeRef func_type = LLVMFunctionType(return_type, param_types, 
+    LLVMTypeRef func_type = LLVMFunctionType(return_type, param_types,
                                            (unsigned)type->data.function.param_count,
                                            type->data.function.is_variadic);
-    
+
     free(param_types);
     return func_type;
+}
+
+// The universal function-VALUE representation: an anonymous (literal)
+// `{ ptr fn, ptr env }` struct — 16 bytes, two SysV INTEGER-class eightbytes,
+// passed BY VALUE (does not trigger the >16-byte by-pointer ABI rule the
+// runtime slice/string structs follow — verified against goo_string_t, the
+// existing {ptr,i64} 16-byte precedent passed by value throughout this
+// codebase and across the C runtime boundary). env is FIRST in the pair AND
+// first in every indirect call's argument list (`fn_ptr(env_ptr, args...)`,
+// call_codegen.c) — this is a change-together contract Branch B (closures)
+// builds on unseen: reordering either position breaks every closure
+// literal's calling convention. See docs/superpowers/specs/
+// 2026-07-03-closures-design.md "Representation".
+//
+// LITERAL (unnamed) struct types with identical field lists are
+// automatically uniqued by LLVM within a context — every call site that
+// builds this type (here; codegen_get_func_thunk, function_codegen.c; the
+// indirect-call site in call_codegen.c, via codegen_get_funcval_call_type
+// below) gets the SAME LLVMTypeRef with no caching of our own, exactly like
+// TYPE_STRING's `{ptr,i64}` struct above.
+LLVMTypeRef codegen_get_funcval_pair_type(CodeGenerator* codegen) {
+    if (!codegen) return NULL;
+    LLVMTypeRef ptr = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+    LLVMTypeRef fields[] = { ptr, ptr };
+    return LLVMStructTypeInContext(codegen->context, fields, 2, 0);
+}
+
+// The LLVM function type for CALLING THROUGH a function value: `fn_type`'s
+// signature with an i8* env parameter PREPENDED (env FIRST — see
+// codegen_get_funcval_pair_type above). Shared by codegen_get_func_thunk
+// (function_codegen.c, which uses it as the thunk's OWN definition type) and
+// the indirect-call site in codegen_generate_call_expr (call_codegen.c,
+// which uses it as the LLVMBuildCall2 call-through type for `fn_ptr`) — the
+// two must agree byte-for-byte or an indirect call through a thunk-wrapped
+// named function builds mismatched IR.
+LLVMTypeRef codegen_get_funcval_call_type(CodeGenerator* codegen, const Type* fn_type) {
+    if (!codegen || !fn_type || fn_type->kind != TYPE_FUNCTION) return NULL;
+
+    LLVMTypeRef return_type = codegen_type_to_llvm(codegen, fn_type->data.function.return_type);
+    if (!return_type) return NULL;
+
+    size_t param_count = fn_type->data.function.param_count;
+    LLVMTypeRef* param_types = malloc(sizeof(LLVMTypeRef) * (param_count + 1));
+    if (!param_types) return NULL;
+    param_types[0] = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);  // env — FIRST
+    for (size_t i = 0; i < param_count; i++) {
+        param_types[i + 1] = codegen_type_to_llvm(codegen, fn_type->data.function.param_types[i]);
+        if (!param_types[i + 1]) {
+            free(param_types);
+            return NULL;
+        }
+    }
+
+    LLVMTypeRef call_type = LLVMFunctionType(return_type, param_types,
+                                             (unsigned)(param_count + 1),
+                                             fn_type->data.function.is_variadic);
+    free(param_types);
+    return call_type;
 }
 
 LLVMTypeRef codegen_get_pointer_type(CodeGenerator* codegen, const Type* type) {

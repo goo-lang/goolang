@@ -1368,8 +1368,19 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 
     CallExprNode* call = (CallExprNode*)go_stmt->call;
 
-    // Resolve the target function value and its type.
-    ValueInfo* func_val = codegen_generate_expression(codegen, checker, call->function);
+    // Resolve the target function value and its type. Task 2 (universal
+    // fat-pointer function values): MUST go through codegen_resolve_callee
+    // (call_codegen.c), NOT codegen_generate_expression directly. A bare
+    // identifier naming an unshadowed top-level function must resolve to
+    // the BARE LLVM global here — the M8 LLVMIsAFunction check right below
+    // requires it. Calling codegen_generate_expression directly would hit
+    // codegen_generate_identifier's fat-pointer VALUE-wrapping fallback for
+    // ANY bare function name, breaking every `go namedFunc(...)` golden.
+    // This keeps the arg-boxing path below byte-for-byte unchanged for the
+    // one shape it supports; anything else still yields a function VALUE
+    // and is still cleanly rejected by the LLVMIsAFunction check (pre-Task-2
+    // this could crash instead — see the Task 2 report's crash-site #1).
+    ValueInfo* func_val = codegen_resolve_callee(codegen, checker, call->function);
     if (!func_val) return 0;
     LLVMValueRef callee = func_val->llvm_value;
 

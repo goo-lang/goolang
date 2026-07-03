@@ -162,6 +162,52 @@ static LLVMValueRef codegen_numeric_convert(CodeGenerator* codegen, LLVMValueRef
 }
 #endif
 
+// Resolve a call/go-statement's CALLEE expression. A bare identifier NOT
+// shadowed by a local variable/parameter (i.e. it names a package-level
+// function) resolves to the BARE LLVM global function value — the
+// direct-call fast path, UNCONDITIONALLY UNCHANGED from before the universal
+// fat-pointer migration (see docs/superpowers/specs/2026-07-03-closures-
+// design.md "Representation": "Direct calls to named functions are
+// untouched — still bare `call @F(args...)`"). Any other callee expression
+// (a local variable/parameter holding a function value, a struct field, a
+// slice element, or a chained call's return value) evaluates through the
+// ordinary expression path and yields the universal `{ fn_ptr, env_ptr }`
+// pair — callers must extract and indirect-call it (see
+// codegen_generate_call_expr's direct-vs-indirect gate below).
+//
+// Used by BOTH codegen_generate_call_expr (this file) and
+// codegen_generate_go_stmt (statement_codegen.c). The go-statement use is
+// what keeps `go f(...)`'s arg-boxing path from EVER seeing a function
+// VALUE: a go target is, by construction, only ever a bare unshadowed
+// identifier (the go statement's own LLVMIsAFunction check already rejects
+// anything else), so routing its callee resolution through here — instead
+// of calling codegen_generate_expression directly, which would hit
+// codegen_generate_identifier's thunk-wrapping fallback for ANY bare
+// function name — is required, not optional, for that non-negotiable to
+// hold. (statement_codegen.c is outside this task's file allowlist; the
+// one-line call-site swap there is flagged in the task report.)
+ValueInfo* codegen_resolve_callee(CodeGenerator* codegen, TypeChecker* checker, ASTNode* callee_expr) {
+#if !LLVM_AVAILABLE
+    (void)checker;
+    codegen_error(codegen, callee_expr ? callee_expr->pos : (Position){0, 0, 0, NULL},
+                  "LLVM support not available");
+    return NULL;
+#else
+    if (callee_expr && callee_expr->type == AST_IDENTIFIER) {
+        IdentifierNode* id = (IdentifierNode*)callee_expr;
+        if (!codegen_lookup_value(codegen, id->name)) {
+            LLVMValueRef func_val = codegen_lookup_global_function(codegen, checker, id->name);
+            if (func_val) {
+                Variable* func_var = type_checker_lookup_variable(checker, id->name);
+                Type* func_type = func_var ? func_var->type : NULL;
+                return value_info_new(id->name, func_val, func_type);
+            }
+        }
+    }
+    return codegen_generate_expression(codegen, checker, callee_expr);
+#endif
+}
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -967,8 +1013,12 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         free(mangled);
     }
 
-    // Generate function expression
-    ValueInfo* func_val = codegen_generate_expression(codegen, checker, call->function);
+    // Resolve the callee. See codegen_resolve_callee's comment: a bare
+    // identifier not shadowed by a local variable/parameter resolves to the
+    // BARE LLVM global function (the unconditionally-unchanged direct-call
+    // path); anything else evaluates through the ordinary expression path
+    // and may yield the universal `{ fn_ptr, env_ptr }` function-VALUE pair.
+    ValueInfo* func_val = codegen_resolve_callee(codegen, checker, call->function);
     if (!func_val) return NULL;
 
     // The callee's declared parameter types drive nullable auto-wrapping:
@@ -1147,15 +1197,73 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         }
     }
 
-    // Generate call. LLVMGetElementType doesn't work with LLVM 22 opaque
-    // pointers — use LLVMGlobalGetValueType which returns the underlying
-    // function type directly for any global value (functions are globals).
-    // Use an empty result name for void functions (invalid to name a void value).
-    LLVMTypeRef func_llvm_type = LLVMGlobalGetValueType(func_val->llvm_value);
-    const char* result_name = (LLVMGetTypeKind(LLVMGetReturnType(func_llvm_type)) == LLVMVoidTypeKind)
-                              ? "" : "call";
-    LLVMValueRef result = LLVMBuildCall2(codegen->builder, func_llvm_type, func_val->llvm_value, args, (unsigned)llvm_argc, result_name);
+    // Generate the call. A direct callee (LLVMIsAFunction — the bare-call
+    // path codegen_resolve_callee preserves above) calls unconditionally
+    // unchanged: `call @F(args...)`. Anything else is a function VALUE: the
+    // universal fat pointer `{ fn_ptr, env_ptr }` (env FIRST — see
+    // docs/superpowers/specs/2026-07-03-closures-design.md
+    // "Representation", a change-together contract Branch B's closures build
+    // on unseen). codegen_generate_selector_expr / codegen_generate_
+    // index_expr both return a func-typed field/element as its ADDRESS
+    // (is_lvalue=1) — load it through the goo type before extracting; a
+    // local var/param is the same shape. Extract fn_ptr (idx 0) / env_ptr
+    // (idx 1) and call `fn_ptr(env_ptr, args...)` — the exact ABI
+    // codegen_get_func_thunk's thunks and codegen_get_funcval_call_type
+    // both build (function_codegen.c / type_mapping.c).
+    LLVMValueRef callee_val = func_val->llvm_value;
+    LLVMValueRef result;
 
+    if (callee_val && LLVMIsAFunction(callee_val)) {
+        // Unchanged bare-call path. LLVMGetElementType doesn't work with
+        // LLVM 22 opaque pointers — use LLVMGlobalGetValueType which
+        // returns the underlying function type directly for any global
+        // value (functions are globals). Use an empty result name for void
+        // functions (invalid to name a void value).
+        LLVMTypeRef func_llvm_type = LLVMGlobalGetValueType(callee_val);
+        const char* result_name = (LLVMGetTypeKind(LLVMGetReturnType(func_llvm_type)) == LLVMVoidTypeKind)
+                                  ? "" : "call";
+        result = LLVMBuildCall2(codegen->builder, func_llvm_type, callee_val, args, (unsigned)llvm_argc, result_name);
+    } else {
+        if (func_val->is_lvalue && func_goo_type) {
+            LLVMTypeRef pair_ty = codegen_type_to_llvm(codegen, func_goo_type);
+            if (pair_ty) {
+                callee_val = LLVMBuildLoad2(codegen->builder, pair_ty, callee_val, "funcval_load");
+            }
+        }
+        if (!callee_val || !func_goo_type || func_goo_type->kind != TYPE_FUNCTION) {
+            codegen_error(codegen, expr->pos,
+                          "internal: indirect call target is not a function value");
+            free(args);
+            value_info_free(func_val);
+            return NULL;
+        }
+
+        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(codegen->builder, callee_val, 0, "funcval_fn");
+        LLVMValueRef env_ptr = LLVMBuildExtractValue(codegen->builder, callee_val, 1, "funcval_env");
+
+        LLVMTypeRef call_type = codegen_get_funcval_call_type(codegen, func_goo_type);
+        if (!call_type) {
+            codegen_error(codegen, expr->pos, "internal: cannot build indirect-call type");
+            free(args);
+            value_info_free(func_val);
+            return NULL;
+        }
+
+        LLVMValueRef* full_args = malloc(sizeof(LLVMValueRef) * (llvm_argc + 1));
+        if (!full_args) {
+            free(args);
+            value_info_free(func_val);
+            return NULL;
+        }
+        full_args[0] = env_ptr;
+        for (size_t i = 0; i < llvm_argc; i++) full_args[i + 1] = args[i];
+
+        const char* result_name = (LLVMGetTypeKind(LLVMGetReturnType(call_type)) == LLVMVoidTypeKind)
+                                  ? "" : "call";
+        result = LLVMBuildCall2(codegen->builder, call_type, fn_ptr, full_args,
+                                (unsigned)(llvm_argc + 1), result_name);
+        free(full_args);
+    }
 
     free(args);
 
