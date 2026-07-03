@@ -583,6 +583,13 @@ int goo_map_iter_next_sv(GooMapEntrySV** cursor, const char** key_out, int64_t* 
     return 1;
 }
 
+// Cursor init: NULL-safe head read. See include/runtime.h — a nil map
+// (Go zero value, never made) must range as zero iterations, so the NULL
+// check lives here rather than in every generated range loop.
+GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m) {
+    return m ? (GooMapEntrySV*)m->head : NULL;
+}
+
 // Unlinks and frees the entry for key k, if present (no-op if absent or
 // m/k is NULL). Backs delete(m, k).
 //

@@ -650,11 +650,17 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
 
-    // Declare the two runtime externs this loop calls, if not already
-    // present in the module — same fallback-declare pattern
-    // codegen_alloc_local uses for goo_alloc (function_codegen.c): avoids
-    // adding these to runtime_integration.c's central table, which is out
-    // of scope for this change.
+    // Declare the runtime externs this loop calls, if not already present
+    // in the module — same fallback-declare pattern codegen_alloc_local
+    // uses for goo_alloc (function_codegen.c): avoids adding these to
+    // runtime_integration.c's central table, which is out of scope for
+    // this change.
+    LLVMValueRef init_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_init_sv");
+    if (!init_fn) {
+        LLVMTypeRef init_params[] = { ptr_type };
+        LLVMTypeRef init_fn_type = LLVMFunctionType(ptr_type, init_params, 1, 0);
+        init_fn = LLVMAddFunction(codegen->module, "goo_map_iter_init_sv", init_fn_type);
+    }
     LLVMValueRef iter_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_next_sv");
     if (!iter_fn) {
         LLVMTypeRef pp_type = LLVMPointerType(ptr_type, 0);
@@ -672,13 +678,14 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     }
 
     // Cursor slot: GooMapEntrySV* (opaque — entry layout stays private to
-    // runtime.c). Init to m->head, GooMapSV's sole field (struct GooMapSV {
-    // struct GooMapEntrySV* head; } — include/runtime.h), read via a
-    // locally-built single-pointer-field struct type mirroring that public
-    // layout (not GooMapEntrySV, which this file never needs to know).
-    LLVMTypeRef map_sv_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr_type }, 1, 0);
-    LLVMValueRef head_slot = LLVMBuildStructGEP2(codegen->builder, map_sv_ty, map_ptr, 0, "map_head_slot");
-    LLVMValueRef head_val = LLVMBuildLoad2(codegen->builder, ptr_type, head_slot, "map_head");
+    // runtime.c). Initialized via goo_map_iter_init_sv rather than a
+    // GEP+load of GooMapSV's head field: the runtime call is NULL-safe, so
+    // ranging over a nil map (`var m map[string]int`, Go's zero value)
+    // yields a NULL cursor ⇒ zero iterations instead of faulting on the
+    // head load — and codegen carries no mirror of GooMapSV's layout.
+    LLVMValueRef init_args[1] = { map_ptr };
+    LLVMValueRef head_val = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(init_fn),
+                                           init_fn, init_args, 1, "map_head");
 
     LLVMValueRef cursor_alloca = codegen_alloc_local(codegen, ptr_type, "range_mcursor");
     LLVMBuildStore(codegen->builder, head_val, cursor_alloca);

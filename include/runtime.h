@@ -149,6 +149,15 @@ int64_t goo_map_len_sv(GooMapSV* m);
 // "a map entry cursor" and "any pointer-to-pointer", inviting a mismatched
 // call at the LLVM IR call-site to go unnoticed).
 int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, const char** key_out, int64_t* val_out);
+// Cursor init for the walk above: returns m->head, or NULL when m itself
+// is NULL. Exists precisely for the nil-map case — Go's zero-value map
+// (`var m map[string]int`, never made) is legal to range over and yields
+// zero iterations, so the "NULL map ⇒ NULL cursor" caller obligation
+// documented on goo_map_iter_next_sv is discharged HERE in the runtime,
+// not by a null-check every code generator must remember to emit. Also
+// keeps GooMapSV's field layout out of generated IR entirely (no
+// GEP-to-head at the range-loop site).
+struct GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m);
 // Deletes the entry for key k, if present. Backs delete(m, k). Does not
 // free k: the map never owns key storage (see goo_map_set_sv above).
 void goo_map_delete_sv(GooMapSV* m, const char* k);

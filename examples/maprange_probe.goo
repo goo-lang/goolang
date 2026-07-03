@@ -36,4 +36,12 @@ func main() {
 		c += v
 	}
 	fmt.Println(c)
+	// Nil map (Go zero value, never made): legal to range, zero iterations.
+	// Exercises goo_map_iter_init_sv's NULL-map path.
+	var nm map[string]int
+	z := 0
+	for _, v := range nm {
+		z += v
+	}
+	fmt.Println(z)
 }
