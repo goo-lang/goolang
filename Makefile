@@ -1028,27 +1028,28 @@ charlit-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 #     shadows the predeclared type, so `int(5)` must CALL the function (prints
 #     105), NOT convert (would print 5). A regression to name-only gating in
 #     codegen — the exact bug 6d69e2a fixed — fails here.
-#  2. Clean rejection of unsupported `string`/`bool` conversions (plan F2 Step 3
-#     "reject cleanly if unsupported"): a single conversion-specific diagnostic
-#     ("cannot convert ... only numeric conversions are supported in v1"), NOT
-#     the misleading "Undefined variable 'string'" cascade, and never an invalid
-#     IR reaching the LLVM verifier.
+#  2. `string(byte(66))` NOW CONVERTS (Task 2, port unblocker): Go-conformant
+#     rune/byte->string conversion shipped, superseding the old "string/bool
+#     both cleanly rejected" assumption this sub-check used to encode. `bool`
+#     stays unsupported and is still exercised as the clean-rejection
+#     exemplar below (single conversion-specific diagnostic, "cannot convert
+#     ... only numeric conversions are supported in v1", NOT the misleading
+#     "Undefined variable 'bool'" cascade, never invalid IR reaching the LLVM
+#     verifier).
 #  3. No over-rejection: a plain numeric conversion still compiles + runs.
 conv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== conv-reject-probe: T(x) shadowing soundness + clean rejection ==="
 	@printf 'package main\nimport "fmt"\nfunc int(n int) int { return n + 100 }\nfunc main(){ fmt.Println(int(5)) }\n' > build/cr_shadow.goo
-	@printf 'package main\nfunc main(){ _ = string(byte(66)) }\n' > build/cr_string.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(string(byte(66))) }\n' > build/cr_string.goo
 	@printf 'package main\nfunc main(){ _ = bool(1) }\n' > build/cr_bool.goo
 	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(int(byte(200))) }\n' > build/cr_numok.goo
 	@"$(COMPILER)" build/cr_shadow.goo -o build/cr_shadow.out 2>build/cr_shadow.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "conv-reject-probe: FAIL (user 'func int' + int(5) wrongly rejected)"; cat build/cr_shadow.err; exit 1; fi; \
 	  out="$$(./build/cr_shadow.out)"; if [ "$$out" != "105" ]; then echo "conv-reject-probe: FAIL (shadowing soundness: int(5) printed '$$out' != 105 — gate regressed to name-only, converting instead of calling the user func)"; exit 1; fi
 	@"$(COMPILER)" build/cr_string.goo -o build/cr_string.out 2>build/cr_string.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "conv-reject-probe: FAIL (string(b) compiled — unsupported conversion not rejected)"; exit 1; fi; \
-	  if grep -qiE "Module verification failed|LLVM ERROR" build/cr_string.err; then echo "conv-reject-probe: FAIL (invalid IR reached verifier for string(b))"; cat build/cr_string.err; exit 1; fi; \
-	  if grep -qiE "Undefined variable" build/cr_string.err; then echo "conv-reject-probe: FAIL (string(b) gave misleading 'Undefined variable' cascade, not a clean conversion diagnostic)"; cat build/cr_string.err; exit 1; fi; \
-	  if ! grep -qiE "cannot convert to string" build/cr_string.err; then echo "conv-reject-probe: FAIL (no clean 'cannot convert to string' diagnostic)"; cat build/cr_string.err; exit 1; fi
+	  if [ $$rc -ne 0 ]; then echo "conv-reject-probe: FAIL (string(byte(66)) wrongly rejected — Task 2 shipped rune/byte->string conversion)"; cat build/cr_string.err; exit 1; fi; \
+	  out="$$(./build/cr_string.out)"; if [ "$$out" != "B" ]; then echo "conv-reject-probe: FAIL (string(byte(66)) printed '$$out' != B)"; exit 1; fi
 	@"$(COMPILER)" build/cr_bool.goo -o build/cr_bool.out 2>build/cr_bool.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "conv-reject-probe: FAIL (bool(1) compiled — unsupported conversion not rejected)"; exit 1; fi; \
 	  if grep -qiE "Undefined variable" build/cr_bool.err; then echo "conv-reject-probe: FAIL (bool(1) gave misleading 'Undefined variable', not a clean conversion diagnostic)"; cat build/cr_bool.err; exit 1; fi; \
