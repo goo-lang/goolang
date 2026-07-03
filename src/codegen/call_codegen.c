@@ -257,6 +257,62 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         if (strcmp(func_name->name, "make_chan") == 0) {
             return codegen_generate_make_chan_call(codegen, checker, expr);
         }
+        // string(x) where x is ANY integer kind (Task 2, port unblocker). The
+        // checker has already validated x (any integer kind, including
+        // TYPE_CHAR) and stamped TYPE_STRING on expr->node_type — see the
+        // "string(x)" arm in expression_checker.c, placed ahead of ITS
+        // generic numeric-conversion gate for the same reason this arm is
+        // placed ahead of the generic numeric-conversion codegen below.
+        // Unlike a numeric conversion, the target width isn't the operand's
+        // final representation: the runtime helper goo_string_from_rune
+        // does the real work (UTF-8-encodes the value as a Unicode code
+        // point), so this lowering only widens/narrows the operand to the
+        // i32 that helper expects (codegen_numeric_convert, reused from the
+        // numeric-conversion path below) and calls it. Scope: rune/byte->
+        // string ONLY — []byte(s)/string([]byte) are out of scope and never
+        // reach here (the checker rejects a non-integer/non-char source).
+        //
+        // Mirror the checker's shadowing gate (see the numeric-conversion
+        // comment below for the rationale): a user `func string(...)` makes
+        // `string(x)` an ordinary call, not a conversion.
+        if (strcmp(func_name->name, "string") == 0 && call->args && !call->args->next
+            && !type_checker_lookup_variable(checker, func_name->name)) {
+            ValueInfo* src = codegen_generate_expression(codegen, checker, call->args);
+            if (!src) return NULL;
+            LLVMValueRef sval = src->llvm_value;
+            if (src->is_lvalue && src->goo_type) {
+                LLVMTypeRef st = codegen_type_to_llvm(codegen, src->goo_type);
+                if (st) sval = LLVMBuildLoad2(codegen->builder, st, sval, "conv_load");
+            }
+            Type* i32_type = type_checker_get_builtin(checker, TYPE_INT32);
+            LLVMTypeRef i32_l = LLVMInt32TypeInContext(codegen->context);
+            LLVMValueRef rune_val = codegen_numeric_convert(codegen, sval, src->goo_type, i32_type, i32_l);
+            value_info_free(src);
+
+            // goo_string_from_rune is not registered by runtime_integration.c
+            // (out of this task's file allowlist) — declare it lazily here
+            // on first use, the same lazy-fallback pattern statement_codegen.c
+            // uses for goo_string_new in the map-range lowering (its
+            // goo_string_new comment explains why: avoids widening the
+            // central runtime_integration.c table for a single call site).
+            // The struct layout {i8*, i64} mirrors runtime_integration.c's
+            // string_type exactly (goo_string_t: {char* data; size_t length}).
+            LLVMValueRef from_rune_fn = LLVMGetNamedFunction(codegen->module, "goo_string_from_rune");
+            if (!from_rune_fn) {
+                LLVMTypeRef string_l = LLVMStructTypeInContext(codegen->context,
+                    (LLVMTypeRef[]){
+                        LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                        LLVMInt64TypeInContext(codegen->context)
+                    }, 2, 0);
+                LLVMTypeRef params[] = { i32_l };
+                LLVMTypeRef fn_type = LLVMFunctionType(string_l, params, 1, 0);
+                from_rune_fn = LLVMAddFunction(codegen->module, "goo_string_from_rune", fn_type);
+            }
+            LLVMValueRef args[] = { rune_val };
+            LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(from_rune_fn),
+                                                 from_rune_fn, args, 1, "str_from_rune");
+            return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+        }
         // Builtin numeric type conversion `T(x)` (F2). The type checker has
         // already validated the single numeric/char argument and stamped the
         // target type on expr->node_type. Evaluate the operand and emit the

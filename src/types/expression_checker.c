@@ -2099,6 +2099,47 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         if (strcmp(func_ident->name, "make_chan") == 0) {
             return type_check_make_chan_call(checker, call, expr);
         }
+        // string(x) where x is ANY integer kind (Task 2, port unblocker):
+        // Go-conformant rune/byte->string conversion — the result is x's
+        // value interpreted as a Unicode code point and UTF-8-encoded (see
+        // goo_string_from_rune's doc comment in runtime.h for the
+        // invalid-code-point rule). Placed AHEAD of the generic
+        // name_is_builtin_conv_name gate below, which still recognizes
+        // "string" as a conversion NAME (so the shadowing/name-recognition
+        // logic doesn't need duplicating) but only ever produces NULL for it
+        // (builtin_conversion_target has no "string" case) and rejects with
+        // "cannot convert to string ... only numeric conversions". This arm
+        // intercepts "string" first so that generic rejection never fires.
+        // Scope: rune/byte->string ONLY — []byte(s) and string([]byte) stay
+        // unsupported (a []byte source fails the type_is_integer/TYPE_CHAR
+        // check below and falls through to the ordinary "cannot convert"
+        // diagnostic, same as before this task).
+        if (strcmp(func_ident->name, "string") == 0 &&
+            !name_is_user_shadowed(checker, func_ident->name)) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos,
+                           "conversion string() expects exactly one argument");
+                return NULL;
+            }
+            Type* src = type_check_expression(checker, call->args);
+            if (!src) return NULL;
+            // Only integer-kind sources convert (Go: rune/byte/int.../uint...
+            // and the char/rune literal kind TYPE_CHAR). Floats, bool,
+            // string, and aggregate sources are NOT integer-to-string
+            // conversions in Go and are rejected here rather than reaching
+            // codegen with no lowering.
+            if (!type_is_integer(src) && src->kind != TYPE_CHAR) {
+                type_error(checker, expr->pos,
+                           "cannot convert %s to string (only integer-kind "
+                           "conversions — rune/byte/int-family — are "
+                           "supported)",
+                           type_to_string(src));
+                return NULL;
+            }
+            Type* str_type = type_checker_get_builtin(checker, TYPE_STRING);
+            expr->node_type = str_type;
+            return str_type;
+        }
         // Builtin type conversion `T(x)` (F2): a call whose callee names a
         // builtin conversion type is a conversion, not a function call. Gate on
         // the name NOT being shadowed by a user variable OR function (Go
