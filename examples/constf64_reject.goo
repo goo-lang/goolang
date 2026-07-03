@@ -1,0 +1,18 @@
+// constf64_reject (task 3 review fix, negative gate): a float constant that
+// overflows float64's finite range must be REJECTED at compile time, not
+// silently saturated to +/-inf. Go itself rejects this ("constant 1e+309
+// overflows float64") — a Go-CONFORMANT rejection like the other three
+// const*-reject probes. The first task-3 commit shipped this check DEAD:
+// the lexer bridge converts the literal to a C double (atof saturates 1e309
+// to +inf) and parser.y re-serializes it via "%f", so the literal text the
+// checker sees is "inf" — strtod parses that back without ERANGE, and the
+// original errno-based check never fired (`var f float64 = 1e309` compiled
+// and printed inf). Fixed by testing the parsed VALUE's finiteness instead
+// — see float64_is_finite's doc comment in expression_checker.c. Guarded by
+// the constf64-reject-probe Makefile target.
+package main
+
+func main() {
+	var f float64 = 1e309
+	_ = f
+}

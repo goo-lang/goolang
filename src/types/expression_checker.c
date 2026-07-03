@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <errno.h>   // literal_fits_type: ERANGE from strtoull/strtod
+#include <errno.h>   // literal_fits_type: ERANGE from strtoull (defensive branch)
 
 // Forward declarations: the untyped-constant rootedness predicates and
 // adapters are defined below (near type_check_binary_expr, their primary
@@ -723,6 +723,27 @@ static bool float32_is_finite(float f) {
     return (bits & 0x7F800000u) != 0x7F800000u;
 }
 
+// 64-bit sibling of float32_is_finite (same ccomp-safe bit-test technique,
+// same <math.h> avoidance rationale — see that function's doc comment): a
+// double's exponent field is all-ones (0x7FF) iff it's +-inf or NaN.
+// Needed because float64 overflow does NOT reach literal_fits_type as an
+// out-of-range NUMERIC STRING: the lexer bridge converts every float
+// literal to a C double with atof (lexer_bridge.c's TOKEN_FLOAT arm), which
+// saturates `1e309` to +inf, and parser.y's FLOAT_LITERAL rule then
+// re-serializes that double via snprintf("%f") — so the literal TEXT the
+// checker receives is literally "inf", which strtod parses back to +inf
+// with NO ERANGE. An errno-based overflow check therefore never fires for
+// float64 (it shipped dead in the first task-3 commit); the finiteness of
+// the parsed VALUE is the reliable signal. "inf" text can only arise from
+// that lexer-side saturation — Goo has no infinity literal syntax — so a
+// non-finite parse result here always means the source constant overflowed
+// float64.
+static bool float64_is_finite(double d) {
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    return (bits & 0x7FF0000000000000ull) != 0x7FF0000000000000ull;
+}
+
 // Task 3 (constant representability): does literal `lit`'s value, under
 // `negated` (an odd number of enclosing unary MINUS — see
 // adapt_untyped_int_operand's doc comment), fit representably in `target`?
@@ -730,29 +751,46 @@ static bool float32_is_finite(float f) {
 // caller and owns the "constant %s overflows %s" diagnostic, so every
 // rejection is worded identically regardless of which call site triggered it.
 //
-// INT literal: `lit->value` is always non-negative TEXT — codegen_generate_
-// literal's TOKEN_INT arm parses it the same way (strtoull, base 0 so a 0x/
-// 0o/0b prefix is honored) and documents why: a negative literal like `-128`
-// never reaches this text as "-128"; it arrives as THIS SAME node under a
-// unary-MINUS wrapper, with `negated` carrying the sign instead. errno==
-// ERANGE (magnitude > UINT64_MAX) never fits anything. An int literal
-// meeting a FLOAT target always fits — Go converts a constant integer to
-// float with rounding, never rejecting for magnitude (float64 exactly
-// represents any int literal up to 2^53; Go itself doesn't reject beyond
-// that either). A signed integer target fits iff v <= INT_MAX(target)
-// (!negated), or v <= (uint64_t)INT_MAX(target)+1 (negated — two's
-// complement has exactly one more negative value than positive, which is
-// the whole reason `-128` fits int8 though the raw magnitude 128 alone does
-// not: INT8_MAX is 127, but negated allows one more). An unsigned target
-// rejects any negation except literal 0 (`-0` is vacuously representable as
-// 0), and otherwise fits iff v <= UINT_MAX(target).
+// INT literal: `lit->value` is DECIMALIZED text, never the raw source
+// spelling — the lexer bridge parses the source text (including 0x/0o/0b
+// prefixes) with strtoull into a long long (lexer_bridge.c's TOKEN_INT arm;
+// a magnitude beyond UINT64_MAX clamps there via ERANGE), and parser.y's
+// INT_LITERAL rule re-serializes that value with snprintf("%lld"). So by
+// the time text reaches this checker: no prefix ever survives (base 0 on
+// the strtoull below is kept to mirror codegen_generate_literal's TOKEN_INT
+// arm, which shares this parse, and as defense — it never actually sees a
+// prefixed string), and the ERANGE branch below cannot fire in practice
+// (every %lld-printed value re-parses in range) — it is defensive only, do
+// not treat it as live overflow handling. A user-written negative literal
+// like `-128` never reaches this text as "-128" either; it arrives as THIS
+// SAME node under a unary-MINUS wrapper, with `negated` carrying the sign
+// (the one way a leading `-` CAN appear in the text is %lld printing a
+// bit-pattern above INT64_MAX, e.g. source 0xFFFFFFFFFFFFFFFF becomes
+// "-1" — strtoull's well-defined negation wrap re-parses it to the same
+// 64-bit pattern, so the unsigned-max comparisons below still see the
+// correct value). An int literal meeting a FLOAT target always fits — Go
+// converts a constant integer to float with rounding, never rejecting for
+// magnitude (float64 exactly represents any int literal up to 2^53; Go
+// itself doesn't reject beyond that either). A signed integer target fits
+// iff v <= INT_MAX(target) (!negated), or v <= (uint64_t)INT_MAX(target)+1
+// (negated — two's complement has exactly one more negative value than
+// positive, which is the whole reason `-128` fits int8 though the raw
+// magnitude 128 alone does not: INT8_MAX is 127, but negated allows one
+// more). An unsigned target rejects any negation except literal 0 (`-0` is
+// vacuously representable as 0), and otherwise fits iff v <= UINT_MAX(target).
 //
-// FLOAT literal: strtod parses the full magnitude (sign is irrelevant to
-// over/underflow, so `negated` is unused here). A float64 target fits iff
-// errno != ERANGE (strtod's own overflow signal). A float32 target fits iff
-// the value survives a (float) narrowing cast finite — overflow produces
-// +-inf, which is the rejection; underflow-to-zero is NOT an error (Go
-// permits a constant that rounds to zero, only overflow rejects).
+// FLOAT literal: the text is likewise re-serialized (lexer bridge atof ->
+// double -> parser.y snprintf("%f")), so a float64-overflowing source
+// constant like 1e309 arrives as the TEXT "inf" (atof saturated it), which
+// strtod parses back to +inf with NO ERANGE — see float64_is_finite's doc
+// comment for why the finiteness of the parsed VALUE, not errno, is the
+// overflow signal for both float widths. `negated` is unused here (sign is
+// irrelevant to over/underflow). A float64 target fits iff the parsed
+// double is finite. A float32 target fits iff the value survives a (float)
+// narrowing cast finite — overflow produces +-inf, which is the rejection;
+// underflow-to-zero is NOT an error (Go permits a constant that rounds to
+// zero, only overflow rejects; underflow can't even produce ERANGE-shaped
+// text here, since %f prints a denormal as "0.000000").
 static bool literal_fits_type(const LiteralNode* lit, const Type* target, bool negated) {
     if (!lit || !target) return true; // defensive; callers only invoke on numeric targets
 
@@ -785,10 +823,15 @@ static bool literal_fits_type(const LiteralNode* lit, const Type* target, bool n
     }
 
     if (lit->literal_type == TOKEN_FLOAT) {
-        errno = 0;
         double v = strtod(lit->value, NULL);
         if (target->kind == TYPE_FLOAT32) return float32_is_finite((float)v);
-        if (target->kind == TYPE_FLOAT64) return errno != ERANGE;
+        // Finiteness, NOT errno: the actual overflow shape here is the text
+        // "inf" (parser-side saturation, no ERANGE) — see float64_is_finite's
+        // doc comment. A hypothetical direct out-of-range numeric string
+        // would ALSO land here as strtod's +-HUGE_VAL (= +-inf), so the one
+        // test covers both; strtod underflow returns a finite value and is
+        // correctly accepted (Go allows constants that round to zero).
+        if (target->kind == TYPE_FLOAT64) return float64_is_finite(v);
         return true; // defensive; a float literal only ever meets a float target here
     }
 
