@@ -111,6 +111,17 @@ goo_string_t goo_strings_trim_space(const char* s);
 void goo_strings_split(goo_slice_t* out, const char* s, const char* sep);
 goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep);
 goo_string_t goo_os_getenv(const char* name);
+
+// os.Args ([]string): argc/argv captured ONCE from the generated
+// executable's entry point (see the is_entry_main prologue in
+// src/codegen/function_codegen.c, the only caller of goo_os_args_init).
+// goo_os_args() lazily builds and caches a []string from the raw argv on
+// first read — argv storage is stable for the process lifetime, so
+// caching is safe and avoids re-walking/re-allocating on every read.
+// Same by-pointer ABI as goo_strings_split above: the 24-byte goo_slice_t
+// is SysV class MEMORY and cannot cross the codegen<->C boundary by value.
+void goo_os_args_init(int argc, char** argv);
+void goo_os_args(goo_slice_t* out);
 double goo_math_sqrt(double x);
 double goo_math_pow(double x, double y);
 double goo_math_abs(double x);

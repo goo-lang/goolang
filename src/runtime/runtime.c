@@ -462,6 +462,45 @@ goo_string_t goo_os_getenv(const char* name) {
     return goo_string_new(v ? v : "");
 }
 
+// os.Args: raw argc/argv, captured once by the generated executable's
+// entry point (function_codegen.c's is_entry_main prologue — the only
+// caller). Deliberately independent of the `goo_runtime` struct/goo_init
+// above: goo_init is declared but never called from codegen today (see
+// the comment at its call site), so piggy-backing on it would leave
+// os.Args silently empty until that changes.
+static struct {
+    int argc;
+    char** argv;
+} goo_os_args_raw = {0, NULL};
+
+void goo_os_args_init(int argc, char** argv) {
+    goo_os_args_raw.argc = argc;
+    goo_os_args_raw.argv = argv;
+}
+
+void goo_os_args(goo_slice_t* out) {
+    if (!out) return;
+    // Cached on first read: argv's backing storage is stable for the
+    // process lifetime (the OS/libc owns it), so the []string built from
+    // it needs building only once.
+    static goo_string_t* built = NULL;
+    static size_t built_count = 0;
+    static int built_done = 0;
+    if (!built_done) {
+        size_t count = goo_os_args_raw.argc > 0 ? (size_t)goo_os_args_raw.argc : 0;
+        if (count > 0) {
+            built = goo_alloc(sizeof(goo_string_t) * count);
+            for (size_t i = 0; i < count; i++) {
+                const char* a = goo_os_args_raw.argv[i];
+                built[i] = goo_string_new(a ? a : "");
+            }
+        }
+        built_count = count;
+        built_done = 1;
+    }
+    *out = (goo_slice_t){built, built_count, built_count};
+}
+
 void goo_strings_split(goo_slice_t* out, const char* s, const char* sep) {
     // MVP contract: empty/NULL sep yields the whole string as a single
     // element (Go's per-rune split for "" is future work). Result is a

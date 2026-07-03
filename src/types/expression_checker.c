@@ -2888,6 +2888,16 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, string_t);
     }
 
+    // os.Args -> []string. A package VALUE member, not a call — mirrors
+    // math.Pi below (no type_function wrapper). Real argv is captured
+    // once at process entry (codegen's is_entry_main prologue calling
+    // goo_os_args_init); argv[0] is always present for a real process,
+    // so len(os.Args) >= 1 always holds even with no extra args.
+    if (strcmp(package, "os") == 0 && strcmp(name, "Args") == 0) {
+        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+        return type_slice(string_t);
+    }
+
     // File I/O (M1): scalar signatures, all returning int (bytes written /
     // byte value / size, or a negative value on error).
     //   os.WriteFile(path string, data string) -> int
