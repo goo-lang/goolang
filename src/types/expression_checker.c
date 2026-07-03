@@ -113,6 +113,122 @@ static int check_slice_elements(TypeChecker* checker, ASTNode* elements,
     return 1;
 }
 
+// Closures Branch B, Task 1: func literal `func(params) result { body }` in
+// expression position. Builds the signature from the literal's OWN
+// params/return_type — the exact same param-walk as type_from_ast's
+// AST_FUNC_TYPE arm (type_checker.c), including the #105 variadic-last-
+// param model (wrap in TYPE_SLICE, set is_variadic on the resulting
+// function Type). Not shared code with that arm (it lives in a different
+// file outside this task's allowlist) but deliberately kept in lockstep —
+// see that arm's comment for the shape this mirrors.
+//
+// NO captures in T1: the design (docs/superpowers/specs/2026-07-03-closures-
+// design.md "Capture") calls for a scope-chain boundary marker so a body
+// reference crossing INTO an enclosing function's locals is recorded as a
+// capture — that marker is T2's job. Standing in for it here: the literal's
+// scope is rooted at the PACKAGE/GLOBAL scope (walk ->parent to the top),
+// not the enclosing (function-local) scope, so package-level functions/
+// vars/consts/imports still resolve normally (they are never captures —
+// same as today) while an enclosing FUNCTION's param or local does not
+// resolve at all. That is deliberate, not an oversight: codegen emits the
+// literal as its own independent LLVM function, so a checker pass that let
+// such a reference through would resolve a name whose only binding is an
+// alloca in a DIFFERENT LLVM function — an unreachable SSA value from the
+// literal's body, i.e. a miscompile, not a diagnostic. A clean "Undefined
+// variable" is the correct T1 behavior for what T2 turns into a real
+// capture.
+static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_FUNC_LIT) return NULL;
+    FuncLitNode* lit = (FuncLitNode*)expr;
+
+    size_t param_count = 0;
+    for (ASTNode* p = lit->params; p; p = p->next) {
+        if (p->type == AST_VAR_DECL) param_count++;
+    }
+
+    Type** param_types = NULL;
+    int is_variadic = 0;
+    if (param_count > 0) {
+        param_types = calloc(param_count, sizeof(Type*));
+        if (!param_types) return NULL;
+        size_t idx = 0;
+        for (ASTNode* p = lit->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            Type* pt = pd->type ? type_from_ast(checker, pd->type)
+                                : type_checker_get_builtin(checker, TYPE_INT32);
+            if (!pt) { free(param_types); return NULL; }
+            if (pd->is_variadic_param) {
+                pt = type_slice(pt);
+                is_variadic = 1;
+            }
+            param_types[idx++] = pt;
+        }
+    }
+
+    Type* return_type = lit->return_type
+        ? type_from_ast(checker, lit->return_type)
+        : type_checker_get_builtin(checker, TYPE_VOID);
+    if (lit->return_type && !return_type) { free(param_types); return NULL; }
+
+    Type* func_type = type_function(param_types, param_count, return_type);
+    if (func_type) func_type->data.function.is_variadic = is_variadic;
+    free(param_types);  // type_function copies what it needs
+    if (!func_type) return NULL;
+
+    // Root the literal's body scope at the package/global scope (see the
+    // doc comment above) instead of the currently-active (enclosing) scope.
+    Scope* enclosing_scope = checker->current_scope;
+    Scope* root_scope = enclosing_scope;
+    while (root_scope && root_scope->parent) root_scope = root_scope->parent;
+    checker->current_scope = root_scope;
+
+    scope_push(checker);
+
+    // Track the return type so a `return` inside the literal's body checks
+    // against the LITERAL's declared return, not whatever enclosing
+    // function's return type was active (mirrors type_check_function_decl's
+    // save/restore of this exact field, type_checker.c).
+    Type* saved_return_type = checker->current_return_type;
+    checker->current_return_type = return_type;
+
+    if (lit->params) {
+        for (ASTNode* p = lit->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            Type* pt = pd->type ? type_from_ast(checker, pd->type)
+                                : type_checker_get_builtin(checker, TYPE_INT32);
+            if (pd->is_variadic_param && pt) pt = type_slice(pt);
+            if (pt) {
+                for (size_t i = 0; i < pd->name_count; i++) {
+                    Variable* pv = variable_new(pd->names[i], pt, pd->base.pos);
+                    if (pv) {
+                        pv->is_initialized = 1;
+                        scope_add_variable(checker->current_scope, pv);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check the body statements — reuse type_check_statement exactly like
+    // type_check_function_decl's own body traversal (type_checker.c) rather
+    // than duplicating that logic.
+    int ok = 1;
+    if (lit->body) {
+        ok = type_check_statement(checker, lit->body);
+    }
+
+    checker->current_return_type = saved_return_type;
+    scope_pop(checker);
+    checker->current_scope = enclosing_scope;
+
+    if (!ok) return NULL;
+
+    expr->node_type = func_type;
+    return func_type;
+}
+
 // Expression type checking implementation
 
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
@@ -329,6 +445,8 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
         }
         case AST_MATCH_EXPR:
             return type_check_match_expr(checker, expr);
+        case AST_FUNC_LIT:
+            return type_check_func_lit(checker, expr);
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;

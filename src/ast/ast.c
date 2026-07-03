@@ -46,6 +46,7 @@ static const char* ast_node_type_strings[] = {
     [AST_TYPE_ASSERT_EXPR] = "TypeAssertExpr",
     [AST_PAREN_EXPR] = "ParenExpr",
     [AST_STRUCT_LITERAL] = "StructLiteral",
+    [AST_FUNC_LIT] = "FuncLit",
 
     [AST_BASIC_TYPE] = "BasicType",
     [AST_ARRAY_TYPE] = "ArrayType",
@@ -156,6 +157,13 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(func->return_type);
             ast_node_free(func->body);
             ast_node_free(func->annotations);
+            break;
+        }
+        case AST_FUNC_LIT: {
+            FuncLitNode* lit = (FuncLitNode*)node;
+            ast_node_free(lit->params);
+            ast_node_free(lit->return_type);
+            ast_node_free(lit->body);
             break;
         }
         case AST_CONCEPT_DECL: {

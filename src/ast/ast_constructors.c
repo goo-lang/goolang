@@ -82,10 +82,28 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
     return node;
 }
 
+// Closures Branch B, Task 1: func literal constructor. See FuncLitNode's doc
+// comment (ast.h) for field shapes; the parser assigns params/return_type/
+// body from its own RHS symbols after construction.
+FuncLitNode* ast_func_lit_new(Position pos) {
+    FuncLitNode* node = (FuncLitNode*)malloc(sizeof(FuncLitNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_FUNC_LIT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->params = NULL;
+    node->return_type = NULL;
+    node->body = NULL;
+
+    return node;
+}
+
 ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos) {
     ConceptDeclNode* node = (ConceptDeclNode*)malloc(sizeof(ConceptDeclNode));
     if (!node) return NULL;
-    
+
     node->base.type = AST_CONCEPT_DECL;
     node->base.pos = pos;
     node->base.node_type = NULL;

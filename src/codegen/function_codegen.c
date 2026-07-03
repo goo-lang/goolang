@@ -280,6 +280,192 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 #endif
 }
 
+// Closures Branch B, Task 1: emit a func literal `func(params) result {body}`
+// as its own LLVM function `__goo_lit_<n>` (module-unique via
+// codegen->func_lit_counter — see its doc comment in codegen.h) with the
+// env-first calling convention (codegen_get_funcval_call_type): env is LLVM
+// parameter 0, present but UNUSED in T1 (no captures; Branch B's Task 2
+// wires the env struct through it). The literal's VALUE is the universal
+// fat-pointer pair `{__goo_lit_n, NULL}` — same InsertValue-into-ConstNull
+// shape as the named-function identifier arm (expression_codegen.c's
+// codegen_generate_identifier).
+//
+// Unlike every other function-emitting entry point in this file, this one
+// runs MID-EXPRESSION: the ENCLOSING function's body is still being
+// generated when this is called, so this is a NESTED (not sequential)
+// function emission. Every piece of ambient CodeGenerator/TypeChecker state
+// that codegen_generate_function_decl normally owns for the FULL DURATION
+// of a function's emission must therefore be saved before entering the
+// literal and restored after, mirroring codegen_generate_global_init_
+// function's save/restore discipline (this file) with two ADDITIONS that
+// only matter for a nested (not sequential) emission:
+//   - value_table_function_start: codegen_enter_function OVERWRITES this
+//     with the literal's own start offset; without saving/restoring it, the
+//     OUTER function's eventual codegen_exit_function would truncate the
+//     value table back to the LITERAL's start instead of the outer's own,
+//     leaking the literal's locals past its exit.
+//   - the M8b escape-promotion globals (g_escape_names et al., file-static
+//     above): escape_prepass_compute OVERWRITES the promoted-name set from
+//     whatever body it is given (it is not accumulative), so leaving it as
+//     the literal's set would misroute goroutine-escape promotion for any
+//     code emitted AFTER the literal in the enclosing function.
+// The type-checker scope mirror additionally reproduces the CHECKER's own
+// T1 no-capture decision (expression_checker.c's type_check_func_lit):
+// rooted at the package/global scope, not the enclosing function's scope,
+// so a stray re-check from codegen never resolves an enclosing local that
+// has no reachable binding in the literal's own (separate) LLVM function.
+ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_FUNC_LIT) return NULL;
+    FuncLitNode* lit = (FuncLitNode*)expr;
+
+    Type* fn_type = expr->node_type;
+    if (!fn_type || fn_type->kind != TYPE_FUNCTION) {
+        codegen_error(codegen, expr->pos, "internal: func literal missing resolved type");
+        return NULL;
+    }
+
+    char lit_name[64];
+    snprintf(lit_name, sizeof(lit_name), "__goo_lit_%lu", codegen->func_lit_counter++);
+
+    LLVMTypeRef lit_llvm_ty = codegen_get_funcval_call_type(codegen, fn_type);
+    LLVMTypeRef llvm_return_type = codegen_type_to_llvm(codegen, fn_type->data.function.return_type);
+    if (!lit_llvm_ty || !llvm_return_type) {
+        codegen_error(codegen, expr->pos, "internal: failed to build func literal signature");
+        return NULL;
+    }
+
+    LLVMValueRef lit_fn = LLVMAddFunction(codegen->module, lit_name, lit_llvm_ty);
+    LLVMSetLinkage(lit_fn, LLVMInternalLinkage);
+
+    FunctionInfo* func_info = function_info_new(lit_name, lit_fn, fn_type->data.function.return_type);
+    if (!func_info) {
+        codegen_error(codegen, expr->pos, "Failed to create function info for func literal");
+        return NULL;
+    }
+    func_info->entry_block = LLVMAppendBasicBlockInContext(codegen->context, lit_fn, "entry");
+
+    // Save every piece of ambient state this nested emission touches.
+    LLVMValueRef saved_function = codegen->current_function;
+    FunctionInfo* saved_function_info = codegen->current_function_info;
+    LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(codegen->builder);
+    size_t saved_value_table_function_start = codegen->value_table_function_start;
+    const char* saved_escape_names[ESCAPE_MAX_NAMES];
+    memcpy(saved_escape_names, g_escape_names, sizeof(g_escape_names));
+    size_t saved_escape_count = g_escape_count;
+    int saved_escape_has_go = g_escape_has_go;
+    Type* saved_return_type = checker->current_return_type;
+    Scope* enclosing_scope = checker->current_scope;
+
+    codegen_enter_function(codegen, func_info);
+    codegen_set_insert_point(codegen, func_info->entry_block);
+
+    // M8b: compute which of the LITERAL's OWN locals escape into a
+    // goroutine spawned from ITS OWN body — scoped fresh per the doc
+    // comment above (restored below, not left applied to the enclosing
+    // function's remaining codegen).
+    escape_prepass_compute(lit->body);
+
+    // Mirror the type-checker scope for re-invocations of type_check_* from
+    // inside body codegen (same pattern as codegen_generate_function_decl),
+    // rooted at the package/global scope — T1's no-capture boundary.
+    Scope* root_scope = enclosing_scope;
+    while (root_scope && root_scope->parent) root_scope = root_scope->parent;
+    checker->current_scope = root_scope;
+    scope_push(checker);
+    checker->current_return_type = fn_type->data.function.return_type;
+
+    // Bind parameters. LLVM param 0 is env (T1: unused); the literal's OWN
+    // params start at LLVM index 1.
+    size_t param_count = fn_type->data.function.param_count;
+    if (lit->params && param_count > 0) {
+        ASTNode* param = lit->params;
+        size_t param_index = 0;
+        while (param && param_index < param_count) {
+            const char* param_name = NULL;
+            if (param->type == AST_VAR_DECL) {
+                VarDeclNode* pd = (VarDeclNode*)param;
+                if (pd->name_count > 0 && pd->names) param_name = pd->names[0];
+            }
+            if (param_name) {
+                Type* pgoo_type = fn_type->data.function.param_types[param_index];
+                LLVMTypeRef p_llvm_type = codegen_type_to_llvm(codegen, pgoo_type);
+                if (p_llvm_type) {
+                    LLVMValueRef param_value = LLVMGetParam(lit_fn, (unsigned)(param_index + 1));
+                    LLVMValueRef param_alloca = codegen_alloc_local(codegen, p_llvm_type, param_name);
+                    LLVMBuildStore(codegen->builder, param_value, param_alloca);
+
+                    ValueInfo* param_info = value_info_new(param_name, param_alloca, pgoo_type);
+                    param_info->is_lvalue = 1;
+                    param_info->is_initialized = 1;
+                    codegen_add_value(codegen, param_info);
+
+                    Variable* pv = variable_new(param_name, pgoo_type, param->pos);
+                    if (pv) {
+                        pv->is_initialized = 1;
+                        scope_add_variable(checker->current_scope, pv);
+                    }
+                }
+                param_index++;
+            }
+            param = param->next;
+        }
+    }
+
+    // Generate the body.
+    int ok = 1;
+    if (lit->body) {
+        ok = codegen_generate_statement(codegen, checker, lit->body);
+    }
+
+    // Default-return handling per the named-func path
+    // (codegen_generate_function_decl): a fall-off-the-end exit runs any
+    // registered defers (LIFO) then returns void/zero. No is_entry_main
+    // case — a literal is never `main`.
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        codegen_emit_deferred_calls(codegen, checker);
+        if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
+            LLVMBuildRetVoid(codegen->builder);
+        } else {
+            LLVMBuildRet(codegen->builder, LLVMConstNull(llvm_return_type));
+        }
+    }
+
+    // Restore every piece of saved ambient state, in the mirror order of
+    // the save above.
+    checker->current_return_type = saved_return_type;
+    scope_pop(checker);
+    checker->current_scope = enclosing_scope;
+
+    codegen_exit_function(codegen);
+    codegen->value_table_function_start = saved_value_table_function_start;
+    codegen->current_function = saved_function;
+    codegen->current_function_info = saved_function_info;
+    if (saved_block) LLVMPositionBuilderAtEnd(codegen->builder, saved_block);
+    memcpy(g_escape_names, saved_escape_names, sizeof(g_escape_names));
+    g_escape_count = saved_escape_count;
+    g_escape_has_go = saved_escape_has_go;
+
+    function_info_free(func_info);
+
+    if (!ok) {
+        codegen_error(codegen, expr->pos, "Failed to generate func literal body");
+        return NULL;
+    }
+
+    // Build the literal's VALUE — the universal fat-pointer pair
+    // `{__goo_lit_n, NULL}` — in the NOW-RESTORED outer builder position
+    // (the Branch A identifier-arm pattern, expression_codegen.c).
+    LLVMTypeRef pair_ty = codegen_get_funcval_pair_type(codegen);
+    LLVMValueRef pair = LLVMConstNull(pair_ty);
+    pair = LLVMBuildInsertValue(codegen->builder, pair, lit_fn, 0, "funcval_lit");
+    return value_info_new(lit_name, pair, fn_type);
+#endif
+}
+
 // Forward declaration for error union function generation
 int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* checker, 
                                          FuncDeclNode* func_decl, Type* return_type);
