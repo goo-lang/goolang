@@ -277,7 +277,19 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     // function below) only runs after every declaration, including main
     // itself, has been generated. The prototype-now/body-later split lets
     // main call it regardless of declaration order.
-    if (codegen_program_needs_global_init(prog->decls)) {
+    //
+    // MAIN PACKAGE ONLY (Task 2b): codegen_generate_program also runs once
+    // per imported package into this same module. Packages can never defer
+    // (codegen_generate_var_decl rejects package-scope deferral cleanly),
+    // but the pre-pass OVER-approximates — it runs before any declaration
+    // is generated, so it cannot resolve const identifiers, and a goostd
+    // lookup table like utf8's `first` (elements are const identifiers)
+    // would be misread as "needs init". A package pass would then create —
+    // and its fill call below would body-fill — a goo.global_init that
+    // collides with main's own. Gate both the prototype and the fill on
+    // the main pass.
+    int is_main_pass = (checker->current_package == NULL);
+    if (is_main_pass && codegen_program_needs_global_init(prog->decls)) {
         LLVMTypeRef void_ty = LLVMVoidTypeInContext(codegen->context);
         LLVMTypeRef fn_ty = LLVMFunctionType(void_ty, NULL, 0, 0);
         LLVMAddFunction(codegen->module, "goo.global_init", fn_ty);
@@ -297,8 +309,9 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     // Fill in goo.global_init's body from whatever was deferred while
     // generating the declarations above. Must run after the loop: every
     // global and every function this initializer might call (e.g. `var w =
-    // double(x)`) needs to already exist in the module.
-    if (!codegen_generate_global_init_function(codegen, checker)) {
+    // double(x)`) needs to already exist in the module. Main pass only —
+    // see the prototype gate above.
+    if (is_main_pass && !codegen_generate_global_init_function(codegen, checker)) {
         return 0;
     }
 

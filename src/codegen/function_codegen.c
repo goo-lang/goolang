@@ -635,66 +635,131 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
 }
 
 #if LLVM_AVAILABLE
+// Task 2b: recursive all-constant-elements check over a composite literal's
+// element tree. Answers: will composite_codegen.c's module-scope
+// "all-constant fast path" handle every element builder-free? Constant
+// shapes:
+//   - any bare literal (int/float/string/bool/char/nil);
+//   - an identifier that resolves to a registered CONSTANT global (a
+//     package-level `const` — codegen_generate_const_decl registers these
+//     as is_lvalue=0 globals with LLVMSetGlobalConstant; identifier codegen
+//     then returns the INITIALIZER constant without any load, i.e.
+//     builder-free). This case is REQUIRED by the goostd lookup tables —
+//     utf8's `first`/`acceptRanges` and their like are composed of const
+//     identifiers (`as`, `xx`, `locb`, ...), and they must stay on the
+//     immediate path (bits/utf8 goldens are the guard). An identifier that
+//     resolves to a VAR needs an LLVMBuildLoad2 — not constant;
+//   - a keyed element `k: v` whose key folds via goo_fold_const_int and
+//     whose value is recursively constant;
+//   - a nested composite (incl. the elided `{locb, hicb}` form) whose
+//     elements are all recursively constant.
+// Everything else — var identifiers, calls (incl. conversions: deferral
+// evaluates them correctly, so no special exemption is needed), binary and
+// unary expressions, selectors, indexing — is NOT constant, so the
+// enclosing composite defers to goo.global_init (main package) or hits the
+// package-scope clean rejection (imported packages, where nothing needs it
+// today).
+//
+// `codegen == NULL` selects PRE-PASS mode (codegen_program_needs_global_init
+// runs before ANY declaration is generated, so the value table holds no
+// consts yet): identifiers count as NOT constant. That makes the pre-pass a
+// strict over-approximation of the decl-time answer — it may predict
+// deferral for a composite the decl-time check keeps immediate (worst case:
+// an empty goo.global_init is synthesized and called), but it can never
+// predict "no deferral" when decl time defers, which is the direction that
+// would lose initializers (main couldn't call a prototype that was never
+// created).
+static int global_init_elem_is_const(CodeGenerator* codegen, ASTNode* e) {
+    if (!e) return 0;
+    switch (e->type) {
+        case AST_LITERAL:
+            return 1;
+        case AST_IDENTIFIER: {
+            if (!codegen) return 0;  // pre-pass: consts not registered yet
+            ValueInfo* vi = codegen_lookup_value(codegen, ((IdentifierNode*)e)->name);
+            if (!vi || vi->is_lvalue || !vi->llvm_value) return 0;
+            if (!LLVMIsAGlobalVariable(vi->llvm_value) ||
+                !LLVMIsGlobalConstant(vi->llvm_value)) return 0;
+            // Mirror identifier codegen's builder-free const fast path
+            // exactly: it substitutes the initializer, so one must exist.
+            LLVMValueRef init = LLVMGetInitializer(vi->llvm_value);
+            return init && LLVMIsConstant(init);
+        }
+        case AST_KEYED_ELEMENT: {
+            KeyedElementNode* ke = (KeyedElementNode*)e;
+            uint64_t k;
+            if (!goo_fold_const_int(ke->key, &k)) return 0;
+            return global_init_elem_is_const(codegen, ke->value);
+        }
+        case AST_SLICE_EXPR: {
+            for (ASTNode* el = ((SliceLitNode*)e)->elements; el; el = el->next)
+                if (!global_init_elem_is_const(codegen, el)) return 0;
+            return 1;
+        }
+        case AST_ARRAY_LITERAL: {
+            for (ASTNode* el = ((ArrayLitNode*)e)->elements; el; el = el->next)
+                if (!global_init_elem_is_const(codegen, el)) return 0;
+            return 1;
+        }
+        case AST_STRUCT_LITERAL: {
+            for (ASTNode* fv = ((StructLiteralNode*)e)->field_values; fv; fv = fv->next)
+                if (!global_init_elem_is_const(codegen, fv)) return 0;
+            return 1;
+        }
+        default:
+            return 0;
+    }
+}
+
 // Task 2 / var-init cluster: module-scope initializer classification. Can
 // `expr` (a package-level var's initializer) be evaluated NOW, with no
-// positioned LLVM builder, as a true module constant? A bare literal (or
-// nil) is the only shape trusted to skip the builder entirely — identifiers,
-// calls, binary/unary expressions, selectors, indexing, and everything else
-// EXCEPT composite literals (see the carve-out just below) are deferred to
-// goo.global_init(), which runs with a real positioned builder before user
-// main. This subsumes the old call-rejection guard that used to sit in the
-// caller below: a call is never AST_LITERAL, so it is now deferred rather
-// than cleanly rejected — and it happens to fix the SIGSEGV root cause
-// (module-scope codegen_generate_expression touching an unpositioned
-// builder for an identifier operand), since we never attempt generation for
-// these shapes at module scope at all.
+// positioned LLVM builder, as a true module constant? Trusted to skip the
+// builder entirely: a bare literal (or nil), and a composite literal whose
+// element tree is recursively all-constant (global_init_elem_is_const —
+// the goostd lookup-table shape, handled by composite_codegen.c's constant
+// fast path). Everything else — identifiers, calls, binary/unary
+// expressions, selectors, indexing, composites with any non-constant
+// element (Task 2b fix: `var t = []int{a}` used to SIGSEGV on this path) —
+// is deferred to goo.global_init(), which runs with a real positioned
+// builder before user main. This subsumes the old call-rejection guard: a
+// call is now deferred rather than cleanly rejected — fixing the SIGSEGV
+// root cause (module-scope codegen_generate_expression touching an
+// unpositioned builder), since we never attempt generation for these
+// shapes at module scope at all.
 //
-// Carve-out: a nullable global whose declared base type's numeric KIND
-// differs from the literal's own token kind (`var gq ?float64 = 5` — an int
-// literal into a float base) must ALSO defer. codegen_generate_var_decl's
-// module-scope nullable-wrap fallback does a bare InsertValue with no
-// coercion — correct only when the literal already matches the base kind.
-// Coercing the raw literal requires a positioned builder
-// (codegen_create_nullable_with_value, the function-scope path), so route
-// it through goo.global_init instead of teaching the constant path to
-// coerce in place.
-static int global_init_should_defer(ASTNode* expr, Type* var_type) {
+// Nullable carve-out (Task 2b widened, review m4): ANY non-nil initializer
+// into a `?T` global defers — not just cross-KIND literals. The module-
+// scope nullable-wrap fallback is a bare InsertValue with no coercion, so
+// a literal whose LLVM type mismatches the base slot in WIDTH alone
+// (`var g ?float32 = 2.5`: double into float; `var h ?int32 = 5`: i64 into
+// i32) built a malformed constant that died in the LLVM emitter with a
+// location-less "invalid number of bytes". Deferral routes these through
+// codegen_create_nullable_with_value, which width- and kind-coerces first.
+// `?T = nil` stays immediate: the nil intercept in codegen_generate_var_decl
+// builds the {is_null=1, zero} constant without the builder.
+//
+// `codegen == NULL` selects pre-pass mode — see global_init_elem_is_const.
+static int global_init_should_defer(CodeGenerator* codegen, ASTNode* expr, Type* var_type) {
     if (!expr) return 0;
 
-    // Composite literals (array/slice/struct) already have their own
-    // constant-vs-clean-error handling at module scope
-    // (composite_codegen.c's "all-constant fast path" / "requires constant
-    // elements" checks) that neither crashes nor needs deferral — an
-    // all-constant literal (the goostd/bits and goostd/utf8 lookup-table
-    // shape) folds to a true LLVM constant without touching the builder.
-    // Keep them on today's path unchanged. Deferring them would need a
-    // per-package-qualified goo.global_init: codegen_generate_program runs
-    // ONCE PER IMPORTED PACKAGE in addition to once for main (see
-    // compile_resolved_packages in src/compiler/goo.c), all sharing ONE
-    // module — a second package's deferred initializer would collide with
-    // (or silently reprocess stale entries alongside) an earlier package's
-    // goo.global_init. Out of scope for this task; see the package-scope
-    // rejection in codegen_generate_var_decl below for what happens if a
-    // package ever needs this for a non-composite shape.
-    if (expr->type == AST_ARRAY_LITERAL || expr->type == AST_SLICE_EXPR ||
-        expr->type == AST_STRUCT_LITERAL) {
+    if (expr->type == AST_LITERAL &&
+        ((LiteralNode*)expr)->literal_type == TOKEN_NIL) {
         return 0;
     }
 
-    if (expr->type != AST_LITERAL) return 1;
+    if (var_type && var_type->kind == TYPE_NULLABLE) return 1;
 
-    LiteralNode* lit = (LiteralNode*)expr;
-    if (lit->literal_type == TOKEN_NIL) return 0;
-
-    if (var_type && var_type->kind == TYPE_NULLABLE && var_type->data.nullable.base_type) {
-        TypeKind base_kind = var_type->data.nullable.base_type->kind;
-        int base_is_float = (base_kind == TYPE_FLOAT32 || base_kind == TYPE_FLOAT64);
-        int lit_is_float = (lit->literal_type == TOKEN_FLOAT);
-        int lit_is_int   = (lit->literal_type == TOKEN_INT);
-        if (base_is_float && lit_is_int) return 1;
-        if (!base_is_float && lit_is_float) return 1;
+    if (expr->type == AST_ARRAY_LITERAL || expr->type == AST_SLICE_EXPR ||
+        expr->type == AST_STRUCT_LITERAL) {
+        // All-constant composites MUST stay immediate: deferring them would
+        // break the imported goostd packages (bits/utf8 lookup tables),
+        // whose codegen_generate_program passes share this one module and
+        // cannot own a second goo.global_init — see the package-scope
+        // rejection in codegen_generate_var_decl below.
+        return !global_init_elem_is_const(codegen, expr);
     }
-    return 0;
+
+    return expr->type != AST_LITERAL;
 }
 
 // Append a module-scope initializer that global_init_should_defer flagged to
@@ -839,7 +904,11 @@ int codegen_program_needs_global_init(ASTNode* decls) {
         if (d->type != AST_VAR_DECL) continue;
         VarDeclNode* vd = (VarDeclNode*)d;
         if (!vd->values) continue;
-        if (global_init_should_defer(vd->values, d->node_type)) return 1;
+        // codegen == NULL: pre-pass mode — no declaration has been generated
+        // yet, so const identifiers can't be resolved; the classifier
+        // over-approximates (may predict deferral the decl-time check avoids;
+        // never the reverse). See global_init_elem_is_const.
+        if (global_init_should_defer(NULL, vd->values, d->node_type)) return 1;
     }
     return 0;
 #endif
@@ -1144,18 +1213,21 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // Generate initializer if present
         if (var_decl->values) {
             // Task 2 / var-init cluster: a module-scope initializer that
-            // global_init_should_defer flags (anything but a bare literal/
-            // nil, plus the cross-kind-nullable-literal carve-out) cannot be
-            // safely generated now — see that function's header comment for
-            // the SIGSEGV root cause. Queue it and let
-            // codegen_generate_global_init_function evaluate it later, with
-            // a real positioned builder, in a synthesized goo.global_init()
-            // called before user main. Declaration order becomes the
-            // evaluation order — a forward reference to a not-yet-declared
-            // global reads its zero value here, unlike Go's dependency-
-            // resolved order (documented in examples/global_init_probe.goo).
+            // global_init_should_defer flags (anything but a bare
+            // literal/nil or an all-constant composite, plus any non-nil
+            // nullable init) cannot be safely generated now — see that
+            // function's header comment for the SIGSEGV root cause. Queue
+            // it and let codegen_generate_global_init_function evaluate it
+            // later, with a real positioned builder, in a synthesized
+            // goo.global_init() called before user main. Declaration order
+            // becomes the evaluation order. Deviation from Go: a forward
+            // reference (`var p = q` before `var q = 7`) never reaches this
+            // path — the type checker's def-before-use rule rejects it
+            // ("Undefined variable") — where Go would reorder and compute
+            // 7. Rejection-where-Go-reorders, not wrong values (documented
+            // in examples/global_init_probe.goo).
             if (!codegen->current_function &&
-                global_init_should_defer(var_decl->values, var_type)) {
+                global_init_should_defer(codegen, var_decl->values, var_type)) {
                 if (checker->current_package) {
                     // Defensive boundary (see global_init_should_defer's
                     // header comment): deferral only works for a SINGLE
@@ -1270,9 +1342,12 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
 // pipeline an ordinary function-body var-decl uses
 // (codegen_apply_local_init_pipeline), just against a fresh entry generated
 // here instead of one inlined in codegen_generate_var_decl. Entries run in
-// DECLARATION order — not Go's dependency-resolved order (documented in
-// examples/global_init_probe.goo's header) — so a forward reference reads
-// the target global's zero value instead of Go's computed value.
+// DECLARATION order — not Go's dependency-resolved order. In practice the
+// difference surfaces as REJECTION, not wrong values: a forward reference
+// (`var p = q` before `var q = 7`) is stopped much earlier by the type
+// checker's def-before-use rule ("Undefined variable"), where Go would
+// reorder and compute 7 (documented in examples/global_init_probe.goo's
+// header).
 int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* checker) {
 #if !LLVM_AVAILABLE
     (void)checker;
@@ -1282,12 +1357,34 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
 
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo.global_init");
     if (!fn) {
-        // codegen_program_needs_global_init found nothing deferrable, so
-        // codegen_generate_program never pre-created the prototype. Nothing
-        // to do (by construction, deferred_global_init_count must be 0 too:
-        // both passes apply the identical predicate to the identical decl
-        // list).
+        // The pre-pass (codegen_program_needs_global_init) found nothing
+        // deferrable, so the prototype was never pre-created. Nothing to
+        // fill in — and nothing can have been deferred: the pre-pass
+        // over-approximates the decl-time classifier (identifiers count as
+        // non-constant there), so decl-time deferral implies a pre-pass
+        // "needs init" answer. Assert that direction anyway (Task 2b m6):
+        // silently returning with pending entries would DROP initializers.
+        if (codegen->deferred_global_init_count > 0) {
+            codegen_error(codegen, codegen->deferred_global_inits[0].pos,
+                "Internal error: %zu deferred global initializer(s) with no "
+                "goo.global_init prototype (pre-pass under-approximated)",
+                codegen->deferred_global_init_count);
+            return 0;
+        }
         return 1;
+    }
+
+    // Double-fill guard (Task 2b m6): a body means a previous pass already
+    // filled this function. With nothing newly deferred that's a benign
+    // repeat call; with pending entries, appending a second entry block (or
+    // silently returning) would miscompile — refuse loudly instead.
+    if (LLVMCountBasicBlocks(fn) != 0) {
+        if (codegen->deferred_global_init_count == 0) return 1;
+        codegen_error(codegen, codegen->deferred_global_inits[0].pos,
+            "Internal error: goo.global_init already has a body; refusing to "
+            "drop %zu newly deferred global initializer(s)",
+            codegen->deferred_global_init_count);
+        return 0;
     }
 
     FunctionInfo* func_info = function_info_new("goo.global_init", fn, NULL);
@@ -1346,6 +1443,11 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
 
     if (ok) {
         LLVMBuildRetVoid(codegen->builder);
+        // Consume the queue (Task 2b m6): the entries are now compiled into
+        // the body, so a hypothetical later pass must see an empty list —
+        // paired with the double-fill guard above, re-processing (or
+        // silently dropping) them becomes impossible.
+        codegen->deferred_global_init_count = 0;
     }
 
     codegen_exit_function(codegen);

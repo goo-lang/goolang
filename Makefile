@@ -535,13 +535,13 @@ selectsend-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 globalcall-init-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== globalcall-init-probe: builtin call in global initializer now runs correctly (Task 2), not crash ==="
-	@printf 'package main\nimport "fmt"\nvar g = append([]int64{1}, 2)\nfunc main(){ fmt.Println(len(g)); fmt.Println(g[0]); fmt.Println(g[1]) }\n' > build/globalcall_reject.goo
-	@rm -f build/globalcall_reject
-	@$(COMPILER) -o build/globalcall_reject build/globalcall_reject.goo > build/globalcall_reject.out 2> build/globalcall_reject.err; rc=$$?; \
+	@printf 'package main\nimport "fmt"\nvar g = append([]int64{1}, 2)\nfunc main(){ fmt.Println(len(g)); fmt.Println(g[0]); fmt.Println(g[1]) }\n' > build/globalcall_init.goo
+	@rm -f build/globalcall_init
+	@$(COMPILER) -o build/globalcall_init build/globalcall_init.goo > build/globalcall_init.out 2> build/globalcall_init.err; rc=$$?; \
 	if [ $$rc -eq 139 ]; then echo "globalcall-init-probe: FAIL (SIGSEGV, rc=139 — crashed instead of compiling)"; exit 1; fi; \
-	if [ $$rc -ne 0 ]; then echo "globalcall-init-probe: FAIL (compile rc=$$rc, expected success)"; cat build/globalcall_reject.err; exit 1; fi; \
-	if [ ! -x build/globalcall_reject ]; then echo "globalcall-init-probe: FAIL (no binary emitted despite rc=0)"; exit 1; fi; \
-	actual=$$(./build/globalcall_reject); \
+	if [ $$rc -ne 0 ]; then echo "globalcall-init-probe: FAIL (compile rc=$$rc, expected success)"; cat build/globalcall_init.err; exit 1; fi; \
+	if [ ! -x build/globalcall_init ]; then echo "globalcall-init-probe: FAIL (no binary emitted despite rc=0)"; exit 1; fi; \
+	actual=$$(./build/globalcall_init); \
 	expected=$$(printf '2\n1\n2'); \
 	if [ "$$actual" != "$$expected" ]; then echo "globalcall-init-probe: FAIL (wrong output)"; echo "expected: $$expected"; echo "actual: $$actual"; exit 1; fi; \
 	echo "globalcall-init-probe: PASS (builtin call in global initializer compiled and ran correctly)"

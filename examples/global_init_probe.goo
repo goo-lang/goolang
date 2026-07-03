@@ -2,19 +2,26 @@
 // initializers containing an identifier, call, or other non-constant-
 // foldable expression are evaluated by a synthesized goo.global_init()
 // function, called before user main — fixing a prior SIGSEGV (rc=139) for
-// ANY initializer with an identifier operand (`var y = x`), and a clean
-// rejection for calls (`var w = double(x)`).
+// ANY initializer with an identifier operand (`var y = x`), for composite
+// literals with a non-constant element (`var t = []int{x, 7}`,
+// `var pt = Pt{a: x}` — Task 2b), and a clean rejection for calls
+// (`var w = double(x)`).
 //
 // DEVIATION FROM GO: initializers run in DECLARATION order, not Go's
-// dependency-resolved order. A forward reference (`var a = b` appearing
-// before `var b = 5`) would read b's zero value here, where Go computes 5.
-// Full dependency ordering is out of scope (tracked follow-up) — so this
-// probe deliberately keeps declaration order == dependency order (every
-// line only reads names already declared above it), which is also true Go,
-// verified line-by-line with `go run`.
+// dependency-resolved order. In practice the difference surfaces as
+// REJECTION, not wrong values: a forward reference (`var p = q` appearing
+// before `var q = 7`) is rejected by the type checker's def-before-use rule
+// ("Undefined variable"), where Go would reorder the initializers and
+// compute 7. So this probe keeps declaration order == dependency order
+// (every line only reads names already declared above it), which is also
+// true Go, verified line-by-line with `go run`.
 package main
 
 import "fmt"
+
+type Pt struct {
+	a int
+}
 
 func double(n int) int {
 	return n * 2
@@ -27,11 +34,20 @@ var w = double(x)
 var f = 0.5 * 3.0
 var s = "go" + "o"
 
+// Task 2b: composite literals with a non-constant element (used to SIGSEGV
+// — the composite classifier routed ALL composites onto the immediate
+// module-scope constant path).
+var t = []int{x, 7}
+var pt = Pt{a: x}
+
 // Sanctioned addition (Task 1 review follow-up): a cross-kind literal
-// (untyped int) into a nullable float global. Not valid Go (no nullable
-// types), so not verified with `go run` — verified against Goo's own
-// `if let` semantics instead.
+// (untyped int) into a nullable float global. Task 2b (review m4): also a
+// cross-WIDTH literal (untyped float, i.e. double) into a ?float32 slot —
+// previously died in the LLVM emitter with a location-less "invalid number
+// of bytes". Not valid Go (no nullable types), so not verified with
+// `go run` — verified against Goo's own `if let` semantics instead.
 var gq ?float64 = 5
+var gw ?float32 = 2.5
 
 func main() {
 	fmt.Println(x + y)
@@ -43,5 +59,13 @@ func main() {
 		fmt.Println(v == 5.0)
 	} else {
 		fmt.Println("gq none")
+	}
+	fmt.Println(t[0])
+	fmt.Println(t[1])
+	fmt.Println(pt.a)
+	if let v = gw {
+		fmt.Println(v == 2.5)
+	} else {
+		fmt.Println("gw none")
 	}
 }
