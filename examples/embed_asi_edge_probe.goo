@@ -1,0 +1,32 @@
+package main
+
+import "fmt"
+
+type A struct {
+	N int
+}
+
+type Edge struct {
+	// comment between fields
+	A
+
+	Pair struct {
+		X int
+		Y int
+	}
+	Tail int // trailing comment after a field
+}
+
+type OneLine struct{ A; Z int }
+
+func main() {
+	e := Edge{}
+	e.N = 1
+	e.Pair.X = 2
+	e.Tail = 3
+	fmt.Println(e.N + e.Pair.X + e.Tail)
+	o := OneLine{}
+	o.N = 40
+	o.Z = 2
+	fmt.Println(o.N + o.Z)
+}
