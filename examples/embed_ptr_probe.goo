@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+type Base struct {
+	N int
+}
+
+type Holder struct {
+	*Base
+	Tag int
+}
+
+func main() {
+	b := Base{N: 3}
+	h := Holder{Base: &b, Tag: 1}
+	fmt.Println(h.N) // promoted read through the pointer
+	h.N = 9          // promoted write through the pointer
+	fmt.Println(b.N) // shared: the write hit b
+	fmt.Println(h.Tag)
+}

@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+type Inner struct {
+	V int
+}
+
+type Mid struct {
+	Inner
+	M int
+}
+
+type Outer struct {
+	Mid
+	V int // shadows Inner.V at depth 2
+}
+
+func main() {
+	o := Outer{}
+	o.M = 10       // promoted from Mid (depth 1)
+	o.V = 5        // direct field shadows Inner.V
+	o.Inner.V = 7  // explicit path to the shadowed field
+	fmt.Println(o.M)
+	fmt.Println(o.V)
+	fmt.Println(o.Mid.Inner.V)
+	o.Mid.M = 11 // explicit path write
+	fmt.Println(o.M)
+}

@@ -1,4 +1,5 @@
 #include "types.h"
+#include "embedding.h"
 #include "comptime.h"  // comptime_context_lookup_func: order-independent func registry
 #include <stdlib.h>
 #include <string.h>
@@ -2984,6 +2985,24 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
     return NULL;
 }
 
+// Struct embedding desugar: rewrite `o.X` into `(o.Hop1.Hop2).X` in place, so
+// every downstream consumer (lvalue addressing, method receiver auto-address,
+// pointer auto-deref) sees only constructs that already ship. Promotion in Go
+// is DEFINED as this sugar — the rewrite is the spec, executed.
+static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position pos) {
+    for (size_t i = 0; i < r->len; i++) {
+        SelectorExprNode* s = (SelectorExprNode*)malloc(sizeof(SelectorExprNode));
+        s->base.type = AST_SELECTOR_EXPR;
+        s->base.pos = pos;
+        s->base.node_type = NULL;
+        s->base.next = NULL;
+        s->expr = base;
+        s->selector = strdup(r->path[i]);
+        base = (ASTNode*)s;
+    }
+    return base;
+}
+
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
 
@@ -3054,6 +3073,19 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
                 expr->node_type = m->type;
                 return m->type;
             }
+        }
+        EmbedResult er = embedding_resolve(checker, struct_type, selector->selector);
+        if (er.kind == EMBED_FIELD || er.kind == EMBED_METHOD) {
+            selector->expr = embed_wrap_base(selector->expr, &er, expr->pos);
+            // Re-resolve: each inserted hop is a real (embedded) field, and
+            // the leaf is now a direct member of its owner.
+            return type_check_selector_expr(checker, expr);
+        }
+        if (er.kind == EMBED_AMBIGUOUS) {
+            type_error(checker, expr->pos,
+                       "ambiguous selector '%s' (found via %s and %s)",
+                       selector->selector, er.ambig_a, er.ambig_b);
+            return NULL;
         }
         type_error(checker, expr->pos, "Struct has no field or method '%s'", selector->selector);
         return NULL;
