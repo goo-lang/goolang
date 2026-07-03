@@ -1578,9 +1578,10 @@ call_expr:
         // The type node leads the argument list; splice the rest of
         // expression_list after it (mirrors expression_list's own
         // left-to-right chaining via ast_add_child/->next).
-        // Invariant: type_call_arg (map_type/slice_type) produces a freshly
-        // malloc'd node whose ->next is NULL, so this direct assignment does
-        // not drop a pre-existing tail — no ast_add_child walk is needed.
+        // Invariant: type_call_arg (map_type/slice_type/chan_type) produces
+        // a freshly malloc'd node whose ->next is NULL, so this direct
+        // assignment does not drop a pre-existing tail — no ast_add_child
+        // walk is needed.
         $3->next = $5;
         call->args = $3;
         $$ = (ASTNode*)call;
@@ -1589,11 +1590,17 @@ call_expr:
 
 // The type argument accepted by `make(...)` (grammar-only — the type
 // checker enforces that the callee is actually `make`). map_type/
-// slice_type are the only type forms make() needs; other type forms
-// (struct_type, chan_type, ...) are deliberately not included here.
+// slice_type/chan_type are the type forms make() needs (make(chan T[, n])
+// mirrors make([]T, n)'s capacity-arg shape); other type forms (struct_type,
+// ...) are deliberately not included here. CHAN is not in primary_expr's
+// first set (no expression production starts with it), so this addition is
+// disjoint from make()'s ordinary-call alternatives on the first token —
+// unlike map_type/slice_type, which need the LALR lookahead split described
+// above.
 type_call_arg:
     map_type { $$ = $1; }
     | slice_type { $$ = $1; }
+    | chan_type { $$ = $1; }
     ;
 
 index_expr:

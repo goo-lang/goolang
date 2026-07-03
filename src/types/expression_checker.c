@@ -1822,15 +1822,17 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
 
     CallExprNode* call = (CallExprNode*)expr;
 
-    // A type in call-argument position (map_type/slice_type — the grammar
-    // alternative added for `make(...)`) only means something when the
-    // callee is the `make` builtin. Any other callee reaching here with one
-    // (e.g. `foo(map[string]int)`) is rejected here with a clean, specific
-    // diagnostic. Without this guard the argument would fall through to the
-    // generic type_check_expression() call in the argument-checking loop
-    // below, whose switch has no case for AST_MAP_TYPE/AST_SLICE_TYPE and
-    // would instead emit the far less useful "Unknown expression type".
-    if (call->args && (call->args->type == AST_MAP_TYPE || call->args->type == AST_SLICE_TYPE)) {
+    // A type in call-argument position (map_type/slice_type/chan_type — the
+    // grammar alternative added for `make(...)`) only means something when
+    // the callee is the `make` builtin. Any other callee reaching here with
+    // one (e.g. `foo(map[string]int)`, `foo(chan int)`) is rejected here
+    // with a clean, specific diagnostic. Without this guard the argument
+    // would fall through to the generic type_check_expression() call in the
+    // argument-checking loop below, whose switch has no case for
+    // AST_MAP_TYPE/AST_SLICE_TYPE/AST_CHAN_TYPE and would instead emit the
+    // far less useful "Unknown expression type".
+    if (call->args && (call->args->type == AST_MAP_TYPE || call->args->type == AST_SLICE_TYPE
+                        || call->args->type == AST_CHAN_TYPE)) {
         int callee_is_make = call->function && call->function->type == AST_IDENTIFIER &&
                               strcmp(((IdentifierNode*)call->function)->name, "make") == 0;
         if (!callee_is_make) {
@@ -1997,7 +1999,35 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 expr->node_type = made;
                 return made;
             }
-            type_error(checker, expr->pos, "make() requires a map or slice type");
+            if (made->kind == TYPE_CHANNEL) {
+                // make(chan T[, capacity]): capacity optional, integer,
+                // defaults to unbuffered (0) — same shape as make_chan(T[,
+                // capacity])'s (type_check_make_chan_call above) except
+                // `made` here is already the resolved channel type (the
+                // grammar's chan_type alternative on call->args produced it
+                // directly via type_from_ast), so it is NOT re-wrapped in
+                // another type_channel() call the way make_chan's bare
+                // element-type argument is.
+                ASTNode* cap_arg = call->args->next;
+                if (cap_arg && cap_arg->next) {
+                    type_error(checker, expr->pos,
+                               "make(chan T, capacity) takes at most two arguments");
+                    return NULL;
+                }
+                if (cap_arg) {
+                    Type* cap_t = type_check_expression(checker, cap_arg);
+                    if (!cap_t) return NULL;
+                    if (!type_is_integer(cap_t)) {
+                        type_error(checker, cap_arg->pos,
+                                   "make: capacity must be an integer, got %s",
+                                   type_to_string(cap_t));
+                        return NULL;
+                    }
+                }
+                expr->node_type = made;
+                return made;
+            }
+            type_error(checker, expr->pos, "make() requires a map, slice, or channel type");
             return NULL;
         }
         // append(slice, elem) -> slice. The result type is the first arg's

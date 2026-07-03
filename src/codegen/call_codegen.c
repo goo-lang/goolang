@@ -300,6 +300,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, cap64, 2, "slice_cap");
                 return value_info_new(NULL, slice_val, made_type);
             }
+            if (made_type && made_type->kind == TYPE_CHANNEL) {
+                // make(chan T[, capacity]) -> buffered/unbuffered channel.
+                // codegen_generate_make_chan_call reads expr->node_type
+                // (the resolved TYPE_CHANNEL, already stamped above) for
+                // the element size/ABI layout and call->args->next for the
+                // optional capacity expression — it never inspects
+                // call->args[0] itself, so it is agnostic to whether that
+                // node is a bare type-name identifier (make_chan(T, n)) or
+                // a chan_type AST node (make(chan T, n)). Reused as-is
+                // rather than duplicating the ABI-size/capacity plumbing.
+                return codegen_generate_make_chan_call(codegen, checker, expr);
+            }
             if (!made_type || made_type->kind != TYPE_MAP) {
                 codegen_error(codegen, expr->pos, "make: missing resolved map or slice type");
                 return NULL;
