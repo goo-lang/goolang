@@ -1,0 +1,19 @@
+package main
+
+import "fmt"
+
+type Base struct {
+	N int
+}
+
+type Outer struct {
+	Base
+	X int
+}
+
+func main() {
+	o := Outer{}
+	o.Base.N = 41
+	o.X = 1
+	fmt.Println(o.Base.N + o.X)
+}
