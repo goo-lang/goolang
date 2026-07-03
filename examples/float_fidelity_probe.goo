@@ -1,0 +1,18 @@
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println(1e70 > 1e69)
+	x := 1e307
+	fmt.Println(x > 1e306)
+	y := 0.30000000000000004
+	z := 0.3
+	fmt.Println(y == z)
+	a := 0.1
+	b := 0.2
+	fmt.Println(a+b == 0.3)
+	fmt.Println(a+b == 0.30000000000000004)
+	fmt.Println(1.5e-300 > 0.0)
+	fmt.Println(2.5 == 2.5)
+}
