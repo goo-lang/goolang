@@ -1384,19 +1384,98 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     if (!func_val) return 0;
     LLVMValueRef callee = func_val->llvm_value;
 
-    // M8 restriction: only direct top-level function targets. A closure or bound
-    // method carries an environment we don't box yet — reject with a clear error
-    // rather than spawn a goroutine that calls garbage.
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+
+    // M8 restriction (relaxed by Task 3 below): a direct top-level function
+    // target calls unconditionally unchanged via the arg-boxing/thunk path
+    // that follows this if/else. Anything else — a func literal or a local
+    // variable/param/selector/index holding a function VALUE — is handled
+    // by the shape-equivalence spawn below instead of being rejected
+    // outright (bound methods still fall through to codegen_resolve_
+    // callee's own "not found" error before ever reaching here — see the
+    // task report).
     if (!callee || !LLVMIsAFunction(callee)) {
-        codegen_error(codegen, stmt->pos,
-                      "go: only direct function calls are supported "
-                      "(closures and methods are not yet supported)");
+        // Task 3: `go <zero-arg VOID function value>()`. The universal
+        // fat-pointer pair `{fn_ptr, env_ptr}` (call_codegen.c's
+        // representation for every non-direct function value, including a
+        // func literal's captured closure) is EXACTLY the runtime's
+        // required `void(*)(void*)` goroutine-thunk shape whenever the
+        // callee takes zero arguments and returns nothing: extract fn_ptr/
+        // env_ptr and spawn `goo_go(fn_ptr, env_ptr)` directly — no boxing,
+        // no per-call-site thunk synthesis needed (unlike the named-
+        // function path below, which exists to ADAPT an arbitrary
+        // signature to that same shape). A captured variable's slot was
+        // already heap-promoted at its declaration site (Task 2), so it
+        // safely outlives this frame across the goroutine boundary.
+        //
+        // Go itself discards a go-statement's call result, so a non-void
+        // callee is rejected rather than silently dropping the value (see
+        // also `go vet`'s unused-result-style diagnostics for discarded
+        // calls). An argument-carrying value/literal target is a distinct,
+        // separately out-of-scope case (needs either boxing this
+        // representation's env alongside the arg box, or wrapping in an
+        // adapter thunk) — rejected with its own message; capturing the
+        // values into the closure instead is the workaround today.
+        if (call->args) {
+            codegen_error(codegen, stmt->pos,
+                          "go with argument-carrying function values is not "
+                          "yet supported; capture the values instead");
+            value_info_free(func_val);
+            return 0;
+        }
+
+        Type* callee_type = func_val->goo_type;
+        if (!callee_type || callee_type->kind != TYPE_FUNCTION ||
+            !callee_type->data.function.return_type ||
+            callee_type->data.function.return_type->kind != TYPE_VOID) {
+            codegen_error(codegen, stmt->pos,
+                          "go: only void-returning function values are "
+                          "supported (the result would be discarded)");
+            value_info_free(func_val);
+            return 0;
+        }
+
+        // codegen_generate_selector_expr / codegen_generate_index_expr (and
+        // an identifier naming a local var/param) return a func-typed
+        // field/element/slot as its ADDRESS (is_lvalue=1) — load the pair
+        // through the goo type before extracting, mirroring the general
+        // indirect-call site (call_codegen.c). A func literal's value
+        // (is_lvalue=0, the common `go func(){...}()` shape) is already the
+        // pair itself and needs no load.
+        LLVMValueRef pair_val = callee;
+        if (func_val->is_lvalue) {
+            LLVMTypeRef pair_ty = codegen_type_to_llvm(codegen, callee_type);
+            if (!pair_ty) {
+                codegen_error(codegen, stmt->pos,
+                              "internal: cannot lower go target's function-value type");
+                value_info_free(func_val);
+                return 0;
+            }
+            pair_val = LLVMBuildLoad2(codegen->builder, pair_ty, pair_val, "go_funcval_load");
+        }
+
+        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(codegen->builder, pair_val, 0, "go_funcval_fn");
+        LLVMValueRef env_ptr = LLVMBuildExtractValue(codegen->builder, pair_val, 1, "go_funcval_env");
+
+        // Same `void(*)(void*)` thunk type the named-function path below
+        // builds for goo_go's first parameter — built independently here
+        // (LLVM literal function types are uniqued per-context, so this is
+        // the identical LLVMTypeRef either way) since this branch returns
+        // before reaching that shared declaration.
+        LLVMTypeRef thunk_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &void_ptr_type, 1, 0);
+        LLVMTypeRef goo_go_params[] = { LLVMPointerType(thunk_ty, 0), void_ptr_type };
+        LLVMTypeRef goo_go_type = LLVMFunctionType(void_ptr_type, goo_go_params, 2, 0);
+        LLVMValueRef goo_go_func = LLVMGetNamedFunction(codegen->module, "goo_go");
+        if (!goo_go_func) goo_go_func = LLVMAddFunction(codegen->module, "goo_go", goo_go_type);
+
+        LLVMValueRef spawn_args[] = { fn_ptr, env_ptr };
+        LLVMBuildCall2(codegen->builder, goo_go_type, goo_go_func, spawn_args, 2, "");
+
         value_info_free(func_val);
-        return 0;
+        return 1;
     }
     LLVMTypeRef callee_ty = LLVMGlobalGetValueType(callee);
 
-    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx);
 
     // Count + evaluate the call arguments (in the caller's block).

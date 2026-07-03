@@ -1,0 +1,12 @@
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 1)
+	n := 41
+	go func() {
+		ch <- (n + 1)
+	}()
+	fmt.Println(<-ch)
+}
