@@ -50,40 +50,40 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
         case AST_FUNC_LIT:
             return codegen_generate_func_lit(codegen, checker, expr);
         case AST_POSTFIX_EXPR: {
-            // `j++` / `j--`: load operand, compute load ± 1, store back,
-            // return the LOADED (pre-modification) value. Postfix
-            // semantics. Operand must be an lvalue (identifier or
-            // selector). We don't auto-load the operand expression
-            // because we need the alloca, not the value.
+            // `j++` / `j--` / `c.n++` / `a[i]++`: load operand, compute
+            // load ± 1, store back, return the LOADED (pre-modification)
+            // value. Postfix semantics. The operand's storage ADDRESS is
+            // resolved via codegen_emit_lvalue_address — the SAME helper
+            // `x = v` / `s.field = v` / `a[i] = v` assignment uses
+            // (expression_codegen.c's TOKEN_ASSIGN arm) — so identifier,
+            // selector, and index operands are all handled uniformly here
+            // and `a[i]++` inherits whatever GEP/bounds behavior `a[i] = x`
+            // already has (same code path, not a re-walk).
             PostfixExprNode* p = (PostfixExprNode*)expr;
-            ValueInfo* operand;
-            LLVMValueRef alloca_ref;
+            ValueInfo* target;
             LLVMTypeRef elem_llvm;
             LLVMValueRef loaded;
             LLVMValueRef one;
             LLVMValueRef updated;
-            if (p->operand->type != AST_IDENTIFIER) {
-                codegen_error(codegen, expr->pos, "postfix ++/-- requires a simple identifier (selector/index forms not yet supported)");
+            target = codegen_emit_lvalue_address(codegen, checker, p->operand);
+            if (!target || !target->is_lvalue) {
+                codegen_error(codegen, expr->pos,
+                              "postfix ++/-- operand must be an addressable lvalue "
+                              "(identifier, field, or index)");
                 return NULL;
             }
-            operand = codegen_lookup_value(codegen, ((IdentifierNode*)p->operand)->name);
-            if (!operand || !operand->is_lvalue) {
-                codegen_error(codegen, expr->pos, "postfix ++/-- operand must be an lvalue");
-                return NULL;
-            }
-            alloca_ref = operand->llvm_value;
-            elem_llvm = operand->goo_type
-                ? codegen_type_to_llvm(codegen, operand->goo_type)
+            elem_llvm = target->goo_type
+                ? codegen_type_to_llvm(codegen, target->goo_type)
                 : LLVMInt32TypeInContext(codegen->context);
-            loaded = LLVMBuildLoad2(codegen->builder, elem_llvm, alloca_ref, "postfix_load");
+            loaded = LLVMBuildLoad2(codegen->builder, elem_llvm, target->llvm_value, "postfix_load");
             one = LLVMConstInt(elem_llvm, 1, 0);
             if (p->operator == TOKEN_INCREMENT) {
                 updated = LLVMBuildAdd(codegen->builder, loaded, one, "postfix_inc");
             } else {
                 updated = LLVMBuildSub(codegen->builder, loaded, one, "postfix_dec");
             }
-            LLVMBuildStore(codegen->builder, updated, alloca_ref);
-            return value_info_new(NULL, loaded, operand->goo_type);
+            LLVMBuildStore(codegen->builder, updated, target->llvm_value);
+            return value_info_new(NULL, loaded, target->goo_type);
         }
         case AST_PAREN_EXPR: {
             // MapLitNode — `map[string]V{ … }`. Lowers to:
