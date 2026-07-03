@@ -1142,20 +1142,35 @@ static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* t
 // typed variable/call/conversion RHS, or a non-numeric declared type, is
 // left untouched exactly as before), 0 on a range violation (the adapter
 // already emitted "constant ... overflows ...").
+//
+// Review fix: a NULLABLE declared type (`?int8`) wraps a numeric base at
+// the type level, but is itself TYPE_NULLABLE, not numeric — so
+// `type_is_numeric(declared)` used to bail immediately and `var gz ?int8 =
+// 300` skipped range-checking entirely, deferring to codegen's width-coerce
+// step, which truncates/wraps instead of rejecting (printed 44). Unwrap to
+// the base type FIRST and range-check/stamp against THAT: the literal gets
+// stamped as the plain (non-nullable) base type, exactly as it would for a
+// non-nullable `var b int8 = 300`. Codegen's nullable auto-wrap
+// (codegen_create_nullable_with_value) then receives an already-valid,
+// already-narrowed value and just inserts it into the { i1, T } struct's
+// slot 1 — it never needs to know a nullable declared type was involved.
 int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* declared) {
-    if (!value || !declared || !type_is_numeric(declared)) return 1;
-    if (type_is_float(declared)) {
+    if (!value || !declared) return 1;
+    Type* target = (declared->kind == TYPE_NULLABLE) ? declared->data.nullable.base_type
+                                                       : declared;
+    if (!target || !type_is_numeric(target)) return 1;
+    if (type_is_float(target)) {
         if (is_untyped_float_rooted(value))
-            return adapt_untyped_float_operand(checker, value, declared, 0);
+            return adapt_untyped_float_operand(checker, value, target, 0);
         // for_float_context=1: no shift, and no / or % anywhere in the
         // subtree may stamp float (is_untyped_int_rooted's doc comment) —
         // mirrors adapt_field_init_value's identical gate.
         if (is_untyped_int_rooted(value, 1))
-            return adapt_untyped_int_operand(checker, value, declared, 0, 1);
+            return adapt_untyped_int_operand(checker, value, target, 0, 1);
         return 1;
     }
-    if (type_is_integer(declared) && is_untyped_int_rooted(value, 0))
-        return adapt_untyped_int_operand(checker, value, declared, 0, 1);
+    if (type_is_integer(target) && is_untyped_int_rooted(value, 0))
+        return adapt_untyped_int_operand(checker, value, target, 0, 1);
     return 1;
 }
 

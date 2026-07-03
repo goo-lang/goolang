@@ -35,6 +35,18 @@ LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMType
     // caller supplied one (typed values); default to signed when it
     // didn't (untyped literals), matching function_codegen.c's var-decl
     // convention.
+    //
+    // Invariant: a float VALUE never reaches this helper for an INT slot.
+    // The checker rejects implicit float->int (36af0ca, type_compatible's
+    // "Reject implicit FLOAT -> INT" arm in types.c) before codegen ever
+    // gets here, so the fk==FP/tk==int combination is one
+    // codegen_coerce_to_type deliberately leaves unhandled (it returns v
+    // unchanged) — meant to be unreachable in practice. If that checker
+    // guard were ever bypassed, the unchanged float value would fail the
+    // InsertValue below with a LOUD LLVM verifier type-mismatch error
+    // ("insertvalue { i1, i64 } ..., double") rather than silently
+    // miscompiling — a crash here is the safe failure mode, not a bug to
+    // paper over.
     {
         LLVMTypeRef elems[2];
         LLVMGetStructElementTypes(nullable_type, elems);
