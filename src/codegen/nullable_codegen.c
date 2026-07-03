@@ -19,25 +19,29 @@ LLVMValueRef codegen_create_nullable_with_value(CodeGenerator* codegen, LLVMType
     LLVMValueRef is_null_false = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
     nullable_val = LLVMBuildInsertValue(codegen->builder, nullable_val, is_null_false, 0, "nullable.is_null");
     
-    // Widen or narrow the value to match the expected element type of slot 1
-    // before inserting.  Without this, an i32 literal wrapped into a ?int64
-    // struct (whose slot 1 is i64) yields an "insertvalue operand type
-    // mismatch" that fails `opt --passes=verify`.  Gate to integer-kind
-    // mismatches only; structs and already-matching widths are left alone.
-    // Goo integers are signed, so widening uses SExt.
+    // Coerce the value to match the expected element type of slot 1 before
+    // inserting.  Without this, a value whose LLVM type differs from the
+    // slot's yields either an "insertvalue operand type mismatch" (e.g. an
+    // i32 literal wrapped into a ?int64 struct's i64 slot) or, for a
+    // cross-kind mismatch (e.g. a typed int wrapped into a ?float64
+    // struct's double slot), a hard LLVM verifier crash
+    // ("insertvalue { i1, double } ..., i64"). Delegate to the shared
+    // width/kind coercion helper (int<->int, int->float, float<->float)
+    // instead of reimplementing the rule here — every wrap site that routes
+    // through this function inherits the fix in one place. The helper
+    // itself no-ops on kinds it doesn't handle (matching types, aggregates,
+    // pointers), so it's safe to call unconditionally whenever the slot and
+    // value types differ.  Signedness comes from the source Type when the
+    // caller supplied one (typed values); default to signed when it
+    // didn't (untyped literals), matching function_codegen.c's var-decl
+    // convention.
     {
         LLVMTypeRef elems[2];
         LLVMGetStructElementTypes(nullable_type, elems);
         LLVMTypeRef slot_type = elems[1];
-        LLVMTypeRef val_ty    = LLVMTypeOf(value);
-        if (LLVMGetTypeKind(val_ty)    == LLVMIntegerTypeKind &&
-            LLVMGetTypeKind(slot_type) == LLVMIntegerTypeKind) {
-            unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
-            unsigned to_bits   = LLVMGetIntTypeWidth(slot_type);
-            if (from_bits < to_bits)
-                value = LLVMBuildSExt(codegen->builder, value, slot_type, "nullable_sext");
-            else if (from_bits > to_bits)
-                value = LLVMBuildTrunc(codegen->builder, value, slot_type, "nullable_trunc");
+        if (LLVMTypeOf(value) != slot_type) {
+            int src_signed = value_type ? type_is_signed(value_type) : 1;
+            value = codegen_coerce_to_type(codegen, value, src_signed, slot_type);
         }
     }
 

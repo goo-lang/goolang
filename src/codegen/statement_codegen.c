@@ -997,34 +997,19 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             return_value->goo_type && return_value->goo_type->kind != TYPE_NULLABLE) {
             LLVMTypeRef nullable_llvm = codegen_type_to_llvm(codegen, function_return_type);
             if (nullable_llvm) {
-                // Widen the inner value to match the nullable's element type BEFORE
-                // InsertValue — prevents an i32→i64 slot mismatch when the declared
-                // return type is ?int64 but the returned literal is a narrow i32.
-                // This mirrors the SExt guard below, but must apply to the INNER type
-                // (not the struct wrapper) because after InsertValue the value is a
-                // struct and the integer-kind checks below will no-op.
-                {
-                    Type* inner_t = function_return_type->data.nullable.base_type;
-                    if (inner_t) {
-                        LLVMTypeRef inner_llvm = codegen_type_to_llvm(codegen, inner_t);
-                        LLVMTypeRef val_ty = LLVMTypeOf(final_return_value);
-                        if (inner_llvm &&
-                            LLVMGetTypeKind(val_ty) == LLVMIntegerTypeKind &&
-                            LLVMGetTypeKind(inner_llvm) == LLVMIntegerTypeKind) {
-                            unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
-                            unsigned to_bits   = LLVMGetIntTypeWidth(inner_llvm);
-                            if (from_bits < to_bits)
-                                final_return_value = LLVMBuildSExt(
-                                    codegen->builder, final_return_value,
-                                    inner_llvm, "inner_sext");
-                        }
-                    }
-                }
-                LLVMValueRef agg = LLVMGetUndef(nullable_llvm);
-                LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
-                agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "ret_null_tag");
-                agg = LLVMBuildInsertValue(codegen->builder, agg, final_return_value, 1, "ret_null_val");
-                final_return_value = agg;
+                // Delegate to the shared nullable-wrap helper (the same one
+                // the multi-value return, call-arg, and struct/array-literal
+                // wrap sites use) instead of reimplementing the InsertValue
+                // pair inline. The helper's coercion covers both narrow->wide
+                // int widening (what the old inline SExt guard here handled)
+                // and cross-kind int->float coercion (which the old guard
+                // did not) — fixes `return n` (typed int) into a ?float64
+                // return slot, which crashed the LLVM verifier the same way
+                // the var-decl path did before it was routed through this
+                // helper. A `return` always executes inside a function body,
+                // so the builder is guaranteed positioned here.
+                final_return_value = codegen_create_nullable_with_value(
+                    codegen, nullable_llvm, final_return_value, return_value->goo_type);
             }
         }
 

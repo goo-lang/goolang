@@ -1013,11 +1013,31 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             // builds a {is_null=0, value=42} aggregate.
             if (var_type && var_type->kind == TYPE_NULLABLE &&
                 init_value->goo_type && init_value->goo_type->kind != TYPE_NULLABLE) {
-                LLVMValueRef agg = LLVMGetUndef(llvm_type);
-                LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
-                agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "null_tag");
-                agg = LLVMBuildInsertValue(codegen->builder, agg, init_value->llvm_value, 1, "null_val");
-                init_value->llvm_value = agg;
+                if (codegen->current_function) {
+                    // Function scope: the builder is positioned, so route
+                    // through the shared nullable-wrap helper instead of
+                    // inlining the InsertValue pair. Unlike the old inline
+                    // code, the helper coerces the value to the slot's
+                    // element type first — fixes `var q ?float64 = n`
+                    // (typed int value into a float nullable slot), which
+                    // crashed the LLVM verifier with a raw
+                    // "insertvalue { i1, double } ..., i64".
+                    init_value->llvm_value = codegen_create_nullable_with_value(
+                        codegen, llvm_type, init_value->llvm_value, init_value->goo_type);
+                } else {
+                    // Module scope: the builder has no insertion point
+                    // positioned here (see the width-coercion block below
+                    // for the same LLVM-22 hazard). The helper's coercion
+                    // path requires a positioned builder, so keep the
+                    // original inline InsertValue pair for this branch — it
+                    // already covers the constant-folding case this path
+                    // exists for (e.g. `var g ?int = 5`).
+                    LLVMValueRef agg = LLVMGetUndef(llvm_type);
+                    LLVMValueRef tag = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+                    agg = LLVMBuildInsertValue(codegen->builder, agg, tag, 0, "null_tag");
+                    agg = LLVMBuildInsertValue(codegen->builder, agg, init_value->llvm_value, 1, "null_val");
+                    init_value->llvm_value = agg;
+                }
                 init_value->goo_type = var_type;
             }
 
