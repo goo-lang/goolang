@@ -577,6 +577,46 @@ var_decl:
         ast_node_free($2);
         $$ = (ASTNode*)var;
     }
+    // Multi-name, no-initializer form: `var a, b int`. Explicit productions
+    // (2-name and 3-name), NOT a general list nonterminal — mirrors the
+    // short_var_decl convention (parser.y short_var_decl, above) and bounds
+    // conflict risk to what's already proven safe there. The VAR prefix
+    // disambiguates from short_var_decl's bare `identifier COMMA identifier`
+    // forms, so this does not introduce new shift/reduce or reduce/reduce
+    // conflicts (see the bison guard in the Makefile gate). 4+ names and the
+    // initializer-list form (`var a, b int = 1, 2`) are out of scope: the
+    // latter would need codegen changes (walking a values chain in lockstep
+    // with names) beyond this task's allowed file set — see decl-surface
+    // breadth task-1 report for the follow-up.
+    | VAR identifier COMMA identifier type {
+        VarDeclNode* var = ast_var_decl_new(get_current_position());
+        IdentifierNode* i1 = (IdentifierNode*)$2;
+        IdentifierNode* i2 = (IdentifierNode*)$4;
+        var->names = malloc(sizeof(char*) * 2);
+        var->names[0] = strdup(i1->name);
+        var->names[1] = strdup(i2->name);
+        var->name_count = 2;
+        var->type = $5;
+        ast_node_free($2);
+        ast_node_free($4);
+        $$ = (ASTNode*)var;
+    }
+    | VAR identifier COMMA identifier COMMA identifier type {
+        VarDeclNode* var = ast_var_decl_new(get_current_position());
+        IdentifierNode* i1 = (IdentifierNode*)$2;
+        IdentifierNode* i2 = (IdentifierNode*)$4;
+        IdentifierNode* i3 = (IdentifierNode*)$6;
+        var->names = malloc(sizeof(char*) * 3);
+        var->names[0] = strdup(i1->name);
+        var->names[1] = strdup(i2->name);
+        var->names[2] = strdup(i3->name);
+        var->name_count = 3;
+        var->type = $7;
+        ast_node_free($2);
+        ast_node_free($4);
+        ast_node_free($6);
+        $$ = (ASTNode*)var;
+    }
     | VAR identifier ASSIGN expression {
         VarDeclNode* var = ast_var_decl_new(get_current_position());
         IdentifierNode* ident = (IdentifierNode*)$2;

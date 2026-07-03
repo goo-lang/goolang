@@ -1,0 +1,28 @@
+package main
+
+import "fmt"
+
+type P struct {
+	X int
+	Y int
+}
+
+func main() {
+	var a, b int
+	a = 1
+	b = 2
+	fmt.Println(a + b)
+	var s, t string
+	s = "go"
+	t = "o"
+	fmt.Println(s + t)
+	var p, q P
+	p.X = 3
+	q.Y = 4
+	fmt.Println(p.X + q.Y)
+	var x, y, z int
+	x = 1
+	y = 2
+	z = 3
+	fmt.Println(x + y + z)
+}

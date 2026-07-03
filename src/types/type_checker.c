@@ -996,8 +996,16 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     // binds to the corresponding field's type. Codegen does the
     // ExtractValue destructuring; the type checker just records
     // each binding with the right per-field type.
+    //
+    // Guarded on var_decl->values (mirrors codegen_generate_var_decl's
+    // identical guard in function_codegen.c): without it, a plain
+    // no-initializer multi-name decl of a struct TYPE (`var p, q P` — no
+    // RHS to destructure at all) was misread as a destructure, binding p/q
+    // to P's FIELD types instead of P itself. Caught by multivar_probe.goo's
+    // `var p, q P` case (decl-surface breadth task 1).
     Type** per_name_types = NULL;
-    if (var_decl->name_count > 1 && final_type && final_type->kind == TYPE_STRUCT) {
+    if (var_decl->name_count > 1 && final_type && final_type->kind == TYPE_STRUCT &&
+        var_decl->values) {
         if (final_type->data.struct_type.field_count >= var_decl->name_count) {
             per_name_types = malloc(sizeof(Type*) * var_decl->name_count);
             for (size_t i = 0; i < var_decl->name_count; i++) {
