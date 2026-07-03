@@ -1025,6 +1025,15 @@ static int check_literal_integral(TypeChecker* checker, const LiteralNode* lit,
 // guarantees the SIGN-APPLIED value is within [-2^63, 2^63) by the time
 // integrality is tested — the predicate applies `negated` before casting
 // for exactly that reason; see both functions' doc comments).
+//
+// Rounding-boundary carve-out of the "Go-conformant" claim: integrality
+// is judged on the lexer-rounded double, not the source decimal. A
+// source-non-integral literal that ROUNDS to an integral double —
+// `int64(9007199254740993.5)` rounds to 9007199254740994.0 — is accepted
+// here where Go (arbitrary-precision constants) rejects it. Pre-existing
+// consequence of the atof-at-lex constant pipeline, shared by every
+// consumer of the literal text; recorded with the stamp-and-compute
+// deviation. An arbitrary-precision-constants task inherits this case.
 static int check_conversion_operand_range(TypeChecker* checker, ASTNode* n,
                                           Type* target, bool negated) {
     if (!n || !target || !type_is_numeric(target)) return 1;

@@ -1,3 +1,12 @@
+// float_fidelity_probe: float literal text must round-trip the lexed double
+// exactly. The parser action used to re-serialize every float literal through
+// snprintf("%f") (6 fractional digits, 64-char cap), so 1e70 and 1e69 collapsed
+// to the same truncated text (1e70 > 1e69 computed FALSE) and
+// 0.30000000000000004 collapsed onto 0.3 (== computed TRUE). Now serialized as
+// the shortest %g text whose strtod round-trips (parser.y FLOAT_LITERAL action).
+// Comparisons of non-representable decimals route through runtime variables so
+// Go agrees line-for-line (Go folds constants exactly; we stamp-and-compute —
+// the documented deviation).
 package main
 
 import "fmt"
