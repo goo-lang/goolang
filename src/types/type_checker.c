@@ -1,6 +1,7 @@
 #include "types.h"
 #include "comptime.h"
 #include "taint_analysis.h"
+#include "embedding.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -795,14 +796,25 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         char* mangled = type_method_mangled_name(tn, im->name);
         Variable* mv = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
         free(mangled);
+        Type* impl = NULL;
         if (!mv || !mv->type || mv->type->kind != TYPE_FUNCTION) {
-            *method_out = im->name; *reason_out = "missing"; return 0;
+            // Not directly declared — promoted method via embedding?
+            Type* impl_via_embed = NULL;
+            if (concrete->kind == TYPE_STRUCT) {
+                EmbedResult er = embedding_resolve(checker, concrete, im->name);
+                if (er.kind == EMBED_METHOD) impl_via_embed = er.type;
+            }
+            if (!impl_via_embed) {
+                *method_out = im->name; *reason_out = "missing"; return 0;
+            }
+            impl = impl_via_embed;
+        } else {
+            impl = mv->type;
         }
 
         // The registered method carries the receiver as params[0]; the interface
         // method's function type has no receiver. So a match requires
         // impl.param_count == want.param_count + 1 and the tails to be equal.
-        Type* impl = mv->type;
         Type* want = im->type;
         size_t want_params = want ? want->data.function.param_count : 0;
         if (impl->data.function.param_count != want_params + 1) {

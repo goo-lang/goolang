@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "embedding.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -63,11 +64,26 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
     if (!fnty) return NULL;
     LLVMValueRef thunk = LLVMAddFunction(codegen->module, thunk_name, fnty);
 
-    // Resolve the real method T__m and its registered receiver kind.
+    // Resolve the real method T__m and its registered receiver kind. If T
+    // doesn't declare it directly, it is a PROMOTED method: resolve the
+    // embedding path and re-mangle against the owning embedded type.
+    EmbedResult epath;
+    memset(&epath, 0, sizeof(epath));
     char* mangled = type_method_mangled_name(concrete_name, im->name);
     LLVMValueRef real_fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
     Variable* mvar = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
     free(mangled);
+    if (!real_fn && concrete->kind == TYPE_STRUCT) {
+        EmbedResult er = embedding_resolve(checker, concrete, im->name);
+        if (er.kind == EMBED_METHOD) {
+            epath = er;
+            const char* otn = type_receiver_name(er.owner);
+            char* om = otn ? type_method_mangled_name(otn, im->name) : NULL;
+            real_fn = om ? LLVMGetNamedFunction(codegen->module, om) : NULL;
+            mvar = om ? type_checker_lookup_variable(checker, om) : NULL;
+            free(om);
+        }
+    }
     if (!real_fn) {
         codegen_error(codegen, (Position){0},
                       "internal: missing method implementation for interface thunk");
@@ -88,14 +104,47 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
     LLVMValueRef* call_args = malloc((np + 1) * sizeof(LLVMValueRef));
     if (!call_args) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
 
-    // Receiver: a pointer receiver takes the data pointer; a value receiver
-    // loads the concrete value from it.
+    // Receiver: walk the embedding path (empty for direct methods) from the
+    // boxed *concrete to a pointer to the method's owner, loading through
+    // pointer-embedded hops. Then pointer receivers take that pointer, value
+    // receivers load through it.
+    LLVMValueRef recv_ptr = data;
+    Type* cur = concrete;
+    for (size_t h = 0; h < epath.len; h++) {
+        unsigned fidx = 0;
+        int found = 0;
+        for (size_t fi = 0; fi < cur->data.struct_type.field_count; fi++) {
+            if (strcmp(cur->data.struct_type.fields[fi].name, epath.path[h]) == 0) {
+                fidx = (unsigned)fi;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            codegen_error(codegen, (Position){0},
+                          "internal: embedding hop '%s' not found building thunk",
+                          epath.path[h]);
+            LLVMPositionBuilderAtEnd(codegen->builder, saved);
+            return NULL;
+        }
+        LLVMTypeRef cur_llvm = codegen_get_struct_type(codegen, cur);
+        recv_ptr = LLVMBuildStructGEP2(codegen->builder, cur_llvm, recv_ptr, fidx, "embed.hop");
+        Type* ft = cur->data.struct_type.fields[fidx].type;
+        if (ft->kind == TYPE_POINTER) {
+            recv_ptr = LLVMBuildLoad2(codegen->builder, iface_ptr_type(codegen),
+                                      recv_ptr, "embed.load");
+            cur = ft->data.pointer.pointee_type;
+        } else {
+            cur = ft;
+        }
+    }
     if (ptr_recv) {
-        call_args[0] = data;
+        call_args[0] = recv_ptr;
     } else {
-        LLVMTypeRef llvm_T = codegen_type_to_llvm(codegen, concrete);
-        call_args[0] = llvm_T ? LLVMBuildLoad2(codegen->builder, llvm_T, data, "recv")
-                              : data;
+        LLVMTypeRef llvm_owner = codegen_type_to_llvm(codegen, cur);
+        call_args[0] = llvm_owner
+                           ? LLVMBuildLoad2(codegen->builder, llvm_owner, recv_ptr, "recv")
+                           : recv_ptr;
     }
     for (size_t i = 0; i < np; i++) call_args[i + 1] = LLVMGetParam(thunk, (unsigned)(i + 1));
 
