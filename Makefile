@@ -790,6 +790,26 @@ constnul-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -q "overflows int8" build/constnul_reject.err; then echo "constnul-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constnul_reject.err; exit 1; fi; \
 	echo "constnul-reject-probe: PASS (rejected rc=$$rc)"
 
+# Task 1 (checker hygiene) negative gate: `%` on FLOAT operands must be
+# REJECTED at the checker (`g := 2.5; h := g % 2.0` crashed codegen with two
+# opaque errors — "Failed to generate binary operation" then "Failed to
+# generate initializer" — before this fix; type_check_arithmetic_op's float-
+# promotion branch happily returned FLOAT64 for `%`, and codegen's
+# TOKEN_MODULO arm is integer-only). Go-conformant: go run rejects the same
+# program too ("invalid operation: operator % not defined on g (variable of
+# type float64)"). See examples/floatmod_reject.goo and
+# type_check_arithmetic_op's `%` gate in expression_helpers.c.
+floatmod-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== floatmod-reject-probe: g % 2.0 (g float64) must reject (Go-conformant) ==="
+	@rm -f build/floatmod_reject
+	@$(COMPILER) -o build/floatmod_reject examples/floatmod_reject.goo > build/floatmod_reject.out 2> build/floatmod_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "floatmod-reject-probe: FAIL (compiled rc=0 — g % 2.0 silently accepted)"; exit 1; fi; \
+	if [ -x build/floatmod_reject ]; then echo "floatmod-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/floatmod_reject.err; then echo "floatmod-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/floatmod_reject.err; exit 1; fi; \
+	if ! grep -q "not defined on float" build/floatmod_reject.err; then echo "floatmod-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/floatmod_reject.err; exit 1; fi; \
+	echo "floatmod-reject-probe: PASS (rejected rc=$$rc)"
+
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
 # that both taken panics abort with the runtime-error message (the non-panic
 # paths are in bits_div_probe).
@@ -1525,7 +1545,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

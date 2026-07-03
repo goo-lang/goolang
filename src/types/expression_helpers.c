@@ -141,7 +141,28 @@ Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* righ
         type_error(checker, pos, "Arithmetic operation requires numeric operands");
         return NULL;
     }
-    
+
+    // `%` is not defined on floats — Go rejects it ("invalid operation:
+    // operator % not defined on g (variable of type float64)") and so must
+    // Goo. The float-promotion branch below only decides which float WIDTH
+    // wins; it never asks whether the operator applies to floats at all, so
+    // a same-kind float `%` (e.g. `g % g`, `g % 2.0`, both operands already
+    // float64) sailed through here as a well-typed float64 expression.
+    // Codegen's TOKEN_MODULO arm is integer-only (no frem is ever emitted),
+    // so the mistyped node reached codegen and crashed there with two
+    // opaque, unactionable errors ("Failed to generate binary operation"
+    // then "Failed to generate initializer") instead of a checker
+    // diagnostic. A cross-KIND float/int `%` (e.g. `g % 2`) is already
+    // caught earlier by type_check_binary_expr's cross-kind rejection block
+    // (TOKEN_MODULO is excluded from that block's adaptation, so the
+    // mismatch falls through to its own clean rejection) — this check is
+    // what closes the remaining same-kind-float gap.
+    if (op == TOKEN_MODULO && (type_is_float(left_type) || type_is_float(right_type))) {
+        Type* float_operand = type_is_float(left_type) ? left_type : right_type;
+        type_error(checker, pos, "operator %% not defined on %s", type_to_string(float_operand));
+        return NULL;
+    }
+
     // For now, return the "larger" type (simple promotion rules)
     if (type_is_float(left_type) || type_is_float(right_type)) {
         if (left_type->kind == TYPE_FLOAT64 || right_type->kind == TYPE_FLOAT64) {
