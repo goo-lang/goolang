@@ -3,16 +3,37 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>   // literal_fits_type: ERANGE from strtoull/strtod
 
 // Forward declarations: the untyped-constant rootedness predicates and
 // adapters are defined below (near type_check_binary_expr, their primary
 // call site — see the doc comments there for the full design), but
 // type_check_struct_literal's field-init sink (task 3) needs them earlier
 // in this file, at struct-literal-loop scope.
+//
+// Task 3 (constant representability): the adapters now RANGE-CHECK a
+// literal against its stamp target before stamping it (see
+// literal_fits_type's doc comment below), so they can fail — return 0 (a
+// type_error was already emitted) instead of silently truncating/wrapping.
+// Every caller below must propagate that failure (return NULL/0) rather
+// than proceed to codegen with a partially-adapted tree. `negated` tracks
+// whether the node being adapted sits under an odd number of enclosing
+// unary MINUS operators (threaded through the SAME recursion legs #101
+// threaded for_float_context through — flipped only at the unary-MINUS leg;
+// PLUS/binop legs pass it through unchanged, since they never change a
+// literal's effective sign). `checkable` (int adapter only) disables the
+// range check — but NOT the stamping — for an entire `^`-rooted subtree:
+// Go folds `^` on the CONSTANT before overflow-checking it, which this
+// stamp-and-compute checker cannot reproduce, so checking the RAW literal
+// under a `^` would be outright wrong rather than merely imprecise (see the
+// task-3 deviation note). Top-level callers always start with negated=0,
+// checkable=1 — the recursion updates both as it descends.
 static int is_untyped_int_rooted(ASTNode* n, int for_float_context);
-static void adapt_untyped_int_operand(ASTNode* n, Type* target);
+static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* target,
+                                      int negated, int checkable);
 static int is_untyped_float_rooted(ASTNode* n);
-static void adapt_untyped_float_operand(ASTNode* n, Type* target);
+static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* target,
+                                        int negated);
 
 // Validate each element of a slice composite literal against the declared
 // element type. Returns 1 on success; emits a type_error and returns 0 on the
@@ -308,11 +329,17 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 // float-rooted value adapts ONLY to a float field — float->int is never
 // adapted here, so `Q{N: 2.5}` (N int32) falls through to the existing
 // type_compatible rejection below instead of silently truncating.
-static Type* adapt_field_init_value(ASTNode* v, Type* field_type, Type* vt) {
+//
+// Task 3: returns NULL (distinct from `vt`, which is never NULL when this
+// is called — both call sites already bailed on a NULL vt) when the
+// adapter's range check rejects an out-of-range literal (e.g. `Q{N: 300}`,
+// N int8) — the type_error was already emitted by the adapter. Callers must
+// check for NULL and return NULL themselves.
+static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* field_type, Type* vt) {
     if (!field_type || !type_is_numeric(field_type)) return vt;
     if (type_is_float(field_type)) {
         if (is_untyped_float_rooted(v)) {
-            adapt_untyped_float_operand(v, field_type);
+            if (!adapt_untyped_float_operand(checker, v, field_type, 0)) return NULL;
             return field_type;
         }
         // for_float_context=1 on the int-rooted check: no shift, and no /
@@ -321,14 +348,14 @@ static Type* adapt_field_init_value(ASTNode* v, Type* field_type, Type* vt) {
         // literal) takes this leg; `F: 1 + 0.5` (mixed rooted) is already
         // float-rooted as a whole and takes the leg above it instead.
         if (is_untyped_int_rooted(v, 1)) {
-            adapt_untyped_int_operand(v, field_type);
+            if (!adapt_untyped_int_operand(checker, v, field_type, 0, 1)) return NULL;
             return field_type;
         }
     } else if (type_is_integer(field_type)) {
         // for_float_context=0: an integer target, so shifts and /,% are
         // all safe to adapt (see is_untyped_int_rooted's doc comment).
         if (is_untyped_int_rooted(v, 0)) {
-            adapt_untyped_int_operand(v, field_type);
+            if (!adapt_untyped_int_operand(checker, v, field_type, 0, 1)) return NULL;
             return field_type;
         }
     }
@@ -476,8 +503,11 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
             if (!vt) return NULL;
             // Task 3: adapt an untyped numeric-rooted value (literal or
             // rooted expression) to the field's declared type BEFORE the
-            // compat check — see adapt_field_init_value's doc comment.
-            vt = adapt_field_init_value(v, field->type, vt);
+            // compat check — see adapt_field_init_value's doc comment. A
+            // NULL return means a range check rejected an out-of-range
+            // literal (error already emitted).
+            vt = adapt_field_init_value(checker, v, field->type, vt);
+            if (!vt) return NULL;
             if (field->type && field->type->kind == TYPE_INTERFACE) {
                 if (!check_interface_assign(checker, vt, field->type, v->pos)) {
                     return NULL;
@@ -501,7 +531,8 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
             Type* vt = type_check_expression(checker, v);
             if (!vt) return NULL;
             // Task 3: same field-value adaptation as the keyed loop above.
-            vt = adapt_field_init_value(v, fields[i].type, vt);
+            vt = adapt_field_init_value(checker, v, fields[i].type, vt);
+            if (!vt) return NULL;
             if (fields[i].type && fields[i].type->kind == TYPE_INTERFACE) {
                 if (!check_interface_assign(checker, vt, fields[i].type, v->pos)) {
                     return NULL;
@@ -673,6 +704,112 @@ static int is_untyped_int_rooted(ASTNode* n, int for_float_context) {
     return 0;
 }
 
+// Is `f` finite (not +-inf, not NaN)? Equivalent to the standard `isfinite`
+// macro for a float, but implemented as a raw IEEE-754 bit test instead of
+// calling it: glibc's <math.h> declares isfinite's helper prototypes
+// (bits/mathcalls-helper-functions.h) with a `long double` overload
+// unconditionally, and CompCert (this project's second, verified-C build
+// target — see `make ccomp-link`) rejects `long double` outright, so merely
+// including <math.h> for isfinite broke the ccomp build. A float's exponent
+// field is all-ones (0xFF) iff it's +-inf or NaN; strtod followed by a
+// (float) narrowing cast never produces NaN from finite input, so in
+// practice this only ever distinguishes overflow-to-infinity from a finite
+// result — exactly what literal_fits_type's float32 arm needs, with the
+// same rounding boundary the (float)v cast itself uses (no separate FLT_MAX
+// threshold to keep in sync).
+static bool float32_is_finite(float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
+// Task 3 (constant representability): does literal `lit`'s value, under
+// `negated` (an odd number of enclosing unary MINUS — see
+// adapt_untyped_int_operand's doc comment), fit representably in `target`?
+// Pure predicate — emits nothing; check_literal_range (below) is the sole
+// caller and owns the "constant %s overflows %s" diagnostic, so every
+// rejection is worded identically regardless of which call site triggered it.
+//
+// INT literal: `lit->value` is always non-negative TEXT — codegen_generate_
+// literal's TOKEN_INT arm parses it the same way (strtoull, base 0 so a 0x/
+// 0o/0b prefix is honored) and documents why: a negative literal like `-128`
+// never reaches this text as "-128"; it arrives as THIS SAME node under a
+// unary-MINUS wrapper, with `negated` carrying the sign instead. errno==
+// ERANGE (magnitude > UINT64_MAX) never fits anything. An int literal
+// meeting a FLOAT target always fits — Go converts a constant integer to
+// float with rounding, never rejecting for magnitude (float64 exactly
+// represents any int literal up to 2^53; Go itself doesn't reject beyond
+// that either). A signed integer target fits iff v <= INT_MAX(target)
+// (!negated), or v <= (uint64_t)INT_MAX(target)+1 (negated — two's
+// complement has exactly one more negative value than positive, which is
+// the whole reason `-128` fits int8 though the raw magnitude 128 alone does
+// not: INT8_MAX is 127, but negated allows one more). An unsigned target
+// rejects any negation except literal 0 (`-0` is vacuously representable as
+// 0), and otherwise fits iff v <= UINT_MAX(target).
+//
+// FLOAT literal: strtod parses the full magnitude (sign is irrelevant to
+// over/underflow, so `negated` is unused here). A float64 target fits iff
+// errno != ERANGE (strtod's own overflow signal). A float32 target fits iff
+// the value survives a (float) narrowing cast finite — overflow produces
+// +-inf, which is the rejection; underflow-to-zero is NOT an error (Go
+// permits a constant that rounds to zero, only overflow rejects).
+static bool literal_fits_type(const LiteralNode* lit, const Type* target, bool negated) {
+    if (!lit || !target) return true; // defensive; callers only invoke on numeric targets
+
+    if (lit->literal_type == TOKEN_INT) {
+        errno = 0;
+        unsigned long long v = strtoull(lit->value, NULL, 0);
+        if (errno == ERANGE) return false;
+        if (type_is_float(target)) return true; // int-into-float: never rejected for magnitude
+        if (!type_is_integer(target)) return true; // defensive
+
+        if (type_is_signed(target)) {
+            unsigned long long max;
+            switch (target->kind) {
+                case TYPE_INT8:  max = (unsigned long long)INT8_MAX;  break;
+                case TYPE_INT16: max = (unsigned long long)INT16_MAX; break;
+                case TYPE_INT32: max = (unsigned long long)INT32_MAX; break;
+                default:         max = (unsigned long long)INT64_MAX; break; // int / int64
+            }
+            return negated ? v <= max + 1 : v <= max;
+        }
+        if (negated) return v == 0; // "-0" only; any other negative magnitude can't be unsigned
+        unsigned long long max;
+        switch (target->kind) {
+            case TYPE_UINT8:  max = (unsigned long long)UINT8_MAX;  break;
+            case TYPE_UINT16: max = (unsigned long long)UINT16_MAX; break;
+            case TYPE_UINT32: max = (unsigned long long)UINT32_MAX; break;
+            default:          max = UINT64_MAX; break; // uint / uint64
+        }
+        return v <= max;
+    }
+
+    if (lit->literal_type == TOKEN_FLOAT) {
+        errno = 0;
+        double v = strtod(lit->value, NULL);
+        if (target->kind == TYPE_FLOAT32) return float32_is_finite((float)v);
+        if (target->kind == TYPE_FLOAT64) return errno != ERANGE;
+        return true; // defensive; a float literal only ever meets a float target here
+    }
+
+    return true; // other literal kinds (string/char/bool/nil) never reach this helper
+}
+
+// Emits "constant <text> overflows <target>" (mirroring Go's wording; a `-`
+// prefix on the literal text when negated, so the message matches the
+// actual source spelling — `-128`, not `128`) and returns 0 when
+// literal_fits_type rejects; returns 1 (no error) when it fits. The single
+// diagnostic site for every adapter/bridge call below, so "constant 300
+// overflows int8" reads identically regardless of whether it came from a
+// var-decl, a struct field, a call argument, or a binary-expr operand.
+static int check_literal_range(TypeChecker* checker, const LiteralNode* lit,
+                                const Type* target, bool negated, Position pos) {
+    if (literal_fits_type(lit, target, negated)) return 1;
+    type_error(checker, pos, "constant %s%s overflows %s",
+               negated ? "-" : "", lit->value, type_to_string(target));
+    return 0;
+}
+
 // Retype an untyped-int-rooted operand — and, for a shift, the shift node and
 // its left operand recursively, or for an arithmetic binop (+,-,*,/,%), the
 // binop node and BOTH sides recursively — to `target`. This makes `1<<32` in
@@ -686,33 +823,68 @@ static int is_untyped_int_rooted(ASTNode* n, int for_float_context) {
 // structure is actually there — in a float context the predicate already
 // guaranteed no shift, /, or % exists anywhere in the subtree, so those
 // arms simply never fire on a float target.
-static void adapt_untyped_int_operand(ASTNode* n, Type* target) {
-    if (!n) return;
+//
+// Task 3: a literal leaf is now range-checked (check_literal_range) against
+// `target` before being stamped, honoring `negated`/`checkable` (see this
+// file's top-of-file doc comment on the forward declarations for both
+// parameters' semantics). Returns 0 the moment a checked literal doesn't
+// fit (the type_error was already emitted); every recursive call and every
+// external caller must check this return and propagate failure rather than
+// treat the tree as fully adapted.
+static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* target,
+                                      int negated, int checkable) {
+    if (!n) return 1;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT) {
+        if (checkable &&
+            !check_literal_range(checker, (LiteralNode*)n, target, negated, n->pos))
+            return 0;
         n->node_type = target;
-        return;
+        return 1;
     }
     if (n->type == AST_UNARY_EXPR) {
         UnaryExprNode* u = (UnaryExprNode*)n;
-        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS ||
-            u->operator == TOKEN_BIT_XOR) {
-            adapt_untyped_int_operand(u->operand, target); // unary result = operand type
+        if (u->operator == TOKEN_MINUS) {
+            // Sign flips for a range check ONLY at unary MINUS — PLUS and
+            // BIT_XOR (below) never change a literal's effective magnitude
+            // the way MINUS does.
+            if (!adapt_untyped_int_operand(checker, u->operand, target, !negated, checkable))
+                return 0;
+            n->node_type = target;
+        } else if (u->operator == TOKEN_PLUS || u->operator == TOKEN_BIT_XOR) {
+            // `^`-rooted literals are excluded from range checking (never
+            // re-enabled once excluded, hence `checkable && ...` rather than
+            // an unconditional 0) — see this function's doc comment and the
+            // task-3 deviation note. The stamping side effect is unchanged
+            // for `^`, matching pre-task-3 behavior exactly.
+            int child_checkable = checkable && (u->operator != TOKEN_BIT_XOR);
+            if (!adapt_untyped_int_operand(checker, u->operand, target, negated, child_checkable))
+                return 0;
             n->node_type = target;
         }
     }
     if (n->type == AST_BINARY_EXPR) {
         BinaryExprNode* b = (BinaryExprNode*)n;
         if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT) {
-            adapt_untyped_int_operand(b->left, target); // shift type = left type
+            if (!adapt_untyped_int_operand(checker, b->left, target, negated, checkable)) // shift type = left type
+                return 0;
             n->node_type = target;
         } else if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
                    b->operator == TOKEN_MULTIPLY || b->operator == TOKEN_DIVIDE ||
                    b->operator == TOKEN_MODULO) {
-            adapt_untyped_int_operand(b->left, target);
-            adapt_untyped_int_operand(b->right, target); // binop result = operand type
+            // Each side keeps ITS OWN negated/checkable state — a binary
+            // MINUS does not flip either operand's sign for range-check
+            // purposes (only a unary MINUS wrapping a leaf does that); this
+            // is exactly the per-literal (no constant-folding) design that
+            // lets `100 + 100` into int8 through uncaught (each 100
+            // individually fits) — see the task-3 deviation note.
+            if (!adapt_untyped_int_operand(checker, b->left, target, negated, checkable))
+                return 0;
+            if (!adapt_untyped_int_operand(checker, b->right, target, negated, checkable)) // binop result = operand type
+                return 0;
             n->node_type = target;
         }
     }
+    return 1;
 }
 
 // Float analogue of is_untyped_int_rooted: is `n` an untyped-float-constant-
@@ -773,16 +945,31 @@ static int is_untyped_float_rooted(ASTNode* n) {
 // stamps node_type = target regardless of target's own kind, so handing it a
 // float target is exactly how an int leg of a mixed `1 + 0.5` gets stamped
 // float here).
-static void adapt_untyped_float_operand(ASTNode* n, Type* target) {
-    if (!n) return;
+//
+// Task 3: `negated` mirrors adapt_untyped_int_operand's (flipped only at
+// unary MINUS, unchanged at PLUS/binop legs); a float literal leaf is
+// range-checked via check_literal_range before stamping (float has no `^`,
+// so there is no `checkable` parameter to thread here — every float literal
+// this function reaches is always checkable). An int-rooted binop side
+// dispatches to adapt_untyped_int_operand with checkable=1 (that function's
+// own `^` handling takes over from there if the side happens to be
+// `^`-rooted). Returns 0 the moment a checked literal doesn't fit (error
+// already emitted); callers must propagate the failure.
+static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* target,
+                                        int negated) {
+    if (!n) return 1;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_FLOAT) {
+        if (!check_literal_range(checker, (LiteralNode*)n, target, negated, n->pos))
+            return 0;
         n->node_type = target;
-        return;
+        return 1;
     }
     if (n->type == AST_UNARY_EXPR) {
         UnaryExprNode* u = (UnaryExprNode*)n;
         if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS) {
-            adapt_untyped_float_operand(u->operand, target); // unary result = operand type
+            int child_negated = (u->operator == TOKEN_MINUS) ? !negated : negated;
+            if (!adapt_untyped_float_operand(checker, u->operand, target, child_negated)) // unary result = operand type
+                return 0;
             n->node_type = target;
         }
     }
@@ -790,17 +977,60 @@ static void adapt_untyped_float_operand(ASTNode* n, Type* target) {
         BinaryExprNode* b = (BinaryExprNode*)n;
         if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
             b->operator == TOKEN_MULTIPLY || b->operator == TOKEN_DIVIDE) {
-            if (is_untyped_float_rooted(b->left))
-                adapt_untyped_float_operand(b->left, target);
-            else
-                adapt_untyped_int_operand(b->left, target);
-            if (is_untyped_float_rooted(b->right))
-                adapt_untyped_float_operand(b->right, target);
-            else
-                adapt_untyped_int_operand(b->right, target);
+            int ok = is_untyped_float_rooted(b->left)
+                ? adapt_untyped_float_operand(checker, b->left, target, negated)
+                : adapt_untyped_int_operand(checker, b->left, target, negated, 1);
+            if (!ok) return 0;
+            ok = is_untyped_float_rooted(b->right)
+                ? adapt_untyped_float_operand(checker, b->right, target, negated)
+                : adapt_untyped_int_operand(checker, b->right, target, negated, 1);
+            if (!ok) return 0;
             n->node_type = target; // binop result = operand type
         }
     }
+    return 1;
+}
+
+// Task 3 bridge for type_checker.c's type_check_var_decl (:800) — a var-decl
+// initializer is the ONE typed sink in this checker that does NOT already
+// route through the adapters above: type_check_var_decl calls
+// type_check_expression on the initializer and leaves it at its checker-
+// default INT64/FLOAT64 stamp, relying on codegen_apply_local_init_pipeline's
+// later width-coerce step to narrow it to the declared type — which
+// TRUNCATES/WRAPS instead of rejecting (`var b int8 = 300` -> 44, the
+// original task-3 bug). Mirrors adapt_field_init_value's int/float/
+// cross-kind dispatch shape (same is_untyped_int_rooted/is_untyped_float_
+// rooted gating), but for a var-decl's single initializer expression against
+// its declared type, and shares the exact SAME range-checking/stamping code
+// (adapt_untyped_int_operand/adapt_untyped_float_operand) rather than
+// duplicating it.
+//
+// Declared non-static and NOT forward-declared at the top of this file
+// (unlike the struct-literal-loop predicates/adapters) because it has
+// exactly one external caller, in a different translation unit:
+// type_checker.c forward-declares its own `extern` prototype locally rather
+// than pulling in a header change, per this task's "no header/parser
+// changes" constraint — see the task-3 report for the full rationale.
+//
+// Returns 1 on success (adapted-and-in-range, or nothing adaptable — a
+// typed variable/call/conversion RHS, or a non-numeric declared type, is
+// left untouched exactly as before), 0 on a range violation (the adapter
+// already emitted "constant ... overflows ...").
+int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* declared) {
+    if (!value || !declared || !type_is_numeric(declared)) return 1;
+    if (type_is_float(declared)) {
+        if (is_untyped_float_rooted(value))
+            return adapt_untyped_float_operand(checker, value, declared, 0);
+        // for_float_context=1: no shift, and no / or % anywhere in the
+        // subtree may stamp float (is_untyped_int_rooted's doc comment) —
+        // mirrors adapt_field_init_value's identical gate.
+        if (is_untyped_int_rooted(value, 1))
+            return adapt_untyped_int_operand(checker, value, declared, 0, 1);
+        return 1;
+    }
+    if (type_is_integer(declared) && is_untyped_int_rooted(value, 0))
+        return adapt_untyped_int_operand(checker, value, declared, 0, 1);
+    return 1;
 }
 
 Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
@@ -845,10 +1075,10 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         int left_adaptable  = is_untyped_int_rooted(binary->left, 0);
         int right_adaptable = is_untyped_int_rooted(binary->right, 0);
         if (right_adaptable && !left_adaptable) {
-            adapt_untyped_int_operand(binary->right, left_type);
+            if (!adapt_untyped_int_operand(checker, binary->right, left_type, 0, 1)) return NULL;
             right_type = left_type;
         } else if (left_adaptable && !right_adaptable) {
-            adapt_untyped_int_operand(binary->left, right_type);
+            if (!adapt_untyped_int_operand(checker, binary->left, right_type, 0, 1)) return NULL;
             left_type = right_type;
         }
     }
@@ -879,10 +1109,10 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         int left_adaptable  = is_untyped_float_rooted(binary->left);
         int right_adaptable = is_untyped_float_rooted(binary->right);
         if (right_adaptable && !left_adaptable) {
-            adapt_untyped_float_operand(binary->right, left_type);
+            if (!adapt_untyped_float_operand(checker, binary->right, left_type, 0)) return NULL;
             right_type = left_type;
         } else if (left_adaptable && !right_adaptable) {
-            adapt_untyped_float_operand(binary->left, right_type);
+            if (!adapt_untyped_float_operand(checker, binary->left, right_type, 0)) return NULL;
             left_type = right_type;
         }
     }
@@ -939,11 +1169,11 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     if (binary->operator != TOKEN_MODULO) {
         if (type_is_integer(left_type) && type_is_float(right_type) &&
             is_untyped_int_rooted(binary->left, 1)) {
-            adapt_untyped_int_operand(binary->left, right_type);
+            if (!adapt_untyped_int_operand(checker, binary->left, right_type, 0, 1)) return NULL;
             left_type = right_type;
         } else if (type_is_float(left_type) && type_is_integer(right_type) &&
                    is_untyped_int_rooted(binary->right, 1)) {
-            adapt_untyped_int_operand(binary->right, left_type);
+            if (!adapt_untyped_int_operand(checker, binary->right, left_type, 0, 1)) return NULL;
             right_type = left_type;
         }
     }
@@ -1374,6 +1604,28 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                                type_to_string(src), func_ident->name);
                     return NULL;
                 }
+                // Task 3 finding (deliberately NOT wired — see the task-3
+                // report): Go itself rejects an out-of-range CONSTANT
+                // conversion (`int8(300)`, `byte(300)`) at compile time, and
+                // this call site is exactly where that check would hook
+                // (`call->args` here is the sole operand, already available
+                // to test with is_untyped_int_rooted/is_untyped_float_rooted
+                // and literal_fits_type). It is intentionally left
+                // unchecked: examples/conv_probe.goo's own documented
+                // coverage (`int(int8(200))` -> -56, `int(byte(300))` -> 44)
+                // deliberately exercises `int8(200)`/`byte(300)` as
+                // TRUNCATING constant conversions to prove SExt-vs-ZExt/
+                // Trunc codegen semantics — adding the range check here
+                // would turn that pre-existing, in-scope-golden-suite
+                // coverage into a compile error. Task 3's named files
+                // (expression_checker.c, type_checker.c, Makefile, and the
+                // three new reject-probe pairs) do not include conv_probe.goo,
+                // so this is recorded as a scoped follow-up rather than wired:
+                // a future task should either fold conv_probe.goo's two
+                // truncating lines into runtime-value conversions (`x :=
+                // 200; int8(x)`, which Go and this checker both already
+                // treat as legal truncation) and then wire this check, or
+                // add a dedicated reject probe once that migration lands.
                 expr->node_type = conv_target;
                 return conv_target;
             }
@@ -1761,7 +2013,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             // pass `1` to a uint64 parameter.
             if (arg && param_type && type_is_integer(param_type) &&
                 is_untyped_int_rooted(arg, 0)) { // for_float_context=0: integer param, shifts and /,% stay valid
-                adapt_untyped_int_operand(arg, param_type);
+                if (!adapt_untyped_int_operand(checker, arg, param_type, 0, 1)) return NULL;
                 arg_type = param_type;
             }
 

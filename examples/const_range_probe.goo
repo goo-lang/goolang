@@ -1,0 +1,39 @@
+// const_range_probe (task 3): constant representability checks — boundary
+// values on BOTH sides for each sized numeric type must be ACCEPTED.
+//
+// `-128`/`-32768` are the negation-context cases: the literal text the
+// lexer/parser hand the checker is the POSITIVE magnitude (128/32768) under
+// a unary-MINUS wrapper (see codegen_generate_literal's TOKEN_INT arm — a
+// negative literal never reaches the checker as a negative number). 128
+// alone overflows int8 (max 127), and 32768 alone overflows int16 (max
+// 32767), so a naive raw-magnitude check would wrongly reject these — the
+// checker must thread the enclosing negation through so `v <= max+1` is the
+// signed-negated bound (two's complement has exactly one more negative value
+// than positive). See literal_fits_type's doc comment in
+// expression_checker.c for the full derivation.
+//
+// DEVIATION (not exercised here — see the helper's doc comment and the
+// task-3 report): a per-literal check with no constant-folding pass cannot
+// catch `var b int8 = 100 + 100` (each 100 individually fits int8; the
+// FOLDED sum 200 does not) — this is a documented, deliberate gap, not a bug
+// in the boundary values below.
+package main
+
+import "fmt"
+
+func main() {
+	var a int8 = 127
+	var b int8 = -128
+	var c uint8 = 255
+	var d uint8 = 0
+	var e int16 = -32768
+	var f int32 = 2147483647
+	var g float32 = 3.5
+	var h float64 = -0.25
+	fmt.Println(int(a), int(b))
+	fmt.Println(int(c), int(d))
+	fmt.Println(int(e))
+	fmt.Println(int(f))
+	fmt.Println(g == float32(3.5))
+	fmt.Println(h == -0.25)
+}

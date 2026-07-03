@@ -638,6 +638,59 @@ baremod-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -q "no implicit int/float conversion" build/baremod_reject.err; then echo "baremod-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/baremod_reject.err; exit 1; fi; \
 	echo "baremod-reject-probe: PASS (rejected rc=$$rc)"
 
+# Task 3 negative gate: a constant that overflows its declared int8 width
+# must be REJECTED, not silently truncated (`var b int8 = 300` printed 44
+# before this fix). Unlike constdiv/constmod/baremod above (deliberately
+# STRICTER than Go), this rejection is Go-CONFORMANT — go run rejects the
+# same program with "... overflows int8" too. See examples/constint8_reject.goo
+# and literal_fits_type's doc comment in expression_checker.c.
+constint8-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constint8-reject-probe: var b int8 = 300 must reject (Go-conformant) ==="
+	@rm -f build/constint8_reject
+	@$(COMPILER) -o build/constint8_reject examples/constint8_reject.goo > build/constint8_reject.out 2> build/constint8_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constint8-reject-probe: FAIL (compiled rc=0 — 300 silently accepted for int8)"; exit 1; fi; \
+	if [ -x build/constint8_reject ]; then echo "constint8-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constint8_reject.err; then echo "constint8-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constint8_reject.err; exit 1; fi; \
+	if ! grep -q "overflows int8" build/constint8_reject.err; then echo "constint8-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constint8_reject.err; exit 1; fi; \
+	echo "constint8-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3 negative gate: a negative constant assigned to an unsigned declared
+# type must be REJECTED, not silently wrapped (`var u uint8 = -1` printed
+# 255 before this fix). Go-conformant (go run rejects with "... overflows
+# uint8" too). See examples/constuint8_reject.goo — the key edge this probe
+# guards is the NEGATION-THREADING itself: literal_fits_type must see
+# negated=true here to reject correctly (a naive unsigned check that ignored
+# the sign would let -1 alias raw magnitude 1, which trivially fits).
+constuint8-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constuint8-reject-probe: var u uint8 = -1 must reject (Go-conformant) ==="
+	@rm -f build/constuint8_reject
+	@$(COMPILER) -o build/constuint8_reject examples/constuint8_reject.goo > build/constuint8_reject.out 2> build/constuint8_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constuint8-reject-probe: FAIL (compiled rc=0 — -1 silently accepted for uint8)"; exit 1; fi; \
+	if [ -x build/constuint8_reject ]; then echo "constuint8-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constuint8_reject.err; then echo "constuint8-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constuint8_reject.err; exit 1; fi; \
+	if ! grep -q "overflows uint8" build/constuint8_reject.err; then echo "constuint8-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constuint8_reject.err; exit 1; fi; \
+	echo "constuint8-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3 negative gate: a float constant that overflows float32's finite
+# range must be REJECTED, not silently rounded to +/-inf (`var f float32 =
+# 1e40` printed +Inf before this fix). Go-conformant (go run rejects with
+# "... overflows float32" too). See examples/constf32_reject.goo and
+# literal_fits_type's float32 arm (float32_is_finite((float)v) after strtod
+# — a raw IEEE-754 bit test, not the <math.h> isfinite macro, which pulls in
+# a `long double` declaration CompCert's ccomp build cannot compile).
+constf32-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constf32-reject-probe: var f float32 = 1e40 must reject (Go-conformant) ==="
+	@rm -f build/constf32_reject
+	@$(COMPILER) -o build/constf32_reject examples/constf32_reject.goo > build/constf32_reject.out 2> build/constf32_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constf32-reject-probe: FAIL (compiled rc=0 — 1e40 silently accepted for float32)"; exit 1; fi; \
+	if [ -x build/constf32_reject ]; then echo "constf32-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constf32_reject.err; then echo "constf32-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constf32_reject.err; exit 1; fi; \
+	if ! grep -q "overflows float32" build/constf32_reject.err; then echo "constf32-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constf32_reject.err; exit 1; fi; \
+	echo "constf32-reject-probe: PASS (rejected rc=$$rc)"
+
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
 # that both taken panics abort with the runtime-error message (the non-panic
 # paths are in bits_div_probe).
@@ -1373,7 +1426,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
