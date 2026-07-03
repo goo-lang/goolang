@@ -915,7 +915,12 @@ static bool literal_fits_type(const LiteralNode* lit, const Type* target, bool n
                     return signed_v >= (double)INT64_MIN && signed_v < -(double)INT64_MIN;
             }
         }
-        if (signed_v < 0.0) return signed_v == 0.0; // "-0.0" only, like the INT-literal arm
+        // Any strictly negative value can't be unsigned. "-0.0" is fine but
+        // never reaches this return: IEEE -0.0 == 0.0, so `-0.0 < 0.0` is
+        // false and it falls through to the max comparisons below (contrast
+        // the INT-literal arm's `v == 0` check, whose integer negation has
+        // no signed zero to exploit).
+        if (signed_v < 0.0) return false;
         switch (target->kind) {
             case TYPE_UINT8:  return signed_v <= UINT8_MAX;
             case TYPE_UINT16: return signed_v <= UINT16_MAX;
@@ -944,23 +949,30 @@ static int check_literal_range(TypeChecker* checker, const LiteralNode* lit,
     return 0;
 }
 
-// Task 2 (float-literal-fidelity): does FLOAT literal `lit`'s value have no
-// fractional part? Pure predicate, sibling to literal_fits_type — that
-// function's extended TOKEN_FLOAT-into-integer-target arm is the MAGNITUDE
-// half of "does this float constant convert to this integer type"; this is
-// the INTEGRALITY half. check_conversion_operand_range (below) calls this
-// ONLY after literal_fits_type has already accepted, so `value` is always
-// finite AND within +-2^63 here (that function's doc comment derives the
-// bound) — which is exactly what makes the `(long long)` truncation cast
-// below well-defined (it's UB outside +-2^63). No <math.h> trunc()/floor()
-// needed either, consistent with this file's ccomp <math.h> avoidance (see
-// float64_is_finite's doc comment for why). Sign doesn't affect
-// integrality (-3.5 is exactly as non-integral as 3.5), so `negated` isn't
-// a parameter here — check_literal_integral, below, only needs it for the
-// diagnostic's `-` prefix.
-static bool literal_is_integral(const LiteralNode* lit) {
+// Task 2 (float-literal-fidelity): does FLOAT literal `lit`'s value, under
+// `negated`, have no fractional part? Pure predicate, sibling to
+// literal_fits_type — that function's extended TOKEN_FLOAT-into-integer-
+// target arm is the MAGNITUDE half of "does this float constant convert to
+// this integer type"; this is the INTEGRALITY half.
+// check_conversion_operand_range (below) calls this ONLY after
+// literal_fits_type has already accepted, so the SIGN-APPLIED value is
+// always finite AND within [-2^63, 2^63) here (that function's doc comment
+// derives the bound) — which is exactly what makes the `(long long)`
+// truncation cast below well-defined (it's UB outside +-2^63). That's why
+// `negated` MUST be threaded in and applied before the cast even though
+// sign can't change whether a value is integral (-3.5 is exactly as
+// non-integral as 3.5): the fits check bounds the SIGN-APPLIED value, and
+// at the one asymmetric boundary — `int64(-9223372036854775808.0)`,
+// exactly INT64_MIN, which Go accepts — the raw MAGNITUDE is +2^63, one
+// past LLONG_MAX, so casting it un-negated would be UB (x86 cvttsd2si
+// saturates to LLONG_MAX, failing the round-trip compare and rejecting a
+// legal Go program). No <math.h> trunc()/floor() needed either, consistent
+// with this file's ccomp <math.h> avoidance (see float64_is_finite's doc
+// comment for why).
+static bool literal_is_integral(const LiteralNode* lit, bool negated) {
     double v = strtod(lit->value, NULL);
-    return (double)(long long)v == v;
+    double sv = negated ? -v : v;
+    return (double)(long long)sv == sv;
 }
 
 // Emits "constant <text> truncated to integer" (mirroring Go's own
@@ -970,7 +982,7 @@ static bool literal_is_integral(const LiteralNode* lit) {
 // integral.
 static int check_literal_integral(TypeChecker* checker, const LiteralNode* lit,
                                    bool negated, Position pos) {
-    if (literal_is_integral(lit)) return 1;
+    if (literal_is_integral(lit, negated)) return 1;
     type_error(checker, pos, "constant %s%s truncated to integer",
                negated ? "-" : "", lit->value);
     return 0;
@@ -1010,8 +1022,9 @@ static int check_literal_integral(TypeChecker* checker, const LiteralNode* lit,
 // `int8(200.0)` gets the OVERFLOW message, never the truncation one (Go
 // agrees) — and it's also what keeps check_literal_integral's `(long
 // long)` truncation cast safe (literal_fits_type's extended float arm
-// guarantees the value is within +-2^63 by the time integrality is
-// tested; see that function's doc comment).
+// guarantees the SIGN-APPLIED value is within [-2^63, 2^63) by the time
+// integrality is tested — the predicate applies `negated` before casting
+// for exactly that reason; see both functions' doc comments).
 static int check_conversion_operand_range(TypeChecker* checker, ASTNode* n,
                                           Type* target, bool negated) {
     if (!n || !target || !type_is_numeric(target)) return 1;
