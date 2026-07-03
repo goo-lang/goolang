@@ -1,0 +1,34 @@
+// composite_field_adapt_probe: untyped numeric literals (and rooted
+// expressions) adapt to numeric struct field types at the composite
+// field-init sink, keyed and positional (task 3 of the cross-kind
+// untyped-constants plan; consumes T1/T2's rooted predicates/adapters).
+//
+// NOTE: named "composite_field_adapt_probe" rather than the more obvious
+// "field_init_probe" because examples/field_init_probe.goo already exists
+// as an unrelated regression lock (struct-field-selector lvalue auto-load
+// for `:=` initializers) — reusing that name would silently delete that
+// golden's coverage.
+package main
+
+import "fmt"
+
+type Q struct {
+	F float32
+	D float64
+	N int32
+}
+
+func main() {
+	q := Q{F: 2.5, D: 0.25, N: 7}
+	fmt.Println(q.F == float32(2.5))
+	fmt.Println(q.D == 0.25)
+	fmt.Println(int(q.N))
+	r := Q{1.5, 1, 3}
+	fmt.Println(r.F == float32(1.5))
+	fmt.Println(r.D == 1.0)
+	fmt.Println(int(r.N))
+	s := Q{F: 1 + 0.5, D: 2 * 0.25, N: 2 + 3}
+	fmt.Println(s.F == float32(1.5))
+	fmt.Println(s.D == 0.5)
+	fmt.Println(int(s.N))
+}

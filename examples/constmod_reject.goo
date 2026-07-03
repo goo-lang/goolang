@@ -1,0 +1,23 @@
+// constmod_reject (task 2 negative gate): an all-int `%` subtree meeting a
+// float in an arithmetic context must be REJECTED, not silently computed.
+//
+// `(1 % 2) * g` is legal Go: Go evaluates `1%2` as an untyped constant using
+// exact integer arithmetic (result 1), THEN promotes to float32 for the
+// multiply, so `go run` prints `2.5`. Goo's checker is a stamp-and-compute
+// design with no constant-folding pass, so it cannot reproduce that
+// fold-before-promote sequence — the only sound choices are "silently
+// compute the wrong value" or "reject". Task 2 chose reject (see
+// expression_checker.c's cross-kind mismatch block, and its doc comment on
+// is_untyped_int_rooted's for_float_context exclusion of `/` and `%`). This
+// is a DELIBERATE stricter-than-Go decision, not a bug — do not "fix" this
+// file to make it compile without first re-reading that adjudication.
+// Guarded by the constmod-reject-probe Makefile target.
+package main
+
+import "fmt"
+
+func main() {
+	g := float32(2.5)
+	h := (1 % 2) * g
+	fmt.Println(h)
+}

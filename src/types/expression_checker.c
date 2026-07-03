@@ -4,6 +4,16 @@
 #include <string.h>
 #include <stdio.h>
 
+// Forward declarations: the untyped-constant rootedness predicates and
+// adapters are defined below (near type_check_binary_expr, their primary
+// call site — see the doc comments there for the full design), but
+// type_check_struct_literal's field-init sink (task 3) needs them earlier
+// in this file, at struct-literal-loop scope.
+static int is_untyped_int_rooted(ASTNode* n, int for_float_context);
+static void adapt_untyped_int_operand(ASTNode* n, Type* target);
+static int is_untyped_float_rooted(ASTNode* n);
+static void adapt_untyped_float_operand(ASTNode* n, Type* target);
+
 // Validate each element of a slice composite literal against the declared
 // element type. Returns 1 on success; emits a type_error and returns 0 on the
 // first incompatible element. Shared by the anonymous []T{} path and the named
@@ -271,6 +281,60 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
     }
 }
 
+// Composite field-init sink (task 3): adapt an untyped numeric-rooted field
+// value (a bare literal, unary -/+/^, or arithmetic binop composed of those
+// — see is_untyped_int_rooted / is_untyped_float_rooted's doc comments) to
+// the struct field's declared type, mirroring type_check_binary_expr's
+// int-int / float-float / cross-kind blocks but for a single field-value
+// node rather than two binop operands. Without this, `Q{F: 2.5}` (F
+// float32) reaches codegen with the literal still stamped FLOAT64 (its
+// checker default) and codegen_build_struct_value only width-coerces
+// INTEGER-kind field mismatches (SExt/Trunc) — a float-kind or width
+// mismatch InsertValues the wrong-shaped constant, silently storing the
+// double's raw bit pattern into the float32 slot (verified via
+// --emit-llvm: `store %Q { double 2.5, ... }` into a `{float, double,
+// i32}` %Q — the printed "double 2.5" bytes land where a 4-byte float is
+// read back, producing 0; an int literal into a float64 field is worse,
+// landing raw integer bits that read back as a denormal near-zero double).
+//
+// Returns the field's type if adaptation happened (the compat check below
+// must use this instead of the pre-adaptation `vt`, same as `left_type =
+// right_type` in the binop blocks), or `vt` unchanged otherwise (value
+// isn't rooted — a typed variable, call, or conversion — or the field
+// isn't numeric).
+//
+// Asymmetry preserved from #100 (float->int assignment rejection): an
+// int-rooted value adapts to ANY numeric field (int or float), but a
+// float-rooted value adapts ONLY to a float field — float->int is never
+// adapted here, so `Q{N: 2.5}` (N int32) falls through to the existing
+// type_compatible rejection below instead of silently truncating.
+static Type* adapt_field_init_value(ASTNode* v, Type* field_type, Type* vt) {
+    if (!field_type || !type_is_numeric(field_type)) return vt;
+    if (type_is_float(field_type)) {
+        if (is_untyped_float_rooted(v)) {
+            adapt_untyped_float_operand(v, field_type);
+            return field_type;
+        }
+        // for_float_context=1 on the int-rooted check: no shift, and no /
+        // or % anywhere in the subtree may stamp float (see
+        // is_untyped_int_rooted's doc comment) — `D: 1` (a bare int
+        // literal) takes this leg; `F: 1 + 0.5` (mixed rooted) is already
+        // float-rooted as a whole and takes the leg above it instead.
+        if (is_untyped_int_rooted(v, 1)) {
+            adapt_untyped_int_operand(v, field_type);
+            return field_type;
+        }
+    } else if (type_is_integer(field_type)) {
+        // for_float_context=0: an integer target, so shifts and /,% are
+        // all safe to adapt (see is_untyped_int_rooted's doc comment).
+        if (is_untyped_int_rooted(v, 0)) {
+            adapt_untyped_int_operand(v, field_type);
+            return field_type;
+        }
+    }
+    return vt;
+}
+
 // `Point{x: 3, y: 4}` / `Point{3, 4}`. Omitted keyed fields take their
 // zero value (Go semantics — matches the zero-initializing alloca that
 // `var p Point` already gets in codegen); positional form must cover
@@ -410,6 +474,10 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
             }
             Type* vt = type_check_expression(checker, v);
             if (!vt) return NULL;
+            // Task 3: adapt an untyped numeric-rooted value (literal or
+            // rooted expression) to the field's declared type BEFORE the
+            // compat check — see adapt_field_init_value's doc comment.
+            vt = adapt_field_init_value(v, field->type, vt);
             if (field->type && field->type->kind == TYPE_INTERFACE) {
                 if (!check_interface_assign(checker, vt, field->type, v->pos)) {
                     return NULL;
@@ -432,6 +500,8 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
         for (ASTNode* v = lit->field_values; v; v = v->next, i++) {
             Type* vt = type_check_expression(checker, v);
             if (!vt) return NULL;
+            // Task 3: same field-value adaptation as the keyed loop above.
+            vt = adapt_field_init_value(v, fields[i].type, vt);
             if (fields[i].type && fields[i].type->kind == TYPE_INTERFACE) {
                 if (!check_interface_assign(checker, vt, fields[i].type, v->pos)) {
                     return NULL;
@@ -529,11 +599,53 @@ Type* type_check_literal(TypeChecker* checker, ASTNode* expr) {
     return type;
 }
 
-// Is `n` an untyped-integer-constant-rooted operand — a bare int literal, or a
-// shift whose (recursively) left operand is one? A shift's Go result type is its
-// LEFT operand's type, so `1<<32` is untyped-rooted through the `1`. Used to
-// decide whether an operand can adapt to the other, sized operand's type.
-static int is_untyped_int_rooted(ASTNode* n) {
+// Is `n` an untyped-integer-constant-rooted operand — a bare int literal, a
+// unary -/+/^ through to one, a shift whose (recursively) left operand is one
+// (integer contexts only), or an arithmetic binop where BOTH sides are
+// (recursively) int-rooted? A shift's Go result type is its LEFT operand's
+// type, so `1<<32` is untyped-rooted through the `1`; an arithmetic binop's
+// result type is the promoted operand type, so `(1+2)*3` is untyped-rooted
+// through ALL its literals, not just one — this is what lets a
+// parenthesized/chained untyped constant expression adapt to a sized context
+// AS A UNIT (task 2), rather than only a single leaf literal. Used to decide
+// whether an operand can adapt to the other, sized operand's type.
+//
+// for_float_context selects which shapes are safe for the ADAPTATION TARGET
+// kind, and each leg passes it through unchanged to every recursive call, so
+// an offending node buried anywhere in the subtree (e.g. the `1<<2` in
+// `(1<<2)+3`, or the `1/2` in `(1/2)+3`) excludes the WHOLE expression:
+//
+//   for_float_context=0 (integer target: the int-int width block and the
+//   call-arg adaptation pass, both below): shifts allowed, arithmetic ops
+//   {+,-,*,/,%} allowed — everything stays integer-typed, so every shape
+//   Go permits in an untyped int constant is safe to stamp.
+//
+//   for_float_context=1 (float target: the cross-kind block in
+//   type_check_binary_expr and is_untyped_float_rooted's binop leg, both
+//   below): NO shift leg — a shift must NEVER be stamped to a float type
+//   (a shift's operands are integer-only, LLVM `shl`/`ashr` have no float
+//   form, and Go itself doesn't let a shift float-adapt in a mixed
+//   comparison either, so `1<<2 > g`, g float32, stays rejected) — and the
+//   arithmetic leg shrinks to {+,-,*}, EXCLUDING / and %. Rationale (task-2
+//   review adjudication): Go resolves an untyped INT constant division by
+//   TRUNCATION before any later float promotion (`(1/2)*g` is exactly 0 in
+//   Go), but this checker doesn't constant-fold — stamping `1/2`'s literals
+//   float would compute an exact float division (0.5) instead, a silently
+//   wrong VALUE on Go-legal code; and a float-stamped `%` node dies in
+//   codegen (TOKEN_MODULO is integer-only, no frem is emitted). +,-,* have
+//   no such divergence: integer and float arithmetic agree exactly for
+//   values representable in both domains. Excluded shapes fall through to
+//   the operator's own check (a clean "incompatible types"-class rejection
+//   — stricter than Go for the / and % cases, wrong-value-proof).
+//
+// This one function replaces what used to be two near-identical ones
+// (is_untyped_int_rooted / is_untyped_int_rooted_non_shift) merged via this
+// flag — both were static, same-file helpers, so there was never a header-
+// edit reason to keep them apart. expression_codegen.c's
+// is_int_rooted_float_context duplicates the for_float_context=1 shape of
+// this function (cross-referenced by comment, not shared through a header
+// edit) — change them together.
+static int is_untyped_int_rooted(ASTNode* n, int for_float_context) {
     if (!n) return 0;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT)
         return 1;
@@ -544,19 +656,36 @@ static int is_untyped_int_rooted(ASTNode* n) {
         UnaryExprNode* u = (UnaryExprNode*)n;
         if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS ||
             u->operator == TOKEN_BIT_XOR)
-            return is_untyped_int_rooted(u->operand);
+            return is_untyped_int_rooted(u->operand, for_float_context);
     }
     if (n->type == AST_BINARY_EXPR) {
         BinaryExprNode* b = (BinaryExprNode*)n;
-        if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT)
-            return is_untyped_int_rooted(b->left);
+        if (!for_float_context &&
+            (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT))
+            return is_untyped_int_rooted(b->left, for_float_context);
+        if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
+            b->operator == TOKEN_MULTIPLY ||
+            (!for_float_context &&
+             (b->operator == TOKEN_DIVIDE || b->operator == TOKEN_MODULO)))
+            return is_untyped_int_rooted(b->left, for_float_context) &&
+                   is_untyped_int_rooted(b->right, for_float_context);
     }
     return 0;
 }
 
-// Retype an untyped-int-rooted operand (and, for a shift, the shift node and its
-// left operand recursively) to `target`. This makes `1<<32` in `x >= 1<<32`
-// (x uint64) compute at 64 bits instead of overflowing an int32 shift to 0.
+// Retype an untyped-int-rooted operand — and, for a shift, the shift node and
+// its left operand recursively, or for an arithmetic binop (+,-,*,/,%), the
+// binop node and BOTH sides recursively — to `target`. This makes `1<<32` in
+// `x >= 1<<32` (x uint64) compute at 64 bits instead of overflowing an int32
+// shift to 0, and makes `(1+2)*g` (g float32) stamp `1`, `2`, AND the `1+2`
+// node itself to float32 (task 2) so the whole parenthesized sub-expression
+// computes at that width, not just a leaf literal feeding a still-int add.
+// No for_float_context parameter here (unlike is_untyped_int_rooted): this
+// is only ever called after that predicate confirmed the shape is adaptable
+// FOR THE CALLER'S CONTEXT, so it just recurses through whatever shift/binop
+// structure is actually there — in a float context the predicate already
+// guaranteed no shift, /, or % exists anywhere in the subtree, so those
+// arms simply never fire on a float target.
 static void adapt_untyped_int_operand(ASTNode* n, Type* target) {
     if (!n) return;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT) {
@@ -576,17 +705,39 @@ static void adapt_untyped_int_operand(ASTNode* n, Type* target) {
         if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT) {
             adapt_untyped_int_operand(b->left, target); // shift type = left type
             n->node_type = target;
+        } else if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
+                   b->operator == TOKEN_MULTIPLY || b->operator == TOKEN_DIVIDE ||
+                   b->operator == TOKEN_MODULO) {
+            adapt_untyped_int_operand(b->left, target);
+            adapt_untyped_int_operand(b->right, target); // binop result = operand type
+            n->node_type = target;
         }
     }
 }
 
 // Float analogue of is_untyped_int_rooted: is `n` an untyped-float-constant-
-// rooted operand — a bare float literal, or a unary -/+ through to one? Floats
-// have no shift/^ operators, so those legs of the int version don't apply
-// here. expression_codegen.c's coerce_float_operand_widths duplicates this
-// exact test locally (10 lines, cross-referenced by comment) rather than this
-// function being exported via a header edit — see task-2 brief for the
-// rationale.
+// rooted operand — a bare float literal, a unary -/+ through to one, or an
+// arithmetic binop (+,-,*,/ — floats have no `%`) where EACH side is float-
+// rooted OR int-rooted for a float context (is_untyped_int_rooted(side, 1):
+// no shift, and no / or % anywhere in the int subtree — see that function's
+// doc comment for both exclusions), with AT LEAST ONE side float-rooted? An
+// all-int binop like `1+2` stays int-rooted only (see is_untyped_int_rooted)
+// — this leg is for a MIXED int+float constant expression, which Go's kind-
+// promotion rule makes float overall (e.g. `1 + 0.5`, or `1` meeting an
+// already-float-rooted `(2.0*3.0)` sibling). Floats have no shift/^
+// operator, so those legs of the int version don't apply here.
+//
+// Note the asymmetry for `/`: THIS function's own binop leg keeps `/` —
+// a division that itself contains a float literal (`0.5 / 2`) is a FLOAT
+// division in Go's constant arithmetic (kind promotion happens before the
+// divide), exact-or-precision-class, so it may adapt — while an all-INT
+// division subtree (`1/2` in `0.5 * (1/2)`) is truncating in Go and is
+// excluded via the int-rooted side test above, falling through to a clean
+// rejection instead of a silently wrong value.
+//
+// expression_codegen.c's is_float_literal_node duplicates this exact shape
+// (cross-referenced by comment rather than shared through a header edit —
+// see task-2 brief for the rationale) — change them together.
 static int is_untyped_float_rooted(ASTNode* n) {
     if (!n) return 0;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_FLOAT)
@@ -598,11 +749,30 @@ static int is_untyped_float_rooted(ASTNode* n) {
         if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS)
             return is_untyped_float_rooted(u->operand);
     }
+    if (n->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)n;
+        if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
+            b->operator == TOKEN_MULTIPLY || b->operator == TOKEN_DIVIDE) {
+            int left_ok  = is_untyped_float_rooted(b->left)  || is_untyped_int_rooted(b->left, 1);
+            int right_ok = is_untyped_float_rooted(b->right) || is_untyped_int_rooted(b->right, 1);
+            return left_ok && right_ok &&
+                   (is_untyped_float_rooted(b->left) || is_untyped_float_rooted(b->right));
+        }
+    }
     return 0;
 }
 
-// Retype an untyped-float-rooted operand (and, for unary -/+, the unary node
-// and its operand recursively) to `target`. Mirrors adapt_untyped_int_operand.
+// Retype an untyped-float-rooted operand — and, for unary -/+, the unary node
+// and its operand recursively, or for an arithmetic binop (+,-,*,/), the
+// binop node and BOTH sides recursively — to `target`. Mirrors
+// adapt_untyped_int_operand. Only ever called after is_untyped_float_rooted(n)
+// confirmed true, so a binop's sides are each guaranteed float-rooted or
+// float-context int-rooted (no shift, /, or %) by that precondition; a
+// float-rooted side recurses here, an int-rooted side dispatches to
+// adapt_untyped_int_operand (which
+// stamps node_type = target regardless of target's own kind, so handing it a
+// float target is exactly how an int leg of a mixed `1 + 0.5` gets stamped
+// float here).
 static void adapt_untyped_float_operand(ASTNode* n, Type* target) {
     if (!n) return;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_FLOAT) {
@@ -614,6 +784,21 @@ static void adapt_untyped_float_operand(ASTNode* n, Type* target) {
         if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS) {
             adapt_untyped_float_operand(u->operand, target); // unary result = operand type
             n->node_type = target;
+        }
+    }
+    if (n->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)n;
+        if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
+            b->operator == TOKEN_MULTIPLY || b->operator == TOKEN_DIVIDE) {
+            if (is_untyped_float_rooted(b->left))
+                adapt_untyped_float_operand(b->left, target);
+            else
+                adapt_untyped_int_operand(b->left, target);
+            if (is_untyped_float_rooted(b->right))
+                adapt_untyped_float_operand(b->right, target);
+            else
+                adapt_untyped_int_operand(b->right, target);
+            n->node_type = target; // binop result = operand type
         }
     }
 }
@@ -651,11 +836,14 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     if (type_is_integer(left_type) && type_is_integer(right_type) &&
         left_type->kind != right_type->kind) {
         // An operand adapts if it is untyped-integer-constant-rooted: a bare int
-        // literal OR a shift through to one (`1<<32`). Adapt it to the other,
-        // sized operand's type so both compute at the same width — this is what
+        // literal, a shift through to one (`1<<32`), or an arithmetic binop
+        // through to two (`(1+2)<<32`). for_float_context=0: this is an
+        // all-integer context, so shifts and /,% are all safe to adapt (see
+        // is_untyped_int_rooted's doc comment). Adapt it to the other, sized
+        // operand's type so both compute at the same width — this is what
         // stops `1<<32` in `x >= 1<<32` from overflowing an int32 shift to 0.
-        int left_adaptable  = is_untyped_int_rooted(binary->left);
-        int right_adaptable = is_untyped_int_rooted(binary->right);
+        int left_adaptable  = is_untyped_int_rooted(binary->left, 0);
+        int right_adaptable = is_untyped_int_rooted(binary->right, 0);
         if (right_adaptable && !left_adaptable) {
             adapt_untyped_int_operand(binary->right, left_type);
             right_type = left_type;
@@ -674,12 +862,20 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     // Adapting BEFORE result-type computation (mirroring the int block above)
     // makes the result come out float32. Applies to both arithmetic and
     // comparison operators (this runs before the switch on binary->operator).
+    //
+    // is_untyped_float_rooted's binop leg (task 2) is what makes this block
+    // handle a CHAINED product like `2.0 * 3.0 * g` (parsed `(2.0*3.0) * g`):
+    // the `2.0*3.0` sub-expression is itself float-rooted now, so it adapts
+    // here as a unit, recursing adapt_untyped_float_operand down into its own
+    // `2.0` and `3.0` leaves — not just a single leaf literal sitting
+    // directly next to `g`.
     if (type_is_float(left_type) && type_is_float(right_type) &&
         left_type->kind != right_type->kind) {
         // An operand adapts if it is untyped-float-constant-rooted: a bare
-        // float literal OR a unary -/+ through to one. A typed conversion
-        // like `float32(0.1)` is NOT literal-rooted (it's a call expression)
-        // and never adapts — only the untyped literal side does.
+        // float literal, a unary -/+ through to one, or an arithmetic binop
+        // through to some mix of those (see is_untyped_float_rooted). A typed
+        // conversion like `float32(0.1)` is NOT literal-rooted (it's a call
+        // expression) and never adapts — only the untyped literal side does.
         int left_adaptable  = is_untyped_float_rooted(binary->left);
         int right_adaptable = is_untyped_float_rooted(binary->right);
         if (right_adaptable && !left_adaptable) {
@@ -688,6 +884,119 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         } else if (left_adaptable && !right_adaptable) {
             adapt_untyped_float_operand(binary->left, right_type);
             left_type = right_type;
+        }
+    }
+
+    // Cross-kind adaptation: an untyped-int-rooted operand (a bare int
+    // literal, unary -/+/^ through to one, or a {+,-,*} binop through to
+    // some mix of those — for_float_context=1: NO shift and NO / or %
+    // anywhere in the subtree, see is_untyped_int_rooted's doc comment for
+    // both exclusions) meeting a float-kind operand (a typed float variable,
+    // or the other side already float-stamped by one of the two blocks
+    // above) adapts to that float type. Without this, `1 < g` (g float32)
+    // reaches codegen as (INT64, FLOAT32) and codegen_generate_binary_expr
+    // emits `icmp slt i64, float`, which the LLVM verifier rejects; `g > 1`
+    // was already a clean type_error before this task (stricter than Go,
+    // which permits both orders). The binop leg (task 2) extends this the
+    // same way: `(1+2) * g` reaches here with binary->left = the whole
+    // `1+2` node, which is now int-rooted as a unit, so it adapts (and
+    // recurses into its own `1`/`2` leaves) instead of computing an integer
+    // add that a float multiply can't consume. An int subtree containing
+    // / or % (e.g. `(1/2) * g`, `(1%2) * g`) is NOT rooted here and falls
+    // through to the operator's own clean rejection — Go truncates that
+    // division/modulo as an INT constant before promotion, which a
+    // stamp-and-compute checker can't reproduce; rejecting beats silently
+    // computing 0.5 where Go gets 0. Reuses adapt_untyped_int_operand — it
+    // never sees a shift, `/`, or `%` node here because
+    // is_untyped_int_rooted(_, 1) excludes those shapes.
+    //
+    // An int VARIABLE (not int-rooted) meeting a float is left alone — the
+    // mismatch falls through to whatever the operator's own check does (e.g.
+    // type_check_comparison_op's "incompatible types" rejection), matching
+    // Go (no implicit int-to-float conversion for typed values).
+    //
+    // Untyped×untyped cross-kind (task 2, e.g. `0.1 * 10`): left_type is
+    // FLOAT64 (from type_check_literal on `0.1`) and right_type is INT64
+    // (from `10`) BEFORE this block runs, so it already lands in the
+    // type_is_float(left)&&type_is_integer(right) arm below with no
+    // additional code — a bare int literal is trivially int-rooted. Verified
+    // this composes correctly as-is; nothing further was needed here.
+    //
+    // Gated against TOKEN_MODULO as the CURRENT operator (final-sweep fix):
+    // the exclusion above only looks at the operand's OWN subtree (does IT
+    // contain a shift/`/`/`%`), so a bare `1` in `1 % g` (g float32) is
+    // trivially int-rooted and would otherwise adapt here, leaving
+    // type_check_arithmetic_op to face a float×float `%` — a pre-existing
+    // hole where it returns FLOAT32 for a modulo codegen can't emit (its
+    // TOKEN_MODULO arm is integer-only), crashing with an opaque "Failed to
+    // generate binary operation" instead of a diagnostic. Go itself rejects
+    // `1 % g` (mismatched types), so skipping adaptation when `%` is the
+    // operator directly combining these two operands lets the mismatch fall
+    // through unchanged to the rejection switch below, which already has a
+    // clean TOKEN_MODULO case. `/` is deliberately NOT gated here — `1 / g`
+    // must keep adapting and computing (see the constdiv/constmod probes for
+    // the DIFFERENT, subtree-shaped exclusion that governs `(1%2) * g`).
+    if (binary->operator != TOKEN_MODULO) {
+        if (type_is_integer(left_type) && type_is_float(right_type) &&
+            is_untyped_int_rooted(binary->left, 1)) {
+            adapt_untyped_int_operand(binary->left, right_type);
+            left_type = right_type;
+        } else if (type_is_float(left_type) && type_is_integer(right_type) &&
+                   is_untyped_int_rooted(binary->right, 1)) {
+            adapt_untyped_int_operand(binary->right, left_type);
+            right_type = left_type;
+        }
+    }
+
+    // Cross-kind mix that did NOT adapt above — an int VARIABLE meeting a
+    // float (`x > g`), a shift-rooted operand (`1<<2 > g`), or an all-int
+    // /,% subtree in a float context (`(1/2) * g`, `(1%2) * g`,
+    // `0.5 * (1/2)`) — must be REJECTED here for arithmetic and comparison
+    // operators, not allowed through to codegen. Before this check, only
+    // the float-LEFT comparison order got a clean rejection
+    // (type_check_comparison_op via type_compatible, which is asymmetric:
+    // float->int rejected, int->float permitted); the int-left comparison
+    // order and EVERY arithmetic mix sailed through
+    // (type_check_arithmetic_op happily returns the promoted float type)
+    // and crashed the LLVM verifier with mismatched-operand-type errors
+    // (`mul i64 0, float %g`, `icmp sgt i64 4, float %g`). Go rejects all
+    // of these shapes ("invalid operation: mismatched types") except the
+    // /,% constant cases, which Go computes by exact constant arithmetic
+    // (truncating int division BEFORE promotion) — a stamp-and-compute
+    // checker can't reproduce that, so rejecting beats silently computing
+    // 0.5 where Go gets 0 (task-2 review adjudication). Only arithmetic and
+    // comparison operators are gated: assignment ops keep their own
+    // type_check_assignment_op/type_compatible path (int->float assignment
+    // stays permitted, codegen coerces), and bitwise/shift/logical ops
+    // already reject non-integer/non-bool operands in their own checks.
+    if ((type_is_integer(left_type) && type_is_float(right_type)) ||
+        (type_is_float(left_type) && type_is_integer(right_type))) {
+        switch (binary->operator) {
+            case TOKEN_EQ:
+            case TOKEN_NE:
+            case TOKEN_LT:
+            case TOKEN_LE:
+            case TOKEN_GT:
+            case TOKEN_GE:
+                // Same wording type_check_comparison_op produces for the
+                // float-left order, so the diagnostic is consistent across
+                // operand orders.
+                type_error(checker, expr->pos,
+                          "Cannot compare incompatible types %s and %s",
+                          type_to_string(left_type), type_to_string(right_type));
+                return NULL;
+            case TOKEN_PLUS:
+            case TOKEN_MINUS:
+            case TOKEN_MULTIPLY:
+            case TOKEN_DIVIDE:
+            case TOKEN_MODULO:
+                type_error(checker, expr->pos,
+                          "Invalid operation: mismatched types %s and %s "
+                          "(no implicit int/float conversion; use an explicit conversion)",
+                          type_to_string(left_type), type_to_string(right_type));
+                return NULL;
+            default:
+                break; // other operators keep their own checks below
         }
     }
 
@@ -1451,7 +1760,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             // then sees matching types. This is what lets `RotateLeft64(1, 4)`
             // pass `1` to a uint64 parameter.
             if (arg && param_type && type_is_integer(param_type) &&
-                is_untyped_int_rooted(arg)) {
+                is_untyped_int_rooted(arg, 0)) { // for_float_context=0: integer param, shifts and /,% stay valid
                 adapt_untyped_int_operand(arg, param_type);
                 arg_type = param_type;
             }

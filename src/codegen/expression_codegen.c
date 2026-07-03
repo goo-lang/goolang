@@ -255,6 +255,35 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             // INT64_MAX clamped). Integer literals are non-negative (a leading
             // `-` is a separate unary op), so unsigned parsing is exact.
             unsigned long long value = strtoull(literal->value, NULL, 0);
+            Type* nt = expr->node_type;
+            // Cross-kind float adaptation (expression_checker.c's cross-kind
+            // block in type_check_binary_expr): the `1` in `1 < g` (g
+            // float32) is an untyped-int-literal-rooted operand that met a
+            // float-kind operand, so the checker stamped this literal's
+            // node_type FLOAT32/FLOAT64 instead of leaving it INT64. Emit a
+            // float constant directly here (mirrors the TOKEN_FLOAT arm
+            // below) rather than an int constant that codegen_generate_
+            // binary_expr would later feed into an `fcmp`/`fadd` alongside a
+            // real float value — that width/kind mismatch is exactly what
+            // made the LLVM verifier abort with "Both operands to ICmp
+            // instruction are not of the same type! icmp slt i64, float"
+            // before this stamping existed.
+            // `value` is parsed by strtoull as unsigned, so it is always
+            // non-negative here — a negative literal like `-1` never reaches
+            // this arm as a negative number; it arrives as a unary MINUS
+            // node wrapping this literal (see is_untyped_int_rooted's
+            // AST_UNARY_EXPR case), with the sign applied by the unary op's
+            // own codegen above this literal. So casting the raw unsigned
+            // `value` straight to double is exact for the full range of a
+            // representable integer literal.
+            if (nt && type_is_float(nt)) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
+                if (lt) {
+                    llvm_value = LLVMConstReal(lt, (double)value);
+                    goo_type = nt;
+                    break;
+                }
+            }
             // Narrow integer-literal adaptation: when type-checking retyped this
             // literal to a specific integer type OTHER than the default int32
             // (e.g. a uint64 parameter/operand/return context), emit the
@@ -262,7 +291,6 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             // coercion. int32-typed literals keep the magnitude-based path below
             // (which auto-promotes to i64 past INT32_MAX — an unadapted untyped
             // constant must preserve its full magnitude, e.g. 9000000000).
-            Type* nt = expr->node_type;
             if (nt && type_is_integer(nt) && nt->kind != TYPE_INT64) {
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
                 if (lt) {
@@ -542,6 +570,45 @@ static void coerce_int_literal_operand(CodeGenerator* codegen,
     }
 }
 
+// Codegen-local duplicate of expression_checker.c's static
+// is_untyped_int_rooted called with for_float_context=1 (checker-internal,
+// not exported via a header edit per the task-2 brief — change them
+// together). Is `node` an untyped-integer-constant-rooted AST operand,
+// judged for a FLOAT adaptation target: a bare int literal, a unary -/+/^
+// through to one, or a {+,-,*} binop where BOTH sides are (recursively)
+// such? Needed by is_float_literal_node's binop leg below (task 2): an
+// int-rooted operand mixed with a float-rooted sibling in +,-,*,/ is part
+// of a float-kind constant expression as a whole (Go's kind-promotion
+// rule), so it counts as "untyped" for the width-coercion backstop the same
+// way a bare int literal already does. Two shapes are excluded, mirroring
+// the checker's float-context exclusions exactly (see its
+// is_untyped_int_rooted doc comment for the full rationale): NO shift leg
+// (a shift's operands are integer-only, so a shift-rooted subtree must
+// never be treated as float-adaptable), and NO / or % in the binop leg (an
+// all-int division/modulo truncates as an INT constant in Go before any
+// float promotion, which stamp-and-compute can't reproduce — the checker
+// rejects those shapes in float contexts, so codegen must not classify
+// them as float-adaptable either).
+static int is_int_rooted_float_context(ASTNode* node) {
+    if (!node) return 0;
+    if (node->type == AST_LITERAL)
+        return ((LiteralNode*)node)->literal_type == TOKEN_INT;
+    if (node->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)node;
+        if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS ||
+            u->operator == TOKEN_BIT_XOR)
+            return is_int_rooted_float_context(u->operand);
+    }
+    if (node->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)node;
+        if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
+            b->operator == TOKEN_MULTIPLY)
+            return is_int_rooted_float_context(b->left) &&
+                   is_int_rooted_float_context(b->right);
+    }
+    return 0;
+}
+
 // Float analogue of coerce_int_literal_operand: unify float32/float64 operand
 // widths so LLVM float binary ops (fadd/fcmp/...) get two operands of the SAME
 // LLVM FP type — required for the instruction to verify at all (a bare
@@ -566,15 +633,23 @@ static void coerce_int_literal_operand(CodeGenerator* codegen,
 //
 // Codegen-local duplicate of expression_checker.c's static
 // is_untyped_float_rooted (checker-internal, not exported via a header edit
-// per the task-2 brief — this is 10 lines, cross-referenced by this
-// comment rather than shared through include/types.h). Is `node` an
-// untyped-float-constant-rooted AST operand: a bare float literal, or a
-// unary -/+ through to one? This is the AST-untypedness test that replaced
-// `LLVMIsConstant` below: LLVMIsConstant can't tell an untyped literal from
-// a TYPED constant conversion (`float32(0.1)` also constant-folds to an
-// LLVMConstReal), which made `float32(0.1) == 0.1` diverge from Go — the
-// typed conversion was wrongly treated as "may adapt" and got widened to
-// double instead of the untyped `0.1` narrowing to float32.
+// per the task-2 brief — cross-referenced by this comment rather than shared
+// through include/types.h — change them together). Is `node` an untyped-
+// float-constant-rooted AST operand: a bare float literal, a unary -/+
+// through to one, or an arithmetic binop (+,-,*,/) where each side is
+// float-rooted OR float-context int-rooted (is_int_rooted_float_context
+// above — no shift, no / or % in the int subtree), with at least one side
+// float-rooted (task 2 — see the checker's is_untyped_float_rooted for the
+// full rationale, including why an all-int binop like `1+2` stays OUT of
+// this predicate, and why `/` is kept HERE — a division containing a float
+// literal is a float division in Go's constant arithmetic — while an
+// all-int division subtree is excluded via the int side test)? This is
+// the AST-untypedness test that replaced `LLVMIsConstant` below:
+// LLVMIsConstant can't tell an untyped literal from a TYPED constant
+// conversion (`float32(0.1)` also constant-folds to an LLVMConstReal),
+// which made `float32(0.1) == 0.1` diverge from Go — the typed conversion
+// was wrongly treated as "may adapt" and got widened to double instead of
+// the untyped `0.1` narrowing to float32.
 static int is_float_literal_node(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
@@ -583,6 +658,16 @@ static int is_float_literal_node(ASTNode* node) {
         UnaryExprNode* u = (UnaryExprNode*)node;
         if (u->operator == TOKEN_MINUS || u->operator == TOKEN_PLUS)
             return is_float_literal_node(u->operand);
+    }
+    if (node->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)node;
+        if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
+            b->operator == TOKEN_MULTIPLY || b->operator == TOKEN_DIVIDE) {
+            int left_ok  = is_float_literal_node(b->left)  || is_int_rooted_float_context(b->left);
+            int right_ok = is_float_literal_node(b->right) || is_int_rooted_float_context(b->right);
+            return left_ok && right_ok &&
+                   (is_float_literal_node(b->left) || is_float_literal_node(b->right));
+        }
     }
     return 0;
 }
@@ -1412,12 +1497,48 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     
     value_info_free(left_val);
     value_info_free(right_val);
-    
+
     if (!result) {
         codegen_error(codegen, expr->pos, "Failed to generate binary operation");
         return NULL;
     }
-    
+
+    // Composite cross-kind self-correction (task 2): `result_type` above came
+    // from a REDUNDANT re-check of `expr` (the `type_check_binary_expr` call
+    // a few lines up) that can disagree in KIND with what `result` actually
+    // computed. This shows up specifically for a fully-int-rooted sub-
+    // expression like the `1+2` in `(1+2) * g` (g float32): the checker's
+    // cross-kind block (expression_checker.c, task 2) stamps `1+2`'s
+    // node_type FLOAT32 while type-checking the OUTER `*` (which sees
+    // sibling `g`) — but codegen reaches `1+2` through ITS OWN recursive
+    // codegen_generate_binary_expr call, which performs that SAME redundant
+    // re-check on `1+2` IN ISOLATION (no visibility of `g`), legitimately
+    // re-deriving plain INT64 for a standalone `1+2`. The actual `result`
+    // LLVM value is unaffected by that re-check — it was built from operands
+    // already read with the FLOAT32 stamp (codegen_generate_literal ran
+    // BEFORE the isolated re-check even happens) — so it genuinely IS a
+    // float register; `result_type` is just stale/wrong ABOUT it. An OUTER
+    // caller trusts THIS ValueInfo's goo_type for its own int-vs-float
+    // dispatch decision (the switch above does the identical thing one level
+    // up), so a wrong CATEGORY here cascades into an invalid `mul float ...`
+    // (integer multiply fed a float operand) one level up, which the LLVM
+    // verifier rejects. Correct the CATEGORY only — never the width, which
+    // the redundant re-check gets right whenever the category is right
+    // (confirmed: a genuinely float-rooted or mixed int+float sub-expression
+    // always re-derives "float" even in isolation, since neither a bare
+    // float literal nor an int+float mix has any legitimate all-integer
+    // resolution to fall back to — only an ALL-int composite adapted solely
+    // by outer context can flip category like this) — using the actual LLVM
+    // type, which cannot lie about what was really built.
+    if (result_type && !type_is_float(result_type)) {
+        LLVMTypeKind result_kind = LLVMGetTypeKind(LLVMTypeOf(result));
+        if (result_kind == LLVMFloatTypeKind) {
+            result_type = type_checker_get_builtin(checker, TYPE_FLOAT32);
+        } else if (result_kind == LLVMDoubleTypeKind) {
+            result_type = type_checker_get_builtin(checker, TYPE_FLOAT64);
+        }
+    }
+
     return value_info_new(NULL, result, result_type);
 #endif
 }

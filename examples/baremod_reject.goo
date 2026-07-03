@@ -1,0 +1,28 @@
+// baremod_reject (final-sweep negative gate): a bare int literal meeting a
+// float operand across `%` must be REJECTED, not silently adapted.
+//
+// Unlike constdiv_reject.goo / constmod_reject.goo (which pin a
+// stricter-than-Go rejection of an all-int `/` or `%` SUBTREE feeding a
+// float multiply, e.g. `(1%2) * g`), `1 % g` here is Go-conformant: real Go
+// also rejects it ("invalid operation: mismatched types untyped int and
+// float32"). Before this fix, the checker's cross-kind adaptation block
+// adapted the bare `1` to float32 (it only looks at whether the literal's
+// OWN subtree contains a `/` or `%`, not whether `%` is the CURRENT
+// operator combining it with `g`), which left type_check_arithmetic_op to
+// face a float×float modulo — a pre-existing hole that returns FLOAT32 for
+// `%` — and codegen's TOKEN_MODULO arm (integer-only) then failed with an
+// opaque "Failed to generate binary operation" instead of a diagnostic. The
+// fix gates the cross-kind adaptation block against TOKEN_MODULO as the
+// current operator, so this now falls through to the existing cross-kind
+// rejection switch and gets the same clean "no implicit int/float
+// conversion" diagnostic as `x % g` (an int variable). Guarded by the
+// baremod-reject-probe Makefile target.
+package main
+
+import "fmt"
+
+func main() {
+	g := float32(2.5)
+	h := 1 % g
+	fmt.Println(h)
+}
