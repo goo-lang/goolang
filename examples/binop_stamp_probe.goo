@@ -1,0 +1,32 @@
+// binop_stamp_probe: locks the binary-expression shapes that the mid-codegen
+// re-check of type_check_binary_expr used to mangle (or that #102's
+// category-correction patch existed to paper over) — a parenthesized
+// int-rooted subtree adapting to a float sibling `(1+2)*g`, a chained
+// untyped-float product feeding a typed float32 parameter, a mixed
+// int+float sum, plain int64/uint32 arithmetic, and int-only parenthesized
+// arithmetic. These already PASS today via the re-check + category patch;
+// this probe is a REGRESSION NET across the mechanism swap (checker records
+// node_type once, codegen reads it, category patch re-derived/removed) —
+// it is NOT a RED test, nothing here is expected to newly fail.
+package main
+
+import "fmt"
+
+func takesF32(x float32) float32 {
+	return x
+}
+
+func main() {
+	g := float32(2.5)
+	h := (1 + 2) * g
+	fmt.Println(h == float32(7.5))
+	c := 2.0 * 3.0 * g
+	fmt.Println(takesF32(c) == float32(15.0))
+	i := (1 + 1) + 0.5
+	fmt.Println(i == 2.5)
+	x := int64(7)
+	fmt.Println(x + 1 == 8)
+	u := uint32(4000000000)
+	fmt.Println(u/2 == 2000000000)
+	fmt.Println((1+2)*3 == 9)
+}

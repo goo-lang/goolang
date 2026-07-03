@@ -1297,9 +1297,22 @@ int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* decla
     return 1;
 }
 
+// CHANGE-TOGETHER (task 2, checker/codegen hygiene): this function is the
+// SOLE place that computes a binary expression's result type, and it is the
+// SOLE place that RECORDS it, on `expr->node_type`, at each of its two
+// successful returns (the `_ = rhs` short-circuit just below, and the
+// switch-based exit at the bottom). That establishes the invariant codegen
+// now relies on: after a successful checker pass, every AST_BINARY_EXPR
+// carries its result type in `node_type` — codegen (expression_codegen.c,
+// codegen_generate_binary_expr) reads that recording instead of re-invoking
+// this function mid-codegen. If a new successful-return path is ever added
+// here, it MUST set `expr->node_type` before returning, or codegen's
+// NULL-recording check trips a loud "compiler bug" error instead of a
+// silent misdispatch. A failing return (NULL) is exempt — codegen never
+// reaches a node the checker rejected.
 Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_BINARY_EXPR) return NULL;
-    
+
     BinaryExprNode* binary = (BinaryExprNode*)expr;
 
     // Blank identifier `_` as a plain-assignment target (F1): `_ = rhs`
@@ -1312,7 +1325,7 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         strcmp(((IdentifierNode*)binary->left)->name, "_") == 0) {
         Type* rhs_type = type_check_expression(checker, binary->right);
         if (!rhs_type) return NULL;
-        expr->node_type = rhs_type;
+        expr->node_type = rhs_type;  // records — see the invariant comment above
         return rhs_type;
     }
 
@@ -1560,7 +1573,13 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
             type_error(checker, expr->pos, "Unknown binary operator");
             return NULL;
     }
-    
+
+    // Records — see the invariant comment at this function's top. This is
+    // the exit every arithmetic/comparison/logical/bitwise/assignment/
+    // channel-send case above falls through to (each sets `result_type` and
+    // `break`s); `result_type` may legitimately be NULL here if the helper
+    // it called already emitted a type_error, which correctly propagates as
+    // an unset (NULL) node_type — codegen never reaches a rejected node.
     expr->node_type = result_type;
     return result_type;
 }

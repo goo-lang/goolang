@@ -1206,9 +1206,28 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     coerce_float_operand_widths(codegen, binary->left, left_val,
                                 binary->right, right_val);
 
-    // Get the result type from the type checker
-    Type* result_type = type_check_binary_expr(checker, expr);
+    // CHANGE-TOGETHER (task 2, checker/codegen hygiene): read the checker's
+    // recording instead of re-invoking it here. This USED TO be `Type*
+    // result_type = type_check_binary_expr(checker, expr);` — a full
+    // re-check, called AFTER left_val/right_val above were already
+    // generated. That ordering was the bug: type_check_literal
+    // unconditionally overwrites a literal's node_type to its untyped
+    // default (INT64/FLOAT64) on every call, so re-checking `expr`'s
+    // children from scratch here clobbered any outer-context adaptation the
+    // FIRST (real) checker pass had stamped on them — e.g. the `1+2` in
+    // `(1+2) * g` (g float32): the outer `*` node's cross-kind adaptation
+    // stamps `1+2` and its leaves FLOAT32 during the one true pass, but a
+    // later isolated re-check of `1+2` alone (no visibility of sibling `g`)
+    // re-derives plain INT64 and stomps that stamp back down (see #101/#102
+    // review history, and expression_checker.c's invariant comment on
+    // type_check_binary_expr). The checker always runs before codegen, so a
+    // NULL recording here means a successful-return path there forgot to
+    // set node_type — a compiler bug, not a user-facing error.
+    Type* result_type = expr->node_type;
     if (!result_type) {
+        codegen_error(codegen, expr->pos,
+                      "internal: binary expression not typed by checker "
+                      "(missing node_type) -- compiler bug");
         value_info_free(left_val);
         value_info_free(right_val);
         return NULL;
@@ -1503,39 +1522,43 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         return NULL;
     }
 
-    // Composite cross-kind self-correction (task 2): `result_type` above came
-    // from a REDUNDANT re-check of `expr` (the `type_check_binary_expr` call
-    // a few lines up) that can disagree in KIND with what `result` actually
-    // computed. This shows up specifically for a fully-int-rooted sub-
-    // expression like the `1+2` in `(1+2) * g` (g float32): the checker's
-    // cross-kind block (expression_checker.c, task 2) stamps `1+2`'s
-    // node_type FLOAT32 while type-checking the OUTER `*` (which sees
-    // sibling `g`) — but codegen reaches `1+2` through ITS OWN recursive
-    // codegen_generate_binary_expr call, which performs that SAME redundant
-    // re-check on `1+2` IN ISOLATION (no visibility of `g`), legitimately
-    // re-deriving plain INT64 for a standalone `1+2`. The actual `result`
-    // LLVM value is unaffected by that re-check — it was built from operands
-    // already read with the FLOAT32 stamp (codegen_generate_literal ran
-    // BEFORE the isolated re-check even happens) — so it genuinely IS a
-    // float register; `result_type` is just stale/wrong ABOUT it. An OUTER
-    // caller trusts THIS ValueInfo's goo_type for its own int-vs-float
-    // dispatch decision (the switch above does the identical thing one level
-    // up), so a wrong CATEGORY here cascades into an invalid `mul float ...`
-    // (integer multiply fed a float operand) one level up, which the LLVM
-    // verifier rejects. Correct the CATEGORY only — never the width, which
-    // the redundant re-check gets right whenever the category is right
-    // (confirmed: a genuinely float-rooted or mixed int+float sub-expression
-    // always re-derives "float" even in isolation, since neither a bare
-    // float literal nor an int+float mix has any legitimate all-integer
-    // resolution to fall back to — only an ALL-int composite adapted solely
-    // by outer context can flip category like this) — using the actual LLVM
-    // type, which cannot lie about what was really built.
+    // CHANGE-TOGETHER (task 2, checker/codegen hygiene): this USED TO be a
+    // silent "composite cross-kind self-correction" that overwrote
+    // `result_type`'s CATEGORY (int vs float32 vs float64) from the actual
+    // LLVM value's type kind whenever they disagreed. It existed because the
+    // old `result_type` came from a REDUNDANT re-check of `expr` (see the
+    // block above, before the task-2 swap) that ran AFTER operands were
+    // already built — for a fully-int-rooted sub-expression like the `1+2`
+    // in `(1+2) * g` (g float32), that isolated re-check lost the outer
+    // cross-kind context and re-derived plain INT64 for a node the first,
+    // real checker pass had stamped FLOAT32, while `result` itself (built
+    // from operands read with the FLOAT32 stamp before the re-check ran)
+    // genuinely was a float register — a category-only mismatch between
+    // `result_type` and `result`.
+    //
+    // With that re-check gone, `result_type` above IS `expr->node_type` —
+    // the SAME single-pass recording that drove codegen_generate_literal's
+    // operand emission a few lines up — so this mismatch has no known
+    // mechanism left to produce it: verified empirically (temporarily
+    // reinstrumented, locally, not committed) that this branch fires ZERO
+    // times post-swap across the full 188-probe golden suite, including the
+    // exact #102 shapes (`(1+2)*g`, `(1+1)+0.5`) that used to trip it twice
+    // per binop_stamp_probe run under the old (re-check) mechanism. Demoted
+    // from a silent correction to a loud defensive check: reaching this
+    // branch now means the checker's recorded category and the LLVM value
+    // codegen actually built have diverged — an invariant violation (e.g. a
+    // future regression reintroducing a re-check, or a bug in the
+    // untyped-operand adapters) that deserves a compiler-bug error, not a
+    // silent second guess.
     if (result_type && !type_is_float(result_type)) {
         LLVMTypeKind result_kind = LLVMGetTypeKind(LLVMTypeOf(result));
-        if (result_kind == LLVMFloatTypeKind) {
-            result_type = type_checker_get_builtin(checker, TYPE_FLOAT32);
-        } else if (result_kind == LLVMDoubleTypeKind) {
-            result_type = type_checker_get_builtin(checker, TYPE_FLOAT64);
+        if (result_kind == LLVMFloatTypeKind || result_kind == LLVMDoubleTypeKind) {
+            codegen_error(codegen, expr->pos,
+                          "internal: checker recorded a non-float result type "
+                          "(%s) but codegen built a %s value -- compiler bug",
+                          type_to_string(result_type),
+                          result_kind == LLVMFloatTypeKind ? "float32" : "float64");
+            return NULL;
         }
     }
 
