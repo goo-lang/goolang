@@ -14,10 +14,22 @@
 //   float64(int)   -> SIToFP (7 -> 7.0, printed as "7" by %g)
 //   int(byte(200)) -> ZExt   (high bit SET: 200, NOT -56 — proves unsigned
 //                             source widens with ZExt, not SExt)
-//   int(int8(200)) -> SExt   (-56 — signed source widens with SExt; contrasts
-//                             the line above to show signedness drives the cast)
-//   int(byte(300)) -> Trunc  (300 & 0xFF = 44 — value-CHANGING narrowing; bits
-//                             are actually dropped, so a botched Trunc shows up)
+//   int(int8(s8))  -> SExt   (s8 := 200 runtime; -56 — signed source widens
+//                             with SExt; contrasts the line above to show
+//                             signedness drives the cast)
+//   int(byte(w))   -> Trunc  (w := 300 runtime; 300 & 0xFF = 44 —
+//                             value-CHANGING narrowing; bits are actually
+//                             dropped, so a botched Trunc shows up)
+//
+// NOTE (task 3b): the SExt and Trunc lines route their out-of-range values
+// through RUNTIME variables (`s8 := 200; int8(s8)`, `w := 300; byte(w)`)
+// rather than the original constant forms `int8(200)`/`byte(300)`, because
+// constant conversions now range-check (Go-conformant: `int8(200)` is a
+// compile error in Go too — see constconv-reject-probe). A runtime-value
+// conversion is legal truncation in Go and here, and exercises the exact
+// same SExt/ZExt/Trunc instructions this golden exists to lock — same
+// codegen, same output, no constant in checking range. `byte(200)` stays
+// constant form: 200 fits byte (max 255), so it never trips the check.
 package main
 
 import "fmt"
@@ -38,9 +50,15 @@ func main() {
 	fmt.Println(g) // 7
 
 	// Unsigned high-bit widening: ZExt vs SExt actually differ here.
+	// (200 fits byte, so the constant form is legal; the int8 line routes
+	// through a runtime variable — 200 overflows int8's constant range,
+	// and the constant form is a compile error now, as in Go.)
 	fmt.Println(int(byte(200))) // 200  (ZExt; SExt would print -56)
-	fmt.Println(int(int8(200))) // -56  (SExt; signed source)
+	s8 := 200
+	fmt.Println(int(int8(s8))) // -56  (SExt; signed source, runtime truncation)
 
-	// Value-dropping narrowing: 300 does not fit in a byte.
-	fmt.Println(int(byte(300))) // 44   (300 & 0xFF)
+	// Value-dropping narrowing: 300 does not fit in a byte — runtime
+	// variable for the same reason as s8 above.
+	w := 300
+	fmt.Println(int(byte(w))) // 44   (300 & 0xFF)
 }

@@ -34,6 +34,15 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
 static int is_untyped_float_rooted(ASTNode* n);
 static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* target,
                                         int negated);
+// Task 3b: the composite-value adaptation helper (defined below, near
+// type_check_struct_literal, its original #101 sink) is now ALSO the
+// element-value hook for slice literals (check_slice_elements), array
+// literals, and map literal values — all four sinks share the exact same
+// "adapt an untyped numeric-rooted value to the declared slot type, with
+// the task-3 range check" shape, so they share the one function instead of
+// growing four copies. Forward-declared because the element sinks appear
+// earlier in this file than the definition.
+static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* field_type, Type* vt);
 
 // Validate each element of a slice composite literal against the declared
 // element type. Returns 1 on success; emits a type_error and returns 0 on the
@@ -61,6 +70,17 @@ static int check_slice_elements(TypeChecker* checker, ASTNode* elements,
             e->node_type = want_elem;
         }
         Type* et = type_check_expression(checker, e);
+        if (!et) return 0;
+        // Task 3b: adapt an untyped numeric-rooted element to the declared
+        // element type BEFORE the compat checks below — carries the task-3
+        // range check, so `[]int8{300}` is rejected ("constant 300 overflows
+        // int8", Go-conformant) instead of silently truncating to 44 at
+        // codegen's width coercion. NULL means that rejection fired (error
+        // already emitted). A float-rooted element meeting an integer
+        // element type is deliberately NOT adapted (adapt_field_init_value's
+        // #100 asymmetry), so it still falls through to the explicit
+        // float->int rejection just below.
+        et = adapt_field_init_value(checker, e, want_elem, et);
         if (!et) return 0;
         // A float element in an integer slice would silently truncate
         // (`[]int{1, 2.5, 3}` -> 1 0 3) — type_compatible wrongly permits it
@@ -155,6 +175,13 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             size_t vi = 0;
             for (ASTNode* v = lit->values; v; v = v->next, vi++) {
                 Type* vt = type_check_expression(checker, v);
+                if (!vt) return NULL;
+                // Task 3b: same element adaptation + range check as the
+                // slice/array sinks — `map[string]int8{"a": 300}` rejects
+                // instead of silently truncating (keys are not adapted; the
+                // runtime map is string-keyed, so a numeric key never gets
+                // here).
+                vt = adapt_field_init_value(checker, v, want_val, vt);
                 if (!vt) return NULL;
                 if (!type_compatible(vt, want_val)) {
                     type_error(checker, v->pos,
@@ -282,6 +309,12 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 }
                 Type* et = type_check_expression(checker, value);
                 if (!et) return NULL;
+                // Task 3b: same element adaptation + range check as
+                // check_slice_elements — this loop is a separate path (keyed/
+                // sparse array support) but the identical one-hook shape, so
+                // `[2]int8{300, 5}` rejects like `[]int8{300}` does.
+                et = adapt_field_init_value(checker, value, want, et);
+                if (!et) return NULL;
                 if (!type_compatible(et, want)) {
                     type_error(checker, e->pos,
                                "array literal element at index %lld: cannot use "
@@ -331,10 +364,17 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 // type_compatible rejection below instead of silently truncating.
 //
 // Task 3: returns NULL (distinct from `vt`, which is never NULL when this
-// is called — both call sites already bailed on a NULL vt) when the
+// is called — every call site already bailed on a NULL vt) when the
 // adapter's range check rejects an out-of-range literal (e.g. `Q{N: 300}`,
 // N int8) — the type_error was already emitted by the adapter. Callers must
 // check for NULL and return NULL themselves.
+//
+// Task 3b: no longer struct-field-only — this is now the shared element
+// sink for slice literals (check_slice_elements), array literals, and map
+// literal values too (see the forward declaration's comment at the top of
+// this file). "field_type" reads as "declared slot type" at those call
+// sites; the semantics (including the #100 float->int asymmetry and the
+// task-3 range check) are identical for all four.
 static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* field_type, Type* vt) {
     if (!field_type || !type_is_numeric(field_type)) return vt;
     if (type_is_float(field_type)) {
@@ -851,6 +891,49 @@ static int check_literal_range(TypeChecker* checker, const LiteralNode* lit,
     type_error(checker, pos, "constant %s%s overflows %s",
                negated ? "-" : "", lit->value, type_to_string(target));
     return 0;
+}
+
+// Task 3b (review follow-up): range-check a CONSTANT conversion operand —
+// `int8(300)` must reject ("constant 300 overflows int8", Go-conformant)
+// while `int8(x)` (x a runtime value) stays legal truncation; that
+// asymmetry is the whole point, and it's why this walks the operand's AST
+// SHAPE instead of just asking for its type. Checked shapes: a bare
+// INT/FLOAT literal, or one under unary -/+ (negation threading identical
+// to adapt_untyped_int_operand's — flipped at MINUS, unchanged at PLUS).
+// A `^`-rooted operand is excluded per the task-3 deviation (Go folds `^`
+// on the constant; checking the raw literal under it would be wrong, not
+// just imprecise). Everything else — identifiers, calls, nested
+// conversions, index/selector expressions, and constant BINOPS like
+// `int8(0 - 5)` (the append_coerce/elem_coerce goldens' idiom; also
+// consistent with the task-3 "no constant folding" per-literal deviation
+// for `100 + 100`) — is deliberately not checked: runtime conversions
+// truncate legally, and folded expressions are out of this checker's
+// stamp-and-compute reach.
+//
+// CHECK-ONLY, no stamping: unlike the adapters, this never writes
+// node_type. Conversion codegen (call_codegen.c's codegen_numeric_convert)
+// evaluates the operand at its own stamped type and casts — re-stamping
+// the literal to the conversion target here would silently change which
+// codegen path emits the constant, for zero benefit (the conversion's
+// result type is already carried on the call node itself).
+static int check_conversion_operand_range(TypeChecker* checker, ASTNode* n,
+                                          Type* target, bool negated) {
+    if (!n || !target || !type_is_numeric(target)) return 1;
+    if (n->type == AST_LITERAL) {
+        LiteralNode* lit = (LiteralNode*)n;
+        if (lit->literal_type == TOKEN_INT || lit->literal_type == TOKEN_FLOAT)
+            return check_literal_range(checker, lit, target, negated, n->pos);
+        return 1; // char literal etc. — not range-checked here
+    }
+    if (n->type == AST_UNARY_EXPR) {
+        UnaryExprNode* u = (UnaryExprNode*)n;
+        if (u->operator == TOKEN_MINUS)
+            return check_conversion_operand_range(checker, u->operand, target, !negated);
+        if (u->operator == TOKEN_PLUS)
+            return check_conversion_operand_range(checker, u->operand, target, negated);
+        return 1; // `^`-rooted excluded (task-3 deviation); other unaries aren't constants
+    }
+    return 1; // runtime value / binop / nested conversion: legal truncation
 }
 
 // Retype an untyped-int-rooted operand — and, for a shift, the shift node and
@@ -1647,28 +1730,21 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                                type_to_string(src), func_ident->name);
                     return NULL;
                 }
-                // Task 3 finding (deliberately NOT wired — see the task-3
-                // report): Go itself rejects an out-of-range CONSTANT
-                // conversion (`int8(300)`, `byte(300)`) at compile time, and
-                // this call site is exactly where that check would hook
-                // (`call->args` here is the sole operand, already available
-                // to test with is_untyped_int_rooted/is_untyped_float_rooted
-                // and literal_fits_type). It is intentionally left
-                // unchecked: examples/conv_probe.goo's own documented
-                // coverage (`int(int8(200))` -> -56, `int(byte(300))` -> 44)
-                // deliberately exercises `int8(200)`/`byte(300)` as
-                // TRUNCATING constant conversions to prove SExt-vs-ZExt/
-                // Trunc codegen semantics — adding the range check here
-                // would turn that pre-existing, in-scope-golden-suite
-                // coverage into a compile error. Task 3's named files
-                // (expression_checker.c, type_checker.c, Makefile, and the
-                // three new reject-probe pairs) do not include conv_probe.goo,
-                // so this is recorded as a scoped follow-up rather than wired:
-                // a future task should either fold conv_probe.goo's two
-                // truncating lines into runtime-value conversions (`x :=
-                // 200; int8(x)`, which Go and this checker both already
-                // treat as legal truncation) and then wire this check, or
-                // add a dedicated reject probe once that migration lands.
+                // Task 3b: reject an out-of-range CONSTANT conversion
+                // (`int8(300)`, `byte(300)`, `float32(1e40)`) — Go-conformant
+                // — while a runtime-value conversion (`int8(x)`) stays legal
+                // truncation. This was the task-3 report's recorded deferral;
+                // wiring it required first migrating examples/conv_probe.goo's
+                // two deliberately-truncating constant-conversion lines
+                // (`int8(200)`, `byte(300)`) to runtime-variable form, which
+                // preserves their SExt/ZExt/Trunc codegen coverage (same
+                // instructions, same output) without tripping this check.
+                // See check_conversion_operand_range's doc comment for the
+                // exact checked shapes and the `^`/binop exclusions.
+                if (!check_conversion_operand_range(checker, call->args,
+                                                    conv_target, false)) {
+                    return NULL; // error already emitted
+                }
                 expr->node_type = conv_target;
                 return conv_target;
             }

@@ -36,4 +36,12 @@ func main() {
 	fmt.Println(int(f))
 	fmt.Println(g == float32(3.5))
 	fmt.Println(h == -0.25)
+	// Task 3b element sinks: boundary constants inside slice/array literals
+	// must be ACCEPTED too (the same negation-context rule applies — the
+	// -128 element is unary MINUS over raw literal 128). Out-of-range
+	// elements reject: see constelem-reject-probe.
+	t := []int8{127, -128}
+	fmt.Println(int(t[0]), int(t[1]))
+	u := [2]uint8{255, 0}
+	fmt.Println(int(u[0]), int(u[1]))
 }

@@ -1,0 +1,16 @@
+// constconv_reject (task 3b negative gate): a CONSTANT conversion whose
+// operand doesn't fit the conversion target must be REJECTED at compile
+// time, not silently truncated. Go itself rejects this ("constant 300
+// overflows int8") — a Go-CONFORMANT rejection. A RUNTIME-value conversion
+// (`x := 300; int8(x)`) stays legal truncation in both Go and Goo; that
+// asymmetry is the point of the check (see check_conversion_operand_range's
+// doc comment in expression_checker.c, and conv_probe.goo's runtime-variable
+// SExt/Trunc lines for the legal side). Before task 3b, `b := int8(300)`
+// compiled clean and printed 44. Guarded by the constconv-reject-probe
+// Makefile target.
+package main
+
+func main() {
+	b := int8(300)
+	_ = b
+}

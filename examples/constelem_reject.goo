@@ -1,0 +1,17 @@
+// constelem_reject (task 3b negative gate): a slice-literal element constant
+// that overflows the declared element type must be REJECTED at compile
+// time, not silently truncated. Go itself rejects this ("cannot use 300
+// (untyped int constant) as int8 value in array or slice literal
+// (overflows)") — a Go-CONFORMANT rejection. Before task 3b,
+// `t := []int8{300}` compiled clean and printed 44 (check_slice_elements
+// never adapted elements, so the range check never saw them; the array-
+// literal and map-literal-value sinks had the same gap and are hooked by
+// the same fix — see adapt_field_init_value's doc comment in
+// expression_checker.c). Guarded by the constelem-reject-probe Makefile
+// target.
+package main
+
+func main() {
+	t := []int8{300}
+	_ = t
+}
