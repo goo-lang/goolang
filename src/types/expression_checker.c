@@ -820,17 +820,42 @@ static bool float64_is_finite(double d) {
 // vacuously representable as 0), and otherwise fits iff v <= UINT_MAX(target).
 //
 // FLOAT literal: the text is likewise re-serialized (lexer bridge atof ->
-// double -> parser.y snprintf("%f")), so a float64-overflowing source
-// constant like 1e309 arrives as the TEXT "inf" (atof saturated it), which
-// strtod parses back to +inf with NO ERANGE — see float64_is_finite's doc
-// comment for why the finiteness of the parsed VALUE, not errno, is the
-// overflow signal for both float widths. `negated` is unused here (sign is
-// irrelevant to over/underflow). A float64 target fits iff the parsed
-// double is finite. A float32 target fits iff the value survives a (float)
-// narrowing cast finite — overflow produces +-inf, which is the rejection;
-// underflow-to-zero is NOT an error (Go permits a constant that rounds to
-// zero, only overflow rejects; underflow can't even produce ERANGE-shaped
-// text here, since %f prints a denormal as "0.000000").
+// double -> parser.y's shortest-round-tripping %g loop, task 1), so a
+// float64-overflowing source constant like 1e309 arrives as the TEXT "inf"
+// (atof saturated it), which strtod parses back to +inf with NO ERANGE —
+// see float64_is_finite's doc comment for why the finiteness of the parsed
+// VALUE, not errno, is the overflow signal for both float widths. A
+// float64 target fits iff the parsed double is finite. A float32 target
+// fits iff the value survives a (float) narrowing cast finite — overflow
+// produces +-inf, which is the rejection; underflow-to-zero is NOT an
+// error (Go permits a constant that rounds to zero, only overflow
+// rejects). `negated` is unused for the two float-target arms (sign is
+// irrelevant to over/underflow there).
+//
+// FLOAT literal into an INTEGER target (task 2, e.g. `int8(200.0)`): this
+// is the MAGNITUDE half of the check — does the value fit the target's
+// numeric range at all — kept here so "constant 200 overflows int8" uses
+// the same diagnostic (check_literal_range, below) as every other
+// overflow case. The separate INTEGRALITY half (`int(3.5)` — value fits
+// but has a fractional part) lives in check_literal_integral, called from
+// check_conversion_operand_range ONLY after this function accepts, so an
+// integral-but-overflowing value like 200.0 into int8 gets the overflow
+// message, never the truncation one (Go agrees — see that function's doc
+// comment for the ordering rationale). `negated` DOES matter here (unlike
+// the float-target arms above): the parsed magnitude is sign-applied
+// before the range comparison, mirroring the INT-literal arm above. Every
+// bound below is exactly double-representable except the default
+// (int64/uint64) case's magnitude limit, which is deliberately pinned at
+// +-2^63 (itself exact) rather than the true INT64_MAX (2^63-1, NOT
+// exactly representable — it rounds UP to 2^63 in a double, which would
+// wrongly admit one out-of-range value) — this is also the exact safety
+// margin check_literal_integral's `(long long)` truncation cast needs to
+// stay defined (UB outside +-2^63). For UINT64 this is narrower than the
+// type's true [0, UINT64_MAX] range (deliberately — same +-2^63 safety
+// margin, no wider cast available); a float constant in [2^63, UINT64_MAX]
+// is legal Go but is out of scope here, same documented-deviation shape as
+// the INT-literal pipeline's LLONG_MAX clamp (task-3 report). No probe
+// exercises that extreme.
 static bool literal_fits_type(const LiteralNode* lit, const Type* target, bool negated) {
     if (!lit || !target) return true; // defensive; callers only invoke on numeric targets
 
@@ -872,7 +897,38 @@ static bool literal_fits_type(const LiteralNode* lit, const Type* target, bool n
         // test covers both; strtod underflow returns a finite value and is
         // correctly accepted (Go allows constants that round to zero).
         if (target->kind == TYPE_FLOAT64) return float64_is_finite(v);
-        return true; // defensive; a float literal only ever meets a float target here
+        if (!type_is_integer(target)) return true; // defensive
+
+        // Task 2: FLOAT literal meeting an INTEGER conversion target — see
+        // this function's doc comment above for the magnitude-vs-
+        // integrality split and the +-2^63 bound rationale.
+        if (!float64_is_finite(v)) return false; // saturated "inf" fits no integer target
+        double signed_v = negated ? -v : v;
+        if (type_is_signed(target)) {
+            switch (target->kind) {
+                case TYPE_INT8:  return signed_v >= INT8_MIN  && signed_v <= INT8_MAX;
+                case TYPE_INT16: return signed_v >= INT16_MIN && signed_v <= INT16_MAX;
+                case TYPE_INT32: return signed_v >= INT32_MIN && signed_v <= INT32_MAX;
+                default: // int / int64 — exact +-2^63 bound (INT64_MAX itself
+                         // isn't exactly representable as a double; see the
+                         // doc comment above)
+                    return signed_v >= (double)INT64_MIN && signed_v < -(double)INT64_MIN;
+            }
+        }
+        // Any strictly negative value can't be unsigned. "-0.0" is fine but
+        // never reaches this return: IEEE -0.0 == 0.0, so `-0.0 < 0.0` is
+        // false and it falls through to the max comparisons below (contrast
+        // the INT-literal arm's `v == 0` check, whose integer negation has
+        // no signed zero to exploit).
+        if (signed_v < 0.0) return false;
+        switch (target->kind) {
+            case TYPE_UINT8:  return signed_v <= UINT8_MAX;
+            case TYPE_UINT16: return signed_v <= UINT16_MAX;
+            case TYPE_UINT32: return signed_v <= UINT32_MAX;
+            default: // uint / uint64 — deliberately narrower than the true
+                     // range; see the doc comment above
+                return signed_v < -(double)INT64_MIN;
+        }
     }
 
     return true; // other literal kinds (string/char/bool/nil) never reach this helper
@@ -890,6 +946,45 @@ static int check_literal_range(TypeChecker* checker, const LiteralNode* lit,
     if (literal_fits_type(lit, target, negated)) return 1;
     type_error(checker, pos, "constant %s%s overflows %s",
                negated ? "-" : "", lit->value, type_to_string(target));
+    return 0;
+}
+
+// Task 2 (float-literal-fidelity): does FLOAT literal `lit`'s value, under
+// `negated`, have no fractional part? Pure predicate, sibling to
+// literal_fits_type — that function's extended TOKEN_FLOAT-into-integer-
+// target arm is the MAGNITUDE half of "does this float constant convert to
+// this integer type"; this is the INTEGRALITY half.
+// check_conversion_operand_range (below) calls this ONLY after
+// literal_fits_type has already accepted, so the SIGN-APPLIED value is
+// always finite AND within [-2^63, 2^63) here (that function's doc comment
+// derives the bound) — which is exactly what makes the `(long long)`
+// truncation cast below well-defined (it's UB outside +-2^63). That's why
+// `negated` MUST be threaded in and applied before the cast even though
+// sign can't change whether a value is integral (-3.5 is exactly as
+// non-integral as 3.5): the fits check bounds the SIGN-APPLIED value, and
+// at the one asymmetric boundary — `int64(-9223372036854775808.0)`,
+// exactly INT64_MIN, which Go accepts — the raw MAGNITUDE is +2^63, one
+// past LLONG_MAX, so casting it un-negated would be UB (x86 cvttsd2si
+// saturates to LLONG_MAX, failing the round-trip compare and rejecting a
+// legal Go program). No <math.h> trunc()/floor() needed either, consistent
+// with this file's ccomp <math.h> avoidance (see float64_is_finite's doc
+// comment for why).
+static bool literal_is_integral(const LiteralNode* lit, bool negated) {
+    double v = strtod(lit->value, NULL);
+    double sv = negated ? -v : v;
+    return (double)(long long)sv == sv;
+}
+
+// Emits "constant <text> truncated to integer" (mirroring Go's own
+// rejection of e.g. `int(3.5)`; a `-` prefix on the literal text when
+// negated, matching check_literal_range's convention) and returns 0 when
+// literal_is_integral rejects; returns 1 (no error) when the value is
+// integral.
+static int check_literal_integral(TypeChecker* checker, const LiteralNode* lit,
+                                   bool negated, Position pos) {
+    if (literal_is_integral(lit, negated)) return 1;
+    type_error(checker, pos, "constant %s%s truncated to integer",
+               negated ? "-" : "", lit->value);
     return 0;
 }
 
@@ -916,13 +1011,41 @@ static int check_literal_range(TypeChecker* checker, const LiteralNode* lit,
 // the literal to the conversion target here would silently change which
 // codegen path emits the constant, for zero benefit (the conversion's
 // result type is already carried on the call node itself).
+//
+// Task 2 (float-literal-fidelity): a FLOAT literal converting to an
+// INTEGER target must additionally be INTEGRAL — `int(3.5)` rejects
+// ("constant 3.5 truncated to integer", Go-conformant) while `int(2.0)`
+// stays legal (integral value) and a runtime `int(x)` (x float) stays
+// legal truncation, same asymmetry as the overflow check above. ORDER
+// MATTERS: check_literal_range (overflow/magnitude) runs FIRST and
+// short-circuits on failure, so an integral-but-overflowing value like
+// `int8(200.0)` gets the OVERFLOW message, never the truncation one (Go
+// agrees) — and it's also what keeps check_literal_integral's `(long
+// long)` truncation cast safe (literal_fits_type's extended float arm
+// guarantees the SIGN-APPLIED value is within [-2^63, 2^63) by the time
+// integrality is tested — the predicate applies `negated` before casting
+// for exactly that reason; see both functions' doc comments).
+//
+// Rounding-boundary carve-out of the "Go-conformant" claim: integrality
+// is judged on the lexer-rounded double, not the source decimal. A
+// source-non-integral literal that ROUNDS to an integral double —
+// `int64(9007199254740993.5)` rounds to 9007199254740994.0 — is accepted
+// here where Go (arbitrary-precision constants) rejects it. Pre-existing
+// consequence of the atof-at-lex constant pipeline, shared by every
+// consumer of the literal text; recorded with the stamp-and-compute
+// deviation. An arbitrary-precision-constants task inherits this case.
 static int check_conversion_operand_range(TypeChecker* checker, ASTNode* n,
                                           Type* target, bool negated) {
     if (!n || !target || !type_is_numeric(target)) return 1;
     if (n->type == AST_LITERAL) {
         LiteralNode* lit = (LiteralNode*)n;
-        if (lit->literal_type == TOKEN_INT || lit->literal_type == TOKEN_FLOAT)
-            return check_literal_range(checker, lit, target, negated, n->pos);
+        if (lit->literal_type == TOKEN_INT || lit->literal_type == TOKEN_FLOAT) {
+            if (!check_literal_range(checker, lit, target, negated, n->pos))
+                return 0; // overflow — reported; ORDER: overflow before integrality
+            if (lit->literal_type == TOKEN_FLOAT && type_is_integer(target))
+                return check_literal_integral(checker, lit, negated, n->pos);
+            return 1;
+        }
         return 1; // char literal etc. — not range-checked here
     }
     if (n->type == AST_UNARY_EXPR) {

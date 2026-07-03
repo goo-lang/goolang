@@ -2384,8 +2384,21 @@ literal:
         $$ = (ASTNode*)lit;
     }
     | FLOAT_LITERAL {
-        char float_str[64];
-        snprintf(float_str, sizeof(float_str), "%f", $1);
+        /* Shortest text that round-trips to the lexed double: try increasing
+           precision until strtod(text) == value. %.17g always round-trips
+           IEEE-754 double (so the loop terminates); shorter wins for
+           diagnostics ("0.3", "1e+70", "3.5") and keeps LiteralNode.value
+           VALUE-exact for the checker's range checks and codegen's strtod.
+           Replaces the old "%f" (6 fractional digits, 64-char cap) which
+           corrupted any literal needing more precision — 1e70 > 1e69
+           computed false. Over-range literals still arrive here as inf
+           (lexer atof saturation) and format as "inf"/"-inf"; the checker's
+           finiteness rejection (float64_is_finite) owns that case. */
+        char float_str[32];
+        for (int prec = 15; prec <= 17; prec++) {
+            snprintf(float_str, sizeof(float_str), "%.*g", prec, $1);
+            if (strtod(float_str, NULL) == $1) break;
+        }
         LiteralNode* lit = ast_literal_new(TOKEN_FLOAT, float_str, get_current_position());
         $$ = (ASTNode*)lit;
     }

@@ -44,4 +44,13 @@ func main() {
 	fmt.Println(int(t[0]), int(t[1]))
 	u := [2]uint8{255, 0}
 	fmt.Println(int(u[0]), int(u[1]))
+	// Task 2 (float-literal-fidelity): an INTEGRAL float constant converts
+	// cleanly to an integer type — `int(2.0)` and `int32(-4.0)` are both
+	// legal Go (go run: 2, -4). The non-integral reject side (`int(3.5)`)
+	// lives in examples/consttrunc_reject.goo; the overflow-before-
+	// integrality ordering (`int8(200.0)`) is a recorded cross-check, not a
+	// golden line, since it's a rejection.
+	i := int(2.0)
+	j := int32(-4.0)
+	fmt.Println(i, int(j))
 }

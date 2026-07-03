@@ -1,0 +1,19 @@
+// consttrunc_reject (task 2, float-literal-fidelity): a CONSTANT integer
+// conversion whose float operand is NOT integral must be REJECTED at
+// compile time, not silently truncated. Go itself rejects this ("constant
+// 3.5 truncated to integer") — a Go-CONFORMANT rejection. An INTEGRAL float
+// constant (`int(2.0)`, `int32(-4.0)`) stays legal — see
+// examples/const_range_probe.goo's Task 2 lines — and a RUNTIME-value
+// conversion (`x := 3.5; int(x)`) stays legal truncation in both Go and
+// Goo; that asymmetry is the point of the check (see
+// check_conversion_operand_range's doc comment in expression_checker.c).
+// Before task 2, `a := int(3.5)` compiled clean and printed 3. Guarded by
+// the consttrunc-reject-probe Makefile target.
+package main
+
+import "fmt"
+
+func main() {
+	a := int(3.5)
+	fmt.Println(a)
+}
