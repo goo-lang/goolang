@@ -1028,27 +1028,28 @@ charlit-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 #     shadows the predeclared type, so `int(5)` must CALL the function (prints
 #     105), NOT convert (would print 5). A regression to name-only gating in
 #     codegen — the exact bug 6d69e2a fixed — fails here.
-#  2. Clean rejection of unsupported `string`/`bool` conversions (plan F2 Step 3
-#     "reject cleanly if unsupported"): a single conversion-specific diagnostic
-#     ("cannot convert ... only numeric conversions are supported in v1"), NOT
-#     the misleading "Undefined variable 'string'" cascade, and never an invalid
-#     IR reaching the LLVM verifier.
+#  2. `string(byte(66))` NOW CONVERTS (Task 2, port unblocker): Go-conformant
+#     rune/byte->string conversion shipped, superseding the old "string/bool
+#     both cleanly rejected" assumption this sub-check used to encode. `bool`
+#     stays unsupported and is still exercised as the clean-rejection
+#     exemplar below (single conversion-specific diagnostic, "cannot convert
+#     ... only numeric conversions are supported in v1", NOT the misleading
+#     "Undefined variable 'bool'" cascade, never invalid IR reaching the LLVM
+#     verifier).
 #  3. No over-rejection: a plain numeric conversion still compiles + runs.
 conv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== conv-reject-probe: T(x) shadowing soundness + clean rejection ==="
 	@printf 'package main\nimport "fmt"\nfunc int(n int) int { return n + 100 }\nfunc main(){ fmt.Println(int(5)) }\n' > build/cr_shadow.goo
-	@printf 'package main\nfunc main(){ _ = string(byte(66)) }\n' > build/cr_string.goo
+	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(string(byte(66))) }\n' > build/cr_string.goo
 	@printf 'package main\nfunc main(){ _ = bool(1) }\n' > build/cr_bool.goo
 	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(int(byte(200))) }\n' > build/cr_numok.goo
 	@"$(COMPILER)" build/cr_shadow.goo -o build/cr_shadow.out 2>build/cr_shadow.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "conv-reject-probe: FAIL (user 'func int' + int(5) wrongly rejected)"; cat build/cr_shadow.err; exit 1; fi; \
 	  out="$$(./build/cr_shadow.out)"; if [ "$$out" != "105" ]; then echo "conv-reject-probe: FAIL (shadowing soundness: int(5) printed '$$out' != 105 — gate regressed to name-only, converting instead of calling the user func)"; exit 1; fi
 	@"$(COMPILER)" build/cr_string.goo -o build/cr_string.out 2>build/cr_string.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "conv-reject-probe: FAIL (string(b) compiled — unsupported conversion not rejected)"; exit 1; fi; \
-	  if grep -qiE "Module verification failed|LLVM ERROR" build/cr_string.err; then echo "conv-reject-probe: FAIL (invalid IR reached verifier for string(b))"; cat build/cr_string.err; exit 1; fi; \
-	  if grep -qiE "Undefined variable" build/cr_string.err; then echo "conv-reject-probe: FAIL (string(b) gave misleading 'Undefined variable' cascade, not a clean conversion diagnostic)"; cat build/cr_string.err; exit 1; fi; \
-	  if ! grep -qiE "cannot convert to string" build/cr_string.err; then echo "conv-reject-probe: FAIL (no clean 'cannot convert to string' diagnostic)"; cat build/cr_string.err; exit 1; fi
+	  if [ $$rc -ne 0 ]; then echo "conv-reject-probe: FAIL (string(byte(66)) wrongly rejected — Task 2 shipped rune/byte->string conversion)"; cat build/cr_string.err; exit 1; fi; \
+	  out="$$(./build/cr_string.out)"; if [ "$$out" != "B" ]; then echo "conv-reject-probe: FAIL (string(byte(66)) printed '$$out' != B)"; exit 1; fi
 	@"$(COMPILER)" build/cr_bool.goo -o build/cr_bool.out 2>build/cr_bool.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "conv-reject-probe: FAIL (bool(1) compiled — unsupported conversion not rejected)"; exit 1; fi; \
 	  if grep -qiE "Undefined variable" build/cr_bool.err; then echo "conv-reject-probe: FAIL (bool(1) gave misleading 'Undefined variable', not a clean conversion diagnostic)"; cat build/cr_bool.err; exit 1; fi; \
@@ -1621,6 +1622,28 @@ cwd-link-probe: $(COMPILER) $(RUNTIME_LIB)
 	  rc=$$?; if [ $$rc -ne 0 ]; then echo "cwd-link-probe: FAIL (compile/link rc=$$rc)"; cat /tmp/cwd_link_probe.err; exit 1; fi
 	@out=$$(/tmp/cwd_link_probe.out); if [ "$$out" = "7" ]; then echo "cwd-link-probe: PASS"; else echo "cwd-link-probe: FAIL (got '$$out' want 7)"; exit 1; fi
 
+# port-unblockers #1: goostd resolution (GOOROOT) must be cwd-independent
+# too, not just the runtime archive (cwd-link-probe covers that half).
+# Compiled+run from build/oot (cwd != repo root) with an `import "strings"`
+# program: pass 1 unsets GOOROOT so resolution must fall through to the
+# dev-tree exe-relative branch (<exe-dir>/../goostd, mirroring how
+# cwd-link-probe's binary resolves lib/libgoo_runtime.a); pass 2 pins
+# GOOROOT explicitly to the repo root (the directory containing goostd/)
+# to prove the env-var override in goo_gooroot_dir()'s precedence works
+# standalone. See src/package/import_resolver.c: goo_gooroot_dir().
+outoftree-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build/oot
+	@echo "=== outoftree-probe: goostd (import \"strings\") resolves from a non-repo-root cwd ==="
+	@printf 'package main\n\nimport "fmt"\nimport "strings"\n\nfunc main() {\n\tparts := strings.Split("a,b,c", ",")\n\tfmt.Println(len(parts))\n}\n' > build/oot/prog.goo
+	@echo "--- pass 1: dev-tree exe-relative resolution (no GOOROOT) ---"
+	@cd build/oot && GOOROOT="" "$(abspath $(COMPILER))" prog.goo -o prog.out 2>"$(CURDIR)/build/oot/prog.err"; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "outoftree-probe: FAIL (exe-relative compile rc=$$rc)"; cat "$(CURDIR)/build/oot/prog.err"; exit 1; fi
+	@out=$$(build/oot/prog.out); if [ "$$out" = "3" ]; then echo "outoftree-probe: PASS (exe-relative)"; else echo "outoftree-probe: FAIL (exe-relative got '$$out' want 3)"; exit 1; fi
+	@echo "--- pass 2: GOOROOT env override (set to repo root) ---"
+	@cd build/oot && GOOROOT="$(CURDIR)" "$(abspath $(COMPILER))" prog.goo -o prog_env.out 2>"$(CURDIR)/build/oot/prog_env.err"; \
+	  rc=$$?; if [ $$rc -ne 0 ]; then echo "outoftree-probe: FAIL (GOOROOT-env compile rc=$$rc)"; cat "$(CURDIR)/build/oot/prog_env.err"; exit 1; fi
+	@out=$$(build/oot/prog_env.out); if [ "$$out" = "3" ]; then echo "outoftree-probe: PASS (GOOROOT env)"; else echo "outoftree-probe: FAIL (GOOROOT env got '$$out' want 3)"; exit 1; fi
+
 # M12 stdlib-breadth probe: compile + run examples/m12_probe.goo and
 # diff stdout against expected.txt (m10-probe pattern). Each
 # M12-stdlib-* child appends a numbered section + expected lines in
@@ -1636,6 +1659,25 @@ m12-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "m12-probe: FAIL (see diff above)"; \
 	  exit 1; \
 	fi
+
+# Task 4: os.Args probe — dual-harness (see examples/osargs_probe.goo header).
+# The golden suite (test-golden) already runs this same binary with NO
+# args and asserts "true" (argv[0] always present). This target covers
+# what a golden diff can't: scripts/run_golden.sh never passes args to
+# the binary it runs, so the len(os.Args) > 1 branch (len==3 + Args[1]
+# echo) needs a direct run with args, asserted here.
+osargs-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	$(COMPILER) -o build/osargs_probe examples/osargs_probe.goo
+	@actual=$$(./build/osargs_probe alpha beta); \
+	expected=$$(printf 'true\n3\nalpha'); \
+	if [ "$$actual" != "$$expected" ]; then \
+	  echo "osargs-probe: FAIL (with-args run)"; \
+	  echo "  expected: $$expected"; \
+	  echo "  actual:   $$actual"; \
+	  exit 1; \
+	fi; \
+	echo "osargs-probe: PASS (os.Args end-to-end, with args)"
 
 # Methods probe: compile + run examples/methods_probe.goo and diff
 # stdout against expected.txt (m10-probe pattern). Covers value-receiver
@@ -1693,7 +1735,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcsig-reject-probe loopcapture-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

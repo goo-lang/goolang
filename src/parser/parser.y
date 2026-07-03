@@ -192,12 +192,25 @@ static ASTNode* g_func_signature_result = NULL;
 // Binary operator precedence matches Go exactly (go.dev/ref/spec#Operator_precedence),
 // lowest to highest. Getting this right is a hard requirement for compiling real
 // Go source: e.g. `x & m << 8` is `(x & m) << 8` and `1<<32 - 1` is (1<<32)-1.
+//
+// ARROW sits BELOW all of Go's binary operators (looser than ||), so a channel
+// send's RHS absorbs the full expression: `ch <- n + 22` sends n+22, not
+// `(ch <- n) + 22`. Declared here (not at :199-ish, above PLUS/MULTIPLY) is
+// deliberate — bison's rule precedence for `expression ARROW expression`
+// defaults to ARROW's own level, and comparing that against a lookahead
+// operator's level is what decides shift-vs-reduce at the send boundary. The
+// unary receive prefix (`ARROW unary_expr`, <-ch) is unaffected by this
+// position: its reduce is either a forced $default (no competing shift
+// exists in that state) or a reduce/reduce tie broken by rule declaration
+// order against `expression: unary_expr`, never by ARROW's precedence value
+// (bison never uses precedence to resolve reduce/reduce). Verified via
+// bison -v state inspection (see task-5 report) before moving this line.
+%left ARROW                                   // <-   (send: loosest binary op — looser than ||)
 %left OR                                      // ||   (prec 1)
 %left AND                                     // &&   (prec 2)
 %left EQ NE LT LE GT GE                       // == != < <= > >=  (prec 3)
 %left PLUS MINUS BIT_OR BIT_XOR               // + - | ^  (prec 4)
 %left MULTIPLY DIVIDE MODULO LSHIFT RSHIFT BIT_AND AND_NOT  // * / % << >> & &^  (prec 5)
-%left ARROW  // Channel operations
 %right NOT BIT_NOT BANG  // Unary operators
 %right INCREMENT DECREMENT  // Postfix
 %left DOT LBRACKET LPAREN  // Member access, indexing, function calls

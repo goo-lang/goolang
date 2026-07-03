@@ -21,15 +21,29 @@ static char* str_dup(const char* str) {
     return dup;
 }
 
-// Mirrors goo_runtime_archive_path()'s precedence (src/codegen/codegen.c):
-// env var -> exe-relative (via /proc/self/exe on Linux) -> cwd-relative
-// fallback. Here the target is a directory (GOOROOT), not a single
-// archive file, so the fallback stays a bare relative path ("./goostd")
-// rather than a repo-root-relative one.
+// Mirrors goo_runtime_archive_path()'s precedence (src/codegen/codegen.c),
+// with one extra tier: env var -> exe-relative installed layout -> exe-
+// relative dev-tree layout -> cwd-relative fallback. Here the target is a
+// directory (GOOROOT), not a single archive file, so the fallback stays a
+// bare relative path ("./goostd") rather than a repo-root-relative one.
+//
+// GOOROOT semantics: the directory CONTAINING goostd/ (i.e. GOOROOT/goostd
+// must exist) — either the repo root in a dev checkout or the install
+// prefix's lib/ dir, never goostd itself. The two exe-relative tiers below
+// exist because the archive's installed layout (<exe-dir>/../lib/) and the
+// dev tree's layout (<exe-dir>/../, i.e. repo root, since bin/ and goostd/
+// are siblings there — unlike lib/, goostd was never nested under lib/ in
+// the dev tree) don't coincide, so a plain `bin/goo` built from a fresh
+// checkout couldn't find ../lib/goostd and fell back to cwd, breaking any
+// invocation outside the repo root.
 const char* goo_gooroot_dir(void) {
     static char buf[4096];
     const char* env = getenv("GOOROOT");
-    if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s", env); return buf; }
+    // GOOROOT is the goostd PARENT (see contract above); every tier here
+    // returns the goostd directory itself, since resolve_import() joins the
+    // return value directly with the import path ("%s/%s") without an
+    // extra "goostd" segment — so the env branch must append it too.
+    if (env && env[0] != '\0') { snprintf(buf, sizeof(buf), "%s/goostd", env); return buf; }
 #ifdef __linux__
     char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
@@ -38,9 +52,11 @@ const char* goo_gooroot_dir(void) {
         char* slash = strrchr(exe, '/');        // dir-of-exe
         if (slash) {
             *slash = '\0';
-            snprintf(buf, sizeof(buf), "%s/../lib/goostd", exe);
             struct stat st;
-            if (stat(buf, &st) == 0) return buf; // exists relative to the binary
+            snprintf(buf, sizeof(buf), "%s/../lib/goostd", exe);
+            if (stat(buf, &st) == 0) return buf; // installed layout: <exe-dir>/../lib/goostd
+            snprintf(buf, sizeof(buf), "%s/../goostd", exe);
+            if (stat(buf, &st) == 0) return buf; // dev-tree layout: <exe-dir>/../goostd (repo root)
         }
     }
 #endif

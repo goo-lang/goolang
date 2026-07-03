@@ -1,0 +1,30 @@
+// sendexpr_probe: ARROW precedence — a channel send's RHS absorbs the full
+// binary expression (loosest of the binary operators), matching Go exactly:
+// `ch <- n + 22` sends n+22, not `(ch <- n) + 22`. Covers +, *, a comparison
+// as send RHS, and the receive-in-arithmetic guard shape (`10 + <-ch()`)
+// that must keep binding tightly (unary receive is unaffected by the ARROW
+// %left move — see parser.y comment above the precedence block).
+package main
+
+import "fmt"
+
+func makeCh32() chan int {
+	c := make(chan int, 1)
+	c <- 32
+	return c
+}
+
+func main() {
+	ch := make(chan int, 2)
+	n := 20
+	ch <- n + 22
+	ch <- n * 2
+	a := <-ch
+	b := <-ch
+	fmt.Println(a)
+	fmt.Println(b)
+	c2 := make(chan bool, 1)
+	c2 <- n > 10
+	fmt.Println(<-c2)
+	fmt.Println(10 + <-makeCh32())
+}

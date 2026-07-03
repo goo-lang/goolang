@@ -357,6 +357,55 @@ goo_string_t goo_bool_to_string(int value) {
     goo_string_t s; s.data = data; s.length = n; return s;
 }
 
+// UTF-8-encode a single Unicode code point into buf (which must have room for
+// at least 4 bytes). Returns the byte width written (1-4). Mirrors Go's
+// utf8.EncodeRune, and is the inverse of goo_utf8_decode above. An invalid
+// code point — negative, a UTF-16 surrogate half (D800-DFFF, which can never
+// be a real Unicode scalar value), or beyond the max code point 10FFFF — is
+// replaced with U+FFFD (the Unicode replacement character), matching Go's
+// string(rune) behavior for an out-of-range conversion.
+static int goo_utf8_encode_rune(int32_t r, unsigned char buf[4]) {
+    uint32_t cp = (uint32_t)r;
+    if (r < 0 || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
+        cp = 0xFFFD;
+    }
+    if (cp <= 0x7F) {
+        buf[0] = (unsigned char)cp;
+        return 1;
+    }
+    if (cp <= 0x7FF) {
+        buf[0] = (unsigned char)(0xC0 | (cp >> 6));
+        buf[1] = (unsigned char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp <= 0xFFFF) {
+        buf[0] = (unsigned char)(0xE0 | (cp >> 12));
+        buf[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (unsigned char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    buf[0] = (unsigned char)(0xF0 | (cp >> 18));
+    buf[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+    buf[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+    buf[3] = (unsigned char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+// goo_string_t goo_string_from_rune(int32_t r): backs the `string(rune)` /
+// `string(byte)` conversion (Go: converting any integer type to string
+// yields the UTF-8 encoding of that value's Unicode code point — see
+// goo_utf8_encode_rune's doc comment for the invalid-code-point rule).
+// Allocates and returns by the SAME by-value {ptr,len} convention as
+// goo_string_new/goo_string_new_with_length above (mirrored exactly, not
+// reinvented — this 16-byte struct is the proven precedent for the C-ABI
+// struct-return boundary codegen crosses for every string-producing runtime
+// call, e.g. goo_int_to_string).
+goo_string_t goo_string_from_rune(int32_t r) {
+    unsigned char buf[4];
+    int n = goo_utf8_encode_rune(r, buf);
+    return goo_string_new_with_length((const char*)buf, (size_t)n);
+}
+
 // P1-1: byte-wise string value equality for `==`/`!=`. Two strings are equal
 // iff they have the same length and the same bytes. A nil/empty data pointer
 // is treated as the empty string, so "" == "" and nil == "" are equal.
@@ -411,6 +460,45 @@ goo_string_t goo_os_getenv(const char* name) {
     // Go's Getenv contract: unset (and NULL-name) yields "".
     const char* v = name ? getenv(name) : NULL;
     return goo_string_new(v ? v : "");
+}
+
+// os.Args: raw argc/argv, captured once by the generated executable's
+// entry point (function_codegen.c's is_entry_main prologue — the only
+// caller). Deliberately independent of the `goo_runtime` struct/goo_init
+// above: goo_init is declared but never called from codegen today (see
+// the comment at its call site), so piggy-backing on it would leave
+// os.Args silently empty until that changes.
+static struct {
+    int argc;
+    char** argv;
+} goo_os_args_raw = {0, NULL};
+
+void goo_os_args_init(int argc, char** argv) {
+    goo_os_args_raw.argc = argc;
+    goo_os_args_raw.argv = argv;
+}
+
+void goo_os_args(goo_slice_t* out) {
+    if (!out) return;
+    // Cached on first read: argv's backing storage is stable for the
+    // process lifetime (the OS/libc owns it), so the []string built from
+    // it needs building only once.
+    static goo_string_t* built = NULL;
+    static size_t built_count = 0;
+    static int built_done = 0;
+    if (!built_done) {
+        size_t count = goo_os_args_raw.argc > 0 ? (size_t)goo_os_args_raw.argc : 0;
+        if (count > 0) {
+            built = goo_alloc(sizeof(goo_string_t) * count);
+            for (size_t i = 0; i < count; i++) {
+                const char* a = goo_os_args_raw.argv[i];
+                built[i] = goo_string_new(a ? a : "");
+            }
+        }
+        built_count = count;
+        built_done = 1;
+    }
+    *out = (goo_slice_t){built, built_count, built_count};
 }
 
 void goo_strings_split(goo_slice_t* out, const char* s, const char* sep) {

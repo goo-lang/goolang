@@ -311,6 +311,19 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_os_getenv", string_type, params, 1);
     }
 
+    // void goo_os_args_init(int argc, char** argv) — called once from the
+    // generated executable's entry (is_entry_main prologue, function_codegen.c).
+    {
+        LLVMTypeRef params[] = { i32_type, LLVMPointerType(ptr_type, 0) };
+        add_runtime_function(codegen, "goo_os_args_init", void_type, params, 2);
+    }
+    // void goo_os_args(goo_slice_t* out) — os.Args ([]string); by-pointer
+    // result, same ABI note as goo_strings_split above.
+    {
+        LLVMTypeRef params[] = { LLVMPointerType(slice_type, 0) };
+        add_runtime_function(codegen, "goo_os_args", void_type, params, 1);
+    }
+
     // double goo_math_sqrt/abs(double), goo_math_pow/min/max(double, double)
     {
         LLVMTypeRef dbl = LLVMDoubleTypeInContext(codegen->context);

@@ -636,6 +636,31 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
                                          FuncDeclNode* func_decl, Type* return_type);
 
 #if LLVM_AVAILABLE
+// os.Args (Task 4): the Goo entry `main` IS the process's actual C entry
+// point — the OS/libc hands argc/argv to whatever function is linked as
+// `main`, independent of what Goo's `func main()` source declares (always
+// zero params). Two extra LLVM-level params are appended past the Goo
+// surface's own param_count to receive them; they are never bound as Goo
+// locals — the body's parameter-binding loop below walks func_decl->params,
+// which is empty for main, so it never touches these two. is_entry_main's
+// prologue (codegen_generate_function_decl) reads them straight off the
+// LLVM function via LLVMGetParam and passes them to goo_os_args_init.
+// A single helper keeps the predeclare pass and the real definition
+// (which must agree byte-for-byte or LLVMGetNamedFunction's reuse below
+// would silently keep the WRONG, param-less prototype) from drifting.
+static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
+                                                      LLVMTypeRef* param_types,
+                                                      int* param_count) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+    LLVMTypeRef argv_ty = LLVMPointerType(
+        LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0), 0);
+    param_types = realloc(param_types, sizeof(LLVMTypeRef) * (size_t)(*param_count + 2));
+    param_types[*param_count]     = i32;
+    param_types[*param_count + 1] = argv_ty;
+    *param_count += 2;
+    return param_types;
+}
+
 // Prototype pre-pass (forward-reference support): declare a plain function's
 // LLVM prototype in the module BEFORE any body is emitted, so a call to a
 // function defined later in the file/package resolves — call sites look the
@@ -710,6 +735,9 @@ static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* chec
                 param_types[i] = codegen_type_to_llvm(
                     codegen, func_var->type->data.function.param_types[i]);
             }
+        }
+        if (is_entry_main) {
+            param_types = codegen_append_entry_main_params(codegen, param_types, &param_count);
         }
         if (llvm_return_type) {
             LLVMTypeRef function_type =
@@ -835,7 +863,11 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             }
         }
     }
-    
+
+    if (is_entry_main) {
+        param_types = codegen_append_entry_main_params(codegen, param_types, &param_count);
+    }
+
     LLVMTypeRef function_type = LLVMFunctionType(llvm_return_type, param_types, param_count, 0);
 
     // Create the function (mangled symbol for non-main packages; bare for main),
@@ -891,17 +923,32 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
 
+    // os.Args (Task 4): stash the OS-provided argc/argv — read straight off
+    // main's two synthetic LLVM params (codegen_append_entry_main_params
+    // above; never Goo locals) — before ANY user or global-init code runs,
+    // so os.Args is available even from a global initializer. This is now
+    // the first instruction in main's body; global-init (next) runs after it.
+    if (is_entry_main) {
+        LLVMValueRef args_init_fn = LLVMGetNamedFunction(codegen->module, "goo_os_args_init");
+        if (args_init_fn) {
+            LLVMValueRef argc_param = LLVMGetParam(function, (unsigned)(param_count - 2));
+            LLVMValueRef argv_param = LLVMGetParam(function, (unsigned)(param_count - 1));
+            LLVMValueRef init_args[] = { argc_param, argv_param };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(args_init_fn),
+                           args_init_fn, init_args, 2, "");
+        }
+    }
+
     // Task 2 / var-init cluster: evaluate deferred (non-constant) global
-    // initializers before any user code runs — must be main's very FIRST
-    // instruction, ahead of the escape pre-pass below (which emits no IR,
-    // so ordering against it doesn't matter) and everything else. The
-    // symbol only exists if codegen_generate_program's pre-pass
-    // (codegen_program_needs_global_init) found a deferrable global
-    // initializer anywhere in the program — main's own prologue never
-    // creates it, only looks it up, so a program with no such initializer
-    // emits no call and no goo.global_init at all. There is no other
-    // runtime-init call at main entry today to order against (goo_init in
-    // runtime_integration.c is declared but never called from codegen).
+    // initializers before any user code runs — must run ahead of the escape
+    // pre-pass below (which emits no IR, so ordering against it doesn't
+    // matter) and everything else user-authored. The symbol only exists if
+    // codegen_generate_program's pre-pass (codegen_program_needs_global_init)
+    // found a deferrable global initializer anywhere in the program — main's
+    // own prologue never creates it, only looks it up, so a program with no
+    // such initializer emits no call and no goo.global_init at all. (goo_init
+    // in runtime_integration.c is a separate, still-unrelated symbol: it is
+    // declared but never called from codegen.)
     if (is_entry_main) {
         LLVMValueRef global_init_fn = LLVMGetNamedFunction(codegen->module, "goo.global_init");
         if (global_init_fn) {

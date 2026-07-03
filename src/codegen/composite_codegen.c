@@ -347,6 +347,29 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
             return value_info_new(NULL, pi,
                                   type_checker_get_builtin(checker, TYPE_FLOAT64));
         }
+        if (strcmp(pkg->name, "os") == 0 && strcmp(selector->selector, "Args") == 0) {
+            // os.Args ([]string): the slice header is >16 bytes (SysV MEMORY
+            // class, m12/ABI rule), so it can't cross the codegen<->C
+            // boundary by value — mirrors strings.Split's goo_slice_t* out
+            // pattern (call_codegen.c): spill an entry-block alloca, call
+            // goo_os_args(&out), then load the populated header.
+            Type* args_type = expr->node_type;
+            if (!args_type || args_type->kind != TYPE_SLICE) {
+                codegen_error(codegen, expr->pos, "os.Args: expected []string result");
+                return NULL;
+            }
+            LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_os_args");
+            if (!fn) {
+                codegen_error(codegen, expr->pos, "goo_os_args not found in module");
+                return NULL;
+            }
+            LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, args_type);
+            LLVMValueRef out = codegen_create_entry_alloca(codegen, slice_llvm, "os_args_out");
+            LLVMValueRef call_args[] = { out };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, call_args, 1, "");
+            LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, out, "os_args_slice");
+            return value_info_new(NULL, slice_val, args_type);
+        }
     }
 
     // Generate code for the base expression

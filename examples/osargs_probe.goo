@@ -1,0 +1,30 @@
+// os.Args probe — dual-harness design.
+//
+// Harness 1 — golden (scripts/run_golden.sh / `make test-golden`, joined
+// into `make verify`): runs the compiled binary with NO extra arguments.
+// argv[0] (the executable path) is always present for a real process, so
+// `len(os.Args) >= 1` is always true — the ONLY line that run produces,
+// matching osargs_probe.expected.txt exactly.
+//
+// Harness 2 — Makefile `osargs-probe`: runs the SAME binary with two
+// extra args ("alpha" "beta"), so len(os.Args) == 3. That exercises the
+// len>1 branch below, printing the length and Args[1] as two additional
+// lines the Makefile target asserts directly — a plain golden diff can't
+// cover this case, since the golden harness never passes args to the
+// binary it runs (scripts/run_golden.sh).
+//
+// Go conformance: `go run osargs_probe.go` (renamed copy) with and
+// without "alpha beta" produces byte-identical output to this program,
+// confirmed by hand during Task 4 (os.Args) development.
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+	fmt.Println(len(os.Args) >= 1)
+	if len(os.Args) > 1 {
+		fmt.Println(len(os.Args))
+		fmt.Println(os.Args[1])
+	}
+}

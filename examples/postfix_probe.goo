@@ -1,0 +1,30 @@
+// postfix_probe: selector and index lvalues as postfix ++/-- operands
+// (`c.n++`, `a[i]++`, `a[i]--`), plus a plain-identifier-field target
+// mutated across loop iterations. Before this fix these forms were
+// rejected at codegen ("postfix ++/-- requires a simple identifier");
+// the fix routes them through the same lvalue-address machinery
+// assignment (`c.n = v`, `a[i] = v`) already uses.
+package main
+
+import "fmt"
+
+type C struct {
+	n int
+}
+
+func main() {
+	c := C{n: 40}
+	c.n++
+	c.n++
+	fmt.Println(c.n)
+	a := []int{1, 2, 3}
+	a[1]++
+	fmt.Println(a[1])
+	a[0]--
+	fmt.Println(a[0])
+	m := C{n: 0}
+	for i := 0; i < 3; i = i + 1 {
+		m.n++
+	}
+	fmt.Println(m.n)
+}
