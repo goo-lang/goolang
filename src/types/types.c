@@ -625,7 +625,23 @@ int type_equals(const Type* a, const Type* b) {
                     return 0;
             }
             return 1;
-        
+
+        case TYPE_FUNCTION:
+            // Signature equality: same arity, each param type, return type,
+            // and variadic flag. Without this arm the switch's default (any
+            // two same-kind types are equal) made every func value type
+            // compatible with every other, e.g. `func(int) int` accepted
+            // where `func(string) bool` was expected.
+            if (a->data.function.is_variadic != b->data.function.is_variadic)
+                return 0;
+            if (a->data.function.param_count != b->data.function.param_count)
+                return 0;
+            for (size_t i = 0; i < a->data.function.param_count; i++) {
+                if (!type_equals(a->data.function.param_types[i], b->data.function.param_types[i]))
+                    return 0;
+            }
+            return type_equals(a->data.function.return_type, b->data.function.return_type);
+
         default:
             return 1;  // Basic types are equal if kinds match
     }
