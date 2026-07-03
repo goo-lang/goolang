@@ -299,6 +299,16 @@ typedef struct {
     // mid-list field insertion would shift every field after it and silently
     // miscompile any translation unit rebuilt without `make clean`.
     int is_variadic_param;
+    // Closures Task 2: set by the checker (expression_checker.c's
+    // type_check_identifier, via type_checker_record_capture) when a nested
+    // func literal reads or writes this declaration. Codegen's promotion
+    // pass (function_codegen.c) reads this at the var-decl alloca / param-
+    // binding site to allocate the slot on the heap (goo_alloc) instead of
+    // the stack, so every capturing closure's env can hold a pointer to it
+    // that outlives this declaration's own frame. Appended at the STRUCT
+    // TAIL per the no-header-deps convention (see :123-133) — same rule
+    // is_variadic_param documents above.
+    int is_captured;
 } VarDeclNode;
 
 // Constant declaration
@@ -575,6 +585,23 @@ typedef struct {
     struct ASTNode* params;
     struct ASTNode* return_type;
     struct ASTNode* body;
+    // Closures Task 2: names captured from an enclosing function/literal, in
+    // FIRST-CAPTURED order — set by the checker (expression_checker.c's
+    // type_checker_record_capture) as it detects each boundary-crossing
+    // reference inside this literal's body (or, for a TRANSITIVE capture,
+    // relayed in from a nested literal's own capture — see
+    // TypeChecker.literal_stack's doc comment, types.h). Codegen (function_
+    // codegen.c's codegen_generate_func_lit) reads this TWICE against the
+    // SAME array, in the SAME order — once at the literal's closure-creation
+    // site (env build: GEP field i <- current slot address of
+    // captured_names[i]) and once in the literal's own prologue (GEP field i
+    // of the env PARAMETER -> rebind captured_names[i] to the loaded slot
+    // pointer). BUILD ORDER = PROLOGUE ORDER is a change-together contract
+    // between those two sites — see the doc comment at each. Owned (each
+    // name is strdup'd); NULL/0 for a non-capturing literal (T1's only
+    // case).
+    char** captured_names;
+    size_t captured_count;
 } FuncLitNode;
 
 // Pointer type

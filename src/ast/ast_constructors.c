@@ -96,6 +96,8 @@ FuncLitNode* ast_func_lit_new(Position pos) {
     node->params = NULL;
     node->return_type = NULL;
     node->body = NULL;
+    node->captured_names = NULL;
+    node->captured_count = 0;
 
     return node;
 }
@@ -130,6 +132,7 @@ VarDeclNode* ast_var_decl_new(Position pos) {
     node->ownership = OWNERSHIP_NONE;
     node->is_short_decl = 0;
     node->is_variadic_param = 0;
+    node->is_captured = 0;
 
     return node;
 }

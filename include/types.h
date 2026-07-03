@@ -258,13 +258,49 @@ typedef struct Variable {
     // NOT owned — the Package is owned by TypeChecker.packages.
     struct Package* package;
     struct Variable* next;  // For linked list in scope
+    // Closures Task 2: the declaring VarDeclNode (or NULL for a binding not
+    // backed by one — an if-let bind, a for-range loop variable, or a
+    // 2-value `a, b := x, y` short decl/MultiAssignNode). Set at
+    // registration by every VarDeclNode-backed binding site (function/
+    // literal params, named return params, ordinary var-decls —
+    // type_checker.c and expression_checker.c) AND by codegen's own mirror
+    // re-registrations of the SAME declarations (function_codegen.c —
+    // codegen re-invokes type_check_* internally during its own emission
+    // pass and needs an identical, not just equivalent, capture-detection
+    // outcome on re-resolution). type_check_identifier's capture path
+    // (expression_checker.c) stamps is_captured on this node so codegen's
+    // promotion pass can find it; a NULL (or non-AST_VAR_DECL) decl_node
+    // when a capture is detected is rejected with a clear error instead of
+    // silently under-promoting (see type_checker_record_capture).
+    // Tail-appended per the no-header-deps convention (ast.h's M10 note).
+    struct ASTNode* decl_node;
+    // Closures Task 2: set alongside decl_node's VarDeclNode->is_captured
+    // (type_checker_record_capture) when a nested func literal reads or
+    // writes this variable. Codegen reads the VarDeclNode flag (the AST
+    // survives into codegen; this Variable does not), so this field exists
+    // primarily for checker-side introspection/diagnostics parity with the
+    // VarDeclNode flag it mirrors.
+    int is_captured;
 } Variable;
+
+// Closures Task 2: cap on simultaneously-open func-literal nesting tracked by
+// TypeChecker.literal_stack (below) — see that field's doc comment.
+#define GOO_CLOSURE_MAX_NESTING 64
 
 // Scope for variable and type tracking
 struct Scope {
     Variable* variables;
     struct Scope* parent;
     int scope_id;
+    // Closures Task 2: set for the scope pushed as a function's OR a func
+    // literal's own body (type_check_function_decl / type_check_func_lit,
+    // and their codegen mirrors in function_codegen.c) — never for a plain
+    // nested block scope (if/for/switch/etc — an ordinary scope_push leaves
+    // this 0). type_check_identifier (expression_checker.c) walks ->parent
+    // counting these to detect a capture: a resolution that has to leave at
+    // least one such scope before finding its binding. Tail-appended per
+    // the no-header-deps convention (ast.h's M10 note).
+    int is_function_boundary;
 };
 
 // Imported package namespace. Each imported package owns an `exports` scope
@@ -353,6 +389,25 @@ struct TypeChecker {
     // NULL until Task 3 wires import resolution in.
     Package* packages;
     Package* current_package;
+
+    // Closures Task 2: stack of func literals currently being body-checked
+    // (innermost = last, index literal_stack_len-1), pushed/popped by
+    // type_check_func_lit (expression_checker.c) around its own body check,
+    // symmetric with (and immediately alongside) that function's existing
+    // scope_push/scope_pop. Used by type_check_identifier's capture path
+    // (type_checker_record_capture) to record a capture on EVERY literal
+    // between a boundary-crossing reference and its declaring scope — the
+    // classic nested-closure "missing middle env" bug: an inner literal's
+    // own env is populated correctly, but each INTERMEDIATE literal must
+    // ALSO carry the name through its own env to relay the slot pointer
+    // inward. A fixed array (not malloc'd) since literal nesting depth is
+    // bounded by source structure, not runtime data — no realistic program
+    // nests closures anywhere near GOO_CLOSURE_MAX_NESTING deep; a program
+    // that does silently stops recording further capture relaying past the
+    // cap rather than crashing (see type_check_func_lit's push). Tail-
+    // appended per the no-header-deps convention (ast.h's M10 note).
+    struct ASTNode* literal_stack[GOO_CLOSURE_MAX_NESTING];
+    size_t literal_stack_len;
 };
 
 // Type creation functions

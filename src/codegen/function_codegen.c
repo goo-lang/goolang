@@ -165,12 +165,21 @@ static int escape_is_promoted(const char* name) {
     return 0;
 }
 
-// Allocate storage for a named local: heap (goo_alloc, leaked) if the local is
-// goroutine-escape-promoted, else a stack entry alloca. Under opaque pointers
-// both return `ptr`, so all downstream loads/stores (which carry explicit types)
-// are unchanged.
-LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {
-    if (!escape_is_promoted(name))
+// Allocate storage for a named local: heap (goo_alloc, leaked) if the local
+// is EITHER goroutine-escape-promoted (M8b, name-based, `force_promote=0`
+// callers) OR forced by the caller (Closures Task 2: a var-decl/param whose
+// VarDeclNode->is_captured is set — a nested func literal reads or writes
+// it, so its slot must outlive this frame; see codegen_alloc_local's
+// callers in codegen_generate_var_decl/codegen_generate_function_decl/
+// codegen_generate_func_lit). Else a stack entry alloca. Under opaque
+// pointers both return `ptr`, so all downstream loads/stores (which carry
+// explicit types via ValueInfo->goo_type, never LLVMGetAllocatedType) are
+// unchanged — this is the design's core "uniformity trick": a promoted
+// slot's value-table entry is IDENTICAL in shape (a `ptr`, is_lvalue=1) to
+// an alloca'd one.
+static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTypeRef type,
+                                                 const char* name, int force_promote) {
+    if (!force_promote && !escape_is_promoted(name))
         return codegen_create_entry_alloca(codegen, type, name);
 
     LLVMContextRef ctx = codegen->context;
@@ -195,6 +204,15 @@ LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const
                                     name ? name : "go_escape_local");
     if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);
     return p;
+}
+
+// Public entry point (declared in codegen.h; called from every codegen file
+// that allocates a named local) — escape-promotion only, the pre-Task-2
+// behavior. codegen_alloc_local_promoted's `force_promote=1` path (closure
+// capture) is used only by the handful of call sites in THIS file that have
+// a VarDeclNode to check ->is_captured on.
+LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {
+    return codegen_alloc_local_promoted(codegen, type, name, 0);
 }
 
 // Get-or-create the value-thunk for named function `name` (Goo type
@@ -309,11 +327,40 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 //     whatever body it is given (it is not accumulative), so leaving it as
 //     the literal's set would misroute goroutine-escape promotion for any
 //     code emitted AFTER the literal in the enclosing function.
-// The type-checker scope mirror additionally reproduces the CHECKER's own
-// T1 no-capture decision (expression_checker.c's type_check_func_lit):
-// rooted at the package/global scope, not the enclosing function's scope,
-// so a stray re-check from codegen never resolves an enclosing local that
-// has no reachable binding in the literal's own (separate) LLVM function.
+// The type-checker scope mirror below CHAINS onto the enclosing scope (T1
+// rooted it at package/global instead — no captures) and marks the pushed
+// scope is_function_boundary=1, mirroring type_check_func_lit's real (non-
+// stand-in) T2 behavior exactly, so a stray re-check from codegen (e.g.
+// type_check_binary_expr on `n + 1` inside a captured-variable expression)
+// resolves an enclosing local correctly instead of failing.
+//
+// Closures Task 2 (capture): a captured variable's storage was ALREADY
+// promoted to the heap at its declaration/param-binding site (codegen_alloc_
+// local_promoted, keyed off VarDeclNode->is_captured — see
+// codegen_generate_var_decl / codegen_generate_function_decl), so its
+// value-table entry is a `ptr` with is_lvalue=1 — IDENTICAL in shape to an
+// ordinary alloca'd local (the design's "uniformity trick": no load/store
+// path anywhere in this codebase special-cases LLVMIsAAllocaInst or calls
+// LLVMGetAllocatedType, verified by grep and by reading codegen_generate_
+// identifier's load path and codegen_emit_lvalue_address's store path,
+// expression_codegen.c). This function does two more things beyond T1:
+//   - PROLOGUE (right after param binding, below): for each name in
+//     lit->captured_names, load the slot POINTER from env (LLVM param 0,
+//     GEP field i) and codegen_add_value it with is_lvalue=1 — shadowing
+//     any same-named entry still visible from the enclosing function's
+//     region of codegen's flat, unscoped value table (critical: that outer
+//     entry's llvm_value is an SSA value defined in a DIFFERENT LLVM
+//     function and would be invalid IR if read directly from inside this
+//     one). This is also what makes a TRANSITIVE capture "just work": a
+//     nested literal built later in THIS body sees this rebound entry via
+//     the ordinary codegen_lookup_value path when IT builds its own env.
+//   - ENV BUILD (at the pair-construction site, after ambient state is
+//     restored to the ENCLOSING function): if captured_count > 0, goo_alloc
+//     a struct of captured_count opaque pointers and, for each name in
+//     lit->captured_names (SAME array, SAME order as the prologue — a
+//     change-together contract), store that name's CURRENT slot address
+//     (codegen_lookup_value in the ENCLOSING function's context) into the
+//     matching field.
 ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -370,12 +417,12 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     escape_prepass_compute(lit->body);
 
     // Mirror the type-checker scope for re-invocations of type_check_* from
-    // inside body codegen (same pattern as codegen_generate_function_decl),
-    // rooted at the package/global scope — T1's no-capture boundary.
-    Scope* root_scope = enclosing_scope;
-    while (root_scope && root_scope->parent) root_scope = root_scope->parent;
-    checker->current_scope = root_scope;
+    // inside body codegen (same pattern as codegen_generate_function_decl).
+    // Closures Task 2: chain directly onto the enclosing scope (checker-
+    // >current_scope is already `enclosing_scope`, untouched) instead of
+    // T1's "walk to package/global root" — see the doc comment above.
     scope_push(checker);
+    checker->current_scope->is_function_boundary = 1;
     checker->current_return_type = fn_type->data.function.return_type;
 
     // Bind parameters. LLVM param 0 is env (T1: unused); the literal's OWN
@@ -386,16 +433,22 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
         size_t param_index = 0;
         while (param && param_index < param_count) {
             const char* param_name = NULL;
+            int param_is_captured = 0;
             if (param->type == AST_VAR_DECL) {
                 VarDeclNode* pd = (VarDeclNode*)param;
                 if (pd->name_count > 0 && pd->names) param_name = pd->names[0];
+                param_is_captured = pd->is_captured;
             }
             if (param_name) {
                 Type* pgoo_type = fn_type->data.function.param_types[param_index];
                 LLVMTypeRef p_llvm_type = codegen_type_to_llvm(codegen, pgoo_type);
                 if (p_llvm_type) {
                     LLVMValueRef param_value = LLVMGetParam(lit_fn, (unsigned)(param_index + 1));
-                    LLVMValueRef param_alloca = codegen_alloc_local(codegen, p_llvm_type, param_name);
+                    // Closures Task 2: this literal's OWN param may itself be
+                    // captured by a literal NESTED within it — promote the
+                    // same way a named function's captured param is.
+                    LLVMValueRef param_alloca = codegen_alloc_local_promoted(
+                        codegen, p_llvm_type, param_name, param_is_captured);
                     LLVMBuildStore(codegen->builder, param_value, param_alloca);
 
                     ValueInfo* param_info = value_info_new(param_name, param_alloca, pgoo_type);
@@ -406,12 +459,55 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
                     Variable* pv = variable_new(param_name, pgoo_type, param->pos);
                     if (pv) {
                         pv->is_initialized = 1;
+                        pv->decl_node = param;  // Closures Task 2
                         scope_add_variable(checker->current_scope, pv);
                     }
                 }
                 param_index++;
             }
             param = param->next;
+        }
+    }
+
+    // Closures Task 2: closure prologue — rebind each captured name (SAME
+    // order as lit->captured_names — the BUILD ORDER = PROLOGUE ORDER
+    // contract with the env-build site below, near this function's return)
+    // to the slot pointer loaded from env (LLVM param 0). See this
+    // function's top doc comment for why shadowing via codegen_add_value is
+    // required here (not optional): codegen's value table is flat and
+    // unscoped, so without this an outer-function SSA value would otherwise
+    // still be "visible" here — invalid IR across a function boundary.
+    if (lit->captured_count > 0) {
+        LLVMTypeRef vp = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+        LLVMTypeRef* env_fields = malloc(sizeof(LLVMTypeRef) * lit->captured_count);
+        for (size_t i = 0; i < lit->captured_count; i++) env_fields[i] = vp;
+        LLVMTypeRef env_ty = LLVMStructTypeInContext(codegen->context, env_fields,
+                                                     (unsigned)lit->captured_count, 0);
+        free(env_fields);
+        LLVMValueRef env_param = LLVMGetParam(lit_fn, 0);
+
+        for (size_t i = 0; i < lit->captured_count; i++) {
+            const char* cname = lit->captured_names[i];
+            // Re-resolve the captured variable's TYPE via the checker
+            // mirror scope (now correctly chained onto the enclosing
+            // scope, not T1's global-rooted stand-in) — walks up past this
+            // literal's own just-pushed scope to wherever the capture was
+            // originally declared. The RAW lookup helper is used
+            // deliberately (not type_check_identifier): this is a type
+            // lookup for codegen's own bookkeeping, not a fresh capture
+            // detection — the real capture was already recorded during
+            // the type-check pass that produced lit->captured_names.
+            Variable* cvar = type_checker_lookup_variable(checker, cname);
+            Type* cgoo_type = cvar ? cvar->type : NULL;
+
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(codegen->builder, env_ty, env_param,
+                                                         (unsigned)i, "envfield");
+            LLVMValueRef slot_ptr = LLVMBuildLoad2(codegen->builder, vp, field_ptr, cname);
+
+            ValueInfo* cvi = value_info_new(cname, slot_ptr, cgoo_type);
+            cvi->is_lvalue = 1;
+            cvi->is_initialized = 1;
+            codegen_add_value(codegen, cvi);
         }
     }
 
@@ -456,12 +552,55 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
         return NULL;
     }
 
+    // Closures Task 2: build the closure's env in the NOW-RESTORED outer
+    // (enclosing-function) builder position — see this function's top doc
+    // comment. A non-capturing literal (T1's only case) keeps env NULL.
+    LLVMTypeRef vp = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+    LLVMValueRef env_ptr = LLVMConstNull(vp);
+    if (lit->captured_count > 0) {
+        LLVMTypeRef* env_fields = malloc(sizeof(LLVMTypeRef) * lit->captured_count);
+        for (size_t i = 0; i < lit->captured_count; i++) env_fields[i] = vp;
+        LLVMTypeRef env_ty = LLVMStructTypeInContext(codegen->context, env_fields,
+                                                     (unsigned)lit->captured_count, 0);
+        free(env_fields);
+
+        LLVMTypeRef i64t = LLVMInt64TypeInContext(codegen->context);
+        LLVMTypeRef alloc_ty = LLVMFunctionType(vp, &i64t, 1, 0);
+        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+        if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
+        LLVMValueRef env_size = LLVMSizeOf(env_ty);
+        env_ptr = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &env_size, 1, "closure_env");
+
+        for (size_t i = 0; i < lit->captured_count; i++) {
+            // Current slot address for this name, in the ENCLOSING
+            // function's codegen context (codegen's flat value table — see
+            // the prologue's doc comment above for why this is always a
+            // valid SSA value HERE: we are back in the function that
+            // either declared the promoted slot directly, or — for a
+            // TRANSITIVE capture — already rebound it via its OWN
+            // prologue). is_lvalue=1 and llvm_value IS the slot address
+            // already (a promoted local's ValueInfo, like an alloca's,
+            // holds the address, not a loaded value) — no load needed.
+            ValueInfo* slot = codegen_lookup_value(codegen, lit->captured_names[i]);
+            if (!slot || !slot->is_lvalue) {
+                codegen_error(codegen, expr->pos,
+                              "internal: captured variable '%s' has no promoted slot",
+                              lit->captured_names[i]);
+                return NULL;
+            }
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(codegen->builder, env_ty, env_ptr,
+                                                         (unsigned)i, "envfield");
+            LLVMBuildStore(codegen->builder, slot->llvm_value, field_ptr);
+        }
+    }
+
     // Build the literal's VALUE — the universal fat-pointer pair
-    // `{__goo_lit_n, NULL}` — in the NOW-RESTORED outer builder position
+    // `{__goo_lit_n, env_ptr}` — in the NOW-RESTORED outer builder position
     // (the Branch A identifier-arm pattern, expression_codegen.c).
     LLVMTypeRef pair_ty = codegen_get_funcval_pair_type(codegen);
     LLVMValueRef pair = LLVMConstNull(pair_ty);
     pair = LLVMBuildInsertValue(codegen->builder, pair, lit_fn, 0, "funcval_lit");
+    pair = LLVMBuildInsertValue(codegen->builder, pair, env_ptr, 1, "funcval_lit_env");
     return value_info_new(lit_name, pair, fn_type);
 #endif
 }
@@ -757,6 +896,13 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // blocks will push their own scopes the same way the type-check
     // pass did.
     scope_push(checker);
+    // Closures Task 2: mark this mirror scope as a function boundary too —
+    // codegen's own re-invocations of type_check_identifier (e.g. via
+    // type_check_binary_expr, above) must see the SAME boundary shape the
+    // original type-check pass did, or a captured variable's re-resolution
+    // here would spuriously fail to find it / miscount crossings. See
+    // type_check_function_decl's identical marking (type_checker.c).
+    checker->current_scope->is_function_boundary = 1;
     if (func_decl->params) {
         for (ASTNode* p = func_decl->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
@@ -772,12 +918,18 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
                 Variable* pv = variable_new(pd->names[i], pt, pd->base.pos);
                 if (pv) {
                     pv->is_initialized = 1;
+                    // Closures Task 2: backref to the SAME VarDeclNode the
+                    // original type-check pass used, so a captured-param
+                    // re-resolution here (type_check_identifier) stamps the
+                    // real AST node instead of tripping the "unsupported
+                    // binding form" rejection against a mirror-only NULL.
+                    pv->decl_node = (struct ASTNode*)pd;
                     scope_add_variable(checker->current_scope, pv);
                 }
             }
         }
     }
-    
+
     // Generate function parameters as local variables. The parser builds
     // params as AST_VAR_DECL nodes (see parser.y::func_param creating
     // VarDeclNode with names[0]/name_count=1), not AST_IDENTIFIER as
@@ -791,9 +943,11 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
 
         while (param && param_index < param_count) {
             const char* param_name = NULL;
+            int param_is_captured = 0;
             if (param->type == AST_VAR_DECL) {
                 VarDeclNode* pd = (VarDeclNode*)param;
                 if (pd->name_count > 0 && pd->names) param_name = pd->names[0];
+                param_is_captured = pd->is_captured;
             } else if (param->type == AST_IDENTIFIER) {
                 // Defensive: keep the old path working for any path that
                 // builds params as bare identifiers.
@@ -802,7 +956,12 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             if (param_name) {
                 LLVMValueRef param_value = LLVMGetParam(function, param_index);
 
-                LLVMValueRef param_alloca = codegen_alloc_local(codegen, param_types[param_index], param_name);
+                // Closures Task 2: a captured param's slot must outlive this
+                // call frame (a closure returned/stored may read it after
+                // this function returns) — force the heap-allocated path
+                // regardless of M8b's escape-name promotion.
+                LLVMValueRef param_alloca = codegen_alloc_local_promoted(
+                    codegen, param_types[param_index], param_name, param_is_captured);
                 LLVMBuildStore(codegen->builder, param_value, param_alloca);
 
                 ValueInfo* param_info = value_info_new(param_name, param_alloca,
@@ -844,7 +1003,11 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             if (!ft) continue;
             LLVMTypeRef llvm_ft = codegen_type_to_llvm(codegen, ft);
             if (!llvm_ft) continue;
-            LLVMValueRef slot = codegen_alloc_local(codegen, llvm_ft, rname);
+            // Closures Task 2: a captured named-return can be read/written
+            // from a closure that outlives this call (e.g. a deferred or
+            // returned literal touching it) — force heap promotion the same
+            // as any other captured local/param.
+            LLVMValueRef slot = codegen_alloc_local_promoted(codegen, llvm_ft, rname, fd->is_captured);
             LLVMBuildStore(codegen->builder, LLVMConstNull(llvm_ft), slot);
             ValueInfo* vi = value_info_new(rname, slot, ft);
             vi->is_lvalue = 1;
@@ -853,7 +1016,11 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             // Mirror into the type-checker scope so re-checks from codegen
             // (e.g. binary-expr type resolution) can resolve the name.
             Variable* rv = variable_new(rname, ft, fd->base.pos);
-            if (rv) { rv->is_initialized = 1; scope_add_variable(checker->current_scope, rv); }
+            if (rv) {
+                rv->is_initialized = 1;
+                rv->decl_node = (struct ASTNode*)fd;  // Closures Task 2 (see param mirror above)
+                scope_add_variable(checker->current_scope, rv);
+            }
             if (names) names[nnamed++] = strdup(rname);
         }
         if (nnamed > 0) {
@@ -1235,14 +1402,22 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // select below and the spec's preferred form for the value arm.
         value = LLVMBuildSelect(codegen->builder, is_error,
             LLVMConstNull(value_llvm), value, "val_zero_on_err");
-        LLVMValueRef val_alloca = codegen_alloc_local(codegen, value_llvm, nm0);
+        // Closures Task 2: is_captured is a single flag on the shared
+        // VarDeclNode covering both destructured names — if EITHER n or err
+        // is captured, promote both (safe over-promotion via the same
+        // uniformity trick; see codegen_alloc_local_promoted).
+        LLVMValueRef val_alloca = codegen_alloc_local_promoted(codegen, value_llvm, nm0, var_decl->is_captured);
         LLVMBuildStore(codegen->builder, value, val_alloca);
         ValueInfo* vi0 = value_info_new(nm0, val_alloca, value_type);
         vi0->is_lvalue = 1;
         vi0->is_initialized = 1;
         codegen_add_value(codegen, vi0);
         Variable* tv0 = variable_new(nm0, value_type, decl->pos);
-        if (tv0) { tv0->is_initialized = 1; scope_add_variable(checker->current_scope, tv0); }
+        if (tv0) {
+            tv0->is_initialized = 1;
+            tv0->decl_node = (struct ASTNode*)var_decl;  // Closures Task 2
+            scope_add_variable(checker->current_scope, tv0);
+        }
 
         // name1 = ?error {i1 is_null, i8*}. nil ⟺ !is_error, so `err != nil`
         // (which lowers to !is_null) is true exactly when is_error is true.
@@ -1305,14 +1480,18 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         LLVMValueRef err_val = LLVMGetUndef(err_llvm);
         err_val = LLVMBuildInsertValue(codegen->builder, err_val, is_null, 0, "err.is_null");
         err_val = LLVMBuildInsertValue(codegen->builder, err_val, err_ptr, 1, "err.ptr");
-        LLVMValueRef err_alloca = codegen_alloc_local(codegen, err_llvm, nm1);
+        LLVMValueRef err_alloca = codegen_alloc_local_promoted(codegen, err_llvm, nm1, var_decl->is_captured);
         LLVMBuildStore(codegen->builder, err_val, err_alloca);
         ValueInfo* vi1 = value_info_new(nm1, err_alloca, err_type);
         vi1->is_lvalue = 1;
         vi1->is_initialized = 1;
         codegen_add_value(codegen, vi1);
         Variable* tv1 = variable_new(nm1, err_type, decl->pos);
-        if (tv1) { tv1->is_initialized = 1; scope_add_variable(checker->current_scope, tv1); }
+        if (tv1) {
+            tv1->is_initialized = 1;
+            tv1->decl_node = (struct ASTNode*)var_decl;  // Closures Task 2
+            scope_add_variable(checker->current_scope, tv1);
+        }
 
         value_info_free(rhs);
         return 1;
@@ -1408,7 +1587,9 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             Type* field_type = var_type->data.struct_type.fields[i].type;
             LLVMTypeRef field_llvm = codegen_type_to_llvm(codegen, field_type);
             LLVMValueRef field_val = LLVMBuildExtractValue(codegen->builder, rhs->llvm_value, (unsigned)i, nm);
-            LLVMValueRef field_alloca = codegen_alloc_local(codegen, field_llvm, nm);
+            // Closures Task 2: see the error-union destructure path above —
+            // one is_captured flag covers every destructured name.
+            LLVMValueRef field_alloca = codegen_alloc_local_promoted(codegen, field_llvm, nm, var_decl->is_captured);
             LLVMBuildStore(codegen->builder, field_val, field_alloca);
             ValueInfo* vi = value_info_new(nm, field_alloca, field_type);
             vi->is_lvalue = 1;
@@ -1417,6 +1598,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             Variable* tv = variable_new(nm, field_type, decl->pos);
             if (tv) {
                 tv->is_initialized = 1;
+                tv->decl_node = (struct ASTNode*)var_decl;  // Closures Task 2
                 scope_add_variable(checker->current_scope, tv);
             }
         }
@@ -1442,7 +1624,10 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             // (no explicit initializer) behaves like Go's zero value
             // semantics. Without this, struct fields read as garbage
             // from the stack.
-            alloca_inst = codegen_alloc_local(codegen, llvm_type, var_name);
+            // Closures Task 2: promote to the heap if a nested func literal
+            // captures this declaration (checker-stamped is_captured) — its
+            // slot must outlive this frame.
+            alloca_inst = codegen_alloc_local_promoted(codegen, llvm_type, var_name, var_decl->is_captured);
             if (alloca_inst && !var_decl->values) {
                 // For a `?T` local with no initializer, the Go-style zero value
                 // must be nil ({is_null=1, ...}). LLVMConstNull would set the
@@ -1599,6 +1784,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         Variable* tv = variable_new(var_name, var_type, decl->pos);
         if (tv) {
             tv->is_initialized = value_info->is_initialized;
+            tv->decl_node = (struct ASTNode*)var_decl;  // Closures Task 2
             scope_add_variable(checker->current_scope, tv);
         }
     }

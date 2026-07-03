@@ -1,0 +1,59 @@
+package main
+
+import "fmt"
+
+func makeCounter() func() int {
+	n := 0
+	return func() int {
+		n = n + 1
+		return n
+	}
+}
+
+func addN(n int) func(int) int {
+	return func(x int) int { return x + n }
+}
+
+// Transitive capture (Closures Task 2, Step 3 self-review): n is declared in
+// makeNested, captured directly by the MIDDLE literal (which mutates it) and
+// captured a second time, THROUGH that middle literal, by the INNERMOST
+// literal two boundaries out — the classic nested-closure "missing middle
+// env" bug this task's literal-stack relaying exists to prevent. Both
+// captures must resolve to the SAME heap slot so mutation via the middle
+// literal is visible through the innermost one.
+func makeNested() func() func() int {
+	n := 0
+	return func() func() int {
+		n = n + 1
+		return func() int {
+			return n
+		}
+	}
+}
+
+func main() {
+	c := makeCounter()
+	fmt.Println(c())
+	fmt.Println(c())
+	fmt.Println(c())
+	d := makeCounter()
+	fmt.Println(d())
+	total := 0
+	bump := func() { total = total + 5 }
+	bump()
+	bump()
+	fmt.Println(total)
+	add3 := addN(3)
+	fmt.Println(add3(39))
+	x := 1
+	f1 := func() int { return x }
+	x = 100
+	fmt.Println(f1())
+
+	outer := makeNested()
+	inner := outer()
+	fmt.Println(inner())
+	fmt.Println(inner())
+	inner2 := outer()
+	fmt.Println(inner2())
+}
