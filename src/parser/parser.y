@@ -502,6 +502,39 @@ func_param:
         param->values = NULL;
         $$ = (ASTNode*)param;
     }
+    | identifier ELLIPSIS type {
+        // Task 2: variadic parameter `name ...T`. `type` stores the ELEMENT
+        // type T as parsed — the checker (declare_function_signature /
+        // type_check_function_decl) wraps it in a TYPE_SLICE when building
+        // the signature and binding the body param, driven by
+        // is_variadic_param below. Go requires this be the LAST parameter;
+        // that's a semantic (not grammatical) constraint, enforced at
+        // signature-build time so `func f(a ...int, b int)` gets a clean
+        // rejection instead of silently misparsing.
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = malloc(sizeof(char*));
+        param->names[0] = strdup(ident->name);
+        param->name_count = 1;
+        param->type = $3;
+        param->is_variadic_param = 1;
+        param->values = NULL;
+        ast_node_free($1);
+        $$ = (ASTNode*)param;
+    }
+    | ELLIPSIS type {
+        // Anonymous variadic parameter `...T` (Go allows an unnamed variadic
+        // param, matching the unnamed `type` alternative above). Included
+        // for symmetry since it added no grammar conflicts (verified via
+        // the bison conflict-count gate).
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = NULL;
+        param->name_count = 0;
+        param->type = $2;
+        param->is_variadic_param = 1;
+        param->values = NULL;
+        $$ = (ASTNode*)param;
+    }
     ;
 
 func_result:
@@ -575,6 +608,46 @@ var_decl:
         var->name_count = 1;
         var->type = $3;
         ast_node_free($2);
+        $$ = (ASTNode*)var;
+    }
+    // Multi-name, no-initializer form: `var a, b int`. Explicit productions
+    // (2-name and 3-name), NOT a general list nonterminal — mirrors the
+    // short_var_decl convention (parser.y short_var_decl, above) and bounds
+    // conflict risk to what's already proven safe there. The VAR prefix
+    // disambiguates from short_var_decl's bare `identifier COMMA identifier`
+    // forms, so this does not introduce new shift/reduce or reduce/reduce
+    // conflicts (see the bison guard in the Makefile gate). 4+ names and the
+    // initializer-list form (`var a, b int = 1, 2`) are out of scope: the
+    // latter would need codegen changes (walking a values chain in lockstep
+    // with names) beyond this task's allowed file set — see decl-surface
+    // breadth task-1 report for the follow-up.
+    | VAR identifier COMMA identifier type {
+        VarDeclNode* var = ast_var_decl_new(get_current_position());
+        IdentifierNode* i1 = (IdentifierNode*)$2;
+        IdentifierNode* i2 = (IdentifierNode*)$4;
+        var->names = malloc(sizeof(char*) * 2);
+        var->names[0] = strdup(i1->name);
+        var->names[1] = strdup(i2->name);
+        var->name_count = 2;
+        var->type = $5;
+        ast_node_free($2);
+        ast_node_free($4);
+        $$ = (ASTNode*)var;
+    }
+    | VAR identifier COMMA identifier COMMA identifier type {
+        VarDeclNode* var = ast_var_decl_new(get_current_position());
+        IdentifierNode* i1 = (IdentifierNode*)$2;
+        IdentifierNode* i2 = (IdentifierNode*)$4;
+        IdentifierNode* i3 = (IdentifierNode*)$6;
+        var->names = malloc(sizeof(char*) * 3);
+        var->names[0] = strdup(i1->name);
+        var->names[1] = strdup(i2->name);
+        var->names[2] = strdup(i3->name);
+        var->name_count = 3;
+        var->type = $7;
+        ast_node_free($2);
+        ast_node_free($4);
+        ast_node_free($6);
         $$ = (ASTNode*)var;
     }
     | VAR identifier ASSIGN expression {
@@ -1505,9 +1578,10 @@ call_expr:
         // The type node leads the argument list; splice the rest of
         // expression_list after it (mirrors expression_list's own
         // left-to-right chaining via ast_add_child/->next).
-        // Invariant: type_call_arg (map_type/slice_type) produces a freshly
-        // malloc'd node whose ->next is NULL, so this direct assignment does
-        // not drop a pre-existing tail — no ast_add_child walk is needed.
+        // Invariant: type_call_arg (map_type/slice_type/chan_type) produces
+        // a freshly malloc'd node whose ->next is NULL, so this direct
+        // assignment does not drop a pre-existing tail — no ast_add_child
+        // walk is needed.
         $3->next = $5;
         call->args = $3;
         $$ = (ASTNode*)call;
@@ -1516,11 +1590,17 @@ call_expr:
 
 // The type argument accepted by `make(...)` (grammar-only — the type
 // checker enforces that the callee is actually `make`). map_type/
-// slice_type are the only type forms make() needs; other type forms
-// (struct_type, chan_type, ...) are deliberately not included here.
+// slice_type/chan_type are the type forms make() needs (make(chan T[, n])
+// mirrors make([]T, n)'s capacity-arg shape); other type forms (struct_type,
+// ...) are deliberately not included here. CHAN is not in primary_expr's
+// first set (no expression production starts with it), so this addition is
+// disjoint from make()'s ordinary-call alternatives on the first token —
+// unlike map_type/slice_type, which need the LALR lookahead split described
+// above.
 type_call_arg:
     map_type { $$ = $1; }
     | slice_type { $$ = $1; }
+    | chan_type { $$ = $1; }
     ;
 
 index_expr:

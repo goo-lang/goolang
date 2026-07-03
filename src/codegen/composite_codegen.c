@@ -576,13 +576,15 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
 //
 // Also handles enum variant construction: `Circle{radius: 5}` when the
 // Forward declaration: defined after codegen_generate_slice_lit, used here
-// for named-slice composite literal lowering (TYPE_SLICE via struct literal).
+// for named-slice composite literal lowering (TYPE_SLICE via struct literal),
+// and (Task 2) from call_codegen.c for variadic call-site arg packing — see
+// its non-static prototype in codegen.h.
 #if LLVM_AVAILABLE
-static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
-                                                  TypeChecker* checker,
-                                                  ASTNode* first_elem,
-                                                  Type* slice_type,
-                                                  Position pos);
+ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
+                                           TypeChecker* checker,
+                                           ASTNode* first_elem,
+                                           Type* slice_type,
+                                           Position pos);
 #endif
 
 // declared type is a TYPE_ENUM. Builds the payload aggregate against the
@@ -921,11 +923,11 @@ static LLVMValueRef slice_coerce_elem(CodeGenerator* codegen, LLVMValueRef v, LL
 // and codegen_generate_struct_lit (with StructLiteralNode->field_values)
 // so the two surface forms share a single lowering path (DRY).
 #if LLVM_AVAILABLE
-static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
-                                                  TypeChecker* checker,
-                                                  ASTNode* first_elem,
-                                                  Type* slice_type,
-                                                  Position pos) {
+ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
+                                           TypeChecker* checker,
+                                           ASTNode* first_elem,
+                                           Type* slice_type,
+                                           Position pos) {
     Type* elem_type = slice_type->data.slice.element_type;
     LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
     if (!llvm_elem) {
@@ -992,6 +994,26 @@ static ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
                 return NULL;
             }
             v->llvm_value = boxed;
+        }
+
+        // Load a scalar lvalue element (e.g. `xs[0]`, a slice/array index)
+        // before use. The nullable/interface branches above already load
+        // internally when THEY fire; this is the general fallthrough for a
+        // plain element that used to fall straight through to the
+        // elem_vals[idx] assignment below with its address still in
+        // llvm_value — `[]int{xs[0], xs[1]}` silently packed each element's
+        // storage ADDRESS instead of its value (a pointer bit pattern
+        // reinterpreted as an int). Task 2 (variadic call-site packing)
+        // reuses this helper for `sum(nums[0], nums[1])`-style trailing
+        // args, which is what surfaced this — but the bug already existed
+        // for ordinary slice literals. Mirrors the identical general-
+        // fallback load in call_codegen.c's user-call argument loop.
+        if (v->is_lvalue && v->goo_type) {
+            LLVMTypeRef vt = codegen_type_to_llvm(codegen, v->goo_type);
+            if (vt) {
+                v->llvm_value = LLVMBuildLoad2(codegen->builder, vt, v->llvm_value, "elemld");
+                v->is_lvalue = 0;
+            }
         }
 
         if (v->llvm_value && LLVMIsConstant(v->llvm_value) && !v->is_lvalue &&

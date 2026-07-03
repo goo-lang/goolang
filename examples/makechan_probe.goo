@@ -1,0 +1,15 @@
+// makechan_probe: Go-idiomatic `make(chan T, n)` buffered-channel syntax
+// (distinct from the existing make_chan(T, n) builtin identifier path).
+// Capacity 2 lets both sends proceed without blocking — no goroutine needed.
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 2)
+	ch <- 1
+	ch <- 2
+	a := <-ch
+	b := <-ch
+	fmt.Println(a + b)
+}

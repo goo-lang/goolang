@@ -601,7 +601,28 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     for (ASTNode* p = func->params; p; p = p->next) {
         if (p->type == AST_VAR_DECL) param_count++;
     }
+
+    // Task 2: a variadic parameter (`name ...T`) must be the LAST parameter
+    // (Go: "can only use ... with final parameter in list"). Check this
+    // BEFORE building param_types below — an earlier variadic param there
+    // would otherwise just get its element type silently instead of []T,
+    // producing a confusing downstream error instead of a clean rejection.
+    {
+        size_t idx = 0, last_idx = param_count - 1;
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_variadic_param && idx != last_idx) {
+                type_error(checker, p->pos,
+                           "variadic parameter must be the final parameter");
+                return 0;
+            }
+            idx++;
+        }
+    }
+
     Type** param_types = NULL;
+    int is_variadic = 0;
     if (param_count > 0) {
         param_types = calloc(param_count, sizeof(Type*));
         size_t idx = 0;
@@ -610,6 +631,15 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
             VarDeclNode* pd = (VarDeclNode*)p;
             Type* pt = pd->type ? type_from_ast(checker, pd->type)
                                 : type_checker_get_builtin(checker, TYPE_INT32);
+            // The BODY sees a variadic param as a slice of the element type
+            // (Go's slice-sugar model — NOT C varargs); wrap it here so the
+            // signature's param_types[last] is TYPE_SLICE of T. Call sites
+            // key off func_type->data.function.is_variadic (set below) to
+            // pack trailing args into that slice.
+            if (pd->is_variadic_param && pt) {
+                pt = type_slice(pt);
+                is_variadic = 1;
+            }
             param_types[idx++] = pt;
         }
     }
@@ -618,6 +648,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         : type_checker_get_builtin(checker, TYPE_VOID);
 
     Type* func_type = type_function(param_types, param_count, return_type);
+    if (func_type) func_type->data.function.is_variadic = is_variadic;
     char* mangled = NULL;
     const char* reg_name = func->name;
     if (func->receiver) {
@@ -678,7 +709,12 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
                 } else {
                     param_type = type_checker_get_builtin(checker, TYPE_INT32); // Default type
                 }
-                
+                // Task 2: the body sees a variadic param as []T, matching the
+                // signature built by declare_function_signature above.
+                if (param_decl->is_variadic_param && param_type) {
+                    param_type = type_slice(param_type);
+                }
+
                 if (param_type) {
                     for (size_t i = 0; i < param_decl->name_count; i++) {
                         Variable* param_var = variable_new(param_decl->names[i], param_type, param_decl->base.pos);
@@ -996,8 +1032,16 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     // binds to the corresponding field's type. Codegen does the
     // ExtractValue destructuring; the type checker just records
     // each binding with the right per-field type.
+    //
+    // Guarded on var_decl->values (mirrors codegen_generate_var_decl's
+    // identical guard in function_codegen.c): without it, a plain
+    // no-initializer multi-name decl of a struct TYPE (`var p, q P` — no
+    // RHS to destructure at all) was misread as a destructure, binding p/q
+    // to P's FIELD types instead of P itself. Caught by multivar_probe.goo's
+    // `var p, q P` case (decl-surface breadth task 1).
     Type** per_name_types = NULL;
-    if (var_decl->name_count > 1 && final_type && final_type->kind == TYPE_STRUCT) {
+    if (var_decl->name_count > 1 && final_type && final_type->kind == TYPE_STRUCT &&
+        var_decl->values) {
         if (final_type->data.struct_type.field_count >= var_decl->name_count) {
             per_name_types = malloc(sizeof(Type*) * var_decl->name_count);
             for (size_t i = 0; i < var_decl->name_count; i++) {
@@ -1551,8 +1595,8 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 
     // For-range: register the key as int and the value (if present)
     // as the element type of the range expression, both in scope for
-    // the body. Slice range is the supported case for M8; map/string
-    // range deferred.
+    // the body. Slice/array/string/map range are supported; other
+    // ranged types are rejected below.
     if (for_stmt->range_expr) {
         Type* range_type = type_check_expression(checker, for_stmt->range_expr);
         if (!range_type) {
@@ -1560,6 +1604,10 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             return 0;
         }
         Type* elem_type = NULL;
+        // Key type defaults to the int32 index used by slice/array/string
+        // range; TYPE_MAP overrides this below since a map's key is not an
+        // index.
+        Type* key_type = type_checker_get_builtin(checker, TYPE_INT32);
         if (range_type->kind == TYPE_SLICE) {
             elem_type = range_type->data.slice.element_type;
         } else if (range_type->kind == TYPE_ARRAY) {
@@ -1570,16 +1618,27 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             // int32 (rune today). int32 — not uint8 — so fmt.Println accepts
             // the value, and codegen zero-extends the i8 byte into it.
             elem_type = type_checker_get_builtin(checker, TYPE_INT32);
+        } else if (range_type->kind == TYPE_MAP) {
+            // Range over map: key/value bind to the map's OWN key/value
+            // types, read off the Type itself rather than hardcoded — the
+            // runtime map happens to be string-keyed today, but the checker
+            // doesn't bake that in.
+            key_type = range_type->data.map.key_type;
+            elem_type = range_type->data.map.value_type;
+            if (!key_type || !elem_type) {
+                type_error(checker, for_stmt->range_expr->pos,
+                          "range over map: missing key/value type");
+                scope_pop(checker);
+                return 0;
+            }
         } else {
             type_error(checker, for_stmt->range_expr->pos,
-                      "for-range supported only on slice/array/string types");
+                      "for-range supported only on slice/array/string/map types");
             scope_pop(checker);
             return 0;
         }
         if (for_stmt->key_name) {
-            Variable* kv = variable_new(for_stmt->key_name,
-                                       type_checker_get_builtin(checker, TYPE_INT32),
-                                       stmt->pos);
+            Variable* kv = variable_new(for_stmt->key_name, key_type, stmt->pos);
             if (kv) {
                 kv->is_initialized = 1;
                 scope_add_variable(checker->current_scope, kv);

@@ -494,6 +494,11 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             VarDeclNode* pd = (VarDeclNode*)p;
             Type* pt = pd->type ? type_from_ast(checker, pd->type)
                                 : type_checker_get_builtin(checker, TYPE_INT32);
+            // Task 2: mirror declare_function_signature's []T wrap for a
+            // variadic param so re-invoked type-check calls during codegen
+            // (e.g. `for _, n := range nums`) see the same slice type the
+            // signature and body-binding passes already agree on.
+            if (pd->is_variadic_param && pt) pt = type_slice(pt);
             for (size_t i = 0; pt && i < pd->name_count; i++) {
                 Variable* pv = variable_new(pd->names[i], pt, pd->base.pos);
                 if (pv) {

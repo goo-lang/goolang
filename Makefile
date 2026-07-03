@@ -841,6 +841,66 @@ cascade-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$errcount -gt 2 ]; then echo "cascade-reject-probe: FAIL (cascade regressed — $$errcount error lines, expected <=2)"; cat build/cascade_reject.err; exit 1; fi; \
 	echo "cascade-reject-probe: PASS (rejected rc=$$rc, $$errcount error line(s) <= 2)"
 
+# decl-surface breadth task 1: `var a, b int = 1` — an arity-mismatched
+# initializer (2 names, 1 value) on the multi-name var-decl form. The
+# no-initializer form (`var a, b int`) shipped this task; the initializer
+# form (`var a, b int = 1, 2`) did not (needs codegen changes to walk a
+# values chain in lockstep with names — out of this task's file set, see
+# the task-1 report). Consequently this shape is GRAMMAR-rejected (a parse
+# error, mirroring the parser.y explicit-production arity: the 2-name
+# production has no `= expr` continuation at all), not checker-rejected —
+# unlike cascade-reject-probe above, which asserts a checker diagnostic.
+# Go itself rejects this with "assignment mismatch: 2 variables but 1
+# value" (see the task-1 report's go build comparison); either rejection
+# reason satisfies the must-not-compile bar the brief sets.
+multivar-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== multivar-reject-probe: var a, b int = 1 (arity mismatch) must reject ==="
+	@rm -f build/multivar_reject
+	@$(COMPILER) -o build/multivar_reject examples/multivar_reject.goo > build/multivar_reject.out 2> build/multivar_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "multivar-reject-probe: FAIL (compiled rc=0 — arity mismatch silently accepted)"; exit 1; fi; \
+	if [ -x build/multivar_reject ]; then echo "multivar-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR|Segmentation|SIGSEGV" build/multivar_reject.err; then echo "multivar-reject-probe: FAIL (invalid IR/crash reached instead of a clean rejection)"; cat build/multivar_reject.err; exit 1; fi; \
+	if ! grep -qi "syntax error" build/multivar_reject.err; then echo "multivar-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/multivar_reject.err; exit 1; fi; \
+	echo "multivar-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 2 (variadic ...T params): a variadic parameter must be the FINAL
+# parameter (Go: "can only use ... with final parameter in list"). Guards
+# declare_function_signature's must-be-last check, which fires at signature-
+# build time (before the body is even checked) so `func f(a ...int, b int)`
+# gets a clean, specific rejection instead of a confusing downstream error
+# from treating `b` as part of the (already-consumed) variadic slot.
+variadic-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== variadic-reject-probe: non-final variadic parameter must reject ==="
+	@rm -f build/variadic_reject
+	@$(COMPILER) -o build/variadic_reject examples/variadic_reject.goo > build/variadic_reject.out 2> build/variadic_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "variadic-reject-probe: FAIL (compiled rc=0 — non-final variadic silently accepted)"; exit 1; fi; \
+	if [ -x build/variadic_reject ]; then echo "variadic-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR|Segmentation|SIGSEGV" build/variadic_reject.err; then echo "variadic-reject-probe: FAIL (invalid IR/crash reached instead of a clean rejection)"; cat build/variadic_reject.err; exit 1; fi; \
+	if ! grep -q "variadic parameter must be the final parameter" build/variadic_reject.err; then echo "variadic-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/variadic_reject.err; exit 1; fi; \
+	echo "variadic-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 2 (variadic ...T params): the #102 narrow-integer range-check net must
+# fire for a variadic ELEMENT type at the call-site PACK, not just for an
+# ordinary fixed parameter. `small(300)` into `func small(bs ...int8)` routes
+# through the same is_untyped_int_rooted/adapt_untyped_int_operand path a
+# non-variadic int8 param already uses (expression_checker.c's call-arg
+# loop, keyed off the variadic param's element type once the fixed prefix is
+# exhausted) — this is what proves that reuse actually happened instead of
+# the pack site silently truncating 300 to whatever int8 that bit pattern
+# aliases.
+variadic-range-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== variadic-range-reject-probe: narrow variadic element overflow must reject ==="
+	@rm -f build/variadic_range_reject
+	@$(COMPILER) -o build/variadic_range_reject examples/variadic_range_reject.goo > build/variadic_range_reject.out 2> build/variadic_range_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "variadic-range-reject-probe: FAIL (compiled rc=0 — 300 silently accepted for a variadic int8 element)"; exit 1; fi; \
+	if [ -x build/variadic_range_reject ]; then echo "variadic-range-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR|Segmentation|SIGSEGV" build/variadic_range_reject.err; then echo "variadic-range-reject-probe: FAIL (invalid IR/crash reached instead of a clean rejection)"; cat build/variadic_range_reject.err; exit 1; fi; \
+	if ! grep -q "overflows int8" build/variadic_range_reject.err; then echo "variadic-range-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/variadic_range_reject.err; exit 1; fi; \
+	echo "variadic-range-reject-probe: PASS (rejected rc=$$rc)"
+
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
 # that both taken panics abort with the runtime-error message (the non-panic
 # paths are in bits_div_probe).
@@ -1576,7 +1636,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

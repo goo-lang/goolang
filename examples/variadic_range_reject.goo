@@ -1,0 +1,20 @@
+package main
+
+// Task 2 negative gate: the #102 narrow-integer range-check net must fire at
+// the variadic PACK site, not just for ordinary parameters. `small`'s
+// element type is int8; 300 does not fit, so the call-site checker's
+// element-type adaptation (expression_checker.c, routed through the same
+// is_untyped_int_rooted/adapt_untyped_int_operand path a fixed int8 param
+// already uses) must reject this exactly like a non-variadic narrow
+// parameter would (Go-conformant: `go run` rejects `small(300)` too).
+func small(bs ...int8) int {
+	t := 0
+	for _, b := range bs {
+		t += int(b)
+	}
+	return t
+}
+
+func main() {
+	_ = small(300)
+}

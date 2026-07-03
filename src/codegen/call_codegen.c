@@ -300,6 +300,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 slice_val = LLVMBuildInsertValue(codegen->builder, slice_val, cap64, 2, "slice_cap");
                 return value_info_new(NULL, slice_val, made_type);
             }
+            if (made_type && made_type->kind == TYPE_CHANNEL) {
+                // make(chan T[, capacity]) -> buffered/unbuffered channel.
+                // codegen_generate_make_chan_call reads expr->node_type
+                // (the resolved TYPE_CHANNEL, already stamped above) for
+                // the element size/ABI layout and call->args->next for the
+                // optional capacity expression — it never inspects
+                // call->args[0] itself, so it is agnostic to whether that
+                // node is a bare type-name identifier (make_chan(T, n)) or
+                // a chan_type AST node (make(chan T, n)). Reused as-is
+                // rather than duplicating the ABI-size/capacity plumbing.
+                return codegen_generate_make_chan_call(codegen, checker, expr);
+            }
             if (!made_type || made_type->kind != TYPE_MAP) {
                 codegen_error(codegen, expr->pos, "make: missing resolved map or slice type");
                 return NULL;
@@ -958,7 +970,12 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     // Generate function expression
     ValueInfo* func_val = codegen_generate_expression(codegen, checker, call->function);
     if (!func_val) return NULL;
-    
+
+    // The callee's declared parameter types drive nullable auto-wrapping:
+    // a bare `T` or the nil literal passed to a `?T` parameter must be
+    // lowered to the {i1,T} nullable struct, not stored raw.
+    Type* func_goo_type = func_val->goo_type;
+
     // Generate arguments
     size_t arg_count = 0;
     ASTNode* arg = call->args;
@@ -966,22 +983,37 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         arg_count++;
         arg = arg->next;
     }
-    
+
+    // Task 2 (variadic ...T params, pack-only — Go's slice-sugar model, NOT
+    // C varargs): a variadic callee's LLVM call site has one arg per FIXED
+    // (non-variadic) param plus exactly ONE packed-slice arg built from
+    // however many trailing actuals were given (0 or more) — never a 1:1
+    // mapping with arg_count like the ordinary path below. param_types is
+    // guaranteed non-NULL and param_count >= 1 here: is_variadic is only
+    // ever set (declare_function_signature) alongside a real signature whose
+    // last entry is the TYPE_SLICE element wrapper; the NULL-param
+    // println/print/panic builtins are user-callable only by their own
+    // dedicated codegen paths (dispatched earlier in this function), never
+    // reaching this generic call path.
+    int callee_is_variadic = func_goo_type && func_goo_type->kind == TYPE_FUNCTION
+                              && func_goo_type->data.function.is_variadic
+                              && func_goo_type->data.function.param_types
+                              && func_goo_type->data.function.param_count > 0;
+    size_t fixed_count = callee_is_variadic
+        ? func_goo_type->data.function.param_count - 1 : arg_count;
+    size_t llvm_argc = callee_is_variadic
+        ? func_goo_type->data.function.param_count : arg_count;
+
     LLVMValueRef* args = NULL;
-    if (arg_count > 0) {
-        args = malloc(sizeof(LLVMValueRef) * arg_count);
+    if (llvm_argc > 0) {
+        args = malloc(sizeof(LLVMValueRef) * llvm_argc);
         if (!args) {
             value_info_free(func_val);
             return NULL;
         }
-        
-        // The callee's declared parameter types drive nullable auto-wrapping:
-        // a bare `T` or the nil literal passed to a `?T` parameter must be
-        // lowered to the {i1,T} nullable struct, not stored raw.
-        Type* func_goo_type = func_val->goo_type;
 
         arg = call->args;
-        for (size_t i = 0; i < arg_count; i++) {
+        for (size_t i = 0; i < fixed_count; i++) {
             Type* param_type = NULL;
             if (func_goo_type && func_goo_type->kind == TYPE_FUNCTION &&
                 i < func_goo_type->data.function.param_count) {
@@ -1088,6 +1120,31 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(arg_val);
             arg = arg->next;
         }
+
+        // Task 2: pack every remaining trailing actual (0 or more — `arg`
+        // now points at the first trailing node, or NULL if none were
+        // given) into the variadic param's slice. Reuses the SAME
+        // construction helper the `[]T{...}` literal path uses
+        // (codegen_build_slice_from_elems, exposed non-static in codegen.h
+        // for this call site) instead of duplicating the alloca/store/
+        // insertvalue sequence: it evaluates each trailing arg expression
+        // itself (once — not double-evaluated here), applying the identical
+        // nullable-wrap / interface-box / constant-width-normalize /
+        // slice_coerce_elem rules a `[]int{...}` literal's elements get.
+        // Zero trailing args (`sum()`) is exactly the `first_elem == NULL`
+        // case that path already handles for an empty literal.
+        if (callee_is_variadic) {
+            Type* slice_type = func_goo_type->data.function.param_types[fixed_count];
+            ValueInfo* packed = codegen_build_slice_from_elems(
+                codegen, checker, arg, slice_type, expr->pos);
+            if (!packed) {
+                free(args);
+                value_info_free(func_val);
+                return NULL;
+            }
+            args[fixed_count] = packed->llvm_value;
+            value_info_free(packed);
+        }
     }
 
     // Generate call. LLVMGetElementType doesn't work with LLVM 22 opaque
@@ -1097,7 +1154,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     LLVMTypeRef func_llvm_type = LLVMGlobalGetValueType(func_val->llvm_value);
     const char* result_name = (LLVMGetTypeKind(LLVMGetReturnType(func_llvm_type)) == LLVMVoidTypeKind)
                               ? "" : "call";
-    LLVMValueRef result = LLVMBuildCall2(codegen->builder, func_llvm_type, func_val->llvm_value, args, (unsigned)arg_count, result_name);
+    LLVMValueRef result = LLVMBuildCall2(codegen->builder, func_llvm_type, func_val->llvm_value, args, (unsigned)llvm_argc, result_name);
 
 
     free(args);
