@@ -807,6 +807,68 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
 // changes, and this is the only external caller.
 extern int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* declared);
 
+// Registers a single var-decl name in scope, mirroring the bindings the
+// success path has always set (ownership, is_initialized). Both the
+// success path and the Task 3 failure-recovery path (below) construct a
+// Variable for a var-decl name the same way, so this is the one place
+// that does it. `emit_errors` controls whether a construction/
+// redeclaration failure reports a diagnostic: the success path wants its
+// existing "already declared" message, but the failure-recovery caller
+// (register_declared_names_after_failure) must NOT add a new error on top
+// of an already-failing declaration — that would defeat the point of the
+// recovery.
+static int bind_var_decl_name(TypeChecker* checker, VarDeclNode* var_decl,
+                               const char* name, Type* type,
+                               int is_initialized, int emit_errors) {
+    Variable* var = variable_new(name, type, var_decl->base.pos);
+    if (!var) {
+        if (emit_errors) {
+            type_error(checker, var_decl->base.pos, "Memory allocation failed");
+        }
+        return 0;
+    }
+
+    var->ownership = var_decl->ownership;
+    var->is_initialized = is_initialized;
+
+    if (!scope_add_variable(checker->current_scope, var)) {
+        if (emit_errors) {
+            type_error(checker, var_decl->base.pos,
+                      "Variable '%s' already declared in this scope", name);
+        }
+        variable_free(var);
+        return 0;
+    }
+    return 1;
+}
+
+// Task 3 (stop the error cascade after a rejected declaration): a var-decl
+// with an EXPLICIT type (`var b int8 = 300`) that fails type-checking its
+// initializer still binds `b` in scope with the declared type before the
+// caller returns failure. Without this, every downstream reference to `b`
+// also fails as "Undefined variable 'b'" — one real error (the overflow)
+// fans out into a cascade (see examples/cascade_reject.goo, and the
+// cascade-reject-probe Makefile target). Compilation still fails overall
+// (every caller of this still returns 0 right after); this only keeps the
+// checker's scope state sane for the rest of the pass so later real
+// errors — or their absence — are reported accurately instead of drowned
+// out. Registration failures (OOM, genuine redeclaration) are swallowed
+// via emit_errors=0: the declaration is already failing, and a failed
+// recovery attempt should never inject a NEW error into that failure.
+//
+// No-op when `declared_type` is NULL — a `:=` short decl has no explicit
+// type to fall back on, so a failed RHS genuinely leaves nothing sound to
+// register here (see the task-3 report's `:=` residual finding).
+static void register_declared_names_after_failure(TypeChecker* checker,
+                                                    VarDeclNode* var_decl,
+                                                    Type* declared_type) {
+    if (!declared_type) return;
+    for (size_t i = 0; i < var_decl->name_count; i++) {
+        bind_var_decl_name(checker, var_decl, var_decl->names[i],
+                            declared_type, 1, /*emit_errors=*/0);
+    }
+}
+
 int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_VAR_DECL) return 0;
 
@@ -828,6 +890,13 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         inferred_type = type_check_expression(checker, var_decl->values);
         if (!inferred_type) {
             type_error(checker, var_decl->base.pos, "Invalid initializer expression");
+            // Task 3: an explicit-type decl (`var b T = <bad-rhs>`) still
+            // binds `b:T` so downstream uses don't cascade into "Undefined
+            // variable". A `:=` decl (declared_type == NULL here) has
+            // nothing to fall back on: type_check_expression returned no
+            // type at all, so there is no sound type to register — this
+            // is the `:=` residual recorded in the task-3 report.
+            register_declared_names_after_failure(checker, var_decl, declared_type);
             return 0;
         }
         // Task 3: reject an unrepresentable literal constant (`var b int8 =
@@ -839,6 +908,11 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         // check against in that case.
         if (declared_type) {
             if (!adapt_var_decl_initializer(checker, var_decl->values, declared_type)) {
+                // Task 3: this is the cascade probe's exact failure path
+                // (`var b int8 = 300`; examples/cascade_reject.goo) —
+                // register `b:int8` before failing so `fmt.Println(int(b))`
+                // and `c := b` on later lines don't cascade.
+                register_declared_names_after_failure(checker, var_decl, declared_type);
                 return 0; // range violation; adapt_var_decl_initializer already emitted the error
             }
             // Adaptation may have re-stamped the initializer's node_type to a
@@ -861,6 +935,7 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         if (declared_type->kind == TYPE_INTERFACE) {
             if (!check_interface_assign(checker, inferred_type, declared_type,
                                         var_decl->base.pos)) {
+                register_declared_names_after_failure(checker, var_decl, declared_type);
                 return 0;
             }
         } else if (!type_compatible(inferred_type, declared_type)) {
@@ -868,6 +943,7 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                       "Cannot assign %s to %s",
                       type_to_string(inferred_type),
                       type_to_string(declared_type));
+            register_declared_names_after_failure(checker, var_decl, declared_type);
             return 0;
         }
     }
@@ -943,28 +1019,17 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     }
 
     // Add variables to scope
+    // Variables with an explicit type are zero-initialized at declaration
+    // (Go-style default-value semantics) — even when no explicit
+    // initializer expression is supplied. Without this, `var p Point`
+    // would read as uninitialized when its fields are later accessed,
+    // even though the struct's bytes are zeroed by the alloca.
+    int is_initialized = (var_decl->values != NULL) || (declared_type != NULL);
     for (size_t i = 0; i < var_decl->name_count; i++) {
         Type* t = per_name_types ? per_name_types[i] : final_type;
-        Variable* var = variable_new(var_decl->names[i], t, var_decl->base.pos);
-        if (!var) {
-            type_error(checker, var_decl->base.pos, "Memory allocation failed");
+        if (!bind_var_decl_name(checker, var_decl, var_decl->names[i], t,
+                                 is_initialized, /*emit_errors=*/1)) {
             free(per_name_types);
-            return 0;
-        }
-        
-        var->ownership = var_decl->ownership;
-        // Variables with an explicit type are zero-initialized at
-        // declaration (Go-style default-value semantics) — even when
-        // no explicit initializer expression is supplied. Without
-        // this, `var p Point` would read as uninitialized when its
-        // fields are later accessed, even though the struct's bytes
-        // are zeroed by the alloca.
-        var->is_initialized = (var_decl->values != NULL) || (declared_type != NULL);
-        
-        if (!scope_add_variable(checker->current_scope, var)) {
-            type_error(checker, var_decl->base.pos, 
-                      "Variable '%s' already declared in this scope", var_decl->names[i]);
-            variable_free(var);
             return 0;
         }
     }

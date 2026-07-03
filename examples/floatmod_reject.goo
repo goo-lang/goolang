@@ -1,0 +1,24 @@
+// floatmod_reject (task 1, checker hygiene): `%` on FLOAT operands must be
+// REJECTED at the checker, not silently accepted and handed to codegen.
+// Go itself rejects this ("invalid operation: operator % not defined on g
+// (variable of type float64)") — a Go-CONFORMANT rejection.
+//
+// Before this fix, type_check_arithmetic_op's float-promotion branch
+// happily returned FLOAT64 for `%` (it only special-cases float PROMOTION,
+// never asks whether the operator itself is defined for floats), so
+// `g % 2.0` sailed through the checker as a well-typed float64 expression.
+// Codegen's TOKEN_MODULO arm is integer-only (no frem is ever emitted), so
+// the mistyped node crashed two codegen passes back to back with opaque,
+// unactionable messages instead of a checker diagnostic:
+//   "Failed to generate binary operation"
+//   "Failed to generate initializer"
+// Guarded by the floatmod-reject-probe Makefile target.
+package main
+
+import "fmt"
+
+func main() {
+	g := 2.5
+	h := g % 2.0
+	fmt.Println(h)
+}
