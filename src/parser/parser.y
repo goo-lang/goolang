@@ -47,6 +47,21 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
    struct_lit_init stashed on its node_type slot. Shared by the `struct_lit`
    rule and the elided-composite element rule. */
 static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
+
+// func_signature's own $$ collapses params and result into a single
+// ASTNode* that can't tell "params only" (case: `(int)`) apart from
+// "result only" (case: `() int`), and its "both" case (`(int) int`)
+// outright drops the result (see the TODO on that action) — every existing
+// caller of func_signature only ever read $$ as a params chain, so fixing
+// that would ripple into all of them. func_type is the one caller that
+// genuinely needs both pieces (it builds a FuncTypeNode), so func_signature
+// additionally stashes them here, immediately consumed and cleared by
+// func_type's action right after — safe because func_signature always
+// reduces immediately before the func_type rule that contains it, and
+// nested func types fully resolve (stash set, then consumed) before the
+// enclosing func_signature's own action runs.
+static ASTNode* g_func_signature_params = NULL;
+static ASTNode* g_func_signature_result = NULL;
 %}
 
 // Union type for semantic values
@@ -455,18 +470,29 @@ func_decl:
 func_signature:
     LPAREN RPAREN {
         $$ = NULL; // No parameters, no return type
+        g_func_signature_params = NULL;
+        g_func_signature_result = NULL;
     }
     | LPAREN func_params RPAREN {
         reinterpret_grouped_names($2); // Go grouped params `(x, y int)`
         $$ = $2; // Parameters, no return type
+        g_func_signature_params = $2;
+        g_func_signature_result = NULL;
     }
     | LPAREN RPAREN func_result {
         $$ = $3; // No parameters, has return type
+        g_func_signature_params = NULL;
+        g_func_signature_result = $3;
     }
     | LPAREN func_params RPAREN func_result {
         reinterpret_grouped_names($2); // Go grouped params `(x, y int)`
-        // TODO: Combine params and result
+        // TODO: still drops the result for func_signature's OTHER callers
+        // (attribute/comptime/unsafe/extern/kernel decls going through this
+        // rule) — pre-existing, tracked separately. func_type reads the
+        // side-channel above instead of $$, so it isn't affected by this gap.
         $$ = $2;
+        g_func_signature_params = $2;
+        g_func_signature_result = $4;
     }
     ;
 
@@ -2220,8 +2246,21 @@ chan_pattern:
 
 func_type:
     FUNC func_signature {
-        // TODO: Create proper function type
-        $$ = $2;
+        // func_signature's $$ (in $2) is ambiguous between "params only" and
+        // "result only" and drops the result in the "both" case (see its
+        // action) — build the real FuncTypeNode from the side-channel it
+        // populates instead, which carries params and return_type
+        // independently and correctly for all four shapes.
+        FuncTypeNode* func_type_node = (FuncTypeNode*)malloc(sizeof(FuncTypeNode));
+        func_type_node->base.type = AST_FUNC_TYPE;
+        func_type_node->base.pos = get_current_position();
+        func_type_node->base.node_type = NULL;
+        func_type_node->base.next = NULL;
+        func_type_node->params = g_func_signature_params;
+        func_type_node->return_type = g_func_signature_result;
+        g_func_signature_params = NULL;
+        g_func_signature_result = NULL;
+        $$ = (ASTNode*)func_type_node;
     }
     ;
 

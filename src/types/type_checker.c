@@ -2361,6 +2361,52 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (!pointee_type) return NULL;
             return type_pointer(pointee_type);
         }
+
+        case AST_FUNC_TYPE: {
+            // `func(T...) R` in a type position (param, var decl, return
+            // type, field, slice elem, ...). params is a ->next chain of
+            // VarDeclNode — the same shape as a func_decl's parameter list,
+            // already run through reinterpret_grouped_names by the parser's
+            // func_signature rule — so walk it exactly like
+            // declare_function_signature's signature-building loop above,
+            // including the #105 variadic-parameter model (last param's T
+            // becomes []T with is_variadic=1 on the resulting function Type).
+            FuncTypeNode* ft = (FuncTypeNode*)type_node;
+            size_t param_count = 0;
+            for (ASTNode* p = ft->params; p; p = p->next) {
+                if (p->type == AST_VAR_DECL) param_count++;
+            }
+
+            Type** param_types = NULL;
+            int is_variadic = 0;
+            if (param_count > 0) {
+                param_types = calloc(param_count, sizeof(Type*));
+                if (!param_types) return NULL;
+                size_t idx = 0;
+                for (ASTNode* p = ft->params; p; p = p->next) {
+                    if (p->type != AST_VAR_DECL) continue;
+                    VarDeclNode* pd = (VarDeclNode*)p;
+                    Type* pt = pd->type ? type_from_ast(checker, pd->type)
+                                        : type_checker_get_builtin(checker, TYPE_INT32);
+                    if (!pt) { free(param_types); return NULL; }
+                    if (pd->is_variadic_param) {
+                        pt = type_slice(pt);
+                        is_variadic = 1;
+                    }
+                    param_types[idx++] = pt;
+                }
+            }
+
+            Type* return_type = ft->return_type
+                ? type_from_ast(checker, ft->return_type)
+                : type_checker_get_builtin(checker, TYPE_VOID);
+            if (ft->return_type && !return_type) { free(param_types); return NULL; }
+
+            Type* func_type = type_function(param_types, param_count, return_type);
+            if (func_type) func_type->data.function.is_variadic = is_variadic;
+            free(param_types);  // type_function copies what it needs
+            return func_type;
+        }
         
         case AST_REFERENCE_TYPE: {
             ReferenceTypeNode* ref = (ReferenceTypeNode*)type_node;

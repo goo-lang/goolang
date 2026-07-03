@@ -1,0 +1,44 @@
+package main
+
+import "fmt"
+
+func inc(x int) int {
+	return x + 1
+}
+
+func dbl(x int) int {
+	return x * 2
+}
+
+func apply(f func(int) int, v int) int {
+	return f(v)
+}
+
+func pick(b bool) func(int) int {
+	if b {
+		return inc
+	}
+	return dbl
+}
+
+type Ops struct {
+	F func(int) int
+}
+
+func run(o Ops, v int) int {
+	return o.F(v)
+}
+
+func main() {
+	fmt.Println(apply(inc, 41))
+	fmt.Println(apply(dbl, 21))
+	var f func(int) int
+	f = inc
+	fmt.Println(f(1))
+	g := pick(false)
+	fmt.Println(g(21))
+	o := Ops{F: dbl}
+	fmt.Println(run(o, 5))
+	fs := []func(int) int{inc, dbl}
+	fmt.Println(fs[0](0) + fs[1](3))
+}

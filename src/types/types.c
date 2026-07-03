@@ -242,7 +242,42 @@ Type* type_function(Type** param_types, size_t param_count, Type* return_type) {
         type->data.function.is_variadic = 0;
         type->size = sizeof(void*);  // Function is a pointer
         type->align = sizeof(void*);
-        type->name = str_dup("func");  // TODO: Create full signature
+
+        // Create name like "func(int, int) int" (param type names comma-
+        // joined; " " + return-type name suffix only when non-void) — same
+        // exact-size-then-strcpy/strcat idiom as type_application's "Vec<int>"
+        // above. Every TYPE_FUNCTION used to get the literal name "func", so
+        // type_to_string (which just returns type->name) rendered every
+        // signature identically — a func(int,int)int assigned to a
+        // func(int)int var reported "Cannot assign func to func" instead of
+        // naming the actual mismatch.
+        int has_return = return_type && return_type->kind != TYPE_VOID;
+        size_t name_size = strlen("func()") + 1;
+        for (size_t i = 0; i < param_count; i++) {
+            if (i > 0) name_size += 2;  // ", "
+            name_size += strlen(param_types[i] && param_types[i]->name
+                                 ? param_types[i]->name : "?");
+        }
+        if (has_return) {
+            name_size += 1 + strlen(return_type->name ? return_type->name : "?");  // " " + name
+        }
+        char* name = malloc(name_size);
+        if (name) {
+            strcpy(name, "func(");
+            for (size_t i = 0; i < param_count; i++) {
+                if (i > 0) strcat(name, ", ");
+                strcat(name, param_types[i] && param_types[i]->name
+                             ? param_types[i]->name : "?");
+            }
+            strcat(name, ")");
+            if (has_return) {
+                strcat(name, " ");
+                strcat(name, return_type->name ? return_type->name : "?");
+            }
+            type->name = name;
+        } else {
+            type->name = str_dup("func");  // OOM fallback
+        }
     }
     return type;
 }
@@ -625,7 +660,23 @@ int type_equals(const Type* a, const Type* b) {
                     return 0;
             }
             return 1;
-        
+
+        case TYPE_FUNCTION:
+            // Signature equality: same arity, each param type, return type,
+            // and variadic flag. Without this arm the switch's default (any
+            // two same-kind types are equal) made every func value type
+            // compatible with every other, e.g. `func(int) int` accepted
+            // where `func(string) bool` was expected.
+            if (a->data.function.is_variadic != b->data.function.is_variadic)
+                return 0;
+            if (a->data.function.param_count != b->data.function.param_count)
+                return 0;
+            for (size_t i = 0; i < a->data.function.param_count; i++) {
+                if (!type_equals(a->data.function.param_types[i], b->data.function.param_types[i]))
+                    return 0;
+            }
+            return type_equals(a->data.function.return_type, b->data.function.return_type);
+
         default:
             return 1;  // Basic types are equal if kinds match
     }

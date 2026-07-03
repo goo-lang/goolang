@@ -131,13 +131,39 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
     }
 }
 
+// Resolve a bare identifier to its module-level (non-local) function global,
+// if any. Inside a package (current_package set) a package-local function is
+// emitted under its mangled symbol goo_pkg__<pkg>__<name>, so an
+// intra-package reference must resolve the mangled symbol FIRST; the bare
+// name is the fallback for the main package and for runtime/shim symbols.
+// (Without this, any package whose functions call each other — every real
+// stdlib leaf — fails codegen with "Undefined identifier".)
+//
+// Shared by codegen_generate_identifier's value-position fallback below
+// (which wraps a TYPE_FUNCTION result into the universal fat-pointer VALUE)
+// and codegen_resolve_callee's direct-call bypass (call_codegen.c), which
+// need the identical lookup but return it BARE, unwrapped.
+LLVMValueRef codegen_lookup_global_function(CodeGenerator* codegen, TypeChecker* checker,
+                                            const char* name) {
+    LLVMValueRef func_val = NULL;
+    char* pkg_sym = codegen_package_symbol_name(checker, name);
+    if (pkg_sym) {
+        func_val = LLVMGetNamedFunction(codegen->module, pkg_sym);
+        free(pkg_sym);
+    }
+    if (!func_val) {
+        func_val = LLVMGetNamedFunction(codegen->module, name);
+    }
+    return func_val;
+}
+
 ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_IDENTIFIER) return NULL;
-    
+
     IdentifierNode* ident = (IdentifierNode*)expr;
 
     // Look up the identifier in the symbol table
@@ -147,26 +173,39 @@ ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* chec
         // (`func add(...)`) are registered via LLVMAddFunction during
         // codegen_generate_function_decl but never make it into the
         // codegen value table, so any `add(2,3)` call would fail here.
-        //
-        // Inside a package (current_package set) a package-local function is
-        // emitted under its mangled symbol goo_pkg__<pkg>__<name>, so an
-        // intra-package call `Inner(x)` must resolve the mangled symbol FIRST;
-        // the bare name is the fallback for the main package and for runtime/
-        // shim symbols. (Without this, any package whose functions call each
-        // other — every real stdlib leaf — fails codegen with "Undefined
-        // identifier".)
-        LLVMValueRef func_val = NULL;
-        char* pkg_sym = codegen_package_symbol_name(checker, ident->name);
-        if (pkg_sym) {
-            func_val = LLVMGetNamedFunction(codegen->module, pkg_sym);
-            free(pkg_sym);
-        }
-        if (!func_val) {
-            func_val = LLVMGetNamedFunction(codegen->module, ident->name);
-        }
+        LLVMValueRef func_val = codegen_lookup_global_function(codegen, checker, ident->name);
         if (func_val) {
             Variable* func_var = type_checker_lookup_variable(checker, ident->name);
             Type* func_type = func_var ? func_var->type : NULL;
+
+            // A bare named-function reference reached HERE is always a VALUE
+            // use, never a direct-call callee: codegen_generate_call_expr's
+            // generic call path and codegen_generate_go_stmt's callee
+            // resolution both call codegen_resolve_callee FIRST
+            // (call_codegen.c) and bypass this identifier arm entirely for
+            // an unshadowed bare-identifier callee — see that function's
+            // comment for why. Every function-typed VALUE is the universal
+            // fat pointer `{ fn_ptr, env_ptr }` (env FIRST — a change-
+            // together contract Branch B's closures build on unseen; see
+            // docs/superpowers/specs/2026-07-03-closures-design.md
+            // "Representation"). A named function captures nothing, so
+            // get-or-create its thunk (mirrors PR #30's goroutine thunk
+            // conventions: per-symbol, get-or-create, cached by name) and
+            // wrap it as `{ thunk, NULL }`.
+            if (func_type && func_type->kind == TYPE_FUNCTION) {
+                LLVMValueRef thunk = codegen_get_func_thunk(codegen, checker, func_type,
+                                                            func_val, ident->name);
+                if (!thunk) {
+                    codegen_error(codegen, expr->pos,
+                                  "internal: failed to build value-thunk for '%s'",
+                                  ident->name);
+                    return NULL;
+                }
+                LLVMTypeRef pair_ty = codegen_get_funcval_pair_type(codegen);
+                LLVMValueRef pair = LLVMConstNull(pair_ty);
+                pair = LLVMBuildInsertValue(codegen->builder, pair, thunk, 0, "funcval");
+                return value_info_new(ident->name, pair, func_type);
+            }
             return value_info_new(ident->name, func_val, func_type);
         }
         codegen_error(codegen, expr->pos, "Undefined identifier '%s'", ident->name);

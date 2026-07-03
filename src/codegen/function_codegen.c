@@ -197,6 +197,89 @@ LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const
     return p;
 }
 
+// Get-or-create the value-thunk for named function `name` (Goo type
+// `fn_type`, LLVM global `named_fn`): `<name>.__thunk(env, params...) =
+// named_fn(params...)`. `env` (thunk param 0) is ignored — a named function
+// captures nothing — but MUST be present and FIRST: every indirect call site
+// (codegen_generate_call_expr, call_codegen.c) calls through the universal
+// `{ fn_ptr, env_ptr }` pair as `fn_ptr(env_ptr, args...)`, so any callable
+// stored in that pair — including a bare named function's thunk — must share
+// this exact ABI (env-FIRST is a change-together contract Branch B's
+// closures build on unseen; see docs/superpowers/specs/
+// 2026-07-03-closures-design.md "Representation").
+//
+// Mirrors two established get-or-create-thunk conventions in this codebase:
+// PR #30's goroutine thunk (statement_codegen.c's codegen_generate_go_stmt —
+// per-call-site synthesis, block save/restore) and interface_codegen.c's
+// build_thunk (the closer structural analog — a reusable, name-cached,
+// get-or-create thunk). interface_codegen.c itself is not modified by this
+// task (outside its file allowlist); only its convention is mirrored here.
+//
+// Cached via LLVMGetNamedFunction on the thunk's own symbol name — idempotent:
+// a second call for the same function returns the existing thunk, matching
+// the spec's "once per (function, module)" requirement. The thunk's base
+// name is taken from named_fn's OWN LLVM symbol (not the bare `name` param)
+// so a package-mangled function (goo_pkg__<pkg>__<base>) gets a correctly
+// disambiguated thunk instead of colliding with a same-named function in
+// another package; `name` is used only as a defensive fallback if that
+// lookup is empty.
+LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker,
+                                    Type* fn_type, LLVMValueRef named_fn,
+                                    const char* name) {
+#if !LLVM_AVAILABLE
+    (void)checker;
+    (void)fn_type;
+    (void)named_fn;
+    (void)name;
+    return NULL;
+#else
+    (void)checker;  // no re-type-checking needed inside a thunk body
+    if (!codegen || !fn_type || fn_type->kind != TYPE_FUNCTION || !named_fn || !name) return NULL;
+
+    size_t base_len = 0;
+    const char* llvm_name = LLVMGetValueName2(named_fn, &base_len);
+    const char* base_name = (llvm_name && base_len > 0) ? llvm_name : name;
+
+    char thunk_name[256];
+    snprintf(thunk_name, sizeof(thunk_name), "%s.__thunk", base_name);
+    LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, thunk_name);
+    if (existing) return existing;
+
+    LLVMTypeRef thunk_ty = codegen_get_funcval_call_type(codegen, fn_type);
+    LLVMTypeRef named_fn_ty = codegen_get_function_type(codegen, fn_type);
+    if (!thunk_ty || !named_fn_ty) return NULL;
+
+    LLVMValueRef thunk = LLVMAddFunction(codegen->module, thunk_name, thunk_ty);
+    LLVMSetLinkage(thunk, LLVMInternalLinkage);
+
+    // Emit the thunk body, saving/restoring the outer insert point.
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(codegen->context, thunk, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+
+    // Thunk param 0 is env (ignored); the wrapped function's real params
+    // start at thunk param index 1.
+    size_t np = fn_type->data.function.param_count;
+    LLVMValueRef* call_args = np ? malloc(sizeof(LLVMValueRef) * np) : NULL;
+    for (size_t i = 0; i < np; i++) call_args[i] = LLVMGetParam(thunk, (unsigned)(i + 1));
+
+    LLVMTypeRef ret_llvm = LLVMGetReturnType(thunk_ty);
+    int is_void = LLVMGetTypeKind(ret_llvm) == LLVMVoidTypeKind;
+    LLVMValueRef call = LLVMBuildCall2(codegen->builder, named_fn_ty, named_fn,
+                                       call_args, (unsigned)np, is_void ? "" : "thunk_call");
+    free(call_args);
+
+    if (is_void) {
+        LLVMBuildRetVoid(codegen->builder);
+    } else {
+        LLVMBuildRet(codegen->builder, call);
+    }
+
+    if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    return thunk;
+#endif
+}
+
 // Forward declaration for error union function generation
 int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* checker, 
                                          FuncDeclNode* func_decl, Type* return_type);

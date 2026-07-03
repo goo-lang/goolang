@@ -1,0 +1,13 @@
+// funcnil_abort (Task 3): calling a nil function value must abort cleanly
+// (Go: "invalid memory address or nil pointer dereference" runtime panic),
+// not jump to a NULL instruction pointer. `var f func(int) int` zero-values
+// to the fat pointer {NULL, NULL}; f(1) exercises the INDIRECT call site
+// (call_codegen.c) with no assignment ever having replaced the zero value.
+// Compiled and run by the `funcnil-abort-probe` Makefile target, which
+// asserts a non-zero exit and a "nil function" message.
+package main
+
+func main() {
+	var f func(int) int
+	f(1)
+}

@@ -252,6 +252,16 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
 
 // Expression generation
 ValueInfo* codegen_generate_identifier(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+#if LLVM_AVAILABLE
+// Resolve a bare identifier to its module-level (non-local) function global,
+// if any — an intra-package symbol goo_pkg__<pkg>__<name> first, then the
+// bare name. Shared by codegen_generate_identifier's value-position fallback
+// (expression_codegen.c, which wraps the result into the universal
+// fat-pointer VALUE) and codegen_resolve_callee's direct-call bypass
+// (call_codegen.c), which need the identical lookup but return it BARE.
+LLVMValueRef codegen_lookup_global_function(CodeGenerator* codegen, TypeChecker* checker,
+                                            const char* name);
+#endif
 ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 // Build a *constant* goo_string { i8* data, i64 len } value from `len` raw bytes
 // (embedded NULs preserved). Builder-free, so it is valid at global scope — used
@@ -261,6 +271,16 @@ LLVMValueRef codegen_const_string_value(CodeGenerator* codegen, const char* byte
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+// Resolve a call/go-statement's CALLEE expression. A bare identifier NOT
+// shadowed by a local variable/parameter resolves to the BARE LLVM global
+// function (the direct-call fast path — unconditionally unchanged from
+// before the universal fat-pointer migration). Any other callee expression
+// evaluates through the ordinary expression path and may yield the
+// universal `{ fn_ptr, env_ptr }` pair. Used by codegen_generate_call_expr
+// (call_codegen.c) and codegen_generate_go_stmt (statement_codegen.c) — see
+// codegen_resolve_callee's definition for why the go-statement use is
+// required, not optional.
+ValueInfo* codegen_resolve_callee(CodeGenerator* codegen, TypeChecker* checker, ASTNode* callee_expr);
 ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 // Widen an integer index value to a signed-correct i64 offset (zero-extend for
 // unsigned index types, sign-extend for signed). Prevents a narrow unsigned
@@ -328,6 +348,11 @@ LLVMTypeRef codegen_get_basic_type(CodeGenerator* codegen, TypeKind kind);
 LLVMTypeRef codegen_get_array_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_function_type(CodeGenerator* codegen, const Type* type);
+// Universal function-VALUE representation: the `{ ptr fn, ptr env }` pair
+// (see the header comment at its definition, type_mapping.c) and the
+// env-prepended LLVM function type used to call through it.
+LLVMTypeRef codegen_get_funcval_pair_type(CodeGenerator* codegen);
+LLVMTypeRef codegen_get_funcval_call_type(CodeGenerator* codegen, const Type* fn_type);
 LLVMTypeRef codegen_get_pointer_type(CodeGenerator* codegen, const Type* type);
 
 // Special Goo type mappings
@@ -352,6 +377,13 @@ void codegen_exit_function(CodeGenerator* codegen);
 LLVMValueRef codegen_create_alloca(CodeGenerator* codegen, LLVMTypeRef type, const char* name);
 LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef type, const char* name);
 LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const char* name);
+// Get-or-create the value-thunk for named function `name` (Goo type
+// `fn_type`, LLVM global `named_fn`): `<name>.__thunk(env, params...) =
+// named_fn(params...)`. See its definition (function_codegen.c) for the
+// env-FIRST ABI contract and the #30/interface_codegen.c precedents mirrored.
+LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker,
+                                    Type* fn_type, LLVMValueRef named_fn,
+                                    const char* name);
 
 // Map values ride an 8-byte runtime slot (i64). Convert a value of the
 // declared map value-type V to the slot (ptrtoint / zext-or-trunc) and back

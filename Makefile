@@ -1400,6 +1400,44 @@ bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ "$$(cat build/inbounds.txt)" != "20" ]; then echo "bounds-probe: FAIL (in-bounds s[1] != 20: $$(cat build/inbounds.txt))"; exit 1; fi
 	@echo "bounds-probe: PASS"
 
+# Task 3 (func-values): calling a nil function value must abort cleanly
+# (Go: "invalid memory address or nil pointer dereference"-class panic),
+# not jump to a NULL instruction pointer. `var f func(int) int` zero-values
+# to the fat pointer {NULL, NULL}. Mirrors bits-div-abort-probe/divzero-
+# probe's runtime-abort pattern: compiles cleanly (rc=0), the RUN aborts
+# non-zero, and the abort message is grepped.
+funcnil-abort-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== funcnil-abort-probe: nil func value call must abort with 'nil function' ==="
+	@"$(COMPILER)" examples/funcnil_abort.goo -o build/funcnil_abort.out 2>build/funcnil_abort.cerr || \
+	  { echo "funcnil-abort-probe: FAIL (compile)"; cat build/funcnil_abort.cerr; exit 1; }
+	@./build/funcnil_abort.out 2>build/funcnil_abort.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "funcnil-abort-probe: FAIL (nil call did not abort, rc=0)"; exit 1; fi; \
+	if ! grep -q "nil function" build/funcnil_abort.err; then echo "funcnil-abort-probe: FAIL (no nil-function panic message)"; cat build/funcnil_abort.err; exit 1; fi
+	@echo "funcnil-abort-probe: PASS"
+
+# Task 3 (func-values): a func VALUE with a mismatched signature must be
+# REJECTED at compile time (Go: "cannot use two (value of type func(int,
+# int) int) as func(int) int value in assignment"). Task 1 already made
+# TYPE_FUNCTION structurally comparable (type_equals/type_compatible), so
+# the mismatch itself was already rejected before this task — this probe
+# locks in the DIAGNOSTIC WORDING: type_function() used to name every
+# signature the literal "func" ("Cannot assign func to func" regardless of
+# either side's actual shape), and now renders the full signature. Goo's
+# "int" is 64-bit (type_checker.c: "Default int (Go: int is 64-bit here)"),
+# so the rendered param/return name is "int64" — grepping the actual
+# rendering, not Go's own wording (same idiom as constconv-reject-probe).
+funcsig-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== funcsig-reject-probe: func(int64,int64)int64 assigned to func(int64)int64 var must reject ==="
+	@rm -f build/funcsig_reject
+	@$(COMPILER) -o build/funcsig_reject examples/funcsig_reject.goo > build/funcsig_reject.out 2> build/funcsig_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "funcsig-reject-probe: FAIL (compiled rc=0 — signature mismatch silently accepted)"; exit 1; fi; \
+	if [ -x build/funcsig_reject ]; then echo "funcsig-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/funcsig_reject.err; then echo "funcsig-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/funcsig_reject.err; exit 1; fi; \
+	if ! grep -q "func(int64, int64) int64" build/funcsig_reject.err; then echo "funcsig-reject-probe: FAIL (wrong/missing diagnostic — type_to_string regressed to bare 'func')"; cat build/funcsig_reject.err; exit 1; fi; \
+	echo "funcsig-reject-probe: PASS (rejected rc=$$rc)"
+
 # Soak iteration count for the parallel probes (override: make ... PARALLEL_SOAK_ITERS=200).
 PARALLEL_SOAK_ITERS ?= 50
 
@@ -1636,7 +1674,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcsig-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
