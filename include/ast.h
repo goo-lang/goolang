@@ -143,6 +143,13 @@ typedef enum {
     AST_ARRAY_LITERAL,
     AST_KEYED_ELEMENT,     // `index: value` element inside an array/slice literal
 
+    // Closures Branch B, Task 1: func literal `func(params) result { body }`
+    // in EXPRESSION position (assignable, passable, immediately invocable,
+    // returnable — see docs/superpowers/specs/2026-07-03-closures-design.md
+    // "Grammar"). Tail-appended per the M10 convention above (Makefile has
+    // no header deps).
+    AST_FUNC_LIT,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -292,6 +299,16 @@ typedef struct {
     // mid-list field insertion would shift every field after it and silently
     // miscompile any translation unit rebuilt without `make clean`.
     int is_variadic_param;
+    // Closures Task 2: set by the checker (expression_checker.c's
+    // type_check_identifier, via type_checker_record_capture) when a nested
+    // func literal reads or writes this declaration. Codegen's promotion
+    // pass (function_codegen.c) reads this at the var-decl alloca / param-
+    // binding site to allocate the slot on the heap (goo_alloc) instead of
+    // the stack, so every capturing closure's env can hold a pointer to it
+    // that outlives this declaration's own frame. Appended at the STRUCT
+    // TAIL per the no-header-deps convention (see :123-133) — same rule
+    // is_variadic_param documents above.
+    int is_captured;
 } VarDeclNode;
 
 // Constant declaration
@@ -550,6 +567,42 @@ typedef struct {
     struct ASTNode* params;
     struct ASTNode* return_type;
 } FuncTypeNode;
+
+// Function literal (Closures Branch B, Task 1): `func(params) result { body }`
+// as a primary expression. `params` and `return_type` follow the exact same
+// shapes FuncDeclNode's do (params: a `next`-chained VarDeclNode list built
+// from func_params via reinterpret_grouped_names; return_type: a type node,
+// a StructTypeNode for a parenthesized/multi/named result list, or NULL for
+// no declared return). NO captures in T1 — see the codegen literal emitter
+// (function_codegen.c) for how the body's scope is bounded at the literal
+// boundary. Emitted as `__goo_lit_<n>` (module-unique) with env as LLVM
+// parameter 0 (present but unused in T1 — Branch B's Task 2 wires captures
+// through it); the literal's VALUE is the universal fat-pointer pair
+// `{__goo_lit_n, NULL}` (see docs/superpowers/specs/2026-07-03-closures-
+// design.md "Representation").
+typedef struct {
+    ASTNode base;
+    struct ASTNode* params;
+    struct ASTNode* return_type;
+    struct ASTNode* body;
+    // Closures Task 2: names captured from an enclosing function/literal, in
+    // FIRST-CAPTURED order — set by the checker (expression_checker.c's
+    // type_checker_record_capture) as it detects each boundary-crossing
+    // reference inside this literal's body (or, for a TRANSITIVE capture,
+    // relayed in from a nested literal's own capture — see
+    // TypeChecker.literal_stack's doc comment, types.h). Codegen (function_
+    // codegen.c's codegen_generate_func_lit) reads this TWICE against the
+    // SAME array, in the SAME order — once at the literal's closure-creation
+    // site (env build: GEP field i <- current slot address of
+    // captured_names[i]) and once in the literal's own prologue (GEP field i
+    // of the env PARAMETER -> rebind captured_names[i] to the loaded slot
+    // pointer). BUILD ORDER = PROLOGUE ORDER is a change-together contract
+    // between those two sites — see the doc comment at each. Owned (each
+    // name is strdup'd); NULL/0 for a non-capturing literal (T1's only
+    // case).
+    char** captured_names;
+    size_t captured_count;
+} FuncLitNode;
 
 // Pointer type
 typedef struct {
@@ -1098,6 +1151,11 @@ ProgramNode* ast_program_new(Position pos);
 PackageDeclNode* ast_package_decl_new(const char* name, Position pos);
 ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Position pos);
 FuncDeclNode* ast_func_decl_new(const char* name, Position pos);
+// Closures Branch B, Task 1: func literal constructor. Fields default to
+// NULL/NULL/NULL (no params, no declared return, no body); the parser fills
+// them in from its own RHS symbols (func_params/func_result/block) — see
+// FuncLitNode's doc comment above.
+FuncLitNode* ast_func_lit_new(Position pos);
 ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos);
 VarDeclNode* ast_var_decl_new(Position pos);
 EnumTypeNode* ast_enum_type_new(struct ASTNode* variants, Position pos);

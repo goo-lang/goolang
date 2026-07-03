@@ -821,6 +821,9 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->comptime_value = NULL;  // populated by type_check_const_decl for is_comptime consts
     var->package = NULL;  // set only on TYPE_PACKAGE markers (stdlib Phase 0)
     var->next = NULL;
+    var->decl_node = NULL;  // Closures Task 2: set by VarDeclNode-backed registration sites
+    var->is_captured = 0;   // Closures Task 2: set by type_checker_record_capture
+    var->is_loop_var = 0;   // Closures Task 2: set by type_check_for_stmt's loop-binding sites
 
     return var;
 }
@@ -842,7 +845,8 @@ Scope* scope_new(Scope* parent) {
     scope->variables = NULL;
     scope->parent = parent;
     scope->scope_id = parent ? parent->scope_id + 1 : 0;
-    
+    scope->is_function_boundary = 0;  // Closures Task 2: set explicitly by function/literal body pushes
+
     return scope;
 }
 

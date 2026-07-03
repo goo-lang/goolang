@@ -113,6 +113,136 @@ static int check_slice_elements(TypeChecker* checker, ASTNode* elements,
     return 1;
 }
 
+// Closures Branch B, Task 1: func literal `func(params) result { body }` in
+// expression position. Builds the signature from the literal's OWN
+// params/return_type — the exact same param-walk as type_from_ast's
+// AST_FUNC_TYPE arm (type_checker.c), including the #105 variadic-last-
+// param model (wrap in TYPE_SLICE, set is_variadic on the resulting
+// function Type). Not shared code with that arm (it lives in a different
+// file outside this task's allowlist) but deliberately kept in lockstep —
+// see that arm's comment for the shape this mirrors.
+//
+// Closures Task 2 (capture): the literal's body scope now chains directly
+// onto the ENCLOSING scope (no more T1's "root at package/global" stand-in —
+// see the git history of this comment for that earlier behavior), with
+// is_function_boundary=1 marking the scope pushed for the literal's own
+// body. type_check_identifier's scope walk uses that marker to detect a
+// capture: a resolution that has to leave this (or a nested literal's) own
+// boundary scope to find its binding. Codegen's promotion pass
+// (function_codegen.c) heap-allocates every captured variable's storage so
+// the closure's env can hold a pointer to it that outlives the declaring
+// frame — see "Capture" in docs/superpowers/specs/2026-07-03-closures-
+// design.md. Package-level functions/vars/consts/imports still resolve
+// exactly as before (never captures): they live in the root/package scope,
+// which is never is_function_boundary, so type_check_identifier's "found in
+// a FUNCTION scope" check excludes them.
+static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_FUNC_LIT) return NULL;
+    FuncLitNode* lit = (FuncLitNode*)expr;
+
+    size_t param_count = 0;
+    for (ASTNode* p = lit->params; p; p = p->next) {
+        if (p->type == AST_VAR_DECL) param_count++;
+    }
+
+    Type** param_types = NULL;
+    int is_variadic = 0;
+    if (param_count > 0) {
+        param_types = calloc(param_count, sizeof(Type*));
+        if (!param_types) return NULL;
+        size_t idx = 0;
+        for (ASTNode* p = lit->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            Type* pt = pd->type ? type_from_ast(checker, pd->type)
+                                : type_checker_get_builtin(checker, TYPE_INT32);
+            if (!pt) { free(param_types); return NULL; }
+            if (pd->is_variadic_param) {
+                pt = type_slice(pt);
+                is_variadic = 1;
+            }
+            param_types[idx++] = pt;
+        }
+    }
+
+    Type* return_type = lit->return_type
+        ? type_from_ast(checker, lit->return_type)
+        : type_checker_get_builtin(checker, TYPE_VOID);
+    if (lit->return_type && !return_type) { free(param_types); return NULL; }
+
+    Type* func_type = type_function(param_types, param_count, return_type);
+    if (func_type) func_type->data.function.is_variadic = is_variadic;
+    free(param_types);  // type_function copies what it needs
+    if (!func_type) return NULL;
+
+    // Chain the literal's body scope onto the currently-active (enclosing)
+    // scope — Closures Task 2 (see the doc comment above); T1 rooted this at
+    // package/global instead.
+    Scope* enclosing_scope = checker->current_scope;
+
+    scope_push(checker);
+    checker->current_scope->is_function_boundary = 1;
+
+    // Push this literal onto the checker's literal stack so
+    // type_check_identifier can relay a transitive capture through every
+    // currently-open literal (types.h's TypeChecker.literal_stack doc
+    // comment). Saved slot index, not just a decrement on pop, so hitting
+    // GOO_CLOSURE_MAX_NESTING degrades gracefully (push silently skipped;
+    // pop still balances) instead of desyncing the stack.
+    size_t lit_stack_slot = checker->literal_stack_len;
+    if (lit_stack_slot < GOO_CLOSURE_MAX_NESTING) {
+        checker->literal_stack[lit_stack_slot] = expr;
+        checker->literal_stack_len++;
+    }
+
+    // Track the return type so a `return` inside the literal's body checks
+    // against the LITERAL's declared return, not whatever enclosing
+    // function's return type was active (mirrors type_check_function_decl's
+    // save/restore of this exact field, type_checker.c).
+    Type* saved_return_type = checker->current_return_type;
+    checker->current_return_type = return_type;
+
+    if (lit->params) {
+        for (ASTNode* p = lit->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            Type* pt = pd->type ? type_from_ast(checker, pd->type)
+                                : type_checker_get_builtin(checker, TYPE_INT32);
+            if (pd->is_variadic_param && pt) pt = type_slice(pt);
+            if (pt) {
+                for (size_t i = 0; i < pd->name_count; i++) {
+                    Variable* pv = variable_new(pd->names[i], pt, pd->base.pos);
+                    if (pv) {
+                        pv->is_initialized = 1;
+                        // Closures Task 2: backref for capture stamping (see
+                        // type_check_function_decl's identical convention).
+                        pv->decl_node = (struct ASTNode*)pd;
+                        scope_add_variable(checker->current_scope, pv);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check the body statements — reuse type_check_statement exactly like
+    // type_check_function_decl's own body traversal (type_checker.c) rather
+    // than duplicating that logic.
+    int ok = 1;
+    if (lit->body) {
+        ok = type_check_statement(checker, lit->body);
+    }
+
+    checker->current_return_type = saved_return_type;
+    checker->literal_stack_len = lit_stack_slot;
+    scope_pop(checker);
+    checker->current_scope = enclosing_scope;
+
+    if (!ok) return NULL;
+
+    expr->node_type = func_type;
+    return func_type;
+}
+
 // Expression type checking implementation
 
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
@@ -329,6 +459,8 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
         }
         case AST_MATCH_EXPR:
             return type_check_match_expr(checker, expr);
+        case AST_FUNC_LIT:
+            return type_check_func_lit(checker, expr);
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;
@@ -595,17 +727,137 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
     return result_type;
 }
 
+// Closures Task 2: record a capture detected by type_check_identifier's
+// scope walk. `depth` is the number of function/literal boundaries the walk
+// crossed to reach `var`'s declaring scope — exactly the count of
+// currently-open literals (innermost first, i.e. the TOP `depth` entries of
+// checker->literal_stack) that must ALSO carry this name through their own
+// env, per the transitive-capture rule: an inner literal's env is populated
+// correctly, but each INTERMEDIATE literal between the reference and the
+// declaration must relay the slot pointer inward through its own env too
+// (the classic nested-closure "missing middle env" bug).
+//
+// Marks var->is_captured and stamps the declaring VarDeclNode (via
+// var->decl_node) so codegen's promotion pass (function_codegen.c) can find
+// it, then appends `name` (deduped) to the captured_names of each of those
+// `depth` literals.
+//
+// Returns 0 (after emitting a type_error) if var->decl_node is NULL or not
+// an AST_VAR_DECL: this happens for a binding form that carries no
+// VarDeclNode backref today — an if-let bind, a for-range loop variable, or
+// a 2-value `a, b := x, y` short decl (a MultiAssignNode, not a VarDeclNode
+// — see type_check_multi_assign). Silently allowing the capture would
+// type-check successfully but leave the variable un-promotable at codegen
+// time (nothing keys promotion off these forms), a silent miscompile once
+// the closure outlives the frame. Rejecting cleanly here is the T2
+// equivalent of T1's "Undefined variable" stand-in: a real, documented gap
+// instead of a wrong answer.
+static int type_checker_record_capture(TypeChecker* checker, Variable* var,
+                                        const char* name, int depth, Position pos) {
+    // Loop-variable capture: REJECT (checked before the decl_node guard —
+    // it is the more specific diagnosis, and a range binding would otherwise
+    // fall through to the generic "unsupported form" message below). Modern
+    // Go (1.22+) gives each loop iteration its OWN variable, so `for i := 0;
+    // i < 3; i = i + 1 { fs = append(fs, func() int { return i }) }` sums to
+    // 3 there — but this compiler's promotion model has exactly ONE slot per
+    // declaration and the for-init/range slot is minted once per loop ENTRY,
+    // so it would silently compute the pre-Go-1.22 shared-slot answer (9).
+    // Reject-rather-than-silently-deviate, per the #101 precedent;
+    // per-iteration slots are the recorded follow-up. The suggested `i := i`
+    // body-local copy works because an ordinary local's captured slot is
+    // minted per EXECUTION of its declaration — once per iteration inside a
+    // loop body (see codegen_alloc_local_promoted, function_codegen.c).
+    if (var->is_loop_var) {
+        type_error(checker, pos,
+                   "cannot capture loop variable '%s' in a closure "
+                   "(per-iteration capture semantics not yet supported; "
+                   "copy it to a local first: %s := %s)",
+                   name, name, name);
+        return 0;
+    }
+
+    if (!var->decl_node || var->decl_node->type != AST_VAR_DECL) {
+        type_error(checker, pos,
+                   "cannot capture '%s' in a closure: declared via a form not "
+                   "yet supported for capture (multi-value ':=', an if-let "
+                   "binding, or a for-range loop variable) — bind it with a "
+                   "plain 'name := value' first", name);
+        return 0;
+    }
+
+    var->is_captured = 1;
+    ((VarDeclNode*)var->decl_node)->is_captured = 1;
+
+    if (depth > (int)checker->literal_stack_len) depth = (int)checker->literal_stack_len;
+    for (int i = (int)checker->literal_stack_len - depth; i < (int)checker->literal_stack_len; i++) {
+        FuncLitNode* lit = (FuncLitNode*)checker->literal_stack[i];
+        int already = 0;
+        for (size_t j = 0; j < lit->captured_count; j++) {
+            if (strcmp(lit->captured_names[j], name) == 0) { already = 1; break; }
+        }
+        if (already) continue;
+        char** grown = realloc(lit->captured_names, sizeof(char*) * (lit->captured_count + 1));
+        if (!grown) continue;  // defensive: leave this literal's env short rather than crash
+        grown[lit->captured_count] = strdup(name);
+        lit->captured_names = grown;
+        lit->captured_count++;
+    }
+    return 1;
+}
+
 Type* type_check_identifier(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_IDENTIFIER) return NULL;
 
     IdentifierNode* ident = (IdentifierNode*)expr;
-    Variable* var = type_checker_lookup_variable(checker, ident->name);
+
+    // Closures Task 2: resolve via our own scope walk (mirrors
+    // scope_lookup_variable's semantics exactly for the non-capture case —
+    // same first-match-per-scope, then parent, traversal) instead of
+    // calling type_checker_lookup_variable: that raw helper is ALSO used by
+    // package/global lookups and other checker passes (see its call sites)
+    // which must stay side-effect-free. Only THIS identifier arm may record
+    // a capture. See "Capture" in docs/superpowers/specs/2026-07-03-
+    // closures-design.md and the file-level note above type_check_func_lit.
+    Variable* var = NULL;
+    Scope* found_scope = NULL;
+    int boundaries_crossed = 0;
+    for (Scope* s = checker->current_scope; s; s = s->parent) {
+        Variable* v = s->variables;
+        while (v && strcmp(v->name, ident->name) != 0) v = v->next;
+        if (v) { var = v; found_scope = s; break; }
+        if (s->is_function_boundary) boundaries_crossed++;
+    }
 
     if (!var) {
         type_error(checker, expr->pos, "Undefined variable '%s'", ident->name);
         return NULL;
     }
-    
+
+    // A capture is a resolution that (a) had to leave at least one
+    // function/literal body scope to find the binding, AND (b) landed on a
+    // binding that itself belongs to SOME function activation (a local or
+    // param — not a global or package-level symbol, which resolve exactly
+    // as before). For (b): every scope OTHER than the true root or a
+    // package's top-level scope has a function-boundary scope somewhere in
+    // its own ancestor-or-self chain, because every OTHER scope_push
+    // happens while already nested inside one (if/for/switch/etc bodies,
+    // or a literal's own body, are only ever pushed from inside a function
+    // or literal). So walking from found_scope up to the true root and
+    // finding no boundary means found_scope IS that top-level declaration
+    // scope — never a capture, regardless of (a).
+    if (boundaries_crossed > 0) {
+        int found_in_function = 0;
+        for (Scope* s = found_scope; s; s = s->parent) {
+            if (s->is_function_boundary) { found_in_function = 1; break; }
+        }
+        if (found_in_function) {
+            if (!type_checker_record_capture(checker, var, ident->name,
+                                             boundaries_crossed, expr->pos)) {
+                return NULL;  // capture of an unsupported binding form; error already emitted
+            }
+        }
+    }
+
     // Check if variable has been moved (ownership tracking)
     if (var->is_moved) {
         type_error(checker, expr->pos, 

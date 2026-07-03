@@ -1545,6 +1545,49 @@ primary_expr:
        need a syntactic context marker (e.g., inside a `kernel { … }`
        block) before they can re-enter primary_expr. */
     | LPAREN expression RPAREN { $$ = $2; }
+    /* Closures Branch B, Task 1: func literal `func(params) result { body }`
+       as a primary expression — FUNC enters expression position for the
+       first time (previously FUNC only began a top-level func_decl or a
+       func_type in TYPE position). Each action builds the FuncLitNode's
+       params/return_type/body from its OWN RHS symbols (func_params/
+       func_result/block) — NOT the g_func_signature_params/result side
+       channel (that stash is func_type's alone; see its declaration
+       comment). Mirrors func_decl's four param/result shapes exactly,
+       including reinterpret_grouped_names for Go's grouped-name sugar
+       `(x, y int)`. Bison risk: verified empirically (see the conflict-
+       count gate in the closures design doc / task report) — baseline 79
+       shift/reduce + 256 reduce/reduce; a delta requires a written
+       conflict-family analysis and full-suite differential verification. */
+    | FUNC LPAREN RPAREN block {
+        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        lit->params = NULL;
+        lit->return_type = NULL;
+        lit->body = $4;
+        $$ = (ASTNode*)lit;
+    }
+    | FUNC LPAREN func_params RPAREN block {
+        reinterpret_grouped_names($3); // Go grouped params `(x, y int)`
+        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        lit->params = $3;
+        lit->return_type = NULL;
+        lit->body = $5;
+        $$ = (ASTNode*)lit;
+    }
+    | FUNC LPAREN RPAREN func_result block {
+        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        lit->params = NULL;
+        lit->return_type = $4;
+        lit->body = $5;
+        $$ = (ASTNode*)lit;
+    }
+    | FUNC LPAREN func_params RPAREN func_result block {
+        reinterpret_grouped_names($3); // Go grouped params `(x, y int)`
+        FuncLitNode* lit = ast_func_lit_new(get_current_position());
+        lit->params = $3;
+        lit->return_type = $5;
+        lit->body = $6;
+        $$ = (ASTNode*)lit;
+    }
     ;
 
 call_expr:

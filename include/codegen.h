@@ -110,6 +110,23 @@ struct CodeGenerator {
     DeferredGlobalInit* deferred_global_inits;
     size_t deferred_global_init_count;
     size_t deferred_global_init_capacity;
+
+    // Closures Branch B, Task 1: module-unique counter for func-literal LLVM
+    // symbol names (`__goo_lit_<n>`, codegen_generate_func_lit in
+    // function_codegen.c). Tail-appended per the no-header-deps convention
+    // (ast.h's M10 comment) — the Makefile lacks header dependencies, so a
+    // mid-struct insertion would shift every field after it and silently
+    // miscompile any translation unit rebuilt without `make clean`.
+    // codegen_new (codegen.c) is outside this task's file allowlist and so
+    // does not explicitly zero this field; that is safe (not a bug) because
+    // `unsigned long` has no trap representation (an uninitialized read
+    // yields some unspecified-but-valid value, never undefined behavior) and
+    // codegen_generate_func_lit only ever POST-INCREMENTs it, so every
+    // literal in one compilation still gets a distinct suffix regardless of
+    // the field's starting value — merely not guaranteed to start at 0.
+    // Recorded as a follow-up: an explicit `codegen->func_lit_counter = 0;`
+    // in codegen_new would make generated names deterministic across runs.
+    unsigned long func_lit_counter;
 };
 
 // Function information for code generation
@@ -306,6 +323,12 @@ ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* chec
 ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_slice_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+// Closures Branch B, Task 1: emit a func literal (function_codegen.c, beside
+// codegen_get_func_thunk) as its own `__goo_lit_<n>` LLVM function and
+// return the universal fat-pointer VALUE `{__goo_lit_n, NULL}`. See its
+// definition for the full ambient-state save/restore discipline this
+// mid-expression emission requires.
+ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 // Shared slice-construction core behind codegen_generate_slice_lit (`[]T{...}`)
 // and the struct-literal named-slice path: build a slice struct
 // { ptr, i64 len, i64 cap } from a next-chained ASTNode* element list and a

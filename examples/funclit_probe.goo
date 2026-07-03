@@ -1,0 +1,22 @@
+package main
+
+import "fmt"
+
+func apply(f func(int) int, v int) int {
+	return f(v)
+}
+
+func makeAdder() func(int) int {
+	return func(x int) int { return x + 10 }
+}
+
+func main() {
+	add := func(x int) int { return x + 1 }
+	fmt.Println(add(41))
+	fmt.Println(apply(func(x int) int { return x * 2 }, 21))
+	fmt.Println(func(a int, b int) int { return a + b }(20, 22))
+	g := makeAdder()
+	fmt.Println(g(32))
+	h := func() int { return 7 }
+	fmt.Println(h())
+}

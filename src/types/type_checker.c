@@ -36,6 +36,9 @@ TypeChecker* type_checker_new(void) {
     checker->packages = NULL;
     checker->current_package = NULL;
 
+    // Closures Task 2: no literal currently being checked.
+    checker->literal_stack_len = 0;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -689,6 +692,10 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
 
     // Create new scope for function
     scope_push(checker);
+    // Closures Task 2: mark this as a function-boundary scope so a nested
+    // func literal's identifier resolution (type_check_identifier,
+    // expression_checker.c) can detect crossing OUT of it as a capture.
+    checker->current_scope->is_function_boundary = 1;
 
     // Track the return type so context-sensitive builtins (e.g. error()) can
     // look it up without walking the AST upward.
@@ -720,6 +727,10 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
                         Variable* param_var = variable_new(param_decl->names[i], param_type, param_decl->base.pos);
                         if (param_var) {
                             param_var->is_initialized = 1; // Parameters are always initialized
+                            // Closures Task 2: backref to the declaring
+                            // VarDeclNode so a capture of this param can
+                            // stamp is_captured for codegen's promotion pass.
+                            param_var->decl_node = (struct ASTNode*)param_decl;
                             scope_add_variable(checker->current_scope, param_var);
                         }
                     }
@@ -746,6 +757,9 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
             Variable* rv = variable_new(fd->names[0], ft, fd->base.pos);
             if (rv) {
                 rv->is_initialized = 1;  // zero-initialized per Go semantics
+                // Closures Task 2: backref for capture stamping (see the
+                // param loop above).
+                rv->decl_node = (struct ASTNode*)fd;
                 scope_add_variable(checker->current_scope, rv);
             }
         }
@@ -866,6 +880,12 @@ static int bind_var_decl_name(TypeChecker* checker, VarDeclNode* var_decl,
 
     var->ownership = var_decl->ownership;
     var->is_initialized = is_initialized;
+    // Closures Task 2: backref to the declaring VarDeclNode (see the
+    // function/literal param registration sites for the same convention) —
+    // this is the SINGLE registration path for every ordinary local/global
+    // var-decl, including multi-name (`a, b := f()`) decls, which share one
+    // VarDeclNode across all of their names.
+    var->decl_node = (struct ASTNode*)var_decl;
 
     if (!scope_add_variable(checker->current_scope, var)) {
         if (emit_errors) {
@@ -1641,6 +1661,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             Variable* kv = variable_new(for_stmt->key_name, key_type, stmt->pos);
             if (kv) {
                 kv->is_initialized = 1;
+                kv->is_loop_var = 1;  // Closures Task 2: capture rejected (see Variable.is_loop_var)
                 scope_add_variable(checker->current_scope, kv);
             }
         }
@@ -1648,6 +1669,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             Variable* vv = variable_new(for_stmt->value_name, elem_type, stmt->pos);
             if (vv) {
                 vv->is_initialized = 1;
+                vv->is_loop_var = 1;  // Closures Task 2: capture rejected (see Variable.is_loop_var)
                 scope_add_variable(checker->current_scope, vv);
             }
         }
@@ -1657,9 +1679,44 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (for_stmt->init) {
         if (!type_check_statement(checker, for_stmt->init)) {
             result = 0;
+        } else {
+            // Closures Task 2: mark the init clause's declared names as loop
+            // variables so a closure capture of them is rejected (see
+            // Variable.is_loop_var, types.h). The init decl routes through
+            // the ORDINARY var-decl / multi-assign checkers above — which
+            // have no idea they are inside a for header — so the marking
+            // happens here, after the fact: the names were just registered
+            // into the for's OWN scope (pushed at the top of this function),
+            // so a direct walk of current_scope->variables (deliberately NOT
+            // the parent-chasing scope_lookup_variable — an init decl that
+            // failed to register must not mark a same-named OUTER variable)
+            // finds exactly the loop-owned bindings.
+            char** names = NULL;
+            size_t name_count = 0;
+            char* multi_names[8];  // for i, j := ... — targets are identifiers (v1)
+            if (for_stmt->init->type == AST_VAR_DECL) {
+                VarDeclNode* vd = (VarDeclNode*)for_stmt->init;
+                names = vd->names;
+                name_count = vd->name_count;
+            } else if (for_stmt->init->type == AST_MULTI_ASSIGN &&
+                       ((MultiAssignNode*)for_stmt->init)->is_short_decl) {
+                MultiAssignNode* ma = (MultiAssignNode*)for_stmt->init;
+                size_t n = 0;
+                for (ASTNode* t = ma->targets; t && n < 8; t = t->next) {
+                    if (t->type == AST_IDENTIFIER)
+                        multi_names[n++] = ((IdentifierNode*)t)->name;
+                }
+                names = multi_names;
+                name_count = n;
+            }
+            for (size_t i = 0; i < name_count; i++) {
+                for (Variable* v = checker->current_scope->variables; v; v = v->next) {
+                    if (strcmp(v->name, names[i]) == 0) { v->is_loop_var = 1; break; }
+                }
+            }
         }
     }
-    
+
     // Check condition
     if (for_stmt->condition) {
         Type* cond_type = type_check_expression(checker, for_stmt->condition);
