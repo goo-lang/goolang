@@ -810,6 +810,37 @@ floatmod-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -q "not defined on float" build/floatmod_reject.err; then echo "floatmod-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/floatmod_reject.err; exit 1; fi; \
 	echo "floatmod-reject-probe: PASS (rejected rc=$$rc)"
 
+# Task 3 (checker hygiene): a rejected declaration must not cascade into a
+# pile of spurious "Undefined variable" errors for every later use of the
+# name. Before this fix, `var b int8 = 300; fmt.Println(int(b)); c := b;
+# fmt.Println(int(c))` produced FIVE errors (the real overflow, plus
+# "Undefined variable 'b'" x2, "Invalid initializer expression", and
+# "Undefined variable 'c'") — go run reports exactly ONE. Root cause:
+# type_check_var_decl skipped scope registration on every initializer-
+# failure path, so `b` was never bound and every downstream reference
+# looked undefined. Fix: on a failed initializer where the declaration
+# carries an EXPLICIT type, register the name(s) with that declared type
+# before returning failure (see register_declared_names_after_failure in
+# type_checker.c) — compilation still fails, only the checker's scope
+# state recovers so it stops manufacturing new errors. Today's count with
+# the fix applied is 1 (down from 5); the assertion below allows up to 2
+# to leave headroom without re-tightening the probe. See
+# examples/cascade_reject.goo and the task-3 report for the `:=`-chain
+# residual this fix does NOT cover (a failed `:=` RHS has no type to fall
+# back on, so `c := <bad-rhs>` still cascades).
+cascade-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== cascade-reject-probe: one rejected decl must not cascade into spurious errors ==="
+	@rm -f build/cascade_reject
+	@$(COMPILER) -o build/cascade_reject examples/cascade_reject.goo > build/cascade_reject.out 2> build/cascade_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "cascade-reject-probe: FAIL (compiled rc=0 — int8 overflow silently accepted)"; exit 1; fi; \
+	if [ -x build/cascade_reject ]; then echo "cascade-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR|Segmentation|SIGSEGV" build/cascade_reject.err; then echo "cascade-reject-probe: FAIL (invalid IR/crash reached instead of a clean rejection)"; cat build/cascade_reject.err; exit 1; fi; \
+	if ! grep -q "overflows int8" build/cascade_reject.err; then echo "cascade-reject-probe: FAIL (wrong/missing diagnostic for the real error)"; cat build/cascade_reject.err; exit 1; fi; \
+	errcount=$$(grep -c 'error' build/cascade_reject.err); \
+	if [ $$errcount -gt 2 ]; then echo "cascade-reject-probe: FAIL (cascade regressed — $$errcount error lines, expected <=2)"; cat build/cascade_reject.err; exit 1; fi; \
+	echo "cascade-reject-probe: PASS (rejected rc=$$rc, $$errcount error line(s) <= 2)"
+
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
 # that both taken panics abort with the runtime-error message (the non-panic
 # paths are in bits_div_probe).
@@ -1545,7 +1576,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
