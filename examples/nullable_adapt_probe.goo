@@ -1,0 +1,64 @@
+// nullable_adapt_probe: cross-kind (int -> float) auto-wrap into a nullable
+// slot. `var q ?float64 = n` (n a TYPED int, not an untyped literal) crashed
+// the LLVM verifier before the shared-helper fix in this branch — insertvalue
+// { i1, double } ..., i64 — because the nullable auto-wrap paths inserted the
+// raw value without a cross-kind coercion. Untyped literals already adapt
+// (the checker stamps them); the fixed direction is specifically a typed int
+// VALUE flowing into a ?float/mismatched-kind nullable slot. Covers: var-decl
+// wrap (the former crash), a narrower float slot, an int-width slot
+// (regression vs nullable_width_probe), param auto-wrap, return auto-wrap,
+// and reassign wrap — all fed by the same typed int source `n` — plus (below)
+// the constant-range-check path through a nullable declared type: an
+// in-range boundary literal (`?int8 = 100`) and its negative boundary
+// (`?int8 = -128`), both stamped/range-checked against the BASE type before
+// the nullable wrap (see adapt_var_decl_initializer in
+// expression_checker.c). The reject side (`?int8 = 300`) lives in
+// constnul_reject.goo / the constnul-reject-probe Makefile target.
+package main
+
+import "fmt"
+
+func takesNF(p ?float64) bool {
+	if let v = p {
+		return v == 3.0
+	}
+	return false
+}
+
+func makeNF(n int) ?float64 {
+	return n
+}
+
+func main() {
+	n := 3
+	var q ?float64 = n
+	if let v = q {
+		fmt.Println(v == 3.0)
+	}
+	var w ?float32 = n
+	if let v = w {
+		fmt.Println(v == float32(3.0))
+	}
+	var s ?int32 = n
+	if let v = s {
+		fmt.Println(int(v))
+	}
+	fmt.Println(takesNF(n))
+	r := makeNF(4)
+	if let v = r {
+		fmt.Println(v == 4.0)
+	}
+	var t ?float64 = nil
+	t = n
+	if let v = t {
+		fmt.Println(v == 3.0)
+	}
+	var p8 ?int8 = 100
+	if let v = p8 {
+		fmt.Println(v)
+	}
+	var pn ?int8 = -128
+	if let v = pn {
+		fmt.Println(v)
+	}
+}

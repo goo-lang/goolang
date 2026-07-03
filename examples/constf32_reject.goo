@@ -1,0 +1,14 @@
+// constf32_reject (task 3 negative gate): a float constant that overflows
+// float32's finite range must be REJECTED at compile time, not silently
+// rounded to +/-inf. Go itself rejects this ("constant 1e+40 overflows
+// float32") — this is a Go-CONFORMANT rejection, unlike constdiv_reject/
+// constmod_reject (which are DELIBERATELY stricter than Go). Before task 3,
+// `var f float32 = 1e40` compiled clean and printed +Inf — see
+// literal_fits_type's doc comment in expression_checker.c. Guarded by the
+// constf32-reject-probe Makefile target.
+package main
+
+func main() {
+	var f float32 = 1e40
+	_ = f
+}

@@ -1,0 +1,14 @@
+// constuint8_reject (task 3 negative gate): a negative constant assigned to
+// an unsigned declared type must be REJECTED at compile time, not silently
+// wrapped. Go itself rejects this ("constant -1 overflows uint8") — this is
+// a Go-CONFORMANT rejection, unlike constdiv_reject/constmod_reject (which
+// are DELIBERATELY stricter than Go). Before task 3, `var u uint8 = -1`
+// compiled clean and printed 255 (two's-complement wrap) — see
+// literal_fits_type's doc comment in expression_checker.c. Guarded by the
+// constuint8-reject-probe Makefile target.
+package main
+
+func main() {
+	var u uint8 = -1
+	_ = u
+}

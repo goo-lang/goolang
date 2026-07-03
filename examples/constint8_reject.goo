@@ -1,0 +1,14 @@
+// constint8_reject (task 3 negative gate): a constant that overflows its
+// declared int8 width must be REJECTED at compile time, not silently
+// truncated. Go itself rejects this ("constant 300 overflows int8") — this
+// is a Go-CONFORMANT rejection, unlike constdiv_reject/constmod_reject
+// (which are DELIBERATELY stricter than Go). Before task 3, `var b int8 =
+// 300` compiled clean and printed 44 (300 mod 256) — see
+// literal_fits_type's doc comment in expression_checker.c. Guarded by the
+// constint8-reject-probe Makefile target.
+package main
+
+func main() {
+	var b int8 = 300
+	_ = b
+}

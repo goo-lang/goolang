@@ -521,24 +521,30 @@ selectsend-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	echo "selectsend-reject-probe: PASS (rejected rc=$$rc)"
 
 # A call (including a builtin like append) in a package-level var initializer
-# used to SIGSEGV: codegen_generate_var_decl's global path has no positioned
+# used to SIGSEGV: codegen_generate_var_decl's global path had no positioned
 # LLVM builder (codegen->current_function is NULL), but builtin codegen
 # issues LLVMBuildXxx calls unconditionally, dereferencing a null insert
-# block before the "requires constant initializer" backstop is ever reached.
-# Guards the early AST_CALL_EXPR check in function_codegen.c rejects this
-# cleanly instead of crashing — the rc != 139 assertion is the regression
-# guard for the crash itself, not just "some error happened".
-globalcall-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+# block before the "requires constant initializer" backstop was ever reached.
+# An early AST_CALL_EXPR check used to reject this cleanly instead of
+# crashing. Task 2 (var-init cluster) replaced that guard: a call — including
+# a builtin — in a global initializer is now DEFERRED to a synthesized
+# goo.global_init(), evaluated (with a real positioned builder) before user
+# main, so it compiles AND runs correctly instead of being rejected. This
+# probe now asserts the new behavior; the rc!=139 assertion stays as the
+# regression guard for the original crash.
+globalcall-init-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== globalcall-reject-probe: builtin call in global initializer must reject, not crash ==="
-	@printf 'package main\nvar g = append([]int64{1}, 2)\nfunc main(){ _ = g }\n' > build/globalcall_reject.goo
-	@rm -f build/globalcall_reject
-	@$(COMPILER) -o build/globalcall_reject build/globalcall_reject.goo > build/globalcall_reject.out 2> build/globalcall_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "globalcall-reject-probe: FAIL (compiled rc=0 — builtin call in global initializer silently accepted)"; exit 1; fi; \
-	if [ $$rc -eq 139 ]; then echo "globalcall-reject-probe: FAIL (SIGSEGV, rc=139 — crashed instead of rejecting cleanly)"; exit 1; fi; \
-	if [ -x build/globalcall_reject ]; then echo "globalcall-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "requires constant initializer" build/globalcall_reject.err; then echo "globalcall-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/globalcall_reject.err; exit 1; fi; \
-	echo "globalcall-reject-probe: PASS (rejected rc=$$rc)"
+	@echo "=== globalcall-init-probe: builtin call in global initializer now runs correctly (Task 2), not crash ==="
+	@printf 'package main\nimport "fmt"\nvar g = append([]int64{1}, 2)\nfunc main(){ fmt.Println(len(g)); fmt.Println(g[0]); fmt.Println(g[1]) }\n' > build/globalcall_init.goo
+	@rm -f build/globalcall_init
+	@$(COMPILER) -o build/globalcall_init build/globalcall_init.goo > build/globalcall_init.out 2> build/globalcall_init.err; rc=$$?; \
+	if [ $$rc -eq 139 ]; then echo "globalcall-init-probe: FAIL (SIGSEGV, rc=139 — crashed instead of compiling)"; exit 1; fi; \
+	if [ $$rc -ne 0 ]; then echo "globalcall-init-probe: FAIL (compile rc=$$rc, expected success)"; cat build/globalcall_init.err; exit 1; fi; \
+	if [ ! -x build/globalcall_init ]; then echo "globalcall-init-probe: FAIL (no binary emitted despite rc=0)"; exit 1; fi; \
+	actual=$$(./build/globalcall_init); \
+	expected=$$(printf '2\n1\n2'); \
+	if [ "$$actual" != "$$expected" ]; then echo "globalcall-init-probe: FAIL (wrong output)"; echo "expected: $$expected"; echo "actual: $$actual"; exit 1; fi; \
+	echo "globalcall-init-probe: PASS (builtin call in global initializer compiled and ran correctly)"
 
 # Implicit float->int is a silent bit-store, not a conversion: codegen has no
 # narrowing path for this direction, so it reinterprets the float's raw bits
@@ -631,6 +637,135 @@ baremod-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if grep -qiE "Module verification failed|LLVM ERROR" build/baremod_reject.err; then echo "baremod-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/baremod_reject.err; exit 1; fi; \
 	if ! grep -q "no implicit int/float conversion" build/baremod_reject.err; then echo "baremod-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/baremod_reject.err; exit 1; fi; \
 	echo "baremod-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3 negative gate: a constant that overflows its declared int8 width
+# must be REJECTED, not silently truncated (`var b int8 = 300` printed 44
+# before this fix). Unlike constdiv/constmod/baremod above (deliberately
+# STRICTER than Go), this rejection is Go-CONFORMANT — go run rejects the
+# same program with "... overflows int8" too. See examples/constint8_reject.goo
+# and literal_fits_type's doc comment in expression_checker.c.
+constint8-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constint8-reject-probe: var b int8 = 300 must reject (Go-conformant) ==="
+	@rm -f build/constint8_reject
+	@$(COMPILER) -o build/constint8_reject examples/constint8_reject.goo > build/constint8_reject.out 2> build/constint8_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constint8-reject-probe: FAIL (compiled rc=0 — 300 silently accepted for int8)"; exit 1; fi; \
+	if [ -x build/constint8_reject ]; then echo "constint8-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constint8_reject.err; then echo "constint8-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constint8_reject.err; exit 1; fi; \
+	if ! grep -q "overflows int8" build/constint8_reject.err; then echo "constint8-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constint8_reject.err; exit 1; fi; \
+	echo "constint8-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3 negative gate: a negative constant assigned to an unsigned declared
+# type must be REJECTED, not silently wrapped (`var u uint8 = -1` printed
+# 255 before this fix). Go-conformant (go run rejects with "... overflows
+# uint8" too). See examples/constuint8_reject.goo — the key edge this probe
+# guards is the NEGATION-THREADING itself: literal_fits_type must see
+# negated=true here to reject correctly (a naive unsigned check that ignored
+# the sign would let -1 alias raw magnitude 1, which trivially fits).
+constuint8-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constuint8-reject-probe: var u uint8 = -1 must reject (Go-conformant) ==="
+	@rm -f build/constuint8_reject
+	@$(COMPILER) -o build/constuint8_reject examples/constuint8_reject.goo > build/constuint8_reject.out 2> build/constuint8_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constuint8-reject-probe: FAIL (compiled rc=0 — -1 silently accepted for uint8)"; exit 1; fi; \
+	if [ -x build/constuint8_reject ]; then echo "constuint8-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constuint8_reject.err; then echo "constuint8-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constuint8_reject.err; exit 1; fi; \
+	if ! grep -q "overflows uint8" build/constuint8_reject.err; then echo "constuint8-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constuint8_reject.err; exit 1; fi; \
+	echo "constuint8-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3 negative gate: a float constant that overflows float32's finite
+# range must be REJECTED, not silently rounded to +/-inf (`var f float32 =
+# 1e40` printed +Inf before this fix). Go-conformant (go run rejects with
+# "... overflows float32" too). See examples/constf32_reject.goo and
+# literal_fits_type's float32 arm (float32_is_finite((float)v) after strtod
+# — a raw IEEE-754 bit test, not the <math.h> isfinite macro, which pulls in
+# a `long double` declaration CompCert's ccomp build cannot compile).
+constf32-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constf32-reject-probe: var f float32 = 1e40 must reject (Go-conformant) ==="
+	@rm -f build/constf32_reject
+	@$(COMPILER) -o build/constf32_reject examples/constf32_reject.goo > build/constf32_reject.out 2> build/constf32_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constf32-reject-probe: FAIL (compiled rc=0 — 1e40 silently accepted for float32)"; exit 1; fi; \
+	if [ -x build/constf32_reject ]; then echo "constf32-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constf32_reject.err; then echo "constf32-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constf32_reject.err; exit 1; fi; \
+	if ! grep -q "overflows float32" build/constf32_reject.err; then echo "constf32-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constf32_reject.err; exit 1; fi; \
+	echo "constf32-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3 review-fix negative gate: a float constant overflowing float64's
+# finite range must be REJECTED, not silently saturated to +/-inf (`var f
+# float64 = 1e309` compiled and printed inf — the first task-3 commit's
+# errno-based float64 check was dead because the lexer/parser pipeline
+# hands the checker the TEXT "inf", which strtod parses without ERANGE; see
+# examples/constf64_reject.goo and float64_is_finite's doc comment in
+# expression_checker.c). Go-conformant (go run rejects with "... overflows
+# float64" too).
+constf64-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constf64-reject-probe: var f float64 = 1e309 must reject (Go-conformant) ==="
+	@rm -f build/constf64_reject
+	@$(COMPILER) -o build/constf64_reject examples/constf64_reject.goo > build/constf64_reject.out 2> build/constf64_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constf64-reject-probe: FAIL (compiled rc=0 — 1e309 silently accepted for float64)"; exit 1; fi; \
+	if [ -x build/constf64_reject ]; then echo "constf64-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constf64_reject.err; then echo "constf64-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constf64_reject.err; exit 1; fi; \
+	if ! grep -q "overflows float64" build/constf64_reject.err; then echo "constf64-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constf64_reject.err; exit 1; fi; \
+	echo "constf64-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3b negative gate: a CONSTANT conversion whose operand overflows the
+# target must be REJECTED (`b := int8(300)` compiled and printed 44 before
+# this fix) while a runtime-value conversion (`int8(x)`) stays legal
+# truncation — that asymmetry is Go's, and conv_probe.goo's runtime-variable
+# SExt/Trunc lines lock the legal side. Go-conformant (go run rejects with
+# "constant 300 overflows int8"). See examples/constconv_reject.goo and
+# check_conversion_operand_range in expression_checker.c.
+constconv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constconv-reject-probe: b := int8(300) constant conversion must reject (Go-conformant) ==="
+	@rm -f build/constconv_reject
+	@$(COMPILER) -o build/constconv_reject examples/constconv_reject.goo > build/constconv_reject.out 2> build/constconv_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constconv-reject-probe: FAIL (compiled rc=0 — int8(300) silently accepted)"; exit 1; fi; \
+	if [ -x build/constconv_reject ]; then echo "constconv-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constconv_reject.err; then echo "constconv-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constconv_reject.err; exit 1; fi; \
+	if ! grep -q "overflows int8" build/constconv_reject.err; then echo "constconv-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constconv_reject.err; exit 1; fi; \
+	echo "constconv-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3b negative gate: a slice-literal element constant overflowing the
+# declared element type must be REJECTED (`t := []int8{300}` compiled and
+# printed 44 before this fix — check_slice_elements never adapted elements,
+# so the task-3 range check never saw them; array and map-value sinks are
+# hooked by the same fix). Go-conformant (go run rejects with "cannot use
+# 300 ... as int8 value in array or slice literal (overflows)"). See
+# examples/constelem_reject.goo. The boundary ACCEPT side ([]int8{127,-128})
+# lives in const_range_probe.goo.
+constelem-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constelem-reject-probe: t := []int8{300} element constant must reject (Go-conformant) ==="
+	@rm -f build/constelem_reject
+	@$(COMPILER) -o build/constelem_reject examples/constelem_reject.goo > build/constelem_reject.out 2> build/constelem_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constelem-reject-probe: FAIL (compiled rc=0 — []int8{300} silently accepted)"; exit 1; fi; \
+	if [ -x build/constelem_reject ]; then echo "constelem-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constelem_reject.err; then echo "constelem-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constelem_reject.err; exit 1; fi; \
+	if ! grep -q "overflows int8" build/constelem_reject.err; then echo "constelem-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constelem_reject.err; exit 1; fi; \
+	echo "constelem-reject-probe: PASS (rejected rc=$$rc)"
+
+# var-init-cluster review-fix negative gate: a constant that overflows the
+# BASE type behind a NULLABLE declared type must be REJECTED (`var gz ?int8
+# = 300` compiled and printed 44 before this fix — adapt_var_decl_initializer
+# bailed on any TYPE_NULLABLE declared type since it isn't itself numeric, so
+# the range check never saw the literal). Go-conformant (go run rejects the
+# unwrapped equivalent with "constant 300 overflows int8" too). See
+# examples/constnul_reject.goo and adapt_var_decl_initializer's doc comment
+# in expression_checker.c. The accept side (boundary + negation through a
+# nullable declared type) lives in nullable_adapt_probe.goo.
+constnul-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== constnul-reject-probe: var gz ?int8 = 300 must reject (Go-conformant) ==="
+	@rm -f build/constnul_reject
+	@$(COMPILER) -o build/constnul_reject examples/constnul_reject.goo > build/constnul_reject.out 2> build/constnul_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "constnul-reject-probe: FAIL (compiled rc=0 — 300 silently accepted for ?int8)"; exit 1; fi; \
+	if [ -x build/constnul_reject ]; then echo "constnul-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR" build/constnul_reject.err; then echo "constnul-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constnul_reject.err; exit 1; fi; \
+	if ! grep -q "overflows int8" build/constnul_reject.err; then echo "constnul-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constnul_reject.err; exit 1; fi; \
+	echo "constnul-reject-probe: PASS (rejected rc=$$rc)"
 
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
 # that both taken panics abort with the runtime-error message (the non-panic
@@ -1367,7 +1502,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-reject-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe constelem-reject-probe constnul-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

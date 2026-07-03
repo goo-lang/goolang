@@ -1,0 +1,17 @@
+// constnul_reject (var-init-cluster review fix negative gate): a constant
+// that overflows the BASE type behind a NULLABLE declared type must be
+// REJECTED at compile time, exactly like the non-nullable constint8_reject
+// case. Before this fix, adapt_var_decl_initializer bailed immediately on
+// any TYPE_NULLABLE declared type (type_is_numeric(?int8) is false), so
+// `var gz ?int8 = 300` skipped range-checking entirely and fell through to
+// codegen's width-coerce step, which truncates/wraps rather than rejecting
+// (printed 44). Go itself rejects the equivalent unwrapped case with
+// "constant 300 overflows int8" — this is a Go-CONFORMANT rejection. See
+// adapt_var_decl_initializer's doc comment in expression_checker.c. Guarded
+// by the constnul-reject-probe Makefile target.
+package main
+
+func main() {
+	var gz ?int8 = 300
+	_ = gz
+}

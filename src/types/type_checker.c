@@ -797,11 +797,21 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
     return 0;
 }
 
+// Task 3 (constant representability): bridge into expression_checker.c's
+// untyped-constant-literal adapters — see that file's adapt_var_decl_
+// initializer doc comment for why a var-decl initializer needs its own
+// entry point (it doesn't already route through the adapters the way a
+// binary-expr operand, struct-literal field, or call argument does).
+// Forward-declared here with its own `extern` prototype instead of via a
+// shared header — this task's constraint set excludes header/parser
+// changes, and this is the only external caller.
+extern int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* declared);
+
 int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_VAR_DECL) return 0;
-    
+
     VarDeclNode* var_decl = (VarDeclNode*)decl;
-    
+
     // Get declared type
     Type* declared_type = NULL;
     if (var_decl->type) {
@@ -811,7 +821,7 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
             return 0;
         }
     }
-    
+
     // Check initial values
     Type* inferred_type = NULL;
     if (var_decl->values) {
@@ -820,8 +830,27 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
             type_error(checker, var_decl->base.pos, "Invalid initializer expression");
             return 0;
         }
+        // Task 3: reject an unrepresentable literal constant (`var b int8 =
+        // 300`) BEFORE the compatibility check below, which permits int<->int
+        // and int->float width mismatches unconditionally — only codegen's
+        // later width-coerce step would otherwise narrow the value, and it
+        // truncates/wraps rather than rejecting. declared_type may still be
+        // NULL here (a `:=` short decl with no annotation) — nothing sized to
+        // check against in that case.
+        if (declared_type) {
+            if (!adapt_var_decl_initializer(checker, var_decl->values, declared_type)) {
+                return 0; // range violation; adapt_var_decl_initializer already emitted the error
+            }
+            // Adaptation may have re-stamped the initializer's node_type to a
+            // narrower/wider type than the checker-default INT64/FLOAT64
+            // (e.g. `var b int8 = -128` narrows to INT8) — read it back so
+            // the compatibility check below sees the adapted type. A non-
+            // adapted initializer (a typed variable/call RHS) is untouched,
+            // so this is a no-op in that case.
+            if (var_decl->values->node_type) inferred_type = var_decl->values->node_type;
+        }
     }
-    
+
     // Determine final type
     Type* final_type = declared_type;
     if (!final_type) {

@@ -90,7 +90,13 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // WebAssembly configuration
     codegen->wasm_configured = 0;
     codegen->is_wasm_target = 0;
-    
+
+    // Deferred global initializers (Task 2 / var-init cluster) — empty
+    // until codegen_generate_var_decl's module-scope path defers one.
+    codegen->deferred_global_inits = NULL;
+    codegen->deferred_global_init_count = 0;
+    codegen->deferred_global_init_capacity = 0;
+
     // Declare runtime functions
     codegen_declare_runtime_functions(codegen);
     
@@ -148,6 +154,11 @@ void codegen_free(CodeGenerator* codegen) {
 
     free(codegen->struct_cache_keys);
     free(codegen->struct_cache_vals);
+
+    // The deferred-init array holds borrowed pointers (globals owned by the
+    // module, expressions by the AST, types by the type system) — free only
+    // the array itself.
+    free(codegen->deferred_global_inits);
 
     free(codegen->current_file);
     free(codegen->target_triple);
@@ -256,6 +267,34 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         return 0;
     }
 
+    // Task 2 / var-init cluster: pre-create goo.global_init's prototype
+    // (no body yet) BEFORE any function body is generated. Without this, a
+    // package-level `var` that ends up deferred but appears textually AFTER
+    // `func main` would mean the call inserted into main's prologue (see
+    // codegen_generate_function_decl's is_entry_main branch) can't find the
+    // symbol yet — LLVMGetNamedFunction would return NULL at that point,
+    // since the actual body-filling pass (codegen_generate_global_init_
+    // function below) only runs after every declaration, including main
+    // itself, has been generated. The prototype-now/body-later split lets
+    // main call it regardless of declaration order.
+    //
+    // MAIN PACKAGE ONLY (Task 2b): codegen_generate_program also runs once
+    // per imported package into this same module. Packages can never defer
+    // (codegen_generate_var_decl rejects package-scope deferral cleanly),
+    // but the pre-pass OVER-approximates — it runs before any declaration
+    // is generated, so it cannot resolve const identifiers, and a goostd
+    // lookup table like utf8's `first` (elements are const identifiers)
+    // would be misread as "needs init". A package pass would then create —
+    // and its fill call below would body-fill — a goo.global_init that
+    // collides with main's own. Gate both the prototype and the fill on
+    // the main pass.
+    int is_main_pass = (checker->current_package == NULL);
+    if (is_main_pass && codegen_program_needs_global_init(prog->decls)) {
+        LLVMTypeRef void_ty = LLVMVoidTypeInContext(codegen->context);
+        LLVMTypeRef fn_ty = LLVMFunctionType(void_ty, NULL, 0, 0);
+        LLVMAddFunction(codegen->module, "goo.global_init", fn_ty);
+    }
+
     // Generate declarations
     if (prog->decls) {
         ASTNode* decl = prog->decls;
@@ -266,7 +305,16 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
             decl = decl->next;
         }
     }
-    
+
+    // Fill in goo.global_init's body from whatever was deferred while
+    // generating the declarations above. Must run after the loop: every
+    // global and every function this initializer might call (e.g. `var w =
+    // double(x)`) needs to already exist in the module. Main pass only —
+    // see the prototype gate above.
+    if (is_main_pass && !codegen_generate_global_init_function(codegen, checker)) {
+        return 0;
+    }
+
     return codegen->error_count == 0;
 }
 
