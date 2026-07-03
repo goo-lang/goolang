@@ -823,6 +823,7 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->next = NULL;
     var->decl_node = NULL;  // Closures Task 2: set by VarDeclNode-backed registration sites
     var->is_captured = 0;   // Closures Task 2: set by type_checker_record_capture
+    var->is_loop_var = 0;   // Closures Task 2: set by type_check_for_stmt's loop-binding sites
 
     return var;
 }

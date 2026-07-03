@@ -189,8 +189,35 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
     if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
 
-    // Emit the goo_alloc in the entry block (like an alloca) so it dominates all
-    // uses and runs once per call. Save/restore the builder position.
+    LLVMValueRef size = LLVMSizeOf(type);
+
+    // Closures Task 2 (loop-variable capture fix, DECL-SITE allocation): a
+    // capture-promoted slot is minted AT THE DECLARATION SITE (the current
+    // insert position), NOT hoisted to the entry block. This is what gives a
+    // captured local declared inside a loop body (the `j := i` copy
+    // workaround) Go's per-iteration variable semantics: the declaration
+    // statement executes once per iteration, so each iteration's goo_alloc
+    // mints a FRESH slot, and each iteration's closure env captures that
+    // iteration's slot address (the value table's SSA entry for the name is
+    // rebound to the new call result each time the decl re-executes at
+    // runtime... more precisely: the ONE call instruction yields a different
+    // pointer on each dynamic execution, and every in-body use — including
+    // the env-build store — consumes that same dominating SSA value, i.e.
+    // the current iteration's slot). Entry-hoisting here would silently
+    // share ONE slot across all iterations — verified to produce 6 instead
+    // of Go's 3 on the three-closure copy-capture probe before this fix.
+    // Dominance is safe: a declaration lexically precedes every use of its
+    // name, so the call instruction dominates all uses the same way the
+    // decl's zero-init/initializer store (emitted at this same position by
+    // every caller) always has.
+    if (force_promote) {
+        return LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1,
+                              name ? name : "captured_local");
+    }
+
+    // M8b goroutine-escape path (unchanged): emit the goo_alloc in the entry
+    // block (like an alloca) so it dominates all uses and runs once per
+    // call. Save/restore the builder position.
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(codegen->builder);
     LLVMBasicBlockRef entry = codegen->current_function_info
         ? codegen->current_function_info->entry_block
@@ -199,7 +226,6 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     if (first) LLVMPositionBuilderBefore(codegen->builder, first);
     else       LLVMPositionBuilderAtEnd(codegen->builder, entry);
 
-    LLVMValueRef size = LLVMSizeOf(type);
     LLVMValueRef p = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1,
                                     name ? name : "go_escape_local");
     if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);

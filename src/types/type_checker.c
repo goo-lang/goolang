@@ -1661,6 +1661,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             Variable* kv = variable_new(for_stmt->key_name, key_type, stmt->pos);
             if (kv) {
                 kv->is_initialized = 1;
+                kv->is_loop_var = 1;  // Closures Task 2: capture rejected (see Variable.is_loop_var)
                 scope_add_variable(checker->current_scope, kv);
             }
         }
@@ -1668,6 +1669,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
             Variable* vv = variable_new(for_stmt->value_name, elem_type, stmt->pos);
             if (vv) {
                 vv->is_initialized = 1;
+                vv->is_loop_var = 1;  // Closures Task 2: capture rejected (see Variable.is_loop_var)
                 scope_add_variable(checker->current_scope, vv);
             }
         }
@@ -1677,9 +1679,44 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (for_stmt->init) {
         if (!type_check_statement(checker, for_stmt->init)) {
             result = 0;
+        } else {
+            // Closures Task 2: mark the init clause's declared names as loop
+            // variables so a closure capture of them is rejected (see
+            // Variable.is_loop_var, types.h). The init decl routes through
+            // the ORDINARY var-decl / multi-assign checkers above — which
+            // have no idea they are inside a for header — so the marking
+            // happens here, after the fact: the names were just registered
+            // into the for's OWN scope (pushed at the top of this function),
+            // so a direct walk of current_scope->variables (deliberately NOT
+            // the parent-chasing scope_lookup_variable — an init decl that
+            // failed to register must not mark a same-named OUTER variable)
+            // finds exactly the loop-owned bindings.
+            char** names = NULL;
+            size_t name_count = 0;
+            char* multi_names[8];  // for i, j := ... — targets are identifiers (v1)
+            if (for_stmt->init->type == AST_VAR_DECL) {
+                VarDeclNode* vd = (VarDeclNode*)for_stmt->init;
+                names = vd->names;
+                name_count = vd->name_count;
+            } else if (for_stmt->init->type == AST_MULTI_ASSIGN &&
+                       ((MultiAssignNode*)for_stmt->init)->is_short_decl) {
+                MultiAssignNode* ma = (MultiAssignNode*)for_stmt->init;
+                size_t n = 0;
+                for (ASTNode* t = ma->targets; t && n < 8; t = t->next) {
+                    if (t->type == AST_IDENTIFIER)
+                        multi_names[n++] = ((IdentifierNode*)t)->name;
+                }
+                names = multi_names;
+                name_count = n;
+            }
+            for (size_t i = 0; i < name_count; i++) {
+                for (Variable* v = checker->current_scope->variables; v; v = v->next) {
+                    if (strcmp(v->name, names[i]) == 0) { v->is_loop_var = 1; break; }
+                }
+            }
         }
     }
-    
+
     // Check condition
     if (for_stmt->condition) {
         Type* cond_type = type_check_expression(checker, for_stmt->condition);

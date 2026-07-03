@@ -56,4 +56,25 @@ func main() {
 	fmt.Println(inner())
 	inner2 := outer()
 	fmt.Println(inner2())
+
+	// Positive control for the loop-variable capture rejection
+	// (examples/loopcapture_reject.goo): the `i := i` body-local COPY is an
+	// ordinary local — capturable — and its captured slot is minted per
+	// EXECUTION of the declaration (decl-site goo_alloc, NOT entry-hoisted:
+	// see codegen_alloc_local_promoted, function_codegen.c), so each
+	// iteration's closure captures that iteration's own copy. Sum is
+	// 0+1+2 = 3, matching modern Go's per-iteration loopvar answer — an
+	// entry-hoisted shared slot would print 6 (three closures all reading
+	// the final copy, 2).
+	fs := []func() int{}
+	for i := 0; i < 3; i = i + 1 {
+		i := i
+		fs = append(fs, func() int { return i })
+	}
+	csum := 0
+	for k := 0; k < 3; k = k + 1 {
+		g := fs[k]
+		csum = csum + g()
+	}
+	fmt.Println(csum)
 }

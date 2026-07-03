@@ -281,6 +281,23 @@ typedef struct Variable {
     // primarily for checker-side introspection/diagnostics parity with the
     // VarDeclNode flag it mirrors.
     int is_captured;
+    // Closures Task 2 (loop-variable capture fix): set for a variable
+    // declared BY a loop construct — the 3-clause for's init declaration
+    // (`for i := 0; ...`, including a multi-name `for i, j := 0, 1;`) and
+    // for-range key/value bindings (`for k, v := range ...`) — at
+    // type_check_for_stmt's registration/marking sites (type_checker.c).
+    // Capturing such a variable in a closure is REJECTED by
+    // type_checker_record_capture (expression_checker.c): modern Go (1.22+)
+    // gives each iteration its OWN variable, but this compiler's promotion
+    // model has exactly one slot per declaration, which would silently
+    // compute pre-1.22 shared-slot results (the classic loop-capture bug)
+    // — reject-rather-than-deviate, per the #101 precedent. Per-iteration
+    // slots are the recorded follow-up; the `i := i` body-local copy is the
+    // supported workaround (an ordinary local — capturable, and its slot is
+    // minted per execution of the declaration; see
+    // codegen_alloc_local_promoted's decl-site allocation note,
+    // function_codegen.c). Tail-appended per the no-header-deps convention.
+    int is_loop_var;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by

@@ -1,0 +1,30 @@
+// Closures Task 2 fix probe: capturing a LOOP VARIABLE in a closure must be
+// a clean checker error, not a silent wrong value.
+//
+// Modern Go (1.22+ loopvar semantics) ACCEPTS this program and prints 3:
+// each iteration gets its OWN `i`, so the three closures return 0, 1, 2.
+// This compiler's promotion model has exactly ONE heap slot per declaration
+// and the for-init slot is minted once per loop ENTRY — accepting the
+// capture would silently compute the pre-Go-1.22 shared-slot answer (9:
+// every closure reads the final i=3) on one of the most common closure
+// idioms in ported code. Per the #101 reject-rather-than-silently-deviate
+// precedent, Goo rejects with "cannot capture loop variable"; per-iteration
+// slots are the recorded follow-up. The supported workaround — a body-local
+// copy (`i := i`), which IS per-iteration — is the positive control in
+// examples/closure_probe.goo.
+package main
+
+import "fmt"
+
+func main() {
+	fs := []func() int{}
+	for i := 0; i < 3; i = i + 1 {
+		fs = append(fs, func() int { return i })
+	}
+	sum := 0
+	for k := 0; k < 3; k = k + 1 {
+		f := fs[k]
+		sum = sum + f()
+	}
+	fmt.Println(sum)
+}

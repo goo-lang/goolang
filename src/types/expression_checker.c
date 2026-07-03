@@ -754,6 +754,28 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
 // instead of a wrong answer.
 static int type_checker_record_capture(TypeChecker* checker, Variable* var,
                                         const char* name, int depth, Position pos) {
+    // Loop-variable capture: REJECT (checked before the decl_node guard —
+    // it is the more specific diagnosis, and a range binding would otherwise
+    // fall through to the generic "unsupported form" message below). Modern
+    // Go (1.22+) gives each loop iteration its OWN variable, so `for i := 0;
+    // i < 3; i = i + 1 { fs = append(fs, func() int { return i }) }` sums to
+    // 3 there — but this compiler's promotion model has exactly ONE slot per
+    // declaration and the for-init/range slot is minted once per loop ENTRY,
+    // so it would silently compute the pre-Go-1.22 shared-slot answer (9).
+    // Reject-rather-than-silently-deviate, per the #101 precedent;
+    // per-iteration slots are the recorded follow-up. The suggested `i := i`
+    // body-local copy works because an ordinary local's captured slot is
+    // minted per EXECUTION of its declaration — once per iteration inside a
+    // loop body (see codegen_alloc_local_promoted, function_codegen.c).
+    if (var->is_loop_var) {
+        type_error(checker, pos,
+                   "cannot capture loop variable '%s' in a closure "
+                   "(per-iteration capture semantics not yet supported; "
+                   "copy it to a local first: %s := %s)",
+                   name, name, name);
+        return 0;
+    }
+
     if (!var->decl_node || var->decl_node->type != AST_VAR_DECL) {
         type_error(checker, pos,
                    "cannot capture '%s' in a closure: declared via a form not "
