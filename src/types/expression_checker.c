@@ -1882,6 +1882,22 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
             break;
             
         case TOKEN_BIT_AND:  // & - take reference/borrow
+            // Go semantics: map values are not addressable — &m[k] is illegal.
+            // (The runtime slot may hold a heap box, but exposing it would
+            // alias storage that overwrite replaces silently.) operand_type
+            // above is the map's VALUE type (int, P, ...); re-derive the
+            // INDEX EXPRESSION's base type via its already-stamped node_type
+            // (type_check_expression on unary->operand, above, recursed into
+            // ix->expr and stamped it) to see whether the base is a map.
+            if (unary->operand->type == AST_INDEX_EXPR) {
+                IndexExprNode* ix = (IndexExprNode*)unary->operand;
+                if (ix->expr && ix->expr->node_type && ix->expr->node_type->kind == TYPE_MAP) {
+                    type_error(checker, expr->pos,
+                              "cannot take the address of a map value "
+                              "(map values are not addressable)");
+                    return NULL;
+                }
+            }
             // Go allows & on any composite literal; Goo supports only the
             // struct case (heap-allocated by codegen). Reject the other
             // literal kinds here with a specific error — without this they

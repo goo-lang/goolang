@@ -489,6 +489,21 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
 
     if (expr->type == AST_INDEX_EXPR) {
         IndexExprNode* ix = (IndexExprNode*)expr;
+
+        // Go semantics: a map index is never an lvalue address. Direct
+        // `m[k] = v` is intercepted earlier (assignment fast path, above);
+        // any request that reaches HERE is a partial write through a map
+        // value (m[k].F = v, m[k][i] = v) or an address-of that slipped past
+        // typecheck — all illegal. Fire ONLY on a map base — node_type is
+        // stamped on ix->expr by typecheck (which always runs before
+        // codegen), so this doesn't disturb the array/slice GEP paths below.
+        if (ix->expr && ix->expr->node_type && ix->expr->node_type->kind == TYPE_MAP) {
+            codegen_error(codegen, expr->pos,
+                          "cannot assign through a map value (map values are "
+                          "not addressable; assign the whole value: m[k] = v)");
+            return NULL;
+        }
+
         ValueInfo* base = codegen_emit_lvalue_address(codegen, checker, ix->expr);
         if (!base) return NULL;
         Type* base_type = base->goo_type;

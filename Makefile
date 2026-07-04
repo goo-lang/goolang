@@ -1752,7 +1752,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2148,6 +2148,26 @@ embed-literal-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@$(COMPILER) -o build/embed_lit_ok build/embed_lit_ok.goo 2> build/embed_lit_ok.err || (echo "embed-literal-reject-probe: FAIL (keyed Base literal rejected)"; cat build/embed_lit_ok.err; exit 1)
 	@out=$$(build/embed_lit_ok); [ "$$out" = "7" ] || (echo "embed-literal-reject-probe: FAIL (keyed literal wrong value: $$out)"; exit 1)
 	@echo "embed-literal-reject-probe: PASS (keyed Base literal fine)"
+
+# Generic map values: Go's map values are NOT addressable. &m[k] and partial
+# writes (m[k].F = v) must reject at compile time — without the guard the
+# lvalue path would silently mutate a private box nobody reads back.
+map-addr-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== map-addr-reject-probe: &m[k] must reject ==="
+	@printf 'package main\nfunc main(){\n\tm := map[string]int{"a": 1}\n\tp := &m["a"]\n\t_ = p\n}\n' > build/map_addr_reject.goo
+	@rm -f build/map_addr_reject
+	@$(COMPILER) -o build/map_addr_reject build/map_addr_reject.goo > /dev/null 2> build/map_addr_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "map-addr-reject-probe: FAIL (&m[k] compiled)"; exit 1; fi; \
+	if ! grep -q "cannot take the address of a map value" build/map_addr_reject.err; then echo "map-addr-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/map_addr_reject.err; exit 1; fi; \
+	echo "map-addr-reject-probe: PASS"
+	@echo "=== m[k].F = v must reject ==="
+	@printf 'package main\ntype P struct { X int }\nfunc main(){\n\tm := map[string]P{"a": P{X: 1}}\n\tm["a"].X = 5\n}\n' > build/map_field_reject.goo
+	@rm -f build/map_field_reject
+	@$(COMPILER) -o build/map_field_reject build/map_field_reject.goo > /dev/null 2> build/map_field_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "map-addr-reject-probe: FAIL (m[k].F = v compiled)"; exit 1; fi; \
+	if ! grep -q "cannot assign through a map value" build/map_field_reject.err; then echo "map-addr-reject-probe: FAIL (wrong/missing partial-write diagnostic)"; cat build/map_field_reject.err; exit 1; fi; \
+	echo "map-addr-reject-probe: PASS (partial write rejected)"
 
 # P2-2: a user-function call with the wrong number of arguments must be
 # rejected at type-check with a clean source-located diagnostic, NOT reach
