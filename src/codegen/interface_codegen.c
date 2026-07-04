@@ -53,6 +53,16 @@ static LLVMTypeRef thunk_fn_type(CodeGenerator* codegen, Type* method_type,
 static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
                                 Type* concrete, const char* concrete_name,
                                 const char* iface_name, InterfaceMethod* im) {
+    // After the C-representation normalization in codegen_interface_box, a
+    // pointer concrete must never reach the thunk builder — its thunks are
+    // the pointee's. A future direct caller of codegen_interface_vtable with
+    // a raw *T would otherwise re-create the #109 verifier failure.
+    if (concrete && concrete->kind == TYPE_POINTER) {
+        codegen_error(codegen, (Position){0},
+                      "internal: pointer concrete reached thunk builder un-normalized");
+        return NULL;
+    }
+
     char thunk_name[256];
     snprintf(thunk_name, sizeof(thunk_name), "goo.thunk.%s.%s.%s",
              concrete_name, iface_name, im->name);
@@ -205,6 +215,27 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
 // loaded concrete LLVM value. Returns the interface struct value, or NULL.
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
                                    Type* iface, Type* concrete, LLVMValueRef value) {
+    // C-representation for pointer concretes (Go's own layout): the interface
+    // data word IS the pointer, and the vtable is the POINTEE's — *T
+    // deliberately REUSES T's thunks, because in both boxing shapes `data`
+    // ends up pointing at a T (value-boxed: at the heap copy; pointer-boxed:
+    // at the caller's object). No heap box: boxing a pointer must alias, and
+    // storing it in a box was the #109 miscompile (thunks treated the box as
+    // the pointee). See docs/superpowers/specs/2026-07-04-ptr-iface-boxing-design.md.
+    if (concrete && concrete->kind == TYPE_POINTER &&
+        concrete->data.pointer.pointee_type &&
+        type_receiver_name(concrete->data.pointer.pointee_type)) {
+        Type* pointee = concrete->data.pointer.pointee_type;
+        LLVMValueRef pvt = codegen_interface_vtable(codegen, checker, iface, pointee);
+        if (!pvt) return NULL;
+        LLVMTypeRef pifacety = codegen_type_to_llvm(codegen, iface);
+        if (!pifacety) return NULL;
+        LLVMValueRef piv = LLVMGetUndef(pifacety);
+        piv = LLVMBuildInsertValue(codegen->builder, piv, pvt, 0, "iface.vt");
+        piv = LLVMBuildInsertValue(codegen->builder, piv, value, 1, "iface.data");
+        return piv;
+    }
+
     LLVMValueRef vt = codegen_interface_vtable(codegen, checker, iface, concrete);
     if (!vt) return NULL;
 
