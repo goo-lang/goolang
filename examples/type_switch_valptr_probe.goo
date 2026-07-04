@@ -1,0 +1,38 @@
+// type_switch_valptr_probe (Task 5, final-review High): the exact repro from
+// the final-review finding — `switch x.(type) { case *Cat: ...; case Cat: ...
+// }` must distinguish a value-boxed Cat from a pointer-boxed *Cat. Before the
+// fix, both boxed a value into the SAME vtable global (goo.vtable.Cat.I), so
+// the switch's vtable-ptr compares always matched whichever case happened to
+// be checked first — here, a value-boxed Cat would wrongly match `case *Cat`.
+package main
+
+import "fmt"
+
+type Sayer interface {
+	Say() string
+}
+
+type Cat struct {
+	Name string
+}
+
+func (c Cat) Say() string {
+	return c.Name
+}
+
+func describe(x Sayer) string {
+	switch x.(type) {
+	case *Cat:
+		return "pointer"
+	case Cat:
+		return "value"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	c := Cat{Name: "Tom"}
+	fmt.Println(describe(c))
+	fmt.Println(describe(&c))
+}

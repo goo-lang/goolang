@@ -344,8 +344,17 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen, TypeChecker* c
                                           ASTNode* first_elem, Type* slice_type, Position pos);
 
 // Interface codegen (P4-5): vtable construction, boxing, dynamic dispatch.
+// `pointer_form` (Task 5): 0 builds/reuses the value-form global
+// `goo.vtable.<concrete>.<iface>` (thunks against `concrete` directly); 1
+// builds/reuses the DISTINCTLY-NAMED pointer-form global
+// `goo.vtable.$ptr$<concrete>.<iface>` — same thunk slots (built against the
+// same `concrete`, since a pointer box's `data` also points at a `concrete`),
+// but a different global so a pointer-boxed `*T` and a value-boxed `T` no
+// longer alias the same vtable address. See interface_codegen.c's callers
+// (codegen_interface_box's two branches, codegen_interface_assert_match) for
+// which form each site must request.
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
-                                      Type* iface, Type* concrete);
+                                      Type* iface, Type* concrete, int pointer_form);
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
                                    Type* iface, Type* concrete, LLVMValueRef value);
 ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* checker,

@@ -1,0 +1,40 @@
+// type_assert_valptr_probe (Task 5, final-review High): pins the fix for the
+// silent miscompile where value-boxed T and pointer-boxed *T shared the same
+// vtable global (goo.vtable.T.I, from #113's *T-reuses-pointee's-vtable
+// boxing) — the assertion's vtable-ptr icmp could not tell T from *T. A
+// value-boxed Cat must assert true to .(Cat) and false to .(*Cat); a
+// pointer-boxed *Cat must assert true to .(*Cat) and false to .(Cat).
+package main
+
+import "fmt"
+
+type Sayer interface {
+	Say() string
+}
+
+type Cat struct {
+	Name string
+}
+
+func (c Cat) Say() string {
+	return c.Name
+}
+
+func main() {
+	c := Cat{Name: "Tom"}
+	var v Sayer = c
+	vAsValue, vIsValue := v.(Cat)
+	vAsPointer, vIsPointer := v.(*Cat)
+	fmt.Println(vIsValue)
+	fmt.Println(vIsPointer)
+	_ = vAsValue
+	_ = vAsPointer
+
+	var p Sayer = &c
+	pAsPointer, pIsPointer := p.(*Cat)
+	pAsValue, pIsValue := p.(Cat)
+	fmt.Println(pIsPointer)
+	fmt.Println(pIsValue)
+	_ = pAsPointer
+	_ = pAsValue
+}
