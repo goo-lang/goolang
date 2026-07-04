@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+func main() {
+	src := []int{1, 2, 3, 4}
+	dst := []int{0, 0}
+	n := copy(dst, src)
+	fmt.Println(n)
+	fmt.Println(dst[0] + dst[1])
+	m := copy(src[1:4], src[0:3])
+	fmt.Println(m)
+	fmt.Println(src[1])
+	fmt.Println(src[3])
+	b := []byte("??????")
+	k := copy(b, "hi")
+	fmt.Println(k)
+	fmt.Println(string(b))
+	var empty []int
+	fmt.Println(copy(empty, src))
+}

@@ -1,0 +1,71 @@
+package main
+
+import "fmt"
+
+// Vendored verbatim from Go 1.9 (src/strings/strings.go, tag go1.9,
+// https://raw.githubusercontent.com/golang/go/go1.9/src/strings/strings.go).
+// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+// Join concatenates the elements of a to create a single string. The separator string
+// sep is placed between elements in the resulting string.
+func Join(a []string, sep string) string {
+	switch len(a) {
+	case 0:
+		return ""
+	case 1:
+		return a[0]
+	case 2:
+		// Special case for common small values.
+		// Remove if golang.org/issue/6714 is fixed
+		return a[0] + sep + a[1]
+	case 3:
+		// Special case for common small values.
+		// Remove if golang.org/issue/6714 is fixed
+		return a[0] + sep + a[1] + sep + a[2]
+	}
+	n := len(sep) * (len(a) - 1)
+	for i := 0; i < len(a); i++ {
+		n += len(a[i])
+	}
+
+	b := make([]byte, n)
+	bp := copy(b, a[0])
+	for _, s := range a[1:] {
+		bp += copy(b[bp:], sep)
+		bp += copy(b[bp:], s)
+	}
+	return string(b)
+}
+
+// joinAll is probe-only scaffolding (not verbatim): supplies §3 spread
+// coverage (parts... into Join's []string parameter).
+func joinAll(sep string, parts ...string) string {
+	return Join(parts, sep)
+}
+
+func main() {
+	words := []string{
+		"goo",
+		"runs",
+		"go",
+		"source",
+	}
+	fmt.Println(Join(words, " "))
+	fmt.Println(Join(words[0:1], "-"))
+	fmt.Println(Join(words[0:2], "-"))
+	fmt.Println(Join(words[0:3], "-"))
+	fmt.Println(joinAll("+", words...))
+	// Elided inner literals (map[string][]string{"csv": {"a", "b", "c"}, ...})
+	// don't parse — pre-existing #110-era gap (composite_value's elided-{...}
+	// form isn't reachable from map_entry's plain `expression` value slot).
+	// Explicit []string{...} with trailing commas is the pre-adjudicated
+	// substitute; not this branch's scope to fix.
+	table := map[string][]string{
+		"csv": []string{"a", "b", "c",},
+		"tsv": []string{"x", "y",},
+	}
+	fmt.Println(Join(table["csv"], ","))
+	fmt.Println(Join(table["tsv"], "\t"))
+}

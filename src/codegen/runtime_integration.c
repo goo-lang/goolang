@@ -418,6 +418,24 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
                              LLVMInt32TypeInContext(codegen->context), params, 3);
     }
 
+    // int64_t goo_slice_copy_raw(void* dst, int64_t dst_len, const void* src,
+    //                            int64_t src_len, int64_t elem_size)
+    // Raw-pointer ABI (Task 4, copy builtin) — dst/src are already-extracted
+    // {data,len} pairs, not goo_slice_t*, since copy() never resizes dst.
+    {
+        LLVMTypeRef params[] = { ptr_type, size_type, ptr_type, size_type, size_type };
+        add_runtime_function(codegen, "goo_slice_copy_raw", size_type, params, 5);
+    }
+
+    // void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
+    //                            int64_t src_len, int64_t elem_size)
+    // Task 4, append(dst, s...) bulk arm. Takes dst BY POINTER like
+    // goo_slice_append above, for the same in-place-grow reason.
+    {
+        LLVMTypeRef params[] = { LLVMPointerType(slice_type, 0), ptr_type, size_type, size_type };
+        add_runtime_function(codegen, "goo_slice_append_bulk", void_type, params, 4);
+    }
+
     // Bounds checking
     // void goo_bounds_check(size_t index, size_t length, const char* file, int line)
     {

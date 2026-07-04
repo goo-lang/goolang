@@ -1752,7 +1752,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2168,6 +2168,91 @@ map-addr-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "map-addr-reject-probe: FAIL (m[k].F = v compiled)"; exit 1; fi; \
 	if ! grep -q "cannot assign through a map value" build/map_field_reject.err; then echo "map-addr-reject-probe: FAIL (wrong/missing partial-write diagnostic)"; cat build/map_field_reject.err; exit 1; fi; \
 	echo "map-addr-reject-probe: PASS (partial write rejected)"
+
+# Trailing commas in struct/map literals are now accepted (see
+# struct_lit / map_lit in parser.y), but a BARE comma with no preceding
+# entry (`{,}`) must stay a syntax error — the COMMA arms require a
+# non-empty entries/inits list before the trailing comma.
+trailingcomma-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== trailingcomma-reject-probe: bare comma literal must reject ==="
+	@printf 'package main\nfunc main(){\n\tm := map[string]int{,}\n\t_ = m\n}\n' > build/tc_reject.goo
+	@if $(COMPILER) -o build/tc_reject build/tc_reject.goo 2>build/tc_reject.err; then \
+	  echo "trailingcomma-reject-probe: FAIL (bare-comma literal compiled)"; exit 1; \
+	else \
+	  echo "trailingcomma-reject-probe: PASS (rejected)"; \
+	fi
+
+# Task 2 (stdlib unblocker): `[]T(expr)` is only supported for []byte(string)
+# in v1 (expression_checker.c's AST_SLICE_CONVERSION case) — any other
+# element type (`[]int("x")`) must reject with the v1-scoped diagnostic,
+# not reach codegen with no lowering.
+bytesconv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== bytesconv-reject-probe: []int(x) conversion must reject ==="
+	@printf 'package main\nfunc main(){\n\tb := []int("x")\n\t_ = b\n}\n' > build/bytesconv_reject.goo
+	@rm -f build/bytesconv_reject
+	@$(COMPILER) -o build/bytesconv_reject build/bytesconv_reject.goo > /dev/null 2> build/bytesconv_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "bytesconv-reject-probe: FAIL (compiled rc=0 — []int(\"x\") silently accepted)"; exit 1; fi; \
+	if [ -x build/bytesconv_reject ]; then echo "bytesconv-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "only supported for" build/bytesconv_reject.err; then echo "bytesconv-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/bytesconv_reject.err; exit 1; fi; \
+	echo "bytesconv-reject-probe: PASS (rejected rc=$$rc)"
+
+# Task 3 (spread `f(s...)`): four distinct reject shapes, each with its own
+# diagnostic (expression_checker.c's has_spread block) — spread on a
+# non-variadic callee, a spread element-type mismatch (no coercion, even
+# though int32->int64 is otherwise a permitted numeric widening), a spread
+# call missing a required fixed argument, and (reviewer finding, closed by
+# making the spread checks independent of check_signature) the same
+# element-type mismatch reached through a function-VALUED STRUCT FIELD
+# callee (`o.Sum(s...)`), whose name-based resolution never sets
+# check_signature — before the fix this compiled silently.
+spread-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== spread-reject-probe: spread f(s...) must reject four distinct ways ==="
+	@printf 'package main\nfunc f(a int) int { return a }\nfunc main(){ s := []int{1,2,3}; _ = f(s...) }\n' > build/spread_nonvariadic.goo
+	@printf 'package main\nfunc sum64(xs ...int64) int64 { return 0 }\nfunc main(){ s := []int32{1,2,3}; _ = sum64(s...) }\n' > build/spread_elemmismatch.goo
+	@printf 'package main\nfunc tagged(tag string, xs ...int) int { return 0 }\nfunc main(){ s := []int{1,2,3}; _ = tagged(s...) }\n' > build/spread_missingfixed.goo
+	@printf 'package main\ntype Ops struct { Sum func(xs ...int64) int64 }\nfunc sum64(xs ...int64) int64 { return 0 }\nfunc main(){ o := Ops{Sum: sum64}; s := []int32{1,2,3}; _ = o.Sum(s...) }\n' > build/spread_fieldelemmismatch.goo
+	@rm -f build/spread_nonvariadic build/spread_elemmismatch build/spread_missingfixed build/spread_fieldelemmismatch
+	@$(COMPILER) -o build/spread_nonvariadic build/spread_nonvariadic.goo > build/spread_nonvariadic.out 2> build/spread_nonvariadic.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "spread-reject-probe: FAIL (non-variadic: f(s...) silently accepted)"; exit 1; fi; \
+	if [ -x build/spread_nonvariadic ]; then echo "spread-reject-probe: FAIL (non-variadic: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "spread argument requires a variadic function" build/spread_nonvariadic.err; then echo "spread-reject-probe: FAIL (non-variadic: wrong/missing diagnostic)"; cat build/spread_nonvariadic.err; exit 1; fi
+	@$(COMPILER) -o build/spread_elemmismatch build/spread_elemmismatch.goo > build/spread_elemmismatch.out 2> build/spread_elemmismatch.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "spread-reject-probe: FAIL (elem mismatch: []int32 into ...int64 silently accepted)"; exit 1; fi; \
+	if [ -x build/spread_elemmismatch ]; then echo "spread-reject-probe: FAIL (elem mismatch: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "cannot spread \[\]int32 into variadic parameter ...int64" build/spread_elemmismatch.err; then echo "spread-reject-probe: FAIL (elem mismatch: wrong/missing diagnostic)"; cat build/spread_elemmismatch.err; exit 1; fi
+	@$(COMPILER) -o build/spread_missingfixed build/spread_missingfixed.goo > build/spread_missingfixed.out 2> build/spread_missingfixed.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "spread-reject-probe: FAIL (missing fixed arg: tagged(s...) silently accepted)"; exit 1; fi; \
+	if [ -x build/spread_missingfixed ]; then echo "spread-reject-probe: FAIL (missing fixed arg: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "spread call must supply exactly the fixed arguments then one slice" build/spread_missingfixed.err; then echo "spread-reject-probe: FAIL (missing fixed arg: wrong/missing diagnostic)"; cat build/spread_missingfixed.err; exit 1; fi
+	@$(COMPILER) -o build/spread_fieldelemmismatch build/spread_fieldelemmismatch.goo > build/spread_fieldelemmismatch.out 2> build/spread_fieldelemmismatch.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "spread-reject-probe: FAIL (struct-field elem mismatch: o.Sum(s...) with []int32 silently accepted)"; exit 1; fi; \
+	if [ -x build/spread_fieldelemmismatch ]; then echo "spread-reject-probe: FAIL (struct-field elem mismatch: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "cannot spread \[\]int32 into variadic parameter ...int64" build/spread_fieldelemmismatch.err; then echo "spread-reject-probe: FAIL (struct-field elem mismatch: wrong/missing diagnostic)"; cat build/spread_fieldelemmismatch.err; exit 1; fi
+	@echo "spread-reject-probe: PASS (all four spread-reject shapes correctly rejected)"
+
+# Task 4 (copy builtin): two distinct reject shapes, each with its own
+# diagnostic (expression_checker.c's copy() arm) — an element-type mismatch
+# ([]string source into a []int destination, neither identical-elem nor the
+# byte/string special case) and a non-slice destination (a string passed as
+# dst, which Go also rejects: only src may be a string).
+copy-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== copy-reject-probe: copy(dst, src) must reject two distinct ways ==="
+	@printf 'package main\nfunc main(){ a := []int{1,2,3}; b := []string{"x"}; _ = copy(a, b) }\n' > build/copy_elemmismatch.goo
+	@printf 'package main\nfunc main(){ s := "x"; b := []byte{1,2,3}; _ = copy(s, b) }\n' > build/copy_stringdst.goo
+	@rm -f build/copy_elemmismatch build/copy_stringdst
+	@$(COMPILER) -o build/copy_elemmismatch build/copy_elemmismatch.goo > build/copy_elemmismatch.out 2> build/copy_elemmismatch.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "copy-reject-probe: FAIL (elem mismatch: []string into []int64 silently accepted)"; exit 1; fi; \
+	if [ -x build/copy_elemmismatch ]; then echo "copy-reject-probe: FAIL (elem mismatch: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "copy: cannot copy \[\]string into \[\]int64" build/copy_elemmismatch.err; then echo "copy-reject-probe: FAIL (elem mismatch: wrong/missing diagnostic)"; cat build/copy_elemmismatch.err; exit 1; fi
+	@$(COMPILER) -o build/copy_stringdst build/copy_stringdst.goo > build/copy_stringdst.out 2> build/copy_stringdst.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "copy-reject-probe: FAIL (string dst: copy(s, b) silently accepted)"; exit 1; fi; \
+	if [ -x build/copy_stringdst ]; then echo "copy-reject-probe: FAIL (string dst: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "copy: destination must be a slice" build/copy_stringdst.err; then echo "copy-reject-probe: FAIL (string dst: wrong/missing diagnostic)"; cat build/copy_stringdst.err; exit 1; fi
+	@echo "copy-reject-probe: PASS (both copy-reject shapes correctly rejected)"
 
 # P2-2: a user-function call with the wrong number of arguments must be
 # rejected at type-check with a clean source-located diagnostic, NOT reach

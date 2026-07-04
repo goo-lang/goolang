@@ -476,6 +476,35 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_match_expr(checker, expr);
         case AST_FUNC_LIT:
             return type_check_func_lit(checker, expr);
+        // Task 2 (stdlib unblocker): `[]byte(s)` conversion. v1 scope is
+        // exactly []byte(string) — any other []T(expr) shape (e.g.
+        // []int("x")) is rejected here with a v1-scoped diagnostic rather
+        // than reaching codegen with no lowering.
+        case AST_SLICE_CONVERSION: {
+            SliceConvNode* conv = (SliceConvNode*)expr;
+            // conv->slice_type is an AST_SLICE_TYPE node (a TYPE, not a
+            // value expression) — resolved via type_from_ast, the
+            // established convention for type-node resolution elsewhere in
+            // this file (e.g. make(T)/new(T), slice-literal elem_type).
+            // type_check_expression's switch has no AST_SLICE_TYPE case and
+            // would always fail here.
+            Type* target = type_from_ast(checker, conv->slice_type);
+            Type* src = type_check_expression(checker, conv->operand);
+            if (!target || !src) return NULL;
+            if (target->kind != TYPE_SLICE ||
+                target->data.slice.element_type->kind != TYPE_UINT8) {
+                type_error(checker, expr->pos,
+                    "[]T(x) conversion is only supported for []byte(string) in v1");
+                return NULL;
+            }
+            if (src->kind != TYPE_STRING) {
+                type_error(checker, expr->pos,
+                    "[]byte(x) requires a string operand, got %s", type_to_string(src));
+                return NULL;
+            }
+            expr->node_type = target;
+            return target;
+        }
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;
@@ -2100,6 +2129,20 @@ static int name_is_builtin_conv_name(const char* name) {
     return 0;
 }
 
+// Shared accept rule for append(dst, s...) and copy(dst, src): src_t is
+// assignable into dst_t (a SLICE type, verified by the caller) when it's a
+// slice with an identical (not merely compatible) element type, or — when
+// dst's element is byte — a string.
+static int slice_or_string_assignable(Type* src_t, Type* dst_t) {
+    int byte_dst = dst_t->data.slice.element_type->kind == TYPE_UINT8; // byte kind (Task 2)
+    return (src_t->kind == TYPE_SLICE &&
+            type_compatible(src_t->data.slice.element_type,
+                             dst_t->data.slice.element_type) &&
+            src_t->data.slice.element_type->kind ==
+            dst_t->data.slice.element_type->kind)
+           || (byte_dst && src_t->kind == TYPE_STRING);
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
@@ -2141,10 +2184,9 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // (builtin_conversion_target has no "string" case) and rejects with
         // "cannot convert to string ... only numeric conversions". This arm
         // intercepts "string" first so that generic rejection never fires.
-        // Scope: rune/byte->string ONLY — []byte(s) and string([]byte) stay
-        // unsupported (a []byte source fails the type_is_integer/TYPE_CHAR
-        // check below and falls through to the ordinary "cannot convert"
-        // diagnostic, same as before this task).
+        // Scope: rune/byte->string, AND (Task 2, stdlib unblocker)
+        // string([]byte) — a []byte source is checked FIRST, below, ahead
+        // of the integer/TYPE_CHAR check, since a slice is neither.
         if (strcmp(func_ident->name, "string") == 0 &&
             !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || call->args->next) {
@@ -2154,16 +2196,25 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* src = type_check_expression(checker, call->args);
             if (!src) return NULL;
+            // Task 2: string(b) where b is []byte — Go copies on
+            // conversion (see goo_cstr_from_bytes's doc comment in
+            // runtime.h); the result never aliases the source slice.
+            if (src->kind == TYPE_SLICE &&
+                src->data.slice.element_type->kind == TYPE_UINT8) {
+                Type* str_type = type_checker_get_builtin(checker, TYPE_STRING);
+                expr->node_type = str_type;
+                return str_type;
+            }
             // Only integer-kind sources convert (Go: rune/byte/int.../uint...
             // and the char/rune literal kind TYPE_CHAR). Floats, bool,
-            // string, and aggregate sources are NOT integer-to-string
-            // conversions in Go and are rejected here rather than reaching
-            // codegen with no lowering.
+            // string, and non-byte-slice aggregate sources are NOT
+            // integer-to-string conversions in Go and are rejected here
+            // rather than reaching codegen with no lowering.
             if (!type_is_integer(src) && src->kind != TYPE_CHAR) {
                 type_error(checker, expr->pos,
                            "cannot convert %s to string (only integer-kind "
-                           "conversions — rune/byte/int-family — are "
-                           "supported)",
+                           "conversions — rune/byte/int-family — or a "
+                           "[]byte operand are supported)",
                            type_to_string(src));
                 return NULL;
             }
@@ -2369,6 +2420,26 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                            "append: first argument must be a slice, got %s", type_to_string(slice_t));
                 return NULL;
             }
+            // append(dst, s...) (Task 4): the second arg is a whole []E
+            // (identical elem, not merely compatible) or, when dst's
+            // element is byte, a string — instead of a bare element.
+            // `has_spread` is set by the grammar for ANY trailing `expr...`
+            // call argument (Task 3); append has its own dedicated arm
+            // (this one), so it must read the flag itself rather than
+            // relying on the generic variadic-pack path Task 3 modified.
+            if (call->has_spread) {
+                Type* src_t = type_check_expression(checker, call->args->next);
+                if (!src_t) return NULL;
+                int ok = slice_or_string_assignable(src_t, slice_t);
+                if (!ok) {
+                    type_error(checker, expr->pos,
+                               "append: cannot spread %s into %s",
+                               type_to_string(src_t), type_to_string(slice_t));
+                    return NULL;
+                }
+                expr->node_type = slice_t;
+                return slice_t;
+            }
             Type* elem_t = type_check_expression(checker, call->args->next);
             if (!elem_t) return NULL;
             // The element must be assignable to the slice's element type:
@@ -2382,6 +2453,35 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             expr->node_type = slice_t;
             return slice_t;
+        }
+        // copy(dst, src) -> int (Go-exact: min(len(dst), len(src)) count).
+        // dst must be a slice; src is a slice with an identical element type,
+        // or (when dst's element is byte) a string — same acceptance rule
+        // as append(dst, s...) above. Result type is always int, unlike
+        // append, so this rides a fixed node_type rather than the first
+        // arg's dynamic type.
+        if (strcmp(func_ident->name, "copy") == 0) {
+            if (!call->args || !call->args->next || call->args->next->next) {
+                type_error(checker, expr->pos, "copy expects exactly two arguments (dst, src)");
+                return NULL;
+            }
+            Type* dst_t = type_check_expression(checker, call->args);
+            if (!dst_t) return NULL;
+            if (dst_t->kind != TYPE_SLICE) {
+                type_error(checker, expr->pos,
+                           "copy: destination must be a slice, got %s", type_to_string(dst_t));
+                return NULL;
+            }
+            Type* src_t = type_check_expression(checker, call->args->next);
+            if (!src_t) return NULL;
+            int ok = slice_or_string_assignable(src_t, dst_t);
+            if (!ok) {
+                type_error(checker, expr->pos,
+                           "copy: cannot copy %s into %s", type_to_string(src_t), type_to_string(dst_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: copy -> int (64-bit)
+            return expr->node_type;
         }
         // len(slice|string|map) -> int. Codegen dispatches on the arg's
         // TypeKind (map routes through goo_map_len_sv; slice/string extract
@@ -2629,6 +2729,49 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         }
     }
 
+    // Task 3 (spread `f(s...)`): validated BEFORE the per-argument loop
+    // below, which would otherwise misread the spread's slice-typed final
+    // argument against the variadic slot's UNWRAPPED element type (producing
+    // a confusing "cannot use []int as int" instead of the precise
+    // diagnostics here). Go spread rules: the callee must be variadic, and
+    // the call must supply exactly the fixed arguments then one slice — no
+    // extra/missing args. The final argument's element-type match (no
+    // coercion) is checked inside the loop below, at the variadic slot
+    // position, once we know that position is reached exactly once.
+    //
+    // Both checks below are gated on `func_type->data.function.param_types`
+    // (non-NULL), NOT on `check_signature`. check_signature exists to guard
+    // the OLD per-arg diagnostics, whose name-based resolution (re-looking-up
+    // the callee by mangled name/exports scope) can be unreliable for
+    // non-identifier callees. These two spread checks don't need that: they
+    // read param_count/param_types/is_variadic directly off func_type, the
+    // callee EXPRESSION's own static type (already validated TYPE_FUNCTION
+    // above), which is reliable regardless of how the callee resolved — the
+    // unconditional `!callee_is_variadic` check just below is exactly this
+    // pattern. Gating these on check_signature left a call through a
+    // function-valued struct field (e.g. `o.Sum(s...)`, no name-based
+    // resolution match, check_signature stays 0) completely unchecked: a
+    // width/arity mismatch reached call_codegen's spread branch, which passes
+    // the raw {ptr,len,cap} through with no per-element coercion — a latent
+    // heap-OOB read in the callee, and for a missing fixed arg, a silent
+    // codegen failure with zero diagnostic output.
+    if (call->has_spread && !callee_is_variadic) {
+        type_error(checker, expr->pos,
+                   "spread argument requires a variadic function");
+        return NULL;
+    }
+    if (call->has_spread && func_type->data.function.param_types) {
+        size_t arg_total = 0;
+        for (ASTNode* a = call->args; a; a = a->next) arg_total++;
+        size_t declared_total = func_type->data.function.param_count - recv_offset;
+        if (arg_total != declared_total) {
+            type_error(checker, expr->pos,
+                "spread call must supply exactly the fixed arguments then one slice (want %zu args, got %zu)",
+                declared_total, arg_total);
+            return NULL;
+        }
+    }
+
     // Check arguments
     ASTNode* arg = call->args;
     size_t arg_count = 0;
@@ -2653,10 +2796,45 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // "constant 300 overflows int8" already comes from for non-variadic
         // narrow params.
         Type* param_type = NULL;
-        if (check_signature && param_types && callee_is_variadic && param_count > 0) {
+        // Reachable when check_signature is true (unchanged from before), OR
+        // when call->has_spread is true regardless of check_signature — the
+        // has_spread branch below (Task 3's strict element-identity check)
+        // must run for a spread call through an unresolved-name callee (e.g.
+        // a function-valued struct field) too; see the comment above the
+        // pre-loop spread checks for why that's safe to trust off func_type
+        // alone. The fixed-position sub-branch immediately below still
+        // requires check_signature itself before indexing param_types — it
+        // is the OLD per-arg diagnostic and stays exactly as reliable/
+        // unreliable as before.
+        if ((check_signature || call->has_spread) && param_types && callee_is_variadic && param_count > 0) {
             size_t last_idx = param_count - 1;
             if ((arg_count + recv_offset) < last_idx) {
-                param_type = param_types[arg_count + recv_offset];
+                if (check_signature) {
+                    param_type = param_types[arg_count + recv_offset];
+                }
+            } else if (call->has_spread) {
+                // Task 3: the variadic slot's sole argument IS the spread
+                // operand ([]E), not a single element — compare the WHOLE
+                // slice type's element against the variadic slot's element
+                // with strict identity (type_equals, no coercion: Go
+                // requires E to match exactly, unlike the per-element path's
+                // type_compatible below which would let []int32 slip into
+                // ...int64). The pre-loop arg-count check above guarantees
+                // this position is reached exactly once, by the final arg.
+                Type* slice_t = param_types[last_idx];
+                Type* elem_want = (slice_t && slice_t->kind == TYPE_SLICE)
+                    ? slice_t->data.slice.element_type : NULL;
+                if (arg_type->kind != TYPE_SLICE || !elem_want ||
+                    !type_equals(arg_type->data.slice.element_type, elem_want)) {
+                    type_error(checker, arg->pos,
+                               "cannot spread %s into variadic parameter ...%s",
+                               type_to_string(arg_type),
+                               elem_want ? type_to_string(elem_want) : "?");
+                    return NULL;
+                }
+                arg_count++;
+                arg = arg->next;
+                continue;
             } else {
                 Type* slice_t = param_types[last_idx];
                 param_type = (slice_t && slice_t->kind == TYPE_SLICE)

@@ -48,6 +48,12 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
    rule and the elided-composite element rule. */
 static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
 
+/* Shared by the map_lit arms (with and without trailing comma).
+   Extracts the parallel values list that map_entry_list stashes on the
+   keys head's node_type side-channel (cleared so type_check/codegen
+   never see it). */
+static ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries);
+
 // Struct embedding: build the VarDeclNode for an anonymous field `Name` /
 // `*Name`. The field is stored under the type's own name (Go's rule), with
 // is_embedded set; the type node matches what type_name / pointer_type
@@ -1581,6 +1587,22 @@ primary_expr:
     | slice_lit { $$ = $1; }
     | map_lit { $$ = $1; }
     | struct_lit { $$ = $1; }
+    /* Task 2 (stdlib unblocker): `[]byte(s)` / `[]T(expr)` conversion form.
+       slice_type is NOT itself a primary_expr (it's a TYPE), so this can't
+       reuse call_expr's `primary_expr LPAREN ... RPAREN` shape — it needs
+       its own alternative directly in primary_expr. v1 only admits
+       []byte(string); any other []T(expr) is rejected by the type checker
+       (expression_checker.c's AST_SLICE_CONVERSION case), not the grammar. */
+    | slice_type LPAREN expression RPAREN {
+        SliceConvNode* conv = (SliceConvNode*)malloc(sizeof(SliceConvNode));
+        conv->base.type = AST_SLICE_CONVERSION;
+        conv->base.pos = get_current_position();
+        conv->base.node_type = NULL;
+        conv->base.next = NULL;
+        conv->slice_type = $1;
+        conv->operand = $3;
+        $$ = (ASTNode*)conv;
+    }
     /* All GPU constructs deliberately disabled in primary_expr.
        kernel_launch (identifier LT LT LT … GT GT GT (…)) was removed
        because bison can't disambiguate `i < 10` from the start of a
@@ -1645,6 +1667,7 @@ call_expr:
         call->base.next = NULL;
         call->function = $1;
         call->args = NULL;
+        call->has_spread = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN expression_list RPAREN {
@@ -1655,6 +1678,30 @@ call_expr:
         call->base.next = NULL;
         call->function = $1;
         call->args = $3;
+        call->has_spread = 0;
+        $$ = (ASTNode*)call;
+    }
+    // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
+    // immediately above; only has_spread differs. Spread is grammatically
+    // FINAL-ONLY — ELLIPSIS sits directly before RPAREN, so it can only ever
+    // apply to the last element of expression_list (Go rejects non-final
+    // `...` as a syntax error too, which this shape enforces for free: there
+    // is no alternative production for `...` before a COMMA). The typechecker
+    // (expression_checker.c's has_spread block) is the ONLY consumer that
+    // interprets this flag; codegen's variadic pack builder (call_codegen.c)
+    // reads it to bypass the per-element pack and pass the operand's slice
+    // value straight through (Go aliasing semantics). Bison tripwire: this
+    // arm must leave the conflict count at EXACTLY 81 shift/reduce + 256
+    // reduce/reduce (verified empirically before commit).
+    | primary_expr LPAREN expression_list ELLIPSIS RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        call->args = $3;
+        call->has_spread = 1;
         $$ = (ASTNode*)call;
     }
     // `make(map[K]V)` / `make([]T, n)`: a type in call-argument position.
@@ -1681,6 +1728,7 @@ call_expr:
         call->base.next = NULL;
         call->function = $1;
         call->args = $3;
+        call->has_spread = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
@@ -1699,6 +1747,7 @@ call_expr:
         // walk is needed.
         $3->next = $5;
         call->args = $3;
+        call->has_spread = 0;
         $$ = (ASTNode*)call;
     }
     ;
@@ -2013,32 +2062,9 @@ struct_field:
 // map[K]V{k: v, …} — tagged AST_PAREN_EXPR (unused enum slot).
 // keys and values are stored as two parallel `next`-chained lists.
 map_lit:
-    map_type LBRACE map_entry_list RBRACE {
-        MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
-        lit->base.type = AST_PAREN_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->map_type = $1;
-        lit->keys = $3;  // map_entry_list returns the keys head
-        lit->values = (ASTNode*)((ASTNode*)$3)->node_type;  // values stashed on key.node_type
-        // node_type field repurposed as a side-channel for the
-        // parallel values list head; cleared after extraction so
-        // type_check / codegen don't see it.
-        ((ASTNode*)$3)->node_type = NULL;
-        $$ = (ASTNode*)lit;
-    }
-    | map_type LBRACE RBRACE {
-        MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
-        lit->base.type = AST_PAREN_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->map_type = $1;
-        lit->keys = NULL;
-        lit->values = NULL;
-        $$ = (ASTNode*)lit;
-    }
+    map_type LBRACE map_entry_list RBRACE        { $$ = map_literal_new($1, $3); }
+    | map_type LBRACE map_entry_list COMMA RBRACE { $$ = map_literal_new($1, $3); }
+    | map_type LBRACE RBRACE                      { $$ = map_literal_new($1, NULL); }
     ;
 
 /* M10 struct literal: `Point{x: 3, y: 4}` (keyed) or `Point{3, 4}` (positional).
@@ -2049,6 +2075,11 @@ map_lit:
    M10-struct-literal-impl child. */
 struct_lit:
     identifier LBRACE struct_lit_inits RBRACE {
+        IdentifierNode* type_ident = (IdentifierNode*)$1;
+        $$ = struct_literal_new(strdup(type_ident->name), $3);
+        ast_node_free($1);
+    }
+    | identifier LBRACE struct_lit_inits COMMA RBRACE {
         IdentifierNode* type_ident = (IdentifierNode*)$1;
         $$ = struct_literal_new(strdup(type_ident->name), $3);
         ast_node_free($1);
@@ -3258,6 +3289,24 @@ static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits) {
             free(lit->field_names);
             lit->field_names = NULL;
         }
+    }
+    return (ASTNode*)lit;
+}
+
+static ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries) {
+    MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
+    lit->base.type = AST_PAREN_EXPR;
+    lit->base.pos = get_current_position();
+    lit->base.node_type = NULL;
+    lit->base.next = NULL;
+    lit->map_type = map_type_node;
+    if (entries) {
+        lit->keys = entries;
+        lit->values = (ASTNode*)((ASTNode*)entries)->node_type;
+        ((ASTNode*)entries)->node_type = NULL;
+    } else {
+        lit->keys = NULL;
+        lit->values = NULL;
     }
     return (ASTNode*)lit;
 }

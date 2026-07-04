@@ -191,6 +191,26 @@ void goo_slice_free(goo_slice_t slice);
 void* goo_slice_get(goo_slice_t slice, size_t index, size_t element_size);
 int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size);
 
+// copy(dst, src) core (Go-exact): moves min(dst_len, src_len) elements and
+// returns the count. memmove — overlapping ranges are legal (the copy_probe
+// golden's copy(src[1:4], src[0:3]) case pins this). Raw-pointer ABI (no
+// goo_slice_t* — the caller already has each side's {data,len}, whether the
+// source is a slice or, when the destination's element is byte, a string).
+int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
+                           const void* src, int64_t src_len, int64_t elem_size);
+// append(dst, s...) bulk arm: snapshot src, grow dst by src_len (same
+// amortized-doubling policy as goo_slice_append), then move the snapshot in.
+// The snapshot is what makes self-append (append(b, b...)) safe across the
+// grow — a realloc of dst may free/move the very block src still aliases.
+void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
+                           int64_t src_len, int64_t elem_size);
+
+// []byte(s) / string(b) conversion cores. Copy semantics (Go-exact): the
+// result never aliases the source. Bare-pointer ABI (goo_slice_t never
+// crosses by value); lengths explicit.
+void* goo_bytes_from_string(const char* p, int64_t len);
+char* goo_cstr_from_bytes(void* data, int64_t len);
+
 // Runtime type information (for future use)
 typedef enum {
     GOO_TYPE_VOID,

@@ -726,6 +726,25 @@ void* goo_slice_alloc(int64_t count, int64_t elem_size) {
     return data;
 }
 
+// []byte(s) / string(b) conversion cores (Task 2, stdlib unblocker). Go
+// copies on both conversions — codegen builds the destination header
+// ({ptr,len,cap} slice or {ptr,len} string) around whatever buffer these
+// return, so the result never aliases the source's backing store.
+void* goo_bytes_from_string(const char* p, int64_t len) {
+    if (len < 0) len = 0;
+    void* data = goo_alloc(len > 0 ? (size_t)len : 1);
+    if (len > 0) memcpy(data, p, (size_t)len);
+    return data;
+}
+
+char* goo_cstr_from_bytes(void* data, int64_t len) {
+    if (len < 0) len = 0;
+    char* s = (char*)goo_alloc((size_t)len + 1);
+    if (len > 0) memcpy(s, data, (size_t)len);
+    s[len] = '\0';   // known rep limitation: embedded NULs truncate downstream C-string ops
+    return s;
+}
+
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {
     if (capacity == 0 || element_size == 0) {
         return (goo_slice_t){NULL, 0, 0};
@@ -753,18 +772,31 @@ void* goo_slice_get(goo_slice_t slice, size_t index, size_t element_size) {
     return (char*)slice.data + (index * element_size);
 }
 
+// Capacity-doubling policy shared by goo_slice_append and
+// goo_slice_append_bulk: double from `capacity` (or start at 1 if empty),
+// looping until it covers `need`. A single-element append only ever needs
+// one doubling step, but a bulk append's src_len can outgrow that in one
+// call, hence the loop (a no-op when one step already covers `need`).
+static size_t goo_slice_grow_capacity(size_t capacity, size_t need) {
+    size_t new_capacity = capacity * 2;
+    if (new_capacity == 0) {
+        new_capacity = 1;
+    }
+    while (new_capacity < need) {
+        new_capacity *= 2;
+    }
+    return new_capacity;
+}
+
 int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size) {
     if (!slice || !element) {
         return 0;
     }
-    
+
     if (slice->length >= slice->capacity) {
         // Need to grow the slice
-        size_t new_capacity = slice->capacity * 2;
-        if (new_capacity == 0) {
-            new_capacity = 1;
-        }
-        
+        size_t new_capacity = goo_slice_grow_capacity(slice->capacity, slice->length + 1);
+
         void* new_data = goo_realloc(slice->data, new_capacity * element_size);
         if (!new_data) {
             return 0;
@@ -778,8 +810,51 @@ int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size) {
     void* dest = (char*)slice->data + (slice->length * element_size);
     memcpy(dest, element, element_size);
     slice->length++;
-    
+
     return 1;
+}
+
+int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
+                           const void* src, int64_t src_len, int64_t elem_size) {
+    int64_t n = dst_len < src_len ? dst_len : src_len;
+    if (n <= 0 || elem_size <= 0) {
+        return 0;
+    }
+    memmove(dst, src, (size_t)(n * elem_size));
+    return n;
+}
+
+void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
+                           int64_t src_len, int64_t elem_size) {
+    if (!dst || !src || src_len <= 0 || elem_size <= 0) {
+        return;
+    }
+
+    size_t bytes = (size_t)src_len * (size_t)elem_size;
+    // Snapshot BEFORE growing dst: self-append (append(b, b...)) has src
+    // aliasing dst's CURRENT backing array, and the grow below may
+    // goo_realloc that exact block out from under src (freed or moved).
+    void* snap = goo_alloc(bytes);
+    memcpy(snap, src, bytes);
+
+    size_t need = dst->length + (size_t)src_len;
+    if (need > dst->capacity) {
+        // Same capacity-doubling policy as goo_slice_append, via the shared helper.
+        size_t new_capacity = goo_slice_grow_capacity(dst->capacity, need);
+
+        void* new_data = goo_realloc(dst->data, new_capacity * elem_size);
+        if (!new_data) {
+            goo_free(snap);
+            return;
+        }
+
+        dst->data = new_data;
+        dst->capacity = new_capacity;
+    }
+
+    memcpy((char*)dst->data + dst->length * (size_t)elem_size, snap, bytes);
+    dst->length += (size_t)src_len;
+    goo_free(snap);
 }
 
 // Bounds and null checking

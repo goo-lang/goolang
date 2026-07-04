@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+
+func main() {
+	a := []int{1, 2}
+	b := []int{3, 4}
+	a = append(a, b...)
+	fmt.Println(len(a))
+	fmt.Println(a[3])
+	a = append(a, a...)
+	fmt.Println(len(a))
+	fmt.Println(a[7])
+	bs := []byte("ab")
+	bs = append(bs, "cd"...)
+	fmt.Println(string(bs))
+	var z []int
+	z = append(z, b...)
+	fmt.Println(z[1])
+}

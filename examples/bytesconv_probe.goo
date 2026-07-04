@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+func main() {
+	s := "hello"
+	b := []byte(s)
+	b[0] = 'H'
+	fmt.Println(string(b))
+	fmt.Println(s)
+	fmt.Println(len([]byte("héllo")))
+	e := []byte("")
+	fmt.Println(len(e))
+	t := string(b)
+	b[1] = 'X'
+	fmt.Println(t)
+}
