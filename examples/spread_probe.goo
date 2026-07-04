@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+func sum(xs ...int) int {
+	t := 0
+	for _, x := range xs {
+		t += x
+	}
+	return t
+}
+
+func mut(xs ...int) {
+	xs[0] = 99
+}
+
+func tagged(tag string, xs ...int) int {
+	return len(tag) + sum(xs...)
+}
+
+func main() {
+	s := []int{1, 2, 3}
+	fmt.Println(sum(s...))
+	mut(s...)
+	fmt.Println(s[0])
+	var e []int
+	fmt.Println(sum(e...))
+	fmt.Println(tagged("ab", s...))
+}

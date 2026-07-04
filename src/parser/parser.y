@@ -1667,6 +1667,7 @@ call_expr:
         call->base.next = NULL;
         call->function = $1;
         call->args = NULL;
+        call->has_spread = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN expression_list RPAREN {
@@ -1677,6 +1678,30 @@ call_expr:
         call->base.next = NULL;
         call->function = $1;
         call->args = $3;
+        call->has_spread = 0;
+        $$ = (ASTNode*)call;
+    }
+    // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
+    // immediately above; only has_spread differs. Spread is grammatically
+    // FINAL-ONLY — ELLIPSIS sits directly before RPAREN, so it can only ever
+    // apply to the last element of expression_list (Go rejects non-final
+    // `...` as a syntax error too, which this shape enforces for free: there
+    // is no alternative production for `...` before a COMMA). The typechecker
+    // (expression_checker.c's has_spread block) is the ONLY consumer that
+    // interprets this flag; codegen's variadic pack builder (call_codegen.c)
+    // reads it to bypass the per-element pack and pass the operand's slice
+    // value straight through (Go aliasing semantics). Bison tripwire: this
+    // arm must leave the conflict count at EXACTLY 81 shift/reduce + 256
+    // reduce/reduce (verified empirically before commit).
+    | primary_expr LPAREN expression_list ELLIPSIS RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        call->args = $3;
+        call->has_spread = 1;
         $$ = (ASTNode*)call;
     }
     // `make(map[K]V)` / `make([]T, n)`: a type in call-argument position.
@@ -1703,6 +1728,7 @@ call_expr:
         call->base.next = NULL;
         call->function = $1;
         call->args = $3;
+        call->has_spread = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
@@ -1721,6 +1747,7 @@ call_expr:
         // walk is needed.
         $3->next = $5;
         call->args = $3;
+        call->has_spread = 0;
         $$ = (ASTNode*)call;
     }
     ;

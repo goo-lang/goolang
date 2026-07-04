@@ -502,6 +502,8 @@ typedef struct {
     ASTNode base;
     struct ASTNode* function;
     struct ASTNode* args;       // Argument list
+    int has_spread;             // final arg is `expr...` (Go spread); malloc'd
+                                // call sites must zero it — see parser arms
 } CallExprNode;
 
 // Index expression

@@ -1315,7 +1315,37 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         // slice_coerce_elem rules a `[]int{...}` literal's elements get.
         // Zero trailing args (`sum()`) is exactly the `first_elem == NULL`
         // case that path already handles for an empty literal.
-        if (callee_is_variadic) {
+        if (callee_is_variadic && call->has_spread) {
+            // Task 3: `f(s...)` bypasses the per-element pack builder
+            // entirely — the typechecker (expression_checker.c's has_spread
+            // block) already guarantees `arg` is the sole trailing node and
+            // its type is []E with E identical to the variadic element type.
+            // Pass its slice value straight through as the pack arg (Go
+            // aliasing semantics — the golden's `mut(s...)` mutating s[0]
+            // pins this): generate the operand, load if it arrived as an
+            // lvalue (mirrors the generic fixed-arg lvalue-load above), and
+            // use the resulting {ptr,len,cap} aggregate value AS-IS, with no
+            // copy. This is the exact by-value shape
+            // codegen_build_slice_from_elems itself returns (its final
+            // insertvalue chain builds the same aggregate), so both paths
+            // hand args[fixed_count] the identical representation.
+            ValueInfo* spread_val = codegen_generate_expression(codegen, checker, arg);
+            if (!spread_val) {
+                free(args);
+                value_info_free(func_val);
+                return NULL;
+            }
+            if (spread_val->is_lvalue && spread_val->goo_type) {
+                LLVMTypeRef st = codegen_type_to_llvm(codegen, spread_val->goo_type);
+                if (st) {
+                    spread_val->llvm_value = LLVMBuildLoad2(codegen->builder,
+                        st, spread_val->llvm_value, "spreadld");
+                    spread_val->is_lvalue = 0;
+                }
+            }
+            args[fixed_count] = spread_val->llvm_value;
+            value_info_free(spread_val);
+        } else if (callee_is_variadic) {
             Type* slice_type = func_goo_type->data.function.param_types[fixed_count];
             ValueInfo* packed = codegen_build_slice_from_elems(
                 codegen, checker, arg, slice_type, expr->pos);

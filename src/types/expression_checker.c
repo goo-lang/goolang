@@ -2666,6 +2666,32 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         }
     }
 
+    // Task 3 (spread `f(s...)`): validated BEFORE the per-argument loop
+    // below, which would otherwise misread the spread's slice-typed final
+    // argument against the variadic slot's UNWRAPPED element type (producing
+    // a confusing "cannot use []int as int" instead of the precise
+    // diagnostics here). Go spread rules: the callee must be variadic, and
+    // the call must supply exactly the fixed arguments then one slice — no
+    // extra/missing args. The final argument's element-type match (no
+    // coercion) is checked inside the loop below, at the variadic slot
+    // position, once we know that position is reached exactly once.
+    if (call->has_spread && !callee_is_variadic) {
+        type_error(checker, expr->pos,
+                   "spread argument requires a variadic function");
+        return NULL;
+    }
+    if (call->has_spread && check_signature) {
+        size_t arg_total = 0;
+        for (ASTNode* a = call->args; a; a = a->next) arg_total++;
+        size_t declared_total = func_type->data.function.param_count - recv_offset;
+        if (arg_total != declared_total) {
+            type_error(checker, expr->pos,
+                "spread call must supply exactly the fixed arguments then one slice (want %zu args, got %zu)",
+                declared_total, arg_total);
+            return NULL;
+        }
+    }
+
     // Check arguments
     ASTNode* arg = call->args;
     size_t arg_count = 0;
@@ -2694,6 +2720,29 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             size_t last_idx = param_count - 1;
             if ((arg_count + recv_offset) < last_idx) {
                 param_type = param_types[arg_count + recv_offset];
+            } else if (call->has_spread) {
+                // Task 3: the variadic slot's sole argument IS the spread
+                // operand ([]E), not a single element — compare the WHOLE
+                // slice type's element against the variadic slot's element
+                // with strict identity (type_equals, no coercion: Go
+                // requires E to match exactly, unlike the per-element path's
+                // type_compatible below which would let []int32 slip into
+                // ...int64). The pre-loop arg-count check above guarantees
+                // this position is reached exactly once, by the final arg.
+                Type* slice_t = param_types[last_idx];
+                Type* elem_want = (slice_t && slice_t->kind == TYPE_SLICE)
+                    ? slice_t->data.slice.element_type : NULL;
+                if (arg_type->kind != TYPE_SLICE || !elem_want ||
+                    !type_equals(arg_type->data.slice.element_type, elem_want)) {
+                    type_error(checker, arg->pos,
+                               "cannot spread %s into variadic parameter ...%s",
+                               type_to_string(arg_type),
+                               elem_want ? type_to_string(elem_want) : "?");
+                    return NULL;
+                }
+                arg_count++;
+                arg = arg->next;
+                continue;
             } else {
                 Type* slice_t = param_types[last_idx];
                 param_type = (slice_t && slice_t->kind == TYPE_SLICE)
