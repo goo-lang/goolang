@@ -644,17 +644,35 @@ LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr)
 // inline arm is exactly PtrToInt/ZExt/SExt/bitcast — safe to share because
 // map keys are restricted to inline-eligible types; Task 3's typecheck gate
 // enforces that).
+//
+// `key_val` carries is_lvalue: a key expression that is itself an lvalue
+// (slice/array element `a[i]`, struct field `p.X`, string byte-index `s[i]`
+// — codegen_generate_index_expr/codegen_generate_selector_expr always return
+// those as is_lvalue=1 with llvm_value the element/field ADDRESS, not the
+// value) must be loaded to its rvalue here before packing — mirrored from
+// the value/RHS load every value-slot call site already does. Without this
+// load, INLINE keys would sext/zext a `ptr` (LLVM verifier failure) and
+// STRING keys would ExtractValue a raw address instead of the string
+// aggregate (compiler SIGSEGV).
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
-                                     LLVMValueRef key_val, Type* key_type) {
+                                     ValueInfo* key_val, Type* key_type) {
     (void)checker;
-    if (!codegen || !key_val) return NULL;
+    if (!codegen || !key_val || !key_val->llvm_value) return NULL;
+    Type* kt = key_type ? key_type : key_val->goo_type;
+    LLVMValueRef raw = key_val->llvm_value;
+    if (key_val->is_lvalue && kt) {
+        LLVMTypeRef llvm_kt = codegen_type_to_llvm(codegen, kt);
+        if (llvm_kt) {
+            raw = LLVMBuildLoad2(codegen->builder, llvm_kt, raw, "mapkey_load");
+        }
+    }
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
-    if (key_type && key_type->kind == TYPE_STRING) {
+    if (kt && kt->kind == TYPE_STRING) {
         // string aggregate {i8*, i64}: take field 0 (the char*), int-ize it.
-        LLVMValueRef cptr = LLVMBuildExtractValue(codegen->builder, key_val, 0, "kstr_ptr");
+        LLVMValueRef cptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "kstr_ptr");
         return LLVMBuildPtrToInt(codegen->builder, cptr, i64, "kstr_slot");
     }
-    return codegen_map_value_to_slot(codegen, key_val, key_type);
+    return codegen_map_value_to_slot(codegen, raw, kt);
 }
 
 // Inverse for range key binding. STRING: slot holds a char* (the runtime

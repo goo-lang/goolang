@@ -442,9 +442,18 @@ int codegen_map_value_is_inline(Type* value_type);
 // strcmp-based key identity). codegen_map_key_kind feeds goo_map_new_sv's
 // key_kind argument at map-creation sites (GOO_MAPKEY_STRING=0/INLINE=1,
 // include/runtime.h).
+// `key_val` is the ValueInfo produced by generating the key expression, NOT
+// a bare LLVMValueRef: an lvalue key (a[i], p.X, s[i] — index/selector reads
+// always return is_lvalue=1 with llvm_value as the element/field ADDRESS,
+// composite_codegen.c) must be loaded to its rvalue before packing, exactly
+// like every value/RHS site loads its ValueInfo before slot-boxing. Passing
+// the address straight through used to sext/zext a `ptr` (verifier failure)
+// or, for string keys, ExtractValue a raw address (SIGSEGV). Threading the
+// ValueInfo lets this one helper do that load for all 5 call sites.
+// `key_type` may be NULL — falls back to key_val->goo_type.
 int codegen_map_key_kind(Type* key_type);
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
-                                     LLVMValueRef key_val, Type* key_type);
+                                     ValueInfo* key_val, Type* key_type);
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);
 // Wrap a raw `char*` into the goo string aggregate `{i8*, i64}` via
 // goo_string_new. Shared by codegen_map_slot_to_key's STRING arm and the

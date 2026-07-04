@@ -1616,8 +1616,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
                 // Pack the key into its i64 slot (string keys: char* ptrtoint,
                 // never the value-boxing path — codegen_map_key_to_slot).
-                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, key_val->llvm_value,
-                                                          key_type ? key_type : key_val->goo_type);
+                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, key_val, key_type);
 
                 // Call goo_map_get_sv_ok(map, key, &out, &found).
                 LLVMValueRef call_args[4] = { map_val->llvm_value, kp, out_slot, found_slot };

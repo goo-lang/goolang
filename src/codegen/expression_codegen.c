@@ -251,8 +251,7 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 ValueInfo* kv = codegen_generate_expression(codegen, checker, k);
                 ValueInfo* vv = codegen_generate_expression(codegen, checker, v);
                 if (!kv || !vv) return NULL;
-                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv->llvm_value,
-                                                          key_type ? key_type : kv->goo_type);
+                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv, key_type);
                 // Box a concrete implementer into the map's interface-typed
                 // value slot BEFORE slot-boxing — mirrors the plain-assignment
                 // helper (function_codegen.c's var-decl init boxing / the
@@ -1122,8 +1121,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 ValueInfo* mv = codegen_generate_expression(codegen, checker, idx->expr);
                 ValueInfo* kv = codegen_generate_expression(codegen, checker, idx->index);
                 if (!mv || !kv) { value_info_free(mv); value_info_free(kv); return NULL; }
-                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv->llvm_value,
-                                                          key_type ? key_type : kv->goo_type);
+                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv, key_type);
                 ValueInfo* vv = codegen_generate_expression(codegen, checker, binary->right);
                 if (!vv) { value_info_free(mv); value_info_free(kv); return NULL; }
                 if (vv->is_lvalue && vv->goo_type) {

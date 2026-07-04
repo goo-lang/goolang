@@ -89,8 +89,7 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             return NULL;
         }
         Type* key_type = base_type->data.map.key_type;
-        LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, index_val->llvm_value,
-                                                  key_type ? key_type : index_val->goo_type);
+        LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, index_val, key_type);
         LLVMValueRef args[2] = { base_val->llvm_value, kp };
         LLVMValueRef slot = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
                                            get_fn, args, 2, "map_get");

@@ -601,8 +601,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (!key_arg) { value_info_free(map_arg); return NULL; }
             Type* del_key_type = (map_arg->goo_type && map_arg->goo_type->kind == TYPE_MAP)
                 ? map_arg->goo_type->data.map.key_type : key_arg->goo_type;
-            LLVMValueRef key_ptr = codegen_map_key_to_slot(codegen, checker, key_arg->llvm_value,
-                                                           del_key_type);
+            LLVMValueRef key_ptr = codegen_map_key_to_slot(codegen, checker, key_arg, del_key_type);
             LLVMValueRef del_fn = LLVMGetNamedFunction(codegen->module, "goo_map_delete_sv");
             if (!del_fn) {
                 codegen_error(codegen, expr->pos, "delete: goo_map_delete_sv unavailable");
