@@ -116,6 +116,14 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 if (kv->goo_type && kv->goo_type->kind == TYPE_STRING) {
                     kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
                 }
+                LLVMTypeRef want_vt = codegen_type_to_llvm(codegen, val_type);
+                if (want_vt && !codegen_map_value_is_inline(val_type)) {
+                    int src_signed = vv->goo_type &&
+                        vv->goo_type->kind >= TYPE_INT8 &&
+                        vv->goo_type->kind <= TYPE_INT64;
+                    vv->llvm_value = codegen_coerce_to_type(
+                        codegen, vv->llvm_value, src_signed, want_vt);
+                }
                 LLVMValueRef slot = codegen_map_value_to_slot(codegen, vv->llvm_value, val_type);
                 LLVMValueRef args[3] = { m, kp, slot };
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn),
@@ -947,6 +955,14 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                         vv->llvm_value = LLVMBuildLoad2(codegen->builder, vt, vv->llvm_value, "rval");
                         vv->is_lvalue = 0;
                     }
+                }
+                LLVMTypeRef want_vt = codegen_type_to_llvm(codegen, val_type);
+                if (want_vt && !codegen_map_value_is_inline(val_type)) {
+                    int src_signed = vv->goo_type &&
+                        vv->goo_type->kind >= TYPE_INT8 &&
+                        vv->goo_type->kind <= TYPE_INT64;
+                    vv->llvm_value = codegen_coerce_to_type(
+                        codegen, vv->llvm_value, src_signed, want_vt);
                 }
                 LLVMValueRef slot = codegen_map_value_to_slot(codegen, vv->llvm_value, val_type);
                 LLVMValueRef args[3] = { mv->llvm_value, kp, slot };

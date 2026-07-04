@@ -520,11 +520,39 @@ LLVMValueRef codegen_create_alloca(CodeGenerator* codegen, LLVMTypeRef type, con
     return LLVMBuildAlloca(codegen->builder, type, name);
 }
 
+// Map slot classification (spec 2026-07-04-func-map-values): inline types
+// ride the i64 slot as a cast; everything else (funcvals, strings, floats,
+// structs, slices, interfaces, ...) is heap-boxed and the slot holds the
+// box pointer. TYPE_MAP/TYPE_CHAN are opaque runtime pointers — inline.
+// Non-static: the write/literal sites (expression_codegen.c) and the
+// lvalue guard (Task 4) consult it too; declared in codegen.h.
+int codegen_map_value_is_inline(Type* v) {
+    if (!v) return 0;
+    return type_is_integer(v) || v->kind == TYPE_BOOL || v->kind == TYPE_CHAR ||
+           v->kind == TYPE_POINTER || v->kind == TYPE_MAP || v->kind == TYPE_CHANNEL;
+}
+
 LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef value, Type* value_type) {
     if (!codegen || !value || !value_type) return NULL;
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
-    if (value_type->kind == TYPE_POINTER) {
+    if (value_type->kind == TYPE_POINTER || value_type->kind == TYPE_MAP ||
+        value_type->kind == TYPE_CHANNEL) {
         return LLVMBuildPtrToInt(codegen->builder, value, i64, "map_slot");
+    }
+    if (!codegen_map_value_is_inline(value_type)) {
+        // Boxed value: goo_alloc(sizeof V), store, slot = box pointer.
+        // ABI size via LLVMSizeOf — padding-correct (chan-padded lesson).
+        // Boxes leak on overwrite/delete by decision (no GC yet; same as
+        // closure envs and interface boxes).
+        LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_type);
+        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+        if (!vt || !alloc_fn) return NULL;
+        LLVMValueRef size = LLVMSizeOf(vt);
+        LLVMValueRef box = LLVMBuildCall2(codegen->builder,
+                                          LLVMGlobalGetValueType(alloc_fn),
+                                          alloc_fn, &size, 1, "map_box");
+        LLVMBuildStore(codegen->builder, value, box);
+        return LLVMBuildPtrToInt(codegen->builder, box, i64, "map_slot");
     }
     // Sign-extend a SIGNED integer when widening into the slot, so a negative
     // value narrower than the slot keeps its sign (e.g. the i32 literal -1
@@ -539,8 +567,38 @@ LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot
     if (!codegen || !slot || !value_type) return NULL;
     LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_type);
     if (!vt) return NULL;
-    if (value_type->kind == TYPE_POINTER) {
+    if (value_type->kind == TYPE_POINTER || value_type->kind == TYPE_MAP ||
+        value_type->kind == TYPE_CHANNEL) {
         return LLVMBuildIntToPtr(codegen->builder, slot, vt, "map_val");
+    }
+    if (!codegen_map_value_is_inline(value_type)) {
+        // Boxed value with the ZERO GUARD: goo_map_get_sv returns 0 on a
+        // missing key, and loading through slot 0 would be a null deref.
+        // slot == 0  →  V's zero value (nil funcval / "" string / zero struct);
+        // otherwise  →  load the value out of the box (copy semantics).
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+        LLVMValueRef is_miss = LLVMBuildICmp(codegen->builder, LLVMIntEQ, slot,
+                                             LLVMConstInt(i64, 0, 0), "map_miss");
+        LLVMBasicBlockRef cur = LLVMGetInsertBlock(codegen->builder);
+        LLVMValueRef fn = LLVMGetBasicBlockParent(cur);
+        LLVMBasicBlockRef load_bb =
+            LLVMAppendBasicBlockInContext(codegen->context, fn, "map_unbox");
+        LLVMBasicBlockRef done_bb =
+            LLVMAppendBasicBlockInContext(codegen->context, fn, "map_unbox_done");
+        LLVMBuildCondBr(codegen->builder, is_miss, done_bb, load_bb);
+        LLVMPositionBuilderAtEnd(codegen->builder, load_bb);
+        LLVMValueRef box = LLVMBuildIntToPtr(
+            codegen->builder, slot,
+            LLVMPointerTypeInContext(codegen->context, 0), "map_box");
+        LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, vt, box, "map_boxed_val");
+        LLVMBuildBr(codegen->builder, done_bb);
+        LLVMPositionBuilderAtEnd(codegen->builder, done_bb);
+        LLVMValueRef phi = LLVMBuildPhi(codegen->builder, vt, "map_val");
+        LLVMValueRef zero = LLVMConstNull(vt);
+        LLVMValueRef inc_vals[2] = { zero, loaded };
+        LLVMBasicBlockRef inc_bbs[2] = { cur, load_bb };
+        LLVMAddIncoming(phi, inc_vals, inc_bbs, 2);
+        return phi;
     }
     return LLVMBuildIntCast2(codegen->builder, slot, vt, /*isSigned=*/0, "map_val");
 }
