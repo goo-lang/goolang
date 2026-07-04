@@ -519,6 +519,23 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                     "invalid type assertion: operand is not an interface type");
                 return NULL;
             }
+            // Empty interface (`interface{}`, method_count == 0): the dynamic-
+            // type check codegen emits is a vtable-pointer compare
+            // (x.vtable == &goo.vtable.T.I), which relies on each candidate
+            // type having a distinct vtable. A zero-method interface's vtable
+            // is an identical empty [0 x ptr] array for EVERY concrete type,
+            // so the compare always matches — a silent miscompile, not a
+            // clean failure. Reject here rather than let it through: real
+            // empty-interface discrimination needs runtime type information
+            // (a type-descriptor tag), deferred to the same RTTI cycle as
+            // assert-to-interface (the TYPE_INTERFACE target rejection two
+            // blocks below).
+            if (operand_type->data.interface.method_count == 0) {
+                type_error(checker, expr->pos,
+                    "type assertion on the empty interface is not supported in v1 "
+                    "(requires runtime type information)");
+                return NULL;
+            }
             // ta->asserted_type is a TYPE node (like conv->slice_type above),
             // resolved via type_from_ast — not a value expression, so
             // type_check_expression has no case for it.
