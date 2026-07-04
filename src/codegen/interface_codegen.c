@@ -334,7 +334,23 @@ LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker*
                                             Type* target, LLVMValueRef* data_out) {
     if (!codegen || !iface_type || iface_type->kind != TYPE_INTERFACE || !target) return NULL;
 
-    LLVMValueRef vt_want = codegen_interface_vtable(codegen, checker, iface_type, target);
+    // Mirror codegen_interface_box's C-representation branch (~line 225): a
+    // pointer target whose pointee has a nameable receiver (e.g. *T) reuses
+    // the POINTEE's vtable global (goo.vtable.T.I) — *T never gets its own
+    // vtable, box-side or assert-side. Unwrap here so the lookup name matches
+    // regardless of codegen order. Without this, a *T that was never boxed
+    // elsewhere in the module finds no existing goo.vtable.*T.I global and
+    // falls through to build_thunk(concrete=*T, ...), which #113's guard
+    // rejects (TYPE_POINTER concretes are un-normalized for the thunk
+    // builder), producing a spurious compile error instead of a runtime-false
+    // assertion.
+    Type* vt_target = target;
+    if (vt_target->kind == TYPE_POINTER && vt_target->data.pointer.pointee_type &&
+        type_receiver_name(vt_target->data.pointer.pointee_type)) {
+        vt_target = vt_target->data.pointer.pointee_type;
+    }
+
+    LLVMValueRef vt_want = codegen_interface_vtable(codegen, checker, iface_type, vt_target);
     if (!vt_want) return NULL;
 
     LLVMValueRef vt_have = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "ta.vt");
