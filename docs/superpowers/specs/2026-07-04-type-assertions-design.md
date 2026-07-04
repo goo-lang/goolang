@@ -157,3 +157,20 @@ front-loaded on the type-switch grammar task).
 - T4: reject-probe sweep + full sweep (verify, ccomp, tripwire) + handoff.
 
 SDD economy mode; fresh-context whole-branch review before merge.
+
+## Addendum (2026-07-04, final-review find): T-vs-*T distinct vtable
+
+Final whole-branch review found a SECOND degeneracy of vtable-ptr identity: value-boxed
+`T` and pointer-boxed `*T` share `goo.vtable.T.I` (#113 makes `*T` reuse the pointee's
+vtable), so `x.(*T)` on a value-boxed `T` (and vice versa) silently matches. Goo's
+method-set leniency (#109) makes this UNIVERSAL — whenever `T` implements `I`, both `T`
+and `*T` box into `I` and alias. A narrow reject (like empty-interface) is impossible
+(would reject all concrete assertions).
+
+FIX (user-chosen "best long term"): pointer boxing emits a DISTINCTLY-NAMED vtable global
+`goo.vtable.$ptr$T.I` carrying the SAME thunk slots (thunks work for both shapes — `data`
+points at a `T` either way). Assertion picks the value- or pointer-form vtable by the
+TARGET type. Dispatch is rep-agnostic (reads the slot, calls thunk by index) so it is
+untouched and composes with the #113 goldens + gate-lift. This REPLACES Task 2's
+unwrap-*T-to-pointee-for-lookup (df41fb2) with form-aware naming at both box and assert
+sites. Empty-interface + primitives + assert-to-interface remain deferred to the RTTI cycle.
