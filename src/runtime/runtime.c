@@ -797,8 +797,60 @@ int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size) {
     void* dest = (char*)slice->data + (slice->length * element_size);
     memcpy(dest, element, element_size);
     slice->length++;
-    
+
     return 1;
+}
+
+int64_t goo_slice_copy_raw(void* dst, int64_t dst_len,
+                           const void* src, int64_t src_len, int64_t elem_size) {
+    int64_t n = dst_len < src_len ? dst_len : src_len;
+    if (n <= 0 || elem_size <= 0) {
+        return 0;
+    }
+    memmove(dst, src, (size_t)(n * elem_size));
+    return n;
+}
+
+void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
+                           int64_t src_len, int64_t elem_size) {
+    if (!dst || !src || src_len <= 0 || elem_size <= 0) {
+        return;
+    }
+
+    size_t bytes = (size_t)src_len * (size_t)elem_size;
+    // Snapshot BEFORE growing dst: self-append (append(b, b...)) has src
+    // aliasing dst's CURRENT backing array, and the grow below may
+    // goo_realloc that exact block out from under src (freed or moved).
+    void* snap = goo_alloc(bytes);
+    memcpy(snap, src, bytes);
+
+    size_t need = dst->length + (size_t)src_len;
+    if (need > dst->capacity) {
+        // Same capacity-doubling policy as goo_slice_append (verbatim),
+        // looped since a bulk append's src_len can outgrow a single
+        // doubling step in one call (goo_slice_append only ever adds one
+        // element at a time, so it never needed the loop).
+        size_t new_capacity = dst->capacity * 2;
+        if (new_capacity == 0) {
+            new_capacity = 1;
+        }
+        while (new_capacity < need) {
+            new_capacity *= 2;
+        }
+
+        void* new_data = goo_realloc(dst->data, new_capacity * elem_size);
+        if (!new_data) {
+            goo_free(snap);
+            return;
+        }
+
+        dst->data = new_data;
+        dst->capacity = new_capacity;
+    }
+
+    memcpy((char*)dst->data + dst->length * (size_t)elem_size, snap, bytes);
+    dst->length += (size_t)src_len;
+    goo_free(snap);
 }
 
 // Bounds and null checking

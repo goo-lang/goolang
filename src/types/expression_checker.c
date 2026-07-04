@@ -2406,6 +2406,32 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                            "append: first argument must be a slice, got %s", type_to_string(slice_t));
                 return NULL;
             }
+            // append(dst, s...) (Task 4): the second arg is a whole []E
+            // (identical elem, not merely compatible) or, when dst's
+            // element is byte, a string — instead of a bare element.
+            // `has_spread` is set by the grammar for ANY trailing `expr...`
+            // call argument (Task 3); append has its own dedicated arm
+            // (this one), so it must read the flag itself rather than
+            // relying on the generic variadic-pack path Task 3 modified.
+            if (call->has_spread) {
+                Type* src_t = type_check_expression(checker, call->args->next);
+                if (!src_t) return NULL;
+                int byte_dst = slice_t->data.slice.element_type->kind == TYPE_UINT8; // byte kind (Task 2)
+                int ok = (src_t->kind == TYPE_SLICE &&
+                          type_compatible(src_t->data.slice.element_type,
+                                          slice_t->data.slice.element_type) &&
+                          src_t->data.slice.element_type->kind ==
+                          slice_t->data.slice.element_type->kind)
+                         || (byte_dst && src_t->kind == TYPE_STRING);
+                if (!ok) {
+                    type_error(checker, expr->pos,
+                               "append: cannot spread %s into %s",
+                               type_to_string(src_t), type_to_string(slice_t));
+                    return NULL;
+                }
+                expr->node_type = slice_t;
+                return slice_t;
+            }
             Type* elem_t = type_check_expression(checker, call->args->next);
             if (!elem_t) return NULL;
             // The element must be assignable to the slice's element type:
@@ -2419,6 +2445,41 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             expr->node_type = slice_t;
             return slice_t;
+        }
+        // copy(dst, src) -> int (Go-exact: min(len(dst), len(src)) count).
+        // dst must be a slice; src is a slice with an identical element type,
+        // or (when dst's element is byte) a string — same acceptance rule
+        // as append(dst, s...) above. Result type is always int, unlike
+        // append, so this rides a fixed node_type rather than the first
+        // arg's dynamic type.
+        if (strcmp(func_ident->name, "copy") == 0) {
+            if (!call->args || !call->args->next || call->args->next->next) {
+                type_error(checker, expr->pos, "copy expects exactly two arguments (dst, src)");
+                return NULL;
+            }
+            Type* dst_t = type_check_expression(checker, call->args);
+            if (!dst_t) return NULL;
+            if (dst_t->kind != TYPE_SLICE) {
+                type_error(checker, expr->pos,
+                           "copy: destination must be a slice, got %s", type_to_string(dst_t));
+                return NULL;
+            }
+            Type* src_t = type_check_expression(checker, call->args->next);
+            if (!src_t) return NULL;
+            int byte_dst = dst_t->data.slice.element_type->kind == TYPE_UINT8; // byte kind (Task 2)
+            int ok = (src_t->kind == TYPE_SLICE &&
+                      type_compatible(src_t->data.slice.element_type,
+                                      dst_t->data.slice.element_type) &&
+                      src_t->data.slice.element_type->kind ==
+                      dst_t->data.slice.element_type->kind)
+                     || (byte_dst && src_t->kind == TYPE_STRING);
+            if (!ok) {
+                type_error(checker, expr->pos,
+                           "copy: cannot copy %s into %s", type_to_string(src_t), type_to_string(dst_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: copy -> int (64-bit)
+            return expr->node_type;
         }
         // len(slice|string|map) -> int. Codegen dispatches on the arg's
         // TypeKind (map routes through goo_map_len_sv; slice/string extract

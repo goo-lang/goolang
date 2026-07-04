@@ -308,6 +308,18 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, append_var);
     }
 
+    // copy(dst, src) -> int. Real checking (dst/src compatibility, incl. the
+    // copy(dst []byte, src string) case) lives in the dedicated arm in
+    // type_check_call_expr, mirroring append; registered here so the bare
+    // identifier resolves consistently with len/cap/append.
+    Type* copy_type = type_function(NULL, 0, checker->builtin_types[TYPE_INT64]); // Go: copy -> int (64-bit)
+    Variable* copy_var = variable_new("copy", copy_type, (Position){0, 0, 0, "builtin"});
+    if (copy_var) {
+        copy_var->is_builtin = 1;
+        copy_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, copy_var);
+    }
+
     // error(msg) -> !T: constructs the error case of the enclosing function's
     // error-union return type. Registered here so the bare identifier resolves
     // like len/cap/append; the call itself is special-cased in

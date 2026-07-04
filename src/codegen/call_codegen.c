@@ -630,58 +630,150 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             return value_info_new(NULL, cap64, type_checker_get_builtin(checker, TYPE_INT64));
         }
         if (strcmp(func_name->name, "append") == 0 && call->args && call->args->next) {
-            // append(slice, elem) -> slice. goo_slice_append grows the slice
-            // in place (amortized 2x) and rewrites {data,len,cap}. It takes
-            // the slice and element BY POINTER, so we spill both to slots,
-            // call, then load and return the (possibly moved) header. Go value
-            // semantics: the caller stores it back via `s = append(s, x)`.
+            // append(dst, elem) -> slice, OR append(dst, s...) -> slice (Task
+            // 4's bulk arm, selected by `has_spread`). Both share the same
+            // dst-in-slot / possibly-regrown-header shape: dst is spilled to
+            // a temp alloca so goo_slice_append{,_bulk}'s in-place amortized
+            // grow (rewriting {data,len,cap}) is visible to the caller, which
+            // stores the reloaded result back via `s = append(s, ...)`.
             Type* slice_t = expr->node_type;  // resolved by the type checker
             if (!slice_t || slice_t->kind != TYPE_SLICE) {
                 codegen_error(codegen, expr->pos, "append: missing resolved slice type");
                 return NULL;
             }
-            LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_slice_append");
-            if (!fn) { codegen_error(codegen, expr->pos, "goo_slice_append not found in module"); return NULL; }
+            LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_t);
+            LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, slice_t->data.slice.element_type);
 
             ValueInfo* sv = codegen_generate_expression(codegen, checker, call->args);
             if (!sv) return NULL;
-            LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_t);
             LLVMValueRef slice_val = sv->llvm_value;
             if (sv->is_lvalue) slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, slice_val, "append_slice");
             value_info_free(sv);
 
-            ValueInfo* ev = codegen_generate_expression(codegen, checker, call->args->next);
-            if (!ev) return NULL;
-            LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, slice_t->data.slice.element_type);
-            LLVMValueRef elem_val = ev->llvm_value;
-            if (ev->is_lvalue) {
-                LLVMTypeRef et = ev->goo_type ? codegen_type_to_llvm(codegen, ev->goo_type) : elem_llvm;
-                elem_val = LLVMBuildLoad2(codegen->builder, et, elem_val, "append_elem");
-            }
-
-            // Coerce the element to the slice's element type — the slot below
-            // is elem_llvm-sized and goo_slice_append copies elem_llvm's size,
-            // so a mismatched-width value stored raw either leaves undef upper
-            // bytes (an int8 -5 appended onto []int64 read back as 251) or
-            // OOB-writes past a narrower slot (a float64 appended onto
-            // []float32 stores 8 bytes into a 4-byte slot). Same source-
-            // signedness rule as the var-decl, constant-rebuild, and literal-
-            // element fixes, now centralized in codegen_coerce_to_type.
-            int append_src_signed = ev->goo_type ? type_is_signed(ev->goo_type) : 1;
-            elem_val = codegen_coerce_to_type(codegen, elem_val, append_src_signed, elem_llvm);
-            value_info_free(ev);
-
             LLVMValueRef slice_slot = codegen_create_entry_alloca(codegen, slice_llvm, "append_slice_slot");
             LLVMBuildStore(codegen->builder, slice_val, slice_slot);
-            LLVMValueRef elem_slot = codegen_create_entry_alloca(codegen, elem_llvm, "append_elem_slot");
-            LLVMBuildStore(codegen->builder, elem_val, elem_slot);
 
-            LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
-            LLVMValueRef args[] = { slice_slot, elem_slot, elem_size };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 3, "");
+            if (call->has_spread) {
+                // src is []E (identical elem to dst) or, when dst's element
+                // is byte, a string — extract {data,len} from whichever
+                // aggregate it is, same field-0/1 convention the []byte(s)
+                // conversion arm (expression_codegen.c AST_SLICE_CONVERSION)
+                // uses for a string, and cap()/len() use for a slice.
+                LLVMValueRef bulk_fn = LLVMGetNamedFunction(codegen->module, "goo_slice_append_bulk");
+                if (!bulk_fn) {
+                    codegen_error(codegen, expr->pos, "goo_slice_append_bulk not found in module");
+                    return NULL;
+                }
+                ValueInfo* src_v = codegen_generate_expression(codegen, checker, call->args->next);
+                if (!src_v) return NULL;
+                Type* src_t = src_v->goo_type;
+                LLVMValueRef src_raw = src_v->llvm_value;
+                if (src_v->is_lvalue && src_t) {
+                    LLVMTypeRef st = codegen_type_to_llvm(codegen, src_t);
+                    if (st) src_raw = LLVMBuildLoad2(codegen->builder, st, src_raw, "append_spread_src");
+                }
+                LLVMValueRef src_data, src_len;
+                if (src_t && src_t->kind == TYPE_STRING) {
+                    src_data = LLVMBuildExtractValue(codegen->builder, src_raw, 0, "append_spread_str_ptr");
+                    src_len  = LLVMBuildExtractValue(codegen->builder, src_raw, 1, "append_spread_str_len");
+                } else {
+                    src_data = LLVMBuildExtractValue(codegen->builder, src_raw, 0, "append_spread_slice_data");
+                    src_len  = LLVMBuildExtractValue(codegen->builder, src_raw, 1, "append_spread_slice_len");
+                }
+                value_info_free(src_v);
+
+                LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
+                LLVMValueRef args[] = { slice_slot, src_data, src_len, elem_size };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bulk_fn), bulk_fn, args, 4, "");
+            } else {
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_slice_append");
+                if (!fn) { codegen_error(codegen, expr->pos, "goo_slice_append not found in module"); return NULL; }
+
+                ValueInfo* ev = codegen_generate_expression(codegen, checker, call->args->next);
+                if (!ev) return NULL;
+                LLVMValueRef elem_val = ev->llvm_value;
+                if (ev->is_lvalue) {
+                    LLVMTypeRef et = ev->goo_type ? codegen_type_to_llvm(codegen, ev->goo_type) : elem_llvm;
+                    elem_val = LLVMBuildLoad2(codegen->builder, et, elem_val, "append_elem");
+                }
+
+                // Coerce the element to the slice's element type — the slot
+                // below is elem_llvm-sized and goo_slice_append copies
+                // elem_llvm's size, so a mismatched-width value stored raw
+                // either leaves undef upper bytes (an int8 -5 appended onto
+                // []int64 read back as 251) or OOB-writes past a narrower
+                // slot (a float64 appended onto []float32 stores 8 bytes into
+                // a 4-byte slot). Same source-signedness rule as the var-decl,
+                // constant-rebuild, and literal-element fixes, now centralized
+                // in codegen_coerce_to_type.
+                int append_src_signed = ev->goo_type ? type_is_signed(ev->goo_type) : 1;
+                elem_val = codegen_coerce_to_type(codegen, elem_val, append_src_signed, elem_llvm);
+                value_info_free(ev);
+
+                LLVMValueRef elem_slot = codegen_create_entry_alloca(codegen, elem_llvm, "append_elem_slot");
+                LLVMBuildStore(codegen->builder, elem_val, elem_slot);
+
+                LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
+                LLVMValueRef args[] = { slice_slot, elem_slot, elem_size };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 3, "");
+            }
 
             LLVMValueRef result = LLVMBuildLoad2(codegen->builder, slice_llvm, slice_slot, "append_result");
             return value_info_new(NULL, result, slice_t);
+        }
+        if (strcmp(func_name->name, "copy") == 0 && call->args && call->args->next) {
+            // copy(dst, src) -> int (Go-exact: min(len(dst), len(src))
+            // elements moved via memmove — overlap-safe). dst is always a
+            // slice (typecheck-enforced); src is a slice OR, when dst's
+            // element is byte, a string. copy() never resizes dst, so unlike
+            // append() there is no slot/pointer indirection needed — just
+            // extract each side's raw {data,len} and hand them straight to
+            // goo_slice_copy_raw.
+            LLVMValueRef copy_fn = LLVMGetNamedFunction(codegen->module, "goo_slice_copy_raw");
+            if (!copy_fn) {
+                codegen_error(codegen, expr->pos, "goo_slice_copy_raw not found in module");
+                return NULL;
+            }
+
+            ValueInfo* dv = codegen_generate_expression(codegen, checker, call->args);
+            if (!dv) return NULL;
+            Type* dst_t = dv->goo_type;
+            if (!dst_t || dst_t->kind != TYPE_SLICE) {
+                codegen_error(codegen, expr->pos, "copy: missing resolved destination slice type");
+                value_info_free(dv);
+                return NULL;
+            }
+            LLVMTypeRef dst_llvm = codegen_type_to_llvm(codegen, dst_t);
+            LLVMValueRef dst_raw = dv->llvm_value;
+            if (dv->is_lvalue) dst_raw = LLVMBuildLoad2(codegen->builder, dst_llvm, dst_raw, "copy_dst_load");
+            value_info_free(dv);
+            LLVMValueRef dst_data = LLVMBuildExtractValue(codegen->builder, dst_raw, 0, "copy_dst_data");
+            LLVMValueRef dst_len  = LLVMBuildExtractValue(codegen->builder, dst_raw, 1, "copy_dst_len");
+
+            ValueInfo* sv2 = codegen_generate_expression(codegen, checker, call->args->next);
+            if (!sv2) return NULL;
+            Type* src_t = sv2->goo_type;
+            LLVMValueRef src_raw = sv2->llvm_value;
+            if (sv2->is_lvalue && src_t) {
+                LLVMTypeRef st = codegen_type_to_llvm(codegen, src_t);
+                if (st) src_raw = LLVMBuildLoad2(codegen->builder, st, src_raw, "copy_src_load");
+            }
+            LLVMValueRef src_data, src_len;
+            if (src_t && src_t->kind == TYPE_STRING) {
+                src_data = LLVMBuildExtractValue(codegen->builder, src_raw, 0, "copy_src_str_ptr");
+                src_len  = LLVMBuildExtractValue(codegen->builder, src_raw, 1, "copy_src_str_len");
+            } else {
+                src_data = LLVMBuildExtractValue(codegen->builder, src_raw, 0, "copy_src_slice_data");
+                src_len  = LLVMBuildExtractValue(codegen->builder, src_raw, 1, "copy_src_slice_len");
+            }
+            value_info_free(sv2);
+
+            LLVMTypeRef copy_elem_llvm = codegen_type_to_llvm(codegen, dst_t->data.slice.element_type);
+            LLVMValueRef elem_size = LLVMSizeOf(copy_elem_llvm);
+            LLVMValueRef args[] = { dst_data, dst_len, src_data, src_len, elem_size };
+            LLVMValueRef n = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(copy_fn),
+                                            copy_fn, args, 5, "copy_n");
+            return value_info_new(NULL, n, type_checker_get_builtin(checker, TYPE_INT64));
         }
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);
