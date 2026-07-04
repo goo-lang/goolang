@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+type Pt struct {
+	X int
+	Y int
+}
+
+func main() {
+	p := Pt{
+		X: 1,
+		Y: 2,
+	}
+	q := Pt{X: 3,}
+	m := map[string]int{
+		"a": 1,
+		"b": 2,
+	}
+	n := map[string]int{"c": 7,}
+	r := &Pt{
+		X: 9,
+	}
+	fmt.Println(p.X + p.Y)
+	fmt.Println(q.X)
+	fmt.Println(m["b"])
+	fmt.Println(n["c"])
+	fmt.Println(r.X)
+}

@@ -48,6 +48,12 @@ static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
    rule and the elided-composite element rule. */
 static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
 
+/* Shared by the map_lit arms (with and without trailing comma).
+   Extracts the parallel values list that map_entry_list stashes on the
+   keys head's node_type side-channel (cleared so type_check/codegen
+   never see it). */
+static ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries);
+
 // Struct embedding: build the VarDeclNode for an anonymous field `Name` /
 // `*Name`. The field is stored under the type's own name (Go's rule), with
 // is_embedded set; the type node matches what type_name / pointer_type
@@ -2013,32 +2019,9 @@ struct_field:
 // map[K]V{k: v, …} — tagged AST_PAREN_EXPR (unused enum slot).
 // keys and values are stored as two parallel `next`-chained lists.
 map_lit:
-    map_type LBRACE map_entry_list RBRACE {
-        MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
-        lit->base.type = AST_PAREN_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->map_type = $1;
-        lit->keys = $3;  // map_entry_list returns the keys head
-        lit->values = (ASTNode*)((ASTNode*)$3)->node_type;  // values stashed on key.node_type
-        // node_type field repurposed as a side-channel for the
-        // parallel values list head; cleared after extraction so
-        // type_check / codegen don't see it.
-        ((ASTNode*)$3)->node_type = NULL;
-        $$ = (ASTNode*)lit;
-    }
-    | map_type LBRACE RBRACE {
-        MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
-        lit->base.type = AST_PAREN_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->map_type = $1;
-        lit->keys = NULL;
-        lit->values = NULL;
-        $$ = (ASTNode*)lit;
-    }
+    map_type LBRACE map_entry_list RBRACE        { $$ = map_literal_new($1, $3); }
+    | map_type LBRACE map_entry_list COMMA RBRACE { $$ = map_literal_new($1, $3); }
+    | map_type LBRACE RBRACE                      { $$ = map_literal_new($1, NULL); }
     ;
 
 /* M10 struct literal: `Point{x: 3, y: 4}` (keyed) or `Point{3, 4}` (positional).
@@ -2049,6 +2032,11 @@ map_lit:
    M10-struct-literal-impl child. */
 struct_lit:
     identifier LBRACE struct_lit_inits RBRACE {
+        IdentifierNode* type_ident = (IdentifierNode*)$1;
+        $$ = struct_literal_new(strdup(type_ident->name), $3);
+        ast_node_free($1);
+    }
+    | identifier LBRACE struct_lit_inits COMMA RBRACE {
         IdentifierNode* type_ident = (IdentifierNode*)$1;
         $$ = struct_literal_new(strdup(type_ident->name), $3);
         ast_node_free($1);
@@ -3258,6 +3246,24 @@ static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits) {
             free(lit->field_names);
             lit->field_names = NULL;
         }
+    }
+    return (ASTNode*)lit;
+}
+
+static ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries) {
+    MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
+    lit->base.type = AST_PAREN_EXPR;
+    lit->base.pos = get_current_position();
+    lit->base.node_type = NULL;
+    lit->base.next = NULL;
+    lit->map_type = map_type_node;
+    if (entries) {
+        lit->keys = entries;
+        lit->values = (ASTNode*)((ASTNode*)entries)->node_type;
+        ((ASTNode*)entries)->node_type = NULL;
+    } else {
+        lit->keys = NULL;
+        lit->values = NULL;
     }
     return (ASTNode*)lit;
 }
