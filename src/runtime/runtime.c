@@ -772,18 +772,31 @@ void* goo_slice_get(goo_slice_t slice, size_t index, size_t element_size) {
     return (char*)slice.data + (index * element_size);
 }
 
+// Capacity-doubling policy shared by goo_slice_append and
+// goo_slice_append_bulk: double from `capacity` (or start at 1 if empty),
+// looping until it covers `need`. A single-element append only ever needs
+// one doubling step, but a bulk append's src_len can outgrow that in one
+// call, hence the loop (a no-op when one step already covers `need`).
+static size_t goo_slice_grow_capacity(size_t capacity, size_t need) {
+    size_t new_capacity = capacity * 2;
+    if (new_capacity == 0) {
+        new_capacity = 1;
+    }
+    while (new_capacity < need) {
+        new_capacity *= 2;
+    }
+    return new_capacity;
+}
+
 int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size) {
     if (!slice || !element) {
         return 0;
     }
-    
+
     if (slice->length >= slice->capacity) {
         // Need to grow the slice
-        size_t new_capacity = slice->capacity * 2;
-        if (new_capacity == 0) {
-            new_capacity = 1;
-        }
-        
+        size_t new_capacity = goo_slice_grow_capacity(slice->capacity, slice->length + 1);
+
         void* new_data = goo_realloc(slice->data, new_capacity * element_size);
         if (!new_data) {
             return 0;
@@ -826,17 +839,8 @@ void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
 
     size_t need = dst->length + (size_t)src_len;
     if (need > dst->capacity) {
-        // Same capacity-doubling policy as goo_slice_append (verbatim),
-        // looped since a bulk append's src_len can outgrow a single
-        // doubling step in one call (goo_slice_append only ever adds one
-        // element at a time, so it never needed the loop).
-        size_t new_capacity = dst->capacity * 2;
-        if (new_capacity == 0) {
-            new_capacity = 1;
-        }
-        while (new_capacity < need) {
-            new_capacity *= 2;
-        }
+        // Same capacity-doubling policy as goo_slice_append, via the shared helper.
+        size_t new_capacity = goo_slice_grow_capacity(dst->capacity, need);
 
         void* new_data = goo_realloc(dst->data, new_capacity * elem_size);
         if (!new_data) {

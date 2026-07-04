@@ -2129,6 +2129,20 @@ static int name_is_builtin_conv_name(const char* name) {
     return 0;
 }
 
+// Shared accept rule for append(dst, s...) and copy(dst, src): src_t is
+// assignable into dst_t (a SLICE type, verified by the caller) when it's a
+// slice with an identical (not merely compatible) element type, or — when
+// dst's element is byte — a string.
+static int slice_or_string_assignable(Type* src_t, Type* dst_t) {
+    int byte_dst = dst_t->data.slice.element_type->kind == TYPE_UINT8; // byte kind (Task 2)
+    return (src_t->kind == TYPE_SLICE &&
+            type_compatible(src_t->data.slice.element_type,
+                             dst_t->data.slice.element_type) &&
+            src_t->data.slice.element_type->kind ==
+            dst_t->data.slice.element_type->kind)
+           || (byte_dst && src_t->kind == TYPE_STRING);
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
@@ -2416,13 +2430,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             if (call->has_spread) {
                 Type* src_t = type_check_expression(checker, call->args->next);
                 if (!src_t) return NULL;
-                int byte_dst = slice_t->data.slice.element_type->kind == TYPE_UINT8; // byte kind (Task 2)
-                int ok = (src_t->kind == TYPE_SLICE &&
-                          type_compatible(src_t->data.slice.element_type,
-                                          slice_t->data.slice.element_type) &&
-                          src_t->data.slice.element_type->kind ==
-                          slice_t->data.slice.element_type->kind)
-                         || (byte_dst && src_t->kind == TYPE_STRING);
+                int ok = slice_or_string_assignable(src_t, slice_t);
                 if (!ok) {
                     type_error(checker, expr->pos,
                                "append: cannot spread %s into %s",
@@ -2466,13 +2474,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* src_t = type_check_expression(checker, call->args->next);
             if (!src_t) return NULL;
-            int byte_dst = dst_t->data.slice.element_type->kind == TYPE_UINT8; // byte kind (Task 2)
-            int ok = (src_t->kind == TYPE_SLICE &&
-                      type_compatible(src_t->data.slice.element_type,
-                                      dst_t->data.slice.element_type) &&
-                      src_t->data.slice.element_type->kind ==
-                      dst_t->data.slice.element_type->kind)
-                     || (byte_dst && src_t->kind == TYPE_STRING);
+            int ok = slice_or_string_assignable(src_t, dst_t);
             if (!ok) {
                 type_error(checker, expr->pos,
                            "copy: cannot copy %s into %s", type_to_string(src_t), type_to_string(dst_t));
