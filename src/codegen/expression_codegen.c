@@ -116,6 +116,40 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 if (kv->goo_type && kv->goo_type->kind == TYPE_STRING) {
                     kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
                 }
+                // Box a concrete implementer into the map's interface-typed
+                // value slot BEFORE slot-boxing — mirrors the plain-assignment
+                // helper (function_codegen.c's var-decl init boxing / the
+                // TOKEN_ASSIGN arm below) via the same codegen_interface_box.
+                // Without this, codegen_coerce_to_type leaves an aggregate
+                // unchanged (it only handles int/float widths), so the raw
+                // concrete struct bits would be written into the slot's box
+                // instead of a real {vtable,data} pair — reviewer finding I1.
+                // interface→interface (already-boxed RHS, reviewer probe p13)
+                // needs no re-box: same layout, falls through unchanged.
+                if (val_type->kind == TYPE_INTERFACE &&
+                    vv->goo_type && vv->goo_type->kind != TYPE_INTERFACE) {
+                    LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                               val_type,
+                                                               vv->goo_type,
+                                                               vv->llvm_value);
+                    if (!boxed) {
+                        codegen_error(codegen, expr->pos,
+                                      "failed to box map literal value into interface");
+                        value_info_free(kv);
+                        value_info_free(vv);
+                        return NULL;
+                    }
+                    vv->llvm_value = boxed;
+                    vv->goo_type = val_type;
+                }
+                LLVMTypeRef want_vt = codegen_type_to_llvm(codegen, val_type);
+                if (want_vt && !codegen_map_value_is_inline(val_type)) {
+                    int src_signed = vv->goo_type &&
+                        vv->goo_type->kind >= TYPE_INT8 &&
+                        vv->goo_type->kind <= TYPE_INT64;
+                    vv->llvm_value = codegen_coerce_to_type(
+                        codegen, vv->llvm_value, src_signed, want_vt);
+                }
                 LLVMValueRef slot = codegen_map_value_to_slot(codegen, vv->llvm_value, val_type);
                 LLVMValueRef args[3] = { m, kp, slot };
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn),
@@ -481,6 +515,21 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
 
     if (expr->type == AST_INDEX_EXPR) {
         IndexExprNode* ix = (IndexExprNode*)expr;
+
+        // Go semantics: a map index is never an lvalue address. Direct
+        // `m[k] = v` is intercepted earlier (assignment fast path, above);
+        // any request that reaches HERE is a partial write through a map
+        // value (m[k].F = v, m[k][i] = v) or an address-of that slipped past
+        // typecheck — all illegal. Fire ONLY on a map base — node_type is
+        // stamped on ix->expr by typecheck (which always runs before
+        // codegen), so this doesn't disturb the array/slice GEP paths below.
+        if (ix->expr && ix->expr->node_type && ix->expr->node_type->kind == TYPE_MAP) {
+            codegen_error(codegen, expr->pos,
+                          "cannot assign through a map value (map values are "
+                          "not addressable; assign the whole value: m[k] = v)");
+            return NULL;
+        }
+
         ValueInfo* base = codegen_emit_lvalue_address(codegen, checker, ix->expr);
         if (!base) return NULL;
         Type* base_type = base->goo_type;
@@ -948,7 +997,47 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                         vv->is_lvalue = 0;
                     }
                 }
-                LLVMValueRef slot = codegen_map_value_to_slot(codegen, vv->llvm_value, val_type);
+                // Box a concrete implementer into the map's interface-typed
+                // value slot BEFORE slot-boxing/coercion — same helper the
+                // TOKEN_ASSIGN arm below uses for `x = Sq{...}` into an
+                // interface-typed lvalue (codegen_interface_box). Without
+                // this, codegen_coerce_to_type leaves the aggregate unchanged
+                // (it only handles int/float widths), so the raw concrete
+                // struct bits would be written into the slot's box instead of
+                // a real {vtable,data} pair — reviewer finding I1 (read-back
+                // treats those bytes as a vtable pointer -> SIGSEGV).
+                // interface->interface (already-boxed RHS, reviewer probe
+                // p13) needs no re-box: same layout, falls through unchanged.
+                // `stored_val` (not vv->llvm_value/vv->goo_type) carries the
+                // boxed representation into the slot, so the returned `vv`
+                // keeps reporting the concrete RHS type/value — mirrors the
+                // general TOKEN_ASSIGN arm below, which returns the unboxed
+                // `value` even though `sval` (boxed) is what gets stored.
+                LLVMValueRef stored_val = vv->llvm_value;
+                if (val_type->kind == TYPE_INTERFACE &&
+                    vv->goo_type && vv->goo_type->kind != TYPE_INTERFACE) {
+                    LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                               val_type,
+                                                               vv->goo_type,
+                                                               vv->llvm_value);
+                    if (!boxed) {
+                        codegen_error(codegen, expr->pos,
+                                      "failed to box value into interface map value");
+                        value_info_free(mv);
+                        value_info_free(kv);
+                        return NULL;
+                    }
+                    stored_val = boxed;
+                }
+                LLVMTypeRef want_vt = codegen_type_to_llvm(codegen, val_type);
+                if (want_vt && !codegen_map_value_is_inline(val_type)) {
+                    int src_signed = vv->goo_type &&
+                        vv->goo_type->kind >= TYPE_INT8 &&
+                        vv->goo_type->kind <= TYPE_INT64;
+                    stored_val = codegen_coerce_to_type(
+                        codegen, stored_val, src_signed, want_vt);
+                }
+                LLVMValueRef slot = codegen_map_value_to_slot(codegen, stored_val, val_type);
                 LLVMValueRef args[3] = { mv->llvm_value, kp, slot };
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn), set_fn, args, 3, "");
                 value_info_free(mv);

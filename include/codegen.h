@@ -414,6 +414,7 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 // (integer/bool/char/pointer).
 LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef value, Type* value_type);
 LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot, Type* value_type);
+int codegen_map_value_is_inline(Type* value_type);
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
 

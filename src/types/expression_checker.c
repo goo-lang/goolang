@@ -314,7 +314,21 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 // here).
                 vt = adapt_field_init_value(checker, v, want_val, vt);
                 if (!vt) return NULL;
-                if (!type_compatible(vt, want_val)) {
+                // An interface-typed map value accepts any concrete
+                // implementer (boxed at codegen via codegen_interface_box —
+                // see the AST_PAREN_EXPR map-literal codegen site). Plain
+                // type_compatible rejects a concrete implementer outright
+                // (it isn't the interface type itself), which used to fall
+                // through to the generic mismatch error below with a NULL-ish
+                // rendering of the interface type; route interface-typed
+                // slots through check_interface_assign instead, mirroring the
+                // slice-literal element check above. It emits its own "does
+                // not implement" diagnostic on failure.
+                if (want_val->kind == TYPE_INTERFACE) {
+                    if (!check_interface_assign(checker, vt, want_val, v->pos)) {
+                        return NULL;
+                    }
+                } else if (!type_compatible(vt, want_val)) {
                     type_error(checker, v->pos,
                                "Map literal value %zu type '%s' is not compatible "
                                "with declared value type '%s'",
@@ -1882,6 +1896,22 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
             break;
             
         case TOKEN_BIT_AND:  // & - take reference/borrow
+            // Go semantics: map values are not addressable — &m[k] is illegal.
+            // (The runtime slot may hold a heap box, but exposing it would
+            // alias storage that overwrite replaces silently.) operand_type
+            // above is the map's VALUE type (int, P, ...); re-derive the
+            // INDEX EXPRESSION's base type via its already-stamped node_type
+            // (type_check_expression on unary->operand, above, recursed into
+            // ix->expr and stamped it) to see whether the base is a map.
+            if (unary->operand->type == AST_INDEX_EXPR) {
+                IndexExprNode* ix = (IndexExprNode*)unary->operand;
+                if (ix->expr && ix->expr->node_type && ix->expr->node_type->kind == TYPE_MAP) {
+                    type_error(checker, expr->pos,
+                              "cannot take the address of a map value "
+                              "(map values are not addressable)");
+                    return NULL;
+                }
+            }
             // Go allows & on any composite literal; Goo supports only the
             // struct case (heap-allocated by codegen). Reject the other
             // literal kinds here with a specific error — without this they

@@ -1,0 +1,12 @@
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]float64{"pi": 3.25}
+	m["e"] = 2.5
+	m["i"] = 4 // untyped int constant must adapt to float64 before boxing
+	fmt.Println(m["pi"] + m["e"])
+	fmt.Println(m["i"])
+	fmt.Println(m["nope"])
+}
