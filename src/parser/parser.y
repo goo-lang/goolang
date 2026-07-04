@@ -1844,6 +1844,22 @@ selector_expr:
         ast_node_free($3);
         $$ = (ASTNode*)selector;
     }
+    // Type assertions branch, Task 1: `x.(T)` type assertion. DOT identifier
+    // (field/method selector, above) vs DOT LPAREN (type assertion, here) is
+    // a clean one-token lookahead split after DOT — no LALR ambiguity with
+    // the selector arm. The comma-ok vs single-return form is NOT decided
+    // here; that's assignment-context-driven at typecheck/codegen (Task 2),
+    // exactly like the comma-ok map read.
+    | primary_expr DOT LPAREN type RPAREN {
+        TypeAssertNode* ta = (TypeAssertNode*)malloc(sizeof(TypeAssertNode));
+        ta->base.type = AST_TYPE_ASSERT;
+        ta->base.pos = get_current_position();
+        ta->base.node_type = NULL;
+        ta->base.next = NULL;
+        ta->expr = $1;
+        ta->asserted_type = $4;
+        $$ = (ASTNode*)ta;
+    }
     ;
 
 expression_list:

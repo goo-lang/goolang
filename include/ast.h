@@ -156,6 +156,13 @@ typedef enum {
     // header deps).
     AST_SLICE_CONVERSION,
 
+    // Type assertions branch, Task 1: `x.(T)` type assertion. Tail-appended
+    // per the M10 convention above (Makefile has no header deps). Note:
+    // AST_TYPE_ASSERT_EXPR already exists above (line ~53) but is unused
+    // dead code (no struct, no grammar production) — this is a distinct,
+    // newly-wired node type, not a rename of that one.
+    AST_TYPE_ASSERT,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -1149,6 +1156,16 @@ typedef struct {
     struct ASTNode* slice_type;
     struct ASTNode* operand;
 } SliceConvNode;
+
+// x.(T) type assertion. asserted_type is the parsed target type node.
+// The comma-ok vs single-return form is NOT stored here — it is decided by
+// assignment context at typecheck/codegen (2 LHS names vs 1), exactly like
+// the comma-ok map read.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* expr;
+    struct ASTNode* asserted_type;
+} TypeAssertNode;
 
 // =============================================================================
 // Function declarations for AST manipulation
