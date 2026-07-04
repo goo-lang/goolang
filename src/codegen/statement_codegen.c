@@ -1326,6 +1326,24 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                     LLVMTypeRef nty = codegen_type_to_llvm(codegen, field_type);
                     if (nty) raw = codegen_create_nullable_with_value(codegen, nty, raw, vv->goo_type);
                 }
+                // Box a concrete return value into an interface-typed return
+                // field. Without this the raw concrete bits land in an
+                // interface-shaped slot (empty/garbage output, or a verifier
+                // failure for the variable form). Mirrors the nullable
+                // auto-wrap above and the map/assignment interface-box arms.
+                if (field_type && field_type->kind == TYPE_INTERFACE &&
+                    vv->goo_type && vv->goo_type->kind != TYPE_INTERFACE) {
+                    LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                               field_type,
+                                                               vv->goo_type, raw);
+                    if (!boxed) {
+                        codegen_error(codegen, v->pos,
+                                      "failed to box concrete return value into interface");
+                        value_info_free(vv);
+                        return 0;
+                    }
+                    raw = boxed;
+                }
                 agg = LLVMBuildInsertValue(codegen->builder, agg, raw, (unsigned)i, "ret_field");
                 value_info_free(vv);
             }
