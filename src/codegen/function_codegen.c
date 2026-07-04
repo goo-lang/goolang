@@ -1586,6 +1586,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             IndexExprNode* idx_expr = (IndexExprNode*)var_decl->values;
             if (idx_expr->expr && idx_expr->expr->node_type &&
                 idx_expr->expr->node_type->kind == TYPE_MAP) {
+                Type* key_type = idx_expr->expr->node_type->data.map.key_type;
                 Type* val_type = idx_expr->expr->node_type->data.map.value_type;
 
                 // Evaluate the map pointer and the key expression.
@@ -1613,11 +1614,9 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 LLVMValueRef out_slot   = codegen_create_entry_alloca(codegen, i64t, "commaok_out");
                 LLVMValueRef found_slot = codegen_create_entry_alloca(codegen, i32t, "commaok_found");
 
-                // String key: extract the raw char* from the {i8*, i64} struct.
-                LLVMValueRef kp = key_val->llvm_value;
-                if (key_val->goo_type && key_val->goo_type->kind == TYPE_STRING) {
-                    kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
-                }
+                // Pack the key into its i64 slot (string keys: char* ptrtoint,
+                // never the value-boxing path — codegen_map_key_to_slot).
+                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, key_val, key_type);
 
                 // Call goo_map_get_sv_ok(map, key, &out, &found).
                 LLVMValueRef call_args[4] = { map_val->llvm_value, kp, out_slot, found_slot };

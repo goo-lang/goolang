@@ -1851,7 +1851,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-emptyiface-reject-probe typeswitch-emptyiface-reject-probe typeassert-reject-probe typeswitch-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-emptyiface-reject-probe typeswitch-emptyiface-reject-probe typeassert-reject-probe typeswitch-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2267,6 +2267,44 @@ map-addr-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "map-addr-reject-probe: FAIL (m[k].F = v compiled)"; exit 1; fi; \
 	if ! grep -q "cannot assign through a map value" build/map_field_reject.err; then echo "map-addr-reject-probe: FAIL (wrong/missing partial-write diagnostic)"; cat build/map_field_reject.err; exit 1; fi; \
 	echo "map-addr-reject-probe: PASS (partial write rejected)"
+
+# Non-string map keys (Task 3, AST_MAP_TYPE comparability gate in
+# type_checker.c): a key type is admitted if it's string, an integer/uint
+# width, bool, rune/byte (both integer kinds), or a pointer — anything else
+# rejects with one of two distinct messages. (a) a key type that's
+# comparable in Go but not yet wired into the v1 slot runtime (float, struct,
+# interface, array) gets the "not yet supported in v1" deferred message.
+# (b) a key type that's never comparable in Go (slice, map, func) gets the
+# "not comparable" message. (c) once a map's key type is fixed, indexing it
+# with a mismatched key type (a string literal against map[int]int) must
+# still reject — the type_check_index_expr TYPE_MAP case, exercised
+# separately from the type-declaration gate above.
+mapkey-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== mapkey-reject-probe: map[float64]int{} must reject (deferred-comparable) ==="
+	@printf 'package main\nfunc main(){\n\tm := map[float64]int{}\n\t_ = m\n}\n' > build/mapkey_float.goo
+	@rm -f build/mapkey_float
+	@$(COMPILER) -o build/mapkey_float build/mapkey_float.goo > /dev/null 2> build/mapkey_float.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "mapkey-reject-probe: FAIL (map[float64]int{} compiled)"; exit 1; fi; \
+	if [ -x build/mapkey_float ]; then echo "mapkey-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "not yet supported in v1" build/mapkey_float.err; then echo "mapkey-reject-probe: FAIL (wrong/missing deferred-comparable diagnostic)"; cat build/mapkey_float.err; exit 1; fi; \
+	echo "mapkey-reject-probe: PASS (deferred-comparable rejected)"
+	@echo "=== mapkey-reject-probe: map[[]int]int{} must reject (non-comparable) ==="
+	@printf 'package main\nfunc main(){\n\tm := map[[]int]int{}\n\t_ = m\n}\n' > build/mapkey_slice.goo
+	@rm -f build/mapkey_slice
+	@$(COMPILER) -o build/mapkey_slice build/mapkey_slice.goo > /dev/null 2> build/mapkey_slice.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "mapkey-reject-probe: FAIL (map[[]int]int{} compiled)"; exit 1; fi; \
+	if [ -x build/mapkey_slice ]; then echo "mapkey-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "not comparable" build/mapkey_slice.err; then echo "mapkey-reject-probe: FAIL (wrong/missing non-comparable diagnostic)"; cat build/mapkey_slice.err; exit 1; fi; \
+	echo "mapkey-reject-probe: PASS (non-comparable rejected)"
+	@echo "=== mapkey-reject-probe: m[\"x\"] on map[int]int must reject (key-type mismatch) ==="
+	@printf 'package main\nfunc main(){\n\tm := map[int]int{}\n\t_ = m["x"]\n}\n' > build/mapkey_wrongindex.goo
+	@rm -f build/mapkey_wrongindex
+	@$(COMPILER) -o build/mapkey_wrongindex build/mapkey_wrongindex.goo > /dev/null 2> build/mapkey_wrongindex.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "mapkey-reject-probe: FAIL (m[\"x\"] on map[int]int compiled)"; exit 1; fi; \
+	if [ -x build/mapkey_wrongindex ]; then echo "mapkey-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "Map key type mismatch" build/mapkey_wrongindex.err; then echo "mapkey-reject-probe: FAIL (wrong/missing key-type-mismatch diagnostic)"; cat build/mapkey_wrongindex.err; exit 1; fi; \
+	echo "mapkey-reject-probe: PASS (wrong-typed index rejected)"
 
 # Trailing commas in struct/map literals are now accepted (see
 # struct_lit / map_lit in parser.y), but a BARE comma with no preceding

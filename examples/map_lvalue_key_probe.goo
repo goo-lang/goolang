@@ -1,0 +1,40 @@
+// map_lvalue_key_probe: pins the final-review MEDIUM fix — a map key
+// expression that is itself an LVALUE (slice/array element `a[i]`, struct
+// field `p.X`, string byte-index `s[i]`) must be loaded to its rvalue
+// before being packed into the map's i64 key slot. Before the fix,
+// codegen_map_key_to_slot received the lvalue's ADDRESS and either
+// sext/zext'd a raw `ptr` (LLVM verifier failure, int/byte keys) or
+// ExtractValue'd a raw address instead of a string aggregate (compiler
+// SIGSEGV, string keys). Covers:
+//   - slice-element key:  m[a[0]]
+//   - struct-field key:   n[p.X]
+//   - string byte-index key, frequency-table idiom: freq[s[i]] = freq[s[i]] + 1
+//     (NOT freq[s[i]]++ — postfix/compound-assign through a map index is
+//     rejected by this codebase's separate map-value non-addressability
+//     rule, unrelated to this bug; the read-modify-write `=` form is the
+//     supported idiom and exercises the same lvalue-key packing path).
+package main
+
+type P struct {
+	X int
+}
+
+func main() {
+	a := []int{5, 7}
+	m := map[int]string{}
+	m[a[0]] = "five"
+	println(m[a[0]])
+
+	p := P{X: 3}
+	n := map[int]string{}
+	n[p.X] = "three"
+	println(n[p.X])
+
+	freq := map[byte]int{}
+	s := "aba"
+	for i := 0; i < len(s); i++ {
+		freq[s[i]] = freq[s[i]] + 1
+	}
+	println(freq['a'])
+	println(freq['b'])
+}

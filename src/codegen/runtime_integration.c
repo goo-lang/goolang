@@ -336,28 +336,35 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_math_max", dbl, binary, 2);
     }
 
-    // GooMapSV* goo_map_new_sv(void)
+    // GooMapSV* goo_map_new_sv(int32_t key_kind) — key_kind selects the
+    // runtime's key-comparison strategy (GOO_MAPKEY_STRING=0 -> strcmp,
+    // GOO_MAPKEY_INLINE=1 -> ==); codegen_map_key_kind (codegen.c) derives
+    // it from the map's key type at every creation site.
     {
-        add_runtime_function(codegen, "goo_map_new_sv", ptr_type, NULL, 0);
+        LLVMTypeRef params[] = { i32_type };
+        add_runtime_function(codegen, "goo_map_new_sv", ptr_type, params, 1);
     }
-    // void goo_map_set_sv(GooMapSV*, const char*, int64_t)  — value is the
-    // 8-byte slot; codegen casts the declared V to i64 before the call.
+    // void goo_map_set_sv(GooMapSV*, int64_t k, int64_t v) — both key and
+    // value are 8-byte slots now; codegen packs the declared K/V to i64 via
+    // codegen_map_key_to_slot / codegen_map_value_to_slot before the call.
     {
-        LLVMTypeRef params[] = { ptr_type, ptr_type, LLVMInt64TypeInContext(codegen->context) };
+        LLVMTypeRef params[] = { ptr_type, LLVMInt64TypeInContext(codegen->context),
+                                  LLVMInt64TypeInContext(codegen->context) };
         add_runtime_function(codegen, "goo_map_set_sv", void_type, params, 3);
     }
-    // int64_t goo_map_get_sv(GooMapSV*, const char*)  — returns the slot;
+    // int64_t goo_map_get_sv(GooMapSV*, int64_t k) — returns the value slot;
     // codegen casts it back to the declared V.
     {
-        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        LLVMTypeRef params[] = { ptr_type, LLVMInt64TypeInContext(codegen->context) };
         add_runtime_function(codegen, "goo_map_get_sv",
                              LLVMInt64TypeInContext(codegen->context), params, 2);
     }
-    // void goo_map_get_sv_ok(GooMapSV*, const char*, int64_t*, int*)
-    // Writes the 8-byte slot to *out; sets *found=1 if key present, 0 if absent.
-    // Used by comma-ok map reads: `v, ok := m[k]`.
+    // void goo_map_get_sv_ok(GooMapSV*, int64_t k, int64_t* out, int* found)
+    // Writes the 8-byte value slot to *out; sets *found=1 if key present, 0
+    // if absent. Used by comma-ok map reads: `v, ok := m[k]`.
     {
-        LLVMTypeRef params[] = { ptr_type, ptr_type, ptr_type, ptr_type };
+        LLVMTypeRef params[] = { ptr_type, LLVMInt64TypeInContext(codegen->context),
+                                  ptr_type, ptr_type };
         add_runtime_function(codegen, "goo_map_get_sv_ok", void_type, params, 4);
     }
     // int64_t goo_map_len_sv(GooMapSV*) — entry count. Backs len(m).
@@ -366,10 +373,10 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_map_len_sv",
                              LLVMInt64TypeInContext(codegen->context), params, 1);
     }
-    // void goo_map_delete_sv(GooMapSV*, const char*) — unlinks the entry for
-    // the given key, if present. Backs delete(m, k).
+    // void goo_map_delete_sv(GooMapSV*, int64_t k) — unlinks the entry for
+    // the given key slot, if present. Backs delete(m, k).
     {
-        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        LLVMTypeRef params[] = { ptr_type, LLVMInt64TypeInContext(codegen->context) };
         add_runtime_function(codegen, "goo_map_delete_sv", void_type, params, 2);
     }
 

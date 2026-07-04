@@ -852,15 +852,8 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         codegen_error(codegen, stmt->pos, "range over map: missing value type");
         return 0;
     }
-    // The runtime iterator's key_out is a raw `const char**` (see
-    // goo_map_iter_next_sv) — the map is string-keyed in practice (the
-    // checker's TYPE_MAP arm binds whatever key type the Type carries, but
-    // no non-string-keyed map construction path exists today), so this is
-    // the codegen-side half of that same documented limitation rather than
-    // a new one.
-    if (!key_type || key_type->kind != TYPE_STRING) {
-        codegen_error(codegen, stmt->pos,
-                      "range over map: only string-keyed maps are supported");
+    if (!key_type) {
+        codegen_error(codegen, stmt->pos, "range over map: missing key type");
         return 0;
     }
 
@@ -880,20 +873,17 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         LLVMTypeRef init_fn_type = LLVMFunctionType(ptr_type, init_params, 1, 0);
         init_fn = LLVMAddFunction(codegen->module, "goo_map_iter_init_sv", init_fn_type);
     }
+    // int goo_map_iter_next_sv(GooMapEntrySV** cursor, int64_t* key_out,
+    // int64_t* val_out) — both out-params are now i64 slots (Task 1's ABI
+    // change); the key slot is unpacked to the declared key type via
+    // codegen_map_slot_to_key below, same as the value slot always was.
     LLVMValueRef iter_fn = LLVMGetNamedFunction(codegen->module, "goo_map_iter_next_sv");
     if (!iter_fn) {
         LLVMTypeRef pp_type = LLVMPointerType(ptr_type, 0);
-        LLVMTypeRef iter_params[] = { pp_type, pp_type, LLVMPointerType(i64, 0) };
+        LLVMTypeRef i64p = LLVMPointerType(i64, 0);
+        LLVMTypeRef iter_params[] = { pp_type, i64p, i64p };
         LLVMTypeRef iter_fn_type = LLVMFunctionType(i32, iter_params, 3, 0);
         iter_fn = LLVMAddFunction(codegen->module, "goo_map_iter_next_sv", iter_fn_type);
-    }
-    LLVMValueRef mkstr_fn = LLVMGetNamedFunction(codegen->module, "goo_string_new");
-    if (!mkstr_fn) {
-        LLVMTypeRef string_type = LLVMStructTypeInContext(ctx,
-            (LLVMTypeRef[]){ ptr_type, i64 }, 2, 0);
-        LLVMTypeRef mkstr_params[] = { ptr_type };
-        LLVMTypeRef mkstr_fn_type = LLVMFunctionType(string_type, mkstr_params, 1, 0);
-        mkstr_fn = LLVMAddFunction(codegen->module, "goo_string_new", mkstr_fn_type);
     }
 
     // Cursor slot: GooMapEntrySV* (opaque — entry layout stays private to
@@ -909,8 +899,10 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     LLVMValueRef cursor_alloca = codegen_alloc_local(codegen, ptr_type, "range_mcursor");
     LLVMBuildStore(codegen->builder, head_val, cursor_alloca);
 
-    // Out-param scratch for the iterator call, reused every iteration.
-    LLVMValueRef key_cstr_alloca = codegen_alloc_local(codegen, ptr_type, "range_mkey_cstr");
+    // Out-param scratch for the iterator call, reused every iteration. Both
+    // are raw i64 slots now — key_slot_alloca held a char* pre-Task-2 when
+    // only string keys existed; codegen_map_slot_to_key unpacks it to K.
+    LLVMValueRef key_slot_alloca = codegen_alloc_local(codegen, i64, "range_mkey_slot");
     LLVMValueRef val_slot_alloca = codegen_alloc_local(codegen, i64, "range_mval_slot");
 
     LLVMTypeRef val_llvm = codegen_type_to_llvm(codegen, value_type);
@@ -958,28 +950,27 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
 
     LLVMBuildBr(codegen->builder, rcond);
 
-    // cond: goo_map_iter_next_sv(&cursor, &key_cstr, &val_slot) != 0. The
+    // cond: goo_map_iter_next_sv(&cursor, &key_slot, &val_slot) != 0. The
     // call itself advances the cursor and fills the out-slots — there is no
     // separate "advance" step in the post block (see below).
     codegen_set_insert_point(codegen, rcond);
-    LLVMValueRef iter_args[3] = { cursor_alloca, key_cstr_alloca, val_slot_alloca };
+    LLVMValueRef iter_args[3] = { cursor_alloca, key_slot_alloca, val_slot_alloca };
     LLVMValueRef has_next = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(iter_fn),
                                            iter_fn, iter_args, 3, "map_has_next");
     LLVMValueRef cond_v = LLVMBuildICmp(codegen->builder, LLVMIntNE, has_next,
                                         LLVMConstInt(i32, 0, 0), "maprange_cond");
     LLVMBuildCondBr(codegen->builder, cond_v, rbody, rexit);
 
-    // body: bind key (wrap the C string via goo_string_new — copies, so the
-    // binding stays valid independent of the map entry) and value (cast the
-    // int64 slot to the declared V, same convention as m[k] reads), then
-    // run the loop body.
+    // body: bind key (unpack the i64 slot to the declared key type via
+    // codegen_map_slot_to_key — string keys rebuild the goo string aggregate
+    // via goo_string_new, same copy-semantics as before this change; inline
+    // keys just cast back) and value (cast the int64 slot to the declared V,
+    // same convention as m[k] reads), then run the loop body.
     codegen_set_insert_point(codegen, rbody);
     if (key_alloca) {
-        LLVMValueRef kc = LLVMBuildLoad2(codegen->builder, ptr_type, key_cstr_alloca, "map_kcstr");
-        LLVMValueRef mkstr_args[1] = { kc };
-        LLVMValueRef kstr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(mkstr_fn),
-                                           mkstr_fn, mkstr_args, 1, "map_kstr");
-        LLVMBuildStore(codegen->builder, kstr, key_alloca);
+        LLVMValueRef kslot = LLVMBuildLoad2(codegen->builder, i64, key_slot_alloca, "map_kslot");
+        LLVMValueRef kval = codegen_map_slot_to_key(codegen, kslot, key_type);
+        LLVMBuildStore(codegen->builder, kval, key_alloca);
     }
     if (val_alloca) {
         LLVMValueRef slot = LLVMBuildLoad2(codegen->builder, i64, val_slot_alloca, "map_vslot");
