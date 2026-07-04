@@ -109,8 +109,14 @@ entirely (key stays string-only with today's message).
 Boxing must not accidentally make map values addressable:
 - `&m[k]` → typecheck reject.
 - Partial updates through a map index — `m[k].F = v`, `m[k][i] = v` — →
-  typecheck reject (Go rejects; without the guard the lvalue path would error
-  uglily or silently mutate a box nobody else reads).
+  typecheck reject (without the guard the lvalue path would error uglily or
+  silently mutate a box nobody else reads).
+  CORRECTION (final review, M1/M2): Go rejects these only when the map value
+  is a STRUCT or ARRAY. For slice values `m[k][i] = v` is legal Go (indexing
+  a copied slice header aliases the shared backing array), and for pointer
+  values `m[k].F = v` is legal Go (auto-deref of the stored pointer). Goo
+  rejects both today — deviation recorded as follow-ups; the Go-idiomatic
+  two-step (`s := m[k]; s[i] = v`) works and aliases correctly (probe-verified).
 - Whole-value forms stay legal per Go: `m[k] = v`; `m[k]++` / `m[k] += 1` for
   inline types **if they already work today** (probe-verify; not newly built).
 - `m[k].F` as an RVALUE read is legal — existing rvalue-selector path.
