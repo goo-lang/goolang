@@ -1,0 +1,23 @@
+// map_overwrite_probe (Task 5, generic map values): pins overwrite/len
+// semantics with boxed values — goo_map_set_sv already updates a slot in
+// place on repeated writes to the same key (runtime.c:611), so len(m) must
+// stay 1 across three successive overwrites even though each write allocates
+// a fresh box. Covers both a string-boxed map and a func-typed dispatch map
+// (the headline case), confirming the in-place update path is type-agnostic.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]string{}
+	m["k"] = "one"
+	m["k"] = "two"
+	m["k"] = "three"
+	fmt.Println(len(m))
+	fmt.Println(m["k"])
+	n := map[string]func() int{}
+	n["f"] = func() int { return 1 }
+	n["f"] = func() int { return 2 }
+	fmt.Println(len(n))
+	fmt.Println(n["f"]())
+}
