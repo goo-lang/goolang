@@ -120,6 +120,12 @@ static ASTNode* g_func_signature_result = NULL;
     long long integer;
     double real;
     int token;
+    // Type assertions branch, Task 3: the type-switch guard (`x.(type)` /
+    // `v := x.(type)`) has to carry TWO values (the optional bind identifier
+    // and the operand expression) through one nonterminal reduction — a
+    // second anonymous-struct union member alongside `strlit` above, same
+    // technique, for the same reason (a single ASTNode* $$ can't hold both).
+    struct { struct ASTNode* bind_name; struct ASTNode* expr; } guard;
 }
 
 // Token declarations with types
@@ -197,6 +203,8 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> switch_stmt case_clause_list case_clause
+%type <node> type_case_list type_case_clause type_list
+%type <guard> type_switch_guard
 %type <node> unsafe_stmt asm_stmt parallel_for_stmt
 %type <node> parallel_reduce_expr barrier_call atomic_expr thread_local_decl
 %type <node> expression primary_expr unary_expr postfix_expr binary_expr
@@ -1384,6 +1392,116 @@ switch_stmt:
     | SWITCH LBRACE case_clause_list RBRACE {
         ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
         $$ = (ASTNode*)ast_switch_stmt_new(t, $3, get_current_position());
+    }
+    /* Type assertions branch, Task 3: `switch [v :=] x.(type) { case T1: … }`.
+       HIGHEST-RISK grammar change in the branch — this arm shares the exact
+       `SWITCH … LBRACE_BODY … RBRACE` prefix with the three arms above.
+       type_switch_guard's `DOT LPAREN TYPE RPAREN` tail is what commits the
+       parse to THIS arm before any CASE is reached: TYPE (the literal `type`
+       keyword token) is disjoint from FIRST(type) (the `type` nonterminal
+       used by the ordinary `x.(T)` assertion, selector_expr — type_name,
+       array_type, slice_type, map_type, chan_type, func_type, pointer_type,
+       reference_type, unsafe_ptr_type, error_union_type, nullable_type,
+       struct_type, enum_type, interface_type — none of which start with the
+       TYPE keyword), so the single token after LPAREN cleanly decides which
+       of `expression` (plain switch, possibly containing an `x.(T)` value
+       assertion) vs `type_switch_guard` is being parsed — by the time
+       type_case_list is reached, case_clause_list is no longer reachable
+       from this state. See docs/superpowers/specs/2026-07-04-type-
+       assertions-design.md "Grammar (risk center)" and the goo-grammar
+       skill's tripwire discipline. */
+    | SWITCH type_switch_guard LBRACE_BODY type_case_list RBRACE {
+        TypeSwitchNode* tsw = ast_type_switch_new($2.bind_name, $2.expr, $4, get_current_position());
+        $$ = (ASTNode*)tsw;
+    }
+    | SWITCH type_switch_guard LBRACE type_case_list RBRACE {
+        TypeSwitchNode* tsw = ast_type_switch_new($2.bind_name, $2.expr, $4, get_current_position());
+        $$ = (ASTNode*)tsw;
+    }
+    ;
+
+// Type assertions branch, Task 3: the type-switch guard. The bind-less form
+// (`x.(type)`) and the `identifier := x.(type)` bind form are both admitted;
+// switch_stmt's action reads $$.bind_name (NULL for the bind-less form) and
+// $$.expr uniformly. TYPE here is the literal `type` keyword token (bison
+// token TYPE, mapped from TOKEN_TYPE — see parser.y's %token block) — NOT
+// the `type` nonterminal used by `primary_expr DOT LPAREN type RPAREN`
+// (Task 1's ordinary type assertion, selector_expr above). This literal-
+// keyword-vs-nonterminal split is exactly what keeps the two DOT-LPAREN
+// forms conflict-free on one token of lookahead (see switch_stmt's comment
+// above).
+type_switch_guard:
+    primary_expr DOT LPAREN TYPE RPAREN {
+        $$.bind_name = NULL;
+        $$.expr = $1;
+    }
+    | identifier SHORT_ASSIGN primary_expr DOT LPAREN TYPE RPAREN {
+        $$.bind_name = $1;
+        $$.expr = $3;
+    }
+    ;
+
+// Type assertions branch, Task 3: type-switch case clauses. A separate
+// clause/list pair from case_clause/case_clause_list (not a reuse) — each
+// clause lists TYPES (type_list), not value expressions, and is only ever
+// reachable via the type_switch_guard arm above (never the plain
+// case_clause_list), so the two never compete for the same LALR state
+// despite the structural similarity.
+type_case_list:
+    type_case_clause {
+        $$ = $1;
+    }
+    | type_case_list type_case_clause {
+        ASTNode* current = $1;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = $2;
+        $$ = $1;
+    }
+    ;
+
+type_case_clause:
+    CASE type_list COLON statement_list {
+        $$ = (ASTNode*)ast_type_case_new($2, $4, get_current_position());
+    }
+    | DEFAULT COLON statement_list {
+        $$ = (ASTNode*)ast_type_case_new(NULL, $3, get_current_position());
+    }
+    ;
+
+// `case nil:` matches a nil interface (see design doc) — nil is not a `type`
+// (NIL is a distinct token, disjoint from every `type` alternative's FIRST
+// set, exactly like TYPE above), so it needs its own alternatives here
+// rather than being reachable through the `type` nonterminal. The resulting
+// list element is a LiteralNode(TOKEN_NIL) sentinel — type_check_type_switch_stmt
+// and codegen_generate_type_switch_stmt both recognize it structurally
+// (AST_LITERAL + literal_type == TOKEN_NIL) rather than resolving it via
+// type_from_ast.
+type_list:
+    type {
+        $$ = $1;
+    }
+    | NIL {
+        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", get_current_position());
+        $$ = (ASTNode*)lit;
+    }
+    | type_list COMMA type {
+        ASTNode* current = $1;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = $3;
+        $$ = $1;
+    }
+    | type_list COMMA NIL {
+        LiteralNode* lit = ast_literal_new(TOKEN_NIL, "nil", get_current_position());
+        ASTNode* current = $1;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = (ASTNode*)lit;
+        $$ = $1;
     }
     ;
 

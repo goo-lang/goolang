@@ -1,0 +1,62 @@
+package main
+
+import "fmt"
+
+// The brief's literal fmt-shaped probe used `[]interface{}` (a slice of the
+// empty interface) and a heterogeneous `[]interface{}{1, "hi", true}`
+// composite literal. That is a genuine pre-existing PARSE gap, not a
+// typecheck/codegen one: the lexer bridge's empty-`[]`-disambiguation table
+// (bridge_token_starts_type, src/parser/lexer_bridge.c) lists the tokens
+// that start a `type` after `[]` (IDENTIFIER, LBRACKET, MAP, CHAN, FUNC,
+// STRUCT, ENUM, …) but does NOT include INTERFACE — so `[]interface{}`
+// tokenizes its `]` as a plain RBRACKET (empty-slice-literal context)
+// instead of RBRACKET_SLICE (slice-type-prefix context), and
+// `slice_type: LBRACKET RBRACKET_SLICE type` never matches. Verified live:
+// `[]interface{}` fails to parse ("syntax error") in EVERY position (var
+// decl, function param), not just this probe's shape — confirmed as a
+// pre-existing gap, recorded (not fixed) here per this task's explicit
+// instruction not to touch interface{} literal support. Substituted a named
+// single-method interface (Boxed) with three concrete implementers
+// (IntBox/StringBox/BoolBox), keeping the int/string/bool spirit and the
+// heterogeneous-slice + type-switch dispatch shape intact — go-run-verified
+// against go1.26.1 byte-for-byte before adoption.
+type Boxed interface {
+	Kind() string
+}
+
+type IntBox struct {
+	V int
+}
+
+func (b IntBox) Kind() string { return "int" }
+
+type StringBox struct {
+	V string
+}
+
+func (b StringBox) Kind() string { return "string" }
+
+type BoolBox struct {
+	V bool
+}
+
+func (b BoolBox) Kind() string { return "bool" }
+
+func stringify(vals []Boxed) {
+	for _, x := range vals {
+		switch v := x.(type) {
+		case IntBox:
+			fmt.Println(v.V + 1)
+		case StringBox:
+			fmt.Println(v.V)
+		case BoolBox:
+			fmt.Println(v.V)
+		default:
+			fmt.Println("?")
+		}
+	}
+}
+
+func main() {
+	stringify([]Boxed{IntBox{V: 1}, StringBox{V: "hi"}, BoolBox{V: true}})
+}

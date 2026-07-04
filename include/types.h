@@ -569,6 +569,8 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt);
+// Type assertions branch, Task 3: `switch [v :=] x.(type) { case … }`.
+int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt);
 
 // Helper functions
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node);

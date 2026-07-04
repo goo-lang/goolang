@@ -5,7 +5,7 @@
 # required before any commit). Exit 2 = bison itself failed.
 set -u
 
-EXPECTED_SR=81
+EXPECTED_SR=82
 EXPECTED_RR=256
 PARSER=${1:-src/parser/parser.y}
 

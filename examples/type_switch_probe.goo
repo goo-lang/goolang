@@ -1,0 +1,72 @@
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+}
+
+type Sq struct {
+	S int
+}
+
+func (s Sq) Area() int {
+	return s.S * s.S
+}
+
+type Rect struct {
+	W int
+	H int
+}
+
+func (r Rect) Area() int {
+	return r.W * r.H
+}
+
+type Circle struct {
+	R int
+}
+
+func (c Circle) Area() int {
+	return 3 * c.R * c.R
+}
+
+type Triangle struct {
+	B int
+	H int
+}
+
+func (t Triangle) Area() int {
+	return t.B * t.H / 2
+}
+
+// The brief's original example reused Sq in a later multi-type arm (`case
+// Sq, Circle:` after an earlier `case Sq:`), which real Go rejects outright
+// ("duplicate case Sq in type switch") — verified against go1.26.1 (`go run`
+// on the literal brief text fails to compile). Type-switch case types must
+// be globally unique across the whole switch, not just reachable-order-
+// distinct; this compiler's own duplicate-case-type rejection (task 3's
+// typecheck) matches that real behavior. Substituted a 4th distinct type
+// (Triangle) for the multi-type arm so the golden is valid Go, keeping the
+// brief's intent intact: Sq/Rect each match their OWN single-type arm first,
+// and the multi-type arm (`case Circle, Triangle:`) is exercised by both of
+// its listed types.
+func describe(s Shape) string {
+	switch v := s.(type) {
+	case Sq:
+		return fmt.Sprintf("square %d", v.S)
+	case Rect:
+		return fmt.Sprintf("rect %d", v.W*v.H)
+	case Circle, Triangle:
+		return "circle-or-triangle"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	fmt.Println(describe(Sq{S: 3}))
+	fmt.Println(describe(Rect{W: 2, H: 4}))
+	fmt.Println(describe(Circle{R: 2}))
+	fmt.Println(describe(Triangle{B: 4, H: 3}))
+}

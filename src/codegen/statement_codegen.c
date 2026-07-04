@@ -337,6 +337,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_select_stmt(codegen, checker, stmt);
         case AST_SWITCH_STMT:
             return codegen_generate_switch_stmt(codegen, checker, stmt);
+        case AST_TYPE_SWITCH:
+            return codegen_generate_type_switch_stmt(codegen, checker, stmt);
         case AST_UNSAFE_STMT:
             return codegen_generate_unsafe_stmt(codegen, checker, stmt);
         case AST_ASM_STMT:
@@ -601,6 +603,223 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
             LLVMBuildBr(codegen->builder, merge_block);
         }
+    }
+    codegen_pop_loop(codegen);
+
+    codegen_set_insert_point(codegen, merge_block);
+    free(body_blocks);
+    return 1;
+#endif
+}
+
+// Type switch lowering (Task 3 of type assertions): `switch [v :=] x.(type)
+// { case T1: … case Tn, Tm: … default: … }` desugars to an ordered chain of
+// vtable-pointer-identity compares, exactly mirroring
+// codegen_generate_switch_stmt's icmp-chain shape above but comparing
+// vtable pointers (via the shared codegen_interface_assert_match /
+// codegen_interface_assert_unbox helpers from Task 2, NOT reimplemented
+// here) instead of tag values.
+//
+// PERF (extract-once): the operand expression is evaluated exactly ONCE,
+// up front (`iface_val`) — never re-evaluated per case, which matters both
+// for perf and for correctness if the operand has side effects (a call,
+// e.g. `switch v := getShape().(type)`). Its `data` field (interface field
+// 1) is ALSO extracted exactly once here and reused for every case's
+// unbox — it is the SAME raw pointer regardless of which case ends up
+// matching (only the unbox TARGET type differs per case), so every call
+// below passes `data_out = NULL` to codegen_interface_assert_match and
+// unboxes through this cached `data` instead of letting the helper
+// re-derive it per case. What is NOT hoisted: assert_match's internal
+// `vt_have` (interface field 0) extraction — avoiding that would mean
+// bypassing assert_match's pointer-target normalization (the *T-reuses-
+// pointee's-vtable dance hardened in df41fb2) and hand-rolling the compare,
+// which the brief for this task explicitly rules out ("do not reimplement
+// the vtable compare"). Each repeated ExtractValue of the SAME iface_val
+// SSA value is a single pure instruction with no re-evaluation of anything
+// — cheap, and not a correctness concern either way.
+int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available for type switch statements");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_TYPE_SWITCH) return 0;
+
+    TypeSwitchNode* tsw = (TypeSwitchNode*)stmt;
+    Type* iface_type = tsw->expr->node_type;
+    if (!iface_type) {
+        codegen_error(codegen, stmt->pos,
+                      "internal: type switch operand missing resolved type");
+        return 0;
+    }
+
+    ValueInfo* iv = codegen_generate_expression(codegen, checker, tsw->expr);
+    if (!iv) return 0;
+    LLVMValueRef iface_val = iv->llvm_value;
+    // Same is_lvalue-load idiom as AST_TYPE_ASSERT's operand handling
+    // (expression_codegen.c) and codegen_interface_dispatch's call site.
+    if (iv->is_lvalue) {
+        LLVMTypeRef ity = codegen_type_to_llvm(codegen, iface_type);
+        if (ity) iface_val = LLVMBuildLoad2(codegen->builder, ity, iface_val, "tsw.operand");
+    }
+    value_info_free(iv);
+
+    LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "tsw.merge");
+
+    size_t clause_count = 0;
+    for (ASTNode* c = tsw->cases; c; c = c->next) clause_count++;
+    if (clause_count == 0) {
+        LLVMBuildBr(codegen->builder, merge_block);
+        codegen_set_insert_point(codegen, merge_block);
+        return 1;
+    }
+
+    LLVMBasicBlockRef* body_blocks = malloc(sizeof(LLVMBasicBlockRef) * clause_count);
+    if (!body_blocks) return 0;
+    LLVMBasicBlockRef default_body = NULL;
+    size_t i = 0;
+    for (ASTNode* c = tsw->cases; c; c = c->next, i++) {
+        body_blocks[i] = codegen_create_block(codegen, "tsw.case");
+        if (((TypeCaseNode*)c)->types == NULL) default_body = body_blocks[i];
+    }
+
+    // Extracted once (see header comment); reused for every case's unbox.
+    LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "tsw.data");
+
+    // Zero interface value {NULL,NULL} for `case nil:` — a nil interface
+    // compares the WHOLE value (vtable AND data both null), not just data,
+    // since a non-nil interface could (in principle) box a value whose
+    // heap data pointer coincides with NULL only if the vtable were also
+    // NULL, which never happens for a real boxed value.
+    LLVMTypeRef iface_llvm = codegen_type_to_llvm(codegen, iface_type);
+    LLVMValueRef zero_iface = iface_llvm ? LLVMConstNull(iface_llvm) : NULL;
+
+    i = 0;
+    for (ASTNode* c = tsw->cases; c; c = c->next, i++) {
+        TypeCaseNode* clause = (TypeCaseNode*)c;
+        if (!clause->types) continue;  // default tested last
+        for (ASTNode* t = clause->types; t; t = t->next) {
+            LLVMValueRef match;
+            int is_nil = (t->type == AST_LITERAL && ((LiteralNode*)t)->literal_type == TOKEN_NIL);
+            if (is_nil) {
+                if (!zero_iface) {
+                    codegen_error(codegen, t->pos, "internal: cannot lower nil interface compare");
+                    free(body_blocks);
+                    return 0;
+                }
+                LLVMValueRef vt_have = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "tsw.vt");
+                LLVMValueRef zero_vt = LLVMBuildExtractValue(codegen->builder, zero_iface, 0, "tsw.zvt");
+                LLVMValueRef zero_data = LLVMBuildExtractValue(codegen->builder, zero_iface, 1, "tsw.zdata");
+                LLVMValueRef vt_eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ, vt_have, zero_vt, "tsw.vteq");
+                LLVMValueRef data_eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ, data, zero_data, "tsw.deq");
+                match = LLVMBuildAnd(codegen->builder, vt_eq, data_eq, "tsw.nileq");
+            } else {
+                Type* case_type = t->node_type;
+                if (!case_type) {
+                    codegen_error(codegen, t->pos, "internal: type switch case missing resolved type");
+                    free(body_blocks);
+                    return 0;
+                }
+                match = codegen_interface_assert_match(codegen, checker, iface_val,
+                                                       iface_type, case_type, NULL);
+                if (!match) {
+                    codegen_error(codegen, t->pos, "internal: cannot build type switch vtable compare");
+                    free(body_blocks);
+                    return 0;
+                }
+            }
+            LLVMBasicBlockRef next_test = codegen_create_block(codegen, "tsw.test");
+            LLVMBuildCondBr(codegen->builder, match, body_blocks[i], next_test);
+            codegen_set_insert_point(codegen, next_test);
+        }
+    }
+    // Fell through every test: go to default body, else merge.
+    LLVMBuildBr(codegen->builder, default_body ? default_body : merge_block);
+
+    // `break` inside a case must terminate the SWITCH (Go semantics), matching
+    // the plain switch's break-scope convention above.
+    if (!codegen_push_break_scope(codegen, merge_block)) {
+        codegen_error(codegen, stmt->pos, "type switch nested too deeply for break handling");
+        free(body_blocks);
+        return 0;
+    }
+
+    i = 0;
+    for (ASTNode* c = tsw->cases; c; c = c->next, i++) {
+        TypeCaseNode* clause = (TypeCaseNode*)c;
+        codegen_set_insert_point(codegen, body_blocks[i]);
+
+        // Mirror `v` to the type-checker's OWN scope (parallels the
+        // for-range arms above, e.g. ~line 922) — NOT just codegen's value
+        // table. codegen_generate_call_expr re-invokes type_check_call_expr
+        // during method-call codegen (to re-derive recv_offset etc., which
+        // isn't persisted between passes), and that re-check resolves the
+        // receiver via checker->current_scope, independent of codegen's own
+        // value table. Without this, `v.Method()` inside a case body fails
+        // typecheck's identifier resolution ("Undefined variable 'v'")
+        // even though `v.Field` (which never re-invokes the checker) works
+        // fine — verified live: the first version of this function only
+        // registered `v` in codegen's value table and broke exactly this
+        // way on a method-call probe.
+        scope_push(checker);
+        if (tsw->bind_name) {
+            const char* vname = ((IdentifierNode*)tsw->bind_name)->name;
+            size_t case_type_count = 0;
+            for (ASTNode* t = clause->types; t; t = t->next) case_type_count++;
+            // Single-type case (and not `case nil:`, which has no Type* to
+            // bind) unboxes to the concrete type; multi-type/default/nil
+            // keeps `v` at the operand's interface type — mirrors
+            // type_check_type_switch_stmt's identical rule exactly.
+            int single_concrete = (case_type_count == 1 && clause->types &&
+                                   clause->types->type != AST_LITERAL);
+            Type* bind_type = single_concrete ? clause->types->node_type : iface_type;
+            LLVMTypeRef bind_llvm = codegen_type_to_llvm(codegen, bind_type);
+            if (!bind_llvm) {
+                codegen_error(codegen, c->pos, "internal: cannot lower type switch bind type");
+                scope_pop(checker);
+                codegen_pop_loop(codegen);
+                free(body_blocks);
+                return 0;
+            }
+            LLVMValueRef bound_val;
+            if (single_concrete) {
+                bound_val = codegen_interface_assert_unbox(codegen, bind_type, data);
+                if (!bound_val) {
+                    codegen_error(codegen, c->pos, "internal: cannot unbox type switch case value");
+                    scope_pop(checker);
+                    codegen_pop_loop(codegen);
+                    free(body_blocks);
+                    return 0;
+                }
+            } else {
+                bound_val = iface_val;  // multi-type/default/nil: v stays the interface value
+            }
+            LLVMValueRef slot = codegen_alloc_local(codegen, bind_llvm, vname);
+            LLVMBuildStore(codegen->builder, bound_val, slot);
+            ValueInfo* vi = value_info_new(vname, slot, bind_type);
+            if (vi) {
+                vi->is_lvalue = 1;
+                vi->is_initialized = 1;
+                codegen_add_value(codegen, vi);
+            }
+            Variable* cv = variable_new(vname, bind_type, c->pos);
+            if (cv) {
+                cv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, cv);
+            }
+        }
+
+        for (ASTNode* s = clause->body; s; s = s->next) {
+            if (!codegen_generate_statement(codegen, checker, s)) {
+                scope_pop(checker);
+                codegen_pop_loop(codegen);
+                free(body_blocks);
+                return 0;
+            }
+        }
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+            LLVMBuildBr(codegen->builder, merge_block);
+        }
+        scope_pop(checker);
     }
     codegen_pop_loop(codegen);
 

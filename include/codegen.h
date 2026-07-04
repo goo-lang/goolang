@@ -255,6 +255,8 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
 int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
+// Type assertions branch, Task 3: `switch [v :=] x.(type) { case … }`.
+int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 

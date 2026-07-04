@@ -1596,6 +1596,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             }
             return ok;
         }
+        case AST_TYPE_SWITCH:
+            return type_check_type_switch_stmt(checker, stmt);
         case AST_COMPTIME_BLOCK: {
             // M11-types-const-stub: minimum dispatch — treat the body as
             // ordinary statements. Engine engagement (real comptime
@@ -2151,6 +2153,166 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
 // Forward declarations for helper functions
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
+
+// Type assertions branch, Task 3: duplicate-case-type comparison.
+// `type_equals` (types.c) falls back to `default: return 1` (kind-only
+// equality) for any kind it doesn't explicitly special-case — which
+// includes TYPE_STRUCT, so it treats ANY two structs as equal (verified
+// live: it falsely flagged Sq/Rect/Circle/Triangle as duplicates of each
+// other in this task's own golden). This is a real, pre-existing gap;
+// RECORDED rather than fixed here — type_equals is shared by several
+// unrelated checkers (channel_checker.c, constraint_inference.c,
+// protocol_oriented_programming.c) whose reliance on that fallback is out
+// of this task's scope to audit. For case-type duplicate detection
+// specifically, comparing by type_receiver_name (the SAME string that
+// keys a concrete's vtable global, goo.vtable.<T>.<I> — see
+// interface_codegen.c) is not just a workaround but the semantically
+// correct notion of "same case" here: two case types are truly duplicates
+// iff they'd resolve to the same vtable global at runtime. Falls back to
+// type_equals for nameless kinds (builtins etc.), where its kind-only
+// default is correct.
+static int type_switch_case_type_same(Type* a, Type* b) {
+    if (!a || !b) return a == b;
+    if (a->kind != b->kind) return 0;
+    const char* na = type_receiver_name(a);
+    const char* nb = type_receiver_name(b);
+    if (na || nb) return na && nb && strcmp(na, nb) == 0;
+    return type_equals(a, b);
+}
+
+// Type assertions branch, Task 3: `switch [v :=] x.(type) { case T1: … case
+// Tn, Tm: … default: … }`. Operand must be interface-typed (same "invalid
+// type assertion: operand is not an interface type" rejection x.(T) uses);
+// each case type must be CONCRETE and satisfy the operand interface
+// (type_interface_satisfied — same "impossible type assertion" message
+// shape as x.(T)); duplicate case types anywhere in the switch are rejected,
+// and at most one `default`. Bound var `v`'s type is the single case type
+// in a single-type case, else the operand's own interface type (multi-type
+// case, `default`, or a bare `case nil:` — nil has no Type* to bind to, so
+// it never triggers the single-type rule even when it is the clause's only
+// list entry), introduced into that case's OWN scope, mirroring the
+// AST_SWITCH_STMT clause loop's per-case scope_push/scope_pop above.
+int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_TYPE_SWITCH) return 0;
+
+    TypeSwitchNode* tsw = (TypeSwitchNode*)stmt;
+
+    Type* iface_type = type_check_expression(checker, tsw->expr);
+    if (!iface_type) return 0;
+    if (iface_type->kind != TYPE_INTERFACE) {
+        type_error(checker, stmt->pos,
+                   "invalid type assertion: operand is not an interface type");
+        return 0;
+    }
+
+    const char* bind_name = tsw->bind_name ? ((IdentifierNode*)tsw->bind_name)->name : NULL;
+
+    int ok = 1;
+    int default_count = 0;
+    // Dup-case-type tracking across the WHOLE switch (not just within one
+    // clause) — Go rejects `case T: … case T:` in separate clauses exactly
+    // like `case T, T:` in one. A fixed-size buffer is a deliberate
+    // simplification (mirrors this file's existing bounded-buffer
+    // convention, e.g. the for-stmt multi-name array above): realistic
+    // switches never approach 128 case types, and overflow degrades to
+    // "duplicate detection stops," never a crash.
+    Type* seen_types[128];
+    size_t seen_count = 0;
+    int seen_nil = 0;
+
+    for (ASTNode* c = tsw->cases; c; c = c->next) {
+        TypeCaseNode* clause = (TypeCaseNode*)c;
+
+        if (!clause->types) {
+            default_count++;
+            if (default_count > 1) {
+                type_error(checker, c->pos, "multiple defaults in type switch");
+                ok = 0;
+            }
+        }
+
+        size_t case_type_count = 0;
+        for (ASTNode* t = clause->types; t; t = t->next) case_type_count++;
+
+        for (ASTNode* t = clause->types; t; t = t->next) {
+            int is_nil = (t->type == AST_LITERAL && ((LiteralNode*)t)->literal_type == TOKEN_NIL);
+            if (is_nil) {
+                if (seen_nil) {
+                    type_error(checker, t->pos, "duplicate case nil in type switch");
+                    ok = 0;
+                }
+                seen_nil = 1;
+                continue;
+            }
+
+            Type* case_type = type_from_ast(checker, t);
+            if (!case_type) {
+                type_error(checker, t->pos, "invalid type switch case: cannot resolve type");
+                ok = 0;
+                continue;
+            }
+            if (case_type->kind == TYPE_INTERFACE) {
+                type_error(checker, t->pos,
+                    "type assertion to an interface type is not supported in v1 "
+                    "(concrete target types only)");
+                ok = 0;
+                continue;
+            }
+            const char* method = NULL;
+            const char* reason = NULL;
+            if (!type_interface_satisfied(checker, iface_type, case_type, &method, &reason)) {
+                const char* iname = iface_type->data.interface.name
+                                         ? iface_type->data.interface.name : "interface";
+                const char* cname = type_receiver_name(case_type);
+                type_error(checker, t->pos,
+                    "impossible type assertion: %s does not implement %s (%s method %s)",
+                    cname ? cname : type_to_string(case_type), iname,
+                    reason ? reason : "missing", method ? method : "?");
+                ok = 0;
+                continue;
+            }
+            int dup = 0;
+            for (size_t i = 0; i < seen_count; i++) {
+                if (type_switch_case_type_same(seen_types[i], case_type)) { dup = 1; break; }
+            }
+            if (dup) {
+                const char* dname = type_receiver_name(case_type);
+                type_error(checker, t->pos, "duplicate case type %s in type switch",
+                          dname ? dname : type_to_string(case_type));
+                ok = 0;
+            } else if (seen_count < 128) {
+                seen_types[seen_count++] = case_type;
+            }
+
+            // Read back by codegen instead of re-resolving (type_from_ast is
+            // NOT idempotent-cheap for every type kind, and this mirrors the
+            // "stamp once, read back" convention the comma-ok map/assert
+            // paths already use).
+            t->node_type = case_type;
+        }
+
+        scope_push(checker);
+        if (bind_name) {
+            Type* bind_type = iface_type;
+            int single_concrete = (case_type_count == 1 && clause->types &&
+                clause->types->type != AST_LITERAL);
+            if (single_concrete) {
+                bind_type = clause->types->node_type;
+            }
+            Variable* v = variable_new(bind_name, bind_type, c->pos);
+            if (v) {
+                v->is_initialized = 1;
+                scope_add_variable(checker->current_scope, v);
+            }
+        }
+        for (ASTNode* s = clause->body; s; s = s->next) {
+            if (!type_check_statement(checker, s)) ok = 0;
+        }
+        scope_pop(checker);
+    }
+
+    return ok;
+}
 
 // Helper function to convert AST type nodes to Type structures
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
