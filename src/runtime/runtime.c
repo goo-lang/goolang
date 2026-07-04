@@ -589,26 +589,41 @@ double goo_math_max(double x, double y) {
     return fmax(x, y);
 }
 
-// Map runtime: linked-list {string → int64_t value slot}. Linear scan.
-// The slot holds an integer or any pointer; codegen casts per the
-// declared map value type V.
+// Map runtime: linked-list {int64_t key slot → int64_t value slot}. Linear
+// scan. The key slot holds either a char* (STRING key_kind) or the key's
+// raw bits (INLINE key_kind); the value slot holds an integer or any
+// pointer. Codegen casts each slot per the declared map K/V types.
+
+// Compare two int64 key slots per the map's key_kind. STRING: the slots hold
+// char* — strcmp. INLINE: the slots hold the key's bits — direct ==.
+static int goo_map_key_eq(int32_t kind, int64_t a, int64_t b) {
+    if (kind == GOO_MAPKEY_STRING) {
+        const char* sa = (const char*)(intptr_t)a;
+        const char* sb = (const char*)(intptr_t)b;
+        if (sa == sb) return 1;
+        if (!sa || !sb) return 0;
+        return strcmp(sa, sb) == 0;
+    }
+    return a == b;
+}
+
 typedef struct GooMapEntrySV {
-    const char* key;
+    int64_t key;
     int64_t value;
     struct GooMapEntrySV* next;
 } GooMapEntrySV;
 
-GooMapSV* goo_map_new_sv(void) {
+GooMapSV* goo_map_new_sv(int32_t key_kind) {
     GooMapSV* m = goo_alloc(sizeof(GooMapSV));
-    if (m) m->head = NULL;
+    if (m) { m->head = NULL; m->key_kind = key_kind; }
     return m;
 }
 
-void goo_map_set_sv(GooMapSV* m, const char* k, int64_t v) {
-    if (!m || !k) return;
+void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v) {
+    if (!m) return;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (strcmp(e->key, k) == 0) { e->value = v; return; }
+        if (goo_map_key_eq(m->key_kind, e->key, k)) { e->value = v; return; }
         e = e->next;
     }
     e = goo_alloc(sizeof(GooMapEntrySV));
@@ -619,23 +634,23 @@ void goo_map_set_sv(GooMapSV* m, const char* k, int64_t v) {
     m->head = e;
 }
 
-int64_t goo_map_get_sv(GooMapSV* m, const char* k) {
-    if (!m || !k) return 0;
+int64_t goo_map_get_sv(GooMapSV* m, int64_t k) {
+    if (!m) return 0;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (strcmp(e->key, k) == 0) return e->value;
+        if (goo_map_key_eq(m->key_kind, e->key, k)) return e->value;
         e = e->next;
     }
     return 0;  // zero-value default (no comma-ok presence signal yet)
 }
 
-void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found) {
+void goo_map_get_sv_ok(GooMapSV* m, int64_t k, int64_t* out, int* found) {
     *out = 0;
     *found = 0;
-    if (!m || !k) return;
+    if (!m) return;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (strcmp(e->key, k) == 0) {
+        if (goo_map_key_eq(m->key_kind, e->key, k)) {
             *out = e->value;
             *found = 1;
             return;
@@ -663,7 +678,7 @@ int64_t goo_map_len_sv(GooMapSV* m) {
 // caller passes an already-NULL cursor (never dereferences GooMapSV here).
 // Returns 1 with *key_out/*val_out filled and *cursor advanced to the next
 // entry; returns 0 (outs untouched) once the list is exhausted.
-int goo_map_iter_next_sv(GooMapEntrySV** cursor, const char** key_out, int64_t* val_out) {
+int goo_map_iter_next_sv(GooMapEntrySV** cursor, int64_t* key_out, int64_t* val_out) {
     if (!cursor || !*cursor) return 0;
     if (key_out) *key_out = (*cursor)->key;
     if (val_out) *val_out = (*cursor)->value;
@@ -678,20 +693,20 @@ GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m) {
     return m ? (GooMapEntrySV*)m->head : NULL;
 }
 
-// Unlinks and frees the entry for key k, if present (no-op if absent or
-// m/k is NULL). Backs delete(m, k).
+// Unlinks and frees the entry for key k, if present (no-op if absent or m
+// is NULL). Backs delete(m, k).
 //
 // Key ownership: goo_map_set_sv above stores the caller's pointer verbatim
 // (`e->key = k;`) rather than duplicating it — the map never owns key
 // storage. So this frees only the entry node itself (allocated via
 // goo_alloc in goo_map_set_sv); freeing dead->key would free memory the
 // map doesn't own (e.g. a string literal's constant data).
-void goo_map_delete_sv(GooMapSV* m, const char* k) {
-    if (!m || !k) return;
+void goo_map_delete_sv(GooMapSV* m, int64_t k) {
+    if (!m) return;
     GooMapEntrySV* prev = NULL;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (strcmp(e->key, k) == 0) {
+        if (goo_map_key_eq(m->key_kind, e->key, k)) {
             if (prev) {
                 prev->next = e->next;
             } else {

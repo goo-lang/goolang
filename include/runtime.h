@@ -128,21 +128,32 @@ double goo_math_abs(double x);
 double goo_math_min(double x, double y);
 double goo_math_max(double x, double y);
 
-// General map `map[string]V` (M2-general-maps). String key -> 8-byte value
-// slot (`int64_t`, holding an integer or any pointer); codegen casts the
-// slot to/from the declared value type V. Linear-scan linked list —
-// performance is not the point; correctness is. Richer key types and
-// comma-ok presence reads are future work; on a miss `get` returns 0.
+// General map `map[K]V` (M2-general-maps, extended for non-string keys).
+// Both key and value travel as 8-byte slots (`int64_t`): the key slot holds
+// either a char* (STRING) or the key's raw bits (INLINE — int/uint/bool/
+// rune/byte/pointer); the value slot holds an integer or any pointer.
+// Codegen casts each slot to/from the declared K/V types. Linear-scan
+// linked list — performance is not the point; correctness is. Richer key
+// kinds (struct/float) and comma-ok presence reads beyond what's below are
+// future work; on a miss `get` returns 0.
+//
+// Map key kind: how goo_map_key_eq compares two int64 key slots. STRING = the
+// slot holds a char*, compared by strcmp; INLINE = the slot holds the key's
+// bits (int/uint/bool/rune/byte/pointer), compared by ==. New kinds
+// (struct/float) append here later.
+enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1 };
+
 struct GooMapEntrySV;
 typedef struct GooMapSV {
     struct GooMapEntrySV* head;
+    int32_t key_kind;
 } GooMapSV;
-GooMapSV* goo_map_new_sv(void);
-void goo_map_set_sv(GooMapSV* m, const char* k, int64_t v);
-int64_t goo_map_get_sv(GooMapSV* m, const char* k);
+GooMapSV* goo_map_new_sv(int32_t key_kind);
+void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v);
+int64_t goo_map_get_sv(GooMapSV* m, int64_t k);
 // Presence-returning read: *found=1 and *out=value if k is present, else
 // *found=0 and *out=0. Backs comma-ok map reads (v, ok := m[k]).
-void goo_map_get_sv_ok(GooMapSV* m, const char* k, int64_t* out, int* found);
+void goo_map_get_sv_ok(GooMapSV* m, int64_t k, int64_t* out, int* found);
 // Entry count. Backs len(m); linear scan of the linked list.
 int64_t goo_map_len_sv(GooMapSV* m);
 // Map iteration: cursor-based walk of the entry list. Init the cursor to
@@ -165,7 +176,7 @@ int64_t goo_map_len_sv(GooMapSV* m);
 // typing the cursor as `void**` (would erase the type distinction between
 // "a map entry cursor" and "any pointer-to-pointer", inviting a mismatched
 // call at the LLVM IR call-site to go unnoticed).
-int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, const char** key_out, int64_t* val_out);
+int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, int64_t* key_out, int64_t* val_out);
 // Cursor init for the walk above: returns m->head, or NULL when m itself
 // is NULL. Exists precisely for the nil-map case — Go's zero-value map
 // (`var m map[string]int`, never made) is legal to range over and yields
@@ -177,7 +188,7 @@ int goo_map_iter_next_sv(struct GooMapEntrySV** cursor, const char** key_out, in
 struct GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m);
 // Deletes the entry for key k, if present. Backs delete(m, k). Does not
 // free k: the map never owns key storage (see goo_map_set_sv above).
-void goo_map_delete_sv(GooMapSV* m, const char* k);
+void goo_map_delete_sv(GooMapSV* m, int64_t k);
 
 // Slice operations
 // Zero-initialized backing store for make([]T, n[, cap]). Returns a bare
