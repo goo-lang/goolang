@@ -1,0 +1,63 @@
+// map_iface_probe (reviewer finding I1, generic map values): map[string]Shape
+// with CONCRETE struct values. codegen_coerce_to_type leaves aggregates
+// unchanged (it only handles int/float widths), so writing a concrete Sq/
+// Rect struct straight into an interface-typed map slot stored raw struct
+// bits where the read-back path expects a {vtable, data} pair — read-back
+// treated those bytes as a vtable pointer and segfaulted on the first method
+// call through the map. Both map-write sites (the literal's AST_PAREN_EXPR
+// arm and `m[k] = v`'s TOKEN_ASSIGN/AST_INDEX_EXPR arm) now interface-box a
+// concrete value via codegen_interface_box — the same helper the plain
+// `var s Shape = Sq{...}` / `s = Sq{...}` assignment paths already used —
+// before the value reaches the slot.
+//
+// Covers: a literal entry with a concrete value, inserting a DIFFERENT
+// concrete implementer via `m[k] = v` (proves both write sites box),
+// method dispatch through both, storing an ALREADY-interface value
+// (reviewer probe p13 — must NOT re-box, or it would double-wrap and
+// dispatch through the wrong vtable), overwriting an existing entry with
+// yet another concrete value, and comma-ok on a missing key (the zero value
+// is a nil interface — must not panic on its own; calling a method on that
+// nil interface hits the existing nil-interface panic, deliberately NOT
+// exercised/goldened here, only the comma-ok boolean is checked).
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+}
+
+type Sq struct {
+	S int
+}
+
+func (q Sq) Area() int {
+	return q.S * q.S
+}
+
+type Rect struct {
+	W int
+	H int
+}
+
+func (r Rect) Area() int {
+	return r.W * r.H
+}
+
+func main() {
+	m := map[string]Shape{"sq": Sq{S: 3}}
+	fmt.Println(m["sq"].Area()) // 9
+
+	m["rect"] = Rect{W: 4, H: 5}
+	fmt.Println(m["rect"].Area()) // 20
+
+	var s Shape = Rect{W: 6, H: 7}
+	m["from_iface"] = s // already-boxed interface value — no re-box
+	fmt.Println(m["from_iface"].Area()) // 42
+
+	m["sq"] = Rect{W: 2, H: 6} // overwrite a concrete Sq entry with a Rect
+	fmt.Println(m["sq"].Area()) // 12
+
+	_, ok := m["missing"]
+	fmt.Println(ok) // false
+}

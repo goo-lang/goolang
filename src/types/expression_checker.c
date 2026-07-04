@@ -314,7 +314,21 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 // here).
                 vt = adapt_field_init_value(checker, v, want_val, vt);
                 if (!vt) return NULL;
-                if (!type_compatible(vt, want_val)) {
+                // An interface-typed map value accepts any concrete
+                // implementer (boxed at codegen via codegen_interface_box —
+                // see the AST_PAREN_EXPR map-literal codegen site). Plain
+                // type_compatible rejects a concrete implementer outright
+                // (it isn't the interface type itself), which used to fall
+                // through to the generic mismatch error below with a NULL-ish
+                // rendering of the interface type; route interface-typed
+                // slots through check_interface_assign instead, mirroring the
+                // slice-literal element check above. It emits its own "does
+                // not implement" diagnostic on failure.
+                if (want_val->kind == TYPE_INTERFACE) {
+                    if (!check_interface_assign(checker, vt, want_val, v->pos)) {
+                        return NULL;
+                    }
+                } else if (!type_compatible(vt, want_val)) {
                     type_error(checker, v->pos,
                                "Map literal value %zu type '%s' is not compatible "
                                "with declared value type '%s'",
