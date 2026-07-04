@@ -810,10 +810,20 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         free(mangled);
         Type* impl = NULL;
         if (!mv || !mv->type || mv->type->kind != TYPE_FUNCTION) {
-            // Not directly declared — promoted method via embedding?
+            // Not directly declared — promoted method via embedding? Also
+            // through a POINTER to a struct: Go's *Outer method set includes
+            // Outer's promoted methods (the #109 pair, part 2 — safe only now
+            // that codegen boxes pointer concretes correctly; before that fix
+            // this gate was the shield between users and the miscompile).
+            Type* embed_root = concrete;
+            if (embed_root->kind == TYPE_POINTER &&
+                embed_root->data.pointer.pointee_type &&
+                embed_root->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+                embed_root = embed_root->data.pointer.pointee_type;
+            }
             Type* impl_via_embed = NULL;
-            if (concrete->kind == TYPE_STRUCT) {
-                EmbedResult er = embedding_resolve(checker, concrete, im->name);
+            if (embed_root->kind == TYPE_STRUCT) {
+                EmbedResult er = embedding_resolve(checker, embed_root, im->name);
                 if (er.kind == EMBED_METHOD) impl_via_embed = er.type;
             }
             if (!impl_via_embed) {

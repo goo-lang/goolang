@@ -1,0 +1,38 @@
+// embed_ptr_satisfaction_probe: the #109 pair, part 2. *Outer satisfies an
+// interface via a PROMOTED method (Go: *T's method set includes promoted
+// methods). Depth 2 with a pointer-embedded inner hop; the shared *Base
+// means mutations are visible through the interface.
+package main
+
+import "fmt"
+
+type Namer interface {
+	Name() string
+}
+
+type Base struct {
+	Tag string
+}
+
+func (b Base) Name() string {
+	return b.Tag
+}
+
+type Wrap struct {
+	*Base
+}
+
+type Outer struct {
+	Wrap
+	X int
+}
+
+func main() {
+	b := Base{Tag: "hi"}
+	o := Outer{Wrap: Wrap{Base: &b}, X: 1}
+	var n Namer = &o
+	fmt.Println(n.Name())
+	b.Tag = "yo"
+	fmt.Println(n.Name())
+	fmt.Println(o.X)
+}

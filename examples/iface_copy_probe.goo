@@ -1,0 +1,32 @@
+// iface_copy_probe: value-boxed interfaces COPY (Go-exact) — pins that the
+// pointer-boxing change did not leak aliasing into the value path — and a
+// []Getter mixing value-boxed and pointer-boxed Box exercises the shared
+// pointee vtable (the *Box "collision" is intentional reuse).
+package main
+
+import "fmt"
+
+type Getter interface {
+	Get() int
+}
+
+type Box struct {
+	N int
+}
+
+func (b Box) Get() int {
+	return b.N
+}
+
+func main() {
+	b := Box{N: 5}
+	var iv Getter = b
+	var ip Getter = &b
+	b.N = 9
+	fmt.Println(iv.Get())
+	fmt.Println(ip.Get())
+	list := []Getter{b, &b}
+	b.N = 12
+	fmt.Println(list[0].Get())
+	fmt.Println(list[1].Get())
+}

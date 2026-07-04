@@ -1,0 +1,45 @@
+// ptr_iface_probe: pointer-concrete interface boxing (the #109 pair, part 1).
+// Go semantics: `var i Counter = &b` stores the POINTER in the interface data
+// word — mutations of b are visible through i, and a pointer-receiver method
+// called through i mutates b itself. The old code heap-boxed the pointer and
+// the thunk then treated the box as the pointee (LLVM verifier failure).
+package main
+
+import "fmt"
+
+type Counter interface {
+	Get() int
+	Bump()
+}
+
+type Box struct {
+	N int
+}
+
+func (b Box) Get() int {
+	return b.N
+}
+
+func (b *Box) Bump() {
+	b.N = b.N + 1
+}
+
+func read(c Counter) int {
+	return c.Get()
+}
+
+func main() {
+	b := Box{N: 40}
+	var i Counter = &b
+	fmt.Println(i.Get())
+	b.N = 41
+	fmt.Println(i.Get())
+	i.Bump()
+	fmt.Println(b.N)
+	fmt.Println(read(i))
+	b2 := Box{N: 7}
+	list := []Counter{&b, &b2}
+	list[1].Bump()
+	fmt.Println(b2.N)
+	fmt.Println(list[0].Get())
+}
