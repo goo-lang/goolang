@@ -1,0 +1,28 @@
+// map_struct_probe (Task 3, generic map values): map[string]P (struct value).
+// Structs box by ABI size (Task 1) — this golden proves the box/unbox path
+// gives real COPY semantics: mutating the source struct after insertion must
+// not affect the map's stored copy, and reading a struct value out of the
+// map (`m["a"]`) must itself be a copy — mutating the read-out copy must not
+// affect the map either. Also covers reading a missing key, which must
+// yield the zero-value struct (all fields zeroed).
+package main
+
+import "fmt"
+
+type P struct {
+	X int
+	Y int
+}
+
+func main() {
+	p := P{X: 1, Y: 2}
+	m := map[string]P{"a": p}
+	p.X = 100 // mutate source AFTER insert — map's copy must be unaffected
+	fmt.Println(m["a"].X)
+	fmt.Println(m["a"].Y)
+	q := m["a"] // read is a copy too
+	q.Y = 200
+	fmt.Println(m["a"].Y)
+	z := m["missing"] // zero-value struct
+	fmt.Println(z.X + z.Y)
+}

@@ -1,0 +1,26 @@
+// map_nested_probe (Task 3, generic map values): map[string]map[string]int
+// — nested maps ride inline as opaque pointers in the outer map's boxed
+// slot (Task 1). Covers writing through a double index expression, reading
+// and summing through the same, and the Go zero-value chain: a missing
+// OUTER key yields a nil inner map, and reading through a nil map is safe
+// and yields the zero value (0), never a crash.
+//
+// One deviation from the brief's naive Go source, scratch-probed first (see
+// task-3-report.md): the elided inner-literal form `{"a": 1}` as a map
+// value doesn't parse (elided composite literals aren't supported in map
+// literal values). Using the explicit form `map[string]int{"a": 1}`
+// instead — verified separately as valid Go with `go run`. Also, per the
+// pre-existing map-literal trailing-comma gap (found in Task 2), the
+// closing brace is kept on the same line as the last entry rather than on
+// its own line after a trailing comma.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]map[string]int{
+		"inner": map[string]int{"a": 1}}
+	m["inner"]["b"] = 2
+	fmt.Println(m["inner"]["a"] + m["inner"]["b"])
+	fmt.Println(m["ghost"]["x"]) // missing outer -> nil inner -> 0
+}
