@@ -1,0 +1,19 @@
+// map_char_key_probe (non-string map keys, Task 4): map[rune]int as a
+// frequency table built via range-over-string, keyed on the char/rune
+// key_kind (inline int32-family value packed into the i64 slot, `==`
+// equality). Covers a present key with count > 1, a present key with
+// count == 1, and a key never seen (zero-value miss). go-run-verified
+// byte-for-byte against an equivalent .go program.
+package main
+
+import "fmt"
+
+func main() {
+	freq := map[rune]int{}
+	for _, r := range "hello" {
+		freq[r] = freq[r] + 1
+	}
+	fmt.Println(freq['l'])
+	fmt.Println(freq['h'])
+	fmt.Println(freq['z'])
+}

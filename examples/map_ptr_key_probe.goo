@@ -1,0 +1,25 @@
+// map_ptr_key_probe (non-string map keys, Task 4): map[*Node]string keyed
+// on pointer identity (key_kind=PTR, the pointer's address packed into the
+// i64 slot, `==` equality) — two distinct heap objects with identical field
+// values must NOT collide as keys, and re-indexing through the same
+// pointer variable must hit the same slot for both read and overwrite.
+// go-run-verified byte-for-byte against an equivalent .go program.
+package main
+
+import "fmt"
+
+type Node struct{ V int }
+
+func main() {
+	a := &Node{V: 1}
+	b := &Node{V: 2}
+	m := map[*Node]string{}
+	m[a] = "a"
+	m[b] = "b"
+	fmt.Println(m[a])
+	fmt.Println(m[b])
+	fmt.Println(len(m))
+	m[a] = "aa"
+	fmt.Println(m[a])
+	fmt.Println(len(m))
+}

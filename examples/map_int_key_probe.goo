@@ -1,0 +1,23 @@
+// map_int_key_probe (non-string map keys, Task 4): map[int]string, full
+// surface — literal init, insert, overwrite, len, comma-ok miss, delete,
+// and a miss read after delete. Pins the int64 key-slot path (key_kind=INT,
+// `==` equality, no strcmp) end-to-end. go-run-verified byte-for-byte
+// against an equivalent .go program.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[int]string{1: "one", 2: "two"}
+	m[3] = "three"
+	m[2] = "TWO"
+	fmt.Println(len(m))
+	fmt.Println(m[2])
+	fmt.Println(m[3])
+	v, ok := m[9]
+	fmt.Println(ok)
+	fmt.Println(v)
+	delete(m, 1)
+	fmt.Println(len(m))
+	fmt.Println(m[0])
+}

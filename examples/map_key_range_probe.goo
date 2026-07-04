@@ -1,0 +1,21 @@
+// map_key_range_probe (non-string map keys, Task 4): range over a
+// map[int]int yielding a non-string key — exercises codegen_map_slot_to_key
+// (the unpack direction) rather than the value-only range paths the older
+// map goldens cover. Keys/values are summed rather than printed positionally
+// so the (documented, pre-existing) reverse-insertion iteration order
+// doesn't make the golden order-sensitive.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[int]int{10: 1, 20: 2, 30: 3}
+	sumK := 0
+	sumV := 0
+	for k, v := range m {
+		sumK = sumK + k
+		sumV = sumV + v
+	}
+	fmt.Println(sumK)
+	fmt.Println(sumV)
+}
