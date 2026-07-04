@@ -1,0 +1,21 @@
+// map_boxed_range_probe (Task 2, generic map values): range over a boxed-
+// value map (comma-ok's iteration cousin) plus accumulation of a boxed
+// float64 value across a range loop. Single-entry maps so iteration order
+// can't introduce flakiness.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]string{"only": "value"}
+	for k, v := range m {
+		fmt.Println(k)
+		fmt.Println(v)
+	}
+	n := map[string]float64{"x": 1.5}
+	total := 0.0
+	for _, v := range n {
+		total = total + v
+	}
+	fmt.Println(total)
+}

@@ -1,0 +1,43 @@
+// map_dispatch_probe (Task 2, generic map values): map[string]func(int) int
+// as a closure dispatch table — the feature's headline case. Covers a func
+// literal value, a capturing closure (reads an outer local), a named func
+// value assigned via m[k]=v, overwriting an existing entry, and comma-ok on
+// a missing key. Task 1's boxing stores/loads the 16-byte {fn, env} pair
+// whole, so all of insert/read/call/overwrite are expected to be type-
+// agnostic — this golden is the proof.
+//
+// Two deliberate deviations from the naive Go source, both scratch-probed
+// first (see task-2-report.md):
+//   - No trailing comma in the map literal. `map[string]func(int) int{...,}`
+//     fails to parse — the map_lit grammar (parser.y) only has productions
+//     for `map_type LBRACE map_entry_list RBRACE` and the empty-map case,
+//     unlike slice/array/struct literals which also accept a COMMA before
+//     RBRACE. Pre-existing, orthogonal to func-typed values (repros with
+//     map[string]string too); not touched here per the no-compiler-changes
+//     constraint.
+//   - No `f == nil` on a func value. `var f func(int) int; f == nil` is a
+//     type error ("Cannot compare incompatible types func(...) ... and
+//     nil") — funcval nil-compare hasn't shipped. Substituted per the task
+//     brief's documented contingency: comma-ok only, no nil-entry check.
+package main
+
+import "fmt"
+
+func triple(x int) int {
+	return x * 3
+}
+
+func main() {
+	base := 10
+	ops := map[string]func(int) int{
+		"double": func(x int) int { return x * 2 },
+		"offset": func(x int) int { return x + base }} // capturing closure in a map
+	ops["triple"] = triple // named func value
+	fmt.Println(ops["double"](21))
+	fmt.Println(ops["offset"](5))
+	fmt.Println(ops["triple"](14))
+	ops["double"] = func(x int) int { return x * 20 } // overwrite an entry
+	fmt.Println(ops["double"](21))
+	_, ok := ops["nope"]
+	fmt.Println(ok)
+}
