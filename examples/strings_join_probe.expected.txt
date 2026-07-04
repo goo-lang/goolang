@@ -1,0 +1,7 @@
+goo runs go source
+goo
+goo-runs
+goo-runs-go
+goo+runs+go+source
+a,b,c
+x	y
