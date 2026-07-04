@@ -1647,6 +1647,88 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             }
         }
 
+        // comma-ok type assertion: `v, ok := x.(T)` — sibling of the
+        // comma-ok map read above (Task 2 of type assertions). Compute the
+        // vtable-pointer match via codegen_interface_assert_match (shared
+        // with the single-return arm in expression_codegen.c and Task 3's
+        // type switch), then branch/phi between the unboxed concrete
+        // (match) and T's zero value (miss — no panic, unlike single-
+        // return), mirroring codegen_map_slot_to_value's zero-guard shape
+        // (codegen.c ~574-601). Pack {v, ok} into the same {V, i1} aggregate
+        // the generic ExtractValue loop below binds name0→v, name1→ok.
+        if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+            var_decl->values->type == AST_TYPE_ASSERT) {
+            TypeAssertNode* ta = (TypeAssertNode*)var_decl->values;
+            Type* iface_type = ta->expr->node_type;
+            Type* target = var_decl->values->node_type;
+            if (iface_type && target) {
+                ValueInfo* iv = codegen_generate_expression(codegen, checker, ta->expr);
+                if (!iv) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to evaluate comma-ok type assertion operand");
+                    return 0;
+                }
+                LLVMValueRef iface_val = iv->llvm_value;
+                if (iv->is_lvalue) {
+                    LLVMTypeRef ity = codegen_type_to_llvm(codegen, iface_type);
+                    if (ity) {
+                        iface_val = LLVMBuildLoad2(codegen->builder, ity, iface_val, "ta.operand");
+                    }
+                }
+                value_info_free(iv);
+
+                LLVMValueRef ta_data = NULL;
+                LLVMValueRef ta_match = codegen_interface_assert_match(codegen, checker, iface_val,
+                                                                       iface_type, target, &ta_data);
+                if (!ta_match) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to build comma-ok type assertion compare");
+                    return 0;
+                }
+
+                LLVMTypeRef target_llvm = codegen_type_to_llvm(codegen, target);
+                if (!target_llvm) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to lower comma-ok type assertion target type");
+                    return 0;
+                }
+
+                // Branch/phi: on miss go straight to ta_done (V = zero, no
+                // unbox attempted); on match, unbox in ta_load, then join.
+                LLVMBasicBlockRef ta_entry_bb = LLVMGetInsertBlock(codegen->builder);
+                LLVMValueRef ta_fn = LLVMGetBasicBlockParent(ta_entry_bb);
+                LLVMBasicBlockRef ta_load_bb = LLVMAppendBasicBlockInContext(codegen->context, ta_fn, "ta.load");
+                LLVMBasicBlockRef ta_done_bb = LLVMAppendBasicBlockInContext(codegen->context, ta_fn, "ta.done");
+                LLVMBuildCondBr(codegen->builder, ta_match, ta_load_bb, ta_done_bb);
+
+                codegen_set_insert_point(codegen, ta_load_bb);
+                LLVMValueRef ta_loaded = codegen_interface_assert_unbox(codegen, target, ta_data);
+                if (!ta_loaded) {
+                    codegen_error(codegen, decl->pos,
+                                  "Failed to unbox comma-ok type assertion value");
+                    return 0;
+                }
+                LLVMBuildBr(codegen->builder, ta_done_bb);
+                LLVMBasicBlockRef ta_load_exit_bb = LLVMGetInsertBlock(codegen->builder);
+
+                codegen_set_insert_point(codegen, ta_done_bb);
+                LLVMValueRef ta_v = LLVMBuildPhi(codegen->builder, target_llvm, "ta.v");
+                LLVMValueRef ta_zero = LLVMConstNull(target_llvm);
+                LLVMValueRef ta_inc_vals[2] = { ta_zero, ta_loaded };
+                LLVMBasicBlockRef ta_inc_bbs[2] = { ta_entry_bb, ta_load_exit_bb };
+                LLVMAddIncoming(ta_v, ta_inc_vals, ta_inc_bbs, 2);
+
+                LLVMTypeRef ta_i1t = LLVMInt1TypeInContext(codegen->context);
+                LLVMTypeRef ta_agg_fields[2] = { target_llvm, ta_i1t };
+                LLVMTypeRef ta_agg_type = LLVMStructTypeInContext(codegen->context, ta_agg_fields, 2, 0);
+                LLVMValueRef ta_agg = LLVMGetUndef(ta_agg_type);
+                ta_agg = LLVMBuildInsertValue(codegen->builder, ta_agg, ta_v,     0, "ta_commaok_v");
+                ta_agg = LLVMBuildInsertValue(codegen->builder, ta_agg, ta_match, 1, "ta_commaok_agg");
+
+                rhs = value_info_new(NULL, ta_agg, var_type);
+            }
+        }
+
         // Non-map-ok path: generic struct-return destructure (e.g. `a, b := f()`).
         if (!rhs) {
             rhs = codegen_generate_expression(codegen, checker, var_decl->values);

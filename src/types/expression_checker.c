@@ -505,6 +505,50 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = target;
             return target;
         }
+        // Task 2 of type assertions: `x.(T)`. The comma-ok vs single-return
+        // form is NOT decided here (mirrors the comma-ok map read) — this
+        // always yields T, the single-value result type; the assignment
+        // site (type_check_var_decl) synthesizes {T, bool} for a 2-name
+        // short decl, exactly like the map-read comma-ok path.
+        case AST_TYPE_ASSERT: {
+            TypeAssertNode* ta = (TypeAssertNode*)expr;
+            Type* operand_type = type_check_expression(checker, ta->expr);
+            if (!operand_type) return NULL;
+            if (operand_type->kind != TYPE_INTERFACE) {
+                type_error(checker, expr->pos,
+                    "invalid type assertion: operand is not an interface type");
+                return NULL;
+            }
+            // ta->asserted_type is a TYPE node (like conv->slice_type above),
+            // resolved via type_from_ast — not a value expression, so
+            // type_check_expression has no case for it.
+            Type* target_type = type_from_ast(checker, ta->asserted_type);
+            if (!target_type) {
+                type_error(checker, expr->pos,
+                    "invalid type assertion: cannot resolve target type");
+                return NULL;
+            }
+            if (target_type->kind == TYPE_INTERFACE) {
+                type_error(checker, expr->pos,
+                    "type assertion to an interface type is not supported in v1 "
+                    "(concrete target types only)");
+                return NULL;
+            }
+            const char* method = NULL;
+            const char* reason = NULL;
+            if (!type_interface_satisfied(checker, operand_type, target_type, &method, &reason)) {
+                const char* iname = operand_type->data.interface.name
+                                         ? operand_type->data.interface.name : "interface";
+                const char* cname = type_receiver_name(target_type);
+                type_error(checker, expr->pos,
+                    "impossible type assertion: %s does not implement %s (%s method %s)",
+                    cname ? cname : type_to_string(target_type), iname,
+                    reason ? reason : "missing", method ? method : "?");
+                return NULL;
+            }
+            expr->node_type = target_type;
+            return target_type;
+        }
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;

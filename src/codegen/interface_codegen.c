@@ -309,4 +309,63 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
     return value_info_new(NULL, result, ret_type);
 }
 
+// Task 2 (type assertions): the vtable-pointer identity compare shared by
+// `x.(T)` (both comma-ok and single-return) and Task 3's type switch. Spec
+// mechanism: the dynamic type held by an interface value is T iff
+// `iface.vtable == &goo.vtable.T.I` — a pointer compare, no RTTI. `iface_val`
+// must already be the LOADED {vtable, data} struct value (mirror the
+// is_lvalue-load idiom at codegen_interface_dispatch's call site,
+// call_codegen.c ~1094 — a selector/index operand is an address and must be
+// loaded before ExtractValue). `target`'s vtable is resolved via
+// codegen_interface_vtable, which reuses the SAME global codegen_interface_box
+// built at the boxing site (matched by name, "goo.vtable.<T>.<I>") — it must
+// already exist by the time any assertion against a live interface value
+// runs, since boxing is what put the value there. Writes the raw (still-
+// boxed) data pointer to *data_out unless NULL; pass it to
+// codegen_interface_assert_unbox to recover the concrete value, but only
+// inside a branch already gated on the returned match bit — the data
+// pointer's pointee size/shape depends on the ACTUAL runtime type, so
+// unboxing it as `target` before confirming the match would be unsound.
+// Returns the i1 match value, or NULL if the vtable global couldn't be
+// resolved (should not happen for a type-checked assertion — the checker's
+// type_interface_satisfied gate already ruled out a non-implementing target).
+LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
+                                            LLVMValueRef iface_val, Type* iface_type,
+                                            Type* target, LLVMValueRef* data_out) {
+    if (!codegen || !iface_type || iface_type->kind != TYPE_INTERFACE || !target) return NULL;
+
+    LLVMValueRef vt_want = codegen_interface_vtable(codegen, checker, iface_type, target);
+    if (!vt_want) return NULL;
+
+    LLVMValueRef vt_have = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "ta.vt");
+    if (data_out) {
+        *data_out = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "ta.data");
+    }
+    return LLVMBuildICmp(codegen->builder, LLVMIntEQ, vt_have, vt_want, "ta.match");
+}
+
+// Recover the concrete value of Go type `target` from an interface's `data`
+// pointer (as extracted by codegen_interface_assert_match). Must mirror
+// codegen_interface_box's two boxing shapes exactly:
+//   - a pointer concrete whose pointee has a nameable receiver (e.g. *Box)
+//     is boxed WITHOUT a heap copy — `data` IS the pointer value itself
+//     (see codegen_interface_box's C-representation branch) — so recovering
+//     it is a no-op (identity), not a load. In this LLVM version pointers
+//     are opaque (`ptr`), so no bitcast is needed either.
+//   - every other concrete (a struct value, or a pointer without a
+//     nameable pointee) is boxed as a heap COPY — `data` is a pointer TO a
+//     `target`, and must be LOADED through.
+// Returns NULL if `target`'s LLVM type cannot be resolved.
+LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
+                                            LLVMValueRef data) {
+    if (!codegen || !target || !data) return NULL;
+    if (target->kind == TYPE_POINTER && target->data.pointer.pointee_type &&
+        type_receiver_name(target->data.pointer.pointee_type)) {
+        return data;
+    }
+    LLVMTypeRef target_llvm = codegen_type_to_llvm(codegen, target);
+    if (!target_llvm) return NULL;
+    return LLVMBuildLoad2(codegen->builder, target_llvm, data, "ta.val");
+}
+
 #endif // LLVM_AVAILABLE

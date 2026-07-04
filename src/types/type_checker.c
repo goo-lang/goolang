@@ -1078,6 +1078,40 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         }
     }
 
+    // Task 2 of type assertions: comma-ok `v, ok := x.(T)` — sibling of the
+    // comma-ok map read above, same {V, bool} synthesis. The single-value
+    // result type was already computed and stamped by type_check_expression's
+    // AST_TYPE_ASSERT case (called above via the initial
+    // `type_check_expression(checker, var_decl->values)`); read it back
+    // instead of re-checking, exactly as the map arm reads back base_type.
+    if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+        var_decl->values && var_decl->values->type == AST_TYPE_ASSERT) {
+        Type* v_type = var_decl->values->node_type;
+        if (v_type) {
+            Type* commaok_struct = type_new(TYPE_STRUCT);
+            if (commaok_struct) {
+                commaok_struct->data.struct_type.fields = calloc(2, sizeof(StructField));
+                if (commaok_struct->data.struct_type.fields) {
+                    commaok_struct->data.struct_type.field_count = 2;
+                    commaok_struct->data.struct_type.name = NULL;
+                    commaok_struct->data.struct_type.fields[0].name = strdup("v");
+                    commaok_struct->data.struct_type.fields[0].type = v_type;
+                    commaok_struct->data.struct_type.fields[0].offset = 0;
+                    commaok_struct->data.struct_type.fields[0].ownership = OWNERSHIP_NONE;
+                    commaok_struct->data.struct_type.fields[0].mutability = MUTABILITY_MUTABLE;
+                    commaok_struct->data.struct_type.fields[1].name = strdup("ok");
+                    commaok_struct->data.struct_type.fields[1].type = type_checker_get_builtin(checker, TYPE_BOOL);
+                    commaok_struct->data.struct_type.fields[1].offset = 0;
+                    commaok_struct->data.struct_type.fields[1].ownership = OWNERSHIP_NONE;
+                    commaok_struct->data.struct_type.fields[1].mutability = MUTABILITY_MUTABLE;
+                    final_type = commaok_struct;
+                } else {
+                    type_free(commaok_struct);
+                }
+            }
+        }
+    }
+
     // Store the type on the AST node for code generation
     var_decl->base.node_type = final_type;
 

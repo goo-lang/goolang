@@ -350,6 +350,14 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
                                       LLVMValueRef iface_val, Type* iface_type,
                                       const char* method_name,
                                       LLVMValueRef* args, size_t argc);
+// Task 2 (type assertions): shared vtable-pointer-compare + unbox lowering
+// for `x.(T)` (comma-ok and single-return) and Task 3's type switch. See
+// interface_codegen.c's doc comments on each for the exact contract.
+LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
+                                            LLVMValueRef iface_val, Type* iface_type,
+                                            Type* target, LLVMValueRef* data_out);
+LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
+                                            LLVMValueRef data);
 
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
