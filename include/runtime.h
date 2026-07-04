@@ -191,6 +191,12 @@ void goo_slice_free(goo_slice_t slice);
 void* goo_slice_get(goo_slice_t slice, size_t index, size_t element_size);
 int goo_slice_append(goo_slice_t* slice, void* element, size_t element_size);
 
+// []byte(s) / string(b) conversion cores. Copy semantics (Go-exact): the
+// result never aliases the source. Bare-pointer ABI (goo_slice_t never
+// crosses by value); lengths explicit.
+void* goo_bytes_from_string(const char* p, int64_t len);
+char* goo_cstr_from_bytes(void* data, int64_t len);
+
 // Runtime type information (for future use)
 typedef enum {
     GOO_TYPE_VOID,

@@ -49,6 +49,58 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return codegen_generate_match(codegen, checker, expr);
         case AST_FUNC_LIT:
             return codegen_generate_func_lit(codegen, checker, expr);
+        case AST_SLICE_CONVERSION: {
+            // []byte(s) (Task 2, stdlib unblocker). The checker has already
+            // validated conv->operand as TYPE_STRING and stamped the []byte
+            // Type on expr->node_type. Go copies on conversion:
+            // goo_bytes_from_string allocates a fresh buffer and memcpy's,
+            // so mutating the result slice never aliases the source string
+            // (see the bytesconv_probe golden's mutation-independence
+            // lines).
+            SliceConvNode* conv = (SliceConvNode*)expr;
+            ValueInfo* src = codegen_generate_expression(codegen, checker, conv->operand);
+            if (!src) return NULL;
+            LLVMValueRef sval = src->llvm_value;
+            if (src->is_lvalue && src->goo_type) {
+                LLVMTypeRef st = codegen_type_to_llvm(codegen, src->goo_type);
+                if (st) sval = LLVMBuildLoad2(codegen->builder, st, sval, "conv_load");
+            }
+            // String rep is {i8* ptr, i64 len} — field 0/1.
+            LLVMValueRef str_ptr = LLVMBuildExtractValue(codegen->builder, sval, 0, "bytesconv_str_ptr");
+            LLVMValueRef str_len = LLVMBuildExtractValue(codegen->builder, sval, 1, "bytesconv_str_len");
+            value_info_free(src);
+
+            // goo_bytes_from_string is not registered by runtime_integration.c
+            // (out of this task's file allowlist) — declare it lazily here on
+            // first use, the same lazy-fallback pattern call_codegen.c's
+            // string(x) arm uses for goo_string_from_rune.
+            LLVMValueRef from_str_fn = LLVMGetNamedFunction(codegen->module, "goo_bytes_from_string");
+            if (!from_str_fn) {
+                LLVMTypeRef i8_ptr = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                LLVMTypeRef i64_l = LLVMInt64TypeInContext(codegen->context);
+                LLVMTypeRef params[] = { i8_ptr, i64_l };
+                LLVMTypeRef fn_type = LLVMFunctionType(i8_ptr, params, 2, 0);
+                from_str_fn = LLVMAddFunction(codegen->module, "goo_bytes_from_string", fn_type);
+            }
+            LLVMValueRef args[] = { str_ptr, str_len };
+            LLVMValueRef data_ptr = LLVMBuildCall2(codegen->builder,
+                LLVMGlobalGetValueType(from_str_fn), from_str_fn, args, 2, "bytesconv_data");
+
+            Type* slice_type = expr->node_type;
+            LLVMTypeRef slice_llvm = codegen_type_to_llvm(codegen, slice_type);
+            if (!slice_llvm) {
+                codegen_error(codegen, expr->pos, "[]byte(s): cannot lower slice type");
+                return NULL;
+            }
+            // Build the {ptr, len, cap=len} slice aggregate. data_ptr's LLVM
+            // type is already i8* (goo_bytes_from_string's declared return),
+            // matching field 0's element-pointer type for []byte exactly.
+            LLVMValueRef result = LLVMGetUndef(slice_llvm);
+            result = LLVMBuildInsertValue(codegen->builder, result, data_ptr, 0, "bytesconv_sl_data");
+            result = LLVMBuildInsertValue(codegen->builder, result, str_len, 1, "bytesconv_sl_len");
+            result = LLVMBuildInsertValue(codegen->builder, result, str_len, 2, "bytesconv_sl_cap");
+            return value_info_new(NULL, result, slice_type);
+        }
         case AST_POSTFIX_EXPR: {
             // `j++` / `j--` / `c.n++` / `a[i]++`: load operand, compute
             // load ± 1, store back, return the LOADED (pre-modification)

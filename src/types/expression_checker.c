@@ -476,6 +476,35 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             return type_check_match_expr(checker, expr);
         case AST_FUNC_LIT:
             return type_check_func_lit(checker, expr);
+        // Task 2 (stdlib unblocker): `[]byte(s)` conversion. v1 scope is
+        // exactly []byte(string) — any other []T(expr) shape (e.g.
+        // []int("x")) is rejected here with a v1-scoped diagnostic rather
+        // than reaching codegen with no lowering.
+        case AST_SLICE_CONVERSION: {
+            SliceConvNode* conv = (SliceConvNode*)expr;
+            // conv->slice_type is an AST_SLICE_TYPE node (a TYPE, not a
+            // value expression) — resolved via type_from_ast, the
+            // established convention for type-node resolution elsewhere in
+            // this file (e.g. make(T)/new(T), slice-literal elem_type).
+            // type_check_expression's switch has no AST_SLICE_TYPE case and
+            // would always fail here.
+            Type* target = type_from_ast(checker, conv->slice_type);
+            Type* src = type_check_expression(checker, conv->operand);
+            if (!target || !src) return NULL;
+            if (target->kind != TYPE_SLICE ||
+                target->data.slice.element_type->kind != TYPE_UINT8) {
+                type_error(checker, expr->pos,
+                    "[]T(x) conversion is only supported for []byte(string) in v1");
+                return NULL;
+            }
+            if (src->kind != TYPE_STRING) {
+                type_error(checker, expr->pos,
+                    "[]byte(x) requires a string operand, got %s", type_to_string(src));
+                return NULL;
+            }
+            expr->node_type = target;
+            return target;
+        }
         default:
             type_error(checker, expr->pos, "Unknown expression type");
             return NULL;
@@ -2141,10 +2170,9 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // (builtin_conversion_target has no "string" case) and rejects with
         // "cannot convert to string ... only numeric conversions". This arm
         // intercepts "string" first so that generic rejection never fires.
-        // Scope: rune/byte->string ONLY — []byte(s) and string([]byte) stay
-        // unsupported (a []byte source fails the type_is_integer/TYPE_CHAR
-        // check below and falls through to the ordinary "cannot convert"
-        // diagnostic, same as before this task).
+        // Scope: rune/byte->string, AND (Task 2, stdlib unblocker)
+        // string([]byte) — a []byte source is checked FIRST, below, ahead
+        // of the integer/TYPE_CHAR check, since a slice is neither.
         if (strcmp(func_ident->name, "string") == 0 &&
             !name_is_user_shadowed(checker, func_ident->name)) {
             if (!call->args || call->args->next) {
@@ -2154,16 +2182,25 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* src = type_check_expression(checker, call->args);
             if (!src) return NULL;
+            // Task 2: string(b) where b is []byte — Go copies on
+            // conversion (see goo_cstr_from_bytes's doc comment in
+            // runtime.h); the result never aliases the source slice.
+            if (src->kind == TYPE_SLICE &&
+                src->data.slice.element_type->kind == TYPE_UINT8) {
+                Type* str_type = type_checker_get_builtin(checker, TYPE_STRING);
+                expr->node_type = str_type;
+                return str_type;
+            }
             // Only integer-kind sources convert (Go: rune/byte/int.../uint...
             // and the char/rune literal kind TYPE_CHAR). Floats, bool,
-            // string, and aggregate sources are NOT integer-to-string
-            // conversions in Go and are rejected here rather than reaching
-            // codegen with no lowering.
+            // string, and non-byte-slice aggregate sources are NOT
+            // integer-to-string conversions in Go and are rejected here
+            // rather than reaching codegen with no lowering.
             if (!type_is_integer(src) && src->kind != TYPE_CHAR) {
                 type_error(checker, expr->pos,
                            "cannot convert %s to string (only integer-kind "
-                           "conversions — rune/byte/int-family — are "
-                           "supported)",
+                           "conversions — rune/byte/int-family — or a "
+                           "[]byte operand are supported)",
                            type_to_string(src));
                 return NULL;
             }

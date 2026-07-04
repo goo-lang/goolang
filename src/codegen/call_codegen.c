@@ -284,6 +284,48 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMTypeRef st = codegen_type_to_llvm(codegen, src->goo_type);
                 if (st) sval = LLVMBuildLoad2(codegen->builder, st, sval, "conv_load");
             }
+
+            // string(b) where b is []byte (Task 2, stdlib unblocker): the
+            // checker has already confirmed b's element kind is the byte
+            // kind (see the checker's "string" arm, expression_checker.c),
+            // ahead of the rune/int path below — a slice source never
+            // reaches that path. Go copies on conversion: goo_cstr_from_bytes
+            // allocates+memcpy's a fresh NUL-terminated buffer rather than
+            // aliasing the slice's backing store.
+            if (src->goo_type && src->goo_type->kind == TYPE_SLICE) {
+                LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, sval, 0, "strconv_sl_data");
+                LLVMValueRef data_len = LLVMBuildExtractValue(codegen->builder, sval, 1, "strconv_sl_len");
+                value_info_free(src);
+
+                // goo_cstr_from_bytes is not registered by
+                // runtime_integration.c (out of this task's file allowlist)
+                // — declare it lazily here on first use, the same
+                // lazy-fallback pattern this arm already uses below for
+                // goo_string_from_rune.
+                LLVMValueRef to_cstr_fn = LLVMGetNamedFunction(codegen->module, "goo_cstr_from_bytes");
+                if (!to_cstr_fn) {
+                    LLVMTypeRef i8_ptr = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+                    LLVMTypeRef i64_l = LLVMInt64TypeInContext(codegen->context);
+                    // data is void* at the C ABI level; i8* is bit-compatible.
+                    LLVMTypeRef params[] = { i8_ptr, i64_l };
+                    LLVMTypeRef fn_type = LLVMFunctionType(i8_ptr, params, 2, 0);
+                    to_cstr_fn = LLVMAddFunction(codegen->module, "goo_cstr_from_bytes", fn_type);
+                }
+                LLVMValueRef cstr_args[] = { data_ptr, data_len };
+                LLVMValueRef cstr = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(to_cstr_fn),
+                                                   to_cstr_fn, cstr_args, 2, "strconv_cstr");
+
+                LLVMTypeRef string_l = LLVMStructTypeInContext(codegen->context,
+                    (LLVMTypeRef[]){
+                        LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                        LLVMInt64TypeInContext(codegen->context)
+                    }, 2, 0);
+                LLVMValueRef sresult = LLVMGetUndef(string_l);
+                sresult = LLVMBuildInsertValue(codegen->builder, sresult, cstr, 0, "strconv_str_data");
+                sresult = LLVMBuildInsertValue(codegen->builder, sresult, data_len, 1, "strconv_str_len");
+                return value_info_new(NULL, sresult, type_checker_get_builtin(checker, TYPE_STRING));
+            }
+
             Type* i32_type = type_checker_get_builtin(checker, TYPE_INT32);
             LLVMTypeRef i32_l = LLVMInt32TypeInContext(codegen->context);
             LLVMValueRef rune_val = codegen_numeric_convert(codegen, sval, src->goo_type, i32_type, i32_l);

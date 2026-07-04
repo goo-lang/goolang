@@ -1587,6 +1587,22 @@ primary_expr:
     | slice_lit { $$ = $1; }
     | map_lit { $$ = $1; }
     | struct_lit { $$ = $1; }
+    /* Task 2 (stdlib unblocker): `[]byte(s)` / `[]T(expr)` conversion form.
+       slice_type is NOT itself a primary_expr (it's a TYPE), so this can't
+       reuse call_expr's `primary_expr LPAREN ... RPAREN` shape — it needs
+       its own alternative directly in primary_expr. v1 only admits
+       []byte(string); any other []T(expr) is rejected by the type checker
+       (expression_checker.c's AST_SLICE_CONVERSION case), not the grammar. */
+    | slice_type LPAREN expression RPAREN {
+        SliceConvNode* conv = (SliceConvNode*)malloc(sizeof(SliceConvNode));
+        conv->base.type = AST_SLICE_CONVERSION;
+        conv->base.pos = get_current_position();
+        conv->base.node_type = NULL;
+        conv->base.next = NULL;
+        conv->slice_type = $1;
+        conv->operand = $3;
+        $$ = (ASTNode*)conv;
+    }
     /* All GPU constructs deliberately disabled in primary_expr.
        kernel_launch (identifier LT LT LT … GT GT GT (…)) was removed
        because bison can't disambiguate `i < 10` from the start of a

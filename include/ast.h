@@ -150,6 +150,12 @@ typedef enum {
     // no header deps).
     AST_FUNC_LIT,
 
+    // Task 2 (stdlib unblockers): `[]T(expr)` conversion form — in v1 only
+    // []byte(string) is admitted (enforced by the type checker, not the
+    // grammar). Tail-appended per the M10 convention above (Makefile has no
+    // header deps).
+    AST_SLICE_CONVERSION,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -1133,6 +1139,14 @@ typedef struct {
     ASTNode base;
     struct ASTNode* clauses;        // List of contract clauses
 } ContractBlockNode;
+
+// []T(expr) conversion form (v1: only []byte(string) admitted — enforced by
+// the type checker, not the grammar). slice_type holds the parsed AST_SLICE_TYPE.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* slice_type;
+    struct ASTNode* operand;
+} SliceConvNode;
 
 // =============================================================================
 // Function declarations for AST manipulation

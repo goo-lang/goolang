@@ -726,6 +726,25 @@ void* goo_slice_alloc(int64_t count, int64_t elem_size) {
     return data;
 }
 
+// []byte(s) / string(b) conversion cores (Task 2, stdlib unblocker). Go
+// copies on both conversions — codegen builds the destination header
+// ({ptr,len,cap} slice or {ptr,len} string) around whatever buffer these
+// return, so the result never aliases the source's backing store.
+void* goo_bytes_from_string(const char* p, int64_t len) {
+    if (len < 0) len = 0;
+    void* data = goo_alloc(len > 0 ? (size_t)len : 1);
+    if (len > 0) memcpy(data, p, (size_t)len);
+    return data;
+}
+
+char* goo_cstr_from_bytes(void* data, int64_t len) {
+    if (len < 0) len = 0;
+    char* s = (char*)goo_alloc((size_t)len + 1);
+    if (len > 0) memcpy(s, data, (size_t)len);
+    s[len] = '\0';   // known rep limitation: embedded NULs truncate downstream C-string ops
+    return s;
+}
+
 goo_slice_t goo_slice_new(size_t element_size, size_t capacity) {
     if (capacity == 0 || element_size == 0) {
         return (goo_slice_t){NULL, 0, 0};
