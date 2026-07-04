@@ -309,9 +309,10 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 if (!vt) return NULL;
                 // Task 3b: same element adaptation + range check as the
                 // slice/array sinks — `map[string]int8{"a": 300}` rejects
-                // instead of silently truncating (keys are not adapted; the
-                // runtime map is string-keyed, so a numeric key never gets
-                // here).
+                // instead of silently truncating. Keys are checked above via
+                // type_compatible only (no adapt_field_init_value narrowing
+                // pass) — a wrong-width key literal is a compatibility
+                // mismatch, not a truncation to catch.
                 vt = adapt_field_init_value(checker, v, want_val, vt);
                 if (!vt) return NULL;
                 // An interface-typed map value accepts any concrete
@@ -2370,10 +2371,10 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             Type* made = type_from_ast(checker, call->args);
             if (!made) return NULL; // type_from_ast reports the error
             if (made->kind == TYPE_MAP) {
-                // type_from_ast() already rejects a non-string map key type
-                // (the runtime map is string-keyed) with its own clean
-                // error before returning here, so `made` never carries a
-                // non-string key at this point.
+                // type_from_ast() already rejects a non-comparable or
+                // not-yet-supported map key type with its own clean error
+                // before returning here (the AST_MAP_TYPE gate), so `made`
+                // never carries a rejected key type at this point.
                 size_t hint_count = 0;
                 for (ASTNode* a = call->args->next; a; a = a->next) hint_count++;
                 if (hint_count > 1) {
@@ -2590,9 +2591,9 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         }
         // delete(m, k) -> void. Removes key k from map m (no-op if absent).
         // Exactly two args: the first must be a map, the second assignable
-        // to its key type (string only, today — the runtime map is
-        // string-keyed). Codegen lowers to goo_map_delete_sv, passing the
-        // key's data pointer like the map-write path does.
+        // to its key type (any admitted key kind — see the AST_MAP_TYPE
+        // comparability gate). Codegen lowers to goo_map_delete_sv, passing
+        // the key packed into its i64 slot like every other map-op site.
         if (strcmp(func_ident->name, "delete") == 0) {
             if (!call->args || !call->args->next || call->args->next->next) {
                 type_error(checker, expr->pos, "delete expects exactly two arguments (map, key)");
@@ -3016,16 +3017,12 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     
     if (!expr_type || !index_type) return NULL;
     
-    // Check index type — integer for array/slice; key type for map.
-    if (expr_type->kind == TYPE_MAP) {
-        // Trust the key matches the declared map key type. Strict
-        // validation can come later (string is the only key type
-        // the M8 runtime supports anyway).
-        Type* vt = expr_type->data.map.value_type;
-        expr->node_type = vt;
-        return vt;
-    }
-    if (!type_is_integer(index_type)) {
+    // Check index type — integer for array/slice/string; a map's key can be
+    // any of its admitted key kinds (string, integer, bool, char, pointer —
+    // see the AST_MAP_TYPE comparability gate), so map indexing skips this
+    // integer requirement and is checked against its own key type in the
+    // switch below instead.
+    if (expr_type->kind != TYPE_MAP && !type_is_integer(index_type)) {
         type_error(checker, index->index->pos,
                   "Array index must be integer, got %s", type_to_string(index_type));
         return NULL;

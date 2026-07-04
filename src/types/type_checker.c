@@ -1711,8 +1711,9 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
         } else if (range_type->kind == TYPE_MAP) {
             // Range over map: key/value bind to the map's OWN key/value
             // types, read off the Type itself rather than hardcoded — the
-            // runtime map happens to be string-keyed today, but the checker
-            // doesn't bake that in.
+            // runtime now admits string/int/bool/char/pointer keys (see the
+            // AST_MAP_TYPE comparability gate), and the checker never baked
+            // in a single key type here.
             key_type = range_type->data.map.key_type;
             elem_type = range_type->data.map.value_type;
             if (!key_type || !elem_type) {
@@ -2684,10 +2685,32 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             Type* key_type = type_from_ast(checker, map->key_type);
             Type* value_type = type_from_ast(checker, map->value_type);
             if (!key_type || !value_type) return NULL;
-            // The runtime keys on strings only.
-            if (key_type->kind != TYPE_STRING) {
+            // Comparability gate, not a string-only gate: the runtime keys
+            // on an 8-byte int64 slot (string keys use strcmp, everything
+            // else uses ==; see key_kind at codegen), so any type that fits
+            // that slot and has well-defined equality is admitted. This
+            // mirrors codegen_map_value_is_inline's kind set (int-family /
+            // bool / char / pointer), plus TYPE_STRING which the runtime
+            // has always supported.
+            int key_ok = key_type->kind == TYPE_STRING || type_is_integer(key_type) ||
+                         key_type->kind == TYPE_BOOL || key_type->kind == TYPE_CHAR ||
+                         key_type->kind == TYPE_POINTER;
+            if (!key_ok) {
+                // Two-reason diagnostic: some rejected kinds are comparable
+                // in Go and just not wired into the v1 slot runtime yet
+                // (deferred); others are permanently non-comparable as map
+                // keys in Go itself (slice/map/func).
+                if (key_type->kind == TYPE_STRUCT || key_type->kind == TYPE_FLOAT32 ||
+                    key_type->kind == TYPE_FLOAT64 || key_type->kind == TYPE_INTERFACE ||
+                    key_type->kind == TYPE_ARRAY) {
+                    type_error(checker, type_node->pos,
+                               "map key type %s is not yet supported in v1 (comparable key "
+                               "types so far: string, integers, bool, rune, byte, pointers)",
+                               type_to_string(key_type));
+                    return NULL;
+                }
                 type_error(checker, type_node->pos,
-                           "map key type must be string, got %s", type_to_string(key_type));
+                           "invalid map key type %s (not comparable)", type_to_string(key_type));
                 return NULL;
             }
             // Any value type is accepted: inline scalars ride the 8-byte
