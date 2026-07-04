@@ -507,8 +507,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 codegen_error(codegen, expr->pos, "make: goo_map_new_sv unavailable");
                 return NULL;
             }
+            LLVMValueRef key_kind = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                                 codegen_map_key_kind(made_type->data.map.key_type), 0);
             LLVMValueRef m = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(new_fn),
-                                            new_fn, NULL, 0, "make_map");
+                                            new_fn, &key_kind, 1, "make_map");
             return value_info_new(NULL, m, made_type);
         }
         if (strcmp(func_name->name, "println") == 0) {
@@ -585,9 +587,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         if (strcmp(func_name->name, "delete") == 0 && call->args && call->args->next) {
             // delete(m, k) — unlink the entry for k from m via
             // goo_map_delete_sv. Map handling mirrors the len() arm above
-            // (load the map pointer if it's an lvalue); the key's data
-            // pointer is extracted the same way the map-write path does
-            // (m[k] = v, src/codegen/expression_codegen.c).
+            // (load the map pointer if it's an lvalue); the key is packed
+            // into its i64 slot via codegen_map_key_to_slot, same as every
+            // other map op site (m[k] = v, src/codegen/expression_codegen.c).
             ValueInfo* map_arg = codegen_generate_expression(codegen, checker, call->args);
             if (!map_arg) return NULL;
             LLVMValueRef map_raw = map_arg->llvm_value;
@@ -597,10 +599,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             ValueInfo* key_arg = codegen_generate_expression(codegen, checker, call->args->next);
             if (!key_arg) { value_info_free(map_arg); return NULL; }
-            LLVMValueRef key_ptr = key_arg->llvm_value;
-            if (key_arg->goo_type && key_arg->goo_type->kind == TYPE_STRING) {
-                key_ptr = LLVMBuildExtractValue(codegen->builder, key_ptr, 0, "k_ptr");
-            }
+            Type* del_key_type = (map_arg->goo_type && map_arg->goo_type->kind == TYPE_MAP)
+                ? map_arg->goo_type->data.map.key_type : key_arg->goo_type;
+            LLVMValueRef key_ptr = codegen_map_key_to_slot(codegen, checker, key_arg->llvm_value,
+                                                           del_key_type);
             LLVMValueRef del_fn = LLVMGetNamedFunction(codegen->module, "goo_map_delete_sv");
             if (!del_fn) {
                 codegen_error(codegen, expr->pos, "delete: goo_map_delete_sv unavailable");

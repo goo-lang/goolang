@@ -434,6 +434,22 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef value, Type* value_type);
 LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot, Type* value_type);
 int codegen_map_value_is_inline(Type* value_type);
+
+// Map KEYS ride the same i64 slot, but pack/unpack differently from values:
+// a string key must extract-and-PtrToInt its char* directly rather than
+// going through codegen_map_value_to_slot, which heap-boxes strings (that
+// would make each key a distinct box address and break the runtime's
+// strcmp-based key identity). codegen_map_key_kind feeds goo_map_new_sv's
+// key_kind argument at map-creation sites (GOO_MAPKEY_STRING=0/INLINE=1,
+// include/runtime.h).
+int codegen_map_key_kind(Type* key_type);
+LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
+                                     LLVMValueRef key_val, Type* key_type);
+LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);
+// Wrap a raw `char*` into the goo string aggregate `{i8*, i64}` via
+// goo_string_new. Shared by codegen_map_slot_to_key's STRING arm and the
+// map-range loop's key bind (statement_codegen.c).
+LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr);
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
 

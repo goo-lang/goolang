@@ -88,10 +88,9 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             value_info_free(base_val); value_info_free(index_val);
             return NULL;
         }
-        LLVMValueRef kp = index_val->llvm_value;
-        if (index_val->goo_type && index_val->goo_type->kind == TYPE_STRING) {
-            kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
-        }
+        Type* key_type = base_type->data.map.key_type;
+        LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, index_val->llvm_value,
+                                                  key_type ? key_type : index_val->goo_type);
         LLVMValueRef args[2] = { base_val->llvm_value, kp };
         LLVMValueRef slot = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
                                            get_fn, args, 2, "map_get");

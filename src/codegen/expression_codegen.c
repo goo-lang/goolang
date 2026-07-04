@@ -219,12 +219,16 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             return value_info_new(NULL, loaded, target->goo_type);
         }
         case AST_PAREN_EXPR: {
-            // MapLitNode — `map[string]V{ … }`. Lowers to:
-            //   m = goo_map_new_sv()
-            //   for each (k,v): goo_map_set_sv(m, k_ptr, slot(v))
-            // where slot(v) casts the declared V into the 8-byte i64 slot.
+            // MapLitNode — `map[K]V{ … }`. Lowers to:
+            //   m = goo_map_new_sv(key_kind)
+            //   for each (k,v): goo_map_set_sv(m, key_slot(k), slot(v))
+            // where slot(v)/key_slot(k) pack the declared V/K into the
+            // 8-byte i64 slot (codegen_map_value_to_slot /
+            // codegen_map_key_to_slot — the latter never boxes strings).
             // Returns the GooMapSV* as a raw ptr-typed value.
             MapLitNode* lit = (MapLitNode*)expr;
+            Type* key_type = (expr->node_type && expr->node_type->kind == TYPE_MAP)
+                ? expr->node_type->data.map.key_type : NULL;
             Type* val_type = (expr->node_type && expr->node_type->kind == TYPE_MAP)
                 ? expr->node_type->data.map.value_type : NULL;
             if (!val_type) {
@@ -237,18 +241,18 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 codegen_error(codegen, expr->pos, "map runtime symbols missing");
                 return NULL;
             }
+            LLVMValueRef key_kind = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                                 codegen_map_key_kind(key_type), 0);
             LLVMValueRef m = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(new_fn),
-                                            new_fn, NULL, 0, "map_new");
+                                            new_fn, &key_kind, 1, "map_new");
             ASTNode* k = lit->keys;
             ASTNode* v = lit->values;
             while (k && v) {
                 ValueInfo* kv = codegen_generate_expression(codegen, checker, k);
                 ValueInfo* vv = codegen_generate_expression(codegen, checker, v);
                 if (!kv || !vv) return NULL;
-                LLVMValueRef kp = kv->llvm_value;
-                if (kv->goo_type && kv->goo_type->kind == TYPE_STRING) {
-                    kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
-                }
+                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv->llvm_value,
+                                                          key_type ? key_type : kv->goo_type);
                 // Box a concrete implementer into the map's interface-typed
                 // value slot BEFORE slot-boxing — mirrors the plain-assignment
                 // helper (function_codegen.c's var-decl init boxing / the
@@ -1108,6 +1112,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             IndexExprNode* idx = (IndexExprNode*)binary->left;
             Type* base_t = type_check_expression(checker, idx->expr);
             if (base_t && base_t->kind == TYPE_MAP) {
+                Type* key_type = base_t->data.map.key_type;
                 Type* val_type = base_t->data.map.value_type;
                 LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, "goo_map_set_sv");
                 if (!set_fn) {
@@ -1117,10 +1122,8 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 ValueInfo* mv = codegen_generate_expression(codegen, checker, idx->expr);
                 ValueInfo* kv = codegen_generate_expression(codegen, checker, idx->index);
                 if (!mv || !kv) { value_info_free(mv); value_info_free(kv); return NULL; }
-                LLVMValueRef kp = kv->llvm_value;
-                if (kv->goo_type && kv->goo_type->kind == TYPE_STRING) {
-                    kp = LLVMBuildExtractValue(codegen->builder, kp, 0, "k_ptr");
-                }
+                LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv->llvm_value,
+                                                          key_type ? key_type : kv->goo_type);
                 ValueInfo* vv = codegen_generate_expression(codegen, checker, binary->right);
                 if (!vv) { value_info_free(mv); value_info_free(kv); return NULL; }
                 if (vv->is_lvalue && vv->goo_type) {

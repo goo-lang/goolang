@@ -603,6 +603,75 @@ LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot
     return LLVMBuildIntCast2(codegen->builder, slot, vt, /*isSigned=*/0, "map_val");
 }
 
+// Map key kind for goo_map_new_sv: STRING(0) for string keys, INLINE(1) for
+// integer/uint/bool/rune/byte/pointer. Matches runtime.h's GOO_MAPKEY_* enum
+// (non-string maps don't type-check yet — Task 3 — but codegen carries the
+// full mapping so creation sites are correct the day the gate lifts).
+int codegen_map_key_kind(Type* key_type) {
+    return (key_type && key_type->kind == TYPE_STRING) ? 0 /*GOO_MAPKEY_STRING*/ : 1 /*INLINE*/;
+}
+
+// Wrap a raw `char*` into the goo string aggregate `{i8*, i64}` via
+// goo_string_new (copies the bytes, so the binding stays valid independent of
+// the source) — the same construction the map-range loop already used inline
+// for its string key (statement_codegen.c, pre-Task-2). Centralized here so
+// codegen_map_slot_to_key can share it. Falls back to declaring the extern if
+// codegen_declare_runtime_functions hasn't run yet (shouldn't happen in
+// practice, but mirrors the defensive LLVMGetNamedFunction-or-declare pattern
+// used throughout this codebase, e.g. codegen_alloc_local's goo_alloc lookup).
+LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr) {
+    if (!codegen || !cptr) return NULL;
+    LLVMContextRef ctx = codegen->context;
+    LLVMValueRef mkstr_fn = LLVMGetNamedFunction(codegen->module, "goo_string_new");
+    if (!mkstr_fn) {
+        LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+        LLVMTypeRef string_type = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr_type, i64 }, 2, 0);
+        LLVMTypeRef mkstr_params[] = { ptr_type };
+        LLVMTypeRef mkstr_fn_type = LLVMFunctionType(string_type, mkstr_params, 1, 0);
+        mkstr_fn = LLVMAddFunction(codegen->module, "goo_string_new", mkstr_fn_type);
+    }
+    LLVMValueRef args[1] = { cptr };
+    return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(mkstr_fn),
+                          mkstr_fn, args, 1, "kstr_wrap");
+}
+
+// Pack a key value into the i64 slot. STRING: extract the char* and PtrToInt
+// (NOT codegen_map_value_to_slot — that heap-boxes strings, which would break
+// strcmp identity: two equal-content string keys must PtrToInt to the SAME
+// comparable representation the runtime's key_kind==STRING arm strcmp's,
+// not two distinct box addresses). INLINE: reuse the value-slot packer (its
+// inline arm is exactly PtrToInt/ZExt/SExt/bitcast — safe to share because
+// map keys are restricted to inline-eligible types; Task 3's typecheck gate
+// enforces that).
+LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
+                                     LLVMValueRef key_val, Type* key_type) {
+    (void)checker;
+    if (!codegen || !key_val) return NULL;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
+    if (key_type && key_type->kind == TYPE_STRING) {
+        // string aggregate {i8*, i64}: take field 0 (the char*), int-ize it.
+        LLVMValueRef cptr = LLVMBuildExtractValue(codegen->builder, key_val, 0, "kstr_ptr");
+        return LLVMBuildPtrToInt(codegen->builder, cptr, i64, "kstr_slot");
+    }
+    return codegen_map_value_to_slot(codegen, key_val, key_type);
+}
+
+// Inverse for range key binding. STRING: slot holds a char* (the runtime
+// stores string keys as their raw pointer, per key_kind==STRING); rebuild the
+// goo string aggregate via codegen_string_from_cstr, mirroring exactly what
+// the range loop's key-bind step did before this change (statement_codegen.c:
+// goo_string_new(key_cstr)). INLINE: reuse the value unpacker.
+LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type) {
+    if (!codegen || !slot) return NULL;
+    if (key_type && key_type->kind == TYPE_STRING) {
+        LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+        LLVMValueRef cptr = LLVMBuildIntToPtr(codegen->builder, slot, i8p, "kstr_ptr");
+        return codegen_string_from_cstr(codegen, cptr);
+    }
+    return codegen_map_slot_to_value(codegen, slot, key_type);
+}
+
 LLVMValueRef codegen_create_entry_alloca(CodeGenerator* codegen, LLVMTypeRef type, const char* name) {
     if (!codegen || !type || !codegen->current_function_info) return NULL;
     
