@@ -156,6 +156,20 @@ typedef enum {
     // header deps).
     AST_SLICE_CONVERSION,
 
+    // Type assertions branch, Task 1: `x.(T)` type assertion. Tail-appended
+    // per the M10 convention above (Makefile has no header deps). Note:
+    // AST_TYPE_ASSERT_EXPR already exists above (line ~53) but is unused
+    // dead code (no struct, no grammar production) — this is a distinct,
+    // newly-wired node type, not a rename of that one.
+    AST_TYPE_ASSERT,
+
+    // Type assertions branch, Task 3: `switch v := x.(type) { case T1: … }`.
+    // Tail-appended per the M10 convention above (Makefile has no header
+    // deps). A distinct pair from AST_SWITCH_STMT/AST_CASE_CLAUSE (not a
+    // reuse) — see TypeSwitchNode/TypeCaseNode's doc comments for why.
+    AST_TYPE_SWITCH,
+    AST_TYPE_CASE,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -1150,6 +1164,49 @@ typedef struct {
     struct ASTNode* operand;
 } SliceConvNode;
 
+// x.(T) type assertion. asserted_type is the parsed target type node.
+// The comma-ok vs single-return form is NOT stored here — it is decided by
+// assignment context at typecheck/codegen (2 LHS names vs 1), exactly like
+// the comma-ok map read.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* expr;
+    struct ASTNode* asserted_type;
+} TypeAssertNode;
+
+// Type assertions branch, Task 3: `switch [v :=] x.(type) { case T1: … }`.
+// A DISTINCT node from SwitchStmtNode (not a reuse): the tag there is an
+// ordinary boolean/value expression compared with icmp/goo_string_eq; here
+// `expr` is the interface-typed operand compared by vtable-pointer identity
+// (codegen_interface_assert_match), and each case lists TYPES, not value
+// expressions — different typecheck rules (type_interface_satisfied, not
+// type_compatible) and a different codegen lowering entirely. bind_name is
+// the IdentifierNode for `v` in the `identifier SHORT_ASSIGN` guard form, or
+// NULL for the bind-less `switch x.(type) { … }` form.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* bind_name;   // IdentifierNode* or NULL
+    struct ASTNode* expr;        // Interface-typed operand (the guard's `x`)
+    struct ASTNode* cases;       // List of TypeCaseNode, linked via base.next
+} TypeSwitchNode;
+
+// Type-case clause within a type switch. `types == NULL` denotes `default`.
+// Each element of `types` is either a TYPE node (stamped with its resolved
+// Type* in node_type during typecheck — read back by codegen, never
+// re-resolved, mirroring the "read back instead of re-checking" convention
+// used elsewhere) or a `nil` sentinel: a LiteralNode with literal_type ==
+// TOKEN_NIL (see the `case nil:`/`type_list` grammar alt). Multiple types
+// are linked via base.next, exactly like CaseClauseNode.exprs — no separate
+// `next` field on this struct either, for the same reason CaseClauseNode
+// has none: the clause list itself is ALSO linked via base.next, and a
+// dedicated field would be redundant with (and easy to confuse for) that
+// one.
+typedef struct {
+    ASTNode base;
+    struct ASTNode* types;   // Case type list, linked via next; NULL for default
+    struct ASTNode* body;    // Statement list for this clause
+} TypeCaseNode;
+
 // =============================================================================
 // Function declarations for AST manipulation
 // =============================================================================
@@ -1201,6 +1258,8 @@ SelectStmtNode* ast_select_stmt_new(Position pos);
 SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos);
 SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos);
 CaseClauseNode* ast_case_clause_new(ASTNode* exprs, ASTNode* body, Position pos);
+TypeSwitchNode* ast_type_switch_new(ASTNode* bind_name, ASTNode* expr, ASTNode* cases, Position pos);
+TypeCaseNode* ast_type_case_new(ASTNode* types, ASTNode* body, Position pos);
 DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos);
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);

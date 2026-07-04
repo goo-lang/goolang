@@ -101,6 +101,87 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             result = LLVMBuildInsertValue(codegen->builder, result, str_len, 2, "bytesconv_sl_cap");
             return value_info_new(NULL, result, slice_type);
         }
+        // Task 2 of type assertions: single-return `d2 := a.(Dog)` /
+        // `_ = a.(T)` / any other single-value use of x.(T). The checker
+        // already rejected a non-interface operand, an interface target, and
+        // an impossible assertion — codegen only emits the runtime
+        // vtable-pointer compare (codegen_interface_assert_match, shared
+        // with the comma-ok arm in function_codegen.c and Task 3's type
+        // switch) and picks load-on-match vs panic-on-miss. Unlike the
+        // comma-ok form there is no phi/join: the panic block is
+        // unreachable, so the match block IS the continuation and this
+        // function can just return its loaded value directly.
+        case AST_TYPE_ASSERT: {
+            TypeAssertNode* ta = (TypeAssertNode*)expr;
+            Type* iface_type = ta->expr->node_type;
+            Type* target = expr->node_type;
+            if (!iface_type || !target) {
+                codegen_error(codegen, expr->pos,
+                              "internal: type assertion missing resolved types");
+                return NULL;
+            }
+
+            ValueInfo* iv = codegen_generate_expression(codegen, checker, ta->expr);
+            if (!iv) return NULL;
+            LLVMValueRef iface_val = iv->llvm_value;
+            // A selector/index operand (e.g. `s.field.(T)`) is an lvalue
+            // (an address) — load the {vtable, data} struct before
+            // extracting, mirroring codegen_interface_dispatch's call site
+            // (call_codegen.c ~1094). An identifier operand is already a
+            // loaded rvalue.
+            if (iv->is_lvalue) {
+                LLVMTypeRef ity = codegen_type_to_llvm(codegen, iface_type);
+                if (ity) {
+                    iface_val = LLVMBuildLoad2(codegen->builder, ity, iface_val, "ta.operand");
+                }
+            }
+            value_info_free(iv);
+
+            LLVMValueRef data = NULL;
+            LLVMValueRef match = codegen_interface_assert_match(codegen, checker, iface_val,
+                                                                iface_type, target, &data);
+            if (!match) {
+                codegen_error(codegen, expr->pos,
+                              "internal: cannot build type assertion vtable compare");
+                return NULL;
+            }
+
+            LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+            if (!panic_fn) {
+                codegen_error(codegen, expr->pos, "goo_panic not found in module");
+                return NULL;
+            }
+
+            LLVMBasicBlockRef match_bb = codegen_create_block(codegen, "ta.ok");
+            LLVMBasicBlockRef miss_bb  = codegen_create_block(codegen, "ta.panic");
+            LLVMBuildCondBr(codegen->builder, match, match_bb, miss_bb);
+
+            // Miss: panic with the STATIC type names only — no dynamic-type
+            // name (v1 deviation: RTTI would be needed to name the actual
+            // held type, and is out of scope) — then terminate the block.
+            codegen_set_insert_point(codegen, miss_bb);
+            const char* iname = iface_type->data.interface.name
+                                     ? iface_type->data.interface.name : "interface";
+            const char* tname = type_receiver_name(target);
+            char msg_buf[256];
+            snprintf(msg_buf, sizeof(msg_buf), "interface conversion: %s is not %s",
+                     iname, tname ? tname : type_to_string(target));
+            LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder, msg_buf, "ta_panic_msg");
+            LLVMValueRef panic_args[1] = { msg };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn), panic_fn,
+                           panic_args, 1, "");
+            LLVMBuildUnreachable(codegen->builder);
+
+            // Match: recover the concrete value and continue here.
+            codegen_set_insert_point(codegen, match_bb);
+            LLVMValueRef loaded = codegen_interface_assert_unbox(codegen, target, data);
+            if (!loaded) {
+                codegen_error(codegen, expr->pos,
+                              "internal: cannot lower type assertion target type");
+                return NULL;
+            }
+            return value_info_new(NULL, loaded, target);
+        }
         case AST_POSTFIX_EXPR: {
             // `j++` / `j--` / `c.n++` / `a[i]++`: load operand, compute
             // load ± 1, store back, return the LOADED (pre-modification)

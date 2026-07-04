@@ -340,6 +340,35 @@ CaseClauseNode* ast_case_clause_new(ASTNode* exprs, ASTNode* body, Position pos)
     return node;
 }
 
+TypeSwitchNode* ast_type_switch_new(ASTNode* bind_name, ASTNode* expr, ASTNode* cases, Position pos) {
+    TypeSwitchNode* node = (TypeSwitchNode*)malloc(sizeof(TypeSwitchNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_TYPE_SWITCH;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->bind_name = bind_name;
+    node->expr = expr;
+    node->cases = cases;
+
+    return node;
+}
+
+TypeCaseNode* ast_type_case_new(ASTNode* types, ASTNode* body, Position pos) {
+    TypeCaseNode* node = (TypeCaseNode*)malloc(sizeof(TypeCaseNode));
+    if (!node) return NULL;
+
+    node->base.type = AST_TYPE_CASE;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->types = types;
+    node->body = body;
+
+    return node;
+}
+
 DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos) {
     DeferStmtNode* node = (DeferStmtNode*)malloc(sizeof(DeferStmtNode));
     if (!node) return NULL;

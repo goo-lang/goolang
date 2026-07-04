@@ -173,10 +173,14 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
     return thunk;
 }
 
-// Build (or reuse) the vtable global for boxing `concrete` into `iface`. Returns
-// the global (a ptr to the [N x ptr] thunk array), or NULL on failure.
+// Build (or reuse) the vtable global for boxing `concrete` into `iface`.
+// `pointer_form` selects a distinctly-named global for the pointer-boxing
+// shape (Task 5) so it never aliases the value-boxing shape's global, even
+// though both build thunks against the same `concrete` and both globals hold
+// identical slot contents. Returns the global (a ptr to the [N x ptr] thunk
+// array), or NULL on failure.
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
-                                      Type* iface, Type* concrete) {
+                                      Type* iface, Type* concrete, int pointer_form) {
     if (!iface || iface->kind != TYPE_INTERFACE) return NULL;
     const char* cname = type_receiver_name(concrete);
     const char* iname = iface->data.interface.name ? iface->data.interface.name : "iface";
@@ -187,7 +191,11 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     }
 
     char gname[256];
-    snprintf(gname, sizeof(gname), "goo.vtable.%s.%s", cname, iname);
+    if (pointer_form) {
+        snprintf(gname, sizeof(gname), "goo.vtable.$ptr$%s.%s", cname, iname);
+    } else {
+        snprintf(gname, sizeof(gname), "goo.vtable.%s.%s", cname, iname);
+    }
     LLVMValueRef existing = LLVMGetNamedGlobal(codegen->module, gname);
     if (existing) return existing;
 
@@ -216,17 +224,26 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
                                    Type* iface, Type* concrete, LLVMValueRef value) {
     // C-representation for pointer concretes (Go's own layout): the interface
-    // data word IS the pointer, and the vtable is the POINTEE's — *T
-    // deliberately REUSES T's thunks, because in both boxing shapes `data`
-    // ends up pointing at a T (value-boxed: at the heap copy; pointer-boxed:
-    // at the caller's object). No heap box: boxing a pointer must alias, and
-    // storing it in a box was the #109 miscompile (thunks treated the box as
-    // the pointee). See docs/superpowers/specs/2026-07-04-ptr-iface-boxing-design.md.
+    // data word IS the pointer. *T's thunks are built against the POINTEE
+    // (same build_thunk as T's), because in both boxing shapes `data` ends up
+    // pointing at a T (value-boxed: at the heap copy; pointer-boxed: at the
+    // caller's object) — so the thunk bodies are identical. No heap box:
+    // boxing a pointer must alias, and storing it in a box was the #109
+    // miscompile (thunks treated the box as the pointee). See
+    // docs/superpowers/specs/2026-07-04-ptr-iface-boxing-design.md.
+    //
+    // Task 5: despite identical thunks, the vtable GLOBAL must NOT be the
+    // same one T's value-boxing uses — a value-boxed T and a pointer-boxed
+    // *T both end up with `data` pointing at a T, but they are different
+    // DYNAMIC TYPES in Go and an assertion/switch must be able to tell them
+    // apart via the vtable-pointer identity check. pointer_form=1 requests
+    // the distinctly-named `goo.vtable.$ptr$<T>.<I>` global (same slot
+    // contents, different address) so it never aliases `goo.vtable.<T>.<I>`.
     if (concrete && concrete->kind == TYPE_POINTER &&
         concrete->data.pointer.pointee_type &&
         type_receiver_name(concrete->data.pointer.pointee_type)) {
         Type* pointee = concrete->data.pointer.pointee_type;
-        LLVMValueRef pvt = codegen_interface_vtable(codegen, checker, iface, pointee);
+        LLVMValueRef pvt = codegen_interface_vtable(codegen, checker, iface, pointee, /*pointer_form=*/1);
         if (!pvt) return NULL;
         LLVMTypeRef pifacety = codegen_type_to_llvm(codegen, iface);
         if (!pifacety) return NULL;
@@ -236,7 +253,7 @@ LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
         return piv;
     }
 
-    LLVMValueRef vt = codegen_interface_vtable(codegen, checker, iface, concrete);
+    LLVMValueRef vt = codegen_interface_vtable(codegen, checker, iface, concrete, /*pointer_form=*/0);
     if (!vt) return NULL;
 
     LLVMTypeRef llvm_T = codegen_type_to_llvm(codegen, concrete);
@@ -307,6 +324,88 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
 
     Type* ret_type = im->type ? im->type->data.function.return_type : NULL;
     return value_info_new(NULL, result, ret_type);
+}
+
+// Task 2 (type assertions): the vtable-pointer identity compare shared by
+// `x.(T)` (both comma-ok and single-return) and Task 3's type switch. Spec
+// mechanism: the dynamic type held by an interface value is T iff
+// `iface.vtable == &goo.vtable.T.I`, and is *T iff `iface.vtable ==
+// &goo.vtable.$ptr$T.I` — a pointer compare, no RTTI. `iface_val` must
+// already be the LOADED {vtable, data} struct value (mirror the
+// is_lvalue-load idiom at codegen_interface_dispatch's call site,
+// call_codegen.c ~1094 — a selector/index operand is an address and must be
+// loaded before ExtractValue). `target`'s vtable is resolved via
+// codegen_interface_vtable, requesting the SAME form (value vs. pointer) the
+// boxing site would have used for that shape (see the form selection below)
+// — it must already exist by the time any assertion against a live interface
+// value runs, since boxing is what put the value there. Writes the raw
+// (still-boxed) data pointer to *data_out unless NULL; pass it to
+// codegen_interface_assert_unbox to recover the concrete value, but only
+// inside a branch already gated on the returned match bit — the data
+// pointer's pointee size/shape depends on the ACTUAL runtime type, so
+// unboxing it as `target` before confirming the match would be unsound.
+// Returns the i1 match value, or NULL if the vtable global couldn't be
+// resolved (should not happen for a type-checked assertion — the checker's
+// type_interface_satisfied gate already ruled out a non-implementing target).
+LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
+                                            LLVMValueRef iface_val, Type* iface_type,
+                                            Type* target, LLVMValueRef* data_out) {
+    if (!codegen || !iface_type || iface_type->kind != TYPE_INTERFACE || !target) return NULL;
+
+    // Task 5 (replaces df41fb2's unwrap-to-pointee-and-use-value-form): a
+    // value-boxed T and a pointer-boxed *T both end up with `data` pointing
+    // at a T, but they are different Go dynamic types and must compare
+    // unequal. Select the vtable FORM by the target's own shape, mirroring
+    // codegen_interface_box's two branches exactly:
+    //   - target is a pointer *T with a nameable pointee (box-site's
+    //     C-representation branch) -> look up the POINTER-form vtable, built
+    //     against the pointee, so `x.(*T)` only matches a pointer-boxed *T.
+    //   - target is anything else (a value T, or a pointer without a
+    //     nameable pointee) -> look up the VALUE-form vtable, so `x.(T)`
+    //     only matches a value-boxed T.
+    // Distinct globals -> distinct addresses -> the icmp below now
+    // discriminates T from *T instead of aliasing them.
+    Type* vt_target = target;
+    int vt_pointer_form = 0;
+    if (vt_target->kind == TYPE_POINTER && vt_target->data.pointer.pointee_type &&
+        type_receiver_name(vt_target->data.pointer.pointee_type)) {
+        vt_target = vt_target->data.pointer.pointee_type;
+        vt_pointer_form = 1;
+    }
+
+    LLVMValueRef vt_want = codegen_interface_vtable(codegen, checker, iface_type, vt_target,
+                                                    vt_pointer_form);
+    if (!vt_want) return NULL;
+
+    LLVMValueRef vt_have = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "ta.vt");
+    if (data_out) {
+        *data_out = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "ta.data");
+    }
+    return LLVMBuildICmp(codegen->builder, LLVMIntEQ, vt_have, vt_want, "ta.match");
+}
+
+// Recover the concrete value of Go type `target` from an interface's `data`
+// pointer (as extracted by codegen_interface_assert_match). Must mirror
+// codegen_interface_box's two boxing shapes exactly:
+//   - a pointer concrete whose pointee has a nameable receiver (e.g. *Box)
+//     is boxed WITHOUT a heap copy — `data` IS the pointer value itself
+//     (see codegen_interface_box's C-representation branch) — so recovering
+//     it is a no-op (identity), not a load. In this LLVM version pointers
+//     are opaque (`ptr`), so no bitcast is needed either.
+//   - every other concrete (a struct value, or a pointer without a
+//     nameable pointee) is boxed as a heap COPY — `data` is a pointer TO a
+//     `target`, and must be LOADED through.
+// Returns NULL if `target`'s LLVM type cannot be resolved.
+LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
+                                            LLVMValueRef data) {
+    if (!codegen || !target || !data) return NULL;
+    if (target->kind == TYPE_POINTER && target->data.pointer.pointee_type &&
+        type_receiver_name(target->data.pointer.pointee_type)) {
+        return data;
+    }
+    LLVMTypeRef target_llvm = codegen_type_to_llvm(codegen, target);
+    if (!target_llvm) return NULL;
+    return LLVMBuildLoad2(codegen->builder, target_llvm, data, "ta.val");
 }
 
 #endif // LLVM_AVAILABLE

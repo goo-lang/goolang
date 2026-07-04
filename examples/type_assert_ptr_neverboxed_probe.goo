@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+type A interface {
+	M() int
+}
+
+type X struct{ V int }
+
+func (x *X) M() int { return x.V }
+
+type Y struct{ V int }
+
+func (y *Y) M() int { return y.V }
+
+func main() {
+	var a A = &X{V: 1}
+	_, ok := a.(*Y)
+	fmt.Println(ok)
+}

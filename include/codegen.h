@@ -255,6 +255,8 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker);
 int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
+// Type assertions branch, Task 3: `switch [v :=] x.(type) { case … }`.
+int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 
@@ -342,14 +344,31 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen, TypeChecker* c
                                           ASTNode* first_elem, Type* slice_type, Position pos);
 
 // Interface codegen (P4-5): vtable construction, boxing, dynamic dispatch.
+// `pointer_form` (Task 5): 0 builds/reuses the value-form global
+// `goo.vtable.<concrete>.<iface>` (thunks against `concrete` directly); 1
+// builds/reuses the DISTINCTLY-NAMED pointer-form global
+// `goo.vtable.$ptr$<concrete>.<iface>` — same thunk slots (built against the
+// same `concrete`, since a pointer box's `data` also points at a `concrete`),
+// but a different global so a pointer-boxed `*T` and a value-boxed `T` no
+// longer alias the same vtable address. See interface_codegen.c's callers
+// (codegen_interface_box's two branches, codegen_interface_assert_match) for
+// which form each site must request.
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
-                                      Type* iface, Type* concrete);
+                                      Type* iface, Type* concrete, int pointer_form);
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
                                    Type* iface, Type* concrete, LLVMValueRef value);
 ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* checker,
                                       LLVMValueRef iface_val, Type* iface_type,
                                       const char* method_name,
                                       LLVMValueRef* args, size_t argc);
+// Task 2 (type assertions): shared vtable-pointer-compare + unbox lowering
+// for `x.(T)` (comma-ok and single-return) and Task 3's type switch. See
+// interface_codegen.c's doc comments on each for the exact contract.
+LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
+                                            LLVMValueRef iface_val, Type* iface_type,
+                                            Type* target, LLVMValueRef* data_out);
+LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
+                                            LLVMValueRef data);
 
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
