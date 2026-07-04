@@ -177,6 +177,7 @@ static ASTNode* g_func_signature_result = NULL;
 // reduce-vs-shift conflict at `LBRACKET RBRACKET .` (empty literal vs `[]T{...}`
 // prefix) never arises. See lexer_bridge.c `[]`-disambiguation. (P3-1)
 %token RBRACKET_SLICE
+// Grammar maintained under the conflict-baseline discipline.
 %token SEMICOLON COMMA DOT COLON ELLIPSIS
 %token NEWLINE
 
