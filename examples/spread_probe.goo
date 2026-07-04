@@ -18,6 +18,25 @@ func tagged(tag string, xs ...int) int {
 	return len(tag) + sum(xs...)
 }
 
+func sum64(xs ...int64) int64 {
+	var t int64 = 0
+	for _, x := range xs {
+		t += x
+	}
+	return t
+}
+
+// Ops.Sum is a function-VALUED STRUCT FIELD, not a method: the checker
+// resolves its callee via type_check_expression on the selector, not the
+// mangled-method-name lookup that sets check_signature. Spread through this
+// path exercises the fix that made the spread checks independent of
+// check_signature — before the fix, o.Sum(t...) would silently accept ANY
+// slice element type here (a width/arity mismatch would reach codegen's
+// spread branch, which passes {ptr,len,cap} through uncoerced).
+type Ops struct {
+	Sum func(xs ...int64) int64
+}
+
 func main() {
 	s := []int{1, 2, 3}
 	fmt.Println(sum(s...))
@@ -26,4 +45,7 @@ func main() {
 	var e []int
 	fmt.Println(sum(e...))
 	fmt.Println(tagged("ab", s...))
+	o := Ops{Sum: sum64}
+	t := []int64{4, 5, 6}
+	fmt.Println(o.Sum(t...))
 }

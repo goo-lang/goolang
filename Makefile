@@ -2198,18 +2198,23 @@ bytesconv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -q "only supported for" build/bytesconv_reject.err; then echo "bytesconv-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/bytesconv_reject.err; exit 1; fi; \
 	echo "bytesconv-reject-probe: PASS (rejected rc=$$rc)"
 
-# Task 3 (spread `f(s...)`): three distinct reject shapes, each with its own
+# Task 3 (spread `f(s...)`): four distinct reject shapes, each with its own
 # diagnostic (expression_checker.c's has_spread block) — spread on a
 # non-variadic callee, a spread element-type mismatch (no coercion, even
-# though int32->int64 is otherwise a permitted numeric widening), and a
-# spread call missing a required fixed argument.
+# though int32->int64 is otherwise a permitted numeric widening), a spread
+# call missing a required fixed argument, and (reviewer finding, closed by
+# making the spread checks independent of check_signature) the same
+# element-type mismatch reached through a function-VALUED STRUCT FIELD
+# callee (`o.Sum(s...)`), whose name-based resolution never sets
+# check_signature — before the fix this compiled silently.
 spread-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== spread-reject-probe: spread f(s...) must reject three distinct ways ==="
+	@echo "=== spread-reject-probe: spread f(s...) must reject four distinct ways ==="
 	@printf 'package main\nfunc f(a int) int { return a }\nfunc main(){ s := []int{1,2,3}; _ = f(s...) }\n' > build/spread_nonvariadic.goo
 	@printf 'package main\nfunc sum64(xs ...int64) int64 { return 0 }\nfunc main(){ s := []int32{1,2,3}; _ = sum64(s...) }\n' > build/spread_elemmismatch.goo
 	@printf 'package main\nfunc tagged(tag string, xs ...int) int { return 0 }\nfunc main(){ s := []int{1,2,3}; _ = tagged(s...) }\n' > build/spread_missingfixed.goo
-	@rm -f build/spread_nonvariadic build/spread_elemmismatch build/spread_missingfixed
+	@printf 'package main\ntype Ops struct { Sum func(xs ...int64) int64 }\nfunc sum64(xs ...int64) int64 { return 0 }\nfunc main(){ o := Ops{Sum: sum64}; s := []int32{1,2,3}; _ = o.Sum(s...) }\n' > build/spread_fieldelemmismatch.goo
+	@rm -f build/spread_nonvariadic build/spread_elemmismatch build/spread_missingfixed build/spread_fieldelemmismatch
 	@$(COMPILER) -o build/spread_nonvariadic build/spread_nonvariadic.goo > build/spread_nonvariadic.out 2> build/spread_nonvariadic.err; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "spread-reject-probe: FAIL (non-variadic: f(s...) silently accepted)"; exit 1; fi; \
 	if [ -x build/spread_nonvariadic ]; then echo "spread-reject-probe: FAIL (non-variadic: emitted a binary despite the error)"; exit 1; fi; \
@@ -2222,7 +2227,11 @@ spread-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "spread-reject-probe: FAIL (missing fixed arg: tagged(s...) silently accepted)"; exit 1; fi; \
 	if [ -x build/spread_missingfixed ]; then echo "spread-reject-probe: FAIL (missing fixed arg: emitted a binary despite the error)"; exit 1; fi; \
 	if ! grep -q "spread call must supply exactly the fixed arguments then one slice" build/spread_missingfixed.err; then echo "spread-reject-probe: FAIL (missing fixed arg: wrong/missing diagnostic)"; cat build/spread_missingfixed.err; exit 1; fi
-	@echo "spread-reject-probe: PASS (all three spread-reject shapes correctly rejected)"
+	@$(COMPILER) -o build/spread_fieldelemmismatch build/spread_fieldelemmismatch.goo > build/spread_fieldelemmismatch.out 2> build/spread_fieldelemmismatch.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "spread-reject-probe: FAIL (struct-field elem mismatch: o.Sum(s...) with []int32 silently accepted)"; exit 1; fi; \
+	if [ -x build/spread_fieldelemmismatch ]; then echo "spread-reject-probe: FAIL (struct-field elem mismatch: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "cannot spread \[\]int32 into variadic parameter ...int64" build/spread_fieldelemmismatch.err; then echo "spread-reject-probe: FAIL (struct-field elem mismatch: wrong/missing diagnostic)"; cat build/spread_fieldelemmismatch.err; exit 1; fi
+	@echo "spread-reject-probe: PASS (all four spread-reject shapes correctly rejected)"
 
 # P2-2: a user-function call with the wrong number of arguments must be
 # rejected at type-check with a clean source-located diagnostic, NOT reach

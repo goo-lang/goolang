@@ -2675,12 +2675,29 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     // extra/missing args. The final argument's element-type match (no
     // coercion) is checked inside the loop below, at the variadic slot
     // position, once we know that position is reached exactly once.
+    //
+    // Both checks below are gated on `func_type->data.function.param_types`
+    // (non-NULL), NOT on `check_signature`. check_signature exists to guard
+    // the OLD per-arg diagnostics, whose name-based resolution (re-looking-up
+    // the callee by mangled name/exports scope) can be unreliable for
+    // non-identifier callees. These two spread checks don't need that: they
+    // read param_count/param_types/is_variadic directly off func_type, the
+    // callee EXPRESSION's own static type (already validated TYPE_FUNCTION
+    // above), which is reliable regardless of how the callee resolved — the
+    // unconditional `!callee_is_variadic` check just below is exactly this
+    // pattern. Gating these on check_signature left a call through a
+    // function-valued struct field (e.g. `o.Sum(s...)`, no name-based
+    // resolution match, check_signature stays 0) completely unchecked: a
+    // width/arity mismatch reached call_codegen's spread branch, which passes
+    // the raw {ptr,len,cap} through with no per-element coercion — a latent
+    // heap-OOB read in the callee, and for a missing fixed arg, a silent
+    // codegen failure with zero diagnostic output.
     if (call->has_spread && !callee_is_variadic) {
         type_error(checker, expr->pos,
                    "spread argument requires a variadic function");
         return NULL;
     }
-    if (call->has_spread && check_signature) {
+    if (call->has_spread && func_type->data.function.param_types) {
         size_t arg_total = 0;
         for (ASTNode* a = call->args; a; a = a->next) arg_total++;
         size_t declared_total = func_type->data.function.param_count - recv_offset;
@@ -2716,10 +2733,22 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // "constant 300 overflows int8" already comes from for non-variadic
         // narrow params.
         Type* param_type = NULL;
-        if (check_signature && param_types && callee_is_variadic && param_count > 0) {
+        // Reachable when check_signature is true (unchanged from before), OR
+        // when call->has_spread is true regardless of check_signature — the
+        // has_spread branch below (Task 3's strict element-identity check)
+        // must run for a spread call through an unresolved-name callee (e.g.
+        // a function-valued struct field) too; see the comment above the
+        // pre-loop spread checks for why that's safe to trust off func_type
+        // alone. The fixed-position sub-branch immediately below still
+        // requires check_signature itself before indexing param_types — it
+        // is the OLD per-arg diagnostic and stays exactly as reliable/
+        // unreliable as before.
+        if ((check_signature || call->has_spread) && param_types && callee_is_variadic && param_count > 0) {
             size_t last_idx = param_count - 1;
             if ((arg_count + recv_offset) < last_idx) {
-                param_type = param_types[arg_count + recv_offset];
+                if (check_signature) {
+                    param_type = param_types[arg_count + recv_offset];
+                }
             } else if (call->has_spread) {
                 // Task 3: the variadic slot's sole argument IS the spread
                 // operand ([]E), not a single element — compare the WHOLE
