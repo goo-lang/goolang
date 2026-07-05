@@ -1,0 +1,9 @@
+package main
+import "fmt"
+func main() {
+	m := map[any]int{}
+	m[nil] = 1
+	m[nil] = 2
+	m[7] = 3
+	fmt.Println(m[nil], len(m))
+}

@@ -179,6 +179,29 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
 // though both build thunks against the same `concrete` and both globals hold
 // identical slot contents. Returns the global (a ptr to the [N x ptr] thunk
 // array), or NULL on failure.
+// Shared pointer-identity comparator `i32 @goo.ptreq(i64 a, i64 b) { ret a==b }`
+// used as the vtable slot-0 eq for pointer-boxed interfaces (the data word is
+// the pointer; equality is identity). Get-or-emit by name — no per-type cache
+// needed, one instance suffices module-wide.
+static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo.ptreq");
+    if (fn) return fn;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMTypeRef params[2] = { i64, i64 };
+    fn = LLVMAddFunction(codegen->module, "goo.ptreq", LLVMFunctionType(i32, params, 2, 0));
+    LLVMSetLinkage(fn, LLVMPrivateLinkage);
+    LLVMBasicBlockRef save = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef bb = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, bb);
+    LLVMValueRef eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ,
+                                    LLVMGetParam(fn, 0), LLVMGetParam(fn, 1), "ptreq");
+    LLVMBuildRet(codegen->builder, LLVMBuildZExt(codegen->builder, eq, i32, "ptreq.i32"));
+    if (save) LLVMPositionBuilderAtEnd(codegen->builder, save);
+    return fn;
+}
+
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
                                       Type* iface, Type* concrete, int pointer_form) {
     if (!iface || iface->kind != TYPE_INTERFACE) return NULL;
@@ -213,7 +236,16 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef* slots = malloc((n + 1) * sizeof(LLVMValueRef));
     if (!slots) return NULL;
 
-    LLVMValueRef eq_fn = codegen_get_or_emit_type_eq(codegen, checker, concrete);
+    // slot-0 value-equality comparator. For a POINTER-boxed interface
+    // (pointer_form) the data word IS the pointer, so equality is POINTER
+    // IDENTITY — NOT the pointee's value comparator. Without this, two distinct
+    // pointers to equal-content values compared equal as interface values / map
+    // keys (they'd run the pointee's structeq), diverging from Go. `concrete`
+    // here is the pointee type (the #114 normalization), so codegen_get_or_emit_
+    // type_eq(concrete) would wrongly synthesize the pointee comparator.
+    LLVMValueRef eq_fn = pointer_form
+        ? iface_ptr_eq_fn(codegen)
+        : codegen_get_or_emit_type_eq(codegen, checker, concrete);
     if (!eq_fn) { free(slots); return NULL; }
     // A Function value's LLVM type is already `ptr` (opaque pointers), the
     // same as every thunk placed below without a cast — no bitcast needed
