@@ -1,0 +1,9 @@
+package main
+import "fmt"
+func main() {
+	sum := 0
+	for _, v := range [4]int{1, 2, 3, 4} {
+		sum += v
+	}
+	fmt.Println(sum)
+}

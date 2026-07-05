@@ -40,12 +40,24 @@ extern int yyparse(void);
 typedef struct {
     int kind;
     int paren_depth_at_push;
+    // Armed when a TYPE-position `[` or `map` appears at this frame's depth, so
+    // the composite literal's opening `{` (`for _, v := range []int{...} {`) is
+    // classified as a literal LBRACE, not the LBRACE_BODY of the loop/if body.
+    // Index-position `[` (`if a[i] > 0 {`) does NOT arm it — see
+    // bridge_prev_ends_operand. Cleared by the literal `{`, or by any token
+    // that can't continue a type (e.g. `(` in the conversion `[]byte(s)`).
+    int literal_pending;
 } M10CondFrame;
 
 #define M10_MAX_FRAMES 64
 static M10CondFrame m10_frame_stack[M10_MAX_FRAMES];
 static int m10_frame_top = -1;
 static int m10_paren_depth = 0;
+// Brace-nesting depth INSIDE a control-clause composite literal. While > 0 we
+// are inside such a literal (`range [][]int{{1},{2}} {`), so every `{` is a
+// literal and no cond frame fires until the braces balance and the real body
+// `{` arrives.
+static int m10_lit_depth = 0;
 
 static void m10_push_frame(int kind) {
     if (m10_frame_top + 1 >= M10_MAX_FRAMES) {
@@ -57,6 +69,37 @@ static void m10_push_frame(int kind) {
     m10_frame_top++;
     m10_frame_stack[m10_frame_top].kind = kind;
     m10_frame_stack[m10_frame_top].paren_depth_at_push = m10_paren_depth;
+    m10_frame_stack[m10_frame_top].literal_pending = 0;
+}
+
+// A following `[` is an INDEX (not a type prefix) when the previous token ends
+// an operand — the same distinction the `[]`→RBRACKET_SLICE lookahead relies
+// on. Used so `a[i]` never arms literal_pending while `range []int` does.
+static int bridge_prev_ends_operand(int bt) {
+    switch (bt) {
+        case IDENTIFIER: case RBRACKET: case RBRACKET_SLICE: case RPAREN:
+        case RBRACE: case STRING_LITERAL: case INT_LITERAL: case FLOAT_LITERAL:
+        case CHAR_LITERAL: case TRUE: case FALSE: case NIL:
+        case INCREMENT: case DECREMENT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// Tokens that can appear between an armed type-position `[`/`map` and the
+// composite literal's `{` — i.e. that keep literal_pending alive. Anything
+// else (an operator, `(`, `;`, ...) means the type-prefix did not lead into a
+// literal, so literal_pending is cleared.
+static int bridge_token_continues_type(int bt) {
+    switch (bt) {
+        case IDENTIFIER: case LBRACKET: case RBRACKET: case RBRACKET_SLICE:
+        case MAP: case CHAN: case MULTIPLY: case DOT:
+        case STRUCT: case FUNC: case ENUM: case BANG: case QUESTION:
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 static void m10_pop_frame(void) {
@@ -104,6 +147,7 @@ static int bridge_token_starts_type(int bt) {
 void bridge_reset_cond_state(void) {
     m10_frame_top = -1;
     m10_paren_depth = 0;
+    m10_lit_depth = 0;
     s_have_pending = 0;
     s_last_emitted = 0;
     s_last_token_line = 0;
@@ -145,7 +189,16 @@ static int map_token_to_bison(TokenType type) {
             return IF;
         case TOKEN_IMPORT: return IMPORT;
         case TOKEN_INTERFACE: return INTERFACE;
-        case TOKEN_MAP: return MAP;
+        case TOKEN_MAP:
+            // `map` is always a type prefix, so `range map[K]V{...} {` arms
+            // literal_pending at the cond-frame depth just like a type-position
+            // `[` — the map literal's `{` is a literal, not the body.
+            if (m10_frame_top >= 0
+                && m10_frame_stack[m10_frame_top].paren_depth_at_push == m10_paren_depth
+                && m10_lit_depth == 0) {
+                m10_frame_stack[m10_frame_top].literal_pending = 1;
+            }
+            return MAP;
         case TOKEN_PACKAGE: return PACKAGE;
         case TOKEN_RANGE: return RANGE;
         case TOKEN_RETURN: return RETURN;
@@ -233,19 +286,43 @@ static int map_token_to_bison(TokenType type) {
             if (m10_paren_depth > 0) m10_paren_depth--;
             return RPAREN;
         case TOKEN_LBRACE:
-            // The lookahead from this point: if there's a cond frame on top
-            // whose paren_depth_at_push matches our current paren_depth, the
-            // `{` closes that cond's expression and opens its body — emit
-            // LBRACE_BODY and pop. Otherwise it's a plain brace (struct_lit
-            // opener, nested block, etc.) — emit LBRACE.
+            // Already inside a control-clause composite literal
+            // (`range [][]int{{1},{2}} {`) — every brace here is a literal
+            // brace, not the body. Deepen and stay a plain LBRACE.
+            if (m10_lit_depth > 0) {
+                m10_lit_depth++;
+                return LBRACE;
+            }
+            // If there's a cond frame on top at our paren_depth, this `{`
+            // either OPENS a `[`/map-prefixed composite literal (armed
+            // literal_pending → plain LBRACE, enter the literal) or closes the
+            // cond's expression and opens its body (LBRACE_BODY, pop).
             if (m10_frame_top >= 0
                 && m10_frame_stack[m10_frame_top].paren_depth_at_push == m10_paren_depth) {
+                if (m10_frame_stack[m10_frame_top].literal_pending) {
+                    m10_frame_stack[m10_frame_top].literal_pending = 0;
+                    m10_lit_depth = 1;
+                    return LBRACE;
+                }
                 m10_pop_frame();
                 return LBRACE_BODY;
             }
             return LBRACE;
-        case TOKEN_RBRACE: return RBRACE;
+        case TOKEN_RBRACE:
+            if (m10_lit_depth > 0) m10_lit_depth--;
+            return RBRACE;
         case TOKEN_LBRACKET:
+            // A TYPE-position `[` at the top cond frame's depth (e.g.
+            // `range []int{...}`) arms literal_pending so the composite
+            // literal's `{` is classified as a literal, not the body. An
+            // INDEX-position `[` (previous token ends an operand, e.g.
+            // `if a[i] > 0 {`) does NOT arm — that would misread the body `{`.
+            if (m10_frame_top >= 0
+                && m10_frame_stack[m10_frame_top].paren_depth_at_push == m10_paren_depth
+                && m10_lit_depth == 0
+                && !bridge_prev_ends_operand(s_last_emitted)) {
+                m10_frame_stack[m10_frame_top].literal_pending = 1;
+            }
             // LBRACKET also raises paren_depth so that `[]int{1,2,3}` after
             // an IF/FOR has its struct-lit-like brace at depth >= 1, keeping
             // the cond frame alive until the real body brace at depth 0.
@@ -296,7 +373,25 @@ static int bridge_next_mapped(void) {
     // actually returned.
     s_last_token_line = token->pos.line;
 
+    // Depth BEFORE map_token_to_bison mutates it (LBRACKET/LPAREN increment):
+    // the clear check below must see the depth the token arrived AT, so tokens
+    // nested inside the type's own brackets — e.g. the size `3` in `[3]int` —
+    // are recognized as not-at-frame-level and do NOT clear literal_pending.
+    int depth_before = m10_paren_depth;
     int bison_token = map_token_to_bison(token->type);
+
+    // Clear a stale literal_pending: it was armed by a type-position `[`/`map`
+    // at cond-frame level, but if a token AT THAT LEVEL can't continue a type
+    // heading into a composite literal — e.g. `(` in a conversion `[]byte(s)`,
+    // or an operator — the type-prefix did not open a literal, so the eventual
+    // body `{` must still fire as LBRACE_BODY. Tokens deeper than frame level
+    // (array sizes, call args) never clear; the literal `{` clears it in
+    // map_token_to_bison (and is excluded here).
+    if (m10_frame_top >= 0 && m10_frame_stack[m10_frame_top].literal_pending
+        && depth_before == m10_frame_stack[m10_frame_top].paren_depth_at_push
+        && bison_token != LBRACE && !bridge_token_continues_type(bison_token)) {
+        m10_frame_stack[m10_frame_top].literal_pending = 0;
+    }
 
     // Set the semantic value based on token type
     switch (token->type) {
