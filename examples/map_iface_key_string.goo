@@ -1,0 +1,18 @@
+// map_iface_key_string (interface-typed map keys, Task 3): map[any]int with
+// a STRING dynamic key. Two distinct string values built two different ways
+// ("Ada" literal vs. "A"+"da" concatenation — different backing addresses)
+// but equal content must hit the SAME entry: interface equality is dynamic
+// type (string) + Go string content equality, never address identity.
+// go-run-verified byte-for-byte against an equivalent .go program.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[any]int{}
+	m["Ada"] = 1
+	s := "A" + "da"
+	m[s] = 2 // same string content, different address -> overwrite
+	fmt.Println(m["Ada"])
+	fmt.Println(len(m))
+}
