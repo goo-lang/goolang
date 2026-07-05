@@ -876,9 +876,25 @@ void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
 
 void goo_bounds_check(size_t index, size_t length, const char* file, int line) {
     if (index >= length) {
-        fprintf(stderr, "bounds check failed at %s:%d: index %zu >= length %zu\n", 
+        fprintf(stderr, "bounds check failed at %s:%d: index %zu >= length %zu\n",
                 file, line, index, length);
         goo_panic("bounds check failed");
+    }
+}
+
+// F5 follow-up: bounds check for slice/substring EXPRESSIONS `base[low:high]`,
+// the sibling of goo_bounds_check (which guards single-element index reads/
+// writes). Go's rule: 0 <= low <= high <= max, where max is cap(base) for a
+// slice and len(base) for a string (strings have no cap). Signed int64_t
+// params (not size_t) because a negative low must compare as negative, not
+// wrap to a huge unsigned value — the caller widens via sign-extension so a
+// literal -1 arrives here as -1, and low < 0 catches it directly.
+void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max, const char* file, int line) {
+    if (low < 0 || high < low || high > max) {
+        fprintf(stderr,
+                "slice bounds out of range at %s:%d: [%lld:%lld] with max %lld\n",
+                file, line, (long long)low, (long long)high, (long long)max);
+        goo_panic("slice bounds out of range");
     }
 }
 

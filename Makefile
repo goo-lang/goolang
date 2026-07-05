@@ -1442,6 +1442,41 @@ array-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -qi "bounds check failed" build/arb_oob.err; then echo "array-bounds-probe: FAIL (no bounds message on read)"; cat build/arb_oob.err; exit 1; fi
 	@echo "array-bounds-probe: PASS"
 
+# F5 follow-up: slice/substring EXPRESSIONS `base[low:high]` out of range must
+# abort (non-zero exit + "slice bounds out of range"), not silently alias
+# memory past the backing buffer/capacity. Sibling of bounds-probe (which
+# covers single-element index reads) and slice-write-bounds-probe (single-
+# element writes) — this one covers the two-bound slice-expression form.
+# Covers: high>cap, low>high, negative low, and a string (no cap, so max=len).
+slice-expr-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== slice-expr-bounds-probe: out-of-range s[low:high] must abort ==="
+	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[]int{1,2,3}; t:=s[1:10]; fmt.Println(len(t)) }\n' > build/sebp_highcap.goo
+	@"$(COMPILER)" build/sebp_highcap.goo -o build/sebp_highcap.out 2>build/sebp_highcap.cerr || \
+	  { echo "slice-expr-bounds-probe: FAIL (compile high>cap)"; cat build/sebp_highcap.cerr; exit 1; }
+	@./build/sebp_highcap.out 2>build/sebp_highcap.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (high>cap did not abort, rc=0)"; exit 1; fi; \
+	  if ! grep -qi "slice bounds out of range" build/sebp_highcap.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on high>cap)"; cat build/sebp_highcap.err; exit 1; fi
+	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[]int{1,2,3}; t:=s[3:1]; fmt.Println(len(t)) }\n' > build/sebp_lowhigh.goo
+	@"$(COMPILER)" build/sebp_lowhigh.goo -o build/sebp_lowhigh.out 2>build/sebp_lowhigh.cerr || \
+	  { echo "slice-expr-bounds-probe: FAIL (compile low>high)"; cat build/sebp_lowhigh.cerr; exit 1; }
+	@./build/sebp_lowhigh.out 2>build/sebp_lowhigh.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (low>high did not abort, rc=0)"; exit 1; fi; \
+	  if ! grep -qi "slice bounds out of range" build/sebp_lowhigh.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on low>high)"; cat build/sebp_lowhigh.err; exit 1; fi
+	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[]int{1,2,3}; i:=-1; t:=s[i:]; fmt.Println(len(t)) }\n' > build/sebp_neg.goo
+	@"$(COMPILER)" build/sebp_neg.goo -o build/sebp_neg.out 2>build/sebp_neg.cerr || \
+	  { echo "slice-expr-bounds-probe: FAIL (compile negative low)"; cat build/sebp_neg.cerr; exit 1; }
+	@./build/sebp_neg.out 2>build/sebp_neg.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (negative low did not abort, rc=0)"; exit 1; fi; \
+	  if ! grep -qi "slice bounds out of range" build/sebp_neg.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on negative low)"; cat build/sebp_neg.err; exit 1; fi
+	@printf 'package main\nimport "fmt"\nfunc main(){ str:="hello"; sub:=str[0:99]; fmt.Println(sub) }\n' > build/sebp_str.goo
+	@"$(COMPILER)" build/sebp_str.goo -o build/sebp_str.out 2>build/sebp_str.cerr || \
+	  { echo "slice-expr-bounds-probe: FAIL (compile string OOB)"; cat build/sebp_str.cerr; exit 1; }
+	@./build/sebp_str.out 2>build/sebp_str.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (string OOB did not abort, rc=0)"; exit 1; fi; \
+	  if ! grep -qi "slice bounds out of range" build/sebp_str.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on string OOB)"; cat build/sebp_str.err; exit 1; fi
+	@echo "slice-expr-bounds-probe: PASS"
+
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
 # not jump to a NULL instruction pointer. `var f func(int) int` zero-values
@@ -1919,7 +1954,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-emptyiface-reject-probe typeswitch-emptyiface-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-emptyiface-reject-probe typeswitch-emptyiface-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
