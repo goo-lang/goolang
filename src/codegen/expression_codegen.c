@@ -1518,6 +1518,54 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         }
     }
 
+    // funcval == nil / nil == funcval (queue #3). A function value is the fat
+    // pointer { i8* fn_ptr, i8* env }; its zero value has a null fn_ptr. Mirror
+    // the nullable path above: do NOT evaluate the nil side (a bare i8* null is
+    // the wrong shape to compare against the pair struct) — evaluate only the
+    // funcval operand and compare its fn-ptr word (field 0) against null. The
+    // env word is deliberately ignored (a nil funcval has no closure).
+    if (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE) {
+        bool right_is_nil = (binary->right->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL);
+        bool left_is_nil  = (binary->left->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->left)->literal_type == TOKEN_NIL);
+
+        ASTNode* funcval_node = NULL;
+        if (right_is_nil) {
+            Type* lt = type_check_expression(checker, binary->left);
+            if (lt && lt->kind == TYPE_FUNCTION) funcval_node = binary->left;
+        } else if (left_is_nil) {
+            Type* rt = type_check_expression(checker, binary->right);
+            if (rt && rt->kind == TYPE_FUNCTION) funcval_node = binary->right;
+        }
+
+        if (funcval_node) {
+            ValueInfo* fv = codegen_generate_expression(codegen, checker, funcval_node);
+            if (!fv) return NULL;
+
+            // Auto-load if the operand is an lvalue (e.g. a plain identifier),
+            // yielding the { i8*, i8* } pair value itself.
+            if (fv->is_lvalue && fv->goo_type) {
+                LLVMTypeRef ft = codegen_type_to_llvm(codegen, fv->goo_type);
+                if (ft) {
+                    fv->llvm_value = LLVMBuildLoad2(codegen->builder, ft, fv->llvm_value, "funcval_load");
+                    fv->is_lvalue = 0;
+                }
+            }
+
+            LLVMValueRef fn_ptr = LLVMBuildExtractValue(codegen->builder, fv->llvm_value, 0, "funcval_fnptr");
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMValueRef null_ptr = LLVMConstPointerNull(i8ptr);
+            LLVMValueRef result = LLVMBuildICmp(codegen->builder,
+                binary->operator == TOKEN_EQ ? LLVMIntEQ : LLVMIntNE,
+                fn_ptr, null_ptr, "funcval_nilcmp");
+
+            Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+            value_info_free(fv);
+            return value_info_new(NULL, result, bool_type);
+        }
+    }
+
     // P1-5: short-circuit && / ||. Must run BEFORE the eager operand
     // generation below — the whole point is that the right operand is only
     // evaluated when the result isn't already determined by the left.

@@ -177,7 +177,7 @@ Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* righ
     }
 }
 
-Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op __attribute__((unused)), Position pos) {
+Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos) {
     if (!checker || !left_type || !right_type) return NULL;
 
     // Comparison operations return boolean
@@ -188,6 +188,16 @@ Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* righ
     // struct-to-nil LLVM comparison is emitted.
     if ((type_is_nullable(left_type) && right_type->kind == TYPE_UNKNOWN) ||
         (left_type->kind == TYPE_UNKNOWN && type_is_nullable(right_type))) {
+        return bool_type;
+    }
+
+    // funcval == nil / nil == funcval (queue #3): a function value is only
+    // comparable to nil, and only with == / != (Go forbids ordering and
+    // funcval-to-funcval comparison). Codegen reads the fn-ptr word and
+    // compares it to null — no struct-to-nil LLVM comparison is emitted.
+    if ((op == TOKEN_EQ || op == TOKEN_NE) &&
+        ((left_type->kind == TYPE_FUNCTION && right_type->kind == TYPE_UNKNOWN) ||
+         (left_type->kind == TYPE_UNKNOWN && right_type->kind == TYPE_FUNCTION))) {
         return bool_type;
     }
 
