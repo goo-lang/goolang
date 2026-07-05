@@ -1,0 +1,7 @@
+int 42
+string hi
+bool true
+ptr Point 5
+Point 6
+nil
+other
