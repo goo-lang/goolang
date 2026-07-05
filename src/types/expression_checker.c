@@ -295,7 +295,15 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             for (ASTNode* k = lit->keys; k; k = k->next, ki++) {
                 Type* kt = type_check_expression(checker, k);
                 if (!kt) return NULL;
-                if (!type_compatible(kt, want_key)) {
+                // An interface-typed map key (Task 2) accepts any concrete
+                // implementer — route through check_interface_assign,
+                // mirroring the value check below. It emits its own "does
+                // not implement" diagnostic on failure.
+                if (want_key->kind == TYPE_INTERFACE) {
+                    if (!check_interface_assign(checker, kt, want_key, k->pos)) {
+                        return NULL;
+                    }
+                } else if (!type_compatible(kt, want_key)) {
                     type_error(checker, k->pos,
                                "Map literal key %zu type '%s' is not compatible "
                                "with declared key type '%s'",
@@ -2629,7 +2637,13 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* key_t = type_check_expression(checker, call->args->next);
             if (!key_t) return NULL;
-            if (!type_compatible(key_t, map_t->data.map.key_type)) {
+            // Interface-typed key (Task 2): accept any concrete implementer,
+            // mirroring type_check_index_expr's TYPE_MAP arm.
+            if (map_t->data.map.key_type->kind == TYPE_INTERFACE) {
+                if (!check_interface_assign(checker, key_t, map_t->data.map.key_type, expr->pos)) {
+                    return NULL;
+                }
+            } else if (!type_compatible(key_t, map_t->data.map.key_type)) {
                 type_error(checker, expr->pos,
                            "delete: cannot use %s as key of %s",
                            type_to_string(key_t), type_to_string(map_t));
@@ -3079,17 +3093,33 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
         case TYPE_SLICE:
             element_type = expr_type->data.slice.element_type;
             break;
-        case TYPE_MAP:
-            // For maps, check if index type is compatible with key type
-            if (!type_compatible(index_type, expr_type->data.map.key_type)) {
+        case TYPE_MAP: {
+            // For maps, check if index type is compatible with key type. An
+            // interface-typed key (Task 2, interface-typed map keys) accepts
+            // any concrete implementer (boxed at codegen via
+            // codegen_box_map_key_if_needed) — plain type_compatible rejects
+            // a concrete implementer outright (it isn't the interface type
+            // itself), so route interface-typed keys through
+            // check_interface_assign instead, mirroring the map-literal
+            // value check above (and this function's own key check). This
+            // is the single type-check choke point for `m[k]` reads AND
+            // `m[k] = v` assignments (the assignment's LHS is type-checked
+            // as this same index expression) and comma-ok reads.
+            Type* want_key = expr_type->data.map.key_type;
+            if (want_key->kind == TYPE_INTERFACE) {
+                if (!check_interface_assign(checker, index_type, want_key, index->index->pos)) {
+                    return NULL;
+                }
+            } else if (!type_compatible(index_type, want_key)) {
                 type_error(checker, index->index->pos,
                           "Map key type mismatch: expected %s, got %s",
-                          type_to_string(expr_type->data.map.key_type),
+                          type_to_string(want_key),
                           type_to_string(index_type));
                 return NULL;
             }
             element_type = expr_type->data.map.value_type;
             break;
+        }
         case TYPE_STRING:
             // Go: s[i] yields the i-th byte (type byte == uint8). The result
             // is a value, not an addressable lvalue — strings are immutable, so

@@ -492,6 +492,17 @@ int codegen_map_value_is_inline(Type* value_type);
 // ValueInfo lets this one helper do that load for all 5 call sites.
 // `key_type` may be NULL — falls back to key_val->goo_type.
 int codegen_map_key_kind(Type* key_type);
+// Interface-typed map keys (Task 2): box a concrete key into `key_type` when
+// (and only when) key_type is TYPE_INTERFACE and the key expression's own
+// type isn't already that interface — call this BEFORE codegen_map_key_to_
+// slot at every call site that packs a user-supplied key (assignment,
+// plain/comma-ok read, delete, RMW, map literal entries). See the doc
+// comment at its definition (codegen.c) for why this can't be folded into
+// codegen_map_key_to_slot itself. Mutates `key_val` in place on success;
+// returns 1 (success, including every no-op case) or 0 (failure, already
+// reported via codegen_error at `pos`).
+int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
+                                  ValueInfo* key_val, Type* key_type, Position pos);
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
                                      ValueInfo* key_val, Type* key_type);
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);

@@ -625,9 +625,11 @@ LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot
 // Map key kind for goo_map_new_sv: STRING(0) for string keys, INLINE(1) for
 // integer/uint/bool/rune/byte/pointer, STRUCT(2) for a struct key compared
 // via the map's synthesized per-field comparator (goo.structeq.<id>, see
-// codegen_get_or_emit_struct_key_eq below). Matches runtime.h's GOO_MAPKEY_*
-// enum.
+// codegen_get_or_emit_struct_key_eq below), IFACE(3) for an interface-typed
+// key compared via the runtime's goo_iface_key_eq (Task 2). Matches
+// runtime.h's GOO_MAPKEY_* enum.
 int codegen_map_key_kind(Type* key_type) {
+    if (key_type && key_type->kind == TYPE_INTERFACE) return 3 /*GOO_MAPKEY_IFACE*/;
     if (key_type && key_type->kind == TYPE_STRUCT) return 2 /*GOO_MAPKEY_STRUCT*/;
     return (key_type && key_type->kind == TYPE_STRING) ? 0 /*GOO_MAPKEY_STRING*/ : 1 /*INLINE*/;
 }
@@ -1006,6 +1008,60 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
     return fn;
 }
 
+// Interface-typed map keys (Task 2): box a concrete key value into the map's
+// declared TYPE_INTERFACE key type before codegen_map_key_to_slot packs it —
+// mirrors the box-before-slot pattern every interface-typed map VALUE site
+// already applies via codegen_interface_box (expression_codegen.c's map
+// literal and `m[k] = v` arms). Every call site that packs a user-supplied
+// key (assignment, plain/comma-ok read, delete, compound-assign RMW, map
+// literal entries) calls this FIRST, then passes the (possibly rewritten)
+// key_val on to codegen_map_key_to_slot.
+//
+// A no-op (returns 1 immediately) unless key_type is TYPE_INTERFACE and the
+// key expression's OWN static type is a different, non-interface concrete —
+// covering both existing behaviors unchanged: (a) every non-interface-keyed
+// map (the overwhelming majority of call sites) skips this entirely; (b) a
+// key whose static type is ALREADY that interface (`var s any = 5; m[s] = v`)
+// falls straight through to codegen_map_key_to_slot's own is_lvalue reload,
+// which is correct there since the map's declared key type and the key
+// expression's type are the same interface struct type.
+//
+// Why this can't be folded into codegen_map_key_to_slot itself: that
+// function's is_lvalue reload loads `key_val->llvm_value` using the
+// DECLARED key type `kt`'s LLVM type, assuming the storage it points at
+// already has that type. For a concrete key into an interface-keyed map
+// (e.g. `m[1] = 10` where m is map[any]int), that assumption is false — `1`
+// is an i64 rvalue (or an i64* alloca if it came from a variable), not a
+// `{vtable,data}` pair. Boxing must happen — and any is_lvalue reload of the
+// CONCRETE value must happen using the CONCRETE type — strictly before
+// codegen_map_key_to_slot ever sees kt=TYPE_INTERFACE, hence a separate
+// pre-step rather than an arm inside that function.
+//
+// Mutates `key_val` in place (llvm_value/goo_type/is_lvalue) on success.
+// Returns 1 on success (including the no-op cases above), 0 on failure
+// (already reported via codegen_error).
+int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
+                                  ValueInfo* key_val, Type* key_type, Position pos) {
+    if (!key_val || !key_type || key_type->kind != TYPE_INTERFACE) return 1;
+    if (!key_val->goo_type || key_val->goo_type->kind == TYPE_INTERFACE) return 1;
+
+    LLVMValueRef raw = key_val->llvm_value;
+    if (key_val->is_lvalue) {
+        LLVMTypeRef llvm_t = codegen_type_to_llvm(codegen, key_val->goo_type);
+        if (!llvm_t) return 0;
+        raw = LLVMBuildLoad2(codegen->builder, llvm_t, raw, "mapkey_concrete_load");
+    }
+    LLVMValueRef boxed = codegen_interface_box(codegen, checker, key_type, key_val->goo_type, raw);
+    if (!boxed) {
+        codegen_error(codegen, pos, "failed to box map key into interface key type");
+        return 0;
+    }
+    key_val->llvm_value = boxed;
+    key_val->goo_type = key_type;
+    key_val->is_lvalue = 0;
+    return 1;
+}
+
 // Pack a key value into the i64 slot. STRING: extract the char* and PtrToInt
 // (NOT codegen_map_value_to_slot — that heap-boxes strings, which would break
 // strcmp identity: two equal-content string keys must PtrToInt to the SAME
@@ -1060,6 +1116,29 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "skey_slot");
     }
+    if (kt && kt->kind == TYPE_INTERFACE) {
+        // Interface-typed map keys (Task 2): heap-copy the boxed `{vtable,
+        // data}` value — mirrors the struct arm immediately above exactly
+        // (an interface key is, ABI-wise, just another two-pointer
+        // aggregate). `raw` is already the loaded interface VALUE: either
+        // the key expression's own static type was already TYPE_INTERFACE
+        // (is_lvalue load above used kt == the interface struct type, which
+        // is correct), or the caller pre-boxed a concrete key into this
+        // interface via codegen_box_map_key_if_needed before reaching here
+        // (every call site that packs a user-supplied key does this — see
+        // that helper's doc comment). Two DISTINCT boxes of the SAME dynamic
+        // type+value must still hit the same map entry, which
+        // goo_iface_key_eq (not pointer identity) provides — the slot only
+        // needs to carry an address the comparator can dereference.
+        LLVMTypeRef ifty = codegen_type_to_llvm(codegen, kt);
+        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+        if (!ifty || !alloc_fn) return NULL;
+        LLVMValueRef size = LLVMSizeOf(ifty);
+        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
+                                          alloc_fn, &size, 1, "ikey_mem");
+        LLVMBuildStore(codegen->builder, raw, mem);
+        return LLVMBuildPtrToInt(codegen->builder, mem, i64, "ikey_slot");
+    }
     return codegen_map_value_to_slot(codegen, raw, kt);
 }
 
@@ -1081,6 +1160,17 @@ LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, 
         LLVMValueRef sp = LLVMBuildIntToPtr(codegen->builder, slot,
                                            LLVMPointerType(sty, 0), "skey_ptr");
         return LLVMBuildLoad2(codegen->builder, sty, sp, "skey_val");
+    }
+    if (key_type && key_type->kind == TYPE_INTERFACE) {
+        // Interface-typed map keys (Task 2): inverse of codegen_map_key_to_
+        // slot's TYPE_INTERFACE arm — IntToPtr the slot back to a pointer to
+        // the boxed `{vtable, data}` value and load it. Used by range-over-
+        // map's key binding (statement_codegen.c).
+        LLVMTypeRef ifty = codegen_type_to_llvm(codegen, key_type);
+        if (!ifty) return NULL;
+        LLVMValueRef ip = LLVMBuildIntToPtr(codegen->builder, slot,
+                                           LLVMPointerType(ifty, 0), "ikey_ptr");
+        return LLVMBuildLoad2(codegen->builder, ifty, ip, "ikey_val");
     }
     return codegen_map_slot_to_value(codegen, slot, key_type);
 }

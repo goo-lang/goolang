@@ -89,6 +89,12 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             return NULL;
         }
         Type* key_type = base_type->data.map.key_type;
+        // Box a concrete key into an interface-typed map key BEFORE
+        // slot-packing (Task 2) — no-op for every non-interface-keyed map.
+        if (!codegen_box_map_key_if_needed(codegen, checker, index_val, key_type, expr->pos)) {
+            value_info_free(base_val); value_info_free(index_val);
+            return NULL;
+        }
         LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, index_val, key_type);
         LLVMValueRef args[2] = { base_val->llvm_value, kp };
         LLVMValueRef slot = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),

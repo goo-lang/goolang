@@ -511,8 +511,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                                                  codegen_map_key_kind(made_type->data.map.key_type), 0);
             // A struct key needs the synthesized per-field comparator so the
             // runtime's key_kind==STRUCT arm can call it (goo_map_key_eq,
-            // runtime.c); every other key kind passes NULL (unused by the
-            // runtime for STRING/INLINE).
+            // runtime.c); an interface key needs the runtime's
+            // goo_iface_key_eq (Task 2, key_kind==IFACE); every other key
+            // kind passes NULL (unused by the runtime for STRING/INLINE).
             LLVMValueRef keyeq_ptr;
             LLVMTypeRef keyeq_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
             if (made_type->data.map.key_type && made_type->data.map.key_type->kind == TYPE_STRUCT) {
@@ -521,6 +522,13 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 if (!cmp_fn) {
                     codegen_error(codegen, expr->pos,
                                   "make: failed to synthesize struct key comparator");
+                    return NULL;
+                }
+                keyeq_ptr = LLVMBuildBitCast(codegen->builder, cmp_fn, keyeq_ptr_ty, "keyeq_ptr");
+            } else if (made_type->data.map.key_type && made_type->data.map.key_type->kind == TYPE_INTERFACE) {
+                LLVMValueRef cmp_fn = LLVMGetNamedFunction(codegen->module, "goo_iface_key_eq");
+                if (!cmp_fn) {
+                    codegen_error(codegen, expr->pos, "make: goo_iface_key_eq unavailable");
                     return NULL;
                 }
                 keyeq_ptr = LLVMBuildBitCast(codegen->builder, cmp_fn, keyeq_ptr_ty, "keyeq_ptr");
@@ -631,6 +639,13 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (!key_arg) { value_info_free(map_arg); return NULL; }
             Type* del_key_type = (map_arg->goo_type && map_arg->goo_type->kind == TYPE_MAP)
                 ? map_arg->goo_type->data.map.key_type : key_arg->goo_type;
+            // Box a concrete key into an interface-typed map key BEFORE
+            // slot-packing (Task 2) — no-op for every non-interface-keyed map.
+            if (!codegen_box_map_key_if_needed(codegen, checker, key_arg, del_key_type, expr->pos)) {
+                value_info_free(map_arg);
+                value_info_free(key_arg);
+                return NULL;
+            }
             LLVMValueRef key_ptr = codegen_map_key_to_slot(codegen, checker, key_arg, del_key_type);
             LLVMValueRef del_fn = LLVMGetNamedFunction(codegen->module, "goo_map_delete_sv");
             if (!del_fn) {

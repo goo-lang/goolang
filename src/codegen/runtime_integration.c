@@ -338,14 +338,25 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
 
     // GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq) — key_kind
     // selects the runtime's key-comparison strategy (GOO_MAPKEY_STRING=0 ->
-    // strcmp, GOO_MAPKEY_INLINE=1 -> ==, GOO_MAPKEY_STRUCT=2 -> key_eq);
-    // codegen_map_key_kind (codegen.c) derives it from the map's key type at
-    // every creation site. key_eq is the per-map struct-key comparator
-    // (opaque ptr; NULL for string/inline maps — struct keys are wired in a
-    // later task).
+    // strcmp, GOO_MAPKEY_INLINE=1 -> ==, GOO_MAPKEY_STRUCT=2 -> key_eq,
+    // GOO_MAPKEY_IFACE=3 -> key_eq); codegen_map_key_kind (codegen.c) derives
+    // it from the map's key type at every creation site. key_eq is the
+    // per-map struct/interface-key comparator (opaque ptr; NULL for
+    // string/inline maps).
     {
         LLVMTypeRef params[] = { i32_type, ptr_type };
         add_runtime_function(codegen, "goo_map_new_sv", ptr_type, params, 2);
+    }
+    // int32_t goo_iface_key_eq(int64_t a, int64_t b) — the runtime's
+    // interface-key comparator (Task 2). Declared here (never called
+    // directly by codegen — only its ADDRESS is taken, at every interface-
+    // keyed map's goo_map_new_sv call site) so LLVMGetNamedFunction can find
+    // it to build that function-pointer argument. Mirrors every other
+    // runtime extern in this file.
+    {
+        LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context),
+                                  LLVMInt64TypeInContext(codegen->context) };
+        add_runtime_function(codegen, "goo_iface_key_eq", i32_type, params, 2);
     }
     // void goo_map_set_sv(GooMapSV*, int64_t k, int64_t v) — both key and
     // value are 8-byte slots now; codegen packs the declared K/V to i64 via

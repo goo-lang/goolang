@@ -594,9 +594,26 @@ double goo_math_max(double x, double y) {
 // raw bits (INLINE key_kind); the value slot holds an integer or any
 // pointer. Codegen casts each slot per the declared map K/V types.
 
+// Interface-typed map keys (Task 2): compare two boxed `{vtable, data}` key
+// slots. Each of a/b is a pointer to one such heap-copied pair (see
+// codegen_map_key_to_slot's TYPE_INTERFACE arm). Go interface equality: same
+// dynamic type (vtable identity) AND equal dynamic value (dispatched to the
+// vtable's slot 0 — the concrete's per-type value-equality comparator,
+// codegen_get_or_emit_type_eq) on the two data words.
+int goo_iface_key_eq(int64_t a, int64_t b) {
+    void** ia = (void**)(intptr_t)a;  // -> { vtable, data }
+    void** ib = (void**)(intptr_t)b;
+    void* vta = ia[0]; void* vtb = ib[0];
+    if (vta == NULL && vtb == NULL) return 1;   // both nil interfaces
+    if (vta != vtb) return 0;                    // different dynamic type (or one nil)
+    GooKeyEqFn eq = (GooKeyEqFn)((void**)vta)[0]; // vtable slot 0 = per-type eq
+    return eq((int64_t)(intptr_t)ia[1], (int64_t)(intptr_t)ib[1]); // compare the data words
+}
+
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
 // char* — strcmp. INLINE: the slots hold the key's bits — direct ==. STRUCT:
-// dispatch to the map's per-map comparator.
+// dispatch to the map's per-map comparator. IFACE: dispatch to the map's
+// per-map comparator (goo_iface_key_eq, set at map-creation time).
 static int goo_map_key_eq(const GooMapSV* m, int64_t a, int64_t b) {
     if (m->key_kind == GOO_MAPKEY_STRING) {
         const char* sa = (const char*)(intptr_t)a;
@@ -610,6 +627,9 @@ static int goo_map_key_eq(const GooMapSV* m, int64_t a, int64_t b) {
         // per-field comparator does value-equality. NULL key_eq should never
         // happen for a STRUCT map (codegen always supplies it) — fall back to
         // pointer identity defensively.
+        return m->key_eq ? m->key_eq(a, b) : (a == b);
+    }
+    if (m->key_kind == GOO_MAPKEY_IFACE) {
         return m->key_eq ? m->key_eq(a, b) : (a == b);
     }
     return a == b;
