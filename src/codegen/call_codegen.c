@@ -557,6 +557,17 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // be constant-folded; deferred until needed.
             ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
             if (!arg) return NULL;
+            // Array: len is the static element count (a compile-time constant).
+            // An array is a raw [N x T] value, not a {ptr,len} aggregate, so
+            // there is no header field to extract — and we return before the
+            // load below so a large array is never materialized just to be
+            // discarded.
+            if (arg->goo_type && arg->goo_type->kind == TYPE_ARRAY) {
+                LLVMValueRef n = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                              (unsigned long long)arg->goo_type->data.array.length, 0);
+                value_info_free(arg);
+                return value_info_new(NULL, n, type_checker_get_builtin(checker, TYPE_INT64));
+            }
             LLVMValueRef raw = arg->llvm_value;
             if (arg->is_lvalue && arg->goo_type) {
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
@@ -620,6 +631,15 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // header. Mirrors len() but reads field 2 instead of field 1.
             ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
             if (!arg) return NULL;
+            // Array: cap == len == the static element count (a compile-time
+            // constant); no {ptr,len,cap} header to extract. Return before the
+            // load so a large array is never materialized.
+            if (arg->goo_type && arg->goo_type->kind == TYPE_ARRAY) {
+                LLVMValueRef n = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                              (unsigned long long)arg->goo_type->data.array.length, 0);
+                value_info_free(arg);
+                return value_info_new(NULL, n, type_checker_get_builtin(checker, TYPE_INT64));
+            }
             LLVMValueRef raw = arg->llvm_value;
             if (arg->is_lvalue && arg->goo_type) {
                 LLVMTypeRef lt = codegen_type_to_llvm(codegen, arg->goo_type);
