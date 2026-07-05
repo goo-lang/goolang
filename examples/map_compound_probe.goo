@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]int{"a": 1}
+	m["a"]++
+	fmt.Println(m["a"])
+	m["a"] += 5
+	fmt.Println(m["a"])
+	m["a"] -= 2
+	fmt.Println(m["a"])
+	m["b"]++
+	fmt.Println(m["b"])
+	freq := map[rune]int{}
+	for _, r := range "banana" {
+		freq[r]++
+	}
+	fmt.Println(freq['a'])
+	fmt.Println(freq['n'])
+}

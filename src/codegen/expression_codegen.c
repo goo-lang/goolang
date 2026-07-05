@@ -5,6 +5,91 @@
 
 // Expression code generation
 
+#if LLVM_AVAILABLE
+// Read-modify-write for a map-index target `m[k]`: read the old value via
+// goo_map_get_sv, compute old <op> rhs (or old +/- 1 for postfix, when
+// rhs_or_null is NULL), and write the result back via goo_map_set_sv.
+// Returns a ValueInfo wrapping the NEW value (rvalue, not addressable), or
+// NULL on error (a source-located error has already been emitted).
+//
+// Mirrors the `m[k] = v` fast path (this file, TOKEN_ASSIGN's AST_INDEX_EXPR
+// arm, ~line 1110) for the map/key/value plumbing, and the plain read fast
+// path (composite_codegen.c's codegen_generate_index_expr TYPE_MAP arm) for
+// the get+slot_to_value half. This lets `m[k]++`/`m[k] += n` reuse the same
+// runtime calls and slot packing instead of resolving an address — map
+// values are never addressable (see codegen_emit_lvalue_address's
+// AST_INDEX_EXPR arm, which still rejects `&m[k]` / `m[k].F = v`
+// unconditionally; only whole-value RMW is new here).
+static ValueInfo* codegen_map_index_rmw(CodeGenerator* codegen, TypeChecker* checker,
+                                        ASTNode* index_node, TokenType base_op,
+                                        ASTNode* rhs_or_null) {
+    IndexExprNode* idx = (IndexExprNode*)index_node;
+    Type* base_t = type_check_expression(checker, idx->expr);
+    if (!base_t || base_t->kind != TYPE_MAP) return NULL;
+    Type* key_type = base_t->data.map.key_type;
+    Type* val_type = base_t->data.map.value_type;
+
+    LLVMValueRef get_fn = LLVMGetNamedFunction(codegen->module, "goo_map_get_sv");
+    LLVMValueRef set_fn = LLVMGetNamedFunction(codegen->module, "goo_map_set_sv");
+    if (!get_fn || !set_fn) {
+        codegen_error(codegen, index_node->pos, "map get/set runtime symbols missing");
+        return NULL;
+    }
+
+    ValueInfo* mv = codegen_generate_expression(codegen, checker, idx->expr);
+    ValueInfo* kv = codegen_generate_expression(codegen, checker, idx->index);
+    if (!mv || !kv) { value_info_free(mv); value_info_free(kv); return NULL; }
+    LLVMValueRef kslot = codegen_map_key_to_slot(codegen, checker, kv, key_type);
+
+    // old = slot_to_value(goo_map_get_sv(m, kslot)) — a missing key returns a
+    // zero slot from the runtime, so old_val is V's zero value, matching the
+    // plain `m[k]` read fast-path's missing-key behavior.
+    LLVMValueRef gargs[2] = { mv->llvm_value, kslot };
+    LLVMValueRef old_slot = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(get_fn),
+                                           get_fn, gargs, 2, "rmw_get");
+    LLVMValueRef old_val = codegen_map_slot_to_value(codegen, old_slot, val_type);
+
+    // rhs value: the RHS expr (loaded to a scalar if it's itself an lvalue,
+    // same auto-load every other RHS site in this file performs), or a
+    // constant 1 for postfix ++/--.
+    LLVMValueRef rhs;
+    if (rhs_or_null) {
+        ValueInfo* rv = codegen_generate_expression(codegen, checker, rhs_or_null);
+        if (!rv) { value_info_free(mv); value_info_free(kv); return NULL; }
+        rhs = rv->is_lvalue && rv->goo_type
+              ? LLVMBuildLoad2(codegen->builder, codegen_type_to_llvm(codegen, rv->goo_type), rv->llvm_value, "rmw_rhs")
+              : rv->llvm_value;
+        value_info_free(rv);
+    } else {
+        rhs = LLVMConstInt(codegen_type_to_llvm(codegen, val_type), 1, 0);
+    }
+
+    // new = old <op> rhs. v1 admits + - * on map values (mirrors the base_op
+    // switch's TOKEN_PLUS/TOKEN_MINUS/TOKEN_MULTIPLY cases used by the
+    // compound-assign desugar above); anything else is an explicit error,
+    // not a silent miscompile.
+    LLVMValueRef newv;
+    switch (base_op) {
+        case TOKEN_PLUS:     newv = LLVMBuildAdd(codegen->builder, old_val, rhs, "rmw_add"); break;
+        case TOKEN_MINUS:    newv = LLVMBuildSub(codegen->builder, old_val, rhs, "rmw_sub"); break;
+        case TOKEN_MULTIPLY: newv = LLVMBuildMul(codegen->builder, old_val, rhs, "rmw_mul"); break;
+        default:
+            codegen_error(codegen, index_node->pos,
+                          "unsupported compound op on map value (v1: + - *)");
+            value_info_free(mv); value_info_free(kv); return NULL;
+    }
+
+    // goo_map_set_sv(m, kslot, value_to_slot(new))
+    LLVMValueRef nslot = codegen_map_value_to_slot(codegen, newv, val_type);
+    LLVMValueRef sargs[3] = { mv->llvm_value, kslot, nslot };
+    LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(set_fn), set_fn, sargs, 3, "");
+
+    value_info_free(mv);
+    value_info_free(kv);
+    return value_info_new(NULL, newv, val_type);
+}
+#endif
+
 ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
     if (!codegen || !checker || !expr) return NULL;
     
@@ -198,6 +283,23 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             LLVMValueRef loaded;
             LLVMValueRef one;
             LLVMValueRef updated;
+
+            // `m[k]++` / `m[k]--`: map values are never addressable (see
+            // codegen_emit_lvalue_address's AST_INDEX_EXPR arm below), so
+            // route to the read-modify-write helper BEFORE resolving an
+            // lvalue address — mirrors the `m[k] = v` fast path's map
+            // detection (type_check_expression + TYPE_MAP) in the
+            // TOKEN_ASSIGN arm of codegen_generate_binary_expr.
+            if (p->operand->type == AST_INDEX_EXPR) {
+                IndexExprNode* pidx = (IndexExprNode*)p->operand;
+                Type* pbase_t = type_check_expression(checker, pidx->expr);
+                if (pbase_t && pbase_t->kind == TYPE_MAP) {
+                    return codegen_map_index_rmw(codegen, checker, p->operand,
+                                                 p->operator == TOKEN_INCREMENT ? TOKEN_PLUS : TOKEN_MINUS,
+                                                 NULL);
+                }
+            }
+
             target = codegen_emit_lvalue_address(codegen, checker, p->operand);
             if (!target || !target->is_lvalue) {
                 codegen_error(codegen, expr->pos,
@@ -1045,6 +1147,23 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             default: break;
         }
         if (base_op != TOKEN_UNKNOWN) {
+            // `m[k] += n` (and m[k]-=, m[k]*=, ...): map values are never
+            // addressable (see codegen_emit_lvalue_address's AST_INDEX_EXPR
+            // arm below, which still rejects &m[k] / m[k].F = v
+            // unconditionally), so route to the read-modify-write helper
+            // BEFORE resolving an lvalue address — mirrors the `m[k] = v`
+            // fast path's map detection (type_check_expression + TYPE_MAP)
+            // a few dozen lines down in this same function's TOKEN_ASSIGN
+            // arm. Unsupported ops (anything but + - *) are rejected inside
+            // the helper, not here — v1 admits only + - * on map values.
+            if (binary->left->type == AST_INDEX_EXPR) {
+                IndexExprNode* cidx = (IndexExprNode*)binary->left;
+                Type* cbase_t = type_check_expression(checker, cidx->expr);
+                if (cbase_t && cbase_t->kind == TYPE_MAP) {
+                    return codegen_map_index_rmw(codegen, checker, binary->left, base_op, binary->right);
+                }
+            }
+
             ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, binary->left);
             if (!target || !target->is_lvalue) {
                 codegen_error(codegen, expr->pos,
