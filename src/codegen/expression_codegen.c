@@ -713,6 +713,59 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
 }
 
 #if LLVM_AVAILABLE
+// GEP field `selector` out of an already-resolved struct address
+// `struct_addr` (struct type `st`). Shared by the plain selector arm below
+// and the map[K]*P auto-deref special-case (legal Go: m[k].F = v when the
+// map's VALUE type is a POINTER -- no map-value ADDRESS is needed, unlike a
+// struct-VALUE map, which stays rejected).
+static ValueInfo* codegen_emit_struct_field_lvalue(CodeGenerator* codegen, Type* st,
+                                                   LLVMValueRef struct_addr,
+                                                   const char* selector) {
+    int field_index = -1;
+    StructField* field = NULL;
+    for (size_t i = 0; i < st->data.struct_type.field_count; i++) {
+        if (strcmp(st->data.struct_type.fields[i].name, selector) == 0) {
+            field_index = (int)i;
+            field = &st->data.struct_type.fields[i];
+            break;
+        }
+    }
+    if (field_index == -1) return NULL;
+
+    LLVMValueRef indices[] = {
+        LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
+        LLVMConstInt(LLVMInt32TypeInContext(codegen->context), field_index, 0)
+    };
+    LLVMValueRef field_ptr = LLVMBuildGEP2(codegen->builder,
+                                           codegen_type_to_llvm(codegen, st),
+                                           struct_addr, indices, 2, selector);
+    ValueInfo* out = value_info_new(selector, field_ptr, field->type);
+    out->is_lvalue = 1;
+    return out;
+}
+
+// GEP element `idx64` out of an already-resolved slice HEADER VALUE (not an
+// address) -- the data pointer is field 0, bounds-checked against the
+// header's own length (field 1). Shared by the plain slice arm below (header
+// loaded from an addressable slice variable) and the map[K][]V special-case
+// (header read as an RVALUE via the map-get fast path -- there is no
+// map-value address, but the header's data pointer aliases the shared
+// backing array, so writing through it is legal Go without one).
+static ValueInfo* codegen_emit_slice_elem_lvalue(CodeGenerator* codegen, Type* slice_type,
+                                                 LLVMValueRef slice_header_val,
+                                                 LLVMValueRef idx64, ASTNode* expr) {
+    Type* elem_type = slice_type->data.slice.element_type;
+    LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, slice_header_val, 0, "slice_ptr");
+    LLVMValueRef slice_len = LLVMBuildExtractValue(codegen->builder, slice_header_val, 1, "slice_len");
+    codegen_emit_bounds_check(codegen, idx64, slice_len, expr);
+    LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
+                                          codegen_type_to_llvm(codegen, elem_type),
+                                          data_ptr, &idx64, 1, "slice_elem");
+    ValueInfo* out = value_info_new(NULL, elem_ptr, elem_type);
+    out->is_lvalue = 1;
+    return out;
+}
+
 // Compute the ADDRESS of an assignable lvalue without loading its value.
 // codegen_generate_expression auto-loads identifiers (and a selector spills a
 // loaded struct base to a throwaway temp), which is correct for reads but loses
@@ -735,6 +788,41 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
 
     if (expr->type == AST_SELECTOR_EXPR) {
         SelectorExprNode* sel = (SelectorExprNode*)expr;
+
+        // Legal Go: m[k].F = v when the map's VALUE type is a POINTER (to a
+        // struct) -- Go auto-derefs through the pointer, so no map-value
+        // ADDRESS is needed (maps don't have one; that's exactly what makes
+        // a struct-VALUE map illegal below). Detected by: sel->expr (`m[k]`)
+        // is itself a map-index expression (its base's type is TYPE_MAP) and
+        // its OWN type (the map's value type, stamped on the node by
+        // type_check_index_expr) is TYPE_POINTER->TYPE_STRUCT. Read `m[k]`
+        // as an RVALUE (the map-get fast path returns the pointer directly --
+        // pointer map values ride the inline i64 slot, see
+        // codegen_map_value_is_inline), then GEP the field through the
+        // pointee struct.
+        if (sel->expr && sel->expr->type == AST_INDEX_EXPR) {
+            IndexExprNode* inner = (IndexExprNode*)sel->expr;
+            if (inner->expr && inner->expr->node_type &&
+                inner->expr->node_type->kind == TYPE_MAP) {
+                Type* map_val_type = sel->expr->node_type;
+                if (map_val_type && map_val_type->kind == TYPE_POINTER &&
+                    map_val_type->data.pointer.pointee_type &&
+                    map_val_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+                    ValueInfo* ptr_val = codegen_generate_expression(codegen, checker, sel->expr);
+                    if (!ptr_val) return NULL;
+                    return codegen_emit_struct_field_lvalue(
+                        codegen, map_val_type->data.pointer.pointee_type,
+                        ptr_val->llvm_value, sel->selector);
+                }
+                // Struct-VALUE map (map[K]P, non-pointer): falls through to
+                // the general path below, which recurses into
+                // codegen_emit_lvalue_address(sel->expr) -> the AST_INDEX_EXPR
+                // arm's map-base guard -> rejected. Go: map values are not
+                // addressable, so a plain struct value can't be field-written
+                // through a map index.
+            }
+        }
+
         ValueInfo* base = codegen_emit_lvalue_address(codegen, checker, sel->expr);
         if (!base) return NULL;
 
@@ -751,31 +839,53 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
         }
         if (!st || st->kind != TYPE_STRUCT) return NULL;
 
-        int field_index = -1;
-        StructField* field = NULL;
-        for (size_t i = 0; i < st->data.struct_type.field_count; i++) {
-            if (strcmp(st->data.struct_type.fields[i].name, sel->selector) == 0) {
-                field_index = (int)i;
-                field = &st->data.struct_type.fields[i];
-                break;
-            }
-        }
-        if (field_index == -1) return NULL;
-
-        LLVMValueRef indices[] = {
-            LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
-            LLVMConstInt(LLVMInt32TypeInContext(codegen->context), field_index, 0)
-        };
-        LLVMValueRef field_ptr = LLVMBuildGEP2(codegen->builder,
-                                               codegen_type_to_llvm(codegen, st),
-                                               struct_addr, indices, 2, sel->selector);
-        ValueInfo* out = value_info_new(sel->selector, field_ptr, field->type);
-        out->is_lvalue = 1;
-        return out;
+        return codegen_emit_struct_field_lvalue(codegen, st, struct_addr, sel->selector);
     }
 
     if (expr->type == AST_INDEX_EXPR) {
         IndexExprNode* ix = (IndexExprNode*)expr;
+
+        // Legal Go: m[k][i] = v when the map's VALUE type is a SLICE. The
+        // slice header aliases its backing array, so writing through the
+        // header's data pointer mutates the shared storage -- no map-value
+        // ADDRESS is needed (maps don't have one; a two-step `s := m[k];
+        // s[i] = v` already relies on exactly this aliasing and works today).
+        // Detected by: ix->expr (`m[k]`) is itself a map-index expression
+        // (its base's type is TYPE_MAP) and its OWN type (the map's value
+        // type, stamped on the node by type_check_index_expr) is TYPE_SLICE.
+        // Read `m[k]` as an RVALUE (the map-get fast path in
+        // composite_codegen.c), which yields the header {ptr,len,cap} by
+        // value, and GEP+bounds-check off of THAT instead of an address.
+        if (ix->expr && ix->expr->type == AST_INDEX_EXPR) {
+            IndexExprNode* inner = (IndexExprNode*)ix->expr;
+            if (inner->expr && inner->expr->node_type &&
+                inner->expr->node_type->kind == TYPE_MAP) {
+                Type* map_val_type = ix->expr->node_type;
+                if (map_val_type && map_val_type->kind == TYPE_SLICE) {
+                    ValueInfo* index_val = codegen_generate_expression(codegen, checker, ix->index);
+                    if (!index_val) return NULL;
+                    if (index_val->is_lvalue && index_val->goo_type) {
+                        LLVMTypeRef it = codegen_type_to_llvm(codegen, index_val->goo_type);
+                        if (it) {
+                            index_val->llvm_value = LLVMBuildLoad2(codegen->builder, it, index_val->llvm_value, "idx");
+                            index_val->is_lvalue = 0;
+                        }
+                    }
+                    LLVMValueRef idx64 = codegen_widen_index(codegen, index_val);
+
+                    ValueInfo* slice_val = codegen_generate_expression(codegen, checker, ix->expr);
+                    if (!slice_val) return NULL;
+                    return codegen_emit_slice_elem_lvalue(codegen, map_val_type,
+                                                          slice_val->llvm_value, idx64, expr);
+                }
+                // Array-VALUE map (map[K][N]T, non-slice): falls through to
+                // the general path below, which recurses into
+                // codegen_emit_lvalue_address(ix->expr) -> the map-base guard
+                // right below -> rejected. Go: an array map value has no
+                // aliasing like a slice header, so it is not addressable
+                // through the map.
+            }
+        }
 
         // Go semantics: a map index is never an lvalue address. Direct
         // `m[k] = v` is intercepted earlier (assignment fast path, above);
@@ -829,24 +939,15 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
         }
 
         if (base_type->kind == TYPE_SLICE) {
-            // base->llvm_value points to the slice struct { ptr, len, cap }; load
-            // it, take the data pointer (field 0), and GEP into the backing buffer.
-            Type* elem_type = base_type->data.slice.element_type;
+            // base->llvm_value points to the slice struct { ptr, len, cap };
+            // load it and let the shared helper extract the data pointer,
+            // bounds-check against the length, and GEP the element — mirrors
+            // the slice-READ arm in composite_codegen.c so s[i]=x aborts on
+            // out-of-range instead of writing past the buffer.
             LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder,
                                                     codegen_type_to_llvm(codegen, base_type),
                                                     base->llvm_value, "slice_load");
-            LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, slice_val, 0, "slice_ptr");
-            // Bounds-check the write against the slice length (field 1) before the
-            // element GEP — mirrors the slice-READ arm in composite_codegen.c so
-            // s[i]=x aborts on out-of-range instead of writing past the buffer.
-            LLVMValueRef slice_len = LLVMBuildExtractValue(codegen->builder, slice_val, 1, "slice_len");
-            codegen_emit_bounds_check(codegen, idx64, slice_len, expr);
-            LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
-                                                  codegen_type_to_llvm(codegen, elem_type),
-                                                  data_ptr, &idx64, 1, "slice_elem");
-            ValueInfo* out = value_info_new(NULL, elem_ptr, elem_type);
-            out->is_lvalue = 1;
-            return out;
+            return codegen_emit_slice_elem_lvalue(codegen, base_type, slice_val, idx64, expr);
         }
 
         return NULL; // maps / pointers: not an addressable element lvalue here

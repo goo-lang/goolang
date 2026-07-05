@@ -2411,8 +2411,12 @@ embed-literal-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@echo "embed-literal-reject-probe: PASS (keyed Base literal fine)"
 
 # Generic map values: Go's map values are NOT addressable. &m[k] and partial
-# writes (m[k].F = v) must reject at compile time — without the guard the
-# lvalue path would silently mutate a private box nobody reads back.
+# writes through a STRUCT or ARRAY map value (m[k].F = v, m[k][i] = v) must
+# reject at compile time — without the guard the lvalue path would silently
+# mutate a private box nobody reads back. Sibling of map_value_write_probe
+# (examples/), which pins the two partial-write forms that ARE legal Go and
+# must NOT reject: m[k][i] = v on a SLICE-valued map (the slice header aliases
+# its backing array) and m[k].F = v on a POINTER-valued map (auto-deref).
 map-addr-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== map-addr-reject-probe: &m[k] must reject ==="
@@ -2429,6 +2433,13 @@ map-addr-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "map-addr-reject-probe: FAIL (m[k].F = v compiled)"; exit 1; fi; \
 	if ! grep -q "cannot assign through a map value" build/map_field_reject.err; then echo "map-addr-reject-probe: FAIL (wrong/missing partial-write diagnostic)"; cat build/map_field_reject.err; exit 1; fi; \
 	echo "map-addr-reject-probe: PASS (partial write rejected)"
+	@echo "=== m[k][i] = v on an ARRAY-valued map must reject (sibling of the []T-valued map, which IS legal Go) ==="
+	@printf 'package main\nfunc main(){\n\tm := map[string][3]int{}\n\tm["a"] = [3]int{1, 2, 3}\n\tm["a"][0] = 5\n}\n' > build/map_array_reject.goo
+	@rm -f build/map_array_reject
+	@$(COMPILER) -o build/map_array_reject build/map_array_reject.goo > /dev/null 2> build/map_array_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "map-addr-reject-probe: FAIL (m[k][i] = v on array-valued map compiled)"; exit 1; fi; \
+	if ! grep -q "cannot assign through a map value" build/map_array_reject.err; then echo "map-addr-reject-probe: FAIL (wrong/missing array-value partial-write diagnostic)"; cat build/map_array_reject.err; exit 1; fi; \
+	echo "map-addr-reject-probe: PASS (array-value index write rejected)"
 
 # Non-string map keys (Task 3, AST_MAP_TYPE comparability gate in
 # type_checker.c): a key type is admitted if it's string, an integer/uint
