@@ -1018,9 +1018,14 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // Evaluate range expression once.
         ValueInfo* range_val = codegen_generate_expression(codegen, checker, for_stmt->range_expr);
         if (!range_val) return 0;
-        // Auto-load if lvalue.
+        // Auto-load if lvalue — EXCEPT for TYPE_ARRAY. An array lowers to a
+        // raw LLVM [N x T] value, not a {ptr,len} struct like slices/strings,
+        // so loading it here would discard the address we need for the GEP
+        // below and load the (possibly large) aggregate for nothing; the
+        // TYPE_ARRAY branch reads range_val->llvm_value directly instead.
         LLVMValueRef raw = range_val->llvm_value;
-        if (range_val->is_lvalue && range_val->goo_type) {
+        if (range_val->is_lvalue && range_val->goo_type
+            && range_val->goo_type->kind != TYPE_ARRAY) {
             LLVMTypeRef lt = codegen_type_to_llvm(codegen, range_val->goo_type);
             if (lt) raw = LLVMBuildLoad2(codegen->builder, lt, raw, "range_load");
         }
@@ -1036,24 +1041,53 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             return ok;
         }
 
-        // Extract data pointer (field 0) and length (field 1) — both
-        // slices and (eventually) strings share this layout.
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "range_data");
-        LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "range_len");
-
         // F7: range over a string iterates its bytes — the value var is an
         // int32 rune (v1 byte-wise), so the backing i8 byte is zero-extended
         // into it in the body below. Slices/arrays use their element type.
         int is_string_range = range_val->goo_type
                            && range_val->goo_type->kind == TYPE_STRING;
+        int is_array_range = range_val->goo_type
+                           && range_val->goo_type->kind == TYPE_ARRAY;
         Type* elem_type = NULL;
         LLVMTypeRef llvm_elem = NULL;
-        if (range_val->goo_type && range_val->goo_type->kind == TYPE_SLICE) {
-            elem_type = range_val->goo_type->data.slice.element_type;
+        LLVMValueRef data_ptr;
+        LLVMValueRef len64;
+
+        if (is_array_range) {
+            // Arrays are a raw [N x T] aggregate — the iteration count is
+            // the STATIC length (never read from the value), and the "data
+            // pointer" is the array's own address, not an extracted field.
+            Type* arr_type = range_val->goo_type;
+            elem_type = arr_type->data.array.element_type;
             llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
-        } else if (is_string_range) {
-            elem_type = type_checker_get_builtin(checker, TYPE_INT32);
-            llvm_elem = LLVMInt32TypeInContext(codegen->context);
+            len64 = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                 (unsigned long long)arr_type->data.array.length, 0);
+            if (range_val->is_lvalue) {
+                // Addressable (a variable): `raw` above skipped the load for
+                // arrays, so it's still the pointer to the array.
+                data_ptr = raw;
+            } else {
+                // Rvalue (e.g. an inline `[3]int{...}` composite literal):
+                // no address to reuse, so spill the value into a temp
+                // alloca and GEP off of that instead.
+                LLVMTypeRef arr_llvm = codegen_type_to_llvm(codegen, arr_type);
+                LLVMValueRef tmp_alloca = codegen_create_alloca(codegen, arr_llvm, "range_arr_tmp");
+                LLVMBuildStore(codegen->builder, raw, tmp_alloca);
+                data_ptr = tmp_alloca;
+            }
+        } else {
+            // Extract data pointer (field 0) and length (field 1) — both
+            // slices and strings share this layout.
+            data_ptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "range_data");
+            len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "range_len");
+
+            if (range_val->goo_type && range_val->goo_type->kind == TYPE_SLICE) {
+                elem_type = range_val->goo_type->data.slice.element_type;
+                llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+            } else if (is_string_range) {
+                elem_type = type_checker_get_builtin(checker, TYPE_INT32);
+                llvm_elem = LLVMInt32TypeInContext(codegen->context);
+            }
         }
 
         // Allocate index var; register it in scope under key_name.

@@ -1,0 +1,78 @@
+// range_array_probe: `for range arr` over a FIXED array. Confirmed-broken
+// before this fix: arrays lower to a raw LLVM [N x T] value (not a
+// {ptr,len} struct like slices), but the for-range codegen only diverged
+// early for TYPE_MAP — TYPE_ARRAY fell through to the slice/string path,
+// which does LLVMBuildExtractValue(raw, 0)/(raw, 1) and misreads array
+// element 0/1 as a data pointer and a length. Effects this probe pins down:
+//   - key-only range over a non-zero array silently miscompiled (wrong
+//     count / wrong last key, since "length" was really element 1's value).
+//   - `for i, v := range arr` failed codegen outright ("Undefined
+//     identifier 'v'") — no TYPE_ARRAY case in the elem_type/llvm_elem
+//     selection, so the value var was never allocated.
+//   - a zero-valued `var arr [N]int` range read a bogus "length" from the
+//     zero aggregate (element 1 of the zeroed array == 0), so the loop body
+//     never ran.
+//   - `for range [1]int{42}` SIGSEGVs the COMPILER itself: extractvalue
+//     index 1 is out of bounds on a 1-element aggregate.
+package main
+
+import "fmt"
+
+func main() {
+	// Key-only range: count iterations and the last key seen. Go ranges
+	// 0..N-1 in order, so lastKey must land on N-1.
+	arr := [3]int{10, 20, 30}
+	count := 0
+	lastKey := -1
+	for i := range arr {
+		count = count + 1
+		lastKey = i
+	}
+	fmt.Println(count)   // 3
+	fmt.Println(lastKey) // 2
+
+	// Index + value range: sum the values and track the last index. This
+	// is the "Undefined identifier 'v'" shape from the bug report.
+	sum := 0
+	lastIdx := -1
+	for i, v := range arr {
+		sum = sum + v
+		lastIdx = i
+	}
+	fmt.Println(sum)     // 60
+	fmt.Println(lastIdx) // 2
+
+	// Rvalue composite-literal range: no addressable variable backs the
+	// array, so the range expr itself must be spilled to a temp before
+	// it can be GEP'd. Parenthesized: an unparenthesized composite literal
+	// immediately followed by the for-body `{` is a pre-existing grammar
+	// ambiguity in this parser (unrelated to this fix — ranging over a
+	// plain variable or a parenthesized literal both parse fine).
+	total := 0
+	for _, v := range ([3]int{1, 2, 3}) {
+		total = total + v
+	}
+	fmt.Println(total) // 6
+
+	// Zero-valued array range: `var arr [4]int` is all zeros. The loop
+	// must iterate the STATIC length 4, not something derived from the
+	// (zero) contents.
+	var zeroArr [4]int
+	zcount := 0
+	zsum := 0
+	for _, v := range zeroArr {
+		zcount = zcount + 1
+		zsum = zsum + v
+	}
+	fmt.Println(zcount) // 4
+	fmt.Println(zsum)   // 0
+
+	// The compiler-segfault shape: a 1-element array's aggregate has only
+	// index 0 — extractvalue index 1 (the old "length" read) is OOB and
+	// crashed the compiler itself, not just the generated program.
+	onecount := 0
+	for range ([1]int{42}) {
+		onecount = onecount + 1
+	}
+	fmt.Println(onecount) // 1
+}
