@@ -199,18 +199,36 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef existing = LLVMGetNamedGlobal(codegen->module, gname);
     if (existing) return existing;
 
+    // Interface-typed map keys, Task 1 (vtable ABI shift): the vtable now
+    // carries n+1 slots — slot 0 is the concrete's per-type value-equality
+    // comparator (codegen_get_or_emit_type_eq), slots 1..n are the method
+    // thunks in their original, unchanged order. codegen_interface_dispatch
+    // shifts its method GEP index by +1 to match (interface_codegen.c,
+    // below); this is the ONLY other site that indexes a vtable by a raw
+    // slot number (confirmed by grepping every `goo.vtable`/vtable-indexing
+    // site in the codebase — codegen_interface_assert_match only ever
+    // compares whole vtable-pointer identity, never indexes into one).
     size_t n = iface->data.interface.method_count;
     LLVMTypeRef ptrty = iface_ptr_type(codegen);
-    LLVMValueRef* slots = n ? malloc(n * sizeof(LLVMValueRef)) : NULL;
+    LLVMValueRef* slots = malloc((n + 1) * sizeof(LLVMValueRef));
+    if (!slots) return NULL;
+
+    LLVMValueRef eq_fn = codegen_get_or_emit_type_eq(codegen, checker, concrete);
+    if (!eq_fn) { free(slots); return NULL; }
+    // A Function value's LLVM type is already `ptr` (opaque pointers), the
+    // same as every thunk placed below without a cast — no bitcast needed
+    // to satisfy LLVMConstArray(ptrty, ...).
+    slots[0] = eq_fn;
+
     size_t i = 0;
     for (InterfaceMethod* im = iface->data.interface.methods; im; im = im->next, i++) {
         LLVMValueRef thunk = build_thunk(codegen, checker, concrete, cname, iname, im);
         if (!thunk) { free(slots); return NULL; }
-        slots[i] = thunk;  // a function value is a ptr constant
+        slots[i + 1] = thunk;  // a function value is a ptr constant
     }
 
-    LLVMTypeRef arrty = LLVMArrayType(ptrty, (unsigned)n);
-    LLVMValueRef init = LLVMConstArray(ptrty, slots, (unsigned)n);
+    LLVMTypeRef arrty = LLVMArrayType(ptrty, (unsigned)(n + 1));
+    LLVMValueRef init = LLVMConstArray(ptrty, slots, (unsigned)(n + 1));
     LLVMValueRef g = LLVMAddGlobal(codegen->module, arrty, gname);
     LLVMSetInitializer(g, init);
     LLVMSetLinkage(g, LLVMPrivateLinkage);
@@ -302,9 +320,11 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef vt = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "vt");
     LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "data");
 
-    // Load the thunk pointer from vtable slot `idx` (array of ptr).
+    // Load the thunk pointer from vtable slot `idx + 1` (array of ptr): slot
+    // 0 is now the per-concrete-type eq comparator (Task 1, codegen_
+    // interface_vtable above), so method thunks shifted right by one.
     LLVMTypeRef ptrty = iface_ptr_type(codegen);
-    LLVMValueRef gep_idx = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), idx, 0);
+    LLVMValueRef gep_idx = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), idx + 1, 0);
     LLVMValueRef slot = LLVMBuildGEP2(codegen->builder, ptrty, vt, &gep_idx, 1, "vt.slot");
     LLVMValueRef thunk = LLVMBuildLoad2(codegen->builder, ptrty, slot, "thunk");
 
