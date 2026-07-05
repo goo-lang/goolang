@@ -1,0 +1,27 @@
+package main
+
+import "fmt"
+
+func main() {
+	const N = 4
+	var a [N]int
+	a[0] = 10
+	a[N-1] = 40
+	fmt.Println(a[0])
+	fmt.Println(a[N-1])
+
+	var c [2 + 3]int
+	c[0] = 1
+	c[4] = 5
+	fmt.Println(c[0])
+	fmt.Println(c[4])
+
+	b := [N]int{1, 2, 3, 4}
+	fmt.Println(b[0])
+	fmt.Println(b[3])
+
+	const M = N + 1
+	var d [M]int
+	d[M-1] = 99
+	fmt.Println(d[M-1])
+}

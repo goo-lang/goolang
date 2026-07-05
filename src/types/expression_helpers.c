@@ -60,6 +60,67 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
     }
 }
 
+// Checker-aware sibling of goo_fold_const_int (see header): additionally
+// resolves AST_IDENTIFIER against checker's scope chain, using the constant's
+// cached integer value (Variable->const_int_value, set by
+// type_check_const_decl when its RHS folds), and recurses through
+// unary/binary operators WITH the same checker context so a const-expression
+// built on a const-identifier (`[N+1]int`) folds too. Anything else
+// (literals, and anything goo_fold_const_int already rejects) falls through
+// to that context-free folder unchanged.
+int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out) {
+    if (!expr || !out) return 0;
+    switch (expr->type) {
+        case AST_IDENTIFIER: {
+            IdentifierNode* id = (IdentifierNode*)expr;
+            Variable* var = checker ? type_checker_lookup_variable(checker, id->name) : NULL;
+            if (var && var->has_const_int_value) {
+                *out = var->const_int_value;
+                return 1;
+            }
+            return 0;
+        }
+        case AST_UNARY_EXPR: {
+            UnaryExprNode* u = (UnaryExprNode*)expr;
+            uint64_t v;
+            if (!goo_fold_const_int_ctx(checker, u->operand, &v)) return 0;
+            switch (u->operator) {
+                case TOKEN_MINUS:   *out = (uint64_t)(-(int64_t)v); return 1;
+                case TOKEN_PLUS:    *out = v; return 1;
+                case TOKEN_BIT_XOR: *out = ~v; return 1; // ^x complement
+                case TOKEN_BIT_NOT: *out = ~v; return 1; // ~x
+                default: return 0;
+            }
+        }
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            uint64_t l, r;
+            if (!goo_fold_const_int_ctx(checker, b->left, &l) ||
+                !goo_fold_const_int_ctx(checker, b->right, &r))
+                return 0;
+            switch (b->operator) {
+                case TOKEN_PLUS:     *out = l + r; return 1;
+                case TOKEN_MINUS:    *out = l - r; return 1;
+                case TOKEN_MULTIPLY: *out = l * r; return 1;
+                case TOKEN_DIVIDE:   if (r == 0) return 0; *out = l / r; return 1;
+                case TOKEN_MODULO:   if (r == 0) return 0; *out = l % r; return 1;
+                case TOKEN_LSHIFT:   *out = (r >= 64) ? 0 : (l << r); return 1;
+                case TOKEN_RSHIFT:   *out = (r >= 64) ? 0 : (l >> r); return 1;
+                case TOKEN_BIT_AND:  *out = l & r; return 1;
+                case TOKEN_AND_NOT:  *out = l & ~r; return 1; // &^ bit-clear
+                case TOKEN_BIT_OR:   *out = l | r; return 1;
+                case TOKEN_BIT_XOR:  *out = l ^ r; return 1;
+                default: return 0;
+            }
+        }
+        default:
+            // AST_LITERAL and anything not special-cased above: delegate to
+            // the context-free folder (handles TOKEN_INT literals; returns 0
+            // for anything else, same as here).
+            return goo_fold_const_int(expr, out);
+    }
+}
+
 // Fold a compile-time string constant — string literals joined by `+` — into a
 // freshly malloc'd byte buffer (see header). Recurses over `+` binary nodes and
 // concatenates the decoded bytes, preserving embedded NULs via each literal's

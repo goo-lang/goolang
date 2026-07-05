@@ -1477,6 +1477,49 @@ slice-expr-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -qi "slice bounds out of range" build/sebp_str.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on string OOB)"; cat build/sebp_str.err; exit 1; fi
 	@echo "slice-expr-bounds-probe: PASS"
 
+# fix/const-array-length: an array-type length written as a const identifier
+# (`[N]int`) or a const expression (`[N+1]int`) used to silently fall back to
+# a fixed placeholder length of 10, regardless of what the const actually
+# resolved to — which also made bounds checks meaningless (an OOB index
+# against the real N could sail under the placeholder-10 and never trip).
+# type_from_ast now folds the length via goo_fold_const_int_ctx (checker-
+# aware: resolves const identifiers, recursing through const expressions).
+# Sibling of array-bounds-probe (which covers a literal-length array with a
+# variable index) — this one pins the LENGTH resolution itself: arr[i]=x
+# with i out of range against the real const-resolved length (3, not 10)
+# must abort.
+const-array-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== const-array-bounds-probe: const-sized array must bounds-check against its REAL length, not a placeholder ==="
+	@printf 'package main\nfunc main(){ const N=3; var arr [N]int; i:=5; arr[i]=9; _=arr }\n' > build/cabp_oob.goo
+	@"$(COMPILER)" build/cabp_oob.goo -o build/cabp_oob.out 2>build/cabp_oob.cerr || \
+	  { echo "const-array-bounds-probe: FAIL (compile)"; cat build/cabp_oob.cerr; exit 1; }
+	@./build/cabp_oob.out 2>build/cabp_oob.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "const-array-bounds-probe: FAIL (OOB write against const-sized array did not abort, rc=0)"; exit 1; fi; \
+	  if ! grep -qi "bounds check failed" build/cabp_oob.err; then echo "const-array-bounds-probe: FAIL (no bounds message)"; cat build/cabp_oob.err; exit 1; fi; \
+	  if ! grep -q "length 3" build/cabp_oob.err; then echo "const-array-bounds-probe: FAIL (checked against wrong length — placeholder-10 regression?)"; cat build/cabp_oob.err; exit 1; fi
+	@printf 'package main\nfunc main(){ var arr [2+3]int; i:=5; arr[i]=9; _=arr }\n' > build/cabp_expr.goo
+	@"$(COMPILER)" build/cabp_expr.goo -o build/cabp_expr.out 2>build/cabp_expr.cerr || \
+	  { echo "const-array-bounds-probe: FAIL (compile expr-length)"; cat build/cabp_expr.cerr; exit 1; }
+	@./build/cabp_expr.out 2>build/cabp_expr.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "const-array-bounds-probe: FAIL (OOB write against expr-sized [2+3]int did not abort, rc=0)"; exit 1; fi; \
+	  if ! grep -q "length 5" build/cabp_expr.err; then echo "const-array-bounds-probe: FAIL (expr length not resolved to 5)"; cat build/cabp_expr.err; exit 1; fi
+	@echo "const-array-bounds-probe: PASS"
+
+# fix/const-array-length: a genuinely non-constant array length (a plain
+# runtime variable, not a const) must be a clean type error — NOT a silent
+# fallback to the placeholder length, and not a crash. See
+# examples/nonconst_arraylen_reject.goo.
+nonconst-arraylen-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== nonconst-arraylen-reject-probe: [n]int with a runtime variable n must be rejected ==="
+	@rm -f build/nonconst_arraylen_reject
+	@$(COMPILER) -o build/nonconst_arraylen_reject examples/nonconst_arraylen_reject.goo > build/nonconst_arraylen_reject.out 2> build/nonconst_arraylen_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "nonconst-arraylen-reject-probe: FAIL (compiled rc=0 — non-const array length silently accepted)"; exit 1; fi; \
+	if [ -x build/nonconst_arraylen_reject ]; then echo "nonconst-arraylen-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "array length must be a constant expression" build/nonconst_arraylen_reject.err; then echo "nonconst-arraylen-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/nonconst_arraylen_reject.err; exit 1; fi; \
+	echo "nonconst-arraylen-reject-probe: PASS (rejected rc=$$rc)"
+
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
 # not jump to a NULL instruction pointer. `var f func(int) int` zero-values
@@ -1954,7 +1997,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-emptyiface-reject-probe typeswitch-emptyiface-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-emptyiface-reject-probe typeswitch-emptyiface-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

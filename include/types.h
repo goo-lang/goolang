@@ -302,6 +302,16 @@ typedef struct Variable {
     // codegen_alloc_local_promoted's decl-site allocation note,
     // function_codegen.c). Tail-appended per the no-header-deps convention.
     int is_loop_var;
+    // fix/const-array-length: for a const Variable (type_check_const_decl)
+    // whose RHS folds to a compile-time integer via goo_fold_const_int_ctx,
+    // the folded value is cached here so a later array-length reference
+    // (`[N]int`, `[N+1]int`) can resolve the real length instead of the
+    // pre-existing silent placeholder-10 fallback. has_const_int_value is 0
+    // for every non-const variable and for any const whose RHS doesn't fold
+    // to an integer (e.g. a string const, or a call). Tail-appended per the
+    // no-header-deps convention.
+    int has_const_int_value;
+    uint64_t const_int_value;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by
@@ -610,6 +620,17 @@ Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* targ
 // type-checking and codegen so masks like `1<<32 - 1` / `1<<64 - 1` evaluate to
 // their true value instead of a width-truncated LLVM shift.
 int goo_fold_const_int(ASTNode* expr, uint64_t* out);
+
+// Checker-aware sibling of goo_fold_const_int: additionally resolves
+// AST_IDENTIFIER by looking the name up in checker's scope chain and using
+// its cached Variable->const_int_value (set by type_check_const_decl), and
+// recurses through unary/binary operators WITH that same context so a
+// const-expression built on a const-identifier (`[N+1]int`) folds too. Falls
+// back to goo_fold_const_int for literals and anything else it doesn't
+// special-case. Introduced for fix/const-array-length (array-length
+// resolution); the original context-free goo_fold_const_int above is
+// unchanged and keeps its existing (non-identifier) call sites.
+int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
 
 // Fold a compile-time string constant — string literals joined by `+` — into a
 // freshly malloc'd byte buffer. On success returns 1, writes *out (the buffer,
