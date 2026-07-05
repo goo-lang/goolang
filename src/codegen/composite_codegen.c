@@ -12,8 +12,8 @@
 // fn panics if index >= length (negative indices SExt to a huge size_t and so
 // also fail), aborting before any out-of-range read/write. The bounds test is
 // inside the runtime fn, so no IR branching is emitted here.
-static void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
-                                      LLVMValueRef length, ASTNode* expr) {
+void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
+                               LLVMValueRef length, ASTNode* expr) {
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_bounds_check");
     if (!fn) return;  // no symbol: index unguarded (best-effort)
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);

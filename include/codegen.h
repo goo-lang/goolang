@@ -306,6 +306,16 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
 // index (e.g. uint8 255) from sign-extending to -1 in an element GEP. Used by
 // both the index read path and the index-assignment lvalue path.
 LLVMValueRef codegen_widen_index(CodeGenerator* codegen, ValueInfo* idx);
+// Emit a goo_bounds_check(index, length, file, line) call. The runtime fn
+// panics if index >= length (negative indices SExt to a huge size_t and so
+// also fail), aborting before any out-of-range read/write. The bounds test is
+// inside the runtime fn, so no IR branching is emitted here. Internally
+// re-widens `index` via codegen_widen_index-equivalent logic, so passing an
+// already-i64 value is a safe no-op pass-through. Shared by every codegen
+// site that needs a bounds-checked index (composite_codegen.c's index-read
+// path and expression_codegen.c's slice-write lvalue path).
+void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
+                               LLVMValueRef length, ASTNode* expr);
 // Coerce a VALUE to the target LLVM type using the source type's
 // signedness — the single home for the width-coercion rule that was
 // previously inlined (and repeatedly re-broken) at the var-decl,
