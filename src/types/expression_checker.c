@@ -3052,9 +3052,30 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
     Type* element_type = NULL;
     
     switch (expr_type->kind) {
-        case TYPE_ARRAY:
+        case TYPE_ARRAY: {
             element_type = expr_type->data.array.element_type;
+            // Go rejects a CONSTANT out-of-bounds array index at COMPILE time
+            // (`arr[5]` on a [3]int is "index 5 out of bounds [0:3]"; a negative
+            // constant folds to a huge unsigned value and so also fails). Fold a
+            // constant index and check it against the static length; a
+            // non-constant index falls through to the runtime bounds check
+            // (goo_bounds_check) instead.
+            uint64_t ci;
+            if (goo_fold_const_int_ctx(checker, index->index, &ci)) {
+                if ((int64_t)ci < 0) {
+                    type_error(checker, index->index->pos,
+                               "array index %lld must not be negative", (long long)ci);
+                    return NULL;
+                }
+                if (ci >= (uint64_t)expr_type->data.array.length) {
+                    type_error(checker, index->index->pos,
+                               "array index %llu out of bounds [0:%zu]",
+                               (unsigned long long)ci, expr_type->data.array.length);
+                    return NULL;
+                }
+            }
             break;
+        }
         case TYPE_SLICE:
             element_type = expr_type->data.slice.element_type;
             break;
