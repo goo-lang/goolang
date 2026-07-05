@@ -1,0 +1,19 @@
+package main
+
+import "fmt"
+
+type Rect struct {
+	X, Y  int
+	W, H  int
+	Tag   string
+	Count int
+}
+
+func main() {
+	r := Rect{X: 1, Y: 2, W: 3, H: 4, Tag: "box", Count: 5}
+	fmt.Println(r.X, r.Y, r.W, r.H, r.Tag, r.Count)
+	r.X = 10
+	r.H = 40
+	fmt.Println(r.X + r.Y + r.W + r.H)
+	fmt.Println(r.Tag, r.Count)
+}
