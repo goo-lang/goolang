@@ -1,0 +1,34 @@
+package main
+
+import "fmt"
+
+type Reader interface {
+	Read() int
+}
+
+type Writer interface {
+	Write(x int) int
+}
+
+// ReadWriter composes two interfaces by embedding — the io.ReadWriter idiom.
+type ReadWriter interface {
+	Reader
+	Writer
+	Flush() int
+}
+
+type Buf struct {
+	data int
+}
+
+func (b *Buf) Read() int      { return b.data }
+func (b *Buf) Write(x int) int { b.data = b.data + x; return b.data }
+func (b *Buf) Flush() int     { return b.data * 10 }
+
+func main() {
+	b := &Buf{data: 3}
+	var rw ReadWriter = b
+	fmt.Println(rw.Read())
+	fmt.Println(rw.Write(4))
+	fmt.Println(rw.Flush())
+}

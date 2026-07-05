@@ -2188,6 +2188,15 @@ interface_method:
         ast_node_free($1);
         $$ = (ASTNode*)m;
     }
+    | identifier {
+        // Embedded interface `Reader` — a bare type name in an interface body
+        // (Go interface embedding: `interface { Reader; Write(...) }`). Passes
+        // through as a bare IdentifierNode; type_from_ast (AST_INTERFACE_TYPE)
+        // resolves it to a TYPE_INTERFACE and unions its methods into this set.
+        // Distinguished from a method by the absence of '(' — LPAREN shifts into
+        // the method arms above; end-of-member (next name or '}') reduces here.
+        $$ = $1;
+    }
     ;
 
 struct_field_list:
