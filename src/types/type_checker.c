@@ -904,6 +904,15 @@ extern int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type
 static int bind_var_decl_name(TypeChecker* checker, VarDeclNode* var_decl,
                                const char* name, Type* type,
                                int is_initialized, int emit_errors) {
+    // The blank identifier `_` is a discard, never a binding: it is never
+    // registered in scope, so it may repeat freely in one scope
+    // (`_, a := f(); _, b := g()`) and can never be read back as a value. Go
+    // special-cases `_` this way; without this guard the second `_` collided
+    // with the first ("Variable '_' already declared in this scope").
+    if (name && strcmp(name, "_") == 0) {
+        return 1;
+    }
+
     Variable* var = variable_new(name, type, var_decl->base.pos);
     if (!var) {
         if (emit_errors) {
@@ -1495,6 +1504,11 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
                 return 0;
             }
             t->node_type = vt;
+            // `_` is a discard, never bound (mirrors bind_var_decl_name), so it
+            // can repeat and can never be read back as a value.
+            if (strcmp(((IdentifierNode*)t)->name, "_") == 0) {
+                continue;
+            }
             Variable* var = variable_new(((IdentifierNode*)t)->name, vt, t->pos);
             if (var) {
                 var->is_initialized = 1;
@@ -1505,6 +1519,15 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
                 }
             }
         } else {
+            // Blank identifier `_` as a multi-assign target discards its value
+            // (`_, a = f()`, `_, _ = f()`): it is not an lvalue to resolve, so
+            // skip it — mirrors the single `_ = rhs` discard path. Without this
+            // the target loop type-checks `_` as an expression and wrongly
+            // reports "Undefined variable '_'".
+            if (t->type == AST_IDENTIFIER &&
+                strcmp(((IdentifierNode*)t)->name, "_") == 0) {
+                continue;
+            }
             // The grammar accepts any expression as a tuple-assign target;
             // enforce addressability here (mirrors type_check_assignment_op).
             // Lvalues are identifiers, index, selector, and deref (`*p`).

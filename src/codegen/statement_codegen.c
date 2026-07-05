@@ -131,6 +131,11 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
         }
         size_t i = 0;
         for (ASTNode* t = ma->targets; t; t = t->next, i++) {
+            // `_` discards its field — no lvalue to resolve, no store.
+            if (t->type == AST_IDENTIFIER &&
+                strcmp(((IdentifierNode*)t)->name, "_") == 0) {
+                continue;
+            }
             ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
             if (!target || !target->is_lvalue) {
                 codegen_error(codegen, t->pos,
@@ -180,6 +185,10 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
 
         if (ma->is_short_decl) {
             const char* nm = ((IdentifierNode*)t)->name;
+            // `_` is a discard — no slot, no binding (mirrors the typecheck).
+            if (strcmp(nm, "_") == 0) {
+                continue;
+            }
             LLVMTypeRef llty = codegen_type_to_llvm(codegen, rtypes[i]);
             if (!llty) {
                 codegen_error(codegen, t->pos, "multi-assign: no type for '%s'", nm);
@@ -199,6 +208,11 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                 scope_add_variable(checker->current_scope, tv);
             }
         } else {
+            // `_` discards its value — no lvalue to resolve, no store.
+            if (t->type == AST_IDENTIFIER &&
+                strcmp(((IdentifierNode*)t)->name, "_") == 0) {
+                continue;
+            }
             ValueInfo* target = codegen_emit_lvalue_address(codegen, checker, t);
             if (!target || !target->is_lvalue) {
                 codegen_error(codegen, t->pos,

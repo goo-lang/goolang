@@ -1,0 +1,28 @@
+package main
+
+import "fmt"
+
+func pair() (int, int) {
+	return 3, 4
+}
+
+func main() {
+	// blank _ may repeat across := in one scope (comma-ok and destructure)
+	m := map[string]int{"a": 1}
+	_, ok1 := m["a"]
+	_, ok2 := m["b"]
+	fmt.Println(ok1, ok2)
+
+	// blank _ as a plain-= destructure target discards its value
+	var x int
+	_, x = pair()
+	fmt.Println(x)
+	y, _ := pair()
+	fmt.Println(y)
+
+	// both blank, and two-value form
+	_, _ = pair()
+	var z int
+	_, z = 10, 20
+	fmt.Println(z)
+}
