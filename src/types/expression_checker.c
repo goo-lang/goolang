@@ -2578,9 +2578,10 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* arg_t = type_check_expression(checker, call->args);
             if (!arg_t) return NULL;
-            if (arg_t->kind != TYPE_SLICE && arg_t->kind != TYPE_STRING && arg_t->kind != TYPE_MAP) {
+            if (arg_t->kind != TYPE_SLICE && arg_t->kind != TYPE_STRING &&
+                arg_t->kind != TYPE_MAP && arg_t->kind != TYPE_ARRAY) {
                 type_error(checker, expr->pos,
-                           "len() requires a slice, string, or map argument");
+                           "len() requires an array, slice, string, or map argument");
                 return NULL;
             }
             expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: len -> int (64-bit)
@@ -2601,9 +2602,9 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 type_error(checker, expr->pos, "cap() is not defined for maps");
                 return NULL;
             }
-            if (slice_t->kind != TYPE_SLICE) {
+            if (slice_t->kind != TYPE_SLICE && slice_t->kind != TYPE_ARRAY) {
                 type_error(checker, expr->pos,
-                           "cap: argument must be a slice, got %s", type_to_string(slice_t));
+                           "cap: argument must be a slice or array, got %s", type_to_string(slice_t));
                 return NULL;
             }
             expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: cap -> int (64-bit)

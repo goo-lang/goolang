@@ -1,0 +1,25 @@
+package main
+
+import "fmt"
+
+type Box struct {
+	items [5]int
+}
+
+func main() {
+	a := [3]int{1, 2, 3}
+	fmt.Println(len(a), cap(a))
+	const N = 7
+	var b [N]int
+	fmt.Println(len(b), cap(b))
+	var box Box
+	fmt.Println(len(box.items), cap(box.items))
+	sum := 0
+	for i := 0; i < len(a); i++ {
+		sum += a[i]
+	}
+	fmt.Println(sum)
+	// slice/string/map len + slice cap still work
+	s := make([]int, 2, 6)
+	fmt.Println(len(s), cap(s), len("hello"))
+}
