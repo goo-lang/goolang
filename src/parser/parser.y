@@ -2327,10 +2327,17 @@ map_entry_list:
     ;
 
 map_entry:
-    expression COLON expression {
+    expression COLON composite_value {
         // The KEY node is returned. The matching VALUE is stashed
         // on key->node_type as a side-channel; map_entry_list
         // extracts and re-chains it into a parallel values list.
+        // VALUE uses composite_value (not bare expression) so a
+        // brace-elided inner composite `{...}` is accepted here too,
+        // e.g. map[string][]int{"a": {1, 2}} or map[string]P{"p": {X: 1}}.
+        // Reuses the same elided-composite machinery (struct_literal_new(NULL, ...)
+        // via composite_value's LBRACE arms) that []T{...}/[N]T{...} element
+        // elision already uses; the concrete type is resolved from the map's
+        // value type V at typecheck.
         ASTNode* k = $1;
         k->node_type = (Type*)$3;
         $$ = k;

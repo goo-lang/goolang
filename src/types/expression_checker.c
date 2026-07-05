@@ -305,6 +305,18 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             }
             size_t vi = 0;
             for (ASTNode* v = lit->values; v; v = v->next, vi++) {
+                // Elided composite VALUE `{...}` (Task 4, e.g. map[string]P{"p":
+                // {X: 1}} or map[string][]int{"a": {1, 2}}): thread the map's
+                // declared value type V into the literal so
+                // type_check_struct_literal can resolve it — same pre-stamp
+                // check_slice_elements does for slice/array elements. V may be
+                // a struct type (struct field elision) or a slice type
+                // (positional element elision); type_check_struct_literal
+                // accepts both for an elided (type_name==NULL) literal.
+                if (v->type == AST_STRUCT_LITERAL &&
+                    ((StructLiteralNode*)v)->type_name == NULL) {
+                    v->node_type = want_val;
+                }
                 Type* vt = type_check_expression(checker, v);
                 if (!vt) return NULL;
                 // Task 3b: same element adaptation + range check as the
@@ -650,10 +662,14 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
     StructLiteralNode* lit = (StructLiteralNode*)expr;
 
     // Elided composite literal `{...}`: the type name is omitted and the target
-    // type is inferred from context (the enclosing array/slice element type),
-    // which the caller pre-stamps on expr->node_type before dispatching here.
-    // Resolve the target struct type from that stamp instead of a by-name
-    // lookup. Only struct element types are supported (the common table case).
+    // type is inferred from context (the enclosing array/slice element type, or
+    // — Task 4 — a map's declared value type V), which the caller pre-stamps on
+    // expr->node_type before dispatching here. Resolve the target type from that
+    // stamp instead of a by-name lookup. Struct element types are the common
+    // table case; TYPE_SLICE is also accepted (e.g. `map[string][]int{"a": {1,
+    // 2}}`) so it falls through to the "Named slice composite literal" block
+    // below, the SAME machinery `type IntSlice []int; IntSlice{1, 2, 3}`
+    // already uses — no new lowering path needed, just widening this gate.
     Type* named_type;
     if (lit->type_name == NULL) {
         named_type = expr->node_type;
@@ -663,10 +679,10 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
                        "in this context");
             return NULL;
         }
-        if (named_type->kind != TYPE_STRUCT) {
+        if (named_type->kind != TYPE_STRUCT && named_type->kind != TYPE_SLICE) {
             type_error(checker, expr->pos,
-                       "elided composite literal '{...}' requires a struct "
-                       "element type, got '%s'", type_to_string(named_type));
+                       "elided composite literal '{...}' requires a struct or "
+                       "slice element type, got '%s'", type_to_string(named_type));
             return NULL;
         }
     } else {
@@ -710,6 +726,9 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
     Type* struct_type = named_type;
 
     // Named slice composite literal: `type IntSlice []int; IntSlice{3, 1, 2}`
+    // (or, Task 4, an ELIDED slice value — lit->type_name is NULL here, e.g.
+    // `map[string][]int{"a": {1, 2}}` — reusing this same block; the error
+    // messages below fall back to "(elided)" since there's no name to print).
     // Validates field_values as elements of the underlying element type and
     // stamps the named TYPE_SLICE as the expression's type. Codegen handles
     // lowering via the slice path (see codegen_generate_struct_lit).
@@ -719,13 +738,14 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
         if (lit->is_keyed) {
             type_error(checker, expr->pos,
                        "cannot use keyed (field-name) elements with slice type '%s'",
-                       lit->type_name);
+                       lit->type_name ? lit->type_name : "(elided)");
             return NULL;
         }
         Type* want = struct_type->data.slice.element_type;
         if (!want) {
             type_error(checker, expr->pos,
-                       "Named slice type '%s' missing element type", lit->type_name);
+                       "Named slice type '%s' missing element type",
+                       lit->type_name ? lit->type_name : "(elided)");
             return NULL;
         }
         if (!check_slice_elements(checker, lit->field_values, want, expr->pos))
