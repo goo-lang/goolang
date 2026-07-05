@@ -12,8 +12,8 @@
 // fn panics if index >= length (negative indices SExt to a huge size_t and so
 // also fail), aborting before any out-of-range read/write. The bounds test is
 // inside the runtime fn, so no IR branching is emitted here.
-static void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
-                                      LLVMValueRef length, ASTNode* expr) {
+void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
+                               LLVMValueRef length, ASTNode* expr) {
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_bounds_check");
     if (!fn) return;  // no symbol: index unguarded (best-effort)
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
@@ -109,6 +109,13 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
     switch (base_type->kind) {
         case TYPE_ARRAY: {
             element_type = base_type->data.array.element_type;
+
+            // Bounds-check the read against the fixed length (static N) before
+            // the element GEP — arrays previously skipped this (only slices
+            // checked), so arr[i] could read past the array.
+            LLVMValueRef arr_len = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                                (unsigned long long)base_type->data.array.length, 0);
+            codegen_emit_bounds_check(codegen, idx64, arr_len, expr);
 
             // For arrays, generate GEP
             LLVMValueRef indices[] = {

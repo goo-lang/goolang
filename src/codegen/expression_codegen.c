@@ -811,6 +811,11 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
 
         if (base_type->kind == TYPE_ARRAY) {
             // base->llvm_value is a pointer to the array; GEP the element.
+            // Bounds-check against the fixed length (static N) first — mirrors
+            // the slice-write arm; arr[i]=x aborts on out-of-range.
+            LLVMValueRef arr_len = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                                (unsigned long long)base_type->data.array.length, 0);
+            codegen_emit_bounds_check(codegen, idx64, arr_len, expr);
             LLVMValueRef indices[] = {
                 LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
                 idx64
@@ -831,6 +836,11 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
                                                     codegen_type_to_llvm(codegen, base_type),
                                                     base->llvm_value, "slice_load");
             LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, slice_val, 0, "slice_ptr");
+            // Bounds-check the write against the slice length (field 1) before the
+            // element GEP — mirrors the slice-READ arm in composite_codegen.c so
+            // s[i]=x aborts on out-of-range instead of writing past the buffer.
+            LLVMValueRef slice_len = LLVMBuildExtractValue(codegen->builder, slice_val, 1, "slice_len");
+            codegen_emit_bounds_check(codegen, idx64, slice_len, expr);
             LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder,
                                                   codegen_type_to_llvm(codegen, elem_type),
                                                   data_ptr, &idx64, 1, "slice_elem");
