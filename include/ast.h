@@ -527,8 +527,9 @@ typedef struct {
     struct ASTNode* index;
 } IndexExprNode;
 
-// F5: slice/substring expression `expr[low:high]`. Both bounds required in v1
-// (the `[i:]`/`[:j]`/`[:]` shorthands are deferred). Shares the base's backing
+// F5: slice/substring expression `expr[low:high]`. Open-ended forms `[low:]`,
+// `[:high]`, and `[:]` are also supported — a NULL low/high is filled in by
+// codegen (low defaults to 0, high to len). Shares the base's backing
 // storage — codegen synthesizes a new string/slice header, no copy.
 typedef struct {
     ASTNode base;
