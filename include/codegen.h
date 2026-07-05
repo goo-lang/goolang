@@ -127,6 +127,20 @@ struct CodeGenerator {
     // Recorded as a follow-up: an explicit `codegen->func_lit_counter = 0;`
     // in codegen_new would make generated names deterministic across runs.
     unsigned long func_lit_counter;
+
+    // Struct-typed map keys (Task 2): cache of synthesized per-field
+    // equality comparators, Goo Type* -> the `goo.structeq.<id>` LLVM
+    // function value. Keyed by TYPE IDENTITY (pointer equality), exactly
+    // like struct_cache_keys/vals above — NOT by name, so two independent
+    // anonymous struct types (no `struct_type.name`) each get their own
+    // comparator instead of colliding. structeq_counter hands out the
+    // unique `<id>` suffix for each newly-synthesized comparator's LLVM
+    // symbol name; see codegen_get_or_emit_struct_key_eq (codegen.c).
+    const Type** structeq_cache_keys;
+    LLVMValueRef* structeq_cache_vals;
+    size_t structeq_cache_size;
+    size_t structeq_cache_cap;
+    unsigned long structeq_counter;
 };
 
 // Function information for code generation
@@ -465,6 +479,21 @@ int codegen_map_key_kind(Type* key_type);
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
                                      ValueInfo* key_val, Type* key_type);
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);
+// Struct-typed map keys (Task 2): get (or emit, on first request) the
+// synthesized per-field equality comparator for `struct_type` — an LLVM
+// function `i32 @goo.structeq.<id>(i64 a, i64 b)` that casts both i64 slots
+// to `struct_type*` and compares every DECLARED field (int/bool/char/pointer
+// via icmp eq, float32/float64 via fcmp oeq, string via strcmp on the char*
+// field, nested struct fields via a recursive call to THAT type's
+// comparator), returning 1 iff every field matches, else 0. Cached by struct
+// Type* identity (see CodeGenerator's structeq_cache_keys/vals) so it is
+// emitted exactly once per distinct struct type no matter how many map
+// creation sites request it. Pass the result (bit-cast to the opaque `ptr`
+// param type) as goo_map_new_sv's key_eq argument when the map's key type is
+// a struct; NULL for every other key kind. Returns NULL on failure (e.g.
+// `struct_type` isn't TYPE_STRUCT, or a field's LLVM type can't be resolved).
+LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeChecker* checker,
+                                               Type* struct_type);
 // Wrap a raw `char*` into the goo string aggregate `{i8*, i64}` via
 // goo_string_new. Shared by codegen_map_slot_to_key's STRING arm and the
 // map-range loop's key bind (statement_codegen.c).

@@ -139,16 +139,19 @@ double goo_math_max(double x, double y);
 //
 // Map key kind: how goo_map_key_eq compares two int64 key slots. STRING = the
 // slot holds a char*, compared by strcmp; INLINE = the slot holds the key's
-// bits (int/uint/bool/rune/byte/pointer), compared by ==. New kinds
-// (struct/float) append here later.
-enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1 };
+// bits (int/uint/bool/rune/byte/pointer), compared by ==; STRUCT = the slot
+// holds a pointer to a heap copy of the struct, compared via the per-map
+// key_eq comparator. New kinds (float) append here later.
+typedef int (*GooKeyEqFn)(int64_t a, int64_t b);
+enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2 };
 
 struct GooMapEntrySV;
 typedef struct GooMapSV {
     struct GooMapEntrySV* head;
     int32_t key_kind;
+    GooKeyEqFn key_eq;   // per-map struct-key comparator; NULL for string/inline maps
 } GooMapSV;
-GooMapSV* goo_map_new_sv(int32_t key_kind);
+GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq);
 void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v);
 int64_t goo_map_get_sv(GooMapSV* m, int64_t k);
 // Presence-returning read: *found=1 and *out=value if k is present, else

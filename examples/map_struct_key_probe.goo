@@ -1,0 +1,27 @@
+// map_struct_key_probe (struct-typed map keys, Task 2): map[Point]int where
+// Point is a plain two-int struct. Exercises insert, overwrite-same-key
+// (two DISTINCT heap copies with equal fields must hit the SAME entry —
+// the synthesized per-field comparator's whole point, not pointer identity),
+// comma-ok miss, and len. go-run-verified byte-for-byte against an
+// equivalent .go program. Multi-line struct body (single-line struct bodies
+// hit an unrelated ASI quirk — goo-grammar workaround #4).
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+	Y int
+}
+
+func main() {
+	m := map[Point]int{}
+	m[Point{X: 1, Y: 2}] = 5
+	m[Point{X: 1, Y: 2}] = 7 // overwrite same key (distinct heap copy, equal fields)
+	m[Point{X: 3, Y: 4}] = 9
+	fmt.Println(m[Point{X: 1, Y: 2}])
+	fmt.Println(m[Point{X: 3, Y: 4}])
+	_, ok := m[Point{X: 9, Y: 9}]
+	fmt.Println(ok)
+	fmt.Println(len(m))
+}

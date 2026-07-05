@@ -1,0 +1,30 @@
+// map_struct_key_nested (struct-typed map keys, Task 3): a struct key
+// (Seg) that itself embeds two nested struct fields (Point) plus a string
+// field — exercises the comparator's recursion into nested TYPE_STRUCT
+// fields, not just scalars. Insert-then-retrieve on an exact match, and a
+// comma-ok miss on a key that differs only in the trailing string field.
+// go-run-verified byte-for-byte against an equivalent .go program.
+// Multi-line struct bodies (single-line struct bodies hit an unrelated ASI
+// quirk — goo-grammar workaround #4).
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+	Y int
+}
+
+type Seg struct {
+	A   Point
+	B   Point
+	Tag string
+}
+
+func main() {
+	m := map[Seg]int{}
+	m[Seg{A: Point{X: 0, Y: 0}, B: Point{X: 1, Y: 1}, Tag: "up"}] = 42
+	fmt.Println(m[Seg{A: Point{X: 0, Y: 0}, B: Point{X: 1, Y: 1}, Tag: "up"}])
+	_, ok := m[Seg{A: Point{X: 0, Y: 0}, B: Point{X: 1, Y: 1}, Tag: "down"}]
+	fmt.Println(ok)
+}
