@@ -2263,20 +2263,6 @@ int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                    "invalid type assertion: operand is not an interface type");
         return 0;
     }
-    // Empty interface (`interface{}`, method_count == 0): same miscompile as
-    // x.(T) on an empty-interface operand (see AST_TYPE_ASSERT's guard in
-    // expression_checker.c) — the vtable-pointer identity check has no
-    // signal when every concrete type shares an identical empty vtable, so
-    // `switch x.(type)` would always match the first case. Reject rather
-    // than let it silently pick the wrong branch; deferred to the RTTI
-    // cycle alongside assert-to-interface.
-    if (iface_type->data.interface.method_count == 0) {
-        type_error(checker, stmt->pos,
-                   "type switch on the empty interface is not supported in v1 "
-                   "(requires runtime type information)");
-        return 0;
-    }
-
     const char* bind_name = tsw->bind_name ? ((IdentifierNode*)tsw->bind_name)->name : NULL;
 
     int ok = 1;

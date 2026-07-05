@@ -1612,38 +1612,19 @@ typeassert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -q "interface conversion" build/typeassert_abort.err; then echo "typeassert-abort-probe: FAIL (no conversion panic message)"; cat build/typeassert_abort.err; exit 1; fi
 	@echo "typeassert-abort-probe: PASS"
 
-# Empty-interface type assertion/switch: reviewer-confirmed silent
-# miscompile. The dynamic-type check codegen emits is a vtable-pointer
-# compare (x.vtable == &goo.vtable.T.I); for a ZERO-method interface every
-# concrete type's vtable is an identical empty [0 x ptr] array, so the
-# compare always matches the FIRST case — `x.(T)` reports ok=true for the
-# wrong type, and `switch x.(type)` always takes the first arm. Fixed by
-# rejecting at typecheck rather than emitting wrong code; both guards live
-# in src/types/expression_checker.c (AST_TYPE_ASSERT) and
-# src/types/type_checker.c (type_check_type_switch_stmt). Method-bearing
-# interfaces are unaffected (distinct thunks -> distinct vtables — see
-# type_assert_probe / type_switch_probe / type_switch_fmt_probe goldens).
-typeassert-emptyiface-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== typeassert-emptyiface-reject-probe: x.(T) on interface{} must reject ==="
-	@printf 'package main\ntype X struct{ V int }\nfunc main() {\n\tvar x interface{} = X{V: 1}\n\t_ = x.(X)\n}\n' > build/typeassert_emptyiface_reject.goo
-	@rm -f build/typeassert_emptyiface_reject
-	@$(COMPILER) -o build/typeassert_emptyiface_reject build/typeassert_emptyiface_reject.goo > /dev/null 2> build/typeassert_emptyiface_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "typeassert-emptyiface-reject-probe: FAIL (compiled rc=0 — x.(T) on interface{} silently accepted)"; exit 1; fi; \
-	if [ -x build/typeassert_emptyiface_reject ]; then echo "typeassert-emptyiface-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "type assertion on the empty interface" build/typeassert_emptyiface_reject.err; then echo "typeassert-emptyiface-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/typeassert_emptyiface_reject.err; exit 1; fi; \
-	echo "typeassert-emptyiface-reject-probe: PASS (rejected rc=$$rc)"
-
-typeswitch-emptyiface-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== typeswitch-emptyiface-reject-probe: switch x.(type) on interface{} must reject ==="
-	@printf 'package main\nimport "fmt"\ntype A struct{ V int }\ntype B struct{ V int }\nfunc main() {\n\tvar x interface{} = A{V: 1}\n\tswitch x.(type) {\n\tcase A:\n\t\tfmt.Println("A")\n\tcase B:\n\t\tfmt.Println("B")\n\t}\n}\n' > build/typeswitch_emptyiface_reject.goo
-	@rm -f build/typeswitch_emptyiface_reject
-	@$(COMPILER) -o build/typeswitch_emptyiface_reject build/typeswitch_emptyiface_reject.goo > /dev/null 2> build/typeswitch_emptyiface_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "typeswitch-emptyiface-reject-probe: FAIL (compiled rc=0 — switch x.(type) on interface{} silently accepted)"; exit 1; fi; \
-	if [ -x build/typeswitch_emptyiface_reject ]; then echo "typeswitch-emptyiface-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "type switch on the empty interface" build/typeswitch_emptyiface_reject.err; then echo "typeswitch-emptyiface-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/typeswitch_emptyiface_reject.err; exit 1; fi; \
-	echo "typeswitch-emptyiface-reject-probe: PASS (rejected rc=$$rc)"
+# NOTE: the empty-interface type-switch guard that used to live here
+# (type_check_type_switch_stmt, src/types/type_checker.c) was lifted by the
+# RTTI concrete-type-switch plan Task 2 — per-type vtable identity
+# (post-#132) makes the empty-interface case safe for concrete switch cases
+# now, same as the assert-side lift in Task 1 (see the NOTE that used to
+# sit above typeassert-emptyiface-reject-probe, now removed). That behavior
+# is covered by the rtti_type_switch_any golden, not by a reject-probe here.
+# Method-bearing interfaces were always unaffected (distinct thunks ->
+# distinct vtables — see type_assert_probe / type_switch_probe /
+# type_switch_fmt_probe goldens). The interface-TARGET reject (`case S:`
+# where S is itself an interface, the per-case loop in
+# type_check_type_switch_stmt ~line 2308) is unrelated and still enforced —
+# a dedicated reject-probe for it is Task 3's concern.
 
 # Task 4 (type assertions/switches — reject-probe sweep): three static
 # `x.(T)` rejections bundled into one probe (mirrors floatint-reject-probe's
@@ -2024,7 +2005,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-emptyiface-reject-probe typeswitch-emptyiface-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe rtti-iface-target-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -3527,3 +3508,26 @@ const-index-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@printf 'package main\nfunc main(){ a:=[3]int{1,2,3}; _=a[2] }\n' > build/cir_ok.goo
 	@if ! $(COMPILER) -o build/cir_ok build/cir_ok.goo 2>build/cir_ok.err; then echo "const-index-reject-probe: FAIL (in-bounds arr[2] rejected)"; cat build/cir_ok.err; exit 1; fi
 	@echo "const-index-reject-probe: PASS"
+
+# RTTI concrete-type-switch plan, Task 1: a failed `x.(T)` assert on the
+# empty interface (no comma-ok to absorb the miss) must still panic cleanly
+# now that the empty-interface guard is lifted — mirrors typeassert-abort-probe
+# but with an `interface{}` operand instead of a method-bearing interface.
+rtti-assert-panic-probe: lexer
+	@printf 'package main\nfunc main(){ var x interface{} = "s"; _ = x.(int) }\n' > build/rtti_panic.goo
+	@$(COMPILER) build/rtti_panic.goo -o build/rtti_panic 2>/dev/null || (echo "FAIL: should compile"; exit 1)
+	@if build/rtti_panic; then echo "FAIL: expected panic, got clean exit"; exit 1; fi
+	@echo "PASS rtti-assert-panic-probe (assert-miss on any panics)"
+
+# RTTI concrete-type-switch plan, Task 3: lifting the empty-interface guards
+# (Tasks 1 & 2) must not accidentally lift the interface-target guards too —
+# `x.(Interface)` and `case Interface:` stay out of scope and must still be
+# compile-rejected with the existing message.
+rtti-iface-target-reject-probe: lexer
+	@printf 'package main\ntype S interface{ M() int }\nfunc main(){ var x interface{} = 1; _, _ = x.(S) }\n' > build/rtti_rej_assert.goo
+	@if $(COMPILER) build/rtti_rej_assert.goo -o build/rtti_rej_assert 2>build/rtti_rej_assert.err; then echo "FAIL: assert-to-interface should be rejected"; exit 1; fi
+	@grep -q "to an interface type is not supported" build/rtti_rej_assert.err || (echo "FAIL: wrong rejection message"; cat build/rtti_rej_assert.err; exit 1)
+	@printf 'package main\ntype S interface{ M() int }\nfunc main(){ var x interface{} = 1; switch x.(type) { case S: _ = 0 } }\n' > build/rtti_rej_sw.goo
+	@if $(COMPILER) build/rtti_rej_sw.goo -o build/rtti_rej_sw 2>build/rtti_rej_sw.err; then echo "FAIL: case-interface should be rejected"; exit 1; fi
+	@grep -q "to an interface type is not supported" build/rtti_rej_sw.err || (echo "FAIL: wrong rejection message"; cat build/rtti_rej_sw.err; exit 1)
+	@echo "PASS rtti-iface-target-reject-probe (interface targets still rejected)"

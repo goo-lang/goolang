@@ -1,0 +1,37 @@
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+}
+
+func describe(x interface{}) {
+	switch v := x.(type) {
+	case int:
+		fmt.Println("int", v+1)
+	case string:
+		fmt.Println("string", v)
+	case bool:
+		fmt.Println("bool", v)
+	case *Point:
+		fmt.Println("ptr Point", v.X)
+	case Point:
+		fmt.Println("Point", v.X)
+	case nil:
+		fmt.Println("nil")
+	default:
+		fmt.Println("other")
+	}
+}
+
+func main() {
+	describe(41)
+	describe("hi")
+	describe(true)
+	describe(&Point{X: 5})
+	describe(Point{X: 6})
+	var z interface{}
+	describe(z)
+	describe(3.14)
+}
