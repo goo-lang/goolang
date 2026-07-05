@@ -245,7 +245,9 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
 //   slice  -> goo_slice  { data+low*esize, high-low, cap-low }
 // The element GEP scales `low` by the element size for slices (i8 for
 // strings). Bounds are widened to i64 to match the size_t header fields.
-// Bounds checking is deferred (matching the existing index path's TODO).
+// Bounds-checked via goo_slice_bounds_check before the new header is built:
+// 0 <= low <= high <= max, where max is cap(base) for a slice (high may
+// exceed len but not cap) and len(base) for a string (no cap field).
 ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -305,6 +307,28 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
     LLVMValueRef new_len = LLVMBuildSub(codegen->builder, high64, low64, "new_len");
     LLVMValueRef result = LLVMGetUndef(struct_ty);
 
+    // MAX for the bounds check: cap(base) for a slice (high may run up to
+    // cap, past len — that's what lets a reslice recover previously-truncated
+    // capacity), len(base) for a string (strings have no cap field at all).
+    LLVMValueRef old_cap = NULL;
+    LLVMValueRef max64 = base_len;
+    if (base_type->kind != TYPE_STRING) {
+        old_cap = LLVMBuildExtractValue(codegen->builder, base_struct, 2, "old_cap");
+        max64 = old_cap;
+    }
+    {
+        LLVMValueRef bc_fn = LLVMGetNamedFunction(codegen->module, "goo_slice_bounds_check");
+        if (bc_fn) {
+            LLVMValueRef file = LLVMBuildGlobalStringPtr(codegen->builder,
+                expr->pos.filename ? expr->pos.filename : "<input>", "sbc_file");
+            LLVMValueRef line = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
+                                             (unsigned long long)expr->pos.line, 0);
+            LLVMValueRef bc_args[5] = { low64, high64, max64, file, line };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bc_fn), bc_fn, bc_args, 5, "");
+        }
+        // no symbol: bounds unguarded (best-effort), matching codegen_emit_bounds_check
+    }
+
     if (base_type->kind == TYPE_STRING) {
         // Byte-addressed: new_data = data_ptr + low.
         LLVMValueRef new_data = LLVMBuildGEP2(codegen->builder,
@@ -318,7 +342,6 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
         LLVMTypeRef elem_ty = codegen_type_to_llvm(codegen, elem);
         LLVMValueRef new_data = LLVMBuildGEP2(codegen->builder, elem_ty,
                                               data_ptr, &low64, 1, "resl_data");
-        LLVMValueRef old_cap = LLVMBuildExtractValue(codegen->builder, base_struct, 2, "old_cap");
         LLVMValueRef new_cap = LLVMBuildSub(codegen->builder, old_cap, low64, "new_cap");
         result = LLVMBuildInsertValue(codegen->builder, result, new_data, 0, "sl_data");
         result = LLVMBuildInsertValue(codegen->builder, result, new_len, 1, "sl_len");

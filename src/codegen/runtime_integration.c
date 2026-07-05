@@ -449,7 +449,18 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { size_type, size_type, ptr_type, i32_type };
         add_runtime_function(codegen, "goo_bounds_check", void_type, params, 4);
     }
-    
+
+    // void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max,
+    //                              const char* file, int line)
+    // F5 follow-up: bounds check for slice/substring EXPRESSIONS
+    // base[low:high], distinct from goo_bounds_check above (single-element
+    // index). low/high/max share the i64 size_type slot (both are LLVMInt64
+    // under the hood) — only the runtime-side C signature is signed.
+    {
+        LLVMTypeRef params[] = { size_type, size_type, size_type, ptr_type, i32_type };
+        add_runtime_function(codegen, "goo_slice_bounds_check", void_type, params, 5);
+    }
+
     // int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out)
     // -> rune byte width; used by rune-aware for-range-over-string.
     {

@@ -1,0 +1,54 @@
+// slice_expr_bounds_probe: golden coverage for IN-BOUNDS slice/substring
+// EXPRESSIONS `base[low:high]` (F5 follow-up) — the sibling of
+// index_bounds_probe, which covers single-element index reads/writes.
+// Every case here is legal per Go's slice-expression rule
+// (0 <= low <= high <= max, max = cap for slices / len for strings) and
+// must produce byte-for-byte the same stdout as `go run` on the equivalent
+// program. Out-of-range cases (which panic in Go and so can't be golden)
+// are covered separately by the `slice-expr-bounds-probe` Makefile target.
+package main
+
+import "fmt"
+
+func main() {
+	s := []int{1, 2, 3, 4, 5}
+
+	// Both bounds given.
+	t1 := s[1:3]
+	fmt.Println(t1[0], t1[1], len(t1))
+
+	// Omitted low defaults to 0.
+	t2 := s[:2]
+	fmt.Println(t2[0], t2[1], len(t2))
+
+	// Omitted high defaults to len (not cap).
+	t3 := s[2:]
+	fmt.Println(t3[0], len(t3))
+
+	// Both omitted: the whole slice.
+	t4 := s[:]
+	fmt.Println(len(t4))
+
+	// high == len is in bounds (not just high < len).
+	t5 := s[0:5]
+	fmt.Println(len(t5))
+
+	// high > len but <= cap is legal for slices (recovers spare capacity).
+	m := make([]int, 3, 8)
+	m[0] = 100
+	m[1] = 200
+	m[2] = 300
+	t6 := m[1:8]
+	fmt.Println(len(t6), cap(t6), t6[0])
+
+	// Empty slice expressions: low == high, both away from 0 and at 0.
+	t7 := s[3:3]
+	fmt.Println(len(t7))
+	t8 := s[0:0]
+	fmt.Println(len(t8))
+
+	// String substring: strings have no cap, so max is len.
+	str := "hello world"
+	sub := str[1:4]
+	fmt.Println(sub)
+}

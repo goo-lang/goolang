@@ -255,6 +255,12 @@ typedef struct goo_type_info {
 // Bounds checking (for safe mode)
 void goo_bounds_check(size_t index, size_t length, const char* file, int line);
 
+// Bounds check for slice/substring EXPRESSIONS `base[low:high]` — the
+// sibling of goo_bounds_check for single-element index reads/writes. Panics
+// if low < 0 || high < low || high > max, where max is cap(base) for a
+// slice and len(base) for a string. See goo_slice_bounds_check in runtime.c.
+void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max, const char* file, int line);
+
 // Decode the UTF-8 rune at data[i] (i < len); writes *rune_out, returns byte
 // width (1..4). Used by rune-aware for-range-over-string. See runtime.c.
 int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out);
