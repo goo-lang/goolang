@@ -1,0 +1,63 @@
+// map_value_write_probe: two legal-Go partial writes THROUGH a map value
+// that were wrongly rejected as "cannot assign through a map value":
+//   1. m[k][i] = v  when the map VALUE type is a SLICE (map[string][]int).
+//      Legal Go: the slice header aliases its backing array, so writing
+//      through the header's data pointer mutates the shared storage -- no
+//      map-value ADDRESS is needed (maps don't have one). The two-step
+//      `s := m[k]; s[i] = v` form already worked and relies on exactly this
+//      aliasing; it must keep working alongside the direct one-step form.
+//   2. m[k].F = v  when the map VALUE type is a POINTER (map[string]*P).
+//      Legal Go: auto-deref through the pointer; again no map-value address
+//      is needed.
+// Both forms are also exercised with a rune-keyed map, since value-type
+// handling is independent of key kind. Sibling of map-addr-reject-probe,
+// which pins the cases that must STILL reject (struct-VALUE field write,
+// array-VALUE index write, &m[k]) because those genuinely need a map-value
+// address, which maps don't have. go-run-verified byte-for-byte.
+package main
+
+import "fmt"
+
+type P struct {
+	X int
+}
+
+func main() {
+	// map[string][]int: m[k][i] = v -- legal Go; the slice header aliases
+	// its backing array, so no map-value ADDRESS is needed.
+	sl := map[string][]int{}
+	sl["a"] = []int{1, 2, 3}
+	sl["a"][1] = 20
+	fmt.Println(sl["a"][0])
+	fmt.Println(sl["a"][1])
+	fmt.Println(sl["a"][2])
+
+	// Two-step form must still work identically -- it's what proves the
+	// aliasing, and must keep working after the fix.
+	s := sl["a"]
+	s[2] = 30
+	fmt.Println(sl["a"][2])
+
+	// map[string]*P: m[k].F = v -- legal Go; auto-deref through the pointer,
+	// no map-value ADDRESS needed.
+	pm := map[string]*P{}
+	p1 := new(P)
+	p1.X = 1
+	pm["p"] = p1
+	pm["p"].X = 42
+	fmt.Println(pm["p"].X)
+
+	// rune-keyed variants of both forms.
+	rsl := map[rune][]int{}
+	rsl['x'] = []int{5, 6}
+	rsl['x'][0] = 50
+	fmt.Println(rsl['x'][0])
+	fmt.Println(rsl['x'][1])
+
+	rpm := map[rune]*P{}
+	p2 := new(P)
+	p2.X = 9
+	rpm['p'] = p2
+	rpm['p'].X = 99
+	fmt.Println(rpm['p'].X)
+}
