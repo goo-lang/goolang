@@ -423,7 +423,7 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 return NULL;
             }
             uint64_t n = 0;
-            if (!at->length || !goo_fold_const_int(at->length, &n)) {
+            if (!at->length || !goo_fold_const_int_ctx(checker, at->length, &n)) {
                 type_error(checker, expr->pos,
                            "array literal: length must be a constant expression");
                 return NULL;

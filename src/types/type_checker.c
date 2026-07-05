@@ -1241,6 +1241,16 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         if (res) comptime_result_free(res);
     }
 
+    // fix/const-array-length: fold the RHS through the checker-aware folder
+    // (identifiers matter — `const M = N + 1` should fold if N is already a
+    // cached const) and cache the result on every Variable this decl
+    // introduces, so a later array-length reference (`[N]int`, `[M]int`) can
+    // resolve the real length instead of the placeholder-10 fallback. This is
+    // independent of (and does not replace) the goo_fold_const_int call
+    // above, which only decides int64-vs-uint64 for an untyped const's Type.
+    uint64_t const_int_value = 0;
+    int has_const_int_value = goo_fold_const_int_ctx(checker, const_decl->values, &const_int_value);
+
     // Add constants to scope (treated as immutable variables)
     for (size_t i = 0; i < const_decl->name_count; i++) {
         Variable* var = variable_new(const_decl->names[i], value_type, const_decl->base.pos);
@@ -1251,6 +1261,8 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
 
         var->mutability = MUTABILITY_IMMUTABLE;
         var->is_initialized = 1;
+        var->has_const_int_value = has_const_int_value;
+        var->const_int_value = const_int_value;
         if (comptime_val) {
             // First variable takes ownership of the original copy;
             // subsequent variables get their own copies. The multi-name
@@ -2427,23 +2439,27 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (!element_type) return NULL;
 
             // Bare fixed-array type annotations (`var arr [3]int`, `owned
-            // [1024]char`) carry the length as an AST expression, not a
-            // resolved size_t. This used to be an unevaluated placeholder
-            // (always 10, regardless of what was written) — every declared
-            // array silently got the same fixed capacity, which also made
-            // per-element bounds checks meaningless (an OOB index against the
-            // real N could still be < 10 and never trip). Evaluate the common
-            // case — a constant integer literal — for real; anything else
-            // (identifier/const-expr lengths) is a pre-existing gap, not
-            // introduced here, so it still falls back to the placeholder
-            // rather than regressing further.
-            size_t length = 10;  // fallback for non-literal lengths (pre-existing gap)
-            if (array->length && array->length->type == AST_LITERAL) {
-                LiteralNode* len_lit = (LiteralNode*)array->length;
-                if (len_lit->literal_type == TOKEN_INT) {
-                    length = (size_t)strtoull(len_lit->value, NULL, 0);
-                }
+            // [1024]char`, `var arr [N]int`, `var arr [N+1]int`) carry the
+            // length as an AST expression, not a resolved size_t. This used
+            // to only evaluate a plain integer literal and silently fall
+            // back to a fixed placeholder (10) for anything else — every
+            // const-identifier or const-expression length silently got the
+            // SAME wrong capacity, which also made per-element bounds checks
+            // meaningless (an OOB index against the real N could still be
+            // < 10 and never trip). goo_fold_const_int_ctx resolves both a
+            // literal and a const-identifier/const-expression (recursively,
+            // via each const's cached folded value — see
+            // type_check_const_decl); a length that isn't a compile-time
+            // integer constant at all is now a clean type error instead of
+            // a silent wrong length (mirrors the array-literal length check
+            // in expression_checker.c).
+            uint64_t length64 = 0;
+            if (!array->length || !goo_fold_const_int_ctx(checker, array->length, &length64)) {
+                type_error(checker, type_node->pos,
+                           "array length must be a constant expression");
+                return NULL;
             }
+            size_t length = (size_t)length64;
             return type_array(element_type, length);
         }
         
