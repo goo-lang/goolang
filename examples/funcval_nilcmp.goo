@@ -1,0 +1,36 @@
+// funcval-nilcmp (queue #3): a function value compares to nil. A declared but
+// unassigned `var f func(int) int` zero-values to the fat pointer {NULL, NULL},
+// so `f == nil` reads its fn-ptr word and is true; after assigning a real
+// function, `f == nil` is false and `f != nil` is true. Exercises both the
+// typecheck exception (expression_helpers.c) and the codegen fn-ptr compare
+// (expression_codegen.c). Compiled and run by the `funcval-nilcmp-probe`
+// Makefile target, which asserts exit code 0 (all checks passed).
+package main
+
+func dbl(x int) int {
+	return x * 2
+}
+
+func main() {
+	var f func(int) int
+	if f != nil {
+		// f is the zero value: must be nil here.
+		panic("unassigned funcval compared != nil")
+	}
+	if !(f == nil) {
+		panic("unassigned funcval did not compare == nil")
+	}
+
+	f = dbl
+	if f == nil {
+		panic("assigned funcval compared == nil")
+	}
+	if !(f != nil) {
+		panic("assigned funcval did not compare != nil")
+	}
+
+	// The assigned value must still call correctly.
+	if f(21) != 42 {
+		panic("assigned funcval called wrong")
+	}
+}
