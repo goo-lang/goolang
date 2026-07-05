@@ -2566,7 +2566,10 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             StructTypeNode* st = (StructTypeNode*)type_node;
             size_t count = 0;
             for (ASTNode* f = st->fields; f; f = f->next) {
-                if (f->type == AST_VAR_DECL) count++;
+                // Grouped fields `X, Y T` are one VarDeclNode with
+                // name_count>1 but yield one struct field per name, so
+                // count names, not VarDeclNodes.
+                if (f->type == AST_VAR_DECL) count += ((VarDeclNode*)f)->name_count;
             }
             // Named-result ABI (P3-5): a parser-synthesized result tuple with a
             // SINGLE field is `func f() (r int)` — the common Go named-result
@@ -2632,13 +2635,20 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                         return NULL;
                     }
                 }
-                result->data.struct_type.fields[idx].name = strdup(fd->names[0]);
-                result->data.struct_type.fields[idx].type = ft;
-                result->data.struct_type.fields[idx].offset = total_size;
-                result->data.struct_type.fields[idx].is_embedded = fd->is_embedded;
-                total_size += ft->size ? ft->size : 8;
+                // One StructField per name. Grouped fields `X, Y T` share the
+                // single `ft` type here — the same way two separate `int`
+                // fields already share type_from_ast's result. Each name still
+                // gets its own offset so the layout is identical to writing the
+                // fields out one per line.
+                for (size_t k = 0; k < fd->name_count; k++) {
+                    result->data.struct_type.fields[idx].name = strdup(fd->names[k]);
+                    result->data.struct_type.fields[idx].type = ft;
+                    result->data.struct_type.fields[idx].offset = total_size;
+                    result->data.struct_type.fields[idx].is_embedded = fd->is_embedded;
+                    total_size += ft->size ? ft->size : 8;
+                    idx++;
+                }
                 if (ft->align > max_align) max_align = ft->align;
-                idx++;
             }
             for (size_t a = 0; a < idx; a++) {
                 for (size_t b = a + 1; b < idx; b++) {

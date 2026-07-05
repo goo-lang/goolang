@@ -87,6 +87,29 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     return (ASTNode*)field;
 }
 
+// Grouped struct field `X, Y, Z T` — the names share the single trailing
+// type T. `first` is the leading identifier; `tail` is a `next`-linked chain
+// of the remaining identifiers (built by field_name_tail). Fold them into one
+// multi-name VarDeclNode; type_from_ast (AST_STRUCT_TYPE) expands it to one
+// StructField per name. Mirrors grouped params, which share a trailing type
+// the same way. `tail` is freed whole here — ast_node_free chases ->next.
+static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type) {
+    int count = 1;
+    for (ASTNode* n = tail; n; n = n->next) count++;
+    VarDeclNode* field = ast_var_decl_new(get_current_position());
+    field->names = malloc(sizeof(char*) * count);
+    field->names[0] = strdup(((IdentifierNode*)first)->name);
+    int i = 1;
+    for (ASTNode* n = tail; n; n = n->next)
+        field->names[i++] = strdup(((IdentifierNode*)n)->name);
+    field->name_count = count;
+    field->type = type;
+    field->values = NULL;
+    ast_node_free(first);
+    ast_node_free(tail);
+    return (ASTNode*)field;
+}
+
 // func_signature's own $$ collapses params and result into a single
 // ASTNode* that can't tell "params only" (case: `(int)`) apart from
 // "result only" (case: `() int`), and its "both" case (`(int) int`)
@@ -212,7 +235,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> type type_name array_type slice_type map_type chan_type
 %type <node> type_call_arg
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
-%type <node> struct_type struct_field_list struct_field
+%type <node> struct_type struct_field_list struct_field field_name_tail
 %type <node> enum_type enum_variant_list enum_variant
 %type <node> interface_type interface_method_list interface_method
 %type <node> slice_lit
@@ -2231,6 +2254,19 @@ struct_field:
         ast_node_free($1);
         $$ = (ASTNode*)field;
     }
+    | identifier field_name_tail type {
+        // Grouped field `X, Y, Z T` — the leading `identifier` then a
+        // `COMMA identifier` chain (field_name_tail), sharing type T. A bare
+        // COMMA right after the first identifier (no COLON/type yet) is what
+        // distinguishes this from the single-field arms above and from the
+        // `struct_field_list COMMA struct_field` list arm (whose COMMA follows
+        // a fully-reduced field like `w: int`).
+        $$ = make_grouped_field($1, $2, $3);
+    }
+    | identifier field_name_tail type SEMICOLON {
+        // Grouped field with explicit/ASI-inserted terminator.
+        $$ = make_grouped_field($1, $2, $3);
+    }
     | identifier SEMICOLON {
         // Embedded (anonymous) field `Base;` — the ';' is explicit in
         // one-liners and ASI-inserted at newlines inside struct bodies.
@@ -2239,6 +2275,20 @@ struct_field:
     | MULTIPLY identifier SEMICOLON {
         // Embedded pointer field `*Base;`.
         $$ = make_embedded_field($2, 1);
+    }
+    ;
+
+// The `, Y, Z` tail of a grouped field `X, Y, Z T`: one or more trailing
+// names, returned as a `next`-linked IdentifierNode chain. Kept separate from
+// the struct_field_list COMMA arm so the grouped-name COMMA (right after a
+// bare identifier) never competes with the field-separator COMMA.
+field_name_tail:
+    COMMA identifier { $$ = $2; }
+    | field_name_tail COMMA identifier {
+        ASTNode* n = $1;
+        while (n->next) n = n->next;
+        n->next = $3;
+        $$ = $1;
     }
     ;
 
