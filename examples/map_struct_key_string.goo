@@ -1,0 +1,27 @@
+// map_struct_key_string (struct-typed map keys, Task 3): the string-field
+// CORRECTNESS centerpiece. Two keys whose string fields have DISTINCT
+// addresses but EQUAL content (one literal, one built from concatenation)
+// must hit the SAME entry — proves the synthesized comparator does
+// content-equality (strcmp) on string fields, not pointer-equality.
+// go-run-verified byte-for-byte against an equivalent .go program.
+// Multi-line struct body (single-line struct bodies hit an unrelated ASI
+// quirk — goo-grammar workaround #4).
+package main
+
+import "fmt"
+
+type Name struct {
+	First string
+	Last  string
+}
+
+func main() {
+	m := map[Name]int{}
+	m[Name{First: "Ada", Last: "Lovelace"}] = 1
+	// build an equal key from concatenation so its field pointers differ
+	first := "A" + "da"
+	last := "Love" + "lace"
+	m[Name{First: first, Last: last}] = 2 // same key by content — overwrites
+	fmt.Println(m[Name{First: "Ada", Last: "Lovelace"}])
+	fmt.Println(len(m))
+}

@@ -1,0 +1,27 @@
+// map_struct_key_range (struct-typed map keys, Task 3): range over a
+// map[Point]int exercises codegen_map_slot_to_key's struct arm (recovering
+// a full struct key from its heap slot during iteration), not just direct
+// indexing. Sums k.X + k.Y + v, which is order-independent so the golden
+// matches regardless of the runtime's iteration order. go-run-verified
+// byte-for-byte against an equivalent .go program. Multi-line struct body
+// (single-line struct bodies hit an unrelated ASI quirk — goo-grammar
+// workaround #4).
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+	Y int
+}
+
+func main() {
+	m := map[Point]int{}
+	m[Point{X: 1, Y: 2}] = 10
+	m[Point{X: 3, Y: 4}] = 20
+	sum := 0
+	for k, v := range m {
+		sum += k.X + k.Y + v
+	}
+	fmt.Println(sum)
+}
