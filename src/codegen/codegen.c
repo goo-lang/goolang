@@ -74,6 +74,12 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->struct_cache_size = 0;
     codegen->struct_cache_cap = 0;
 
+    codegen->structeq_cache_keys = NULL;
+    codegen->structeq_cache_vals = NULL;
+    codegen->structeq_cache_size = 0;
+    codegen->structeq_cache_cap = 0;
+    codegen->structeq_counter = 0;
+
     // Loop-context stack (break/continue targets) starts empty.
     codegen->loop_depth = 0;
 
@@ -154,6 +160,9 @@ void codegen_free(CodeGenerator* codegen) {
 
     free(codegen->struct_cache_keys);
     free(codegen->struct_cache_vals);
+
+    free(codegen->structeq_cache_keys);
+    free(codegen->structeq_cache_vals);
 
     // The deferred-init array holds borrowed pointers (globals owned by the
     // module, expressions by the AST, types by the type system) — free only
@@ -604,10 +613,12 @@ LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot
 }
 
 // Map key kind for goo_map_new_sv: STRING(0) for string keys, INLINE(1) for
-// integer/uint/bool/rune/byte/pointer. Matches runtime.h's GOO_MAPKEY_* enum
-// (non-string maps don't type-check yet — Task 3 — but codegen carries the
-// full mapping so creation sites are correct the day the gate lifts).
+// integer/uint/bool/rune/byte/pointer, STRUCT(2) for a struct key compared
+// via the map's synthesized per-field comparator (goo.structeq.<id>, see
+// codegen_get_or_emit_struct_key_eq below). Matches runtime.h's GOO_MAPKEY_*
+// enum.
 int codegen_map_key_kind(Type* key_type) {
+    if (key_type && key_type->kind == TYPE_STRUCT) return 2 /*GOO_MAPKEY_STRUCT*/;
     return (key_type && key_type->kind == TYPE_STRING) ? 0 /*GOO_MAPKEY_STRING*/ : 1 /*INLINE*/;
 }
 
@@ -634,6 +645,186 @@ LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr)
     LLVMValueRef args[1] = { cptr };
     return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(mkstr_fn),
                           mkstr_fn, args, 1, "kstr_wrap");
+}
+
+// Get-or-declare the libc `strcmp(const char*, const char*) -> int` extern,
+// mirroring codegen_string_from_cstr's LLVMGetNamedFunction-or-declare
+// pattern above. Used by codegen_get_or_emit_struct_key_eq for STRING struct
+// fields. The final link already pulls in libc (codegen_emit_executable
+// shells out to `clang ... -lm -lpthread`, which links libc by default), so
+// declaring the extern here (never defining it) resolves at link time like
+// any other libc call.
+static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "strcmp");
+    if (fn) return fn;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMTypeRef params[2] = { i8p, i8p };
+    LLVMTypeRef fnty = LLVMFunctionType(i32, params, 2, 0);
+    return LLVMAddFunction(codegen->module, "strcmp", fnty);
+}
+
+// Struct-typed map keys (Task 2): synthesize (or return the cached) per-field
+// equality comparator for `struct_type` — `i32 @goo.structeq.<id>(i64 a, i64
+// b)`. Cast both slots to `struct_type*`, then for every DECLARED field (in
+// order, so LLVM struct-field index == Goo field index — codegen_get_struct_
+// type builds them 1:1):
+//   - string             : extract field 0 (char*) from both loaded string
+//                           aggregates, `strcmp(...) == 0`.
+//   - nested struct       : GEP the field's ADDRESS in both operands,
+//                           PtrToInt, and call THAT type's comparator
+//                           (recursive codegen_get_or_emit_struct_key_eq,
+//                           emitting the nested one first if not cached yet).
+//   - float32/float64     : `fcmp oeq` (Go `==`; a NaN field is therefore
+//                           never retrievable, matching Go — not a bug).
+//   - everything else     : `icmp eq` (int/uint/bool/char/pointer — the only
+//                           other kinds struct_is_comparable_key admits,
+//                           type_checker.c).
+// Short-circuits on the first mismatch (branches to a single shared "ret 0"
+// block); falling through every field's compare reaches "ret 1". Cached by
+// struct Type* IDENTITY (not name) so this is emitted exactly once per
+// distinct type — including two independent anonymous struct types, which
+// would otherwise collide if the cache were keyed by name (both have none).
+// Returns NULL (no partial function left registered beyond an empty body —
+// callers must treat any NULL as synthesis failure) if `struct_type` isn't a
+// struct or a field's LLVM type can't be resolved.
+LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeChecker* checker,
+                                               Type* struct_type) {
+    if (!codegen || !struct_type || struct_type->kind != TYPE_STRUCT) return NULL;
+
+    for (size_t i = 0; i < codegen->structeq_cache_size; i++) {
+        if (codegen->structeq_cache_keys[i] == struct_type) {
+            return codegen->structeq_cache_vals[i];
+        }
+    }
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+
+    LLVMTypeRef sty = codegen_type_to_llvm(codegen, struct_type);
+    if (!sty) return NULL;
+    LLVMTypeRef sptr = LLVMPointerType(sty, 0);
+
+    char fname[64];
+    snprintf(fname, sizeof(fname), "goo.structeq.%lu", codegen->structeq_counter++);
+    LLVMTypeRef param_types[2] = { i64, i64 };
+    LLVMTypeRef fnty = LLVMFunctionType(i32, param_types, 2, 0);
+    LLVMValueRef fn = LLVMAddFunction(codegen->module, fname, fnty);
+    if (!fn) return NULL;
+
+    // Insert into the cache BEFORE emitting the body: a nested struct field
+    // referring back to an ancestor type (mutual struct-in-struct nesting)
+    // would otherwise recurse forever instead of reusing this in-progress
+    // function — mirrors codegen_get_struct_type's opaque-struct-first
+    // insertion for the identical reason (type_mapping.c).
+    if (codegen->structeq_cache_size == codegen->structeq_cache_cap) {
+        size_t new_cap = codegen->structeq_cache_cap ? codegen->structeq_cache_cap * 2 : 8;
+        const Type** new_keys = realloc(codegen->structeq_cache_keys, new_cap * sizeof(const Type*));
+        if (!new_keys) return NULL;
+        codegen->structeq_cache_keys = new_keys;
+        LLVMValueRef* new_vals = realloc(codegen->structeq_cache_vals, new_cap * sizeof(LLVMValueRef));
+        if (!new_vals) return NULL;
+        codegen->structeq_cache_vals = new_vals;
+        codegen->structeq_cache_cap = new_cap;
+    }
+    codegen->structeq_cache_keys[codegen->structeq_cache_size] = struct_type;
+    codegen->structeq_cache_vals[codegen->structeq_cache_size] = fn;
+    codegen->structeq_cache_size++;
+
+    // Emit the body, saving/restoring the caller's insert point (mirrors
+    // build_thunk, interface_codegen.c) — this function may be synthesized
+    // mid-expression (a map creation site inside some other function's body).
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+    LLVMBasicBlockRef ret1_bb = LLVMAppendBasicBlockInContext(ctx, fn, "structeq.ret1");
+    LLVMBasicBlockRef ret0_bb = LLVMAppendBasicBlockInContext(ctx, fn, "structeq.ret0");
+
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+    LLVMValueRef a = LLVMGetParam(fn, 0);
+    LLVMValueRef b = LLVMGetParam(fn, 1);
+    LLVMValueRef pa = LLVMBuildIntToPtr(codegen->builder, a, sptr, "structeq.pa");
+    LLVMValueRef pb = LLVMBuildIntToPtr(codegen->builder, b, sptr, "structeq.pb");
+
+    size_t fc = struct_type->data.struct_type.field_count;
+    LLVMBasicBlockRef cur_bb = entry;
+    for (size_t i = 0; i < fc; i++) {
+        LLVMPositionBuilderAtEnd(codegen->builder, cur_bb);
+        Type* ft = struct_type->data.struct_type.fields[i].type;
+
+        LLVMValueRef eq_bit;
+        if (ft && ft->kind == TYPE_STRING) {
+            LLVMTypeRef fllty = codegen_type_to_llvm(codegen, ft);
+            if (!fllty) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+            LLVMValueRef fa = LLVMBuildLoad2(codegen->builder, fllty,
+                LLVMBuildStructGEP2(codegen->builder, sty, pa, (unsigned)i, "fa.ptr"), "fa");
+            LLVMValueRef fb = LLVMBuildLoad2(codegen->builder, fllty,
+                LLVMBuildStructGEP2(codegen->builder, sty, pb, (unsigned)i, "fb.ptr"), "fb");
+            LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, fa, 0, "ca");
+            LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, fb, 0, "cb");
+            LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
+            LLVMValueRef sargs[2] = { ca, cb };
+            LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
+                                            strcmp_fn, sargs, 2, "strcmp.r");
+            eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "streq");
+        } else if (ft && ft->kind == TYPE_STRUCT) {
+            LLVMValueRef nested_eq = codegen_get_or_emit_struct_key_eq(codegen, checker, ft);
+            if (!nested_eq) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+            LLVMValueRef fa_ptr = LLVMBuildStructGEP2(codegen->builder, sty, pa, (unsigned)i, "nfa.ptr");
+            LLVMValueRef fb_ptr = LLVMBuildStructGEP2(codegen->builder, sty, pb, (unsigned)i, "nfb.ptr");
+            LLVMValueRef na = LLVMBuildPtrToInt(codegen->builder, fa_ptr, i64, "nfa.i64");
+            LLVMValueRef nb = LLVMBuildPtrToInt(codegen->builder, fb_ptr, i64, "nfb.i64");
+            LLVMValueRef nargs[2] = { na, nb };
+            LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(nested_eq),
+                                            nested_eq, nargs, 2, "nested.eq");
+            // r is the nested comparator's own i32 (1 == equal), not a raw
+            // 3-way compare — != 0 means "equal", matching this function's
+            // own return convention.
+            eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntNE, r, LLVMConstInt(i32, 0, 0), "nested.eqbit");
+        } else if (ft && (ft->kind == TYPE_FLOAT32 || ft->kind == TYPE_FLOAT64)) {
+            LLVMTypeRef fllty = codegen_type_to_llvm(codegen, ft);
+            if (!fllty) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+            LLVMValueRef fa = LLVMBuildLoad2(codegen->builder, fllty,
+                LLVMBuildStructGEP2(codegen->builder, sty, pa, (unsigned)i, "fa.ptr"), "fa");
+            LLVMValueRef fb = LLVMBuildLoad2(codegen->builder, fllty,
+                LLVMBuildStructGEP2(codegen->builder, sty, pb, (unsigned)i, "fb.ptr"), "fb");
+            eq_bit = LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, fa, fb, "feq");
+        } else {
+            // int/uint/bool/char/pointer.
+            LLVMTypeRef fllty = codegen_type_to_llvm(codegen, ft);
+            if (!fllty) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+            LLVMValueRef fa = LLVMBuildLoad2(codegen->builder, fllty,
+                LLVMBuildStructGEP2(codegen->builder, sty, pa, (unsigned)i, "fa.ptr"), "fa");
+            LLVMValueRef fb = LLVMBuildLoad2(codegen->builder, fllty,
+                LLVMBuildStructGEP2(codegen->builder, sty, pb, (unsigned)i, "fb.ptr"), "fb");
+            eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, fa, fb, "eq");
+        }
+
+        if (i + 1 < fc) {
+            LLVMBasicBlockRef next_bb =
+                LLVMAppendBasicBlockInContext(ctx, fn, "structeq.next");
+            LLVMBuildCondBr(codegen->builder, eq_bit, next_bb, ret0_bb);
+            cur_bb = next_bb;
+        } else {
+            LLVMBuildCondBr(codegen->builder, eq_bit, ret1_bb, ret0_bb);
+        }
+    }
+    if (fc == 0) {
+        // Empty struct: every instance compares equal.
+        LLVMPositionBuilderAtEnd(codegen->builder, entry);
+        LLVMBuildBr(codegen->builder, ret1_bb);
+    }
+
+    LLVMPositionBuilderAtEnd(codegen->builder, ret1_bb);
+    LLVMBuildRet(codegen->builder, LLVMConstInt(i32, 1, 0));
+    LLVMPositionBuilderAtEnd(codegen->builder, ret0_bb);
+    LLVMBuildRet(codegen->builder, LLVMConstInt(i32, 0, 0));
+
+    if (saved) {
+        LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    }
+    return fn;
 }
 
 // Pack a key value into the i64 slot. STRING: extract the char* and PtrToInt
@@ -672,6 +863,24 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         LLVMValueRef cptr = LLVMBuildExtractValue(codegen->builder, raw, 0, "kstr_ptr");
         return LLVMBuildPtrToInt(codegen->builder, cptr, i64, "kstr_slot");
     }
+    if (kt && kt->kind == TYPE_STRUCT) {
+        // Heap-copy the struct key (mirrors codegen_map_value_to_slot's
+        // boxed-value arm): two DISTINCT copies with equal fields must
+        // still hit the same map entry, which the synthesized
+        // goo.structeq.<id> comparator (not pointer identity) provides —
+        // the slot only needs to carry an address the comparator can
+        // dereference. `raw` is already the loaded struct VALUE (composite
+        // literals and identifiers both yield rvalues here; the is_lvalue
+        // load above already ran for lvalue key expressions).
+        LLVMTypeRef sty = codegen_type_to_llvm(codegen, kt);
+        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+        if (!sty || !alloc_fn) return NULL;
+        LLVMValueRef size = LLVMSizeOf(sty);
+        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
+                                          alloc_fn, &size, 1, "skey_mem");
+        LLVMBuildStore(codegen->builder, raw, mem);
+        return LLVMBuildPtrToInt(codegen->builder, mem, i64, "skey_slot");
+    }
     return codegen_map_value_to_slot(codegen, raw, kt);
 }
 
@@ -686,6 +895,13 @@ LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, 
         LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
         LLVMValueRef cptr = LLVMBuildIntToPtr(codegen->builder, slot, i8p, "kstr_ptr");
         return codegen_string_from_cstr(codegen, cptr);
+    }
+    if (key_type && key_type->kind == TYPE_STRUCT) {
+        LLVMTypeRef sty = codegen_type_to_llvm(codegen, key_type);
+        if (!sty) return NULL;
+        LLVMValueRef sp = LLVMBuildIntToPtr(codegen->builder, slot,
+                                           LLVMPointerType(sty, 0), "skey_ptr");
+        return LLVMBuildLoad2(codegen->builder, sty, sp, "skey_val");
     }
     return codegen_map_slot_to_value(codegen, slot, key_type);
 }

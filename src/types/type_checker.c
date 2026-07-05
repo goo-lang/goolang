@@ -2363,6 +2363,40 @@ int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
     return ok;
 }
 
+// Struct-typed map keys (Task 2): is `t` (already known TYPE_STRUCT) usable
+// as a map key? Recursively — every field must be a scalar
+// (integer/bool/char/pointer), a float, a string, or a nested comparable
+// struct. An ARRAY field is Go-legal (arrays are comparable if their element
+// type is) but deferred to a later cycle: the synthesized comparator
+// (codegen_get_or_emit_struct_key_eq) has no per-element loop yet. A
+// slice/map/func/interface field is never comparable in Go. On rejection,
+// `*why` is set to "array" or "noncomparable" so the AST_MAP_TYPE gate below
+// can choose the matching diagnostic (deferred vs. permanently rejected).
+// Returns 1 iff `t` is a valid map key type.
+static int struct_is_comparable_key(Type* t, const char** why) {
+    if (!t || t->kind != TYPE_STRUCT) return 0;
+    for (size_t i = 0; i < t->data.struct_type.field_count; i++) {
+        Type* f = t->data.struct_type.fields[i].type;
+        if (!f) return 0;
+        switch (f->kind) {
+            case TYPE_STRING: case TYPE_BOOL: case TYPE_CHAR:
+            case TYPE_FLOAT32: case TYPE_FLOAT64: case TYPE_POINTER:
+                break;
+            case TYPE_STRUCT:
+                if (!struct_is_comparable_key(f, why)) return 0;
+                break;
+            case TYPE_ARRAY:
+                *why = "array";   // Go-legal, deferred (v1 has no element loop)
+                return 0;
+            default:
+                if (type_is_integer(f)) break;
+                *why = "noncomparable";  // slice/map/func/interface/...
+                return 0;
+        }
+    }
+    return 1;
+}
+
 // Helper function to convert AST type nodes to Type structures
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
     if (!checker || !type_node) return NULL;
@@ -2750,7 +2784,26 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             int key_ok = key_type->kind == TYPE_STRING || type_is_integer(key_type) ||
                          key_type->kind == TYPE_BOOL || key_type->kind == TYPE_CHAR ||
                          key_type->kind == TYPE_POINTER;
+            // Struct-typed key (Task 2, struct map keys): admit iff every
+            // field is recursively comparable — struct_is_comparable_key
+            // also tells us WHY a rejected struct was rejected (a deferred
+            // array field vs. a permanently non-comparable slice/map/func
+            // field), so the two-reason diagnostic below stays accurate for
+            // structs too instead of collapsing both into "not yet
+            // supported in v1".
+            const char* struct_reject_why = NULL;
+            if (!key_ok && key_type->kind == TYPE_STRUCT &&
+                struct_is_comparable_key(key_type, &struct_reject_why)) {
+                key_ok = 1;
+            }
             if (!key_ok) {
+                if (key_type->kind == TYPE_STRUCT && struct_reject_why &&
+                    strcmp(struct_reject_why, "noncomparable") == 0) {
+                    type_error(checker, type_node->pos,
+                               "invalid map key type: struct has a non-comparable field "
+                               "(slice/map/func/interface fields are never comparable)");
+                    return NULL;
+                }
                 // Two-reason diagnostic: some rejected kinds are comparable
                 // in Go and just not wired into the v1 slot runtime yet
                 // (deferred); others are permanently non-comparable as map

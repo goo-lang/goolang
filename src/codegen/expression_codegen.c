@@ -368,11 +368,25 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             }
             LLVMValueRef key_kind = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
                                                  codegen_map_key_kind(key_type), 0);
-            // Struct keys aren't wired yet (comparability gate still rejects
-            // them) — every map literal passes a NULL comparator.
-            LLVMValueRef null_keyeq = LLVMConstPointerNull(
-                LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0));
-            LLVMValueRef new_args[] = { key_kind, null_keyeq };
+            // A struct key needs the synthesized per-field comparator so the
+            // runtime's key_kind==STRUCT arm can call it (goo_map_key_eq,
+            // runtime.c); every other key kind passes NULL (unused by the
+            // runtime for STRING/INLINE). Mirrors the make(map[K]V) site
+            // (call_codegen.c).
+            LLVMValueRef keyeq_ptr;
+            LLVMTypeRef keyeq_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            if (key_type && key_type->kind == TYPE_STRUCT) {
+                LLVMValueRef cmp_fn = codegen_get_or_emit_struct_key_eq(codegen, checker, key_type);
+                if (!cmp_fn) {
+                    codegen_error(codegen, expr->pos,
+                                  "map literal: failed to synthesize struct key comparator");
+                    return NULL;
+                }
+                keyeq_ptr = LLVMBuildBitCast(codegen->builder, cmp_fn, keyeq_ptr_ty, "keyeq_ptr");
+            } else {
+                keyeq_ptr = LLVMConstPointerNull(keyeq_ptr_ty);
+            }
+            LLVMValueRef new_args[] = { key_kind, keyeq_ptr };
             LLVMValueRef m = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(new_fn),
                                             new_fn, new_args, 2, "map_new");
             ASTNode* k = lit->keys;
