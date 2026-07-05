@@ -1178,6 +1178,54 @@ if_stmt:
         if_node->else_stmt = $5;
         $$ = (ASTNode*)if_node;
     }
+    // `if init; cond { }` — the idiomatic Go guard form (e.g. `if v, ok := m[k]; ok {`).
+    // Desugared to a wrapping block `{ init; if cond {...} }` (mirrors the C-style
+    // `for init; cond; post` shape at parser.y:1220, disambiguated the same way on
+    // SEMICOLON) rather than adding an `init` field to IfStmtNode: this way the init
+    // var's scope is naturally bounded to the wrapper block (out of scope after the
+    // if, matching Go), with zero AST/codegen changes.
+    | IF simple_stmt SEMICOLON expression block {
+        IfStmtNode* if_node = (IfStmtNode*)malloc(sizeof(IfStmtNode));
+        if_node->base.type = AST_IF_STMT;
+        if_node->base.pos = get_current_position();
+        if_node->base.node_type = NULL;
+        if_node->base.next = NULL;
+        if_node->condition = $4;
+        if_node->then_stmt = $5;
+        if_node->else_stmt = NULL;
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, (ASTNode*)if_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | IF simple_stmt SEMICOLON expression block ELSE block {
+        IfStmtNode* if_node = (IfStmtNode*)malloc(sizeof(IfStmtNode));
+        if_node->base.type = AST_IF_STMT;
+        if_node->base.pos = get_current_position();
+        if_node->base.node_type = NULL;
+        if_node->base.next = NULL;
+        if_node->condition = $4;
+        if_node->then_stmt = $5;
+        if_node->else_stmt = $7;
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, (ASTNode*)if_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | IF simple_stmt SEMICOLON expression block ELSE if_stmt {
+        IfStmtNode* if_node = (IfStmtNode*)malloc(sizeof(IfStmtNode));
+        if_node->base.type = AST_IF_STMT;
+        if_node->base.pos = get_current_position();
+        if_node->base.node_type = NULL;
+        if_node->base.next = NULL;
+        if_node->condition = $4;
+        if_node->then_stmt = $5;
+        if_node->else_stmt = $7;
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, (ASTNode*)if_node);
+        $$ = (ASTNode*)wrapper;
+    }
     ;
 
 if_let_stmt:

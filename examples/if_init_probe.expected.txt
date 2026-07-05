@@ -1,0 +1,3 @@
+has a 1
+no z
+big 12
