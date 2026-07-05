@@ -509,8 +509,13 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             LLVMValueRef key_kind = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
                                                  codegen_map_key_kind(made_type->data.map.key_type), 0);
+            // Struct keys aren't wired yet (comparability gate still rejects
+            // them) — make(map[K]V) always passes a NULL comparator.
+            LLVMValueRef null_keyeq = LLVMConstPointerNull(
+                LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0));
+            LLVMValueRef new_args[] = { key_kind, null_keyeq };
             LLVMValueRef m = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(new_fn),
-                                            new_fn, &key_kind, 1, "make_map");
+                                            new_fn, new_args, 2, "make_map");
             return value_info_new(NULL, m, made_type);
         }
         if (strcmp(func_name->name, "println") == 0) {

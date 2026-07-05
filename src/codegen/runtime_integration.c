@@ -336,13 +336,16 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_math_max", dbl, binary, 2);
     }
 
-    // GooMapSV* goo_map_new_sv(int32_t key_kind) — key_kind selects the
-    // runtime's key-comparison strategy (GOO_MAPKEY_STRING=0 -> strcmp,
-    // GOO_MAPKEY_INLINE=1 -> ==); codegen_map_key_kind (codegen.c) derives
-    // it from the map's key type at every creation site.
+    // GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq) — key_kind
+    // selects the runtime's key-comparison strategy (GOO_MAPKEY_STRING=0 ->
+    // strcmp, GOO_MAPKEY_INLINE=1 -> ==, GOO_MAPKEY_STRUCT=2 -> key_eq);
+    // codegen_map_key_kind (codegen.c) derives it from the map's key type at
+    // every creation site. key_eq is the per-map struct-key comparator
+    // (opaque ptr; NULL for string/inline maps — struct keys are wired in a
+    // later task).
     {
-        LLVMTypeRef params[] = { i32_type };
-        add_runtime_function(codegen, "goo_map_new_sv", ptr_type, params, 1);
+        LLVMTypeRef params[] = { i32_type, ptr_type };
+        add_runtime_function(codegen, "goo_map_new_sv", ptr_type, params, 2);
     }
     // void goo_map_set_sv(GooMapSV*, int64_t k, int64_t v) — both key and
     // value are 8-byte slots now; codegen packs the declared K/V to i64 via

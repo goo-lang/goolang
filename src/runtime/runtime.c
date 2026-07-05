@@ -595,14 +595,22 @@ double goo_math_max(double x, double y) {
 // pointer. Codegen casts each slot per the declared map K/V types.
 
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
-// char* — strcmp. INLINE: the slots hold the key's bits — direct ==.
-static int goo_map_key_eq(int32_t kind, int64_t a, int64_t b) {
-    if (kind == GOO_MAPKEY_STRING) {
+// char* — strcmp. INLINE: the slots hold the key's bits — direct ==. STRUCT:
+// dispatch to the map's per-map comparator.
+static int goo_map_key_eq(const GooMapSV* m, int64_t a, int64_t b) {
+    if (m->key_kind == GOO_MAPKEY_STRING) {
         const char* sa = (const char*)(intptr_t)a;
         const char* sb = (const char*)(intptr_t)b;
         if (sa == sb) return 1;
         if (!sa || !sb) return 0;
         return strcmp(sa, sb) == 0;
+    }
+    if (m->key_kind == GOO_MAPKEY_STRUCT) {
+        // Struct keys are stored as pointers to heap copies; a synthesized
+        // per-field comparator does value-equality. NULL key_eq should never
+        // happen for a STRUCT map (codegen always supplies it) — fall back to
+        // pointer identity defensively.
+        return m->key_eq ? m->key_eq(a, b) : (a == b);
     }
     return a == b;
 }
@@ -613,9 +621,9 @@ typedef struct GooMapEntrySV {
     struct GooMapEntrySV* next;
 } GooMapEntrySV;
 
-GooMapSV* goo_map_new_sv(int32_t key_kind) {
+GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq) {
     GooMapSV* m = goo_alloc(sizeof(GooMapSV));
-    if (m) { m->head = NULL; m->key_kind = key_kind; }
+    if (m) { m->head = NULL; m->key_kind = key_kind; m->key_eq = key_eq; }
     return m;
 }
 
@@ -623,7 +631,7 @@ void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v) {
     if (!m) return;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (goo_map_key_eq(m->key_kind, e->key, k)) { e->value = v; return; }
+        if (goo_map_key_eq(m, e->key, k)) { e->value = v; return; }
         e = e->next;
     }
     e = goo_alloc(sizeof(GooMapEntrySV));
@@ -638,7 +646,7 @@ int64_t goo_map_get_sv(GooMapSV* m, int64_t k) {
     if (!m) return 0;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (goo_map_key_eq(m->key_kind, e->key, k)) return e->value;
+        if (goo_map_key_eq(m, e->key, k)) return e->value;
         e = e->next;
     }
     return 0;  // zero-value default (no comma-ok presence signal yet)
@@ -650,7 +658,7 @@ void goo_map_get_sv_ok(GooMapSV* m, int64_t k, int64_t* out, int* found) {
     if (!m) return;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (goo_map_key_eq(m->key_kind, e->key, k)) {
+        if (goo_map_key_eq(m, e->key, k)) {
             *out = e->value;
             *found = 1;
             return;
@@ -706,7 +714,7 @@ void goo_map_delete_sv(GooMapSV* m, int64_t k) {
     GooMapEntrySV* prev = NULL;
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
-        if (goo_map_key_eq(m->key_kind, e->key, k)) {
+        if (goo_map_key_eq(m, e->key, k)) {
             if (prev) {
                 prev->next = e->next;
             } else {

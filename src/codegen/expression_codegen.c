@@ -368,8 +368,13 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             }
             LLVMValueRef key_kind = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
                                                  codegen_map_key_kind(key_type), 0);
+            // Struct keys aren't wired yet (comparability gate still rejects
+            // them) — every map literal passes a NULL comparator.
+            LLVMValueRef null_keyeq = LLVMConstPointerNull(
+                LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0));
+            LLVMValueRef new_args[] = { key_kind, null_keyeq };
             LLVMValueRef m = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(new_fn),
-                                            new_fn, &key_kind, 1, "map_new");
+                                            new_fn, new_args, 2, "map_new");
             ASTNode* k = lit->keys;
             ASTNode* v = lit->values;
             while (k && v) {
