@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+type P struct {
+	X int
+	Y int
+}
+
+func main() {
+	sl := map[string][]int{"a": {1, 2}, "b": {3}}
+	fmt.Println(sl["a"][1])
+	fmt.Println(sl["b"][0])
+	st := map[string]P{"p": {X: 1, Y: 2}}
+	fmt.Println(st["p"].Y)
+}

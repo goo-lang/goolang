@@ -1,0 +1,47 @@
+package main
+
+import "fmt"
+
+type Sayer interface {
+	Say() string
+}
+
+type Cat struct {
+	Name string
+}
+
+func (c Cat) Say() string {
+	return "meow " + c.Name
+}
+
+type Dog struct {
+	Name string
+}
+
+func (d Dog) Say() string {
+	return "woof " + d.Name
+}
+
+func pairLit() (Sayer, Sayer) {
+	return Cat{Name: "a"}, Dog{Name: "b"}
+}
+
+func pairVar(c Cat) (Sayer, Sayer) {
+	return c, c
+}
+
+func mixed() (int, Sayer) {
+	return 7, Cat{Name: "m"}
+}
+
+func main() {
+	x, y := pairLit()
+	fmt.Println(x.Say())
+	fmt.Println(y.Say())
+	p, q := pairVar(Cat{Name: "v"})
+	fmt.Println(p.Say())
+	fmt.Println(q.Say())
+	n, s := mixed()
+	fmt.Println(n)
+	fmt.Println(s.Say())
+}
