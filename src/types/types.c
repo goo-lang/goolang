@@ -718,7 +718,16 @@ int type_compatible(const Type* from, const Type* to) {
 }
 
 const char* type_to_string(const Type* type) {
-    return type ? type->name : "null";
+    if (!type) return "null";
+    // Structs carry their declared name in data.struct_type.name, not the
+    // shared `name` field (which is NULL for them) — so a bare `type->name`
+    // rendered every struct as "(null)" in diagnostics (e.g. the map-key
+    // reject messages). Prefer the struct name; fall back to "struct" for an
+    // anonymous struct.
+    if (type->kind == TYPE_STRUCT) {
+        return type->data.struct_type.name ? type->data.struct_type.name : "struct";
+    }
+    return type->name ? type->name : "?";
 }
 
 size_t type_size(const Type* type) {
