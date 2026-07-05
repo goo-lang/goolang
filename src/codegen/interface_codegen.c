@@ -273,6 +273,23 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
 // loaded concrete LLVM value. Returns the interface struct value, or NULL.
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
                                    Type* iface, Type* concrete, LLVMValueRef value) {
+    // A nil literal boxes to the ZERO interface value {NULL vtable, NULL data}
+    // — the nil interface — NOT a heap box of a null. codegen_generate_null_
+    // literal types a bare `nil` as *void (or TYPE_UNKNOWN); either would
+    // otherwise fall through to the general path below and build a real
+    // vtable + goo_alloc, so `f(nil)` produced a NON-nil interface (it compared
+    // != nil and disagreed with `switch nil.(type){case nil:}`). `void` has no
+    // first-class values, so a *void reaching boxing is always nil. Handling it
+    // here covers every boxing site uniformly (call args, struct/slice
+    // elements, return values, map values).
+    if (!concrete || concrete->kind == TYPE_UNKNOWN ||
+        (concrete->kind == TYPE_POINTER && concrete->data.pointer.pointee_type &&
+         concrete->data.pointer.pointee_type->kind == TYPE_VOID)) {
+        LLVMTypeRef ifacety = codegen_type_to_llvm(codegen, iface);
+        if (!ifacety) return NULL;
+        return LLVMConstNull(ifacety);  // { NULL, NULL }
+    }
+
     // C-representation for pointer concretes (Go's own layout): the interface
     // data word IS the pointer. *T's thunks are built against the POINTEE
     // (same build_thunk as T's), because in both boxing shapes `data` ends up

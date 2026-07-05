@@ -262,6 +262,17 @@ Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* righ
         return bool_type;
     }
 
+    // iface == nil / nil == iface (RTTI follow-up): an interface value is
+    // comparable to nil, with == / != only (Go forbids ordering; v1 also
+    // defers interface-to-interface comparison). nil is TYPE_UNKNOWN. Codegen
+    // reads the {vtable, data} words and tests both null, mirroring the
+    // type-switch `case nil:` path so the two agree.
+    if ((op == TOKEN_EQ || op == TOKEN_NE) &&
+        ((left_type->kind == TYPE_INTERFACE && right_type->kind == TYPE_UNKNOWN) ||
+         (left_type->kind == TYPE_UNKNOWN && right_type->kind == TYPE_INTERFACE))) {
+        return bool_type;
+    }
+
     // Check if types are compatible for comparison
     if (!type_compatible(left_type, right_type)) {
         type_error(checker, pos, "Cannot compare incompatible types %s and %s",
