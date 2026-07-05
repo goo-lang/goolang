@@ -9,8 +9,10 @@
 // Read-modify-write for a map-index target `m[k]`: read the old value via
 // goo_map_get_sv, compute old <op> rhs (or old +/- 1 for postfix, when
 // rhs_or_null is NULL), and write the result back via goo_map_set_sv.
-// Returns a ValueInfo wrapping the NEW value (rvalue, not addressable), or
-// NULL on error (a source-located error has already been emitted).
+// Returns a ValueInfo wrapping either the OLD value or the NEW value
+// (rvalue, not addressable) depending on return_old_value — see that
+// parameter's doc below — or NULL on error (a source-located error has
+// already been emitted).
 //
 // Mirrors the `m[k] = v` fast path (this file, TOKEN_ASSIGN's AST_INDEX_EXPR
 // arm, ~line 1110) for the map/key/value plumbing, and the plain read fast
@@ -20,9 +22,24 @@
 // values are never addressable (see codegen_emit_lvalue_address's
 // AST_INDEX_EXPR arm, which still rejects `&m[k]` / `m[k].F = v`
 // unconditionally; only whole-value RMW is new here).
+//
+// return_old_value: which value the caller gets back. The write-back
+// (goo_map_set_sv) always stores `newv` regardless of this flag — only the
+// RETURNED ValueInfo differs:
+//   - true  (postfix m[k]++/m[k]--): C postfix semantics return the value
+//     BEFORE the op, matching the pre-existing non-map postfix path
+//     (AST_POSTFIX_EXPR below, `return value_info_new(NULL, loaded, ...)`
+//     where `loaded` is read before the store).
+//   - false (compound-assign m[k] += n / -= / *=): matches the non-map
+//     compound-assign arm's `return newval;` (codegen_generate_binary_expr),
+//     which is the value AFTER the op.
+// A named bool is used instead of overloading rhs_or_null==NULL for this,
+// since that already carries a distinct meaning (postfix's implicit +/-1
+// vs. compound-assign's explicit RHS expression) and conflating the two
+// would make call sites harder to read.
 static ValueInfo* codegen_map_index_rmw(CodeGenerator* codegen, TypeChecker* checker,
                                         ASTNode* index_node, TokenType base_op,
-                                        ASTNode* rhs_or_null) {
+                                        ASTNode* rhs_or_null, bool return_old_value) {
     IndexExprNode* idx = (IndexExprNode*)index_node;
     Type* base_t = type_check_expression(checker, idx->expr);
     if (!base_t || base_t->kind != TYPE_MAP) return NULL;
@@ -86,7 +103,7 @@ static ValueInfo* codegen_map_index_rmw(CodeGenerator* codegen, TypeChecker* che
 
     value_info_free(mv);
     value_info_free(kv);
-    return value_info_new(NULL, newv, val_type);
+    return value_info_new(NULL, return_old_value ? old_val : newv, val_type);
 }
 #endif
 
@@ -294,9 +311,15 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 IndexExprNode* pidx = (IndexExprNode*)p->operand;
                 Type* pbase_t = type_check_expression(checker, pidx->expr);
                 if (pbase_t && pbase_t->kind == TYPE_MAP) {
+                    // Postfix returns the PRE-increment (old) value — same
+                    // rule as the addressable-lvalue postfix path just below
+                    // (`loaded` is captured before the store). Without
+                    // return_old_value=true here, `m[k]++` would silently
+                    // diverge from `i++`'s semantics depending on whether
+                    // the operand is a map index or a plain variable.
                     return codegen_map_index_rmw(codegen, checker, p->operand,
                                                  p->operator == TOKEN_INCREMENT ? TOKEN_PLUS : TOKEN_MINUS,
-                                                 NULL);
+                                                 NULL, /*return_old_value=*/true);
                 }
             }
 
@@ -1160,7 +1183,12 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 IndexExprNode* cidx = (IndexExprNode*)binary->left;
                 Type* cbase_t = type_check_expression(checker, cidx->expr);
                 if (cbase_t && cbase_t->kind == TYPE_MAP) {
-                    return codegen_map_index_rmw(codegen, checker, binary->left, base_op, binary->right);
+                    // Compound-assign returns the POST-op (new) value — matches
+                    // the non-map compound-assign arm's `return newval;` a few
+                    // dozen lines down, which evaluates `x <op> e` and hands
+                    // back the result already stored into x.
+                    return codegen_map_index_rmw(codegen, checker, binary->left, base_op,
+                                                 binary->right, /*return_old_value=*/false);
                 }
             }
 
