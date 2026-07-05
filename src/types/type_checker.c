@@ -2756,6 +2756,40 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             size_t method_count = 0;
 
             for (ASTNode* m = it->methods; m; m = m->next) {
+                if (m->type == AST_IDENTIFIER) {
+                    // Embedded interface `Reader`: resolve the name to a
+                    // TYPE_INTERFACE and union its methods into this set.
+                    // Resolution uses the same named-type lookup as a normal
+                    // type reference, so the embedded interface must be
+                    // declared before this one (forward refs unsupported in
+                    // v1). Duplicate method names are caught by the scan after
+                    // this loop; the shared function Type is reused, as the
+                    // direct-method arm below also does.
+                    IdentifierNode* emb = (IdentifierNode*)m;
+                    Variable* named = type_checker_lookup_variable(checker, emb->name);
+                    Type* et = (named && named->type) ? named->type : NULL;
+                    if (!et) {
+                        type_error(checker, m->pos,
+                                   "undeclared embedded interface '%s'", emb->name);
+                        return NULL;
+                    }
+                    if (et->kind != TYPE_INTERFACE) {
+                        type_error(checker, m->pos,
+                                   "embedded type '%s' is not an interface", emb->name);
+                        return NULL;
+                    }
+                    for (InterfaceMethod* sm = et->data.interface.methods; sm; sm = sm->next) {
+                        InterfaceMethod* im = calloc(1, sizeof(InterfaceMethod));
+                        if (!im) return NULL;
+                        im->name = strdup(sm->name);
+                        im->type = sm->type;
+                        im->next = NULL;
+                        if (tail) tail->next = im; else head = im;
+                        tail = im;
+                        method_count++;
+                    }
+                    continue;
+                }
                 if (m->type != AST_FUNC_DECL) continue;
                 FuncDeclNode* fn = (FuncDeclNode*)m;
 
@@ -2797,6 +2831,20 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 if (tail) tail->next = im; else head = im;
                 tail = im;
                 method_count++;
+            }
+
+            // Reject duplicate method names, whether directly declared or
+            // pulled in by embedding. Go 1.14+ permits identical duplicates
+            // from separate embeds; v1 rejects any name clash — a deliberate
+            // simplification (see design), loosenable later.
+            for (InterfaceMethod* a = head; a; a = a->next) {
+                for (InterfaceMethod* b = a->next; b; b = b->next) {
+                    if (strcmp(a->name, b->name) == 0) {
+                        type_error(checker, type_node->pos,
+                                   "duplicate method '%s' in interface", a->name);
+                        return NULL;
+                    }
+                }
             }
 
             // Empty interface (`interface {}`) is valid — every type satisfies it.
