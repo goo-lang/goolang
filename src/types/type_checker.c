@@ -2425,9 +2425,25 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             ArrayTypeNode* array = (ArrayTypeNode*)type_node;
             Type* element_type = type_from_ast(checker, array->element_type);
             if (!element_type) return NULL;
-            
-            // TODO: Evaluate length expression
-            size_t length = 10;  // Placeholder
+
+            // Bare fixed-array type annotations (`var arr [3]int`, `owned
+            // [1024]char`) carry the length as an AST expression, not a
+            // resolved size_t. This used to be an unevaluated placeholder
+            // (always 10, regardless of what was written) — every declared
+            // array silently got the same fixed capacity, which also made
+            // per-element bounds checks meaningless (an OOB index against the
+            // real N could still be < 10 and never trip). Evaluate the common
+            // case — a constant integer literal — for real; anything else
+            // (identifier/const-expr lengths) is a pre-existing gap, not
+            // introduced here, so it still falls back to the placeholder
+            // rather than regressing further.
+            size_t length = 10;  // fallback for non-literal lengths (pre-existing gap)
+            if (array->length && array->length->type == AST_LITERAL) {
+                LiteralNode* len_lit = (LiteralNode*)array->length;
+                if (len_lit->literal_type == TOKEN_INT) {
+                    length = (size_t)strtoull(len_lit->value, NULL, 0);
+                }
+            }
             return type_array(element_type, length);
         }
         

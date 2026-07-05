@@ -811,6 +811,11 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
 
         if (base_type->kind == TYPE_ARRAY) {
             // base->llvm_value is a pointer to the array; GEP the element.
+            // Bounds-check against the fixed length (static N) first — mirrors
+            // the slice-write arm; arr[i]=x aborts on out-of-range.
+            LLVMValueRef arr_len = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                                (unsigned long long)base_type->data.array.length, 0);
+            codegen_emit_bounds_check(codegen, idx64, arr_len, expr);
             LLVMValueRef indices[] = {
                 LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),
                 idx64

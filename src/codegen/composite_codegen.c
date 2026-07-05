@@ -110,6 +110,13 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         case TYPE_ARRAY: {
             element_type = base_type->data.array.element_type;
 
+            // Bounds-check the read against the fixed length (static N) before
+            // the element GEP — arrays previously skipped this (only slices
+            // checked), so arr[i] could read past the array.
+            LLVMValueRef arr_len = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                                (unsigned long long)base_type->data.array.length, 0);
+            codegen_emit_bounds_check(codegen, idx64, arr_len, expr);
+
             // For arrays, generate GEP
             LLVMValueRef indices[] = {
                 LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0),  // Array base
