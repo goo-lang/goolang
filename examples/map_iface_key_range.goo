@@ -1,0 +1,29 @@
+// map_iface_key_range (interface-typed map keys, Task 3): range over a
+// map[any]int with three DISTINCT dynamic-type keys (int, string, struct —
+// multi-line struct body, goo-grammar workaround #4) accumulating the
+// VALUES (interface keys aren't easily summable order-independently, per
+// the brief — the key var still binds and the loop body reads nothing
+// structural from it, exercising codegen_map_slot_to_key's interface arm
+// without depending on iteration order). go-run-verified byte-for-byte
+// against an equivalent .go program.
+package main
+
+import "fmt"
+
+type Pair struct {
+	A int
+	B int
+}
+
+func main() {
+	m := map[any]int{}
+	m[1] = 10
+	m["two"] = 20
+	m[Pair{A: 1, B: 2}] = 30
+	sum := 0
+	for _, v := range m {
+		sum += v
+	}
+	fmt.Println(sum)
+	fmt.Println(len(m))
+}

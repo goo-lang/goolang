@@ -80,6 +80,13 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->structeq_cache_cap = 0;
     codegen->structeq_counter = 0;
 
+    codegen->typeeq_cache_keys = NULL;
+    codegen->typeeq_cache_vals = NULL;
+    codegen->typeeq_cache_size = 0;
+    codegen->typeeq_cache_cap = 0;
+    codegen->typeeq_counter = 0;
+    codegen->uncmpeq_fn = NULL;
+
     // Loop-context stack (break/continue targets) starts empty.
     codegen->loop_depth = 0;
 
@@ -163,6 +170,9 @@ void codegen_free(CodeGenerator* codegen) {
 
     free(codegen->structeq_cache_keys);
     free(codegen->structeq_cache_vals);
+
+    free(codegen->typeeq_cache_keys);
+    free(codegen->typeeq_cache_vals);
 
     // The deferred-init array holds borrowed pointers (globals owned by the
     // module, expressions by the AST, types by the type system) — free only
@@ -615,9 +625,11 @@ LLVMValueRef codegen_map_slot_to_value(CodeGenerator* codegen, LLVMValueRef slot
 // Map key kind for goo_map_new_sv: STRING(0) for string keys, INLINE(1) for
 // integer/uint/bool/rune/byte/pointer, STRUCT(2) for a struct key compared
 // via the map's synthesized per-field comparator (goo.structeq.<id>, see
-// codegen_get_or_emit_struct_key_eq below). Matches runtime.h's GOO_MAPKEY_*
-// enum.
+// codegen_get_or_emit_struct_key_eq below), IFACE(3) for an interface-typed
+// key compared via the runtime's goo_iface_key_eq (Task 2). Matches
+// runtime.h's GOO_MAPKEY_* enum.
 int codegen_map_key_kind(Type* key_type) {
+    if (key_type && key_type->kind == TYPE_INTERFACE) return 3 /*GOO_MAPKEY_IFACE*/;
     if (key_type && key_type->kind == TYPE_STRUCT) return 2 /*GOO_MAPKEY_STRUCT*/;
     return (key_type && key_type->kind == TYPE_STRING) ? 0 /*GOO_MAPKEY_STRING*/ : 1 /*INLINE*/;
 }
@@ -827,6 +839,229 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
     return fn;
 }
 
+// Interface-typed map keys, Task 1 (vtable ABI shift): synthesize (or return
+// the cached) per-concrete-type VALUE-equality comparator that becomes
+// interface vtable slot 0 (codegen_interface_vtable, interface_codegen.c) —
+// `i32 @goo.typeeq.<id>(i64 a, i64 b)`. `a`/`b` are the two interface `data`
+// words for the SAME concrete type: the runtime only ever calls vtable
+// slot 0 after a vtable-pointer match (goo_iface_key_eq, a later task), so
+// both data words are guaranteed to be that one concrete's boxed
+// representation, exactly mirroring codegen_interface_box's two shapes:
+//   - TYPE_POINTER: boxed by aliasing (data IS the pointer, no heap copy) ->
+//     icmp eq the two i64 words directly.
+//   - integer/bool/char: boxed as a heap copy -> inttoptr each word to T*,
+//     load, icmp eq.
+//   - float32/float64: same shape, fcmp oeq (a NaN field is therefore never
+//     equal to itself, matching Go/IEEE-754 — not a bug).
+//   - string: inttoptr each word to the `{i8*,i64}` string aggregate, load,
+//     extractvalue the char* (field 0), strcmp == 0.
+//   - struct: delegates STRAIGHT to codegen_get_or_emit_struct_key_eq (#129)
+//     — its i32(i64,i64)-over-ptr-to-heap-copy signature already matches a
+//     struct concrete's boxing exactly; not re-synthesized, and NOT cached
+//     in typeeq_cache_keys/vals (structeq_cache_keys/vals already memoizes
+//     it, so a second lookup here would just be a wasted linear scan ahead
+//     of the one structeq_cache already does).
+//   - slice/map/func (uncomparable dynamic types, reachable through
+//     `map[any]V` once a later task admits interface map keys): the single
+//     shared `i32 @goo.uncmpeq(i64,i64)` stub — calls
+//     `goo_panic("comparing uncomparable map key type")` and is
+//     `unreachable` (Go-faithful: Go panics comparing/hashing an
+//     uncomparable dynamic value, not a compile error). Any other concrete
+//     kind not yet reachable as an interface concrete (TYPE_ARRAY,
+//     TYPE_ENUM, TYPE_CHANNEL, ...) falls back to the same stub rather than
+//     miscompiling or crashing the compiler.
+// Cached by concrete Type* IDENTITY (typeeq_cache_keys/vals), mirroring
+// codegen_get_or_emit_struct_key_eq's cache. Saves/restores the caller's
+// builder insert position around emitting a new fn's body — codegen_
+// interface_vtable may synthesize this mid-expression (a vtable built while
+// generating some other function's body). Returns NULL on failure (the
+// concrete's LLVM type can't be resolved, or `goo_panic` isn't declared in
+// the module yet for the uncomparable-stub path).
+LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* checker,
+                                         Type* concrete) {
+    if (!codegen || !concrete) return NULL;
+
+    // Struct concretes delegate directly — no synthesis, no typeeq_cache
+    // entry (see comment above).
+    if (concrete->kind == TYPE_STRUCT) {
+        return codegen_get_or_emit_struct_key_eq(codegen, checker, concrete);
+    }
+
+    for (size_t i = 0; i < codegen->typeeq_cache_size; i++) {
+        if (codegen->typeeq_cache_keys[i] == concrete) {
+            return codegen->typeeq_cache_vals[i];
+        }
+    }
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+
+    int scalar_kind = (concrete->kind == TYPE_POINTER || type_is_integer(concrete) ||
+                       concrete->kind == TYPE_BOOL || concrete->kind == TYPE_CHAR ||
+                       concrete->kind == TYPE_FLOAT32 || concrete->kind == TYPE_FLOAT64 ||
+                       concrete->kind == TYPE_STRING);
+
+    if (!scalar_kind) {
+        // Uncomparable (slice/map/func) or any not-yet-reachable concrete
+        // kind: the single shared panic-stub, emitted at most once.
+        if (codegen->uncmpeq_fn) return codegen->uncmpeq_fn;
+
+        LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+        if (!panic_fn) return NULL;
+
+        LLVMTypeRef param_types[2] = { i64, i64 };
+        LLVMTypeRef fnty = LLVMFunctionType(i32, param_types, 2, 0);
+        LLVMValueRef fn = LLVMAddFunction(codegen->module, "goo.uncmpeq", fnty);
+        if (!fn) return NULL;
+        // Register before emitting the body: this stub is shared by every
+        // uncomparable concrete, so a second caller (still inside this same
+        // synthesis) must see it already exists rather than trying to
+        // LLVMAddFunction the same symbol name twice.
+        codegen->uncmpeq_fn = fn;
+
+        LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+        LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+        LLVMPositionBuilderAtEnd(codegen->builder, entry);
+        LLVMValueRef msg = LLVMBuildGlobalStringPtr(
+            codegen->builder, "comparing uncomparable map key type", "uncmpeq_msg");
+        LLVMValueRef args[1] = { msg };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn), panic_fn, args, 1, "");
+        LLVMBuildUnreachable(codegen->builder);
+        if (saved) {
+            LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        }
+        return fn;
+    }
+
+    char fname[64];
+    snprintf(fname, sizeof(fname), "goo.typeeq.%lu", codegen->typeeq_counter++);
+    LLVMTypeRef param_types[2] = { i64, i64 };
+    LLVMTypeRef fnty = LLVMFunctionType(i32, param_types, 2, 0);
+    LLVMValueRef fn = LLVMAddFunction(codegen->module, fname, fnty);
+    if (!fn) return NULL;
+
+    // Register in the cache before emitting the body, mirroring structeq's
+    // insert-before-body ordering (harmless here — a scalar/string/pointer
+    // eq body never recurses back into this same concrete — kept only for
+    // consistency with the sibling cache).
+    if (codegen->typeeq_cache_size == codegen->typeeq_cache_cap) {
+        size_t new_cap = codegen->typeeq_cache_cap ? codegen->typeeq_cache_cap * 2 : 8;
+        const Type** new_keys = realloc(codegen->typeeq_cache_keys, new_cap * sizeof(const Type*));
+        if (!new_keys) return NULL;
+        codegen->typeeq_cache_keys = new_keys;
+        LLVMValueRef* new_vals = realloc(codegen->typeeq_cache_vals, new_cap * sizeof(LLVMValueRef));
+        if (!new_vals) return NULL;
+        codegen->typeeq_cache_vals = new_vals;
+        codegen->typeeq_cache_cap = new_cap;
+    }
+    codegen->typeeq_cache_keys[codegen->typeeq_cache_size] = concrete;
+    codegen->typeeq_cache_vals[codegen->typeeq_cache_size] = fn;
+    codegen->typeeq_cache_size++;
+
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+    LLVMValueRef a = LLVMGetParam(fn, 0);
+    LLVMValueRef b = LLVMGetParam(fn, 1);
+
+    LLVMValueRef eq_bit;
+    if (concrete->kind == TYPE_POINTER) {
+        eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, a, b, "typeeq.ptreq");
+    } else if (concrete->kind == TYPE_STRING) {
+        LLVMTypeRef strty = codegen_type_to_llvm(codegen, concrete);
+        if (!strty) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMTypeRef strptr = LLVMPointerType(strty, 0);
+        LLVMValueRef pa = LLVMBuildIntToPtr(codegen->builder, a, strptr, "typeeq.pa");
+        LLVMValueRef pb = LLVMBuildIntToPtr(codegen->builder, b, strptr, "typeeq.pb");
+        LLVMValueRef va = LLVMBuildLoad2(codegen->builder, strty, pa, "typeeq.va");
+        LLVMValueRef vb = LLVMBuildLoad2(codegen->builder, strty, pb, "typeeq.vb");
+        LLVMValueRef ca = LLVMBuildExtractValue(codegen->builder, va, 0, "typeeq.ca");
+        LLVMValueRef cb = LLVMBuildExtractValue(codegen->builder, vb, 0, "typeeq.cb");
+        LLVMValueRef strcmp_fn = codegen_get_or_declare_strcmp(codegen);
+        LLVMValueRef sargs[2] = { ca, cb };
+        LLVMValueRef r = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(strcmp_fn),
+                                        strcmp_fn, sargs, 2, "typeeq.strcmp");
+        eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, r, LLVMConstInt(i32, 0, 0), "typeeq.streq");
+    } else {
+        // integer/bool/char/float32/float64: deref both words as T*.
+        LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
+        if (!ty) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMTypeRef typtr = LLVMPointerType(ty, 0);
+        LLVMValueRef pa = LLVMBuildIntToPtr(codegen->builder, a, typtr, "typeeq.pa");
+        LLVMValueRef pb = LLVMBuildIntToPtr(codegen->builder, b, typtr, "typeeq.pb");
+        LLVMValueRef va = LLVMBuildLoad2(codegen->builder, ty, pa, "typeeq.va");
+        LLVMValueRef vb = LLVMBuildLoad2(codegen->builder, ty, pb, "typeeq.vb");
+        if (concrete->kind == TYPE_FLOAT32 || concrete->kind == TYPE_FLOAT64) {
+            eq_bit = LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, va, vb, "typeeq.feq");
+        } else {
+            eq_bit = LLVMBuildICmp(codegen->builder, LLVMIntEQ, va, vb, "typeeq.ieq");
+        }
+    }
+
+    LLVMValueRef result32 = LLVMBuildZExt(codegen->builder, eq_bit, i32, "typeeq.r");
+    LLVMBuildRet(codegen->builder, result32);
+
+    if (saved) {
+        LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    }
+    return fn;
+}
+
+// Interface-typed map keys (Task 2): box a concrete key value into the map's
+// declared TYPE_INTERFACE key type before codegen_map_key_to_slot packs it —
+// mirrors the box-before-slot pattern every interface-typed map VALUE site
+// already applies via codegen_interface_box (expression_codegen.c's map
+// literal and `m[k] = v` arms). Every call site that packs a user-supplied
+// key (assignment, plain/comma-ok read, delete, compound-assign RMW, map
+// literal entries) calls this FIRST, then passes the (possibly rewritten)
+// key_val on to codegen_map_key_to_slot.
+//
+// A no-op (returns 1 immediately) unless key_type is TYPE_INTERFACE and the
+// key expression's OWN static type is a different, non-interface concrete —
+// covering both existing behaviors unchanged: (a) every non-interface-keyed
+// map (the overwhelming majority of call sites) skips this entirely; (b) a
+// key whose static type is ALREADY that interface (`var s any = 5; m[s] = v`)
+// falls straight through to codegen_map_key_to_slot's own is_lvalue reload,
+// which is correct there since the map's declared key type and the key
+// expression's type are the same interface struct type.
+//
+// Why this can't be folded into codegen_map_key_to_slot itself: that
+// function's is_lvalue reload loads `key_val->llvm_value` using the
+// DECLARED key type `kt`'s LLVM type, assuming the storage it points at
+// already has that type. For a concrete key into an interface-keyed map
+// (e.g. `m[1] = 10` where m is map[any]int), that assumption is false — `1`
+// is an i64 rvalue (or an i64* alloca if it came from a variable), not a
+// `{vtable,data}` pair. Boxing must happen — and any is_lvalue reload of the
+// CONCRETE value must happen using the CONCRETE type — strictly before
+// codegen_map_key_to_slot ever sees kt=TYPE_INTERFACE, hence a separate
+// pre-step rather than an arm inside that function.
+//
+// Mutates `key_val` in place (llvm_value/goo_type/is_lvalue) on success.
+// Returns 1 on success (including the no-op cases above), 0 on failure
+// (already reported via codegen_error).
+int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
+                                  ValueInfo* key_val, Type* key_type, Position pos) {
+    if (!key_val || !key_type || key_type->kind != TYPE_INTERFACE) return 1;
+    if (!key_val->goo_type || key_val->goo_type->kind == TYPE_INTERFACE) return 1;
+
+    LLVMValueRef raw = key_val->llvm_value;
+    if (key_val->is_lvalue) {
+        LLVMTypeRef llvm_t = codegen_type_to_llvm(codegen, key_val->goo_type);
+        if (!llvm_t) return 0;
+        raw = LLVMBuildLoad2(codegen->builder, llvm_t, raw, "mapkey_concrete_load");
+    }
+    LLVMValueRef boxed = codegen_interface_box(codegen, checker, key_type, key_val->goo_type, raw);
+    if (!boxed) {
+        codegen_error(codegen, pos, "failed to box map key into interface key type");
+        return 0;
+    }
+    key_val->llvm_value = boxed;
+    key_val->goo_type = key_type;
+    key_val->is_lvalue = 0;
+    return 1;
+}
+
 // Pack a key value into the i64 slot. STRING: extract the char* and PtrToInt
 // (NOT codegen_map_value_to_slot — that heap-boxes strings, which would break
 // strcmp identity: two equal-content string keys must PtrToInt to the SAME
@@ -881,6 +1116,29 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "skey_slot");
     }
+    if (kt && kt->kind == TYPE_INTERFACE) {
+        // Interface-typed map keys (Task 2): heap-copy the boxed `{vtable,
+        // data}` value — mirrors the struct arm immediately above exactly
+        // (an interface key is, ABI-wise, just another two-pointer
+        // aggregate). `raw` is already the loaded interface VALUE: either
+        // the key expression's own static type was already TYPE_INTERFACE
+        // (is_lvalue load above used kt == the interface struct type, which
+        // is correct), or the caller pre-boxed a concrete key into this
+        // interface via codegen_box_map_key_if_needed before reaching here
+        // (every call site that packs a user-supplied key does this — see
+        // that helper's doc comment). Two DISTINCT boxes of the SAME dynamic
+        // type+value must still hit the same map entry, which
+        // goo_iface_key_eq (not pointer identity) provides — the slot only
+        // needs to carry an address the comparator can dereference.
+        LLVMTypeRef ifty = codegen_type_to_llvm(codegen, kt);
+        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+        if (!ifty || !alloc_fn) return NULL;
+        LLVMValueRef size = LLVMSizeOf(ifty);
+        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
+                                          alloc_fn, &size, 1, "ikey_mem");
+        LLVMBuildStore(codegen->builder, raw, mem);
+        return LLVMBuildPtrToInt(codegen->builder, mem, i64, "ikey_slot");
+    }
     return codegen_map_value_to_slot(codegen, raw, kt);
 }
 
@@ -902,6 +1160,17 @@ LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, 
         LLVMValueRef sp = LLVMBuildIntToPtr(codegen->builder, slot,
                                            LLVMPointerType(sty, 0), "skey_ptr");
         return LLVMBuildLoad2(codegen->builder, sty, sp, "skey_val");
+    }
+    if (key_type && key_type->kind == TYPE_INTERFACE) {
+        // Interface-typed map keys (Task 2): inverse of codegen_map_key_to_
+        // slot's TYPE_INTERFACE arm — IntToPtr the slot back to a pointer to
+        // the boxed `{vtable, data}` value and load it. Used by range-over-
+        // map's key binding (statement_codegen.c).
+        LLVMTypeRef ifty = codegen_type_to_llvm(codegen, key_type);
+        if (!ifty) return NULL;
+        LLVMValueRef ip = LLVMBuildIntToPtr(codegen->builder, slot,
+                                           LLVMPointerType(ifty, 0), "ikey_ptr");
+        return LLVMBuildLoad2(codegen->builder, ifty, ip, "ikey_val");
     }
     return codegen_map_slot_to_value(codegen, slot, key_type);
 }

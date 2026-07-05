@@ -211,6 +211,29 @@ Type* type_checker_error_type(TypeChecker* checker) {
     return t;
 }
 
+// Go 1.18+ predeclared `any` = the empty interface (`interface{}`) — exactly
+// the Type the AST_INTERFACE_TYPE case below builds for a bodyless
+// `interface {}` (0 methods, unnamed). No special satisfaction/dispatch
+// handling is needed beyond that: every concrete type trivially implements
+// zero methods. Interface-typed map keys (Task 2, AST_MAP_TYPE gate below)
+// admit `any` the same as any other TYPE_INTERFACE key. A fresh Type is
+// built on every call, mirroring AST_INTERFACE_TYPE (which does the same for
+// every `interface{}` occurrence) — codegen never keys anything off this
+// Type's pointer IDENTITY, only off its (empty) method list and the
+// vtable's STRING name, which defaults to "iface" for any unnamed interface
+// (codegen_interface_vtable, interface_codegen.c) — so two distinct `any`
+// Type instances never diverge in codegen.
+static Type* type_checker_any_type(void) {
+    Type* result = type_new(TYPE_INTERFACE);
+    if (!result) return NULL;
+    result->data.interface.methods = NULL;
+    result->data.interface.method_count = 0;
+    result->data.interface.name = NULL;
+    result->data.interface.is_synthesized = 0;
+    result->data.interface.source_concept = NULL;
+    return result;
+}
+
 void type_checker_add_builtin_functions(TypeChecker* checker) {
     if (!checker || !checker->current_scope) return;
     
@@ -2431,6 +2454,11 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             // works. Method dispatch (`.Error()`) is deferred to Phase 6.
             if (strcmp(ident->name, "error") == 0)
                 return type_checker_error_type(checker);
+            // Go 1.18+ predeclared `any` = the empty interface — see
+            // type_checker_any_type above. Interface-typed map keys (Task 2)
+            // is the first feature that needs `any` to resolve as a type.
+            if (strcmp(ident->name, "any") == 0)
+                return type_checker_any_type();
 
             // User-defined named type (e.g. `new(Point)`): `type Foo ...` is
             // registered as a Variable whose `type` field is the named Type
@@ -2472,6 +2500,9 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             // F8: Go's `error` interface — see the AST_IDENTIFIER branch above.
             if (strcmp(basic->name, "error") == 0)
                 return type_checker_error_type(checker);
+            // Go 1.18+ predeclared `any` — see the AST_IDENTIFIER branch above.
+            if (strcmp(basic->name, "any") == 0)
+                return type_checker_any_type();
 
             // User-defined named type? type_check_type_decl registers
             // `type Foo = ...` aliases by piggybacking on the variable
@@ -2783,7 +2814,18 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             // has always supported.
             int key_ok = key_type->kind == TYPE_STRING || type_is_integer(key_type) ||
                          key_type->kind == TYPE_BOOL || key_type->kind == TYPE_CHAR ||
-                         key_type->kind == TYPE_POINTER;
+                         key_type->kind == TYPE_POINTER ||
+                         key_type->kind == TYPE_INTERFACE;
+            // Interface-typed key (interface-map-keys Task 2): interface
+            // TYPES are always statically comparable in Go — admit
+            // unconditionally, unlike struct keys below (whose comparability
+            // depends on their field types). The uncomparable case here is a
+            // DYNAMIC one (a `[]int`/func/map value stored in an `any` used
+            // as a key) and is handled by the vtable slot-0 panic-stub
+            // (codegen_get_or_emit_type_eq's uncomparable arm) at runtime,
+            // Go-faithfully — NOT a compile error, so TYPE_INTERFACE must
+            // NOT appear in the deferred-reject list below.
+            //
             // Struct-typed key (Task 2, struct map keys): admit iff every
             // field is recursively comparable — struct_is_comparable_key
             // also tells us WHY a rejected struct was rejected (a deferred
@@ -2807,9 +2849,11 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 // Two-reason diagnostic: some rejected kinds are comparable
                 // in Go and just not wired into the v1 slot runtime yet
                 // (deferred); others are permanently non-comparable as map
-                // keys in Go itself (slice/map/func).
+                // keys in Go itself (slice/map/func). TYPE_INTERFACE is
+                // deliberately absent here — it's unconditionally admitted
+                // above (key_ok), never reaches this branch.
                 if (key_type->kind == TYPE_STRUCT || key_type->kind == TYPE_FLOAT32 ||
-                    key_type->kind == TYPE_FLOAT64 || key_type->kind == TYPE_INTERFACE ||
+                    key_type->kind == TYPE_FLOAT64 ||
                     key_type->kind == TYPE_ARRAY) {
                     type_error(checker, type_node->pos,
                                "map key type %s is not yet supported in v1 (comparable key "

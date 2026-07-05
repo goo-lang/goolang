@@ -1,0 +1,27 @@
+// map_iface_key_probe (interface-typed map keys, Task 2): map[any]int with
+// int and string dynamic keys. Equality is Go's interface equality — same
+// dynamic type AND equal dynamic value — dispatched through the concrete
+// type's vtable slot-0 comparator (codegen_get_or_emit_type_eq) via the
+// runtime's goo_iface_key_eq. Exercises: insert, overwrite-same-dynamic-type
+// (two DISTINCT boxes of int(1) must hit the SAME entry, not compare box
+// addresses), cross-type-distinct (any(1) and any("1") are different dynamic
+// types -> different entries even though both keys are 1-charish), comma-ok
+// miss, and len. go-run-verified byte-for-byte against an equivalent .go
+// program.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[any]int{}
+	m[1] = 10
+	m[1] = 20 // same dynamic type (int) + same value -> overwrite
+	m[2] = 30
+	m["1"] = 40 // different dynamic type (string) -> distinct entry from any(1)
+	fmt.Println(m[1])
+	fmt.Println(m[2])
+	fmt.Println(m["1"])
+	_, ok := m[9]
+	fmt.Println(ok)
+	fmt.Println(len(m))
+}

@@ -1614,6 +1614,14 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 LLVMValueRef out_slot   = codegen_create_entry_alloca(codegen, i64t, "commaok_out");
                 LLVMValueRef found_slot = codegen_create_entry_alloca(codegen, i32t, "commaok_found");
 
+                // Box a concrete key into an interface-typed map key BEFORE
+                // slot-packing (Task 2) — no-op for every non-interface-keyed
+                // map.
+                if (!codegen_box_map_key_if_needed(codegen, checker, key_val, key_type, decl->pos)) {
+                    value_info_free(map_val);
+                    value_info_free(key_val);
+                    return 0;
+                }
                 // Pack the key into its i64 slot (string keys: char* ptrtoint,
                 // never the value-boxing path — codegen_map_key_to_slot).
                 LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, key_val, key_type);

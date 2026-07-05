@@ -1,0 +1,40 @@
+// map_iface_key_stringer (interface-typed map keys, Task 3): map[Stringer]int
+// where Stringer is a NAMED METHOD interface (not the empty `any`), keyed by
+// two distinct struct implementers (multi-line bodies — single-line struct
+// bodies hit an unrelated ASI quirk, goo-grammar workaround #4). Exercises:
+// same concrete type (A) + equal value -> overwrite (the synthesized
+// per-field struct comparator at vtable slot 0, same as map[any]int's struct
+// arm — codegen_map_key_kind treats every TYPE_INTERFACE key identically
+// regardless of the interface's declared method set), and a different
+// concrete implementer (B) with the same field value -> distinct entry
+// (vtable-pointer type mismatch short-circuits before any field comparison).
+// go-run-verified byte-for-byte against an equivalent .go program.
+package main
+
+import "fmt"
+
+type Stringer interface {
+	String() string
+}
+
+type A struct {
+	V int
+}
+
+func (a A) String() string { return "A" }
+
+type B struct {
+	V int
+}
+
+func (b B) String() string { return "B" }
+
+func main() {
+	m := map[Stringer]int{}
+	m[A{V: 1}] = 10
+	m[A{V: 1}] = 20 // same concrete + value -> overwrite
+	m[B{V: 1}] = 30 // different concrete -> distinct entry
+	fmt.Println(m[A{V: 1}])
+	fmt.Println(m[B{V: 1}])
+	fmt.Println(len(m))
+}

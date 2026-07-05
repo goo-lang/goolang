@@ -1,0 +1,28 @@
+// map_iface_key_nil (interface-typed map keys, Task 3): map[any]int with a
+// NIL dynamic key — a zero-value `any` variable `k` (no dynamic type, no
+// dynamic value: {vtable=NULL, data=NULL} per goo_iface_key_eq's "both nil
+// interfaces" arm) distinct from a non-nil int key. Note: the read/write is
+// through the VARIABLE `k`, not a bare `nil` literal in index position
+// (`m[nil]`/`m[k]=...` with a literal) — that path is a separate, confirmed,
+// pre-existing bug (bare `nil` has no expected-type hint at that call site,
+// so it falls back to a generic `*void` concrete value instead of a true
+// nil-interface, and mismatches or panics depending on direction; see the
+// Task 3 report). go-run-verified byte-for-byte against an equivalent .go
+// program using the same `var k any; m[k]` shape.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[any]int{}
+	var k any // nil
+	m[k] = 7
+	fmt.Println(m[k])
+	m[1] = 8
+	fmt.Println(len(m)) // nil and 1 are distinct
+	v, ok := m[k]
+	fmt.Println(v)
+	fmt.Println(ok)
+	_, ok2 := m[2]
+	fmt.Println(ok2)
+}

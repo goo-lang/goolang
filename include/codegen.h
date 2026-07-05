@@ -141,6 +141,22 @@ struct CodeGenerator {
     size_t structeq_cache_size;
     size_t structeq_cache_cap;
     unsigned long structeq_counter;
+
+    // Interface-typed map keys, Task 1 (vtable ABI shift): cache of
+    // synthesized per-concrete-type value-equality comparators emitted at
+    // interface vtable slot 0 (`goo.typeeq.<id>`), Goo Type* -> LLVM function
+    // value. Keyed by TYPE IDENTITY, exactly like structeq_cache_keys/vals
+    // above (NOT used for TYPE_STRUCT concretes — those delegate straight to
+    // structeq_cache_keys/vals; see codegen_get_or_emit_type_eq, codegen.c).
+    const Type** typeeq_cache_keys;
+    LLVMValueRef* typeeq_cache_vals;
+    size_t typeeq_cache_size;
+    size_t typeeq_cache_cap;
+    unsigned long typeeq_counter;
+    // Single shared panic-stub eq (`goo.uncmpeq`) for uncomparable dynamic
+    // concrete types (slice/map/func) boxed into an interface; emitted at
+    // most once per module. NULL until first requested.
+    LLVMValueRef uncmpeq_fn;
 };
 
 // Function information for code generation
@@ -476,6 +492,17 @@ int codegen_map_value_is_inline(Type* value_type);
 // ValueInfo lets this one helper do that load for all 5 call sites.
 // `key_type` may be NULL — falls back to key_val->goo_type.
 int codegen_map_key_kind(Type* key_type);
+// Interface-typed map keys (Task 2): box a concrete key into `key_type` when
+// (and only when) key_type is TYPE_INTERFACE and the key expression's own
+// type isn't already that interface — call this BEFORE codegen_map_key_to_
+// slot at every call site that packs a user-supplied key (assignment,
+// plain/comma-ok read, delete, RMW, map literal entries). See the doc
+// comment at its definition (codegen.c) for why this can't be folded into
+// codegen_map_key_to_slot itself. Mutates `key_val` in place on success;
+// returns 1 (success, including every no-op case) or 0 (failure, already
+// reported via codegen_error at `pos`).
+int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
+                                  ValueInfo* key_val, Type* key_type, Position pos);
 LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checker,
                                      ValueInfo* key_val, Type* key_type);
 LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, Type* key_type);
@@ -494,6 +521,35 @@ LLVMValueRef codegen_map_slot_to_key(CodeGenerator* codegen, LLVMValueRef slot, 
 // `struct_type` isn't TYPE_STRUCT, or a field's LLVM type can't be resolved).
 LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeChecker* checker,
                                                Type* struct_type);
+// Interface-typed map keys, Task 1 (vtable ABI shift): get (or synthesize,
+// on first request) the per-concrete-type VALUE-equality comparator emitted
+// at interface vtable slot 0 (codegen_interface_vtable, interface_codegen.c)
+// — an LLVM function `i32 @goo.typeeq.<id>(i64 a, i64 b)` (or the shared
+// `i32 @goo.uncmpeq(i64,i64)` panic stub for uncomparable dynamic types).
+// `a`/`b` are the two interface `data` words for the SAME concrete type (the
+// runtime only calls a vtable-slot-0 eq after a vtable-pointer match, so both
+// data words are guaranteed to be that one concrete's boxed representation):
+//   - TYPE_POINTER (aliased boxing: data IS the pointer) -> icmp eq the two
+//     i64 words directly.
+//   - integer/bool/char -> inttoptr each word to T*, load, icmp eq.
+//   - float32/float64 -> same shape, fcmp oeq.
+//   - string -> inttoptr each word to the `{i8*,i64}` aggregate, load,
+//     extractvalue the char* (field 0), strcmp == 0.
+//   - struct -> delegates directly to codegen_get_or_emit_struct_key_eq
+//     (#129) — its ptr-to-heap-copy signature already matches; NOT cached
+//     here (structeq_cache_keys/vals already memoizes it).
+//   - slice/map/func (uncomparable) -> the single shared `goo.uncmpeq`
+//     stub: calls `goo_panic("comparing uncomparable map key type")` and is
+//     `unreachable` (Go-faithful — Go panics comparing an uncomparable
+//     dynamic value). Any other concrete kind not yet reachable as an
+//     interface concrete (TYPE_ARRAY, TYPE_ENUM, TYPE_CHANNEL, ...) falls
+//     back to the same stub rather than miscompiling.
+// Cached by concrete Type* IDENTITY, mirroring codegen_get_or_emit_struct_
+// key_eq's cache. Saves/restores the caller's builder insert position.
+// Returns NULL on failure (concrete's LLVM type can't be resolved, or
+// `goo_panic` isn't declared in the module yet).
+LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* checker,
+                                         Type* concrete);
 // Wrap a raw `char*` into the goo string aggregate `{i8*, i64}` via
 // goo_string_new. Shared by codegen_map_slot_to_key's STRING arm and the
 // map-range loop's key bind (statement_codegen.c).

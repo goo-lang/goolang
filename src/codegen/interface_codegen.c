@@ -179,6 +179,29 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
 // though both build thunks against the same `concrete` and both globals hold
 // identical slot contents. Returns the global (a ptr to the [N x ptr] thunk
 // array), or NULL on failure.
+// Shared pointer-identity comparator `i32 @goo.ptreq(i64 a, i64 b) { ret a==b }`
+// used as the vtable slot-0 eq for pointer-boxed interfaces (the data word is
+// the pointer; equality is identity). Get-or-emit by name — no per-type cache
+// needed, one instance suffices module-wide.
+static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo.ptreq");
+    if (fn) return fn;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMTypeRef params[2] = { i64, i64 };
+    fn = LLVMAddFunction(codegen->module, "goo.ptreq", LLVMFunctionType(i32, params, 2, 0));
+    LLVMSetLinkage(fn, LLVMPrivateLinkage);
+    LLVMBasicBlockRef save = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef bb = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, bb);
+    LLVMValueRef eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ,
+                                    LLVMGetParam(fn, 0), LLVMGetParam(fn, 1), "ptreq");
+    LLVMBuildRet(codegen->builder, LLVMBuildZExt(codegen->builder, eq, i32, "ptreq.i32"));
+    if (save) LLVMPositionBuilderAtEnd(codegen->builder, save);
+    return fn;
+}
+
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
                                       Type* iface, Type* concrete, int pointer_form) {
     if (!iface || iface->kind != TYPE_INTERFACE) return NULL;
@@ -199,18 +222,45 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef existing = LLVMGetNamedGlobal(codegen->module, gname);
     if (existing) return existing;
 
+    // Interface-typed map keys, Task 1 (vtable ABI shift): the vtable now
+    // carries n+1 slots — slot 0 is the concrete's per-type value-equality
+    // comparator (codegen_get_or_emit_type_eq), slots 1..n are the method
+    // thunks in their original, unchanged order. codegen_interface_dispatch
+    // shifts its method GEP index by +1 to match (interface_codegen.c,
+    // below); this is the ONLY other site that indexes a vtable by a raw
+    // slot number (confirmed by grepping every `goo.vtable`/vtable-indexing
+    // site in the codebase — codegen_interface_assert_match only ever
+    // compares whole vtable-pointer identity, never indexes into one).
     size_t n = iface->data.interface.method_count;
     LLVMTypeRef ptrty = iface_ptr_type(codegen);
-    LLVMValueRef* slots = n ? malloc(n * sizeof(LLVMValueRef)) : NULL;
+    LLVMValueRef* slots = malloc((n + 1) * sizeof(LLVMValueRef));
+    if (!slots) return NULL;
+
+    // slot-0 value-equality comparator. For a POINTER-boxed interface
+    // (pointer_form) the data word IS the pointer, so equality is POINTER
+    // IDENTITY — NOT the pointee's value comparator. Without this, two distinct
+    // pointers to equal-content values compared equal as interface values / map
+    // keys (they'd run the pointee's structeq), diverging from Go. `concrete`
+    // here is the pointee type (the #114 normalization), so codegen_get_or_emit_
+    // type_eq(concrete) would wrongly synthesize the pointee comparator.
+    LLVMValueRef eq_fn = pointer_form
+        ? iface_ptr_eq_fn(codegen)
+        : codegen_get_or_emit_type_eq(codegen, checker, concrete);
+    if (!eq_fn) { free(slots); return NULL; }
+    // A Function value's LLVM type is already `ptr` (opaque pointers), the
+    // same as every thunk placed below without a cast — no bitcast needed
+    // to satisfy LLVMConstArray(ptrty, ...).
+    slots[0] = eq_fn;
+
     size_t i = 0;
     for (InterfaceMethod* im = iface->data.interface.methods; im; im = im->next, i++) {
         LLVMValueRef thunk = build_thunk(codegen, checker, concrete, cname, iname, im);
         if (!thunk) { free(slots); return NULL; }
-        slots[i] = thunk;  // a function value is a ptr constant
+        slots[i + 1] = thunk;  // a function value is a ptr constant
     }
 
-    LLVMTypeRef arrty = LLVMArrayType(ptrty, (unsigned)n);
-    LLVMValueRef init = LLVMConstArray(ptrty, slots, (unsigned)n);
+    LLVMTypeRef arrty = LLVMArrayType(ptrty, (unsigned)(n + 1));
+    LLVMValueRef init = LLVMConstArray(ptrty, slots, (unsigned)(n + 1));
     LLVMValueRef g = LLVMAddGlobal(codegen->module, arrty, gname);
     LLVMSetInitializer(g, init);
     LLVMSetLinkage(g, LLVMPrivateLinkage);
@@ -302,9 +352,11 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef vt = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "vt");
     LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "data");
 
-    // Load the thunk pointer from vtable slot `idx` (array of ptr).
+    // Load the thunk pointer from vtable slot `idx + 1` (array of ptr): slot
+    // 0 is now the per-concrete-type eq comparator (Task 1, codegen_
+    // interface_vtable above), so method thunks shifted right by one.
     LLVMTypeRef ptrty = iface_ptr_type(codegen);
-    LLVMValueRef gep_idx = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), idx, 0);
+    LLVMValueRef gep_idx = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), idx + 1, 0);
     LLVMValueRef slot = LLVMBuildGEP2(codegen->builder, ptrty, vt, &gep_idx, 1, "vt.slot");
     LLVMValueRef thunk = LLVMBuildLoad2(codegen->builder, ptrty, slot, "thunk");
 

@@ -56,6 +56,13 @@ static ValueInfo* codegen_map_index_rmw(CodeGenerator* codegen, TypeChecker* che
     ValueInfo* mv = codegen_generate_expression(codegen, checker, idx->expr);
     ValueInfo* kv = codegen_generate_expression(codegen, checker, idx->index);
     if (!mv || !kv) { value_info_free(mv); value_info_free(kv); return NULL; }
+    // Box a concrete key into an interface-typed map key BEFORE slot-packing
+    // (Task 2) — no-op for every non-interface-keyed map.
+    if (!codegen_box_map_key_if_needed(codegen, checker, kv, key_type, index_node->pos)) {
+        value_info_free(mv);
+        value_info_free(kv);
+        return NULL;
+    }
     LLVMValueRef kslot = codegen_map_key_to_slot(codegen, checker, kv, key_type);
 
     // old = slot_to_value(goo_map_get_sv(m, kslot)) — a missing key returns a
@@ -370,9 +377,10 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                                                  codegen_map_key_kind(key_type), 0);
             // A struct key needs the synthesized per-field comparator so the
             // runtime's key_kind==STRUCT arm can call it (goo_map_key_eq,
-            // runtime.c); every other key kind passes NULL (unused by the
-            // runtime for STRING/INLINE). Mirrors the make(map[K]V) site
-            // (call_codegen.c).
+            // runtime.c); an interface key needs the runtime's
+            // goo_iface_key_eq (Task 2, key_kind==IFACE); every other key
+            // kind passes NULL (unused by the runtime for STRING/INLINE).
+            // Mirrors the make(map[K]V) site (call_codegen.c).
             LLVMValueRef keyeq_ptr;
             LLVMTypeRef keyeq_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
             if (key_type && key_type->kind == TYPE_STRUCT) {
@@ -380,6 +388,13 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 if (!cmp_fn) {
                     codegen_error(codegen, expr->pos,
                                   "map literal: failed to synthesize struct key comparator");
+                    return NULL;
+                }
+                keyeq_ptr = LLVMBuildBitCast(codegen->builder, cmp_fn, keyeq_ptr_ty, "keyeq_ptr");
+            } else if (key_type && key_type->kind == TYPE_INTERFACE) {
+                LLVMValueRef cmp_fn = LLVMGetNamedFunction(codegen->module, "goo_iface_key_eq");
+                if (!cmp_fn) {
+                    codegen_error(codegen, expr->pos, "map literal: goo_iface_key_eq unavailable");
                     return NULL;
                 }
                 keyeq_ptr = LLVMBuildBitCast(codegen->builder, cmp_fn, keyeq_ptr_ty, "keyeq_ptr");
@@ -395,6 +410,15 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 ValueInfo* kv = codegen_generate_expression(codegen, checker, k);
                 ValueInfo* vv = codegen_generate_expression(codegen, checker, v);
                 if (!kv || !vv) return NULL;
+                // Box a concrete key into the map's interface-typed key slot
+                // BEFORE slot-packing (Task 2) — mirrors the value-boxing
+                // step just below for the value half. No-op for every
+                // non-interface-keyed map (codegen_box_map_key_if_needed).
+                if (!codegen_box_map_key_if_needed(codegen, checker, kv, key_type, expr->pos)) {
+                    value_info_free(kv);
+                    value_info_free(vv);
+                    return NULL;
+                }
                 LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv, key_type);
                 // Box a concrete implementer into the map's interface-typed
                 // value slot BEFORE slot-boxing — mirrors the plain-assignment
@@ -1398,6 +1422,14 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 ValueInfo* mv = codegen_generate_expression(codegen, checker, idx->expr);
                 ValueInfo* kv = codegen_generate_expression(codegen, checker, idx->index);
                 if (!mv || !kv) { value_info_free(mv); value_info_free(kv); return NULL; }
+                // Box a concrete key into an interface-typed map key BEFORE
+                // slot-packing (Task 2) — mirrors the value-boxing step
+                // below for the RHS value; no-op for non-interface keys.
+                if (!codegen_box_map_key_if_needed(codegen, checker, kv, key_type, expr->pos)) {
+                    value_info_free(mv);
+                    value_info_free(kv);
+                    return NULL;
+                }
                 LLVMValueRef kp = codegen_map_key_to_slot(codegen, checker, kv, key_type);
                 ValueInfo* vv = codegen_generate_expression(codegen, checker, binary->right);
                 if (!vv) { value_info_free(mv); value_info_free(kv); return NULL; }

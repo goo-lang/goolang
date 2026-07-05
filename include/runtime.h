@@ -141,9 +141,24 @@ double goo_math_max(double x, double y);
 // slot holds a char*, compared by strcmp; INLINE = the slot holds the key's
 // bits (int/uint/bool/rune/byte/pointer), compared by ==; STRUCT = the slot
 // holds a pointer to a heap copy of the struct, compared via the per-map
-// key_eq comparator. New kinds (float) append here later.
+// key_eq comparator. IFACE = the slot holds a pointer to a heap-copied boxed
+// interface value `{void* vtable; void* data}`; compared via goo_iface_key_eq
+// below (also reached through the per-map key_eq comparator). New kinds
+// (float) append here later.
 typedef int (*GooKeyEqFn)(int64_t a, int64_t b);
-enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2 };
+enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2, GOO_MAPKEY_IFACE = 3 };
+
+// Interface-typed map keys (Task 2): compare two boxed interface key slots.
+// Each slot is a pointer to a heap-copied `{void* vtable; void* data}` pair
+// (mirrors a struct key's "pointer to a heap copy" — codegen_map_key_to_slot's
+// TYPE_INTERFACE arm). Equality is Go's interface equality: same dynamic type
+// (vtable identity — see codegen_interface_vtable's per-(concrete,iface)
+// symbol-name caching, codegen/interface_codegen.c) AND equal dynamic value
+// (dispatched to vtable slot 0, the concrete's per-type value-equality
+// comparator synthesized by codegen_get_or_emit_type_eq). A NULL vtable is a
+// nil interface; two nils compare equal, nil vs. non-nil never does (falls
+// out of the `vta != vtb` check — NULL != any real vtable pointer).
+int goo_iface_key_eq(int64_t a, int64_t b);
 
 struct GooMapEntrySV;
 typedef struct GooMapSV {

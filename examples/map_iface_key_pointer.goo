@@ -1,0 +1,14 @@
+package main
+import "fmt"
+type Node struct {
+	V int
+}
+func main() {
+	a := Node{V: 1}
+	b := Node{V: 1}
+	m := map[any]int{}
+	m[&a] = 10
+	m[&b] = 20
+	m[&a] = 30
+	fmt.Println(m[&a], m[&b], len(m))
+}
