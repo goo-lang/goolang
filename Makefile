@@ -11,6 +11,16 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
+# Incremental, header-aware builds ("only rebuild what changed"). -MMD writes a
+# .d file next to each .o listing every header that object includes
+# (transitively); -MP adds phony targets for those headers so deleting one
+# doesn't break the build. The .d files are -included further down, so editing a
+# header (ast.h, types.h, codegen.h, runtime.h, ...) rebuilds EXACTLY the objects
+# that include it — no more whole-tree `make clean` after a header edit, and no
+# stale-object miscompiles. The .d files live in build/ and are removed by
+# `make clean` along with the .o files.
+DEPFLAGS = -MMD -MP
+
 # Apple-style blocks (^-syntax) build path. GCC cannot parse ^-blocks, but
 # clang can with -fblocks, linked against the BlocksRuntime. Exactly three
 # sources use blocks: src/async/async_streams.c,
@@ -133,16 +143,22 @@ $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.tab.h: $(SRCDIR)/parser/pa
 # Object file compilation
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BUILDDIR)/compiler/%.o: $(COMPILERDIR)/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # Test framework object compilation
 $(BUILDDIR)/framework/%.o: $(TEST_FRAMEWORK_DIR)/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# Pull in the compiler-generated header dependencies (see DEPFLAGS). These files
+# don't exist on a fresh checkout; Make treats absent `-include` files as
+# non-fatal and generates them on the first build via the rules above, so the
+# first build is a normal full build and every build after it is header-aware.
+-include $(SRC_OBJS:.o=.d) $(TEST_FRAMEWORK_OBJ:.o=.d) $(RUNTIME_OBJS:.o=.d)
 
 # Parser generation
 $(SRCDIR)/parser/parser.tab.c: $(SRCDIR)/parser/parser.y
