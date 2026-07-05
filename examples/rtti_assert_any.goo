@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+func main() {
+	var x interface{} = 7
+	n := x.(int)
+	fmt.Println(n + 1)
+
+	var y interface{} = "hi"
+	s, ok := y.(string)
+	fmt.Println(s, ok)
+
+	m, ok2 := y.(int)
+	fmt.Println(m, ok2)
+}
