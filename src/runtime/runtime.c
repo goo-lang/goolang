@@ -632,6 +632,27 @@ goo_string_t goo_iface_format(void* vtable, void* data) {
     return fmt(data);
 }
 
+// Task 4: failed type-assertion panic naming the DYNAMIC (actually held)
+// type. Reads descriptor field 1 (type_name) behind the same vtable slot-0
+// hop as goo_iface_key_eq/goo_iface_format above; a NULL vtable (nil
+// interface) renders as "<nil>". Builds the message at RUNTIME because the
+// dynamic type is only known then — the static source/target names are
+// still baked in by codegen as C-string globals, matching Go's own
+// "interface conversion: X is Y, not Z" wording.
+void goo_panic_iface_conversion(const char* iface_name, void* vtable,
+                                 const char* target_name) {
+    const char* dynamic = "<nil>";
+    if (vtable) {
+        void* desc = ((void**)vtable)[0];       // vtable slot 0 -> descriptor
+        dynamic = ((const char**)desc)[1];      // descriptor field 1 -> type_name
+    }
+    char buf[320];
+    snprintf(buf, sizeof(buf), "interface conversion: %s is %s, not %s",
+             iface_name ? iface_name : "interface", dynamic,
+             target_name ? target_name : "?");
+    goo_panic(buf);
+}
+
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
 // char* — strcmp. INLINE: the slots hold the key's bits — direct ==. STRUCT:
 // dispatch to the map's per-map comparator. IFACE: dispatch to the map's

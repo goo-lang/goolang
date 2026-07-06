@@ -1,0 +1,19 @@
+package main
+
+// Interface-type-descriptor plan, Task 4: a failed type assertion `x.(T)`
+// must panic naming the DYNAMIC (actually held) type, not just the static
+// interface/target names codegen already knew at compile time. `x` holds a
+// bool; asserting it to string always fails, and the panic must read
+// "... is bool, not string" — proving the dynamic name was read from the
+// runtime descriptor (interface value's vtable slot 0 -> descriptor field 1,
+// goo_panic_iface_conversion in runtime.c) rather than a static guess.
+//
+// Deliberately bool/string, not int/string: this codebase's `int` keyword
+// resolves to the same builtin Type object as `int64` (see
+// type_checker.c's `int` -> TYPE_INT64 mapping), so its rendered name is
+// "int64", not "int" — a separate, pre-existing naming nuance unrelated to
+// Task 4. bool/string sidesteps it with an unambiguous substring to grep.
+func main() {
+	var x interface{} = true
+	_ = x.(string) // panics: interface conversion: interface is bool, not string
+}

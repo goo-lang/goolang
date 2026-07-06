@@ -255,9 +255,9 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                 return NULL;
             }
 
-            LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+            LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic_iface_conversion");
             if (!panic_fn) {
-                codegen_error(codegen, expr->pos, "goo_panic not found in module");
+                codegen_error(codegen, expr->pos, "goo_panic_iface_conversion not found in module");
                 return NULL;
             }
 
@@ -265,20 +265,26 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             LLVMBasicBlockRef miss_bb  = codegen_create_block(codegen, "ta.panic");
             LLVMBuildCondBr(codegen->builder, match, match_bb, miss_bb);
 
-            // Miss: panic with the STATIC type names only — no dynamic-type
-            // name (v1 deviation: RTTI would be needed to name the actual
-            // held type, and is out of scope) — then terminate the block.
+            // Miss: panic naming the DYNAMIC (actually held) type, not just
+            // the static ones (Task 4 of the interface-type-descriptor plan).
+            // The static interface/target names are still baked in here as
+            // globals — codegen only ever sees TYPES, never the runtime
+            // value's identity — but the dynamic name lives behind the
+            // interface value's vtable (slot 0 -> descriptor field 1), which
+            // is only resolvable at runtime, so the message itself must be
+            // built at runtime too (goo_panic_iface_conversion, runtime.c).
             codegen_set_insert_point(codegen, miss_bb);
             const char* iname = iface_type->data.interface.name
                                      ? iface_type->data.interface.name : "interface";
             const char* tname = type_receiver_name(target);
-            char msg_buf[256];
-            snprintf(msg_buf, sizeof(msg_buf), "interface conversion: %s is not %s",
-                     iname, tname ? tname : type_to_string(target));
-            LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder, msg_buf, "ta_panic_msg");
-            LLVMValueRef panic_args[1] = { msg };
+            LLVMValueRef iname_g = LLVMBuildGlobalStringPtr(codegen->builder, iname, "ta_panic_iname");
+            LLVMValueRef tname_g = LLVMBuildGlobalStringPtr(codegen->builder,
+                                       tname ? tname : type_to_string(target), "ta_panic_tname");
+            LLVMValueRef vtable_val = LLVMBuildExtractValue(codegen->builder, iface_val, 0,
+                                                            "ta_panic_vt");
+            LLVMValueRef panic_args[3] = { iname_g, vtable_val, tname_g };
             LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn), panic_fn,
-                           panic_args, 1, "");
+                           panic_args, 3, "");
             LLVMBuildUnreachable(codegen->builder);
 
             // Match: recover the concrete value and continue here.

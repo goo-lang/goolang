@@ -373,6 +373,15 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, ptr_type };
         add_runtime_function(codegen, "goo_iface_format", string_type, params, 2);
     }
+    // void goo_panic_iface_conversion(const char* iface_name, void* vtable,
+    // const char* target_name) — Task 4: failed type-assertion panic naming
+    // the DYNAMIC type (vtable slot 0 -> descriptor field 1) instead of a
+    // static-only message. Registered up front so expression_codegen.c's
+    // AST_TYPE_ASSERT miss block can find it via LLVMGetNamedFunction.
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_panic_iface_conversion", void_type, params, 3);
+    }
     // void goo_map_set_sv(GooMapSV*, int64_t k, int64_t v) — both key and
     // value are 8-byte slots now; codegen packs the declared K/V to i64 via
     // codegen_map_key_to_slot / codegen_map_value_to_slot before the call.

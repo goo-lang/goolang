@@ -168,6 +168,19 @@ int goo_iface_key_eq(int64_t a, int64_t b);
 // how fmt_fn thunks are synthesized.
 goo_string_t goo_iface_format(void* vtable, void* data);
 
+// Panic for a failed type assertion `x.(T)`, naming the DYNAMIC (actually
+// held) type instead of a compile-time-only static message (Task 4 of the
+// interface-type-descriptor plan). `iface_name` and `target_name` are the
+// STATIC names codegen already had (the interface's own name, and the
+// assertion's target type); `vtable` is the asserted interface value's
+// runtime vtable — slot 0 is the per-concrete-type descriptor (see
+// goo_iface_format above), whose field 1 is the dynamic type_name. A NULL
+// vtable (nil interface) renders as "<nil>", mirroring goo_iface_format's own
+// nil handling. Formats "interface conversion: %s is %s, not %s" and calls
+// goo_panic — never returns.
+void goo_panic_iface_conversion(const char* iface_name, void* vtable,
+                                 const char* target_name) __attribute__((noreturn));
+
 struct GooMapEntrySV;
 typedef struct GooMapSV {
     struct GooMapEntrySV* head;
