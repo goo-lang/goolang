@@ -3549,3 +3549,9 @@ iface-assert-dynname-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "iface-assert-dynname-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
 	if ! grep -q "is bool, not string" build/iface_assert_dynname.err; then echo "iface-assert-dynname-probe: FAIL (dynamic type not named)"; cat build/iface_assert_dynname.err; exit 1; fi
 	@echo "iface-assert-dynname-probe: PASS"
+
+# Regenerate the Go-stdlib coverage report (docs/stdlib-coverage.json).
+# Scores supported symbols against $GOROOT/api/go1*.txt. Needs `go` on PATH.
+.PHONY: stdlib-coverage
+stdlib-coverage:
+	python3 scripts/stdlib-coverage.py

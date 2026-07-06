@@ -1,0 +1,162 @@
+{
+  "go_version": "go1.26.1",
+  "methodology": "top-level exported symbols (func/type/const/var) matched by name against $GOROOT/api/go1*.txt; conservative",
+  "overall": {
+    "supported_symbols": 77,
+    "total_symbols": 11286,
+    "pct": 0.68,
+    "packages_touched": 8,
+    "packages_total": 173
+  },
+  "packages": [
+    {
+      "package": "math/bits",
+      "status": "partial",
+      "supported": 44,
+      "total": 50,
+      "pct": 88.0,
+      "symbols": [
+        "Add32",
+        "Add64",
+        "Div",
+        "Div32",
+        "Div64",
+        "LeadingZeros",
+        "LeadingZeros16",
+        "LeadingZeros32",
+        "LeadingZeros64",
+        "LeadingZeros8",
+        "Len",
+        "Len16",
+        "Len32",
+        "Len64",
+        "Len8",
+        "Mul32",
+        "Mul64",
+        "OnesCount",
+        "OnesCount16",
+        "OnesCount32",
+        "OnesCount64",
+        "OnesCount8",
+        "Reverse",
+        "Reverse16",
+        "Reverse32",
+        "Reverse64",
+        "Reverse8",
+        "ReverseBytes",
+        "ReverseBytes16",
+        "ReverseBytes32",
+        "ReverseBytes64",
+        "RotateLeft",
+        "RotateLeft16",
+        "RotateLeft32",
+        "RotateLeft64",
+        "RotateLeft8",
+        "Sub32",
+        "Sub64",
+        "TrailingZeros",
+        "TrailingZeros16",
+        "TrailingZeros32",
+        "TrailingZeros64",
+        "TrailingZeros8",
+        "UintSize"
+      ]
+    },
+    {
+      "package": "unicode/utf8",
+      "status": "partial",
+      "supported": 6,
+      "total": 19,
+      "pct": 31.6,
+      "symbols": [
+        "DecodeRune",
+        "DecodeRuneInString",
+        "RuneCountInString",
+        "RuneLen",
+        "RuneStart",
+        "ValidRune"
+      ]
+    },
+    {
+      "package": "errors",
+      "status": "partial",
+      "supported": 2,
+      "total": 7,
+      "pct": 28.6,
+      "symbols": [
+        "New",
+        "Unwrap"
+      ]
+    },
+    {
+      "package": "strings",
+      "status": "partial",
+      "supported": 10,
+      "total": 60,
+      "pct": 16.7,
+      "symbols": [
+        "Contains",
+        "HasPrefix",
+        "HasSuffix",
+        "Index",
+        "Join",
+        "Split",
+        "ToLower",
+        "ToUpper",
+        "TrimPrefix",
+        "TrimSuffix"
+      ]
+    },
+    {
+      "package": "fmt",
+      "status": "partial",
+      "supported": 4,
+      "total": 29,
+      "pct": 13.8,
+      "symbols": [
+        "Errorf",
+        "Printf",
+        "Println",
+        "Sprintf"
+      ]
+    },
+    {
+      "package": "strconv",
+      "status": "partial",
+      "supported": 3,
+      "total": 38,
+      "pct": 7.9,
+      "symbols": [
+        "Atoi",
+        "FormatBool",
+        "Itoa"
+      ]
+    },
+    {
+      "package": "math",
+      "status": "partial",
+      "supported": 5,
+      "total": 97,
+      "pct": 5.2,
+      "symbols": [
+        "Abs",
+        "Max",
+        "Min",
+        "Pow",
+        "Sqrt"
+      ]
+    },
+    {
+      "package": "os",
+      "status": "partial",
+      "supported": 3,
+      "total": 119,
+      "pct": 2.5,
+      "symbols": [
+        "Args",
+        "Exit",
+        "Getenv"
+      ]
+    }
+  ]
+}
