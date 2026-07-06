@@ -1718,6 +1718,61 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         }
     }
 
+    // iface == nil / nil == iface (RTTI follow-up). An interface value is the
+    // pair { ptr vtable, ptr data }; its nil (zero) value has both words null.
+    // Mirror the nullable/funcval paths: do NOT evaluate the nil side (a bare
+    // i8* null is the wrong shape to compare against the pair) — evaluate only
+    // the interface operand and test BOTH words against null, matching the
+    // type-switch `case nil:` test (statement_codegen.c) so `x == nil` and
+    // `switch x.(type){case nil:}` agree.
+    if (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE) {
+        bool right_is_nil = (binary->right->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL);
+        bool left_is_nil  = (binary->left->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->left)->literal_type == TOKEN_NIL);
+
+        ASTNode* iface_node = NULL;
+        if (right_is_nil) {
+            Type* lt = type_check_expression(checker, binary->left);
+            if (lt && lt->kind == TYPE_INTERFACE) iface_node = binary->left;
+        } else if (left_is_nil) {
+            Type* rt = type_check_expression(checker, binary->right);
+            if (rt && rt->kind == TYPE_INTERFACE) iface_node = binary->right;
+        }
+
+        if (iface_node) {
+            ValueInfo* iv = codegen_generate_expression(codegen, checker, iface_node);
+            if (!iv) return NULL;
+
+            // Auto-load if the operand is an lvalue (e.g. a plain identifier),
+            // yielding the { ptr, ptr } pair value itself.
+            if (iv->is_lvalue && iv->goo_type) {
+                LLVMTypeRef it = codegen_type_to_llvm(codegen, iv->goo_type);
+                if (it) {
+                    iv->llvm_value = LLVMBuildLoad2(codegen->builder, it, iv->llvm_value, "iface_load");
+                    iv->is_lvalue = 0;
+                }
+            }
+
+            LLVMValueRef vt   = LLVMBuildExtractValue(codegen->builder, iv->llvm_value, 0, "iface_vt");
+            LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, iv->llvm_value, 1, "iface_data");
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMValueRef null_ptr = LLVMConstPointerNull(i8ptr);
+            LLVMIntPredicate pred = (binary->operator == TOKEN_EQ) ? LLVMIntEQ : LLVMIntNE;
+            LLVMValueRef vt_cmp   = LLVMBuildICmp(codegen->builder, pred, vt, null_ptr, "iface_vtcmp");
+            LLVMValueRef data_cmp = LLVMBuildICmp(codegen->builder, pred, data, null_ptr, "iface_datacmp");
+            // == nil: both words null (AND). != nil: either non-null (OR) — De
+            // Morgan of the == form, so the two operators stay consistent.
+            LLVMValueRef result = (binary->operator == TOKEN_EQ)
+                ? LLVMBuildAnd(codegen->builder, vt_cmp, data_cmp, "iface_niseq")
+                : LLVMBuildOr(codegen->builder, vt_cmp, data_cmp, "iface_nisne");
+
+            Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+            value_info_free(iv);
+            return value_info_new(NULL, result, bool_type);
+        }
+    }
+
     // P1-5: short-circuit && / ||. Must run BEFORE the eager operand
     // generation below — the whole point is that the right operand is only
     // evaluated when the result isn't already determined by the left.

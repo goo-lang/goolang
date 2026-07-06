@@ -1,0 +1,9 @@
+z is nil
+z not-not-nil
+z non-nil after assign
+z nil after reassign
+a nil-init ok
+reversed nil ok
+nil
+non-nil
+non-nil

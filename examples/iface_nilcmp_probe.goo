@@ -1,0 +1,53 @@
+// iface-nilcmp (RTTI follow-up): an interface value compares to nil with
+// == / !=, matching Go. A declared-but-unassigned `var z interface{}` is the
+// nil interface {vtable=NULL, data=NULL}, so `z == nil` is true; once it boxes
+// a concrete value (non-null vtable) `z != nil` is true. Also exercises the
+// reversed `nil == z` form and an `interface{}` parameter guard. Complements
+// the type-switch `case nil:` path (rtti_type_switch_any) with the direct
+// comparison operator. Typecheck exception lives in expression_helpers.c
+// (type_check_comparison_op); codegen compares the vtable+data words in
+// expression_codegen.c, mirroring the type-switch nil test.
+package main
+
+import "fmt"
+
+func classify(x interface{}) {
+	if x == nil {
+		fmt.Println("nil")
+	} else {
+		fmt.Println("non-nil")
+	}
+}
+
+func main() {
+	var z interface{} // the nil interface
+	if z == nil {
+		fmt.Println("z is nil")
+	}
+	if !(z != nil) {
+		fmt.Println("z not-not-nil")
+	}
+
+	z = 42 // now boxes a concrete value
+	if z != nil {
+		fmt.Println("z non-nil after assign")
+	}
+	z = nil // reassign back to nil boxes the zero interface, not a boxed null
+	if z == nil {
+		fmt.Println("z nil after reassign")
+	}
+
+	var a interface{} = nil // explicit nil initializer
+	if a == nil {
+		fmt.Println("a nil-init ok")
+	}
+
+	var w interface{}
+	if nil == w { // reversed form
+		fmt.Println("reversed nil ok")
+	}
+
+	classify(nil) // literal nil arg boxes to the nil interface
+	classify(7)
+	classify("s")
+}
