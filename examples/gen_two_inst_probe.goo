@@ -1,0 +1,10 @@
+package main
+
+import "fmt"
+
+func Id[T any](x T) T { return x }
+
+func main() {
+	fmt.Println(Id(7))
+	fmt.Println(Id(true))
+}

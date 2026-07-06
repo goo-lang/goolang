@@ -238,6 +238,17 @@ int codegen_initialize_target(CodeGenerator* codegen);
 // the plain-function and error-union codegen paths. Caller frees the result.
 char* codegen_package_symbol_name(TypeChecker* checker, const char* base);
 
+// Task 7: monomorphization name mangling (src/codegen/monomorphize.c). Used
+// by Tasks 9-10 to name each concrete instantiation of a generic function.
+// Both return a malloc'd string; caller frees.
+//
+// codegen_type_mangle_token: a nameable token for one concrete type --
+// `int`, `string`, `float64`, `ptr_<tok>`, `slice_<tok>`, etc.
+char* codegen_type_mangle_token(const Type* t);
+// codegen_mangle_instance: `base` + type args -> `base__tok0__tok1...`, e.g.
+// `Map` + {int, string} -> `Map__int__string`.
+char* codegen_mangle_instance(const char* base, Type* const* args, size_t n);
+
 // Code generation entry points
 int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNode* program);
 int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl);
