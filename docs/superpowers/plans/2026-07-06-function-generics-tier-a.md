@@ -14,7 +14,7 @@
 - **Scope:** Ordinary functions only (no generic methods, no generic types). `any`-only constraints. Inference-only (no `Map[int](xs)` call-site syntax). `T` is opaque.
 - **Invariant:** Every type parameter must appear in ≥1 parameter type (else reject at declaration).
 - **Codegen:** Monomorphization. One instance per distinct concrete type-arg tuple.
-- **Grammar gate (mandatory):** `./scripts/grammar-tripwire.sh` must PASS with **exactly 81 shift/reduce + 256 reduce/reduce** before AND after any `parser.y` change. Any delta is stop-the-line — use the **goo-grammar** skill (`.claude/skills/goo-grammar/`) and its conflict-ledger. Never commit a grammar delta without that procedure.
+- **Grammar gate (mandatory):** `./scripts/grammar-tripwire.sh` must PASS with **exactly 82 shift/reduce + 256 reduce/reduce** before AND after any `parser.y` change. Any delta is stop-the-line — use the **goo-grammar** skill (`.claude/skills/goo-grammar/`) and its conflict-ledger. Never commit a grammar delta without that procedure.
 - **Build/test gates:** `make verify` and `make test` must be green. `ccomp` (needed by `make verify`) is in the opam `default` switch — prepend `export PATH="$HOME/.opam/default/bin:$PATH"` to any shell running `make verify`.
 - **Branch:** `feat/function-generics-tier-a` (already exists; spec committed at `72efcb7`).
 - **Do NOT** use `ast_node_copy` (latent heap-overflow — under-allocates derived structs).
@@ -106,7 +106,7 @@ git commit -m "feat(ast): add type_params field to FuncDeclNode"
 
 - [ ] **Step 1: Snapshot the baseline conflict counts.**
 Run: `./scripts/grammar-tripwire.sh`
-Expected: PASS — 81 shift/reduce, 256 reduce/reduce. **Record this. If it is not exactly 81/256, STOP and reconcile before touching the grammar.**
+Expected: PASS — 82 shift/reduce, 256 reduce/reduce. **Record this. If it is not exactly 82/256, STOP and reconcile before touching the grammar.**
 
 - [ ] **Step 2: Write the failing parse test.** Create `examples/gen_parse_probe.goo`:
 ```go
@@ -177,7 +177,7 @@ Expected: `Parse error at examples/gen_parse_probe.goo:3:...: syntax error` (die
 
 - [ ] **Step 5: Re-run the tripwire (the gate).**
 Run: `./scripts/grammar-tripwire.sh`
-Expected: PASS — **still exactly 81/256**. If the counts changed, STOP: invoke the goo-grammar skill and follow its conflict-ledger procedure before proceeding. Do not "fix" by editing unrelated rules.
+Expected: PASS — **still exactly 82/256**. If the counts changed, STOP: invoke the goo-grammar skill and follow its conflict-ledger procedure before proceeding. Do not "fix" by editing unrelated rules.
 
 - [ ] **Step 6: Rebuild and verify the probe parses.**
 Run: `make bin/goo 2>&1 | tail -3 && ./bin/goo --emit-ast examples/gen_parse_probe.goo 2>&1 | grep -iE "type_param|Id|Map|error" | head`
@@ -328,7 +328,7 @@ generics-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== generics-reject-probe: generic function declaration invariants ==="
 	@printf 'package main\nfunc Zero[T any]() T { var z T\n return z }\nfunc main() {}\n' > build/gen_uninferable.goo
-	@printf 'package main\nfunc F[T Stringer](x T) T { return x }\nfunc main() {}\n' > build/gen_badconstraint.goo
+	@printf 'package main\ntype Stringer interface { String() string }\nfunc F[T Stringer](x T) T { return x }\nfunc main() {}\n' > build/gen_badconstraint.goo
 	@printf 'package main\nfunc Add[T any](x T) T { return x + 1 }\nfunc main() {}\n' > build/gen_opaque_op.goo
 	@"$(COMPILER)" build/gen_uninferable.goo -o build/gen_uninferable.out 2>build/gen_uninferable.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "generics-reject-probe: FAIL (un-inferable type param compiled)"; exit 1; fi; \
@@ -963,7 +963,7 @@ Expected: all pass, including the 5 new `gen_*` goldens. If `gen_nested_probe` f
 
 - [ ] **Step 4: Full gates.**
 Run: `export PATH="$HOME/.opam/default/bin:$PATH"; make verify 2>&1 | tail -5 && make test 2>&1 | tail -3`
-Expected: `verify: ALL GREEN GATES PASSED`; `make test` all pass; tripwire still 81/256.
+Expected: `verify: ALL GREEN GATES PASSED`; `make test` all pass; tripwire still 82/256.
 
 - [ ] **Step 5: Commit.**
 ```bash
