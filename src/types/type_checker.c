@@ -2649,6 +2649,19 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(ident->name, "any") == 0)
                 return type_checker_any_type();
 
+            // Function generics Task 3: a bare `T` in a generic function's
+            // signature/body may parse as AST_IDENTIFIER (this branch) or
+            // AST_BASIC_TYPE (below) depending on context. Check the
+            // active-type-param stack BEFORE the user-named-type lookup
+            // below: a type parameter must shadow a package-level type of
+            // the same name (Go semantics — `func Id[T any](x T) T` binds
+            // `T` to the type parameter even if `type T struct{...}` exists
+            // at package scope). `active_type_params` is empty outside a
+            // generic declaration, so this is a no-op for ordinary
+            // (non-generic) type resolution.
+            Type* tp_ident = type_checker_lookup_type_param(checker, ident->name);
+            if (tp_ident) return tp_ident;
+
             // User-defined named type (e.g. `new(Point)`): `type Foo ...` is
             // registered as a Variable whose `type` field is the named Type
             // (see the AST_BASIC_TYPE branch below). Exclude package/function
@@ -2659,13 +2672,6 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 named->type->kind != TYPE_FUNCTION) {
                 return named->type;
             }
-
-            // Function generics Task 3: a bare `T` in a generic function's
-            // signature/body may parse as AST_IDENTIFIER (this branch) or
-            // AST_BASIC_TYPE (below) depending on context — check the
-            // active-type-param stack before giving up as "Unknown type".
-            Type* tp_ident = type_checker_lookup_type_param(checker, ident->name);
-            if (tp_ident) return tp_ident;
 
             type_error(checker, type_node->pos, "Unknown type '%s'", ident->name);
             return NULL;
@@ -2700,6 +2706,15 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             if (strcmp(basic->name, "any") == 0)
                 return type_checker_any_type();
 
+            // Function generics Task 3: see the analogous check in the
+            // AST_IDENTIFIER branch above — a bare `T` can arrive as either
+            // node kind. Must run BEFORE the user-named-type lookup below
+            // so a type parameter shadows a package-level type of the same
+            // name (Go semantics); `active_type_params` is empty outside a
+            // generic declaration, so ordinary type resolution is unaffected.
+            Type* tp_basic = type_checker_lookup_type_param(checker, basic->name);
+            if (tp_basic) return tp_basic;
+
             // User-defined named type? type_check_type_decl registers
             // `type Foo = ...` aliases by piggybacking on the variable
             // scope (Variable whose `type` field IS the named Type).
@@ -2712,12 +2727,6 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 named->type->kind != TYPE_FUNCTION) {
                 return named->type;
             }
-
-            // Function generics Task 3: see the analogous check in the
-            // AST_IDENTIFIER branch above — a bare `T` can arrive as either
-            // node kind.
-            Type* tp_basic = type_checker_lookup_type_param(checker, basic->name);
-            if (tp_basic) return tp_basic;
 
             type_error(checker, type_node->pos, "Unknown type '%s'", basic->name);
             return NULL;

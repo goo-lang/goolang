@@ -1304,29 +1304,32 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     // (including this one) was emitted. This takes precedence over the
     // ordinary bare-name resolution below.
     //
-    // codegen_resolve_type resolves each call->type_args[i] through
-    // codegen->active_subst: identity when this call site is itself
-    // concrete (e.g. a call inside main), or TYPE_PARAM -> the enclosing
-    // instance's concrete binding when this call is being emitted INSIDE a
-    // generic body that codegen_generate_function_instance is currently
-    // stamping (Part A's nested-call discovery always pre-stamps that
-    // nested callee before this body is ever emitted, so the instance
-    // looked up below is guaranteed to already exist — this path only
-    // looks it up, it never stamps).
+    // type_substitute resolves each call->type_args[i] through
+    // codegen->active_subst/active_subst_n: identity when this call site is
+    // itself concrete (e.g. a call inside main — active_subst is NULL,
+    // active_subst_n is 0, so the TYPE_PARAM case's bounds check never
+    // fires and every arg is returned unchanged), or a full recursive
+    // rewrite (TYPE_PARAM -> the enclosing instance's concrete binding, and
+    // composite shapes like TYPE_SLICE/TYPE_POINTER/TYPE_FUNCTION rewritten
+    // element-wise) when this call is being emitted INSIDE a generic body
+    // that codegen_generate_function_instance is currently stamping (Part
+    // A's nested-call discovery always pre-stamps that nested callee before
+    // this body is ever emitted, so the instance looked up below is
+    // guaranteed to already exist — this path only looks it up, it never
+    // stamps). This MUST be the same recursive substitution Part A's
+    // mono_instantiate uses to stamp the nested instance's mangled name
+    // (monomorphize.c) — the single-level codegen_resolve_type only
+    // rewrites a bare top-level TYPE_PARAM, so a composite type-arg like
+    // `[]T` would keep its unbound element (`[]T` instead of `[]int`) and
+    // mangle to a symbol Part A never stamped.
     ValueInfo* func_val = NULL;
     if (call->type_arg_count > 0 && call->function->type == AST_IDENTIFIER) {
         IdentifierNode* gid = (IdentifierNode*)call->function;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return NULL;
         for (size_t i = 0; i < call->type_arg_count; i++) {
-            // codegen_resolve_type's `const Type*` is this file's only
-            // non-const consumer of it: codegen_mangle_instance/
-            // type_substitute both take Type* (this codebase does not
-            // otherwise carry const through Type plumbing — CallExprNode.
-            // type_args itself is a plain Type**), so casting the const away
-            // here is safe and matches the ambient (non-const) ownership
-            // model everywhere else a Type* is passed around.
-            concrete_args[i] = (Type*)codegen_resolve_type(codegen, call->type_args[i]);
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
         }
         char* sym = codegen_mangle_instance(gid->name, concrete_args, call->type_arg_count);
         LLVMValueRef inst = LLVMGetNamedFunction(codegen->module, sym);

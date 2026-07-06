@@ -1,0 +1,14 @@
+package main
+
+import "fmt"
+
+type T struct {
+	v int
+}
+
+func Id[T any](x T) T { return x }
+
+func main() {
+	fmt.Println(Id(7))
+	fmt.Println(T{v: 3}.v)
+}
