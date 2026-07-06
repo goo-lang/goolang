@@ -550,10 +550,17 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 return NULL;
             }
             if (target_type->kind == TYPE_INTERFACE) {
-                type_error(checker, expr->pos,
-                    "type assertion to an interface type is not supported in v1 "
-                    "(concrete target types only)");
-                return NULL;
+                // Interface target: a runtime-checked assertion (Go semantics).
+                // Always well-formed on an interface operand; success is
+                // decided at runtime by enumerating implementers in codegen
+                // (codegen_interface_target_match). Do NOT require static
+                // satisfaction — unlike a concrete target, there is no single
+                // "the operand's static type must already satisfy I" check
+                // that would make sense here (the OPERAND is itself some
+                // interface type, e.g. `interface{}`, whose static method set
+                // is unrelated to whether its dynamic value implements I).
+                expr->node_type = target_type;
+                return target_type;
             }
             const char* method = NULL;
             const char* reason = NULL;

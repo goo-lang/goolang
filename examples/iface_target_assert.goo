@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+type Speaker interface {
+	Speak() string
+}
+
+type Dog struct{ name string }
+
+func (d Dog) Speak() string { return d.name + " says woof" }
+
+func main() {
+	var x interface{} = Dog{name: "Rex"}
+	s := x.(Speaker)
+	fmt.Println(s.Speak())
+}

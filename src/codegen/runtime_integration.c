@@ -382,6 +382,14 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, ptr_type, ptr_type };
         add_runtime_function(codegen, "goo_panic_iface_conversion", void_type, params, 3);
     }
+    // void goo_panic_iface_notimpl(void* vtable, const char* target_name) —
+    // interface-target RTTI, Task 1: failed `x.(I)` where I is an INTERFACE.
+    // Registered up front so expression_codegen.c's AST_TYPE_ASSERT
+    // interface-target miss block can find it via LLVMGetNamedFunction.
+    {
+        LLVMTypeRef params[] = { ptr_type, ptr_type };
+        add_runtime_function(codegen, "goo_panic_iface_notimpl", void_type, params, 2);
+    }
     // void goo_map_set_sv(GooMapSV*, int64_t k, int64_t v) — both key and
     // value are 8-byte slots now; codegen packs the declared K/V to i64 via
     // codegen_map_key_to_slot / codegen_map_value_to_slot before the call.

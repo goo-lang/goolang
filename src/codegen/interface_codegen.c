@@ -651,4 +651,208 @@ LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target
     return LLVMBuildLoad2(codegen->builder, target_llvm, data, "ta.val");
 }
 
+// Interface-target RTTI, Task 1: enumerate every concrete STRUCT type
+// declared at package (top) scope that implements `iface`, for the
+// closed-world runtime chain `x.(I)` builds (codegen_interface_target_match,
+// below). "Declared at top scope" is detected the same way the type checker
+// itself distinguishes a type declaration from an ordinary variable binding:
+// `type Point struct{}` registers a Variable named "Point" whose ->type is
+// the very struct Type it names (v->type->data.struct_type.name ==
+// v->name); an ordinary `var p Point` registers a DIFFERENT variable ("p")
+// whose ->type is that same struct Type, so name != struct_type.name for
+// it. Walking to the ROOT scope (top-level declarations only) means a
+// struct type declared inside a function body is never a candidate — Goo
+// (like Go) only allows `type` declarations at package scope in practice,
+// so this is not a limitation in v1.
+//
+// Returns the count and writes a malloc'd array of the matching Type*
+// pointers to *out (NULL/0 on failure or no matches) — the caller owns the
+// array (a flat list of borrowed Type* — the Types themselves are owned by
+// the type checker) and must free() it.
+size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Type*** out) {
+    if (out) *out = NULL;
+    if (!checker || !iface || iface->kind != TYPE_INTERFACE || !out) return 0;
+    if (!checker->current_scope) return 0;
+
+    Scope* s = checker->current_scope;
+    while (s->parent) s = s->parent;
+
+    size_t count = 0, cap = 0;
+    Type** arr = NULL;
+    for (Variable* v = s->variables; v; v = v->next) {
+        if (!v->type || v->type->kind != TYPE_STRUCT) continue;
+        if (!v->type->data.struct_type.name) continue;
+        if (!v->name || strcmp(v->name, v->type->data.struct_type.name) != 0) continue;
+
+        const char* method = NULL;
+        const char* reason = NULL;
+        if (!type_interface_satisfied(checker, iface, v->type, &method, &reason)) continue;
+
+        if (count == cap) {
+            size_t ncap = cap ? cap * 2 : 4;
+            Type** narr = realloc(arr, ncap * sizeof(Type*));
+            if (!narr) { free(arr); *out = NULL; return 0; }
+            arr = narr;
+            cap = ncap;
+        }
+        arr[count++] = v->type;
+    }
+    *out = arr;
+    return count;
+}
+
+// Interface-target RTTI, Task 1: the shared match/build primitive for
+// `x.(I)` where I is itself an INTERFACE (as opposed to
+// codegen_interface_assert_match's concrete-target vtable-pointer compare).
+// Closed-world: every concrete implementer of I is known at compile time
+// (codegen_collect_iface_implementers above), so this builds a straight-
+// line chain comparing `iface_val`'s dynamic-type descriptor (vtable slot 0)
+// against each implementer's descriptor, `select`-ing the matching (T,I)
+// vtable + reusing the SAME data word into a built I-value as it goes — no
+// per-candidate branching, since building a candidate value is side-effect-
+// free (mirrors codegen_interface_box's insertvalue boxing shape). Only the
+// nil-vtable guard branches (mirrors the type switch's `case nil:` null-
+// guard, statement_codegen.c). `iface_val` must already be the LOADED
+// {vtable, data} struct value (same is_lvalue-load contract as
+// codegen_interface_assert_match's caller). Writes the built target-
+// interface value to *built_out (the zero interface value on a miss or a
+// nil operand) and returns the i1 match bit. Self-contained: creates its
+// own nil-guard branch + join and leaves the builder positioned at the join
+// block on return. Returns NULL (and leaves *built_out unset) only on a
+// hard internal failure (e.g. `target_iface`'s LLVM type can't be
+// resolved) — should not happen for a type-checked interface-target
+// assertion.
+LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker* checker,
+                                            LLVMValueRef iface_val, Type* target_iface,
+                                            LLVMValueRef* built_out) {
+    if (!codegen || !checker || !target_iface || target_iface->kind != TYPE_INTERFACE ||
+        !built_out) {
+        return NULL;
+    }
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef i1ty = LLVMInt1TypeInContext(ctx);
+    LLVMTypeRef ptrty = iface_ptr_type(codegen);
+    LLVMTypeRef target_llvm = codegen_type_to_llvm(codegen, target_iface);
+    if (!target_llvm) return NULL;
+    LLVMValueRef zero_built = LLVMConstNull(target_llvm);
+
+    LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "itm.vt");
+    LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "itm.data");
+    LLVMValueRef null_vt = LLVMConstNull(ptrty);
+    LLVMValueRef is_null = LLVMBuildICmp(codegen->builder, LLVMIntEQ, vtab, null_vt, "itm.isnull");
+
+    LLVMBasicBlockRef entry_bb   = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef nonnull_bb = codegen_create_block(codegen, "itm.nonnull");
+    LLVMBasicBlockRef join_bb    = codegen_create_block(codegen, "itm.join");
+    if (!nonnull_bb || !join_bb) return NULL;
+    LLVMBuildCondBr(codegen->builder, is_null, join_bb, nonnull_bb);
+
+    codegen_set_insert_point(codegen, nonnull_bb);
+    // desc_have: GEP element 0 of the vtable array, then load the ptr stored
+    // there — vtable slot 0 is the per-concrete-type descriptor pointer
+    // (codegen_get_or_emit_type_desc), which IS the dynamic-type identity.
+    LLVMValueRef zero_idx = LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, 0);
+    LLVMValueRef slot0 = LLVMBuildGEP2(codegen->builder, ptrty, vtab, &zero_idx, 1, "itm.slot0");
+    LLVMValueRef desc_have = LLVMBuildLoad2(codegen->builder, ptrty, slot0, "itm.desc");
+
+    LLVMValueRef match_acc = LLVMConstInt(i1ty, 0, 0);
+    LLVMValueRef built_acc = zero_built;
+
+    if (target_iface->data.interface.method_count == 0) {
+        // Method-less-target short-circuit (empty-interface RTTI fix):
+        // `interface{}`/`any` (or any named interface with zero methods) is
+        // satisfied by EVERY non-nil interface value, including ones whose
+        // dynamic type is NOT a declared struct (int, string, float,
+        // pointer, slice, ...). The enumeration loop below only ever walks
+        // declared TYPE_STRUCT types (codegen_collect_iface_implementers),
+        // so for a method-less target it would enumerate nothing and every
+        // non-struct dynamic value would wrongly miss — running it here
+        // would be at best a no-op and at worst wrong, so skip it entirely.
+        // Reuse the operand's OWN {vtab, data} as the built value rather
+        // than looking up a (T, target) vtable: T is unknown for non-struct
+        // dynamic types, so no such vtable could even be found. This is
+        // still correct because a method-less target never dispatches
+        // through its vtable — the only thing callers rely on is
+        // built.vtable[0], the dynamic-type descriptor, which `vtab`
+        // already carries unchanged.
+        match_acc = LLVMConstInt(i1ty, 1, 0);
+        LLVMValueRef iv_any = LLVMGetUndef(target_llvm);
+        iv_any = LLVMBuildInsertValue(codegen->builder, iv_any, vtab, 0, "itm.anyvt");
+        iv_any = LLVMBuildInsertValue(codegen->builder, iv_any, data, 1, "itm.anydata");
+        built_acc = iv_any;
+    } else {
+        Type** impls = NULL;
+        size_t n = codegen_collect_iface_implementers(checker, target_iface, &impls);
+        for (size_t i = 0; i < n; i++) {
+            Type* T = impls[i];
+            // base_of(T) mirrors codegen_interface_assert_match's pointer-
+            // candidate normalization (interface_codegen.c, above):
+            // codegen_collect_iface_implementers only ever yields TYPE_STRUCT
+            // candidates today, so this is a no-op in practice — kept so a
+            // future pointer-receiver-aware collector needs no change here.
+            Type* base = T;
+            if (base->kind == TYPE_POINTER && base->data.pointer.pointee_type &&
+                type_receiver_name(base->data.pointer.pointee_type)) {
+                base = base->data.pointer.pointee_type;
+            }
+
+            // Task 4 fix: try BOTH the value-form and pointer-form descriptor/
+            // vtable for every candidate, not just value-form. `T`'s presence in
+            // `impls` means type_interface_satisfied found a matching method —
+            // but that check is permissive about receiver kind (it mangles on
+            // the struct's name alone, never inspecting whether the method's
+            // receiver is `T` or `*T`; see codegen_collect_iface_implementers's
+            // caller, type_interface_satisfied, type_checker.c ~821). So a
+            // pointer-receiver implementer like `func (c *C) Get()` satisfies
+            // the interface in the checker's eyes regardless of whether the
+            // runtime value in hand is value-boxed (`T{...}`) or pointer-boxed
+            // (`&T{...}`) — those two boxings carry DISTINCT descriptor
+            // identities (codegen_interface_box's two branches; Task 5's
+            // `$ptr$` naming). Emitting only the value-form candidate (as
+            // before) silently misses every pointer-boxed implementer — exactly
+            // examples/iface_target_ptr.goo's `&C{n: 5}` shape. A given runtime
+            // descriptor matches at most one of the two forms, so trying both is
+            // safe: exactly one `eq` (or neither, on a genuine miss) is true.
+            for (int form = 0; form <= 1; form++) {
+                LLVMValueRef desc_T = codegen_get_or_emit_type_desc(codegen, checker, base, form);
+                LLVMValueRef vt_TI = codegen_interface_vtable(codegen, checker, target_iface, base, form);
+                if (!desc_T || !vt_TI) continue;
+
+                LLVMValueRef eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ, desc_have, desc_T, "itm.eq");
+
+                // iv_T = {vt_TI, data} — side-effect-free (insertvalue only), so it's
+                // safe to build for every candidate unconditionally and `select` the
+                // winner, avoiding a basic block per implementer. `data` is reused
+                // AS-IS — it's the same data word the concrete boxing site produced,
+                // and I's thunks read it exactly that way (no re-box/copy).
+                LLVMValueRef iv_T = LLVMGetUndef(target_llvm);
+                iv_T = LLVMBuildInsertValue(codegen->builder, iv_T, vt_TI, 0, "itm.ivvt");
+                iv_T = LLVMBuildInsertValue(codegen->builder, iv_T, data, 1, "itm.ivdata");
+
+                built_acc = LLVMBuildSelect(codegen->builder, eq, iv_T, built_acc, "itm.built");
+                match_acc = LLVMBuildOr(codegen->builder, match_acc, eq, "itm.match");
+            }
+        }
+        free(impls);
+    }
+
+    LLVMBasicBlockRef nonnull_exit_bb = LLVMGetInsertBlock(codegen->builder);
+    LLVMBuildBr(codegen->builder, join_bb);
+
+    codegen_set_insert_point(codegen, join_bb);
+    LLVMValueRef match_phi = LLVMBuildPhi(codegen->builder, i1ty, "itm.match.phi");
+    LLVMValueRef match_vals[2]        = { LLVMConstInt(i1ty, 0, 0), match_acc };
+    LLVMBasicBlockRef match_blocks[2] = { entry_bb, nonnull_exit_bb };
+    LLVMAddIncoming(match_phi, match_vals, match_blocks, 2);
+
+    LLVMValueRef built_phi = LLVMBuildPhi(codegen->builder, target_llvm, "itm.built.phi");
+    LLVMValueRef built_vals[2]        = { zero_built, built_acc };
+    LLVMBasicBlockRef built_blocks[2] = { entry_bb, nonnull_exit_bb };
+    LLVMAddIncoming(built_phi, built_vals, built_blocks, 2);
+
+    *built_out = built_phi;
+    return match_phi;
+}
+
 #endif // LLVM_AVAILABLE

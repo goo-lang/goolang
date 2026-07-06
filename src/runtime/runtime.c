@@ -653,6 +653,23 @@ void goo_panic_iface_conversion(const char* iface_name, void* vtable,
     goo_panic(buf);
 }
 
+// Interface-target RTTI, Task 1: failed `x.(I)` where I is an INTERFACE —
+// see the doc comment on the declaration (runtime.h) for why this is a
+// distinct format from goo_panic_iface_conversion above rather than a second
+// call to it (that fixed "X is Y, not Z" format has no way to render Go's
+// "is not" phrasing).
+void goo_panic_iface_notimpl(void* vtable, const char* target_name) {
+    const char* dynamic = "<nil>";
+    if (vtable) {
+        void* desc = ((void**)vtable)[0];       // vtable slot 0 -> descriptor
+        dynamic = ((const char**)desc)[1];      // descriptor field 1 -> type_name
+    }
+    char buf[320];
+    snprintf(buf, sizeof(buf), "interface conversion: %s is not %s",
+             dynamic, target_name ? target_name : "?");
+    goo_panic(buf);
+}
+
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
 // char* — strcmp. INLINE: the slots hold the key's bits — direct ==. STRUCT:
 // dispatch to the map's per-map comparator. IFACE: dispatch to the map's

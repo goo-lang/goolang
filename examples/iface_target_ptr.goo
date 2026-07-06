@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+type Counter interface{ Get() int }
+
+type C struct{ n int }
+
+func (c *C) Get() int { return c.n }
+
+func main() {
+	var x interface{} = &C{n: 5}
+	if v, ok := x.(Counter); ok {
+		fmt.Println(v.Get())
+	}
+}

@@ -1,0 +1,18 @@
+package main
+
+import "fmt"
+
+type Reader interface{ Read() int }
+type Writer interface{ Write() int }
+
+type File struct{ n int }
+
+func (f File) Read() int  { return f.n }
+func (f File) Write() int { return f.n * 2 }
+
+func main() {
+	var x interface{} = File{n: 21}
+	r := x.(Reader)
+	w := x.(Writer)
+	fmt.Println(r.Read(), w.Write())
+}

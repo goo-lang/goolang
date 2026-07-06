@@ -689,6 +689,17 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
 
     LLVMBasicBlockRef* body_blocks = malloc(sizeof(LLVMBasicBlockRef) * clause_count);
     if (!body_blocks) return 0;
+    // Interface-target RTTI, Task 3: for a single-type clause whose case
+    // type is itself an interface (`case Speaker:`), the match-building loop
+    // below builds the bound `v` value (codegen_interface_target_match's
+    // `built` {vtable,data} out-param) at the SAME time it builds the match
+    // bit — there is no separate unbox step the way a concrete case has one.
+    // That `built` value must survive from the match loop into the second
+    // (body-emitting) loop below, so it's stashed here per-clause. Only
+    // populated for single-type interface clauses; NULL (unused) for every
+    // concrete/nil/multi-type clause.
+    LLVMValueRef* built_vals = calloc(clause_count, sizeof(LLVMValueRef));
+    if (!built_vals) { free(body_blocks); return 0; }
     LLVMBasicBlockRef default_body = NULL;
     size_t i = 0;
     for (ASTNode* c = tsw->cases; c; c = c->next, i++) {
@@ -718,6 +729,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                 if (!zero_iface) {
                     codegen_error(codegen, t->pos, "internal: cannot lower nil interface compare");
                     free(body_blocks);
+                    free(built_vals);
                     return 0;
                 }
                 LLVMValueRef vt_have = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "tsw.vt");
@@ -731,14 +743,40 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                 if (!case_type) {
                     codegen_error(codegen, t->pos, "internal: type switch case missing resolved type");
                     free(body_blocks);
+                    free(built_vals);
                     return 0;
                 }
-                match = codegen_interface_assert_match(codegen, checker, iface_val,
-                                                       iface_type, case_type, NULL);
-                if (!match) {
-                    codegen_error(codegen, t->pos, "internal: cannot build type switch vtable compare");
-                    free(body_blocks);
-                    return 0;
+                if (case_type->kind == TYPE_INTERFACE) {
+                    // Interface-target RTTI, Task 3: `case Speaker:` routes
+                    // through the closed-world enumeration primitive (Task 1)
+                    // instead of the concrete-target vtable-pointer compare —
+                    // it also hands back the built (T,Speaker) interface
+                    // value that IS `v` on a match, so stash it for the
+                    // body-emitting loop below (only meaningful when this is
+                    // the clause's sole case type — see that loop's
+                    // single_concrete check).
+                    LLVMValueRef built = NULL;
+                    match = codegen_interface_target_match(codegen, checker, iface_val,
+                                                           case_type, &built);
+                    if (!match) {
+                        codegen_error(codegen, t->pos,
+                            "internal: cannot build type switch interface-target match");
+                        free(body_blocks);
+                        free(built_vals);
+                        return 0;
+                    }
+                    if (clause->types == t && t->next == NULL) {
+                        built_vals[i] = built;
+                    }
+                } else {
+                    match = codegen_interface_assert_match(codegen, checker, iface_val,
+                                                           iface_type, case_type, NULL);
+                    if (!match) {
+                        codegen_error(codegen, t->pos, "internal: cannot build type switch vtable compare");
+                        free(body_blocks);
+                        free(built_vals);
+                        return 0;
+                    }
                 }
             }
             LLVMBasicBlockRef next_test = codegen_create_block(codegen, "tsw.test");
@@ -754,6 +792,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
     if (!codegen_push_break_scope(codegen, merge_block)) {
         codegen_error(codegen, stmt->pos, "type switch nested too deeply for break handling");
         free(body_blocks);
+        free(built_vals);
         return 0;
     }
 
@@ -780,28 +819,46 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
             size_t case_type_count = 0;
             for (ASTNode* t = clause->types; t; t = t->next) case_type_count++;
             // Single-type case (and not `case nil:`, which has no Type* to
-            // bind) unboxes to the concrete type; multi-type/default/nil
-            // keeps `v` at the operand's interface type — mirrors
-            // type_check_type_switch_stmt's identical rule exactly.
-            int single_concrete = (case_type_count == 1 && clause->types &&
-                                   clause->types->type != AST_LITERAL);
-            Type* bind_type = single_concrete ? clause->types->node_type : iface_type;
+            // bind) narrows `v` to that case's own type — unboxed to the
+            // concrete value for a concrete case, or (Task 3) the ALREADY-
+            // BUILT target-interface value stashed in built_vals[i] for an
+            // interface case, since codegen_interface_target_match built
+            // that value as part of the match test itself (no separate
+            // unbox step exists for an interface target). Multi-type/
+            // default/nil keeps `v` at the operand's interface type —
+            // mirrors type_check_type_switch_stmt's identical rule exactly.
+            int single_type_case = (case_type_count == 1 && clause->types &&
+                                    clause->types->type != AST_LITERAL);
+            Type* bind_type = single_type_case ? clause->types->node_type : iface_type;
             LLVMTypeRef bind_llvm = codegen_type_to_llvm(codegen, bind_type);
             if (!bind_llvm) {
                 codegen_error(codegen, c->pos, "internal: cannot lower type switch bind type");
                 scope_pop(checker);
                 codegen_pop_loop(codegen);
                 free(body_blocks);
+                free(built_vals);
                 return 0;
             }
             LLVMValueRef bound_val;
-            if (single_concrete) {
+            if (single_type_case && bind_type->kind == TYPE_INTERFACE) {
+                bound_val = built_vals[i];
+                if (!bound_val) {
+                    codegen_error(codegen, c->pos,
+                        "internal: missing built interface-target value for type switch case");
+                    scope_pop(checker);
+                    codegen_pop_loop(codegen);
+                    free(body_blocks);
+                    free(built_vals);
+                    return 0;
+                }
+            } else if (single_type_case) {
                 bound_val = codegen_interface_assert_unbox(codegen, bind_type, data);
                 if (!bound_val) {
                     codegen_error(codegen, c->pos, "internal: cannot unbox type switch case value");
                     scope_pop(checker);
                     codegen_pop_loop(codegen);
                     free(body_blocks);
+                    free(built_vals);
                     return 0;
                 }
             } else {
@@ -827,6 +884,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                 scope_pop(checker);
                 codegen_pop_loop(codegen);
                 free(body_blocks);
+                free(built_vals);
                 return 0;
             }
         }
@@ -839,6 +897,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
 
     codegen_set_insert_point(codegen, merge_block);
     free(body_blocks);
+    free(built_vals);
     return 1;
 #endif
 }

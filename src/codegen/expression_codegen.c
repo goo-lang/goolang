@@ -246,6 +246,55 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             }
             value_info_free(iv);
 
+            // Interface-target RTTI, Task 1: `x.(I)` where I is itself an
+            // INTERFACE routes through the closed-world enumeration
+            // primitive (codegen_interface_target_match) instead of the
+            // concrete-target vtable-pointer compare below. On a match the
+            // primitive's OWN built (T,I) interface value IS the result —
+            // there is no separate unbox step (I's thunks read the data
+            // word exactly as the concrete boxing site produced it).
+            if (target->kind == TYPE_INTERFACE) {
+                LLVMValueRef built = NULL;
+                LLVMValueRef itm_match = codegen_interface_target_match(codegen, checker,
+                                                                        iface_val, target, &built);
+                if (!itm_match || !built) {
+                    codegen_error(codegen, expr->pos,
+                                  "internal: cannot build interface-target type assertion");
+                    return NULL;
+                }
+
+                LLVMValueRef notimpl_fn = LLVMGetNamedFunction(codegen->module,
+                                                               "goo_panic_iface_notimpl");
+                if (!notimpl_fn) {
+                    codegen_error(codegen, expr->pos, "goo_panic_iface_notimpl not found in module");
+                    return NULL;
+                }
+
+                LLVMBasicBlockRef tai_match_bb = codegen_create_block(codegen, "tai.ok");
+                LLVMBasicBlockRef tai_miss_bb  = codegen_create_block(codegen, "tai.panic");
+                LLVMBuildCondBr(codegen->builder, itm_match, tai_match_bb, tai_miss_bb);
+
+                // Miss: panic naming the DYNAMIC type held, Go's "is not"
+                // wording for an interface target (goo_panic_iface_notimpl,
+                // runtime.c) — distinct from the concrete-target message
+                // below (goo_panic_iface_conversion's "is X, not Y").
+                codegen_set_insert_point(codegen, tai_miss_bb);
+                const char* tai_iname = target->data.interface.name
+                                             ? target->data.interface.name : "interface";
+                LLVMValueRef tai_iname_g = LLVMBuildGlobalStringPtr(codegen->builder, tai_iname,
+                                                                    "tai_panic_iname");
+                LLVMValueRef tai_vt = LLVMBuildExtractValue(codegen->builder, iface_val, 0,
+                                                            "tai_panic_vt");
+                LLVMValueRef tai_panic_args[2] = { tai_vt, tai_iname_g };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(notimpl_fn), notimpl_fn,
+                               tai_panic_args, 2, "");
+                LLVMBuildUnreachable(codegen->builder);
+
+                // Match: the built target-interface value IS the result.
+                codegen_set_insert_point(codegen, tai_match_bb);
+                return value_info_new(NULL, built, target);
+            }
+
             LLVMValueRef data = NULL;
             LLVMValueRef match = codegen_interface_assert_match(codegen, checker, iface_val,
                                                                 iface_type, target, &data);

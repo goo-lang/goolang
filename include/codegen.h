@@ -426,6 +426,14 @@ LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker*
                                             Type* target, LLVMValueRef* data_out);
 LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
                                             LLVMValueRef data);
+// Interface-target RTTI, Task 1: `x.(I)` where I is itself an INTERFACE
+// (closed-world enumeration of I's concrete implementers), as opposed to
+// codegen_interface_assert_match's concrete-target vtable-pointer compare.
+// See interface_codegen.c's doc comments on each for the exact contract.
+size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Type*** out);
+LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker* checker,
+                                            LLVMValueRef iface_val, Type* target_iface,
+                                            LLVMValueRef* built_out);
 
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);

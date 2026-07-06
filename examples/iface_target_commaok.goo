@@ -1,0 +1,26 @@
+package main
+
+import "fmt"
+
+type Speaker interface {
+	Speak() string
+}
+
+type Dog struct{}
+
+func (d Dog) Speak() string { return "woof" }
+
+func check(x interface{}) {
+	if s, ok := x.(Speaker); ok {
+		fmt.Println("speaks:", s.Speak())
+	} else {
+		fmt.Println("not a speaker")
+	}
+}
+
+func main() {
+	check(Dog{})
+	check(42)
+	var n interface{}
+	check(n)
+}

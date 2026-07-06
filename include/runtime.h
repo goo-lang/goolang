@@ -181,6 +181,16 @@ goo_string_t goo_iface_format(void* vtable, void* data);
 void goo_panic_iface_conversion(const char* iface_name, void* vtable,
                                  const char* target_name) __attribute__((noreturn));
 
+// Panic for a failed type assertion `x.(I)` to an INTERFACE target I
+// (interface-target RTTI, Task 1) — Go's own wording for this shape differs
+// from goo_panic_iface_conversion's concrete-target "X is Y, not Z": it's
+// "<dynamic> is not <I>" (real Go appends ": missing method M"; v1 omits it
+// since the miss is decided by closed-world descriptor identity across
+// every implementer, not a single missing-method check). Reads the dynamic
+// type name the same way goo_panic_iface_conversion does (vtable slot 0 ->
+// descriptor field 1); a NULL vtable (nil interface) renders as "<nil>".
+void goo_panic_iface_notimpl(void* vtable, const char* target_name) __attribute__((noreturn));
+
 struct GooMapEntrySV;
 typedef struct GooMapSV {
     struct GooMapEntrySV* head;

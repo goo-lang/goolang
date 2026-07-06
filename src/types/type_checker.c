@@ -1119,6 +1119,17 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (var_decl->name_count == 2 && var_decl->is_short_decl &&
         var_decl->values && var_decl->values->type == AST_TYPE_ASSERT) {
         Type* v_type = var_decl->values->node_type;
+        // Interface-target RTTI, Task 2: `v, ok := x.(I)` where I is an
+        // interface now type-checks like any other comma-ok assertion — the
+        // {v, bool} synthesis below is target-shape-agnostic (v's type is
+        // whatever node_type resolved to, concrete or interface). Task 1
+        // rejected this case here because its codegen counterpart
+        // (function_codegen.c's comma-ok arm) only knew how to call
+        // codegen_interface_assert_match (concrete targets only); Task 2's
+        // codegen arm now branches on target->kind and calls
+        // codegen_interface_target_match for an interface target instead,
+        // so the reject-here guard that used to live in this spot is no
+        // longer needed.
         if (v_type) {
             Type* commaok_struct = type_new(TYPE_STRUCT);
             if (commaok_struct) {
@@ -2241,16 +2252,20 @@ static int type_switch_case_type_same(Type* a, Type* b) {
 
 // Type assertions branch, Task 3: `switch [v :=] x.(type) { case T1: … case
 // Tn, Tm: … default: … }`. Operand must be interface-typed (same "invalid
-// type assertion: operand is not an interface type" rejection x.(T) uses);
-// each case type must be CONCRETE and satisfy the operand interface
+// type assertion: operand is not an interface type" rejection x.(T) uses).
+// A CONCRETE case type must satisfy the operand interface
 // (type_interface_satisfied — same "impossible type assertion" message
-// shape as x.(T)); duplicate case types anywhere in the switch are rejected,
-// and at most one `default`. Bound var `v`'s type is the single case type
-// in a single-type case, else the operand's own interface type (multi-type
-// case, `default`, or a bare `case nil:` — nil has no Type* to bind to, so
-// it never triggers the single-type rule even when it is the clause's only
-// list entry), introduced into that case's OWN scope, mirroring the
-// AST_SWITCH_STMT clause loop's per-case scope_push/scope_pop above.
+// shape as x.(T)); an INTERFACE case type (interface-target RTTI, Task 3 of
+// that follow-on plan) skips that static check — satisfaction is verified
+// at runtime by codegen_interface_target_match's closed-world vtable-
+// descriptor chain instead. Duplicate case types anywhere in the switch are
+// rejected, and at most one `default`. Bound var `v`'s type is the single
+// case type in a single-type case (concrete OR interface), else the
+// operand's own interface type (multi-type case, `default`, or a bare
+// `case nil:` — nil has no Type* to bind to, so it never triggers the
+// single-type rule even when it is the clause's only list entry),
+// introduced into that case's OWN scope, mirroring the AST_SWITCH_STMT
+// clause loop's per-case scope_push/scope_pop above.
 int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_TYPE_SWITCH) return 0;
 
@@ -2309,25 +2324,27 @@ int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                 ok = 0;
                 continue;
             }
-            if (case_type->kind == TYPE_INTERFACE) {
-                type_error(checker, t->pos,
-                    "type assertion to an interface type is not supported in v1 "
-                    "(concrete target types only)");
-                ok = 0;
-                continue;
-            }
-            const char* method = NULL;
-            const char* reason = NULL;
-            if (!type_interface_satisfied(checker, iface_type, case_type, &method, &reason)) {
-                const char* iname = iface_type->data.interface.name
-                                         ? iface_type->data.interface.name : "interface";
-                const char* cname = type_receiver_name(case_type);
-                type_error(checker, t->pos,
-                    "impossible type assertion: %s does not implement %s (%s method %s)",
-                    cname ? cname : type_to_string(case_type), iname,
-                    reason ? reason : "missing", method ? method : "?");
-                ok = 0;
-                continue;
+            // Interface-target RTTI, Task 3: `case I:` where I is itself an
+            // interface is runtime-checked (codegen_interface_target_match's
+            // closed-world vtable-descriptor chain), not statically provable
+            // the way a concrete case's type_interface_satisfied call below
+            // is — skip that concrete-satisfaction rejection entirely for an
+            // interface case type. Everything else (dup detection, node_type
+            // stamp-back) still applies uniformly.
+            if (case_type->kind != TYPE_INTERFACE) {
+                const char* method = NULL;
+                const char* reason = NULL;
+                if (!type_interface_satisfied(checker, iface_type, case_type, &method, &reason)) {
+                    const char* iname = iface_type->data.interface.name
+                                             ? iface_type->data.interface.name : "interface";
+                    const char* cname = type_receiver_name(case_type);
+                    type_error(checker, t->pos,
+                        "impossible type assertion: %s does not implement %s (%s method %s)",
+                        cname ? cname : type_to_string(case_type), iname,
+                        reason ? reason : "missing", method ? method : "?");
+                    ok = 0;
+                    continue;
+                }
             }
             int dup = 0;
             for (size_t i = 0; i < seen_count; i++) {
