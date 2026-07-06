@@ -2264,6 +2264,32 @@ static Type* generic_param_constraint(Type* t, int idx) {
     }
 }
 
+// Tier B transitive-bound support: does the abstract constraint interface
+// `have_iface` (a type parameter's OWN bound) structurally cover every
+// method required by `want_iface` (the callee's bound)? Used when a
+// generic call's inferred binding is itself an abstract TYPE_PARAM — e.g.
+// `Inner(x)` called from inside `Outer`'s body, where `x`'s type is
+// `Outer`'s own type parameter `T`, not a concrete type yet. There is no
+// concrete method table to consult in that case (type_interface_satisfied
+// looks up mangled "Concrete__method" names and would always report
+// "missing" for an abstract T), so satisfaction is checked by comparing
+// method names between the two interfaces instead. Name match is
+// sufficient for Tier B. A NULL/non-interface `have_iface` (a bare `any`
+// type parameter, i.e. no constraint) covers only an empty `want_iface`.
+static int interface_covers(Type* have_iface, Type* want_iface) {
+    if (!want_iface || want_iface->kind != TYPE_INTERFACE) return 0;
+    if (want_iface->data.interface.method_count == 0) return 1;
+    if (!have_iface || have_iface->kind != TYPE_INTERFACE) return 0;
+    for (InterfaceMethod* wm = want_iface->data.interface.methods; wm; wm = wm->next) {
+        int found = 0;
+        for (InterfaceMethod* hm = have_iface->data.interface.methods; hm; hm = hm->next) {
+            if (hm->name && wm->name && strcmp(hm->name, wm->name) == 0) { found = 1; break; }
+        }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
 static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
                                       CallExprNode* call, Variable* callee_var,
                                       const char* callee_name) {
@@ -2335,16 +2361,39 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
             bound = generic_param_constraint(gsig->data.function.param_types[p], (int)i);
         if (bound && bound->kind == TYPE_INTERFACE &&
             bound->data.interface.method_count > 0) {
-            const char* method = NULL; const char* reason = NULL;
-            if (!type_interface_satisfied(checker, bound, bindings[i], &method, &reason)) {
-                const char* cn = type_receiver_name(bindings[i]);
-                type_error(checker, expr->pos,
-                    "%s does not implement %s (%s method %s)",
-                    cn ? cn : type_to_string(bindings[i]),
-                    bound->data.interface.name ? bound->data.interface.name : "interface",
-                    reason ? reason : "missing", method ? method : "?");
-                free(bindings);
-                return NULL;
+            if (bindings[i] && bindings[i]->kind == TYPE_PARAM) {
+                // Transitive case: the inferred binding is itself an
+                // abstract type parameter (e.g. calling Inner(x) from
+                // inside Outer's body, where x : Outer's own T). Check that
+                // T's own constraint structurally covers `bound` instead of
+                // running the concrete-only type_interface_satisfied,
+                // which would always report "missing" against an abstract
+                // receiver name.
+                Type* have = bindings[i]->data.type_param.constraint;
+                if (!interface_covers(have, bound)) {
+                    const char* pname = bindings[i]->data.type_param.name;
+                    const char* hname = (have && have->kind == TYPE_INTERFACE &&
+                                          have->data.interface.name)
+                                             ? have->data.interface.name : "any";
+                    type_error(checker, expr->pos,
+                        "type parameter %s (constraint %s) does not satisfy %s",
+                        pname ? pname : "T", hname,
+                        bound->data.interface.name ? bound->data.interface.name : "interface");
+                    free(bindings);
+                    return NULL;
+                }
+            } else {
+                const char* method = NULL; const char* reason = NULL;
+                if (!type_interface_satisfied(checker, bound, bindings[i], &method, &reason)) {
+                    const char* cn = type_receiver_name(bindings[i]);
+                    type_error(checker, expr->pos,
+                        "%s does not implement %s (%s method %s)",
+                        cn ? cn : type_to_string(bindings[i]),
+                        bound->data.interface.name ? bound->data.interface.name : "interface",
+                        reason ? reason : "missing", method ? method : "?");
+                    free(bindings);
+                    return NULL;
+                }
             }
         }
     }
