@@ -202,6 +202,53 @@ static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
     return fn;
 }
 
+// Per-concrete-type descriptor reached behind interface vtable slot 0
+// (Go's itab->_type shape). Layout: { ptr eq_fn, ptr type_name, ptr fmt_fn }.
+// eq_fn is FIRST so goo_iface_key_eq's slot-0 hop is a single extra deref.
+// fmt_fn is null here; codegen_get_or_emit_type_fmt (Task 2) fills it.
+// Name-deduped by concrete type, like the vtable globals.
+LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* checker,
+                                           Type* concrete, int pointer_form) {
+    char gname[256];
+    const char* cname = type_receiver_name(concrete);
+    if (!cname) cname = type_to_string(concrete);
+    if (pointer_form) snprintf(gname, sizeof(gname), "goo.typedesc.$ptr$%s", cname);
+    else              snprintf(gname, sizeof(gname), "goo.typedesc.%s", cname);
+    LLVMValueRef existing = LLVMGetNamedGlobal(codegen->module, gname);
+    if (existing) return existing;
+
+    LLVMTypeRef ptrty = iface_ptr_type(codegen);
+
+    // eq_fn: pointer-boxed form uses pointer identity; value form uses the
+    // per-type value comparator — same choice codegen_interface_vtable made.
+    LLVMValueRef eq_fn = pointer_form
+        ? iface_ptr_eq_fn(codegen)
+        : codegen_get_or_emit_type_eq(codegen, checker, concrete);
+    if (!eq_fn) return NULL;
+
+    // type_name: a private constant C string. For the pointer form, prefix '*'.
+    char tname[256];
+    if (pointer_form) snprintf(tname, sizeof(tname), "*%s", cname);
+    else              snprintf(tname, sizeof(tname), "%s", cname);
+    LLVMValueRef name_str = LLVMBuildGlobalStringPtr(codegen->builder, tname, "typename");
+    // NOTE: LLVMBuildGlobalStringPtr needs an insertion point. The descriptor
+    // is always emitted while boxing (inside a function), so builder has one.
+    // If a builder-free path ever calls this, switch to a module-level constant
+    // string global (see codegen_const_string_value in composite_codegen.c).
+
+    LLVMValueRef null_fmt = LLVMConstNull(ptrty);
+
+    LLVMValueRef fields[3] = { eq_fn, name_str, null_fmt };
+    LLVMTypeRef descty = LLVMStructTypeInContext(codegen->context,
+                                                 (LLVMTypeRef[]){ptrty, ptrty, ptrty}, 3, 0);
+    LLVMValueRef init = LLVMConstNamedStruct(descty, fields, 3);
+    LLVMValueRef g = LLVMAddGlobal(codegen->module, descty, gname);
+    LLVMSetInitializer(g, init);
+    LLVMSetLinkage(g, LLVMPrivateLinkage);
+    LLVMSetGlobalConstant(g, 1);
+    return g;
+}
+
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
                                       Type* iface, Type* concrete, int pointer_form) {
     if (!iface || iface->kind != TYPE_INTERFACE) return NULL;
@@ -223,9 +270,10 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     if (existing) return existing;
 
     // Interface-typed map keys, Task 1 (vtable ABI shift): the vtable now
-    // carries n+1 slots — slot 0 is the concrete's per-type value-equality
-    // comparator (codegen_get_or_emit_type_eq), slots 1..n are the method
-    // thunks in their original, unchanged order. codegen_interface_dispatch
+    // carries n+1 slots — slot 0 is the per-concrete-type descriptor
+    // (codegen_get_or_emit_type_desc; its field 0 is the value-equality
+    // comparator), slots 1..n are the method thunks in their original,
+    // unchanged order. codegen_interface_dispatch
     // shifts its method GEP index by +1 to match (interface_codegen.c,
     // below); this is the ONLY other site that indexes a vtable by a raw
     // slot number (confirmed by grepping every `goo.vtable`/vtable-indexing
@@ -236,21 +284,21 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef* slots = malloc((n + 1) * sizeof(LLVMValueRef));
     if (!slots) return NULL;
 
-    // slot-0 value-equality comparator. For a POINTER-boxed interface
-    // (pointer_form) the data word IS the pointer, so equality is POINTER
-    // IDENTITY — NOT the pointee's value comparator. Without this, two distinct
-    // pointers to equal-content values compared equal as interface values / map
-    // keys (they'd run the pointee's structeq), diverging from Go. `concrete`
-    // here is the pointee type (the #114 normalization), so codegen_get_or_emit_
-    // type_eq(concrete) would wrongly synthesize the pointee comparator.
-    LLVMValueRef eq_fn = pointer_form
-        ? iface_ptr_eq_fn(codegen)
-        : codegen_get_or_emit_type_eq(codegen, checker, concrete);
-    if (!eq_fn) { free(slots); return NULL; }
+    // slot-0 is now the type descriptor pointer (eq fn lives inside it). For
+    // a POINTER-boxed interface (pointer_form) the data word IS the pointer,
+    // so equality is POINTER IDENTITY — NOT the pointee's value comparator.
+    // Without this, two distinct pointers to equal-content values would
+    // compare equal as interface values / map keys (they'd run the pointee's
+    // structeq), diverging from Go. `concrete` here is the pointee type (the
+    // #114 normalization), so codegen_get_or_emit_type_desc(concrete) would
+    // wrongly synthesize the pointee comparator if pointer_form weren't
+    // threaded through — it is.
+    LLVMValueRef desc = codegen_get_or_emit_type_desc(codegen, checker, concrete, pointer_form);
+    if (!desc) { free(slots); return NULL; }
     // A Function value's LLVM type is already `ptr` (opaque pointers), the
     // same as every thunk placed below without a cast — no bitcast needed
     // to satisfy LLVMConstArray(ptrty, ...).
-    slots[0] = eq_fn;
+    slots[0] = desc;
 
     size_t i = 0;
     for (InterfaceMethod* im = iface->data.interface.methods; im; im = im->next, i++) {

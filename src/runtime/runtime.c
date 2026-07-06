@@ -597,16 +597,18 @@ double goo_math_max(double x, double y) {
 // Interface-typed map keys (Task 2): compare two boxed `{vtable, data}` key
 // slots. Each of a/b is a pointer to one such heap-copied pair (see
 // codegen_map_key_to_slot's TYPE_INTERFACE arm). Go interface equality: same
-// dynamic type (vtable identity) AND equal dynamic value (dispatched to the
-// vtable's slot 0 — the concrete's per-type value-equality comparator,
-// codegen_get_or_emit_type_eq) on the two data words.
+// dynamic type (vtable identity) AND equal dynamic value (dispatched through
+// the vtable's slot 0 — now the per-type descriptor, whose field 0 is the
+// concrete's value-equality comparator, codegen_get_or_emit_type_eq) on the
+// two data words.
 int goo_iface_key_eq(int64_t a, int64_t b) {
     void** ia = (void**)(intptr_t)a;  // -> { vtable, data }
     void** ib = (void**)(intptr_t)b;
     void* vta = ia[0]; void* vtb = ib[0];
     if (vta == NULL && vtb == NULL) return 1;   // both nil interfaces
     if (vta != vtb) return 0;                    // different dynamic type (or one nil)
-    GooKeyEqFn eq = (GooKeyEqFn)((void**)vta)[0]; // vtable slot 0 = per-type eq
+    void* desc = ((void**)vta)[0];          // vtable slot 0 -> descriptor
+    GooKeyEqFn eq = (GooKeyEqFn)((void**)desc)[0];  // descriptor field 0 -> eq_fn
     return eq((int64_t)(intptr_t)ia[1], (int64_t)(intptr_t)ib[1]); // compare the data words
 }
 
