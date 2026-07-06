@@ -1,0 +1,40 @@
+// iface_target_any (interface-target RTTI, method-less-target fix): assert
+// non-struct dynamic values (int, string) to interface{}/any — the empty
+// interface — via single-return, comma-ok, and a type-switch case, plus a
+// nil-interface comma-ok. Before the fix, codegen_interface_target_match
+// enumerated only declared STRUCT implementers of the target interface, so
+// a method-less target (0 methods) enumerated NOTHING and every non-struct
+// dynamic value wrongly failed the match (single-return panicked, comma-ok
+// reported ok=false, the switch case fell to default). Go semantics: every
+// non-nil interface value satisfies the empty interface; a nil interface
+// satisfies nothing. go-run-verified against an equivalent .go program.
+package main
+
+import "fmt"
+
+func main() {
+	var x interface{} = 42
+	v := x.(any)
+	fmt.Println(v)
+
+	v2, ok := x.(any)
+	fmt.Println(v2, ok)
+
+	var s interface{} = "hello"
+	v3 := s.(interface{})
+	fmt.Println(v3)
+
+	v4, ok4 := s.(interface{})
+	fmt.Println(v4, ok4)
+
+	switch x.(type) {
+	case interface{}:
+		fmt.Println("matched any")
+	default:
+		fmt.Println("no match")
+	}
+
+	var n interface{}
+	_, okn := n.(any)
+	fmt.Println(okn)
+}

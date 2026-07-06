@@ -759,59 +759,83 @@ LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker*
     LLVMValueRef match_acc = LLVMConstInt(i1ty, 0, 0);
     LLVMValueRef built_acc = zero_built;
 
-    Type** impls = NULL;
-    size_t n = codegen_collect_iface_implementers(checker, target_iface, &impls);
-    for (size_t i = 0; i < n; i++) {
-        Type* T = impls[i];
-        // base_of(T) mirrors codegen_interface_assert_match's pointer-
-        // candidate normalization (interface_codegen.c, above):
-        // codegen_collect_iface_implementers only ever yields TYPE_STRUCT
-        // candidates today, so this is a no-op in practice — kept so a
-        // future pointer-receiver-aware collector needs no change here.
-        Type* base = T;
-        if (base->kind == TYPE_POINTER && base->data.pointer.pointee_type &&
-            type_receiver_name(base->data.pointer.pointee_type)) {
-            base = base->data.pointer.pointee_type;
+    if (target_iface->data.interface.method_count == 0) {
+        // Method-less-target short-circuit (empty-interface RTTI fix):
+        // `interface{}`/`any` (or any named interface with zero methods) is
+        // satisfied by EVERY non-nil interface value, including ones whose
+        // dynamic type is NOT a declared struct (int, string, float,
+        // pointer, slice, ...). The enumeration loop below only ever walks
+        // declared TYPE_STRUCT types (codegen_collect_iface_implementers),
+        // so for a method-less target it would enumerate nothing and every
+        // non-struct dynamic value would wrongly miss — running it here
+        // would be at best a no-op and at worst wrong, so skip it entirely.
+        // Reuse the operand's OWN {vtab, data} as the built value rather
+        // than looking up a (T, target) vtable: T is unknown for non-struct
+        // dynamic types, so no such vtable could even be found. This is
+        // still correct because a method-less target never dispatches
+        // through its vtable — the only thing callers rely on is
+        // built.vtable[0], the dynamic-type descriptor, which `vtab`
+        // already carries unchanged.
+        match_acc = LLVMConstInt(i1ty, 1, 0);
+        LLVMValueRef iv_any = LLVMGetUndef(target_llvm);
+        iv_any = LLVMBuildInsertValue(codegen->builder, iv_any, vtab, 0, "itm.anyvt");
+        iv_any = LLVMBuildInsertValue(codegen->builder, iv_any, data, 1, "itm.anydata");
+        built_acc = iv_any;
+    } else {
+        Type** impls = NULL;
+        size_t n = codegen_collect_iface_implementers(checker, target_iface, &impls);
+        for (size_t i = 0; i < n; i++) {
+            Type* T = impls[i];
+            // base_of(T) mirrors codegen_interface_assert_match's pointer-
+            // candidate normalization (interface_codegen.c, above):
+            // codegen_collect_iface_implementers only ever yields TYPE_STRUCT
+            // candidates today, so this is a no-op in practice — kept so a
+            // future pointer-receiver-aware collector needs no change here.
+            Type* base = T;
+            if (base->kind == TYPE_POINTER && base->data.pointer.pointee_type &&
+                type_receiver_name(base->data.pointer.pointee_type)) {
+                base = base->data.pointer.pointee_type;
+            }
+
+            // Task 4 fix: try BOTH the value-form and pointer-form descriptor/
+            // vtable for every candidate, not just value-form. `T`'s presence in
+            // `impls` means type_interface_satisfied found a matching method —
+            // but that check is permissive about receiver kind (it mangles on
+            // the struct's name alone, never inspecting whether the method's
+            // receiver is `T` or `*T`; see codegen_collect_iface_implementers's
+            // caller, type_interface_satisfied, type_checker.c ~821). So a
+            // pointer-receiver implementer like `func (c *C) Get()` satisfies
+            // the interface in the checker's eyes regardless of whether the
+            // runtime value in hand is value-boxed (`T{...}`) or pointer-boxed
+            // (`&T{...}`) — those two boxings carry DISTINCT descriptor
+            // identities (codegen_interface_box's two branches; Task 5's
+            // `$ptr$` naming). Emitting only the value-form candidate (as
+            // before) silently misses every pointer-boxed implementer — exactly
+            // examples/iface_target_ptr.goo's `&C{n: 5}` shape. A given runtime
+            // descriptor matches at most one of the two forms, so trying both is
+            // safe: exactly one `eq` (or neither, on a genuine miss) is true.
+            for (int form = 0; form <= 1; form++) {
+                LLVMValueRef desc_T = codegen_get_or_emit_type_desc(codegen, checker, base, form);
+                LLVMValueRef vt_TI = codegen_interface_vtable(codegen, checker, target_iface, base, form);
+                if (!desc_T || !vt_TI) continue;
+
+                LLVMValueRef eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ, desc_have, desc_T, "itm.eq");
+
+                // iv_T = {vt_TI, data} — side-effect-free (insertvalue only), so it's
+                // safe to build for every candidate unconditionally and `select` the
+                // winner, avoiding a basic block per implementer. `data` is reused
+                // AS-IS — it's the same data word the concrete boxing site produced,
+                // and I's thunks read it exactly that way (no re-box/copy).
+                LLVMValueRef iv_T = LLVMGetUndef(target_llvm);
+                iv_T = LLVMBuildInsertValue(codegen->builder, iv_T, vt_TI, 0, "itm.ivvt");
+                iv_T = LLVMBuildInsertValue(codegen->builder, iv_T, data, 1, "itm.ivdata");
+
+                built_acc = LLVMBuildSelect(codegen->builder, eq, iv_T, built_acc, "itm.built");
+                match_acc = LLVMBuildOr(codegen->builder, match_acc, eq, "itm.match");
+            }
         }
-
-        // Task 4 fix: try BOTH the value-form and pointer-form descriptor/
-        // vtable for every candidate, not just value-form. `T`'s presence in
-        // `impls` means type_interface_satisfied found a matching method —
-        // but that check is permissive about receiver kind (it mangles on
-        // the struct's name alone, never inspecting whether the method's
-        // receiver is `T` or `*T`; see codegen_collect_iface_implementers's
-        // caller, type_interface_satisfied, type_checker.c ~821). So a
-        // pointer-receiver implementer like `func (c *C) Get()` satisfies
-        // the interface in the checker's eyes regardless of whether the
-        // runtime value in hand is value-boxed (`T{...}`) or pointer-boxed
-        // (`&T{...}`) — those two boxings carry DISTINCT descriptor
-        // identities (codegen_interface_box's two branches; Task 5's
-        // `$ptr$` naming). Emitting only the value-form candidate (as
-        // before) silently misses every pointer-boxed implementer — exactly
-        // examples/iface_target_ptr.goo's `&C{n: 5}` shape. A given runtime
-        // descriptor matches at most one of the two forms, so trying both is
-        // safe: exactly one `eq` (or neither, on a genuine miss) is true.
-        for (int form = 0; form <= 1; form++) {
-            LLVMValueRef desc_T = codegen_get_or_emit_type_desc(codegen, checker, base, form);
-            LLVMValueRef vt_TI = codegen_interface_vtable(codegen, checker, target_iface, base, form);
-            if (!desc_T || !vt_TI) continue;
-
-            LLVMValueRef eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ, desc_have, desc_T, "itm.eq");
-
-            // iv_T = {vt_TI, data} — side-effect-free (insertvalue only), so it's
-            // safe to build for every candidate unconditionally and `select` the
-            // winner, avoiding a basic block per implementer. `data` is reused
-            // AS-IS — it's the same data word the concrete boxing site produced,
-            // and I's thunks read it exactly that way (no re-box/copy).
-            LLVMValueRef iv_T = LLVMGetUndef(target_llvm);
-            iv_T = LLVMBuildInsertValue(codegen->builder, iv_T, vt_TI, 0, "itm.ivvt");
-            iv_T = LLVMBuildInsertValue(codegen->builder, iv_T, data, 1, "itm.ivdata");
-
-            built_acc = LLVMBuildSelect(codegen->builder, eq, iv_T, built_acc, "itm.built");
-            match_acc = LLVMBuildOr(codegen->builder, match_acc, eq, "itm.match");
-        }
+        free(impls);
     }
-    free(impls);
 
     LLVMBasicBlockRef nonnull_exit_bb = LLVMGetInsertBlock(codegen->builder);
     LLVMBuildBr(codegen->builder, join_bb);
