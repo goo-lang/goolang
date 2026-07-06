@@ -86,23 +86,36 @@ int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* chec
     // Requirement 1 (checker side): push tmpl's type-param names onto the
     // checker's active-type-param stack, index-matched exactly like
     // declare_function_signature's own push (src/types/type_checker.c) — the
-    // SAME construction, `type_param(name, idx++, NULL)` per name across
-    // every type-param group. This does NOT bind a concrete type; it only
-    // lets a raw AST type node inside the template that calls
-    // type_from_ast(checker, ...) on a bare param name (e.g. the return-type
-    // node re-resolved at function_codegen.c's codegen_generate_function_decl,
-    // independently of the Variable's already-typed signature) resolve to a
-    // TYPE_PARAM instead of erroring "Unknown type 'T'". Popped unconditionally
-    // before returning, on every path, so a failed instantiation can't leak
-    // type params into whatever the worklist stamps next.
+    // SAME construction, `type_param(name, idx++, bound)` per name across
+    // every type-param group, `bound` re-resolved from the group's AST
+    // constraint node exactly as declare_function_signature does. This does
+    // NOT bind a concrete type; it lets a raw AST type node inside the
+    // template that calls type_from_ast(checker, ...) on a bare param name
+    // (e.g. the return-type node re-resolved at function_codegen.c's
+    // codegen_generate_function_decl, independently of the Variable's
+    // already-typed signature) resolve to a TYPE_PARAM instead of erroring
+    // "Unknown type 'T'".
+    //
+    // Function generics Tier B: the bound MUST be carried here (not NULL) —
+    // codegen re-invokes type_check_* on template body expressions during
+    // this instance's codegen (e.g. call_codegen.c's method-call block
+    // needs a bounded-T method call's type to compute the call's return
+    // ValueInfo), and type_check_selector_expr's TYPE_PARAM branch only
+    // resolves a method against the bound's interface method set — a NULL
+    // bound sends it to the "Selector on non-struct" rejection instead,
+    // which starves the return value of its Type and crashes downstream
+    // codegen (LLVMTypeOf on a NULL value). Popped unconditionally before
+    // returning, on every path, so a failed instantiation can't leak type
+    // params into whatever the worklist stamps next.
     size_t saved_tp = checker->active_type_param_count;
     {
         int idx = 0;
         for (ASTNode* tp = tmpl->type_params; tp; tp = tp->next) {
             VarDeclNode* g = (VarDeclNode*)tp;
+            Type* bound = g->type ? type_from_ast(checker, g->type) : NULL;
             for (size_t i = 0; i < g->name_count; i++)
                 type_checker_push_type_param(checker,
-                    type_param(g->names[i], idx++, NULL));
+                    type_param(g->names[i], idx++, bound));
         }
     }
 

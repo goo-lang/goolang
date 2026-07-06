@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+type Stringer interface {
+	Label() int
+}
+
+type Node struct {
+	id int
+}
+
+func (n Node) Label() int { return n.id + 100 }
+
+func Show[T Stringer](x T) int {
+	return x.Label()
+}
+
+func main() {
+	fmt.Println(Show(Node{id: 7}))
+}

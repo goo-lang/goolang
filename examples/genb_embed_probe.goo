@@ -1,0 +1,23 @@
+package main
+
+import "fmt"
+
+type Labeler interface {
+	Label() int
+}
+
+type Base struct {
+	n int
+}
+
+func (b Base) Label() int { return b.n * 2 }
+
+type Wrap struct {
+	Base
+}
+
+func Show[T Labeler](x T) int { return x.Label() }
+
+func main() {
+	fmt.Println(Show(Wrap{Base: Base{n: 21}}))
+}
