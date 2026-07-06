@@ -1,0 +1,32 @@
+package main
+
+import "fmt"
+
+type Speaker interface {
+	Speak() string
+}
+
+type Dog struct{}
+
+func (d Dog) Speak() string { return "woof" }
+
+func classify(x interface{}) {
+	switch v := x.(type) {
+	case int:
+		fmt.Println("int", v)
+	case Speaker:
+		fmt.Println("speaker:", v.Speak())
+	case nil:
+		fmt.Println("nil")
+	default:
+		fmt.Println("other")
+	}
+}
+
+func main() {
+	classify(7)
+	classify(Dog{})
+	var n interface{}
+	classify(n)
+	classify("x")
+}
