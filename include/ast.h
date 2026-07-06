@@ -297,6 +297,10 @@ typedef struct {
     // Non-owning alias: the receiver is spliced as the head of `params`,
     // so it is freed via the params chain — do not free it separately.
     struct ASTNode* receiver;
+    // Generic type parameters (`func F[T, U any](...)`). NULL for ordinary
+    // functions. Linked list of VarDeclNode: names[] = a type-param group's
+    // names, type = the constraint (Tier A: always `any`). Owned by this node.
+    struct ASTNode* type_params;
 } FuncDeclNode;
 
 // Variable declaration

@@ -157,6 +157,7 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(func->return_type);
             ast_node_free(func->body);
             ast_node_free(func->annotations);
+            ast_node_free(func->type_params);
             break;
         }
         case AST_FUNC_LIT: {
