@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+func Map[T, U any](s []T, f func(T) U) []U {
+	out := make([]U, 0, len(s))
+	for _, v := range s {
+		out = append(out, f(v))
+	}
+	return out
+}
+
+func main() {
+	xs := []int{1, 2, 3}
+	ys := Map(xs, func(x int) int { return x * 10 })
+	fmt.Println(ys[0], ys[1], ys[2])
+}

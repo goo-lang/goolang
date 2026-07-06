@@ -395,6 +395,29 @@ typedef struct ComptimeTypeContext {
     size_t computed_type_capacity;
 } ComptimeTypeContext;
 
+// Function generics Task 6: one resolved call-site instantiation, appended by
+// type_check_record_instantiation (type_checker.c) whenever a call through a
+// generic Variable (fn->is_generic) has its type arguments successfully
+// inferred. `fn` is the generic template Variable itself (fn->generic_decl is
+// the FuncDeclNode the monomorphizer instantiates from); `args[i]` is the
+// concrete Type bound to fn's type-param index i, `n` == fn->type_param_count.
+// `args` is a malloc'd COPY of the call site's inferred bindings, independent
+// of that same call's CallExprNode.type_args (expression_checker.c's
+// type_check_generic_call builds both from one calloc'd array but hands each
+// side its own copy) — this list's node and its `args` array are owned and
+// freed together by type_checker_free, entirely independent of the AST's own
+// teardown (ast_node_free), so neither free path depends on the other's
+// ordering or reasons about a shared pointer. Intrusive singly-linked list,
+// head at TypeChecker.instantiations (below); the same {fn,args} tuple may be
+// recorded more than once for repeated calls with the same type arguments —
+// deduplication is the monomorphizer's job (Task 9), not this recorder's.
+typedef struct GenericInstantiation {
+    Variable* fn;
+    Type** args;
+    size_t n;
+    struct GenericInstantiation* next;
+} GenericInstantiation;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -460,6 +483,14 @@ struct TypeChecker {
     // (Tier A functions are small), same rationale as literal_stack above.
     Type* active_type_params[32];
     size_t active_type_param_count;
+
+    // Function generics Task 6: head of the linked list of resolved
+    // generic-call instantiations recorded by type_check_record_instantiation
+    // during call checking. NULL until the first generic call type-checks
+    // successfully. The monomorphizer (Task 9) walks this list after
+    // type_check_program returns to know which concrete instantiations of
+    // each generic function to emit; torn down in type_checker_free.
+    GenericInstantiation* instantiations;
 };
 
 // Type creation functions
@@ -580,6 +611,15 @@ Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name);
 // bindings; returns 0 on structural mismatch or a conflicting binding.
 Type* type_substitute(Type* t, Type** bindings, size_t n);
 int unify_types(Type* param, Type* arg, Type** bindings, size_t n);
+
+// Function generics Task 6: append {fn, args, n} to checker->instantiations.
+// Takes ownership of `args` (the caller's calloc'd bindings array — do not
+// free or reuse it after this call). `call_site` is the call expression that
+// produced this instantiation; kept for a possible future per-callsite
+// diagnostic (not read by Task 9's monomorphizer, which only needs fn/args/n).
+void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
+                                     Type** args, size_t n,
+                                     struct ASTNode* call_site);
 
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);

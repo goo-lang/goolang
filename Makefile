@@ -2181,6 +2181,7 @@ generics-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@printf 'package main\nfunc Zero[T any]() T { var z T\n return z }\nfunc main() {}\n' > build/gen_uninferable.goo
 	@printf 'package main\ntype Stringer interface { String() string }\nfunc F[T Stringer](x T) T { return x }\nfunc main() {}\n' > build/gen_badconstraint.goo
 	@printf 'package main\nfunc Add[T any](x T) T { return x + 1 }\nfunc main() {}\n' > build/gen_opaque_op.goo
+	@printf 'package main\nfunc Pair[T any](a T, b T) T { return a }\nfunc main() { _ = Pair(1, "x") }\n' > build/gen_conflict.goo
 	@"$(COMPILER)" build/gen_uninferable.goo -o build/gen_uninferable.out 2>build/gen_uninferable.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "generics-reject-probe: FAIL (un-inferable type param compiled)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/gen_uninferable.err; then echo "generics-reject-probe: FAIL (invalid IR)"; cat build/gen_uninferable.err; exit 1; fi; \
@@ -2191,6 +2192,10 @@ generics-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/gen_opaque_op.goo -o build/gen_opaque_op.out 2>build/gen_opaque_op.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "generics-reject-probe: FAIL (arithmetic on opaque T compiled)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/gen_opaque_op.err; then echo "generics-reject-probe: FAIL (invalid IR)"; cat build/gen_opaque_op.err; exit 1; fi
+	@"$(COMPILER)" build/gen_conflict.goo -o build/gen_conflict.out 2>build/gen_conflict.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-reject-probe: FAIL (Pair(1, \"x\") — conflicting T binding — compiled)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/gen_conflict.err; then echo "generics-reject-probe: FAIL (invalid IR)"; cat build/gen_conflict.err; exit 1; fi; \
+	  if ! grep -qi "conflicting types" build/gen_conflict.err; then echo "generics-reject-probe: FAIL (no conflicting-types diagnostic)"; cat build/gen_conflict.err; exit 1; fi
 	@echo "generics-reject-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void

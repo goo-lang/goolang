@@ -43,6 +43,9 @@ TypeChecker* type_checker_new(void) {
     // Function generics Task 3: no generic function's type params in scope yet.
     checker->active_type_param_count = 0;
 
+    // Function generics Task 6: no recorded generic-call instantiations yet.
+    checker->instantiations = NULL;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -102,6 +105,19 @@ void type_checker_free(TypeChecker* checker) {
         scope_free(pkg->exports);
         free(pkg);
         pkg = next;
+    }
+
+    // Function generics Task 6: free the instantiation-record list itself
+    // (fn is a Scope-owned Variable* freed by scope_free above; args[i] are
+    // Type* pointers owned by the type checker/interning system, same
+    // non-ownership as everywhere else in this function — only the array and
+    // the list nodes are this list's own allocations).
+    GenericInstantiation* inst = checker->instantiations;
+    while (inst) {
+        GenericInstantiation* next = inst->next;
+        free(inst->args);
+        free(inst);
+        inst = next;
     }
 
     free(checker->current_file);
@@ -431,6 +447,28 @@ void type_checker_push_type_param(TypeChecker* checker, Type* tp) {
 void type_checker_pop_type_params(TypeChecker* checker, size_t to_count) {
     if (!checker) return;
     checker->active_type_param_count = to_count;
+}
+
+// Function generics Task 6: record one resolved generic-call instantiation,
+// pushed onto the head of checker->instantiations for the monomorphizer
+// (Task 9) to consume after type checking finishes. See type_check_generic_call
+// (expression_checker.c) for the sole caller today. Takes ownership of `args` —
+// the caller must pass an array it does not otherwise hold a reference to (the
+// caller's own copy, independent of e.g. the same call's CallExprNode.type_args)
+// and must not free or reuse it afterward. `call_site` is stored for a possible
+// future per-callsite diagnostic; the field is otherwise unused by Task 9.
+void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
+                                     Type** args, size_t n,
+                                     struct ASTNode* call_site) {
+    (void)call_site;
+    if (!checker || !fn) { free(args); return; }
+    GenericInstantiation* inst = malloc(sizeof(GenericInstantiation));
+    if (!inst) { free(args); return; }
+    inst->fn = fn;
+    inst->args = args;
+    inst->n = n;
+    inst->next = checker->instantiations;
+    checker->instantiations = inst;
 }
 
 // Innermost-first: a nested function (were that ever legal) would shadow an

@@ -546,6 +546,18 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(dom_access->args);
             break;
         }
+        case AST_CALL_EXPR: {
+            // Function generics Task 6: type_args is a freshly calloc'd array
+            // uniquely owned by this node (unlike ->function/->args, which
+            // this switch has never had a case for — those AST subtrees are
+            // simply not walked here). Its ELEMENTS are Type* pointers owned
+            // by the type checker/interning system, same ownership model as
+            // node->node_type just below (never freed via ast_node_free) —
+            // only the array itself is freed here, not the Types it points to.
+            CallExprNode* call = (CallExprNode*)node;
+            free(call->type_args);
+            break;
+        }
         case AST_SWITCH_STMT: {
             SwitchStmtNode* sw = (SwitchStmtNode*)node;
             ast_node_free(sw->tag);
