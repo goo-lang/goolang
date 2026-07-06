@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+func main() {
+	var i interface{} = 42
+	var s interface{} = "hi"
+	var b interface{} = true
+	var f interface{} = 3.5
+	var n interface{}
+	fmt.Println(i)
+	fmt.Println(s)
+	fmt.Println(b)
+	fmt.Println(f)
+	fmt.Println(n)
+}

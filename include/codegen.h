@@ -402,6 +402,14 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen, TypeChecker* c
 // like the vtable globals — see interface_codegen.c.
 LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* checker,
                                            Type* concrete, int pointer_form);
+// Per-type %v formatter reached via the descriptor's fmt_fn field (field
+// index 2). Emits (or reuses) `goo.fmt.<T>` / `goo.fmt.$ptr$<T>` of LLVM
+// type `goo_string(ptr)`: loads the concrete value from the `data` param
+// and returns its %v string. v1 scalar kinds only (int/uint widths, bool,
+// float32/64, string); pointer_form or any other concrete kind falls back
+// to a goo_string copy of the type name. See interface_codegen.c.
+LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
+                                          Type* concrete, int pointer_form);
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
                                       Type* iface, Type* concrete, int pointer_form);
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,

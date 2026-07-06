@@ -1,0 +1,18 @@
+package main
+
+import "fmt"
+
+func describe(x interface{}) {
+	switch v := x.(type) {
+	case int, string:
+		fmt.Println(v)
+	default:
+		fmt.Println("other")
+	}
+}
+
+func main() {
+	describe(7)
+	describe("go")
+	describe(true)
+}

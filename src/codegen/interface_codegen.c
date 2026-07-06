@@ -202,10 +202,133 @@ static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
     return fn;
 }
 
+// Per-type %v formatter reached via the descriptor's fmt_fn field (field
+// index 2, codegen_get_or_emit_type_desc below). Emits (or reuses, by
+// name) `goo.fmt.<T>` / `goo.fmt.$ptr$<T>` of LLVM type `goo_string(ptr)`:
+// loads the concrete value from the `data` param and returns its %v
+// string via the matching goo_*_to_string runtime helper.
+//
+// v1 scalar kinds only (int/uint widths, bool, float32/64, string); a
+// pointer_form concrete or any other kind (struct, slice, map, ...) falls
+// back to a goo_string copy of the type name — the same "T" / "*T" string
+// codegen_get_or_emit_type_desc computes for its type_name field. This is
+// computed independently here (not fetched from the descriptor) rather
+// than calling codegen_get_or_emit_type_desc: that function calls INTO
+// this one to fill its fmt_fn field BEFORE the descriptor global exists
+// (LLVMGetNamedGlobal wouldn't find it yet), so a fallback-path call back
+// into codegen_get_or_emit_type_desc for the same (concrete, pointer_form)
+// would recurse forever instead of hitting its dedup cache.
+//
+// Mirrors build_thunk's function-creation + save/restore-builder pattern
+// (this file, above): a NEW function is created and its body emitted
+// while codegen may be mid-emitting another function (descriptor
+// synthesis happens during interface boxing), so the caller's insert
+// point must survive the call.
+LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
+                                          Type* concrete, int pointer_form) {
+    (void)checker;
+    if (!codegen || !concrete) return NULL;
+
+    const char* cname = type_receiver_name(concrete);
+    if (!cname) cname = type_to_string(concrete);
+    char fname[256];
+    if (pointer_form) snprintf(fname, sizeof(fname), "goo.fmt.$ptr$%s", cname);
+    else              snprintf(fname, sizeof(fname), "goo.fmt.%s", cname);
+    LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, fname);
+    if (existing) return existing;
+
+    LLVMTypeRef ptrty = iface_ptr_type(codegen);
+    LLVMTypeRef string_ty = codegen_get_basic_type(codegen, TYPE_STRING);
+    if (!string_ty) return NULL;
+    LLVMTypeRef param_types[1] = { ptrty };
+    LLVMTypeRef fnty = LLVMFunctionType(string_ty, param_types, 1, 0);
+    LLVMValueRef fn = LLVMAddFunction(codegen->module, fname, fnty);
+    if (!fn) return NULL;
+
+    // Save/restore the outer insert point (see comment above).
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(codegen->context, fn, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+
+    LLVMValueRef data = LLVMGetParam(fn, 0);
+    LLVMValueRef result = NULL;
+    LLVMContextRef ctx = codegen->context;
+
+    int is_sint = !pointer_form && (concrete->kind == TYPE_INT8 || concrete->kind == TYPE_INT16 ||
+                                    concrete->kind == TYPE_INT32 || concrete->kind == TYPE_INT64);
+    int is_uint = !pointer_form && (concrete->kind == TYPE_UINT8 || concrete->kind == TYPE_UINT16 ||
+                                    concrete->kind == TYPE_UINT32 || concrete->kind == TYPE_UINT64);
+    int is_bool = !pointer_form && concrete->kind == TYPE_BOOL;
+    int is_float = !pointer_form && (concrete->kind == TYPE_FLOAT32 || concrete->kind == TYPE_FLOAT64);
+    int is_string = !pointer_form && concrete->kind == TYPE_STRING;
+
+    if (is_sint) {
+        LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
+        LLVMValueRef v = LLVMBuildLoad2(codegen->builder, ty, data, "fmt.load");
+        LLVMValueRef w = LLVMBuildSExt(codegen->builder, v, LLVMInt64TypeInContext(ctx), "fmt.sext");
+        LLVMValueRef i2s = LLVMGetNamedFunction(codegen->module, "goo_int_to_string");
+        if (!i2s) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMValueRef args[1] = { w };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(i2s), i2s, args, 1, "fmt.s");
+    } else if (is_uint) {
+        LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
+        LLVMValueRef v = LLVMBuildLoad2(codegen->builder, ty, data, "fmt.load");
+        LLVMValueRef w = LLVMBuildZExt(codegen->builder, v, LLVMInt64TypeInContext(ctx), "fmt.zext");
+        LLVMValueRef u2s = LLVMGetNamedFunction(codegen->module, "goo_uint_to_string");
+        if (!u2s) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMValueRef args[1] = { w };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(u2s), u2s, args, 1, "fmt.s");
+    } else if (is_bool) {
+        LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);  // i1
+        LLVMValueRef v = LLVMBuildLoad2(codegen->builder, ty, data, "fmt.load");
+        LLVMValueRef w = LLVMBuildZExt(codegen->builder, v, LLVMInt32TypeInContext(ctx), "fmt.zext");
+        LLVMValueRef b2s = LLVMGetNamedFunction(codegen->module, "goo_bool_to_string");
+        if (!b2s) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMValueRef args[1] = { w };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(b2s), b2s, args, 1, "fmt.s");
+    } else if (is_float) {
+        LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
+        LLVMValueRef v = LLVMBuildLoad2(codegen->builder, ty, data, "fmt.load");
+        LLVMValueRef w = (concrete->kind == TYPE_FLOAT32)
+            ? LLVMBuildFPExt(codegen->builder, v, LLVMDoubleTypeInContext(ctx), "fmt.fpext")
+            : v;
+        LLVMValueRef f2s = LLVMGetNamedFunction(codegen->module, "goo_float_to_string");
+        if (!f2s) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMValueRef args[1] = { w };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(f2s), f2s, args, 1, "fmt.s");
+    } else if (is_string) {
+        // `data` points at a heap goo_string_t (value-boxed) — load and
+        // return it directly (a shallow {ptr,len} copy; the backing bytes
+        // are shared, same as every other %v path returning a fresh
+        // struct without deep-copying storage).
+        LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
+        result = LLVMBuildLoad2(codegen->builder, ty, data, "fmt.str");
+    } else {
+        // pointer_form, or any non-scalar concrete kind not yet supported
+        // in v1 (struct/slice/map/...): bounded fallback — a goo_string
+        // copy of this type's own name ("T", or "*T" for pointer_form),
+        // matching what codegen_get_or_emit_type_desc's type_name field
+        // holds for the same (concrete, pointer_form).
+        char tname[260];
+        if (pointer_form) snprintf(tname, sizeof(tname), "*%s", cname);
+        else              snprintf(tname, sizeof(tname), "%s", cname);
+        LLVMValueRef name_ptr = LLVMBuildGlobalStringPtr(codegen->builder, tname, "fmt.tname");
+        LLVMValueRef newfn = LLVMGetNamedFunction(codegen->module, "goo_string_new");
+        if (!newfn) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMValueRef args[1] = { name_ptr };
+        result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(newfn), newfn, args, 1, "fmt.name");
+    }
+
+    if (!result) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+    LLVMBuildRet(codegen->builder, result);
+    LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    return fn;
+}
+
 // Per-concrete-type descriptor reached behind interface vtable slot 0
 // (Go's itab->_type shape). Layout: { ptr eq_fn, ptr type_name, ptr fmt_fn }.
 // eq_fn is FIRST so goo_iface_key_eq's slot-0 hop is a single extra deref.
-// fmt_fn is null here; codegen_get_or_emit_type_fmt (Task 2) fills it.
+// fmt_fn is codegen_get_or_emit_type_fmt's per-type %v formatter (above).
 // Name-deduped by concrete type, like the vtable globals.
 LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* checker,
                                            Type* concrete, int pointer_form) {
@@ -236,9 +359,10 @@ LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* 
     // If a builder-free path ever calls this, switch to a module-level constant
     // string global (see codegen_const_string_value in composite_codegen.c).
 
-    LLVMValueRef null_fmt = LLVMConstNull(ptrty);
+    LLVMValueRef fmt_fn = codegen_get_or_emit_type_fmt(codegen, checker, concrete, pointer_form);
+    if (!fmt_fn) return NULL;
 
-    LLVMValueRef fields[3] = { eq_fn, name_str, null_fmt };
+    LLVMValueRef fields[3] = { eq_fn, name_str, fmt_fn };
     LLVMTypeRef descty = LLVMStructTypeInContext(codegen->context,
                                                  (LLVMTypeRef[]){ptrty, ptrty, ptrty}, 3, 0);
     LLVMValueRef init = LLVMConstNamedStruct(descty, fields, 3);

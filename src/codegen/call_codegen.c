@@ -2049,6 +2049,32 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
             LLVMValueRef args[] = { widened };
             LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
                           float_fn, args, 1, "");
+        } else if (kind == TYPE_INTERFACE) {
+            // Print an interface value by its dynamic type: {vtable,data} ->
+            // goo_iface_format (runtime helper: nil vtable -> "<nil>", else
+            // vtable[0]=desc, desc.fmt_fn(data)) -> goo_print_string.
+            LLVMValueRef ival = arg_val->llvm_value;   // {ptr vtable, ptr data}
+            LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, ival, 0, "ifvt");
+            LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, ival, 1, "ifdata");
+
+            LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
+            if (!fmtcall) {
+                codegen_error(codegen, a->pos, "goo_iface_format not found");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef fargs[] = { vtab, data };
+            LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
+                                            fmtcall, fargs, 2, "ifstr");
+
+            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+            if (!str_fn) {
+                codegen_error(codegen, a->pos, "goo_print_string not found in module");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef pargs[] = { s };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn), str_fn, pargs, 1, "");
         } else {
             // P0-3: an unsupported argument type is a clean source-located
             // codegen error, not a type-mismatched goo_print call that only

@@ -322,6 +322,15 @@ goo_string_t goo_int_to_string(int64_t value) {
     goo_string_t s; s.data = data; s.length = (size_t)n; return s;
 }
 
+goo_string_t goo_uint_to_string(uint64_t value) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)value);
+    if (len < 0 || (size_t)len >= sizeof(buf)) {
+        goo_panic("goo_uint_to_string: snprintf overflow");
+    }
+    return goo_string_new_with_length(buf, (size_t)len);
+}
+
 goo_string_t goo_float_to_string(double value) {
     char buf[64];
     int n = snprintf(buf, sizeof(buf), "%g", value);
@@ -610,6 +619,17 @@ int goo_iface_key_eq(int64_t a, int64_t b) {
     void* desc = ((void**)vta)[0];          // vtable slot 0 -> descriptor
     GooKeyEqFn eq = (GooKeyEqFn)((void**)desc)[0];  // descriptor field 0 -> eq_fn
     return eq((int64_t)(intptr_t)ia[1], (int64_t)(intptr_t)ib[1]); // compare the data words
+}
+
+// Format an interface value {vtable,data} as its %v string. nil vtable -> "<nil>".
+// Encapsulates the null-check + descriptor hop so both fmt.Println's codegen
+// site (call_codegen.c) and a later fmt.Sprintf site can share it.
+goo_string_t goo_iface_format(void* vtable, void* data) {
+    if (!vtable) return goo_string_new("<nil>");
+    void* desc = ((void**)vtable)[0];              // vtable slot 0 -> descriptor
+    typedef goo_string_t (*GooFmtFn)(void*);
+    GooFmtFn fmt = (GooFmtFn)((void**)desc)[2];    // descriptor field 2 -> fmt_fn
+    return fmt(data);
 }
 
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
