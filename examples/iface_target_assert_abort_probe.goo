@@ -1,0 +1,10 @@
+package main
+
+type Speaker interface {
+	Speak() string
+}
+
+func main() {
+	var x interface{} = 42
+	_ = x.(Speaker) // panics: interface conversion: int64 is not Speaker
+}

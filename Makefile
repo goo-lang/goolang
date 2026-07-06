@@ -1632,15 +1632,19 @@ typeassert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 # `x.(T)` rejections bundled into one probe (mirrors floatint-reject-probe's
 # multi-sub-check-per-target shape): (a) operand isn't an interface at all;
 # (b) target concrete type doesn't implement the operand's interface
-# (type_interface_satisfied miss); (c) target itself is an interface type
-# (assert-to-interface, deferred to the RTTI cycle — see expression_checker.c
-# AST_TYPE_ASSERT). All three diagnostics live in expression_checker.c.
+# (type_interface_satisfied miss); (c) COMMA-OK assert-to-an-interface-target
+# — narrowed by the interface-target RTTI plan's Task 1, which lifted the
+# rejection for the SINGLE-return form (`_ = a.(Named)` now compiles and
+# runs — see examples/iface_target_assert.goo); the comma-ok form has no
+# codegen primitive wired yet (type_checker.c's var_decl comma-ok synthesis)
+# so it still rejects with the same message. All three diagnostics live in
+# expression_checker.c / type_checker.c.
 typeassert-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== typeassert-reject-probe: x.(T) static rejections ==="
 	@printf 'package main\nfunc main() {\n\tvar x int = 5\n\t_ = x.(int)\n}\n' > build/ta_noniface.goo
 	@printf 'package main\ntype Animal interface {\n\tSound() string\n}\ntype Dog struct{ N string }\nfunc (d Dog) Sound() string { return "woof" }\ntype Rock struct{}\nfunc main() {\n\tvar a Animal = Dog{N: "Rex"}\n\t_ = a.(Rock)\n}\n' > build/ta_impossible.goo
-	@printf 'package main\ntype Animal interface {\n\tSound() string\n}\ntype Named interface {\n\tLabel() string\n}\ntype Dog struct{ N string }\nfunc (d Dog) Sound() string { return "woof" }\nfunc main() {\n\tvar a Animal = Dog{N: "Rex"}\n\t_ = a.(Named)\n}\n' > build/ta_ifacetarget.goo
+	@printf 'package main\ntype Animal interface {\n\tSound() string\n}\ntype Named interface {\n\tLabel() string\n}\ntype Dog struct{ N string }\nfunc (d Dog) Sound() string { return "woof" }\nfunc main() {\n\tvar a Animal = Dog{N: "Rex"}\n\tn, ok := a.(Named)\n\t_=n; _=ok\n}\n' > build/ta_ifacetarget.goo
 	@rm -f build/ta_noniface build/ta_impossible build/ta_ifacetarget
 	@$(COMPILER) -o build/ta_noniface build/ta_noniface.goo > build/ta_noniface.out 2> build/ta_noniface.err; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "typeassert-reject-probe: FAIL (non-interface operand: compiled rc=0)"; exit 1; fi; \
@@ -1651,9 +1655,9 @@ typeassert-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ -x build/ta_impossible ]; then echo "typeassert-reject-probe: FAIL (impossible assertion: emitted a binary despite the error)"; exit 1; fi; \
 	if ! grep -q "impossible type assertion" build/ta_impossible.err; then echo "typeassert-reject-probe: FAIL (impossible assertion: wrong/missing diagnostic)"; cat build/ta_impossible.err; exit 1; fi
 	@$(COMPILER) -o build/ta_ifacetarget build/ta_ifacetarget.goo > build/ta_ifacetarget.out 2> build/ta_ifacetarget.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "typeassert-reject-probe: FAIL (interface target: compiled rc=0)"; exit 1; fi; \
-	if [ -x build/ta_ifacetarget ]; then echo "typeassert-reject-probe: FAIL (interface target: emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "not supported in v1" build/ta_ifacetarget.err; then echo "typeassert-reject-probe: FAIL (interface target: wrong/missing diagnostic)"; cat build/ta_ifacetarget.err; exit 1; fi
+	if [ $$rc -eq 0 ]; then echo "typeassert-reject-probe: FAIL (comma-ok interface target: compiled rc=0)"; exit 1; fi; \
+	if [ -x build/ta_ifacetarget ]; then echo "typeassert-reject-probe: FAIL (comma-ok interface target: emitted a binary despite the error)"; exit 1; fi; \
+	if ! grep -q "not supported in v1" build/ta_ifacetarget.err; then echo "typeassert-reject-probe: FAIL (comma-ok interface target: wrong/missing diagnostic)"; cat build/ta_ifacetarget.err; exit 1; fi
 	@echo "typeassert-reject-probe: PASS"
 
 # Task 4 (type assertions/switches — reject-probe sweep): two static
@@ -2007,7 +2011,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe rtti-iface-target-reject-probe iface-assert-dynname-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe rtti-iface-target-reject-probe iface-assert-dynname-probe iface-target-assert-abort-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -3521,13 +3525,17 @@ rtti-assert-panic-probe: lexer
 	@if build/rtti_panic; then echo "FAIL: expected panic, got clean exit"; exit 1; fi
 	@echo "PASS rtti-assert-panic-probe (assert-miss on any panics)"
 
-# RTTI concrete-type-switch plan, Task 3: lifting the empty-interface guards
-# (Tasks 1 & 2) must not accidentally lift the interface-target guards too —
-# `x.(Interface)` and `case Interface:` stay out of scope and must still be
+# RTTI concrete-type-switch plan, Task 3 — narrowed by the interface-target
+# RTTI plan's Task 1: the empty-interface guards (Tasks 1 & 2 of the earlier
+# plan) must not accidentally lift the interface-target guards too, but
+# single-return `x.(Interface)` is now INTENTIONALLY supported (see
+# codegen_interface_target_match, interface_codegen.c) — only the comma-ok
+# form (no codegen primitive wired yet; a later task reuses the shared
+# primitive for it) and `case Interface:` stay out of scope and must still be
 # compile-rejected with the existing message.
 rtti-iface-target-reject-probe: lexer
-	@printf 'package main\ntype S interface{ M() int }\nfunc main(){ var x interface{} = 1; _, _ = x.(S) }\n' > build/rtti_rej_assert.goo
-	@if $(COMPILER) build/rtti_rej_assert.goo -o build/rtti_rej_assert 2>build/rtti_rej_assert.err; then echo "FAIL: assert-to-interface should be rejected"; exit 1; fi
+	@printf 'package main\ntype S interface{ M() int }\nfunc main(){ var x interface{} = 1; s, ok := x.(S); _=s; _=ok }\n' > build/rtti_rej_assert.goo
+	@if $(COMPILER) build/rtti_rej_assert.goo -o build/rtti_rej_assert 2>build/rtti_rej_assert.err; then echo "FAIL: comma-ok assert-to-interface should be rejected"; exit 1; fi
 	@grep -q "to an interface type is not supported" build/rtti_rej_assert.err || (echo "FAIL: wrong rejection message"; cat build/rtti_rej_assert.err; exit 1)
 	@printf 'package main\ntype S interface{ M() int }\nfunc main(){ var x interface{} = 1; switch x.(type) { case S: _ = 0 } }\n' > build/rtti_rej_sw.goo
 	@if $(COMPILER) build/rtti_rej_sw.goo -o build/rtti_rej_sw 2>build/rtti_rej_sw.err; then echo "FAIL: case-interface should be rejected"; exit 1; fi
@@ -3549,6 +3557,23 @@ iface-assert-dynname-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "iface-assert-dynname-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
 	if ! grep -q "is bool, not string" build/iface_assert_dynname.err; then echo "iface-assert-dynname-probe: FAIL (dynamic type not named)"; cat build/iface_assert_dynname.err; exit 1; fi
 	@echo "iface-assert-dynname-probe: PASS"
+
+# Interface-target RTTI plan, Task 1: a failed single-return `x.(I)` where I
+# is an INTERFACE target (not a concrete type) must panic cleanly, naming the
+# dynamic type via Go's own "is not" wording for this shape
+# (goo_panic_iface_notimpl, runtime.c — distinct from goo_panic_iface_conversion's
+# concrete-target "X is Y, not Z"). examples/iface_target_assert_abort_probe.goo
+# boxes an int (Goo names it "int64") that does not implement Speaker; mirrors
+# typeassert-abort-probe's compile/run/grep shape.
+iface-target-assert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== iface-target-assert-abort-probe: failed x.(I) on an interface target must panic ==="
+	@"$(COMPILER)" -o build/iface_target_assert_abort examples/iface_target_assert_abort_probe.goo 2>build/iface_target_assert_abort.cerr || \
+	  { echo "iface-target-assert-abort-probe: FAIL (compile)"; cat build/iface_target_assert_abort.cerr; exit 1; }
+	@./build/iface_target_assert_abort 2>build/iface_target_assert_abort.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "iface-target-assert-abort-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
+	if ! grep -q "is not Speaker" build/iface_target_assert_abort.err; then echo "iface-target-assert-abort-probe: FAIL (dynamic type not named)"; cat build/iface_target_assert_abort.err; exit 1; fi
+	@echo "iface-target-assert-abort-probe: PASS"
 
 # Regenerate the Go-stdlib coverage report (docs/stdlib-coverage.json).
 # Scores supported symbols against $GOROOT/api/go1*.txt. Needs `go` on PATH.

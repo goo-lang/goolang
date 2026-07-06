@@ -1119,6 +1119,23 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (var_decl->name_count == 2 && var_decl->is_short_decl &&
         var_decl->values && var_decl->values->type == AST_TYPE_ASSERT) {
         Type* v_type = var_decl->values->node_type;
+        // Interface-target RTTI, Task 1: `x.(I)` where I is an interface now
+        // type-checks for the SINGLE-return form (expression_checker.c's
+        // AST_TYPE_ASSERT case no longer rejects it), but the comma-ok {v,
+        // bool} synthesis below assumes a CONCRETE target — its codegen
+        // counterpart (function_codegen.c's comma-ok arm) calls
+        // codegen_interface_assert_match, which is built for concrete
+        // targets only and would misresolve an interface `target` (no
+        // vtable-form selection makes sense for "assert to some interface").
+        // Reject comma-ok-to-interface cleanly here rather than let it reach
+        // that internal codegen error; a later task reuses
+        // codegen_interface_target_match to lift this too.
+        if (v_type && v_type->kind == TYPE_INTERFACE) {
+            type_error(checker, var_decl->base.pos,
+                "type assertion to an interface type is not supported in v1 "
+                "(concrete target types only)");
+            return 0;
+        }
         if (v_type) {
             Type* commaok_struct = type_new(TYPE_STRUCT);
             if (commaok_struct) {
