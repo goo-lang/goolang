@@ -40,6 +40,9 @@ TypeChecker* type_checker_new(void) {
     // Closures Task 2: no literal currently being checked.
     checker->literal_stack_len = 0;
 
+    // Function generics Task 3: no generic function's type params in scope yet.
+    checker->active_type_param_count = 0;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -414,6 +417,35 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
     return scope_lookup_variable(checker->current_scope, name);
 }
 
+// Function generics Task 3: active-type-param stack. Pushed by
+// declare_function_signature and type_check_function_decl before resolving a
+// generic function's param/return/body types, popped on every return path of
+// both (see their callers below) so a leaked type param can't leak into a
+// sibling function checked afterward.
+void type_checker_push_type_param(TypeChecker* checker, Type* tp) {
+    if (!checker || !tp) return;
+    if (checker->active_type_param_count < 32)
+        checker->active_type_params[checker->active_type_param_count++] = tp;
+}
+
+void type_checker_pop_type_params(TypeChecker* checker, size_t to_count) {
+    if (!checker) return;
+    checker->active_type_param_count = to_count;
+}
+
+// Innermost-first: a nested function (were that ever legal) would shadow an
+// outer type param of the same name, matching ordinary scope lookup.
+Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name) {
+    if (!checker || !name) return NULL;
+    for (size_t i = checker->active_type_param_count; i-- > 0; ) {
+        Type* tp = checker->active_type_params[i];
+        if (tp && tp->data.type_param.name &&
+            strcmp(tp->data.type_param.name, name) == 0)
+            return tp;
+    }
+    return NULL;
+}
+
 // Register a synthetic, codegen-introduced binding in the current type-checker
 // scope. The defer lowering (codegen) snapshots each deferred call's arguments
 // at the defer site and rewrites those argument AST nodes to synthetic
@@ -641,6 +673,22 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         if (p->type == AST_VAR_DECL) param_count++;
     }
 
+    // Function generics Task 3: push this function's type params BEFORE any
+    // type_from_ast call below (param types, return type) so a bare `T` in
+    // the signature (including inside `[]T`) resolves instead of erroring
+    // "Unknown type 'T'". Popped on every return path of this function —
+    // see the matching type_checker_pop_type_params before each `return`.
+    size_t saved_tp = checker->active_type_param_count;
+    if (func->type_params) {
+        int idx = 0;
+        for (ASTNode* tp = func->type_params; tp; tp = tp->next) {
+            VarDeclNode* g = (VarDeclNode*)tp;
+            for (size_t i = 0; i < g->name_count; i++)
+                type_checker_push_type_param(checker,
+                    type_param(g->names[i], idx++, NULL));
+        }
+    }
+
     // Task 2: a variadic parameter (`name ...T`) must be the LAST parameter
     // (Go: "can only use ... with final parameter in list"). Check this
     // BEFORE building param_types below — an earlier variadic param there
@@ -654,6 +702,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
             if (pd->is_variadic_param && idx != last_idx) {
                 type_error(checker, p->pos,
                            "variadic parameter must be the final parameter");
+                type_checker_pop_type_params(checker, saved_tp);
                 return 0;
             }
             idx++;
@@ -706,9 +755,11 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         if (!scope_add_variable(checker->current_scope, func_var)) {
             type_error(checker, func->base.pos, "Function '%s' already declared", func->name);
             variable_free(func_var);
+            type_checker_pop_type_params(checker, saved_tp);
             return 0;
         }
     }
+    type_checker_pop_type_params(checker, saved_tp);
     return 1;
 }
 
@@ -716,6 +767,21 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
 
     FuncDeclNode* func = (FuncDeclNode*)decl;
+
+    // Function generics Task 3: push this function's type params before the
+    // return-type lookup just below (may reference `T`) and before the body
+    // is checked. Symmetric with declare_function_signature's push; popped
+    // right before this function's own `return result` below.
+    size_t saved_tp = checker->active_type_param_count;
+    if (func->type_params) {
+        int idx = 0;
+        for (ASTNode* tp = func->type_params; tp; tp = tp->next) {
+            VarDeclNode* g = (VarDeclNode*)tp;
+            for (size_t i = 0; i < g->name_count; i++)
+                type_checker_push_type_param(checker,
+                    type_param(g->names[i], idx++, NULL));
+        }
+    }
 
     // Body-checking pass only. The function's signature (its scope Variable, and
     // for a method its receiver mangling) was already registered by pass 1 of
@@ -809,6 +875,7 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
 
     checker->current_return_type = saved_return_type;
     scope_pop(checker);
+    type_checker_pop_type_params(checker, saved_tp);
     return result;
 }
 
@@ -2474,6 +2541,13 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 return named->type;
             }
 
+            // Function generics Task 3: a bare `T` in a generic function's
+            // signature/body may parse as AST_IDENTIFIER (this branch) or
+            // AST_BASIC_TYPE (below) depending on context — check the
+            // active-type-param stack before giving up as "Unknown type".
+            Type* tp_ident = type_checker_lookup_type_param(checker, ident->name);
+            if (tp_ident) return tp_ident;
+
             type_error(checker, type_node->pos, "Unknown type '%s'", ident->name);
             return NULL;
         }
@@ -2519,6 +2593,12 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 named->type->kind != TYPE_FUNCTION) {
                 return named->type;
             }
+
+            // Function generics Task 3: see the analogous check in the
+            // AST_IDENTIFIER branch above — a bare `T` can arrive as either
+            // node kind.
+            Type* tp_basic = type_checker_lookup_type_param(checker, basic->name);
+            if (tp_basic) return tp_basic;
 
             type_error(checker, type_node->pos, "Unknown type '%s'", basic->name);
             return NULL;

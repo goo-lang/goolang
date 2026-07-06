@@ -439,6 +439,17 @@ struct TypeChecker {
     // appended per the no-header-deps convention (ast.h's M10 note).
     struct ASTNode* literal_stack[GOO_CLOSURE_MAX_NESTING];
     size_t literal_stack_len;
+
+    // Function generics Task 3: active generic type parameters, innermost
+    // function's params on top. Consulted by type_from_ast so a bare `T` in
+    // a generic function's signature/body resolves to its TYPE_PARAM Type
+    // instead of "Unknown type 'T'". Pushed by declare_function_signature
+    // and type_check_function_decl (popped on every return path of both —
+    // a missed pop leaks type params into sibling functions). Fixed array,
+    // not malloc'd: type-param-list nesting is bounded by source structure
+    // (Tier A functions are small), same rationale as literal_stack above.
+    Type* active_type_params[32];
+    size_t active_type_param_count;
 };
 
 // Type creation functions
@@ -542,6 +553,14 @@ void variable_free(Variable* var);
 int scope_add_variable(Scope* scope, Variable* var);
 Variable* scope_lookup_variable(Scope* scope, const char* name);
 Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
+
+// Function generics Task 3: active-type-param stack (see TypeChecker's
+// active_type_params field above). Push/pop bracket a function's signature
+// and body checking; lookup is consulted by type_from_ast before it would
+// otherwise report "Unknown type '<name>'".
+void type_checker_push_type_param(TypeChecker* checker, Type* tp);
+void type_checker_pop_type_params(TypeChecker* checker, size_t to_count);
+Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name);
 
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);
