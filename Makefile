@@ -1628,24 +1628,27 @@ typeassert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 # type_check_type_switch_stmt ~line 2308) is unrelated and still enforced —
 # a dedicated reject-probe for it is Task 3's concern.
 
-# Task 4 (type assertions/switches — reject-probe sweep): three static
+# Task 4 (type assertions/switches — reject-probe sweep): two static
 # `x.(T)` rejections bundled into one probe (mirrors floatint-reject-probe's
 # multi-sub-check-per-target shape): (a) operand isn't an interface at all;
 # (b) target concrete type doesn't implement the operand's interface
-# (type_interface_satisfied miss); (c) COMMA-OK assert-to-an-interface-target
-# — narrowed by the interface-target RTTI plan's Task 1, which lifted the
-# rejection for the SINGLE-return form (`_ = a.(Named)` now compiles and
-# runs — see examples/iface_target_assert.goo); the comma-ok form has no
-# codegen primitive wired yet (type_checker.c's var_decl comma-ok synthesis)
-# so it still rejects with the same message. All three diagnostics live in
+# (type_interface_satisfied miss). Both diagnostics live in
 # expression_checker.c / type_checker.c.
+#
+# A third sub-check used to live here: COMMA-OK assert-to-an-interface-
+# target, narrowed by the interface-target RTTI plan's Task 1 (which lifted
+# the rejection for the SINGLE-return form only — `_ = a.(Named)`, see
+# examples/iface_target_assert.goo). Task 2 wired the comma-ok codegen
+# primitive too (`n, ok := a.(Named)` now compiles and runs — see
+# examples/iface_target_commaok.goo), so that sub-check no longer describes
+# a rejection and was removed; the positive case is covered by the golden
+# above instead.
 typeassert-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== typeassert-reject-probe: x.(T) static rejections ==="
 	@printf 'package main\nfunc main() {\n\tvar x int = 5\n\t_ = x.(int)\n}\n' > build/ta_noniface.goo
 	@printf 'package main\ntype Animal interface {\n\tSound() string\n}\ntype Dog struct{ N string }\nfunc (d Dog) Sound() string { return "woof" }\ntype Rock struct{}\nfunc main() {\n\tvar a Animal = Dog{N: "Rex"}\n\t_ = a.(Rock)\n}\n' > build/ta_impossible.goo
-	@printf 'package main\ntype Animal interface {\n\tSound() string\n}\ntype Named interface {\n\tLabel() string\n}\ntype Dog struct{ N string }\nfunc (d Dog) Sound() string { return "woof" }\nfunc main() {\n\tvar a Animal = Dog{N: "Rex"}\n\tn, ok := a.(Named)\n\t_=n; _=ok\n}\n' > build/ta_ifacetarget.goo
-	@rm -f build/ta_noniface build/ta_impossible build/ta_ifacetarget
+	@rm -f build/ta_noniface build/ta_impossible
 	@$(COMPILER) -o build/ta_noniface build/ta_noniface.goo > build/ta_noniface.out 2> build/ta_noniface.err; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "typeassert-reject-probe: FAIL (non-interface operand: compiled rc=0)"; exit 1; fi; \
 	if [ -x build/ta_noniface ]; then echo "typeassert-reject-probe: FAIL (non-interface operand: emitted a binary despite the error)"; exit 1; fi; \
@@ -1654,10 +1657,6 @@ typeassert-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$rc -eq 0 ]; then echo "typeassert-reject-probe: FAIL (impossible assertion: compiled rc=0)"; exit 1; fi; \
 	if [ -x build/ta_impossible ]; then echo "typeassert-reject-probe: FAIL (impossible assertion: emitted a binary despite the error)"; exit 1; fi; \
 	if ! grep -q "impossible type assertion" build/ta_impossible.err; then echo "typeassert-reject-probe: FAIL (impossible assertion: wrong/missing diagnostic)"; cat build/ta_impossible.err; exit 1; fi
-	@$(COMPILER) -o build/ta_ifacetarget build/ta_ifacetarget.goo > build/ta_ifacetarget.out 2> build/ta_ifacetarget.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "typeassert-reject-probe: FAIL (comma-ok interface target: compiled rc=0)"; exit 1; fi; \
-	if [ -x build/ta_ifacetarget ]; then echo "typeassert-reject-probe: FAIL (comma-ok interface target: emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "not supported in v1" build/ta_ifacetarget.err; then echo "typeassert-reject-probe: FAIL (comma-ok interface target: wrong/missing diagnostic)"; cat build/ta_ifacetarget.err; exit 1; fi
 	@echo "typeassert-reject-probe: PASS"
 
 # Task 4 (type assertions/switches — reject-probe sweep): two static
@@ -3526,21 +3525,19 @@ rtti-assert-panic-probe: lexer
 	@echo "PASS rtti-assert-panic-probe (assert-miss on any panics)"
 
 # RTTI concrete-type-switch plan, Task 3 — narrowed by the interface-target
-# RTTI plan's Task 1: the empty-interface guards (Tasks 1 & 2 of the earlier
-# plan) must not accidentally lift the interface-target guards too, but
-# single-return `x.(Interface)` is now INTENTIONALLY supported (see
-# codegen_interface_target_match, interface_codegen.c) — only the comma-ok
-# form (no codegen primitive wired yet; a later task reuses the shared
-# primitive for it) and `case Interface:` stay out of scope and must still be
-# compile-rejected with the existing message.
+# RTTI plan's Tasks 1 & 2: the empty-interface guards (Tasks 1 & 2 of the
+# earlier plan) must not accidentally lift the interface-target guards too.
+# Single-return `x.(Interface)` (Task 1) and comma-ok `v, ok := x.(Interface)`
+# (Task 2) are now INTENTIONALLY supported (codegen_interface_target_match,
+# interface_codegen.c — see examples/iface_target_assert.goo and
+# examples/iface_target_commaok.goo); only `case Interface:` in a type switch
+# stays out of scope (a later task) and must still be compile-rejected with
+# the existing message.
 rtti-iface-target-reject-probe: lexer
-	@printf 'package main\ntype S interface{ M() int }\nfunc main(){ var x interface{} = 1; s, ok := x.(S); _=s; _=ok }\n' > build/rtti_rej_assert.goo
-	@if $(COMPILER) build/rtti_rej_assert.goo -o build/rtti_rej_assert 2>build/rtti_rej_assert.err; then echo "FAIL: comma-ok assert-to-interface should be rejected"; exit 1; fi
-	@grep -q "to an interface type is not supported" build/rtti_rej_assert.err || (echo "FAIL: wrong rejection message"; cat build/rtti_rej_assert.err; exit 1)
 	@printf 'package main\ntype S interface{ M() int }\nfunc main(){ var x interface{} = 1; switch x.(type) { case S: _ = 0 } }\n' > build/rtti_rej_sw.goo
 	@if $(COMPILER) build/rtti_rej_sw.goo -o build/rtti_rej_sw 2>build/rtti_rej_sw.err; then echo "FAIL: case-interface should be rejected"; exit 1; fi
 	@grep -q "to an interface type is not supported" build/rtti_rej_sw.err || (echo "FAIL: wrong rejection message"; cat build/rtti_rej_sw.err; exit 1)
-	@echo "PASS rtti-iface-target-reject-probe (interface targets still rejected)"
+	@echo "PASS rtti-iface-target-reject-probe (switch case-interface still rejected)"
 
 # Interface-type-descriptor plan, Task 4: a failed `x.(T)` panic must name
 # the DYNAMIC (actually held) type — read from the interface value's vtable
