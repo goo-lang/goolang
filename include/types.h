@@ -572,6 +572,15 @@ void type_checker_push_type_param(TypeChecker* checker, Type* tp);
 void type_checker_pop_type_params(TypeChecker* checker, size_t to_count);
 Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name);
 
+// Function generics Task 5: standalone helpers for generic-call inference
+// (Task 6 wires them in). type_substitute replaces every TYPE_PARAM of index
+// i < n with bindings[i], recursing through slice/pointer/function (Tier-A
+// scope; TYPE_ARRAY/TYPE_MAP are not recursed). unify_types structurally
+// matches a possibly-TYPE_PARAM `param` against a concrete `arg`, inferring
+// bindings; returns 0 on structural mismatch or a conflicting binding.
+Type* type_substitute(Type* t, Type** bindings, size_t n);
+int unify_types(Type* param, Type* arg, Type** bindings, size_t n);
+
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);
 

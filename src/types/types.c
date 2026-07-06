@@ -682,6 +682,81 @@ int type_equals(const Type* a, const Type* b) {
     }
 }
 
+// Function generics Task 5: type_substitute and unify_types — the two
+// standalone helpers generic-call inference (Task 6) builds on. Neither has a
+// caller yet; both are exercised directly once Task 6 wires them into call
+// checking. Deliberately Tier-A scoped: only TYPE_PARAM/SLICE/POINTER/FUNCTION
+// recurse structurally (TYPE_ARRAY/TYPE_MAP are not — the Tier-A goldens only
+// exercise slice/pointer/function/scalar generics), everything else is a
+// concrete type handled via type_equals/identity.
+
+// Returns a new Type* with every TYPE_PARAM of index i < n replaced by
+// bindings[i], recursing through slice/pointer/function. A TYPE_PARAM with no
+// binding (index out of range, or bindings[i] NULL) is returned as-is —
+// callers see an un-substituted param rather than a silent NULL.
+Type* type_substitute(Type* t, Type** bindings, size_t n) {
+    if (!t) return NULL;
+    switch (t->kind) {
+        case TYPE_PARAM: {
+            int i = t->data.type_param.index;
+            if (i >= 0 && (size_t)i < n && bindings[i]) return bindings[i];
+            return t;
+        }
+        case TYPE_SLICE:
+            return type_slice(type_substitute(t->data.slice.element_type, bindings, n));
+        case TYPE_POINTER:
+            return type_pointer(type_substitute(t->data.pointer.pointee_type, bindings, n));
+        case TYPE_FUNCTION: {
+            size_t pc = t->data.function.param_count;
+            Type** ps = pc ? calloc(pc, sizeof(Type*)) : NULL;
+            for (size_t i = 0; i < pc; i++)
+                ps[i] = type_substitute(t->data.function.param_types[i], bindings, n);
+            Type* r = type_substitute(t->data.function.return_type, bindings, n);
+            Type* ft = type_function(ps, pc, r);
+            if (ft) ft->data.function.is_variadic = t->data.function.is_variadic;
+            return ft;
+        }
+        default:
+            return t; // concrete types are shared unchanged
+    }
+}
+
+// Structurally matches param (may contain TYPE_PARAM) against concrete arg,
+// writing inferred concrete types into bindings[index]. Returns 1 on success;
+// 0 on a structural mismatch (differing kind/shape) or a conflicting binding
+// (bindings[i] already set to a type that isn't type_equals to arg).
+int unify_types(Type* param, Type* arg, Type** bindings, size_t n) {
+    if (!param || !arg) return 0;
+    if (param->kind == TYPE_PARAM) {
+        int i = param->data.type_param.index;
+        if (i < 0 || (size_t)i >= n) return 0;
+        if (bindings[i]) return type_equals(bindings[i], arg);
+        bindings[i] = arg;
+        return 1;
+    }
+    if (param->kind != arg->kind) return 0;
+    switch (param->kind) {
+        case TYPE_SLICE:
+            return unify_types(param->data.slice.element_type,
+                               arg->data.slice.element_type, bindings, n);
+        case TYPE_POINTER:
+            return unify_types(param->data.pointer.pointee_type,
+                               arg->data.pointer.pointee_type, bindings, n);
+        case TYPE_FUNCTION: {
+            if (param->data.function.param_count != arg->data.function.param_count)
+                return 0;
+            for (size_t i = 0; i < param->data.function.param_count; i++)
+                if (!unify_types(param->data.function.param_types[i],
+                                 arg->data.function.param_types[i], bindings, n))
+                    return 0;
+            return unify_types(param->data.function.return_type,
+                               arg->data.function.return_type, bindings, n);
+        }
+        default:
+            return type_equals(param, arg);
+    }
+}
+
 int type_compatible(const Type* from, const Type* to) {
     if (type_equals(from, to)) return 1;
     
