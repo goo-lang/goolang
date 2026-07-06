@@ -1,0 +1,9 @@
+package main
+
+func Id[T any](x T) T { return x }
+
+func Map[T, U any](s []T, f func(T) U) []U {
+	return nil
+}
+
+func main() {}
