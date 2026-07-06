@@ -1292,12 +1292,67 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         free(mangled);
     }
 
-    // Resolve the callee. See codegen_resolve_callee's comment: a bare
-    // identifier not shadowed by a local variable/parameter resolves to the
-    // BARE LLVM global function (the unconditionally-unchanged direct-call
-    // path); anything else evaluates through the ordinary expression path
-    // and may yield the universal `{ fn_ptr, env_ptr }` function-VALUE pair.
-    ValueInfo* func_val = codegen_resolve_callee(codegen, checker, call->function);
+    // Function-generics Task 10 (Part B — call rewiring): a generic call
+    // site (call->type_arg_count > 0, stamped by type_check_generic_call in
+    // expression_checker.c only when the callee resolves to a generic
+    // Variable) must dispatch to its MONOMORPHIZED INSTANCE symbol, never
+    // the template's own bare name — codegen_generate_declaration
+    // (codegen.c) skips emitting the generic template itself (Task 4), so
+    // e.g. `Id` was never registered in this module; only instances like
+    // `Id__int64` were, by codegen_monomorphize's worklist (Part A,
+    // monomorphize.c) which ran to completion BEFORE any function body
+    // (including this one) was emitted. This takes precedence over the
+    // ordinary bare-name resolution below.
+    //
+    // codegen_resolve_type resolves each call->type_args[i] through
+    // codegen->active_subst: identity when this call site is itself
+    // concrete (e.g. a call inside main), or TYPE_PARAM -> the enclosing
+    // instance's concrete binding when this call is being emitted INSIDE a
+    // generic body that codegen_generate_function_instance is currently
+    // stamping (Part A's nested-call discovery always pre-stamps that
+    // nested callee before this body is ever emitted, so the instance
+    // looked up below is guaranteed to already exist — this path only
+    // looks it up, it never stamps).
+    ValueInfo* func_val = NULL;
+    if (call->type_arg_count > 0 && call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return NULL;
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            // codegen_resolve_type's `const Type*` is this file's only
+            // non-const consumer of it: codegen_mangle_instance/
+            // type_substitute both take Type* (this codebase does not
+            // otherwise carry const through Type plumbing — CallExprNode.
+            // type_args itself is a plain Type**), so casting the const away
+            // here is safe and matches the ambient (non-const) ownership
+            // model everywhere else a Type* is passed around.
+            concrete_args[i] = (Type*)codegen_resolve_type(codegen, call->type_args[i]);
+        }
+        char* sym = codegen_mangle_instance(gid->name, concrete_args, call->type_arg_count);
+        LLVMValueRef inst = LLVMGetNamedFunction(codegen->module, sym);
+        free(sym);
+        if (inst) {
+            // The instance's REAL (post-substitution) signature — downstream
+            // nullable-wrap / interface-box / numeric-width-coercion logic
+            // below needs the concrete parameter/return types the emitted
+            // LLVM function actually has, not the template's own
+            // TYPE_PARAM-bearing signature.
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    }
+    if (!func_val) {
+        // See codegen_resolve_callee's comment: a bare identifier not
+        // shadowed by a local variable/parameter resolves to the BARE LLVM
+        // global function (the unconditionally-unchanged direct-call path);
+        // anything else evaluates through the ordinary expression path and
+        // may yield the universal `{ fn_ptr, env_ptr }` function-VALUE pair.
+        func_val = codegen_resolve_callee(codegen, checker, call->function);
+    }
     if (!func_val) return NULL;
 
     // The callee's declared parameter types drive nullable auto-wrapping:
