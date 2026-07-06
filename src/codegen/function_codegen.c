@@ -814,6 +814,16 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     const char* symbol_name = emit_name;
     char* pkg_mangled = codegen_package_symbol_name(checker, emit_name);
     if (pkg_mangled) symbol_name = pkg_mangled;
+    // Function-generics Task 9: a monomorphized instance overrides whatever
+    // symbol name was just computed with its mangled instance name (e.g.
+    // `Id__int64`) — installed by codegen_generate_function_instance
+    // (monomorphize.c) around this exact call, for the duration of stamping
+    // one concrete instantiation of a generic template. Checked last so it
+    // always wins over both the bare and package-mangled names. `emit_name`
+    // itself is untouched, so the type-checker lookup just below (which must
+    // still find the TEMPLATE's Variable, carrying its TYPE_PARAM-bearing
+    // signature) keys on the ordinary bare/method name as usual.
+    if (codegen->symbol_override) symbol_name = codegen->symbol_override;
 
     // Get function type from AST
     Type* return_type = NULL;

@@ -66,3 +66,99 @@ char* codegen_mangle_instance(const char* base, Type* const* args, size_t n) {
     for (size_t i = 0; i < n; i++) { strcat(out, "__"); strcat(out, toks[i]); free(toks[i]); }
     free(toks); return out;
 }
+
+// Task 9: stamp one concrete instantiation. See the doc comment at the
+// declaration (include/codegen.h) for the two-substitution contract; the
+// non-LLVM stub build has neither `active_subst`/`symbol_override` on
+// CodeGenerator nor a real codegen_generate_function_decl to reuse, so it
+// just reports failure (mirrors codegen_generate_function_decl's own
+// !LLVM_AVAILABLE stub branch, function_codegen.c).
+int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* checker,
+                                       FuncDeclNode* tmpl, const char* sym,
+                                       Type** args, size_t n) {
+#if !LLVM_AVAILABLE
+    (void)tmpl; (void)sym; (void)args; (void)n;
+    codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !tmpl || !sym) return 0;
+
+    // Requirement 1 (checker side): push tmpl's type-param names onto the
+    // checker's active-type-param stack, index-matched exactly like
+    // declare_function_signature's own push (src/types/type_checker.c) — the
+    // SAME construction, `type_param(name, idx++, NULL)` per name across
+    // every type-param group. This does NOT bind a concrete type; it only
+    // lets a raw AST type node inside the template that calls
+    // type_from_ast(checker, ...) on a bare param name (e.g. the return-type
+    // node re-resolved at function_codegen.c's codegen_generate_function_decl,
+    // independently of the Variable's already-typed signature) resolve to a
+    // TYPE_PARAM instead of erroring "Unknown type 'T'". Popped unconditionally
+    // before returning, on every path, so a failed instantiation can't leak
+    // type params into whatever the worklist stamps next.
+    size_t saved_tp = checker->active_type_param_count;
+    {
+        int idx = 0;
+        for (ASTNode* tp = tmpl->type_params; tp; tp = tp->next) {
+            VarDeclNode* g = (VarDeclNode*)tp;
+            for (size_t i = 0; i < g->name_count; i++)
+                type_checker_push_type_param(checker,
+                    type_param(g->names[i], idx++, NULL));
+        }
+    }
+
+    // Requirement 1 (codegen side): the VALUE binding. codegen_type_to_llvm's
+    // TYPE_PARAM case (Task 8) resolves a TYPE_PARAM's index through
+    // active_subst to the concrete arg — this is what actually lowers `T` to
+    // e.g. `i64` for the signature/body the checker-side push above merely
+    // allowed to be looked up as a TYPE_PARAM in the first place.
+    Type** saved_subst = codegen->active_subst;
+    size_t saved_subst_n = codegen->active_subst_n;
+    const char* saved_override = codegen->symbol_override;
+    codegen->active_subst = args;
+    codegen->active_subst_n = n;
+    // Requirement — the rename: forces the emitted LLVM symbol to `sym`
+    // (e.g. `Id__int64`) instead of the template's bare name, so the same
+    // FuncDeclNode can be lowered more than once under distinct symbols.
+    codegen->symbol_override = sym;
+
+    // codegen_generate_function_decl is called DIRECTLY here (not through
+    // codegen_generate_declaration), so the Task 4 "skip generic template"
+    // guard — `if (((FuncDeclNode*)decl)->type_params) return 1;` in
+    // codegen_generate_declaration (codegen.c) — is never reached; that
+    // guard exists precisely to stop the ordinary declaration loop from
+    // emitting the template directly, not to block this deliberate
+    // per-instance call.
+    int ok = codegen_generate_function_decl(codegen, checker, (ASTNode*)tmpl);
+
+    codegen->symbol_override = saved_override;
+    codegen->active_subst = saved_subst;
+    codegen->active_subst_n = saved_subst_n;
+    type_checker_pop_type_params(checker, saved_tp);
+
+    return ok;
+#endif
+}
+
+// Task 9: the worklist driver. See the doc comment at the declaration
+// (include/codegen.h) for the dedup/no-op contract.
+int codegen_monomorphize(CodeGenerator* codegen, TypeChecker* checker) {
+    if (!codegen || !checker) return 0;
+#if LLVM_AVAILABLE
+    for (GenericInstantiation* it = checker->instantiations; it; it = it->next) {
+        char* sym = codegen_mangle_instance(it->fn->name, it->args, it->n);
+        // Emit-once: the same {fn,args} tuple may have been recorded more
+        // than once (repeated calls with identical inferred type args), and
+        // an already-present symbol means some earlier worklist entry (or a
+        // future generic-calls-generic pre-walk) already stamped it.
+        if (!LLVMGetNamedFunction(codegen->module, sym)) {
+            if (!codegen_generate_function_instance(codegen, checker,
+                    (FuncDeclNode*)it->fn->generic_decl, sym, it->args, it->n)) {
+                free(sym);
+                return 0;
+            }
+        }
+        free(sym);
+    }
+#endif
+    return codegen->error_count == 0;
+}

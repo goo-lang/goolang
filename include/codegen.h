@@ -168,6 +168,19 @@ struct CodeGenerator {
     // TYPE_PARAM never reaches codegen_type_to_llvm on the non-generic path.
     Type** active_subst;     // TYPE_PARAM index -> concrete Type*, or NULL
     size_t active_subst_n;
+
+    // Function-generics Task 9: when non-NULL, codegen_generate_function_decl
+    // (function_codegen.c, at the symbol_name finalization site) uses this
+    // verbatim as the emitted LLVM symbol instead of computing the ordinary
+    // bare/package-mangled name from the AST. Set (and cleared) by
+    // codegen_generate_function_instance (monomorphize.c) around the single
+    // call that stamps one concrete instantiation's body under its mangled
+    // name (e.g. `Id__int64`) — this is what lets the shared template
+    // FuncDeclNode be lowered more than once, under a different symbol each
+    // time, without touching codegen_generate_function_decl's ordinary path.
+    // NULL (the default — see codegen_new) preserves that ordinary path
+    // byte-for-byte for every non-generic function.
+    const char* symbol_override;
 };
 
 // Function information for code generation
@@ -259,6 +272,34 @@ char* codegen_type_mangle_token(const Type* t);
 // codegen_mangle_instance: `base` + type args -> `base__tok0__tok1...`, e.g.
 // `Map` + {int, string} -> `Map__int__string`.
 char* codegen_mangle_instance(const char* base, Type* const* args, size_t n);
+
+// Function-generics Task 9: stamp ONE concrete instantiation of a generic
+// function template `tmpl` under mangled symbol `sym`, with `args[i]` bound
+// to `tmpl`'s type-param index i (n == the template's type-param count).
+// Installs the substitution on BOTH sides that need it: the checker's
+// active-type-param stack (so a raw AST type node inside the template that
+// re-resolves a bare param name via type_from_ast — e.g. the return-type
+// node — yields a TYPE_PARAM instead of "Unknown type") and the codegen's
+// active_subst env (so codegen_type_to_llvm's TYPE_PARAM case, Task 8, lowers
+// that TYPE_PARAM to the concrete `args[i]`). Both are restored before
+// returning. Returns 1 on success, 0 on codegen failure (mirrors
+// codegen_generate_function_decl, which this calls directly — so it is NOT
+// blocked by the Task 4 "skip generic template" guard living in
+// codegen_generate_declaration).
+int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* checker,
+                                       FuncDeclNode* tmpl, const char* sym,
+                                       Type** args, size_t n);
+// Function-generics Task 9: worklist over checker->instantiations (Task 6) —
+// emits one specialized LLVM function per unique {template, args} tuple
+// recorded during type-checking, skipping any symbol already present in the
+// module (LLVMGetNamedFunction dedup — the same {fn,args} pair may have been
+// recorded more than once for repeated call sites). A no-op when
+// checker->instantiations is NULL (the worklist loop simply never executes)
+// — so an ordinary non-generic program is unaffected. Must run BEFORE the
+// body-emitting declaration loop in
+// codegen_generate_program: a caller's body emitted in that loop may
+// (Task 10) call a mangled instance symbol, which must already exist.
+int codegen_monomorphize(CodeGenerator* codegen, TypeChecker* checker);
 
 // Code generation entry points
 int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNode* program);
