@@ -312,6 +312,16 @@ typedef struct Variable {
     // no-header-deps convention.
     int has_const_int_value;
     uint64_t const_int_value;
+    // Function generics Task 4: marks this Variable as a generic function
+    // TEMPLATE (its FuncDeclNode has type_params != NULL). Set by
+    // declare_function_signature alongside registration. generic_decl is the
+    // back-reference codegen's monomorphizer (M3) will instantiate from;
+    // type_param_count is the total number of type-param names across all
+    // groups (tpn in declare_function_signature). is_generic is 0 and
+    // generic_decl is NULL for every ordinary (non-generic) function/variable.
+    int is_generic;
+    struct ASTNode* generic_decl;
+    size_t type_param_count;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by

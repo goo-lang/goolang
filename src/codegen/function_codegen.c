@@ -677,6 +677,17 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
 // success (including the skip), 0 on failure.
 static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* checker,
                                        FuncDeclNode* func_decl) {
+    // Function generics Task 4: a generic function template's signature
+    // contains TYPE_PARAM (e.g. bare `T`), which type_from_ast below cannot
+    // lower on its own (it needs the per-call substitution the monomorphizer
+    // performs in M3) — skip the predeclare prototype entirely for a
+    // template. Without this guard, a *declared-but-never-called* generic
+    // function still reaches this pass (predeclare runs over every decl,
+    // unconditionally, before the codegen_generate_declaration loop that
+    // Task 4's other guard covers) and re-triggers "Unknown type 'T'" /
+    // return-type lowering failures even though type-checking passed.
+    if (func_decl->type_params) return 1;
+
     Type* return_type = func_decl->return_type
         ? type_from_ast(checker, func_decl->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);

@@ -342,6 +342,10 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
     
     switch (decl->type) {
         case AST_FUNC_DECL:
+            // Function generics Task 4: a generic function template
+            // (type_params != NULL) is never emitted directly — it is
+            // monomorphized per concrete instantiation (M3). Skip here.
+            if (((FuncDeclNode*)decl)->type_params) return 1;
             return codegen_generate_function_decl(codegen, checker, decl);
         case AST_VAR_DECL:
             return codegen_generate_var_decl(codegen, checker, decl);

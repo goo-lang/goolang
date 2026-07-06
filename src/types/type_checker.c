@@ -667,6 +667,37 @@ int is_synthetic_result_name(const char* n) {
 // it via a plain variable lookup; the receiver is params[0] (spliced by the
 // parser), so func_type already carries it. Returns 1 on success, 0 on a
 // duplicate definition in the current scope.
+// Function generics Task 4: records into `seen[]` (indexed by type-param
+// index) whether each type param appears anywhere in `t`. Used to enforce the
+// Tier A "every type param must be inferable from a parameter type" rule —
+// walked over every parameter's Type after the signature's param_types are
+// built. Mirrors the union field names actually declared on Type (types.h):
+// array.element_type, slice.element_type, map.key_type/value_type,
+// pointer.pointee_type, function.param_types/param_count/return_type.
+static void mark_type_params_used(const Type* t, int* seen, size_t n) {
+    if (!t) return;
+    switch (t->kind) {
+        case TYPE_PARAM:
+            if (t->data.type_param.index >= 0 &&
+                (size_t)t->data.type_param.index < n)
+                seen[t->data.type_param.index] = 1;
+            return;
+        case TYPE_SLICE:   mark_type_params_used(t->data.slice.element_type, seen, n); return;
+        case TYPE_POINTER: mark_type_params_used(t->data.pointer.pointee_type, seen, n); return;
+        case TYPE_ARRAY:   mark_type_params_used(t->data.array.element_type, seen, n); return;
+        case TYPE_MAP:
+            mark_type_params_used(t->data.map.key_type, seen, n);
+            mark_type_params_used(t->data.map.value_type, seen, n);
+            return;
+        case TYPE_FUNCTION:
+            for (size_t i = 0; i < t->data.function.param_count; i++)
+                mark_type_params_used(t->data.function.param_types[i], seen, n);
+            mark_type_params_used(t->data.function.return_type, seen, n);
+            return;
+        default: return;
+    }
+}
+
 static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) {
     size_t param_count = 0;
     for (ASTNode* p = func->params; p; p = p->next) {
@@ -731,6 +762,47 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
             param_types[idx++] = pt;
         }
     }
+
+    // Function generics Task 4: enforce the Tier A generic-declaration
+    // invariants once the signature's param_types are built (and the type
+    // params are still pushed onto checker->active_type_params from above).
+    size_t tpn = 0;
+    if (func->type_params) {
+        tpn = checker->active_type_param_count - saved_tp;
+        // Constraint must be `any` (Tier A). `any` => constraint node resolves
+        // to TYPE_INTERFACE with 0 methods; anything else is rejected.
+        for (ASTNode* tp = func->type_params; tp; tp = tp->next) {
+            VarDeclNode* g = (VarDeclNode*)tp;
+            Type* c = g->type ? type_from_ast(checker, g->type) : NULL;
+            if (!c || c->kind != TYPE_INTERFACE || c->data.interface.method_count != 0) {
+                type_error(checker, func->base.pos,
+                    "only `any` type constraints are supported in v1");
+                type_checker_pop_type_params(checker, saved_tp);
+                return 0;
+            }
+        }
+        // Every type param must appear in a parameter type (inference-only rule).
+        int used[32] = {0};
+        for (size_t i = 0; i < param_count; i++)
+            mark_type_params_used(param_types[i], used, tpn);
+        // recover the param-group names for the diagnostic
+        {
+            int idx = 0;
+            for (ASTNode* tp = func->type_params; tp; tp = tp->next) {
+                VarDeclNode* g = (VarDeclNode*)tp;
+                for (size_t i = 0; i < g->name_count; i++, idx++) {
+                    if (!used[idx]) {
+                        type_error(checker, func->base.pos,
+                            "type parameter %s is never used in a parameter; cannot be inferred",
+                            g->names[i]);
+                        type_checker_pop_type_params(checker, saved_tp);
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+
     Type* return_type = func->return_type
         ? type_from_ast(checker, func->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
@@ -752,6 +824,15 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     free(mangled);  // variable_new copied the name
     if (func_var) {
         func_var->is_initialized = 1;
+        // Function generics Task 4: mark this Variable as a generic template
+        // so codegen (predeclare AND the declaration loop) can skip it — a
+        // template is only ever emitted per concrete instantiation by the
+        // monomorphizer (M3), never directly.
+        if (func->type_params) {
+            func_var->is_generic = 1;
+            func_var->generic_decl = (struct ASTNode*)func;
+            func_var->type_param_count = tpn;
+        }
         if (!scope_add_variable(checker->current_scope, func_var)) {
             type_error(checker, func->base.pos, "Function '%s' already declared", func->name);
             variable_free(func_var);
