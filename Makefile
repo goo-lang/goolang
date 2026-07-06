@@ -1,4 +1,11 @@
-CC = gcc
+# ccache: cache object compilations so unchanged translation units aren't
+# recompiled. The cache is content-addressed and lives in a per-user dir
+# (~/.cache/ccache by default), so it is SHARED across git worktrees on the
+# same machine — multiple parallel agents each get cache hits on TUs a sibling
+# already built. Degrades gracefully: if ccache isn't on PATH, CCACHE is empty
+# and CC/BLOCKS_CC are just the bare compilers. Override with `make CCACHE=`.
+CCACHE ?= $(shell command -v ccache 2>/dev/null)
+CC = $(CCACHE) gcc
 # _GNU_SOURCE is a project-wide feature-test macro: it exposes mkstemp,
 # pthread_rwlock_t, popen, etc. used across the runtime/proof/concurrency
 # sources. It was only reaching the main build (via LLVM_CFLAGS); the many
@@ -28,7 +35,7 @@ DEPFLAGS = -MMD -MP
 # src/concurrency/structured_concurrency_enhanced.c. Any test target that
 # compiles/links one of those must use these BLOCKS_* variables instead of
 # $(CC)/$(CFLAGS)/$(LDFLAGS) so it goes through clang -fblocks -lBlocksRuntime.
-BLOCKS_CC = clang
+BLOCKS_CC = $(CCACHE) clang
 BLOCKS_CFLAGS = $(CFLAGS) -fblocks
 BLOCKS_LDFLAGS = $(LDFLAGS) -lBlocksRuntime
 
@@ -136,9 +143,25 @@ $(ANALYZER): $(LEXER_SRCS) $(SRCDIR)/main_minimal.c | $(BINDIR)
 $(BUILDDIR) $(BINDIR) $(LIBDIR):
 	mkdir -p $@
 
-# Bison rules
-$(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.tab.h: $(SRCDIR)/parser/parser.y
+# Bison rules. GROUPED TARGET (`&:`, GNU Make >= 4.3): one bison invocation
+# produces BOTH parser.tab.c AND parser.tab.h. Without `&:` Make treats this as
+# two independent rules that each rerun the recipe, which under `-j` races —
+# an object that #includes parser.tab.h could compile before/while bison is
+# still writing it ("YYSTYPE has no member ... / undeclared" flakes). `&:` tells
+# Make the single recipe generates all listed outputs, so it schedules bison
+# once and blocks every consumer of either output until it finishes.
+$(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.tab.h &: $(SRCDIR)/parser/parser.y
 	bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y
+
+# Bootstrap the generated parser header before compiling ANY object. On a clean
+# build the per-object .d files (DEPFLAGS, below) don't exist yet, so Make can't
+# know which translation units #include parser.tab.h — and under `-j` it would
+# race their compilation against bison (lexer_bridge.c fails with "YYSTYPE has
+# no member / <TOKEN> undeclared" when it wins). An ORDER-ONLY prereq (`|`)
+# forces parser.tab.h to exist first WITHOUT forcing a rebuild when the header
+# legitimately changes — the .d files drive real header→object rebuilds once
+# they exist. This is what makes `make -j` correct from a clean tree.
+$(SRC_OBJS) $(TEST_FRAMEWORK_OBJ) $(RUNTIME_OBJS): | $(SRCDIR)/parser/parser.tab.h
 
 # Object file compilation
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
@@ -160,9 +183,6 @@ $(BUILDDIR)/framework/%.o: $(TEST_FRAMEWORK_DIR)/%.c | $(BUILDDIR)
 # first build is a normal full build and every build after it is header-aware.
 -include $(SRC_OBJS:.o=.d) $(TEST_FRAMEWORK_OBJ:.o=.d) $(RUNTIME_OBJS:.o=.d)
 
-# Parser generation
-$(SRCDIR)/parser/parser.tab.c: $(SRCDIR)/parser/parser.y
-	bison -d -o $@ $<
 
 # Main compiler executable
 goo: $(COMPILER)
