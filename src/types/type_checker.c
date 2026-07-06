@@ -894,9 +894,15 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         int idx = 0;
         for (ASTNode* tp = func->type_params; tp; tp = tp->next) {
             VarDeclNode* g = (VarDeclNode*)tp;
+            // Tier B: resolve the bound so the body-check pass sees the same
+            // constraint declare_function_signature already validated (and
+            // pushed for the signature pass). The signature pass already
+            // rejected a non-interface bound before the body is ever checked,
+            // so resolving it again here cannot fail.
+            Type* bound = g->type ? type_from_ast(checker, g->type) : NULL;
             for (size_t i = 0; i < g->name_count; i++)
                 type_checker_push_type_param(checker,
-                    type_param(g->names[i], idx++, NULL));
+                    type_param(g->names[i], idx++, bound));
         }
     }
 

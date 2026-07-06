@@ -2211,6 +2211,18 @@ generics-bound-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (non-interface bound compiled)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/genb_noniface.err; then echo "generics-bound-reject-probe: FAIL (invalid IR)"; cat build/genb_noniface.err; exit 1; fi; \
 	  if ! grep -qiE "constraint must be an interface" build/genb_noniface.err; then echo "generics-bound-reject-probe: FAIL (no constraint diagnostic)"; cat build/genb_noniface.err; exit 1; fi
+	@printf 'package main\ntype Stringer interface { String() string }\ntype Pt struct { x int }\nfunc Show[T Stringer](v T) string { return v.String() }\nfunc main() { _ = Show(Pt{x: 1}) }\n' > build/genb_notsat.goo
+	@"$(COMPILER)" build/genb_notsat.goo -o build/genb_notsat.out 2>build/genb_notsat.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (non-satisfying arg compiled)"; exit 1; fi; \
+	  if ! grep -qiE "does not implement" build/genb_notsat.err; then echo "generics-bound-reject-probe: FAIL (no satisfaction diagnostic)"; cat build/genb_notsat.err; exit 1; fi
+	@printf 'package main\ntype Stringer interface { String() string }\ntype Pt struct { x int }\nfunc (p Pt) String() string { return "p" }\nfunc Bad[T Stringer](v T) string { return v.Nope() }\nfunc main() { _ = Bad(Pt{x: 1}) }\n' > build/genb_nomethod.goo
+	@"$(COMPILER)" build/genb_nomethod.goo -o build/genb_nomethod.out 2>build/genb_nomethod.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (unknown bound method compiled)"; exit 1; fi; \
+	  if ! grep -qiE "has no method" build/genb_nomethod.err; then echo "generics-bound-reject-probe: FAIL (no unknown-method diagnostic)"; cat build/genb_nomethod.err; exit 1; fi
+	@printf 'package main\ntype Stringer interface { String() string }\nfunc Op[T Stringer](a T, b T) T { return a + b }\nfunc main() {}\n' > build/genb_op.goo
+	@"$(COMPILER)" build/genb_op.goo -o build/genb_op.out 2>build/genb_op.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (operator on bounded T compiled)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/genb_op.err; then echo "generics-bound-reject-probe: FAIL (invalid IR)"; cat build/genb_op.err; exit 1; fi
 	@echo "generics-bound-reject-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void
