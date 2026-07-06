@@ -2276,6 +2276,29 @@ static Type* generic_param_constraint(Type* t, int idx) {
 // method names between the two interfaces instead. Name match is
 // sufficient for Tier B. A NULL/non-interface `have_iface` (a bare `any`
 // type parameter, i.e. no constraint) covers only an empty `want_iface`.
+// True if two interface-method function types have identical signatures.
+// Both carry NO receiver (unlike a registered concrete method, whose params[0]
+// is the receiver — see type_interface_satisfied), so params line up directly.
+// A missing return type and TYPE_VOID are treated as equivalent.
+static int iface_method_sig_equals(Type* have_fn, Type* want_fn) {
+    if (!have_fn || have_fn->kind != TYPE_FUNCTION ||
+        !want_fn || want_fn->kind != TYPE_FUNCTION) return 0;
+    if (have_fn->data.function.param_count != want_fn->data.function.param_count)
+        return 0;
+    for (size_t k = 0; k < want_fn->data.function.param_count; k++) {
+        if (!type_equals(have_fn->data.function.param_types[k],
+                         want_fn->data.function.param_types[k]))
+            return 0;
+    }
+    Type* hr = have_fn->data.function.return_type;
+    Type* wr = want_fn->data.function.return_type;
+    int h_void = !hr || hr->kind == TYPE_VOID;
+    int w_void = !wr || wr->kind == TYPE_VOID;
+    if (h_void != w_void) return 0;
+    if (!h_void && !type_equals(hr, wr)) return 0;
+    return 1;
+}
+
 static int interface_covers(Type* have_iface, Type* want_iface) {
     if (!want_iface || want_iface->kind != TYPE_INTERFACE) return 0;
     if (want_iface->data.interface.method_count == 0) return 1;
@@ -2283,7 +2306,11 @@ static int interface_covers(Type* have_iface, Type* want_iface) {
     for (InterfaceMethod* wm = want_iface->data.interface.methods; wm; wm = wm->next) {
         int found = 0;
         for (InterfaceMethod* hm = have_iface->data.interface.methods; hm; hm = hm->next) {
-            if (hm->name && wm->name && strcmp(hm->name, wm->name) == 0) { found = 1; break; }
+            // A name match is not enough: the signatures must be identical, or a
+            // caller-side bound could smuggle in a same-named method with a
+            // different arity/type and miscompile at the concrete call site.
+            if (hm->name && wm->name && strcmp(hm->name, wm->name) == 0 &&
+                iface_method_sig_equals(hm->type, wm->type)) { found = 1; break; }
         }
         if (!found) return 0;
     }

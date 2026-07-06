@@ -2223,6 +2223,15 @@ generics-bound-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/genb_op.goo -o build/genb_op.out 2>build/genb_op.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (operator on bounded T compiled)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/genb_op.err; then echo "generics-bound-reject-probe: FAIL (invalid IR)"; cat build/genb_op.err; exit 1; fi
+	@# Transitive bound with a same-named but DIFFERENT-signature method: Outer's
+	@# bound A requires M() int, Inner's bound B requires M(int) int. The abstract
+	@# transitive check (interface_covers) must compare signatures, not just names,
+	@# and reject at type-check — NOT let a wrong-arity call reach the LLVM verifier.
+	@printf 'package main\ntype A interface { M() int }\ntype B interface { M(x int) int }\ntype C struct { n int }\nfunc (c C) M() int { return c.n }\nfunc Inner[U B](u U) int { return u.M(5) }\nfunc Outer[T A](t T) int { return Inner(t) + 1 }\nfunc main() { _ = Outer(C{n: 3}) }\n' > build/genb_sigmismatch.goo
+	@"$(COMPILER)" build/genb_sigmismatch.goo -o build/genb_sigmismatch.out 2>build/genb_sigmismatch.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (transitive signature-mismatch bound compiled)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/genb_sigmismatch.err; then echo "generics-bound-reject-probe: FAIL (invalid IR — mismatch reached codegen instead of type-check)"; cat build/genb_sigmismatch.err; exit 1; fi; \
+	  if ! grep -qiE "does not satisfy" build/genb_sigmismatch.err; then echo "generics-bound-reject-probe: FAIL (no satisfaction diagnostic)"; cat build/genb_sigmismatch.err; exit 1; fi
 	@echo "generics-bound-reject-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void
