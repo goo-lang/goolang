@@ -393,6 +393,23 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen, TypeChecker* c
 // longer alias the same vtable address. See interface_codegen.c's callers
 // (codegen_interface_box's two branches, codegen_interface_assert_match) for
 // which form each site must request.
+// Per-concrete-type descriptor reached behind interface vtable slot 0 (Go's
+// itab->_type shape): a private-constant global `goo.typedesc.<T>` (or
+// `goo.typedesc.$ptr$<T>` for pointer_form), layout { ptr eq_fn, ptr
+// type_name, ptr fmt_fn }. eq_fn is field 0 so goo_iface_key_eq's slot-0 hop
+// is a single extra deref; type_name is a C string (e.g. "int", "*Point");
+// fmt_fn is null until a later task fills it. Name-deduped by concrete type,
+// like the vtable globals — see interface_codegen.c.
+LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* checker,
+                                           Type* concrete, int pointer_form);
+// Per-type %v formatter reached via the descriptor's fmt_fn field (field
+// index 2). Emits (or reuses) `goo.fmt.<T>` / `goo.fmt.$ptr$<T>` of LLVM
+// type `goo_string(ptr)`: loads the concrete value from the `data` param
+// and returns its %v string. v1 scalar kinds only (int/uint widths, bool,
+// float32/64, string); pointer_form or any other concrete kind falls back
+// to a goo_string copy of the type name. See interface_codegen.c.
+LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
+                                          Type* concrete, int pointer_form);
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
                                       Type* iface, Type* concrete, int pointer_form);
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,

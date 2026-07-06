@@ -2049,6 +2049,32 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
             LLVMValueRef args[] = { widened };
             LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
                           float_fn, args, 1, "");
+        } else if (kind == TYPE_INTERFACE) {
+            // Print an interface value by its dynamic type: {vtable,data} ->
+            // goo_iface_format (runtime helper: nil vtable -> "<nil>", else
+            // vtable[0]=desc, desc.fmt_fn(data)) -> goo_print_string.
+            LLVMValueRef ival = arg_val->llvm_value;   // {ptr vtable, ptr data}
+            LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, ival, 0, "ifvt");
+            LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, ival, 1, "ifdata");
+
+            LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
+            if (!fmtcall) {
+                codegen_error(codegen, a->pos, "goo_iface_format not found");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef fargs[] = { vtab, data };
+            LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
+                                            fmtcall, fargs, 2, "ifstr");
+
+            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+            if (!str_fn) {
+                codegen_error(codegen, a->pos, "goo_print_string not found in module");
+                value_info_free(arg_val);
+                return NULL;
+            }
+            LLVMValueRef pargs[] = { s };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn), str_fn, pargs, 1, "");
         } else {
             // P0-3: an unsupported argument type is a clean source-located
             // codegen error, not a type-mismatched goo_print call that only
@@ -2378,7 +2404,38 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
             }
 
         } else if (verb == 's') {
-            // %s — string (length-aware, safe for substrings)
+            // %s — string (length-aware, safe for substrings). An interface
+            // argument is also accepted (v1: routed through goo_iface_format
+            // identically to %v — no Stringer/%!s(...) semantics yet).
+            if (kind == TYPE_INTERFACE) {
+                LLVMValueRef ival = arg_val->llvm_value;   // {ptr vtable, ptr data}
+                LLVMValueRef vtab = LLVMBuildExtractValue(c->builder, ival, 0, "ifvt");
+                LLVMValueRef data = LLVMBuildExtractValue(c->builder, ival, 1, "ifdata");
+
+                LLVMValueRef fmtcall = LLVMGetNamedFunction(c->module, "goo_iface_format");
+                if (!fmtcall) {
+                    codegen_error(c, arg_cursor->pos, "goo_iface_format not found");
+                    value_info_free(arg_val);
+                    ok = 0;
+                    break;
+                }
+                LLVMValueRef fargs[] = { vtab, data };
+                LLVMValueRef s = LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(fmtcall),
+                                                fmtcall, fargs, 2, "ifstr");
+                if (!sprintf_mode) {
+                    LLVMValueRef pargs[] = { s };
+                    LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
+                                   print_str_fn, pargs, 1, "");
+                } else {
+                    LLVMValueRef cargs[] = { acc, s };
+                    acc = LLVMBuildCall2(c->builder,
+                                         LLVMGlobalGetValueType(concat_fn),
+                                         concat_fn, cargs, 2, "sp_acc");
+                }
+                value_info_free(arg_val);
+                arg_cursor = arg_cursor->next;
+                continue;
+            }
             if (kind != TYPE_STRING) {
                 codegen_error(c, arg_cursor->pos,
                               sprintf_mode ? "fmt.Sprintf: %%s requires a string argument"
@@ -2533,6 +2590,34 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                     LLVMValueRef s = LLVMBuildCall2(c->builder,
                                                     LLVMGlobalGetValueType(float_to_str_fn),
                                                     float_to_str_fn, s_args, 1, "sp_float");
+                    LLVMValueRef cargs[] = { acc, s };
+                    acc = LLVMBuildCall2(c->builder,
+                                         LLVMGlobalGetValueType(concat_fn),
+                                         concat_fn, cargs, 2, "sp_acc");
+                }
+            } else if (kind == TYPE_INTERFACE) {
+                // Interface value: {vtable,data} -> goo_iface_format (runtime
+                // helper: nil vtable -> "<nil>", else vtable[0]=desc,
+                // desc.fmt_fn(data)) — same extraction as Task 2's Println arm.
+                LLVMValueRef ival = arg_val->llvm_value;   // {ptr vtable, ptr data}
+                LLVMValueRef vtab = LLVMBuildExtractValue(c->builder, ival, 0, "ifvt");
+                LLVMValueRef data = LLVMBuildExtractValue(c->builder, ival, 1, "ifdata");
+
+                LLVMValueRef fmtcall = LLVMGetNamedFunction(c->module, "goo_iface_format");
+                if (!fmtcall) {
+                    codegen_error(c, arg_cursor->pos, "goo_iface_format not found");
+                    value_info_free(arg_val);
+                    ok = 0;
+                    break;
+                }
+                LLVMValueRef fargs[] = { vtab, data };
+                LLVMValueRef s = LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(fmtcall),
+                                                fmtcall, fargs, 2, "ifstr");
+                if (!sprintf_mode) {
+                    LLVMValueRef pargs[] = { s };
+                    LLVMBuildCall2(c->builder, LLVMGlobalGetValueType(print_str_fn),
+                                   print_str_fn, pargs, 1, "");
+                } else {
                     LLVMValueRef cargs[] = { acc, s };
                     acc = LLVMBuildCall2(c->builder,
                                          LLVMGlobalGetValueType(concat_fn),

@@ -84,6 +84,7 @@ int goo_string_cmp(goo_string_t a, goo_string_t b);
 // Scalar-to-string conversions — heap-allocate the result; used by fmt.Sprintf
 // and reusable by a later strconv milestone.
 goo_string_t goo_int_to_string(int64_t value);
+goo_string_t goo_uint_to_string(uint64_t value);
 goo_string_t goo_float_to_string(double value);
 goo_string_t goo_bool_to_string(int value);
 int goo_string_to_int(goo_string_t s, int64_t* out);
@@ -159,6 +160,26 @@ enum { GOO_MAPKEY_STRING = 0, GOO_MAPKEY_INLINE = 1, GOO_MAPKEY_STRUCT = 2, GOO_
 // nil interface; two nils compare equal, nil vs. non-nil never does (falls
 // out of the `vta != vtb` check — NULL != any real vtable pointer).
 int goo_iface_key_eq(int64_t a, int64_t b);
+
+// Format an interface value {vtable,data} as its %v string (fmt.Println/
+// fmt.Sprintf's interface-argument path). nil vtable -> "<nil>"; otherwise
+// hops vtable slot 0 -> descriptor -> descriptor field 2 (fmt_fn) and calls
+// it with `data`. See codegen_get_or_emit_type_fmt (interface_codegen.c) for
+// how fmt_fn thunks are synthesized.
+goo_string_t goo_iface_format(void* vtable, void* data);
+
+// Panic for a failed type assertion `x.(T)`, naming the DYNAMIC (actually
+// held) type instead of a compile-time-only static message (Task 4 of the
+// interface-type-descriptor plan). `iface_name` and `target_name` are the
+// STATIC names codegen already had (the interface's own name, and the
+// assertion's target type); `vtable` is the asserted interface value's
+// runtime vtable — slot 0 is the per-concrete-type descriptor (see
+// goo_iface_format above), whose field 1 is the dynamic type_name. A NULL
+// vtable (nil interface) renders as "<nil>", mirroring goo_iface_format's own
+// nil handling. Formats "interface conversion: %s is %s, not %s" and calls
+// goo_panic — never returns.
+void goo_panic_iface_conversion(const char* iface_name, void* vtable,
+                                 const char* target_name) __attribute__((noreturn));
 
 struct GooMapEntrySV;
 typedef struct GooMapSV {

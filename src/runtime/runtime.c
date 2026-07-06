@@ -322,6 +322,15 @@ goo_string_t goo_int_to_string(int64_t value) {
     goo_string_t s; s.data = data; s.length = (size_t)n; return s;
 }
 
+goo_string_t goo_uint_to_string(uint64_t value) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)value);
+    if (len < 0 || (size_t)len >= sizeof(buf)) {
+        goo_panic("goo_uint_to_string: snprintf overflow");
+    }
+    return goo_string_new_with_length(buf, (size_t)len);
+}
+
 goo_string_t goo_float_to_string(double value) {
     char buf[64];
     int n = snprintf(buf, sizeof(buf), "%g", value);
@@ -597,17 +606,51 @@ double goo_math_max(double x, double y) {
 // Interface-typed map keys (Task 2): compare two boxed `{vtable, data}` key
 // slots. Each of a/b is a pointer to one such heap-copied pair (see
 // codegen_map_key_to_slot's TYPE_INTERFACE arm). Go interface equality: same
-// dynamic type (vtable identity) AND equal dynamic value (dispatched to the
-// vtable's slot 0 — the concrete's per-type value-equality comparator,
-// codegen_get_or_emit_type_eq) on the two data words.
+// dynamic type (vtable identity) AND equal dynamic value (dispatched through
+// the vtable's slot 0 — now the per-type descriptor, whose field 0 is the
+// concrete's value-equality comparator, codegen_get_or_emit_type_eq) on the
+// two data words.
 int goo_iface_key_eq(int64_t a, int64_t b) {
     void** ia = (void**)(intptr_t)a;  // -> { vtable, data }
     void** ib = (void**)(intptr_t)b;
     void* vta = ia[0]; void* vtb = ib[0];
     if (vta == NULL && vtb == NULL) return 1;   // both nil interfaces
     if (vta != vtb) return 0;                    // different dynamic type (or one nil)
-    GooKeyEqFn eq = (GooKeyEqFn)((void**)vta)[0]; // vtable slot 0 = per-type eq
+    void* desc = ((void**)vta)[0];          // vtable slot 0 -> descriptor
+    GooKeyEqFn eq = (GooKeyEqFn)((void**)desc)[0];  // descriptor field 0 -> eq_fn
     return eq((int64_t)(intptr_t)ia[1], (int64_t)(intptr_t)ib[1]); // compare the data words
+}
+
+// Format an interface value {vtable,data} as its %v string. nil vtable -> "<nil>".
+// Encapsulates the null-check + descriptor hop so both fmt.Println's codegen
+// site (call_codegen.c) and a later fmt.Sprintf site can share it.
+goo_string_t goo_iface_format(void* vtable, void* data) {
+    if (!vtable) return goo_string_new("<nil>");
+    void* desc = ((void**)vtable)[0];              // vtable slot 0 -> descriptor
+    typedef goo_string_t (*GooFmtFn)(void*);
+    GooFmtFn fmt = (GooFmtFn)((void**)desc)[2];    // descriptor field 2 -> fmt_fn
+    return fmt(data);
+}
+
+// Task 4: failed type-assertion panic naming the DYNAMIC (actually held)
+// type. Reads descriptor field 1 (type_name) behind the same vtable slot-0
+// hop as goo_iface_key_eq/goo_iface_format above; a NULL vtable (nil
+// interface) renders as "<nil>". Builds the message at RUNTIME because the
+// dynamic type is only known then — the static source/target names are
+// still baked in by codegen as C-string globals, matching Go's own
+// "interface conversion: X is Y, not Z" wording.
+void goo_panic_iface_conversion(const char* iface_name, void* vtable,
+                                 const char* target_name) {
+    const char* dynamic = "<nil>";
+    if (vtable) {
+        void* desc = ((void**)vtable)[0];       // vtable slot 0 -> descriptor
+        dynamic = ((const char**)desc)[1];      // descriptor field 1 -> type_name
+    }
+    char buf[320];
+    snprintf(buf, sizeof(buf), "interface conversion: %s is %s, not %s",
+             iface_name ? iface_name : "interface", dynamic,
+             target_name ? target_name : "?");
+    goo_panic(buf);
 }
 
 // Compare two int64 key slots per the map's key_kind. STRING: the slots hold
