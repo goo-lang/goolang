@@ -180,9 +180,9 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
 // identical slot contents. Returns the global (a ptr to the [N x ptr] thunk
 // array), or NULL on failure.
 // Shared pointer-identity comparator `i32 @goo.ptreq(i64 a, i64 b) { ret a==b }`
-// used as the vtable slot-0 eq for pointer-boxed interfaces (the data word is
-// the pointer; equality is identity). Get-or-emit by name — no per-type cache
-// needed, one instance suffices module-wide.
+// used as the descriptor's eq_fn field for pointer-boxed interfaces (the data
+// word is the pointer; equality is identity). Get-or-emit by name — no per-type
+// cache needed, one instance suffices module-wide.
 static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo.ptreq");
     if (fn) return fn;
@@ -295,9 +295,10 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     // threaded through — it is.
     LLVMValueRef desc = codegen_get_or_emit_type_desc(codegen, checker, concrete, pointer_form);
     if (!desc) { free(slots); return NULL; }
-    // A Function value's LLVM type is already `ptr` (opaque pointers), the
-    // same as every thunk placed below without a cast — no bitcast needed
-    // to satisfy LLVMConstArray(ptrty, ...).
+    // Slot 0 is the per-concrete-type descriptor pointer (was the eq fn before
+    // the Task-1 refactor). A global's LLVM type is already `ptr` (opaque
+    // pointers), same as every thunk placed below — no bitcast needed to
+    // satisfy LLVMConstArray(ptrty, ...).
     slots[0] = desc;
 
     size_t i = 0;
@@ -401,8 +402,9 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
     LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, iface_val, 1, "data");
 
     // Load the thunk pointer from vtable slot `idx + 1` (array of ptr): slot
-    // 0 is now the per-concrete-type eq comparator (Task 1, codegen_
-    // interface_vtable above), so method thunks shifted right by one.
+    // 0 is the per-concrete-type descriptor pointer (its field 0 is the eq
+    // comparator; codegen_interface_vtable above), so method thunks shifted
+    // right by one.
     LLVMTypeRef ptrty = iface_ptr_type(codegen);
     LLVMValueRef gep_idx = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), idx + 1, 0);
     LLVMValueRef slot = LLVMBuildGEP2(codegen->builder, ptrty, vt, &gep_idx, 1, "vt.slot");

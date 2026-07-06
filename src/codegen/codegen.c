@@ -840,8 +840,9 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
 }
 
 // Interface-typed map keys, Task 1 (vtable ABI shift): synthesize (or return
-// the cached) per-concrete-type VALUE-equality comparator that becomes
-// interface vtable slot 0 (codegen_interface_vtable, interface_codegen.c) —
+// the cached) per-concrete-type VALUE-equality comparator. It is stored as the
+// eq_fn field of the per-type descriptor that interface vtable slot 0 points at
+// (codegen_get_or_emit_type_desc, interface_codegen.c) —
 // `i32 @goo.typeeq.<id>(i64 a, i64 b)`. `a`/`b` are the two interface `data`
 // words for the SAME concrete type: the runtime only ever calls vtable
 // slot 0 after a vtable-pointer match (goo_iface_key_eq, a later task), so
