@@ -157,6 +157,17 @@ struct CodeGenerator {
     // concrete types (slice/map/func) boxed into an interface; emitted at
     // most once per module. NULL until first requested.
     LLVMValueRef uncmpeq_fn;
+
+    // Function-generics Task 8: substitution environment for lowering a
+    // generic function's TYPE_PARAM types to their concrete bindings during
+    // monomorphized codegen (Task 9/10 set these around a given
+    // instantiation's codegen). active_subst[i] holds the concrete Type*
+    // bound to TYPE_PARAM index i; active_subst_n is its length. NULL/0
+    // (the default — see codegen_new) means "no active substitution", in
+    // which case codegen_resolve_type is the identity function and
+    // TYPE_PARAM never reaches codegen_type_to_llvm on the non-generic path.
+    Type** active_subst;     // TYPE_PARAM index -> concrete Type*, or NULL
+    size_t active_subst_n;
 };
 
 // Function information for code generation
@@ -462,6 +473,11 @@ ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* che
 #if LLVM_AVAILABLE
 // Type mapping functions
 LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type);
+// Function-generics Task 8: resolves a TYPE_PARAM through codegen's active
+// substitution environment (active_subst/active_subst_n), one level deep.
+// Returns `t` itself (identity) for any non-TYPE_PARAM type, or for a
+// TYPE_PARAM with no active env / an out-of-range or unbound index.
+const Type* codegen_resolve_type(CodeGenerator* codegen, const Type* t);
 LLVMTypeRef codegen_get_basic_type(CodeGenerator* codegen, TypeKind kind);
 LLVMTypeRef codegen_get_array_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type);

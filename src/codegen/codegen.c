@@ -110,6 +110,13 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->deferred_global_init_count = 0;
     codegen->deferred_global_init_capacity = 0;
 
+    // Function-generics Task 8: substitution environment — unset (NULL/0)
+    // until Task 9/10 populate it around a monomorphized instantiation's
+    // codegen. NULL here makes codegen_resolve_type identity and TYPE_PARAM
+    // unreachable in codegen_type_to_llvm on the non-generic path.
+    codegen->active_subst = NULL;
+    codegen->active_subst_n = 0;
+
     // Declare runtime functions
     codegen_declare_runtime_functions(codegen);
     
