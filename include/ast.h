@@ -345,6 +345,12 @@ typedef struct {
     // (src/types/embedding.c) keys off this flag. Appended at the STRUCT TAIL
     // per the no-header-deps convention above.
     int is_embedded;
+    // Comptime-value-specialized functions: set on a parameter written
+    // `comptime name type`. The argument bound to it at a call must be a
+    // compile-time constant; the function is monomorphized per distinct value
+    // (the value is substituted as a literal in the specialized body). Appended
+    // at the STRUCT TAIL per the no-header-deps convention above.
+    int is_comptime_param;
 } VarDeclNode;
 
 // Constant declaration

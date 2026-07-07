@@ -691,6 +691,19 @@ func_param:
         param->values = NULL;
         $$ = (ASTNode*)param;
     }
+    | COMPTIME identifier type {
+        // Comptime value parameter `comptime name type`.
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        VarDeclNode* param = ast_var_decl_new(get_current_position());
+        param->names = malloc(sizeof(char*));
+        param->names[0] = strdup(ident->name);
+        param->name_count = 1;
+        param->type = $3;
+        param->values = NULL;
+        param->is_comptime_param = 1;
+        ast_node_free($2);
+        $$ = (ASTNode*)param;
+    }
     ;
 
 func_result:
