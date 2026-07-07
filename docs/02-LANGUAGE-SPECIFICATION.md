@@ -483,6 +483,67 @@ scope(arena_alloc) {
 } // All freed automatically
 ```
 
+> The `allocator`/`scope()` forms above are a forward-looking design sketch.
+> The mechanism actually implemented today is the **`arena { }` block** described
+> next.
+
+### Arena Regions (`arena { }`)
+
+Goo follows a **hybrid memory model**. The default is ordinary heap allocation
+(a managed/GC default is a planned future leg — see below). An `arena { }` block
+opts a lexical region into a **bump allocator** whose entire backing is freed in
+one shot when the block exits:
+
+```goo
+arena {
+    // new(T) / &T{} allocations that stay inside the block are bump-allocated
+    // from this arena and reclaimed together when the block ends.
+    node := &Node{value: 42}
+    tmp  := new(int)
+    use(node, tmp)
+} // the whole arena is freed here
+```
+
+**Escaping values are promoted to the heap automatically — the model is safe by
+construction, with no user annotations and no dangling pointers.** The compiler
+runs an interprocedural escape analysis: any allocation whose value can outlive
+the block — returned, assigned to a variable declared outside the block, assigned
+through a pointer or into a global, captured by a closure, passed to a goroutine,
+passed to a function that retains it, or *embedded in* any such value — is emitted
+on the persistent heap instead of the arena. Only allocations proven to die with
+the block use the arena. When the analysis is unsure, it heap-allocates (it never
+puts an escaping value in the arena):
+
+```goo
+var kept *Node
+func build() *Node {
+    arena {
+        scratch := &Node{value: 1} // stays local -> arena, freed at block exit
+        result  := &Node{value: 2}
+        kept = result              // escapes to an outer variable -> heap
+        return &Node{value: 3}     // escapes via return -> heap, survives
+    }
+}
+```
+
+Semantics and current limits:
+
+- The arena is freed on the **normal fall-through** exit of the block. Leaving the
+  block early via `return`/`break`/`continue` currently *leaks* that arena rather
+  than freeing it — safe (no use-after-free), but it forgoes reclamation on that
+  path. Freeing on early-exit paths is a planned refinement.
+- Arena blocks nest, and an arena block inside a loop allocates and frees a fresh
+  arena per iteration — the concrete win: a loop that builds many temporary
+  objects inside an `arena { }` keeps resident memory flat instead of growing.
+- Because escaping allocations are heap-promoted, code outside the block is never
+  affected by the arena, and no arena-allocated value is ever reachable after the
+  block is freed.
+
+**Hybrid model roadmap.** Arena regions are leg 1 (manual, opt-in reclamation).
+Two further legs are planned and not yet implemented: a **GC-managed default** (the
+"true to Go" default allocation strategy), and **comptime-selected strategies** (let
+compile-time code choose heap vs. arena vs. managed per context).
+
 ### Smart Pointers
 
 ```goo
