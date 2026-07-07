@@ -220,6 +220,15 @@ struct CodeGenerator {
     // / func_lit_counter's comment above) — the Makefile lacks header
     // dependencies, so inserting mid-struct would shift every later field.
     struct BlockEscapeResult* block_escape;
+
+    // Arena-regions early-exit free: arena_loop_depth[i] is codegen->loop_depth
+    // at the moment arena_stack[i] was pushed. A `break`/`continue` exits only
+    // the innermost loop, so it frees exactly the active arenas pushed INSIDE
+    // that loop (arena_loop_depth[i] >= the current loop_depth) — never an
+    // arena enclosing the loop, which the loop keeps using. `return` frees all
+    // active arenas regardless (min_loop_depth 0). Parallel to arena_stack;
+    // tail-appended per the no-header-deps convention above.
+    int arena_loop_depth[16];
 };
 
 // Function information for code generation
