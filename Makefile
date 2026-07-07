@@ -2056,8 +2056,8 @@ break-nested-probe: $(COMPILER) $(RUNTIME_LIB)
 # P0-3: printing an unsupported type must be a clean compile error, not invalid IR.
 println-badtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== println-badtype-probe: printing a struct fails cleanly ==="
-	@printf 'package main\nimport "fmt"\ntype P struct { x int }\nfunc main() { p := P{1}; fmt.Println(p) }\n' > build/println_bad.goo
+	@echo "=== println-badtype-probe: printing an unsupported type (slice) fails cleanly ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { s := []int{1, 2}; fmt.Println(s) }\n' > build/println_bad.goo
 	@"$(COMPILER)" build/println_bad.goo -o build/println_bad.out 2>build/println_bad.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "println-badtype-probe: FAIL (compiled an unsupported print — expected error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/println_bad.err; then echo "println-badtype-probe: FAIL (invalid IR reached verifier)"; cat build/println_bad.err; exit 1; fi; \
@@ -3287,7 +3287,7 @@ arena-routing-test: arena_routing_test
 # examples/*.expected.txt, so `make test-golden` also covers them — this
 # target exists as the named, scoped-to-Task-6 entry point the design doc
 # asks for.
-ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe
+ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe
 
 arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
@@ -3305,7 +3305,7 @@ arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "arena-free-probe: FAIL"; exit 1; fi; \
-	echo "arena-free-probe: PASS (9/9)"
+	echo "arena-free-probe: PASS (10/10)"
 
 # Same 5 binaries, run under the UAF/double-free gate:
 #   valgrind --leak-check=no --error-exitcode=99 ./probe
@@ -3340,7 +3340,7 @@ arena-valgrind-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "arena-valgrind-probe: FAIL"; exit 1; fi; \
-	echo "arena-valgrind-probe: PASS (9/9 clean)"
+	echo "arena-valgrind-probe: PASS (10/10 clean)"
 
 # Arena RSS capstone (Task 9): the concrete reclamation proof. Compiles the
 # 100k-iteration temporary-building loop with `arena { }` (freed each iteration)
