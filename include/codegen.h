@@ -28,6 +28,20 @@
 typedef struct CodeGenerator CodeGenerator;
 typedef struct FunctionInfo FunctionInfo;
 typedef struct ValueInfo ValueInfo;
+// Arena-regions Task 7c: block_escape.h owns the full definition; codegen.h
+// only needs a pointer-sized member, so a forward declaration avoids a
+// codegen.h -> block_escape.h -> ast.h/param_escape.h header dependency.
+struct BlockEscapeResult;
+
+// Allocation routing (arena-regions groundwork): every heap-allocation call
+// site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
+// the only kind today (always routes to goo_alloc) — a later task adds
+// region-aware kinds that branch inside that single helper instead of at
+// each of the ~9 call sites that used to inline the goo_alloc lookup+call
+// idiom themselves.
+typedef enum {
+    ALLOC_KIND_DEFAULT = 0,
+} AllocKind;
 
 #if LLVM_AVAILABLE
 // Deferred global initializer (Task 2 / var-init cluster): a package-level
@@ -181,6 +195,31 @@ struct CodeGenerator {
     // NULL (the default — see codegen_new) preserves that ordinary path
     // byte-for-byte for every non-generic function.
     const char* symbol_override;
+
+    // Arena-regions Task 3 (hybrid-memory): stack of currently active
+    // arenas. arena_stack[i] is the SSA LLVMValueRef of the i-th enclosing
+    // `arena{}` block's arena pointer — the value a future goo_arena_new
+    // call returns (Task 6 wires the block that pushes/pops it; nothing
+    // pushes yet). codegen_arena_current returns the top
+    // (arena_stack[arena_depth - 1]) or NULL when empty, which is what
+    // keeps codegen_emit_alloc (codegen.c) on the plain goo_alloc path for
+    // every program today. Fixed-depth like loop_break_bb/loop_continue_bb
+    // above, for the same reason (simple, depth-bounded, no growable-array
+    // bookkeeping needed for a stack this shallow in practice).
+    LLVMValueRef arena_stack[16];
+    int arena_depth;
+
+    // Arena-regions Task 7c: per-alloc-site block-escape decisions (7b),
+    // computed once at codegen entry (codegen_generate_program) over the
+    // SAME program AST codegen emits from, so site node pointers match by
+    // identity. Consulted by codegen_arena_eligible; NULL (the default —
+    // see codegen_new, and the fail-safe path if the analysis itself
+    // returns NULL) makes block_escape_site_escapes conservatively return
+    // true for every site, i.e. every allocation stays on the heap path.
+    // Tail-appended per the no-header-deps convention (ast.h's M10 comment
+    // / func_lit_counter's comment above) — the Makefile lacks header
+    // dependencies, so inserting mid-struct would shift every later field.
+    struct BlockEscapeResult* block_escape;
 };
 
 // Function information for code generation
@@ -352,6 +391,7 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
+int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 
 // Select statement helper functions
 #if LLVM_AVAILABLE
@@ -690,8 +730,36 @@ LLVMValueRef codegen_error_union_get_error(CodeGenerator* codegen, LLVMValueRef 
 #if LLVM_AVAILABLE
 LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen);
 LLVMValueRef codegen_get_runtime_function(CodeGenerator* codegen, const char* name);
-LLVMValueRef codegen_call_runtime_function(CodeGenerator* codegen, const char* name, 
+LLVMValueRef codegen_call_runtime_function(CodeGenerator* codegen, const char* name,
                                           LLVMValueRef* args, unsigned arg_count);
+
+// Arena-regions Task 3: push/pop/current for codegen->arena_stack. Stack
+// discipline only (push on `arena{}` entry, pop on exit — Task 6); current
+// returns NULL when the stack is empty (arena_depth == 0), which is what
+// keeps codegen_emit_alloc on the goo_alloc path when no arena is active.
+void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena);
+void codegen_arena_pop(CodeGenerator* codegen);
+LLVMValueRef codegen_arena_current(CodeGenerator* codegen);
+
+// Arena-regions Task 7c: true iff an allocation for `alloc_site` should be
+// routed to the active arena rather than the heap. Touches only
+// arena_stack/arena_depth/block_escape — never the builder/module — so it
+// is safe to call against a lightweight (non-LLVM-initialized)
+// CodeGenerator, which is exactly what arena_routing_test.c does. `kind`
+// must be ALLOC_KIND_DEFAULT (the only arena-eligible kind today) and
+// `alloc_site` must not be classified as escaping its enclosing arena block
+// (block_escape_site_escapes — conservatively true on a NULL/unknown site,
+// so an unclassified site or a NULL alloc_site falls through to heap).
+bool codegen_arena_eligible(CodeGenerator* codegen, ASTNode* alloc_site, AllocKind kind);
+
+// Single funnel for every direct goo_alloc call site (new(T), &StructLiteral,
+// slice-literal backing, closure env, escape-promoted locals, map value/key
+// boxing, interface boxing, go-arg boxing). When `alloc_site` is arena-
+// eligible (codegen_arena_eligible), routes to goo_arena_alloc instead of
+// goo_alloc — see definition in codegen.c. `alloc_site` is the AST node the
+// allocation originates from (NULL for any call site not yet classified by
+// block_escape.c — always falls through to heap).
+LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind, ASTNode* alloc_site);
 #else
 int codegen_declare_runtime_functions(CodeGenerator* codegen);
 int codegen_get_runtime_function(CodeGenerator* codegen, const char* name);

@@ -1,0 +1,41 @@
+// arena-loop-reclaim probe (Task 6, RSS-flat capstone): an arena {} block
+// inside a loop, run 100000 times. Each iteration's `new(int)`/`&Pair{}`
+// temporaries are used ONLY within that iteration's own block (never
+// printed, returned, or stored to a pre-loop outer local — see
+// arena_reclaim_probe.goo's header comment for why even a derived-value
+// print would mark them escaping under 7b's viral dereference taint), so
+// each site is genuinely non-escaping and 7c routes it to goo_arena_alloc.
+// Each iteration therefore pushes a FRESH arena (goo_arena_new) and frees
+// it (goo_arena_free) on fall-through before the next iteration — this is
+// why an arena block inside a loop is safe even though the function-scoped
+// defer mechanism is not (see the Task 6 design doc): the free is inline
+// in the loop body, not deferred to function exit.
+//
+// Correctness is checked via an if-condition (its taint is computed and
+// discarded, never a sink — see block_escape.c's AST_IF_STMT case) that
+// panics on a mismatch; a corrupted/miscompiled arena would abort before
+// printing "done", failing the golden diff. Proves the per-iteration arena
+// is reclaimed each time (no unbounded growth) and that the loop runs to
+// completion, printing a final marker.
+package main
+
+import "fmt"
+
+type Pair struct {
+	A int
+	B int
+}
+
+func main() {
+	for i := 0; i < 100000; i++ {
+		arena {
+			p := new(int)
+			*p = i
+			pr := &Pair{A: i, B: i + 1}
+			if *p != i || pr.A != i || pr.B != i+1 {
+				panic("arena-loop-reclaim: mismatch")
+			}
+		}
+	}
+	fmt.Println("done")
+}

@@ -29,6 +29,9 @@ examples/*.out
 /contract_proof_integration_test
 /contracts_test
 /proof_generation_test
+/param_escape_test
+/block_escape_test
+/arena_routing_test
 /runtime_optimization_demo
 /runtime_optimization_test
 /runtime_optimization_test_simple

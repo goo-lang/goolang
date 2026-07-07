@@ -1,4 +1,6 @@
 #include "codegen.h"
+#include "block_escape.h"
+#include "param_escape.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -89,6 +91,14 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
 
     // Loop-context stack (break/continue targets) starts empty.
     codegen->loop_depth = 0;
+
+    // Arena-regions Task 3: arena stack starts empty — codegen_emit_alloc
+    // stays on the goo_alloc path until Task 6's `arena{}` lowering pushes.
+    codegen->arena_depth = 0;
+    // Arena-regions Task 7c: no analysis result until codegen_generate_
+    // program runs param_escape_analyze/block_escape_analyze over the
+    // program it's about to emit.
+    codegen->block_escape = NULL;
 
     // Error reporting
     codegen->current_file = NULL;
@@ -194,6 +204,13 @@ void codegen_free(CodeGenerator* codegen) {
     free(codegen->target_triple);
     free(codegen->target_cpu);
     free(codegen->target_features);
+
+    // Arena-regions Task 7c: free the block-escape analysis result computed
+    // at codegen_generate_program entry (borrowed AST-node pointers inside
+    // it are not owned, so this frees only the result's own storage).
+    if (codegen->block_escape) {
+        block_escape_result_free(codegen->block_escape);
+    }
 #else
     free(codegen->error_message);
     free(codegen->current_file);
@@ -271,7 +288,27 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         codegen_error(codegen, program->pos, "Expected program node");
         return 0;
     }
-    
+
+    // Arena-regions Task 7c: run the param-escape (7a) and block-escape (7b)
+    // analyses over the SAME `program` AST codegen is about to emit from, so
+    // every alloc-site ASTNode* pointer codegen_emit_alloc later passes to
+    // codegen_arena_eligible matches a decision recorded here by identity.
+    // codegen_generate_program may run once per package (main pass plus one
+    // pass per imported package into this same module) — the re-entry guard
+    // frees any prior result before overwriting so repeat calls don't leak.
+    // Analysis is an optimization, not a correctness precondition: if either
+    // step returns NULL (allocation failure), leave block_escape NULL and
+    // CONTINUE — codegen_arena_eligible then treats every site as escaping
+    // (heap), which is the same fail-safe default this gate already has for
+    // every unclassified site. Do NOT abort codegen on analysis failure.
+    if (codegen->block_escape) {
+        block_escape_result_free(codegen->block_escape);
+        codegen->block_escape = NULL;
+    }
+    ParamEscapeResult* pe = param_escape_analyze(program);
+    codegen->block_escape = block_escape_analyze(program, pe); // does NOT retain pe
+    param_escape_result_free(pe);
+
     // Initialize target
     if (!codegen_initialize_target(codegen)) {
         codegen_error(codegen, program->pos, "Failed to initialize target");
@@ -604,12 +641,9 @@ LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef valu
         // Boxes leak on overwrite/delete by decision (no GC yet; same as
         // closure envs and interface boxes).
         LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_type);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!vt || !alloc_fn) return NULL;
+        if (!vt) return NULL;
         LLVMValueRef size = LLVMSizeOf(vt);
-        LLVMValueRef box = LLVMBuildCall2(codegen->builder,
-                                          LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "map_box");
+        LLVMValueRef box = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
         LLVMBuildStore(codegen->builder, value, box);
         return LLVMBuildPtrToInt(codegen->builder, box, i64, "map_slot");
     }
@@ -715,6 +749,88 @@ static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
     LLVMTypeRef params[2] = { i8p, i8p };
     LLVMTypeRef fnty = LLVMFunctionType(i32, params, 2, 0);
     return LLVMAddFunction(codegen->module, "strcmp", fnty);
+}
+
+// Single funnel point for every heap allocation the compiler emits: new(T),
+// &StructLiteral{}, slice-literal backing, closure environments,
+// escape/capture-promoted locals, map value/key boxing, interface boxing, and
+// go-statement argument boxing all used to inline their own copy of "get or
+// declare goo_alloc, LLVMBuildCall2, use the raw pointer" — nine near-identical
+// copies of the same idiom (see git history pre-dating this helper for the
+// scattered originals). Consolidated here so a later arena-region task has
+// exactly ONE place to branch `kind` on instead of nine.
+//
+// Arena-regions Task 3: push `arena` onto codegen->arena_stack. Silently
+// drops the push past the fixed depth (matches the loop-context stack's
+// depth-32 cap style above) rather than growing — arena nesting this deep
+// is not an expected real-world shape. Nothing calls this yet; Task 6's
+// `arena{}` block lowering is the first caller.
+void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena) {
+    if (!codegen) return;
+    size_t cap = sizeof(codegen->arena_stack) / sizeof(codegen->arena_stack[0]);
+    if ((size_t)codegen->arena_depth >= cap) return;
+    codegen->arena_stack[codegen->arena_depth++] = arena;
+}
+
+// Arena-regions Task 3: pop the innermost active arena. No-op when already
+// empty.
+void codegen_arena_pop(CodeGenerator* codegen) {
+    if (!codegen || codegen->arena_depth <= 0) return;
+    codegen->arena_depth--;
+}
+
+// Arena-regions Task 3: the innermost active arena's SSA pointer, or NULL
+// when no `arena{}` block is currently active. codegen_emit_alloc uses this
+// to decide whether to route to goo_arena_alloc or goo_alloc.
+LLVMValueRef codegen_arena_current(CodeGenerator* codegen) {
+    if (!codegen || codegen->arena_depth <= 0) return NULL;
+    return codegen->arena_stack[codegen->arena_depth - 1];
+}
+
+// Arena-regions Task 7c: the testable seam. True iff an allocation for
+// `alloc_site` should be routed to the active arena — an arena must be on
+// the stack, `kind` must be the (only, today) arena-eligible kind, AND the
+// site must not be classified as escaping its enclosing arena block.
+// block_escape_site_escapes returns true on a NULL/unknown site, so a NULL
+// alloc_site (every call site 7c does not yet classify) or a site outside
+// any arena block falls through to false here -> codegen_emit_alloc's heap
+// path, unchanged. Touches only arena_stack/arena_depth/block_escape, never
+// the builder/module, so it is safe to call on a lightweight CodeGenerator
+// built without codegen_new (see arena_routing_test.c).
+bool codegen_arena_eligible(CodeGenerator* codegen, ASTNode* alloc_site, AllocKind kind) {
+    return codegen_arena_current(codegen) != NULL
+        && kind == ALLOC_KIND_DEFAULT
+        && !block_escape_site_escapes(codegen ? codegen->block_escape : NULL, alloc_site);
+}
+
+// `alloc_site` (7c) is the AST node this allocation originates from; NULL
+// for any call site block_escape.c does not yet classify — always falls
+// through to heap via codegen_arena_eligible's NULL-site miss contract.
+// With an empty arena stack (true for every program until Task 6 ships
+// `arena{}` syntax) this is byte-identical to the pre-arena goo_alloc-only
+// path (verified by the unchanged golden suite).
+LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind, ASTNode* alloc_site) {
+    if (!codegen || !size) return NULL;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_type = LLVMInt64TypeInContext(ctx);
+
+    LLVMValueRef current_arena = codegen_arena_current(codegen);
+    if (codegen_arena_eligible(codegen, alloc_site, kind)) {
+        LLVMTypeRef arena_params[] = { ptr_type, size_type };
+        LLVMTypeRef arena_alloc_ty = LLVMFunctionType(ptr_type, arena_params, 2, 0);
+        LLVMValueRef arena_alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_alloc");
+        if (!arena_alloc_fn) {
+            arena_alloc_fn = LLVMAddFunction(codegen->module, "goo_arena_alloc", arena_alloc_ty);
+        }
+        LLVMValueRef args[] = { current_arena, size };
+        return LLVMBuildCall2(codegen->builder, arena_alloc_ty, arena_alloc_fn, args, 2, "arena_alloc");
+    }
+
+    LLVMTypeRef alloc_ty = LLVMFunctionType(ptr_type, &size_type, 1, 0);
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+    if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
+    return LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1, "alloc");
 }
 
 // Struct-typed map keys (Task 2): synthesize (or return the cached) per-field
@@ -1149,11 +1265,9 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         // literals and identifiers both yield rvalues here; the is_lvalue
         // load above already ran for lvalue key expressions).
         LLVMTypeRef sty = codegen_type_to_llvm(codegen, kt);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!sty || !alloc_fn) return NULL;
+        if (!sty) return NULL;
         LLVMValueRef size = LLVMSizeOf(sty);
-        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "skey_mem");
+        LLVMValueRef mem = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "skey_slot");
     }
@@ -1172,11 +1286,9 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         // goo_iface_key_eq (not pointer identity) provides — the slot only
         // needs to carry an address the comparator can dereference.
         LLVMTypeRef ifty = codegen_type_to_llvm(codegen, kt);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!ifty || !alloc_fn) return NULL;
+        if (!ifty) return NULL;
         LLVMValueRef size = LLVMSizeOf(ifty);
-        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "ikey_mem");
+        LLVMValueRef mem = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "ikey_slot");
     }

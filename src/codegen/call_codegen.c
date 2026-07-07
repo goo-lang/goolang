@@ -401,15 +401,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 codegen_error(codegen, expr->pos, "new: missing resolved pointer type");
                 return NULL;
             }
-            LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-            if (!alloc_fn) {
-                codegen_error(codegen, expr->pos, "new: goo_alloc unavailable");
-                return NULL;
-            }
             LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, ptr_type->data.pointer.pointee_type);
             LLVMValueRef size = LLVMSizeOf(elem_llvm);
-            LLVMValueRef p = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                            alloc_fn, &size, 1, "new");
+            LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, expr);
             return value_info_new(NULL, p, ptr_type);
         }
         if (strcmp(func_name->name, "make") == 0) {

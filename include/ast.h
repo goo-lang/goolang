@@ -170,6 +170,11 @@ typedef enum {
     AST_TYPE_SWITCH,
     AST_TYPE_CASE,
 
+    // arena { ... } block statement (bump-allocated scope), Task 5.
+    // Tail-appended per the M10 convention above (Makefile has no header
+    // deps). Mirrors AST_UNSAFE_STMT's shape (a wrapped body block).
+    AST_ARENA_BLOCK,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -463,6 +468,12 @@ typedef struct {
     ASTNode base;
     struct ASTNode* body;       // Block statement containing unsafe operations
 } UnsafeStmtNode;
+
+// Arena region statement (bump-allocated scope)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* body;   // Block statement whose allocations use the arena
+} ArenaBlockNode;
 
 // Inline assembly statement
 typedef struct {
@@ -1280,6 +1291,7 @@ TypeCaseNode* ast_type_case_new(ASTNode* types, ASTNode* body, Position pos);
 DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos);
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
+ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);

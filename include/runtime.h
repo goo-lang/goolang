@@ -46,6 +46,15 @@ void* goo_alloc(size_t size);
 void* goo_realloc(void* ptr, size_t size);
 void goo_free(void* ptr);
 
+// Bump/arena allocator: a growable block-list bump allocator that the
+// arena-region memory model routes allocations into. Opaque; see
+// src/runtime/arena.c for the block-list layout.
+typedef struct GooArena GooArena;
+GooArena* goo_arena_new(size_t initial_size);
+void* goo_arena_alloc(GooArena* a, size_t size);
+void goo_arena_reset(GooArena* a);
+void goo_arena_free(GooArena* a);
+
 // Error handling
 void goo_panic(const char* message) __attribute__((noreturn));
 goo_error_t* goo_new_error(const char* message);
