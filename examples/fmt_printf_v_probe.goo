@@ -1,0 +1,10 @@
+// fmt.Printf %v of struct and pointer-to-struct (reuses the Println formatter).
+package main
+import "fmt"
+type Point struct { x int; y int }
+func main() {
+	p := Point{x: 3, y: 4}
+	fmt.Printf("p=%v done\n", p)
+	q := &Point{x: 5, y: 6}
+	fmt.Printf("q=%v done\n", q)
+}

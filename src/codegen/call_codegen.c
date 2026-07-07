@@ -2908,13 +2908,39 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                                          LLVMGlobalGetValueType(concat_fn),
                                          concat_fn, cargs, 2, "sp_acc");
                 }
+            } else if (kind == TYPE_STRUCT ||
+                       (kind == TYPE_POINTER && arg_val->goo_type &&
+                        arg_val->goo_type->data.pointer.pointee_type &&
+                        arg_val->goo_type->data.pointer.pointee_type->kind == TYPE_STRUCT)) {
+                // %v of a struct / pointer-to-struct. Printf mode reuses the
+                // recursive print-based formatter shared with fmt.Println
+                // (codegen_emit_fmt_value -> {f0 f1} / &{...}). Sprintf mode
+                // can't: that helper PRINTS, it does not accumulate a
+                // goo_string, so a string-building formatter is needed —
+                // deferred as a documented follow-up.
+                if (sprintf_mode) {
+                    codegen_error(c, arg_cursor->pos,
+                                  "fmt.Sprintf: %%v of a struct/pointer-to-struct is not yet "
+                                  "supported (needs a string-building formatter; use fmt.Printf)");
+                    value_info_free(arg_val);
+                    ok = 0;
+                    break;
+                }
+                if (!codegen_emit_fmt_value(c, tc, arg_val->llvm_value,
+                                            arg_val->goo_type, 0, arg_cursor->pos)) {
+                    value_info_free(arg_val);
+                    ok = 0;
+                    break;
+                }
             } else {
                 codegen_error(c, arg_cursor->pos,
                               sprintf_mode
                               ? "fmt.Sprintf: %%v: unsupported argument type "
-                                "(only string, integer, bool, float supported in v1)"
+                                "(only string, integer, bool, float, and — in Printf — "
+                                "struct/pointer-to-struct supported in v1)"
                               : "fmt.Printf: %%v: unsupported argument type "
-                                "(only string, integer, bool, float supported in v1)");
+                                "(only string, integer, bool, float, struct, "
+                                "pointer-to-struct supported in v1)");
                 value_info_free(arg_val);
                 ok = 0;
                 break;
