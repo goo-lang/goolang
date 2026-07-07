@@ -2393,7 +2393,7 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
                                              lit_val, "addr_lit_load");
                 }
                 LLVMValueRef size = LLVMSizeOf(struct_llvm);
-                LLVMValueRef heap_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
+                LLVMValueRef heap_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, expr);
                 LLVMBuildStore(codegen->builder, lit_val, heap_ptr);
                 result = heap_ptr;
                 result_type = type_pointer(operand->goo_type);

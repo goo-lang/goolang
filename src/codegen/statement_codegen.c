@@ -1856,7 +1856,7 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         box_struct = LLVMStructTypeInContext(ctx, arg_types, (unsigned)arg_count, 0);
 
         LLVMValueRef box_size = LLVMSizeOf(box_struct);  // i64 target-size constant
-        boxed = codegen_emit_alloc(codegen, box_size, ALLOC_KIND_DEFAULT);
+        boxed = codegen_emit_alloc(codegen, box_size, ALLOC_KIND_DEFAULT, NULL);
 
         for (size_t i = 0; i < arg_count; i++) {
             LLVMValueRef field = LLVMBuildStructGEP2(codegen->builder, box_struct, boxed,

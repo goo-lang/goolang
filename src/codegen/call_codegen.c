@@ -403,7 +403,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, ptr_type->data.pointer.pointee_type);
             LLVMValueRef size = LLVMSizeOf(elem_llvm);
-            LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
+            LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, expr);
             return value_info_new(NULL, p, ptr_type);
         }
         if (strcmp(func_name->name, "make") == 0) {

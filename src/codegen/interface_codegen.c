@@ -501,7 +501,7 @@ LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
 
     // Heap-box the concrete value so the interface can outlive the current frame.
     LLVMValueRef size = LLVMSizeOf(llvm_T);
-    LLVMValueRef data = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
+    LLVMValueRef data = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
     LLVMBuildStore(codegen->builder, value, data);
 
     LLVMTypeRef ifacety = codegen_type_to_llvm(codegen, iface);  // { ptr, ptr }

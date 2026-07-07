@@ -28,6 +28,10 @@
 typedef struct CodeGenerator CodeGenerator;
 typedef struct FunctionInfo FunctionInfo;
 typedef struct ValueInfo ValueInfo;
+// Arena-regions Task 7c: block_escape.h owns the full definition; codegen.h
+// only needs a pointer-sized member, so a forward declaration avoids a
+// codegen.h -> block_escape.h -> ast.h/param_escape.h header dependency.
+struct BlockEscapeResult;
 
 // Allocation routing (arena-regions groundwork): every heap-allocation call
 // site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
@@ -204,6 +208,18 @@ struct CodeGenerator {
     // bookkeeping needed for a stack this shallow in practice).
     LLVMValueRef arena_stack[16];
     int arena_depth;
+
+    // Arena-regions Task 7c: per-alloc-site block-escape decisions (7b),
+    // computed once at codegen entry (codegen_generate_program) over the
+    // SAME program AST codegen emits from, so site node pointers match by
+    // identity. Consulted by codegen_arena_eligible; NULL (the default —
+    // see codegen_new, and the fail-safe path if the analysis itself
+    // returns NULL) makes block_escape_site_escapes conservatively return
+    // true for every site, i.e. every allocation stays on the heap path.
+    // Tail-appended per the no-header-deps convention (ast.h's M10 comment
+    // / func_lit_counter's comment above) — the Makefile lacks header
+    // dependencies, so inserting mid-struct would shift every later field.
+    struct BlockEscapeResult* block_escape;
 };
 
 // Function information for code generation
@@ -725,13 +741,25 @@ void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena);
 void codegen_arena_pop(CodeGenerator* codegen);
 LLVMValueRef codegen_arena_current(CodeGenerator* codegen);
 
+// Arena-regions Task 7c: true iff an allocation for `alloc_site` should be
+// routed to the active arena rather than the heap. Touches only
+// arena_stack/arena_depth/block_escape — never the builder/module — so it
+// is safe to call against a lightweight (non-LLVM-initialized)
+// CodeGenerator, which is exactly what arena_routing_test.c does. `kind`
+// must be ALLOC_KIND_DEFAULT (the only arena-eligible kind today) and
+// `alloc_site` must not be classified as escaping its enclosing arena block
+// (block_escape_site_escapes — conservatively true on a NULL/unknown site,
+// so an unclassified site or a NULL alloc_site falls through to heap).
+bool codegen_arena_eligible(CodeGenerator* codegen, ASTNode* alloc_site, AllocKind kind);
+
 // Single funnel for every direct goo_alloc call site (new(T), &StructLiteral,
 // slice-literal backing, closure env, escape-promoted locals, map value/key
-// boxing, interface boxing, go-arg boxing). When an arena is active
-// (codegen_arena_current non-NULL) and `kind` is arena-eligible
-// (ALLOC_KIND_DEFAULT, the only kind today), routes to goo_arena_alloc
-// instead of goo_alloc — see definition in codegen.c.
-LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind);
+// boxing, interface boxing, go-arg boxing). When `alloc_site` is arena-
+// eligible (codegen_arena_eligible), routes to goo_arena_alloc instead of
+// goo_alloc — see definition in codegen.c. `alloc_site` is the AST node the
+// allocation originates from (NULL for any call site not yet classified by
+// block_escape.c — always falls through to heap).
+LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind, ASTNode* alloc_site);
 #else
 int codegen_declare_runtime_functions(CodeGenerator* codegen);
 int codegen_get_runtime_function(CodeGenerator* codegen, const char* name);

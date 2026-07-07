@@ -204,7 +204,7 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     // decl's zero-init/initializer store (emitted at this same position by
     // every caller) always has.
     if (force_promote) {
-        return codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
+        return codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
     }
 
     // M8b goroutine-escape path (unchanged): emit the goo_alloc in the entry
@@ -218,7 +218,7 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     if (first) LLVMPositionBuilderBefore(codegen->builder, first);
     else       LLVMPositionBuilderAtEnd(codegen->builder, entry);
 
-    LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
+    LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
     if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);
     return p;
 }
@@ -582,7 +582,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
         free(env_fields);
 
         LLVMValueRef env_size = LLVMSizeOf(env_ty);
-        env_ptr = codegen_emit_alloc(codegen, env_size, ALLOC_KIND_DEFAULT);
+        env_ptr = codegen_emit_alloc(codegen, env_size, ALLOC_KIND_DEFAULT, NULL);
 
         for (size_t i = 0; i < lit->captured_count; i++) {
             // Current slot address for this name, in the ENCLOSING

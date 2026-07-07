@@ -1183,7 +1183,7 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
     LLVMValueRef data_ptr;
     if (LLVMGetNamedFunction(codegen->module, "goo_alloc")) {
         LLVMValueRef size = LLVMSizeOf(arr_type);
-        data_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
+        data_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
         LLVMTypeRef i32ty = LLVMInt32TypeInContext(codegen->context);
         LLVMValueRef zero = LLVMConstInt(i32ty, 0, 0);
         for (size_t i = 0; i < count; i++) {
