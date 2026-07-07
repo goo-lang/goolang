@@ -3442,6 +3442,15 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, string_t);
     }
 
+    // fmt.Sprint(args...) -> string  (like Sprintf without a format string;
+    // space between two operands only when neither is a string) and
+    // fmt.Sprintln(args...) -> string  (always space-separated + trailing \n)
+    if (strcmp(package, "fmt") == 0 &&
+        (strcmp(name, "Sprint") == 0 || strcmp(name, "Sprintln") == 0)) {
+        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
+        return type_function(NULL, 0, string_t);
+    }
+
     // fmt.Errorf(format string, args...) -> error  (Sprintf + box)
     if (strcmp(package, "fmt") == 0 && strcmp(name, "Errorf") == 0) {
         return type_function(NULL, 0, type_checker_error_type(checker));

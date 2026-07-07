@@ -21,9 +21,9 @@ static bool is_nonretaining_builtin(const char* name) {
 // `fmt` selector calls that provably do not retain a pointer argument:
 //   fmt.Print / Println / Printf — format the arguments and write them to
 //     stdout synchronously; nothing outlives the call.
-//   fmt.Sprintf — formats the arguments into a NEW string and returns it; the
-//     argument pointers are not retained, and the returned string is a fresh
-//     copy that does not alias them.
+//   fmt.Sprintf / Sprint / Sprintln — format the arguments into a NEW string
+//     and return it; the argument pointers are not retained, and the returned
+//     string is a fresh copy that does not alias them.
 // Deliberately EXCLUDED (they retain / may retain, so they stay conservative):
 //   fmt.Errorf — with the %w verb the returned error wraps and retains an
 //     argument, so it is NOT safe to whitelist.
@@ -34,7 +34,9 @@ static bool is_nonretaining_fmt_selector(const char* selector) {
     return strcmp(selector, "Print") == 0
         || strcmp(selector, "Println") == 0
         || strcmp(selector, "Printf") == 0
-        || strcmp(selector, "Sprintf") == 0;
+        || strcmp(selector, "Sprintf") == 0
+        || strcmp(selector, "Sprint") == 0
+        || strcmp(selector, "Sprintln") == 0;
 }
 
 bool goo_callee_is_non_retaining(const ASTNode* call_function) {
