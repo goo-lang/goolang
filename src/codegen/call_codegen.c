@@ -2702,44 +2702,37 @@ ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* chec
 
     CallExprNode* call = (CallExprNode*)expr;
 
-    // Get the goo_print function from the module
-    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
-    if (!print_func) {
-        codegen_error(codegen, expr->pos, "goo_print function not found in module");
-        return NULL;
-    }
-    
-    // Handle arguments similar to println
-    if (!call->args) {
-        // print() with no arguments - do nothing
-        LLVMValueRef empty_str = LLVMConstString("", 0, 0);
-        LLVMValueRef args[] = { empty_str };
-        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func), 
-                      print_func, args, 1, "");
-    } else {
-        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
+    // Go's builtin `print`: variadic, NO separators between operands and NO
+    // trailing newline (the builtin `println` — codegen_generate_println_call —
+    // is the spaces+newline variant). Each operand is formatted by the shared
+    // recursive helper codegen_emit_fmt_value, so scalars, structs, and
+    // pointers-to-struct all work. The previous stub took only the first
+    // argument and passed its raw value straight to goo_print (which takes a
+    // char*), producing invalid IR for every non-char* argument — including a
+    // plain string, whose value is a goo_string struct, not a char*.
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
         if (!arg_val) {
             codegen_error(codegen, expr->pos, "Failed to generate argument for print");
             return NULL;
         }
-        
-        LLVMValueRef args[] = { arg_val->llvm_value };
-        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func), 
-                      print_func, args, 1, "");
-        
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at,
+                                                     arg_val->llvm_value, "print_arg");
+                arg_val->is_lvalue = 0;
+            }
+        }
+        if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
+                                    arg_val->goo_type, 0, a->pos)) {
+            value_info_free(arg_val);
+            return NULL;
+        }
         value_info_free(arg_val);
     }
 
-    // Return void value
-    ValueInfo* result = malloc(sizeof(ValueInfo));
-    result->name = NULL;
-    result->llvm_value = NULL;
-    result->goo_type = type_checker_get_builtin(checker, TYPE_VOID);
-    result->is_lvalue = 0;
-    result->is_moved = 0;
-    result->is_initialized = 1;
-
-    return result;
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
 #endif
 }
 
