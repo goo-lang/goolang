@@ -1,0 +1,18 @@
+package main
+
+import "fmt"
+
+// Goo intentionally tolerates `}` on its own line before `else` (more lenient
+// than Go). The ASI change must not break this.
+func classify(n int) string {
+	if n > 0 {
+		return "pos"
+	}
+	else {
+		return "nonpos"
+	}
+}
+
+func main() {
+	fmt.Println(classify(5))
+}

@@ -1,0 +1,17 @@
+package main
+
+import "fmt"
+
+// A bare `return` on its own line must terminate the statement; the following
+// `r + 1` is a separate (unreachable) statement, so f() returns the named
+// result r = 99. Before the ASI fix the lexer joined the lines into
+// `return r + 1`, returning 100 — a silent miscompile.
+func f() (r int) {
+	r = 99
+	return
+	r + 1
+}
+
+func main() {
+	fmt.Println(f())
+}

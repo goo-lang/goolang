@@ -95,6 +95,8 @@ static int token_ends_value(TokenType t) {
         case TOKEN_RPAREN:
         case TOKEN_RBRACKET:
         case TOKEN_RBRACE:
+        case TOKEN_INCREMENT:   // x++  — postfix, value-ending
+        case TOKEN_DECREMENT:   // x--  — postfix, value-ending
             return 1;
         default:
             return 0;
@@ -146,12 +148,41 @@ Token* lexer_next_token(Lexer* lexer) {
             while (lexer->ch == ' ' || lexer->ch == '\t' || lexer->ch == '\r') {
                 lexer_read_char(lexer);
             }
-            // A leading `/` that starts a comment (`//` or `/*`) is not a
-            // continuation operator — don't let it trigger insertion.
+            // Part 1 — keyword terminators (unconditional). Go always ends the
+            // statement after these keywords; their operand (a return
+            // expression, a break/continue label) must sit on the same line, so
+            // a newline here is unambiguously a boundary. This is separate from
+            // the value-ending guard below because `return` <nl> `expr` has an
+            // identifier (not an operator/bracket) starting line 2, which the
+            // next-char guard would not catch.
+            if (lexer->prev_token_type == TOKEN_RETURN ||
+                lexer->prev_token_type == TOKEN_BREAK ||
+                lexer->prev_token_type == TOKEN_CONTINUE ||
+                lexer->prev_token_type == TOKEN_FALLTHROUGH) {
+                lexer->prev_token_type = TOKEN_SEMICOLON;
+                return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
+            }
+            // Part 2 — greedy-join guard. Insert a `;` when a value-ending token
+            // is followed across a newline by a continuation operator (existing
+            // behaviour) OR by `(`, `[`, `.` — otherwise the parser joins the
+            // lines into a call / index / selector (silent miscompile). The
+            // guard is asymmetric: a legitimate multi-line continuation leaves
+            // the operator/dot at the END of line 1 (`foo().` <nl> `bar()`), so
+            // the token before the newline is not value-ending and this does not
+            // fire. `{` is deliberately excluded (`if cond` <nl> `{` must not
+            // split). The `/` sub-condition still guards a comment-opening `//`
+            // or `/*` from being treated as a continuation operator. The `.`
+            // sub-condition similarly must not fire on the first char of `...`
+            // (TOKEN_ELLIPSIS, variadic/spread) — that token has to flow onto
+            // the next line (e.g. `sum(a` <nl> `...)`), not be split from its
+            // value; there is no `..` range operator in Goo, so excluding it
+            // is unambiguous.
             if (token_ends_value(lexer->prev_token_type) &&
-                char_starts_continuation_op(lexer->ch) &&
+                (char_starts_continuation_op(lexer->ch) ||
+                 lexer->ch == '(' || lexer->ch == '[' || lexer->ch == '.') &&
                 !(lexer->ch == '/' &&
-                  (lexer_peek_char(lexer) == '/' || lexer_peek_char(lexer) == '*'))) {
+                  (lexer_peek_char(lexer) == '/' || lexer_peek_char(lexer) == '*')) &&
+                !(lexer->ch == '.' && lexer_peek_char(lexer) == '.')) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
