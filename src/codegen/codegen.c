@@ -110,6 +110,17 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->deferred_global_init_count = 0;
     codegen->deferred_global_init_capacity = 0;
 
+    // Function-generics Task 8: substitution environment — unset (NULL/0)
+    // until Task 9/10 populate it around a monomorphized instantiation's
+    // codegen. NULL here makes codegen_resolve_type identity and TYPE_PARAM
+    // unreachable in codegen_type_to_llvm on the non-generic path.
+    codegen->active_subst = NULL;
+    codegen->active_subst_n = 0;
+
+    // Function-generics Task 9: no override until codegen_generate_function_
+    // instance installs one around a single instantiation's stamping.
+    codegen->symbol_override = NULL;
+
     // Declare runtime functions
     codegen_declare_runtime_functions(codegen);
     
@@ -314,6 +325,31 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         LLVMAddFunction(codegen->module, "goo.global_init", fn_ty);
     }
 
+    // Function-generics Task 9: stamp every recorded generic instantiation's
+    // specialized function BEFORE the body-emitting declaration loop below.
+    // Ordering is load-bearing, not cosmetic: main's body is emitted INSIDE
+    // that loop, and (once Task 10 rewires call sites) will call a mangled
+    // instance symbol like `Id__int64` — that symbol must already exist in
+    // the module by the time main's body is generated, exactly like the
+    // plain-function predeclare pass above exists so a call to a
+    // later-defined function resolves. Running the pass here, right after
+    // that predeclare pass, also means an instance body that itself calls an
+    // ordinary concrete function finds that callee's prototype already in
+    // place.
+    //
+    // MAIN PACKAGE ONLY: checker->instantiations accumulates across every
+    // package + main pass sharing this one TypeChecker (compile_resolved_
+    // packages, goo.c) — by the time main's codegen_generate_program call
+    // reaches here, every package has already been type-checked (and
+    // codegen'd), so the full instantiation list is already present. Gating
+    // on is_main_pass, mirroring the goo.global_init prototype gate just
+    // above, runs the worklist exactly once instead of once per package (the
+    // LLVMGetNamedFunction dedup inside codegen_monomorphize would make a
+    // repeat harmless, but there is no reason to redo the work).
+    if (is_main_pass && !codegen_monomorphize(codegen, checker)) {
+        return 0;
+    }
+
     // Generate declarations
     if (prog->decls) {
         ASTNode* decl = prog->decls;
@@ -342,6 +378,10 @@ int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, A
     
     switch (decl->type) {
         case AST_FUNC_DECL:
+            // Function generics Task 4: a generic function template
+            // (type_params != NULL) is never emitted directly — it is
+            // monomorphized per concrete instantiation (M3). Skip here.
+            if (((FuncDeclNode*)decl)->type_params) return 1;
             return codegen_generate_function_decl(codegen, checker, decl);
         case AST_VAR_DECL:
             return codegen_generate_var_decl(codegen, checker, decl);

@@ -2223,6 +2223,107 @@ static int slice_or_string_assignable(Type* src_t, Type* dst_t) {
            || (byte_dst && src_t->kind == TYPE_STRING);
 }
 
+// Function generics Task 6: fully handles a call whose callee is a generic
+// Variable (callee_var->is_generic), replacing the ordinary fixed-arity path
+// in type_check_call_expr below for this call entirely — arity is checked
+// against the generic signature's own param_count, every argument is
+// type-checked here, and the substituted return type becomes the call's
+// node_type. Callers must `return` this function's result directly rather
+// than falling through, since the normal check_signature/param_types loop
+// has no notion of TYPE_PARAM.
+//
+// Inference walks each (declared param type, checked arg type) pair through
+// unify_types, which structurally matches the (possibly TYPE_PARAM-bearing)
+// param against the concrete arg and writes newly-inferred bindings — Tier A
+// scope only recurses through TYPE_SLICE/TYPE_POINTER/TYPE_FUNCTION (see its
+// doc comment in types.c). A bare TYPE_PARAM parameter already bound to a
+// DIFFERENT concrete type is unify_types' most common failure mode, so it is
+// special-cased here (pre-checking bindings[idx] before calling unify_types)
+// to produce a "conflicting types" diagnostic naming both types, rather than
+// unify_types' generic 0 return folding into the same message as an
+// unrelated structural mismatch (e.g. []int against *int).
+static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
+                                      CallExprNode* call, Variable* callee_var,
+                                      const char* callee_name) {
+    Type* gsig = callee_var->type;
+    if (!gsig || gsig->kind != TYPE_FUNCTION) {
+        type_error(checker, expr->pos,
+                   "%s is marked generic but has no function signature",
+                   callee_name);
+        return NULL;
+    }
+    size_t n = callee_var->type_param_count;
+    size_t pc = gsig->data.function.param_count;
+
+    size_t argc = 0;
+    for (ASTNode* a = call->args; a; a = a->next) argc++;
+
+    if (argc != pc) {
+        type_error(checker, expr->pos,
+                   "wrong number of arguments to %s: expected %zu, got %zu",
+                   callee_name, pc, argc);
+        return NULL;
+    }
+
+    Type** bindings = calloc(n ? n : 1, sizeof(Type*));
+    if (!bindings) return NULL;
+
+    size_t k = 0;
+    for (ASTNode* a = call->args; a; a = a->next, k++) {
+        Type* at = type_check_expression(checker, a);
+        if (!at) { free(bindings); return NULL; }
+
+        Type* pt = gsig->data.function.param_types[k];
+        if (pt && pt->kind == TYPE_PARAM) {
+            int idx = pt->data.type_param.index;
+            if (idx >= 0 && (size_t)idx < n && bindings[idx] &&
+                !type_equals(bindings[idx], at)) {
+                type_error(checker, expr->pos,
+                           "cannot infer %s: conflicting types %s and %s",
+                           pt->data.type_param.name ? pt->data.type_param.name : "type parameter",
+                           type_to_string(bindings[idx]), type_to_string(at));
+                free(bindings);
+                return NULL;
+            }
+        }
+        if (!unify_types(pt, at, bindings, n)) {
+            type_error(checker, expr->pos,
+                       "cannot infer type arguments for %s: argument %zu (%s) does not match",
+                       callee_name, k + 1, type_to_string(at));
+            free(bindings);
+            return NULL;
+        }
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        if (!bindings[i]) {
+            type_error(checker, expr->pos,
+                       "cannot infer type parameter %zu of %s", i, callee_name);
+            free(bindings);
+            return NULL;
+        }
+    }
+
+    // Record the instantiation for the monomorphizer (Task 9). The recorder
+    // gets its OWN copy of the bindings array rather than aliasing the one
+    // handed to call->type_args below — the checker's instantiation list
+    // (freed by type_checker_free) and this call node (freed by
+    // ast_node_free) each then own an independent allocation, so neither
+    // teardown path has to reason about which runs first or double-frees a
+    // shared pointer.
+    Type** rec_args = n ? malloc(n * sizeof(Type*)) : NULL;
+    if (n && !rec_args) { free(bindings); return NULL; }
+    if (rec_args) memcpy(rec_args, bindings, n * sizeof(Type*));
+    type_check_record_instantiation(checker, callee_var, rec_args, n, expr);
+
+    call->type_args = bindings;
+    call->type_arg_count = n;
+
+    Type* result = type_substitute(gsig->data.function.return_type, bindings, n);
+    expr->node_type = result;
+    return result;
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
@@ -2738,6 +2839,19 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         && !skip_variadic_builtin) {
         IdentifierNode* callee_ident = (IdentifierNode*)call->function;
         Variable* callee = type_checker_lookup_variable(checker, callee_ident->name);
+        // Function generics Task 6: a call through a generic Variable is
+        // handled ENTIRELY by type_check_generic_call — arity, per-argument
+        // type-checking, inference, and the result type all happen there,
+        // bypassing the fixed-arity check_signature/param_types path below
+        // (which knows nothing about TYPE_PARAM and would either false-reject
+        // every call or, worse, silently pass one through with the wrong
+        // result type). Must come before the `!callee->is_builtin` arm below:
+        // a generic function is never is_builtin, but is also not meant to
+        // fall into the ordinary check_signature path.
+        if (callee && callee->is_generic) {
+            return type_check_generic_call(checker, expr, call, callee,
+                                            callee_ident->name);
+        }
         if (callee && !callee->is_builtin) {
             check_signature = 1;
             callee_name = callee_ident->name;

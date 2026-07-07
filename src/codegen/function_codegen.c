@@ -677,6 +677,17 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
 // success (including the skip), 0 on failure.
 static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* checker,
                                        FuncDeclNode* func_decl) {
+    // Function generics Task 4: a generic function template's signature
+    // contains TYPE_PARAM (e.g. bare `T`), which type_from_ast below cannot
+    // lower on its own (it needs the per-call substitution the monomorphizer
+    // performs in M3) — skip the predeclare prototype entirely for a
+    // template. Without this guard, a *declared-but-never-called* generic
+    // function still reaches this pass (predeclare runs over every decl,
+    // unconditionally, before the codegen_generate_declaration loop that
+    // Task 4's other guard covers) and re-triggers "Unknown type 'T'" /
+    // return-type lowering failures even though type-checking passed.
+    if (func_decl->type_params) return 1;
+
     Type* return_type = func_decl->return_type
         ? type_from_ast(checker, func_decl->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
@@ -803,6 +814,16 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     const char* symbol_name = emit_name;
     char* pkg_mangled = codegen_package_symbol_name(checker, emit_name);
     if (pkg_mangled) symbol_name = pkg_mangled;
+    // Function-generics Task 9: a monomorphized instance overrides whatever
+    // symbol name was just computed with its mangled instance name (e.g.
+    // `Id__int64`) — installed by codegen_generate_function_instance
+    // (monomorphize.c) around this exact call, for the duration of stamping
+    // one concrete instantiation of a generic template. Checked last so it
+    // always wins over both the bare and package-mangled names. `emit_name`
+    // itself is untouched, so the type-checker lookup just below (which must
+    // still find the TEMPLATE's Variable, carrying its TYPE_PARAM-bearing
+    // signature) keys on the ordinary bare/method name as usual.
+    if (codegen->symbol_override) symbol_name = codegen->symbol_override;
 
     // Get function type from AST
     Type* return_type = NULL;

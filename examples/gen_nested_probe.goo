@@ -1,0 +1,11 @@
+package main
+
+import "fmt"
+
+func Id[T any](x T) T { return x }
+
+func Twice[T any](x T, f func(T) T) T { return f(Id(x)) }
+
+func main() {
+	fmt.Println(Twice(5, func(n int) int { return n + n }))
+}

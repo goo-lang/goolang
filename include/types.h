@@ -312,6 +312,16 @@ typedef struct Variable {
     // no-header-deps convention.
     int has_const_int_value;
     uint64_t const_int_value;
+    // Function generics Task 4: marks this Variable as a generic function
+    // TEMPLATE (its FuncDeclNode has type_params != NULL). Set by
+    // declare_function_signature alongside registration. generic_decl is the
+    // back-reference codegen's monomorphizer (M3) will instantiate from;
+    // type_param_count is the total number of type-param names across all
+    // groups (tpn in declare_function_signature). is_generic is 0 and
+    // generic_decl is NULL for every ordinary (non-generic) function/variable.
+    int is_generic;
+    struct ASTNode* generic_decl;
+    size_t type_param_count;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by
@@ -385,6 +395,29 @@ typedef struct ComptimeTypeContext {
     size_t computed_type_capacity;
 } ComptimeTypeContext;
 
+// Function generics Task 6: one resolved call-site instantiation, appended by
+// type_check_record_instantiation (type_checker.c) whenever a call through a
+// generic Variable (fn->is_generic) has its type arguments successfully
+// inferred. `fn` is the generic template Variable itself (fn->generic_decl is
+// the FuncDeclNode the monomorphizer instantiates from); `args[i]` is the
+// concrete Type bound to fn's type-param index i, `n` == fn->type_param_count.
+// `args` is a malloc'd COPY of the call site's inferred bindings, independent
+// of that same call's CallExprNode.type_args (expression_checker.c's
+// type_check_generic_call builds both from one calloc'd array but hands each
+// side its own copy) — this list's node and its `args` array are owned and
+// freed together by type_checker_free, entirely independent of the AST's own
+// teardown (ast_node_free), so neither free path depends on the other's
+// ordering or reasons about a shared pointer. Intrusive singly-linked list,
+// head at TypeChecker.instantiations (below); the same {fn,args} tuple may be
+// recorded more than once for repeated calls with the same type arguments —
+// deduplication is the monomorphizer's job (Task 9), not this recorder's.
+typedef struct GenericInstantiation {
+    Variable* fn;
+    Type** args;
+    size_t n;
+    struct GenericInstantiation* next;
+} GenericInstantiation;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -439,6 +472,25 @@ struct TypeChecker {
     // appended per the no-header-deps convention (ast.h's M10 note).
     struct ASTNode* literal_stack[GOO_CLOSURE_MAX_NESTING];
     size_t literal_stack_len;
+
+    // Function generics Task 3: active generic type parameters, innermost
+    // function's params on top. Consulted by type_from_ast so a bare `T` in
+    // a generic function's signature/body resolves to its TYPE_PARAM Type
+    // instead of "Unknown type 'T'". Pushed by declare_function_signature
+    // and type_check_function_decl (popped on every return path of both —
+    // a missed pop leaks type params into sibling functions). Fixed array,
+    // not malloc'd: type-param-list nesting is bounded by source structure
+    // (Tier A functions are small), same rationale as literal_stack above.
+    Type* active_type_params[32];
+    size_t active_type_param_count;
+
+    // Function generics Task 6: head of the linked list of resolved
+    // generic-call instantiations recorded by type_check_record_instantiation
+    // during call checking. NULL until the first generic call type-checks
+    // successfully. The monomorphizer (Task 9) walks this list after
+    // type_check_program returns to know which concrete instantiations of
+    // each generic function to emit; torn down in type_checker_free.
+    GenericInstantiation* instantiations;
 };
 
 // Type creation functions
@@ -542,6 +594,32 @@ void variable_free(Variable* var);
 int scope_add_variable(Scope* scope, Variable* var);
 Variable* scope_lookup_variable(Scope* scope, const char* name);
 Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
+
+// Function generics Task 3: active-type-param stack (see TypeChecker's
+// active_type_params field above). Push/pop bracket a function's signature
+// and body checking; lookup is consulted by type_from_ast before it would
+// otherwise report "Unknown type '<name>'".
+void type_checker_push_type_param(TypeChecker* checker, Type* tp);
+void type_checker_pop_type_params(TypeChecker* checker, size_t to_count);
+Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name);
+
+// Function generics Task 5: standalone helpers for generic-call inference
+// (Task 6 wires them in). type_substitute replaces every TYPE_PARAM of index
+// i < n with bindings[i], recursing through slice/pointer/function (Tier-A
+// scope; TYPE_ARRAY/TYPE_MAP are not recursed). unify_types structurally
+// matches a possibly-TYPE_PARAM `param` against a concrete `arg`, inferring
+// bindings; returns 0 on structural mismatch or a conflicting binding.
+Type* type_substitute(Type* t, Type** bindings, size_t n);
+int unify_types(Type* param, Type* arg, Type** bindings, size_t n);
+
+// Function generics Task 6: append {fn, args, n} to checker->instantiations.
+// Takes ownership of `args` (the caller's calloc'd bindings array — do not
+// free or reuse it after this call). `call_site` is the call expression that
+// produced this instantiation; kept for a possible future per-callsite
+// diagnostic (not read by Task 9's monomorphizer, which only needs fn/args/n).
+void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
+                                     Type** args, size_t n,
+                                     struct ASTNode* call_site);
 
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);

@@ -440,6 +440,52 @@ func_decl:
         ast_node_free($2);
         $$ = (ASTNode*)func;
     }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        func->body = $8;
+        func->params = NULL;
+        func->return_type = NULL;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN func_params RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        reinterpret_grouped_names($7);
+        func->params = $7;
+        func->body = $9;
+        func->return_type = NULL;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN RPAREN func_result block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        func->body = $9;
+        func->params = NULL;
+        func->return_type = $8;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN func_params RPAREN func_result block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        reinterpret_grouped_names($7);
+        func->params = $7;
+        func->body = $10;
+        func->return_type = $9;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
     | FUNC identifier func_signature block {
         // Kept as a fall-back catch (covers attribute_list/COMPTIME/
         // UNSAFE-prefixed forms that still go via func_signature). The
@@ -1858,6 +1904,8 @@ call_expr:
         call->function = $1;
         call->args = NULL;
         call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN expression_list RPAREN {
@@ -1869,6 +1917,8 @@ call_expr:
         call->function = $1;
         call->args = $3;
         call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
@@ -1892,6 +1942,8 @@ call_expr:
         call->function = $1;
         call->args = $3;
         call->has_spread = 1;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     // `make(map[K]V)` / `make([]T, n)`: a type in call-argument position.
@@ -1919,6 +1971,8 @@ call_expr:
         call->function = $1;
         call->args = $3;
         call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
@@ -1938,6 +1992,8 @@ call_expr:
         $3->next = $5;
         call->args = $3;
         call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     ;

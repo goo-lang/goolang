@@ -1,0 +1,11 @@
+package main
+
+import "fmt"
+
+func Box[U any](x U) U { return x }
+
+func Outer[T any](s []T) []T { return Box(s) }
+
+func main() {
+	fmt.Println(Outer([]int{1, 2, 3})[0])
+}

@@ -297,6 +297,10 @@ typedef struct {
     // Non-owning alias: the receiver is spliced as the head of `params`,
     // so it is freed via the params chain — do not free it separately.
     struct ASTNode* receiver;
+    // Generic type parameters (`func F[T, U any](...)`). NULL for ordinary
+    // functions. Linked list of VarDeclNode: names[] = a type-param group's
+    // names, type = the constraint (Tier A: always `any`). Owned by this node.
+    struct ASTNode* type_params;
 } FuncDeclNode;
 
 // Variable declaration
@@ -518,6 +522,18 @@ typedef struct {
     struct ASTNode* args;       // Argument list
     int has_spread;             // final arg is `expr...` (Go spread); malloc'd
                                 // call sites must zero it — see parser arms
+    // Function generics Task 6: the concrete type-arg tuple inferred for this
+    // call site when `function` resolves to a generic Variable (is_generic).
+    // Set by type_check_generic_call (expression_checker.c) alongside the
+    // call's substituted result type; NULL/0 for every non-generic call.
+    // type_args[i] is the concrete Type bound to the callee's type-param
+    // index i — owned by the type checker/interning system (same model as
+    // node_type below), NOT by this node; only the array itself is freed
+    // here. Codegen's monomorphizer (Task 9/10) reads these directly off the
+    // call node to select/emit the right instantiation. malloc'd call sites
+    // (the parser arms building CallExprNode directly) must zero both.
+    struct Type** type_args;
+    size_t type_arg_count;
 } CallExprNode;
 
 // Index expression
