@@ -2445,6 +2445,24 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
     return result;
 }
 
+// Comptime value params Task 2: the VarDeclNode at parameter position `idx`
+// in a FuncDeclNode's parameter list (skipping any non-VarDeclNode entries —
+// none are expected today, but declare_function_signature's own param_types
+// build loop applies the same guard). idx is 0-based over parameters only,
+// matching func_type->data.function.param_types[idx] indexing. Returns NULL
+// past the end of the list (e.g. a trailing variadic-packed argument beyond
+// the fixed prefix, which has no per-argument VarDeclNode of its own).
+static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
+    if (!fd) return NULL;
+    size_t i = 0;
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (i == idx) return (VarDeclNode*)p;
+        i++;
+    }
+    return NULL;
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
@@ -2956,6 +2974,14 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     int check_signature = 0;
     size_t recv_offset = 0;
     const char* callee_name = NULL;
+    // Comptime value params Task 2: the resolved callee Variable, captured
+    // whenever check_signature is set below (identifier, struct-method, or
+    // source-package-function call), so the per-argument loop can walk its
+    // func_decl_node (FuncDeclNode) to find each parameter's
+    // is_comptime_param flag. Stays NULL for interface-method calls (no
+    // concrete Variable to resolve to) — comptime params on an interface
+    // method are simply not checked here.
+    Variable* checked_callee = NULL;
     if (call->function && call->function->type == AST_IDENTIFIER
         && !skip_variadic_builtin) {
         IdentifierNode* callee_ident = (IdentifierNode*)call->function;
@@ -2976,6 +3002,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         if (callee && !callee->is_builtin) {
             check_signature = 1;
             callee_name = callee_ident->name;
+            checked_callee = callee;
         }
     } else if (call->function && call->function->type == AST_SELECTOR_EXPR
                && !skip_variadic_builtin) {
@@ -3005,6 +3032,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         check_signature = 1;
                         recv_offset = 1;
                         callee_name = sel->selector;
+                        checked_callee = m;
                     }
                 }
             } else if (st->kind == TYPE_INTERFACE) {
@@ -3045,6 +3073,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         check_signature = 1;
                         recv_offset = 0;
                         callee_name = sel->selector;
+                        checked_callee = exp;
                     }
                 }
             }
@@ -3102,6 +3131,38 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     while (arg) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
+
+        // Comptime value params Task 2: a `comptime name T` parameter demands
+        // a compile-time-constant argument — evaluate it through the
+        // comptime engine and require an int result. Independent of (and
+        // checked before) the type-compatibility logic below: this is a
+        // constness requirement, not a type mismatch, so it gets its own
+        // diagnostic rather than falling through to "cannot use T as U".
+        // Only reachable when checked_callee's real FuncDeclNode is known
+        // (identifier/struct-method/source-package calls); an interface
+        // method call has no concrete Variable to resolve is_comptime_param
+        // from and is not checked here.
+        if (checked_callee && checked_callee->func_decl_node &&
+            checked_callee->func_decl_node->type == AST_FUNC_DECL) {
+            VarDeclNode* param_vd = func_decl_param_at(
+                (FuncDeclNode*)checked_callee->func_decl_node, arg_count + recv_offset);
+            if (param_vd && param_vd->is_comptime_param) {
+                ComptimeContext* raw_ctx = checker->comptime_type_ctx
+                    ? checker->comptime_type_ctx->comptime_ctx : NULL;
+                ComptimeResult* res = raw_ctx
+                    ? comptime_eval_expression(raw_ctx, arg) : NULL;
+                int ok = res && res->value && !res->error &&
+                         res->value->type == COMPTIME_VALUE_INT;
+                if (!ok) {
+                    if (res) comptime_result_free(res);
+                    type_error(checker, arg->pos,
+                        "argument to comptime parameter '%s' must be a compile-time constant",
+                        param_vd->names[0]);
+                    return NULL;
+                }
+                comptime_result_free(res);
+            }
+        }
 
         // Argument type compatibility: position-named so the diagnostic
         // points at the offending argument rather than the LLVM verifier.

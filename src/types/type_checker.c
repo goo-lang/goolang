@@ -860,6 +860,11 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     free(mangled);  // variable_new copied the name
     if (func_var) {
         func_var->is_initialized = 1;
+        // Comptime value params Task 2: back-reference to this FuncDeclNode
+        // for EVERY function/method (unlike generic_decl below, which stays
+        // NULL for non-generic functions) — the call-argument checker needs
+        // it to find each parameter's is_comptime_param flag.
+        func_var->func_decl_node = (struct ASTNode*)func;
         // Function generics Task 4: mark this Variable as a generic template
         // so codegen (predeclare AND the declaration loop) can skip it — a
         // template is only ever emitted per concrete instantiation by the

@@ -322,6 +322,16 @@ typedef struct Variable {
     int is_generic;
     struct ASTNode* generic_decl;
     size_t type_param_count;
+    // Comptime value parameters (Task 2): the FuncDeclNode this Variable was
+    // registered from (declare_function_signature), for EVERY function/method
+    // Variable — not just generic templates (contrast generic_decl, which
+    // stays NULL here). Lets the call-argument checker (expression_checker.c)
+    // walk the callee's real parameter list and read each VarDeclNode's
+    // is_comptime_param flag, positionally matched against param_types[idx]
+    // (recv_offset already accounts for a spliced method receiver). NULL for
+    // every non-function Variable (ordinary locals, consts, package markers).
+    // Not owned — the FuncDeclNode is owned by the AST, freed independently.
+    struct ASTNode* func_decl_node;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by

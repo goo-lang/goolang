@@ -913,6 +913,7 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->is_generic = 0;       // Function generics Task 4: set by declare_function_signature
     var->generic_decl = NULL;
     var->type_param_count = 0;
+    var->func_decl_node = NULL;  // Comptime value params Task 2: set by declare_function_signature
 
     return var;
 }
