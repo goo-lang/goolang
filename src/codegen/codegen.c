@@ -90,6 +90,10 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // Loop-context stack (break/continue targets) starts empty.
     codegen->loop_depth = 0;
 
+    // Arena-regions Task 3: arena stack starts empty — codegen_emit_alloc
+    // stays on the goo_alloc path until Task 6's `arena{}` lowering pushes.
+    codegen->arena_depth = 0;
+
     // Error reporting
     codegen->current_file = NULL;
     codegen->error_count = 0;
@@ -723,16 +727,56 @@ static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
 // scattered originals). Consolidated here so a later arena-region task has
 // exactly ONE place to branch `kind` on instead of nine.
 //
-// `kind` is accepted but unused today: every kind routes to goo_alloc, so this
-// is a pure refactor with no behavioral change (verified by the unchanged
-// golden suite). Do not add region/arena logic here yet — that is the next
-// task's job.
+// Arena-regions Task 3: push `arena` onto codegen->arena_stack. Silently
+// drops the push past the fixed depth (matches the loop-context stack's
+// depth-32 cap style above) rather than growing — arena nesting this deep
+// is not an expected real-world shape. Nothing calls this yet; Task 6's
+// `arena{}` block lowering is the first caller.
+void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena) {
+    if (!codegen) return;
+    size_t cap = sizeof(codegen->arena_stack) / sizeof(codegen->arena_stack[0]);
+    if ((size_t)codegen->arena_depth >= cap) return;
+    codegen->arena_stack[codegen->arena_depth++] = arena;
+}
+
+// Arena-regions Task 3: pop the innermost active arena. No-op when already
+// empty.
+void codegen_arena_pop(CodeGenerator* codegen) {
+    if (!codegen || codegen->arena_depth <= 0) return;
+    codegen->arena_depth--;
+}
+
+// Arena-regions Task 3: the innermost active arena's SSA pointer, or NULL
+// when no `arena{}` block is currently active. codegen_emit_alloc uses this
+// to decide whether to route to goo_arena_alloc or goo_alloc.
+LLVMValueRef codegen_arena_current(CodeGenerator* codegen) {
+    if (!codegen || codegen->arena_depth <= 0) return NULL;
+    return codegen->arena_stack[codegen->arena_depth - 1];
+}
+
+// `kind` selects arena-eligibility: ALLOC_KIND_DEFAULT (the only kind today)
+// routes to the active arena when one is on the stack, else goo_alloc. With
+// an empty arena stack (true for every program until Task 6 ships `arena{}`
+// syntax) this is byte-identical to the pre-arena goo_alloc-only path
+// (verified by the unchanged golden suite).
 LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind) {
-    (void)kind;  // routing point for the arena-region follow-up task
     if (!codegen || !size) return NULL;
     LLVMContextRef ctx = codegen->context;
     LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
     LLVMTypeRef size_type = LLVMInt64TypeInContext(ctx);
+
+    LLVMValueRef current_arena = codegen_arena_current(codegen);
+    if (current_arena && kind == ALLOC_KIND_DEFAULT) {
+        LLVMTypeRef arena_params[] = { ptr_type, size_type };
+        LLVMTypeRef arena_alloc_ty = LLVMFunctionType(ptr_type, arena_params, 2, 0);
+        LLVMValueRef arena_alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_alloc");
+        if (!arena_alloc_fn) {
+            arena_alloc_fn = LLVMAddFunction(codegen->module, "goo_arena_alloc", arena_alloc_ty);
+        }
+        LLVMValueRef args[] = { current_arena, size };
+        return LLVMBuildCall2(codegen->builder, arena_alloc_ty, arena_alloc_fn, args, 2, "arena_alloc");
+    }
+
     LLVMTypeRef alloc_ty = LLVMFunctionType(ptr_type, &size_type, 1, 0);
     LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
     if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);

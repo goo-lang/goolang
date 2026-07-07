@@ -191,6 +191,19 @@ struct CodeGenerator {
     // NULL (the default — see codegen_new) preserves that ordinary path
     // byte-for-byte for every non-generic function.
     const char* symbol_override;
+
+    // Arena-regions Task 3 (hybrid-memory): stack of currently active
+    // arenas. arena_stack[i] is the SSA LLVMValueRef of the i-th enclosing
+    // `arena{}` block's arena pointer — the value a future goo_arena_new
+    // call returns (Task 6 wires the block that pushes/pops it; nothing
+    // pushes yet). codegen_arena_current returns the top
+    // (arena_stack[arena_depth - 1]) or NULL when empty, which is what
+    // keeps codegen_emit_alloc (codegen.c) on the plain goo_alloc path for
+    // every program today. Fixed-depth like loop_break_bb/loop_continue_bb
+    // above, for the same reason (simple, depth-bounded, no growable-array
+    // bookkeeping needed for a stack this shallow in practice).
+    LLVMValueRef arena_stack[16];
+    int arena_depth;
 };
 
 // Function information for code generation
@@ -703,11 +716,20 @@ LLVMValueRef codegen_get_runtime_function(CodeGenerator* codegen, const char* na
 LLVMValueRef codegen_call_runtime_function(CodeGenerator* codegen, const char* name,
                                           LLVMValueRef* args, unsigned arg_count);
 
+// Arena-regions Task 3: push/pop/current for codegen->arena_stack. Stack
+// discipline only (push on `arena{}` entry, pop on exit — Task 6); current
+// returns NULL when the stack is empty (arena_depth == 0), which is what
+// keeps codegen_emit_alloc on the goo_alloc path when no arena is active.
+void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena);
+void codegen_arena_pop(CodeGenerator* codegen);
+LLVMValueRef codegen_arena_current(CodeGenerator* codegen);
+
 // Single funnel for every direct goo_alloc call site (new(T), &StructLiteral,
 // slice-literal backing, closure env, escape-promoted locals, map value/key
-// boxing, interface boxing, go-arg boxing). `kind` is unused today — every
-// kind routes to goo_alloc — but gives the arena-region follow-up task one
-// branch point instead of ~9 call sites. See definition in codegen.c.
+// boxing, interface boxing, go-arg boxing). When an arena is active
+// (codegen_arena_current non-NULL) and `kind` is arena-eligible
+// (ALLOC_KIND_DEFAULT, the only kind today), routes to goo_arena_alloc
+// instead of goo_alloc — see definition in codegen.c.
 LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind);
 #else
 int codegen_declare_runtime_functions(CodeGenerator* codegen);
