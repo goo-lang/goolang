@@ -1,0 +1,29 @@
+// fmt struct / pointer-to-struct formatting probe. Proves fmt.Println can
+// format a struct value ("{f0 f1}"), a pointer-to-struct ("&{f0 f1}"), and a
+// struct with mixed scalar field types (int/string/bool), exercising the
+// per-field recursive dispatch (codegen_emit_fmt_value, call_codegen.c).
+package main
+
+import "fmt"
+
+type Point struct {
+	x int
+	y int
+}
+
+type Mixed struct {
+	n int
+	s string
+	b bool
+}
+
+func main() {
+	p := Point{x: 3, y: 4}
+	fmt.Println(p)
+
+	q := &Point{x: 5, y: 6}
+	fmt.Println(q)
+
+	m := Mixed{n: 7, s: "hi", b: true}
+	fmt.Println(m)
+}

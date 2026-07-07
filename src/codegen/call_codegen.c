@@ -22,6 +22,13 @@ static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker
 // to display: "<nil>" when null, else goo_error_message(handle). Shared by
 // fmt.Println's error case and the %v verb (defined below, near fmt_emit_segments).
 static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMValueRef err_loaded, Position pos);
+
+// fmt.Println value formatter (struct/pointer-to-struct formatting task):
+// recursive per-value dispatch, extracted from the Println arg loop so
+// TYPE_STRUCT and pointer-to-struct can recurse into it. See its definition
+// (near codegen_generate_println_call) for the full contract.
+static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
+                                   LLVMValueRef val, Type* ty, int depth, Position pos);
 #endif
 
 // Defined in expression_codegen.c: storage address of an addressable
@@ -2086,6 +2093,223 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
 #endif
 }
 
+#if LLVM_AVAILABLE
+// codegen_emit_fmt_value: recursive fmt.Println value formatter (struct /
+// pointer-to-struct formatting task). Emits the no-newline print call(s) for
+// ONE already-loaded value `val` of goo type `ty`. Moved verbatim from the
+// Println arg loop's inline per-kind dispatch (string/int/uint/bool/float/
+// error/interface — byte-identical behavior), plus two new recursive cases:
+//
+//   - TYPE_STRUCT: "{" field0 " " field1 ... "}" (Go-style struct format),
+//     each field value extracted with LLVMBuildExtractValue and recursed on.
+//   - TYPE_POINTER to TYPE_STRUCT: a nil check (icmp eq null, branch to a
+//     nil/nonnil block, both joining a cont block — no phi needed, this is
+//     print side effects only) — nil prints "<nil>", non-nil prints "&" then
+//     loads the struct and recurses on the pointee at depth+1.
+//
+// `depth` starts at 0 for a top-level Println argument. depth > 6 prints
+// "..." and stops WITHOUT recursing further: this formatter recurses over
+// TYPES at codegen time (there is no runtime value to bottom out on, only
+// the static type shape), so a self-referential struct
+// (`type Node struct { v int; next *Node }`) would otherwise send the
+// compiler into unbounded recursion emitting IR forever — this cap is
+// required for the compiler to terminate on such a type, not merely a
+// nicety for deeply-nested output.
+//
+// Pointer-to-non-struct (e.g. *int), slices, maps, arrays, and functions
+// stay out of scope (existing clean codegen_error) — Go prints raw
+// addresses for those, which is non-deterministic and not needed here.
+//
+// Returns 1 on success, 0 after emitting a source-located codegen_error.
+static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
+                                   LLVMValueRef val, Type* ty, int depth, Position pos) {
+    (void)checker;
+    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
+    if (!print_func) {
+        codegen_error(codegen, pos, "goo_print function not found in module");
+        return 0;
+    }
+
+    // Recursion cap (REQUIRED, see doc comment above): a self-referential
+    // struct type recurses over TYPES at codegen time, not over a bounded
+    // runtime value, so without this the compiler itself would never
+    // terminate on `type Node struct { next *Node }`.
+    if (depth > 6) {
+        LLVMValueRef dots = LLVMBuildGlobalStringPtr(codegen->builder, "...", "fmt_depth_cap");
+        LLVMValueRef dargs[] = { dots };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, dargs, 1, "");
+        return 1;
+    }
+
+    TypeKind kind = (ty ? ty->kind : TYPE_VOID);
+
+    // error (Phase 6 Task 4): tagged nullable, not one of fmt's primitive
+    // kinds, so it must be special-cased before the kind switch below (it
+    // would otherwise fall into the "unsupported argument type" error).
+    // Print "<nil>" when null, else the boxed message — same nil-guard/
+    // extract/goo_error_message shape as .Error() (Task 3, ~line 495).
+    if (type_is_error(ty)) {
+        LLVMValueRef to_print = codegen_error_display_string(codegen, val, pos);
+        if (!to_print) return 0;
+
+        LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+        if (!str_fn) {
+            codegen_error(codegen, pos, "goo_print_string not found in module");
+            return 0;
+        }
+        LLVMValueRef pargs[] = { to_print };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                      str_fn, pargs, 1, "");
+    } else if (kind == TYPE_STRING) {
+        // Pass the whole goo_string struct to the length-aware printer.
+        // Extracting just the data ptr and calling goo_print (strlen) is
+        // wrong for a substring (F5): a shared-buffer slice like
+        // "hello"[1:3] has no '\0' after "el", so strlen would read past
+        // the logical length. goo_print_string honours the length field.
+        LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+        if (!str_fn) {
+            codegen_error(codegen, pos, "goo_print_string not found in module");
+            return 0;
+        }
+        LLVMValueRef args[] = { val };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                      str_fn, args, 1, "");
+    } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
+        LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_print_int");
+        LLVMValueRef widened = LLVMBuildSExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "sext");
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
+                      int_fn, args, 1, "");
+    } else if (kind == TYPE_UINT8 || kind == TYPE_UINT16 || kind == TYPE_UINT32 || kind == TYPE_UINT64) {
+        // Unsigned: zero-extend (not sign-extend) to u64 and use the unsigned
+        // printer so large values print correctly (uint64 above INT64_MAX
+        // would show negative through goo_print_int).
+        LLVMValueRef uint_fn = LLVMGetNamedFunction(codegen->module, "goo_print_uint");
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "zext");
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(uint_fn),
+                      uint_fn, args, 1, "");
+    } else if (kind == TYPE_BOOL) {
+        LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_print_bool");
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt32TypeInContext(codegen->context), "zext");
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
+                      bool_fn, args, 1, "");
+    } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
+        LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_print_float");
+        LLVMValueRef widened = (kind == TYPE_FLOAT32)
+            ? LLVMBuildFPExt(codegen->builder, val,
+                             LLVMDoubleTypeInContext(codegen->context), "fpext")
+            : val;
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
+                      float_fn, args, 1, "");
+    } else if (kind == TYPE_INTERFACE) {
+        // Print an interface value by its dynamic type: {vtable,data} ->
+        // goo_iface_format (runtime helper: nil vtable -> "<nil>", else
+        // vtable[0]=desc, desc.fmt_fn(data)) -> goo_print_string.
+        LLVMValueRef ival = val;   // {ptr vtable, ptr data}
+        LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, ival, 0, "ifvt");
+        LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, ival, 1, "ifdata");
+
+        LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
+        if (!fmtcall) {
+            codegen_error(codegen, pos, "goo_iface_format not found");
+            return 0;
+        }
+        LLVMValueRef fargs[] = { vtab, data };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
+                                        fmtcall, fargs, 2, "ifstr");
+
+        LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+        if (!str_fn) {
+            codegen_error(codegen, pos, "goo_print_string not found in module");
+            return 0;
+        }
+        LLVMValueRef pargs[] = { s };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn), str_fn, pargs, 1, "");
+    } else if (kind == TYPE_STRUCT) {
+        // "{" field0 " " field1 ... "}" — Go-style struct formatting.
+        LLVMValueRef brace_open = LLVMBuildGlobalStringPtr(codegen->builder, "{", "fmt_struct_open");
+        LLVMValueRef oargs[] = { brace_open };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, oargs, 1, "");
+
+        size_t fcount = ty->data.struct_type.field_count;
+        StructField* fields = ty->data.struct_type.fields;
+        for (size_t i = 0; i < fcount; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_struct_sp");
+                LLVMValueRef spargs[] = { sp };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                              print_func, spargs, 1, "");
+            }
+            LLVMValueRef fv = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_struct_field");
+            if (!codegen_emit_fmt_value(codegen, checker, fv, fields[i].type, depth + 1, pos)) {
+                return 0;
+            }
+        }
+
+        LLVMValueRef brace_close = LLVMBuildGlobalStringPtr(codegen->builder, "}", "fmt_struct_close");
+        LLVMValueRef cargs[] = { brace_close };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, cargs, 1, "");
+    } else if (kind == TYPE_POINTER && ty->data.pointer.pointee_type &&
+               ty->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+        // Pointer-to-struct: nil check -> "<nil>", else "&" + the pointee
+        // struct's own formatting (no phi — both arms just emit print side
+        // effects and fall through to a shared continuation block).
+        LLVMValueRef null_ptr = LLVMConstNull(LLVMTypeOf(val));
+        LLVMValueRef is_null = LLVMBuildICmp(codegen->builder, LLVMIntEQ, val, null_ptr, "fmt_ptr_isnull");
+        LLVMBasicBlockRef nil_bb    = codegen_create_block(codegen, "fmt.nil");
+        LLVMBasicBlockRef nonnil_bb = codegen_create_block(codegen, "fmt.nonnil");
+        LLVMBasicBlockRef cont_bb   = codegen_create_block(codegen, "fmt.cont");
+        LLVMBuildCondBr(codegen->builder, is_null, nil_bb, nonnil_bb);
+
+        codegen_set_insert_point(codegen, nil_bb);
+        LLVMValueRef nil_str = LLVMBuildGlobalStringPtr(codegen->builder, "<nil>", "fmt_ptr_nilstr");
+        LLVMValueRef nargs[] = { nil_str };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, nargs, 1, "");
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, nonnil_bb);
+        LLVMValueRef amp = LLVMBuildGlobalStringPtr(codegen->builder, "&", "fmt_ptr_amp");
+        LLVMValueRef aargs[] = { amp };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, aargs, 1, "");
+
+        Type* pointee = ty->data.pointer.pointee_type;
+        LLVMTypeRef struct_llvm = codegen_type_to_llvm(codegen, pointee);
+        if (!struct_llvm) {
+            codegen_error(codegen, pos, "fmt.Println: cannot lower pointee struct type");
+            return 0;
+        }
+        LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, struct_llvm, val, "fmt_ptr_load");
+        if (!codegen_emit_fmt_value(codegen, checker, loaded, pointee, depth + 1, pos)) {
+            return 0;
+        }
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, cont_bb);
+    } else {
+        // P0-3: an unsupported argument type is a clean source-located
+        // codegen error, not a type-mismatched goo_print call that only
+        // surfaces (as invalid IR) at the LLVM verifier.
+        codegen_error(codegen, pos,
+                      "fmt.Println: unsupported argument type (only string, integer, "
+                      "bool, float, struct, and pointer-to-struct are supported in v1)");
+        return 0;
+    }
+
+    return 1;
+}
+#endif
+
 ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -2137,107 +2361,12 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
             }
         }
 
-        TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);
-
-        // error (Phase 6 Task 4): tagged nullable, not one of fmt's primitive
-        // kinds, so it must be special-cased before the kind switch below (it
-        // would otherwise fall into the "unsupported argument type" error).
-        // Print "<nil>" when null, else the boxed message — same nil-guard/
-        // extract/goo_error_message shape as .Error() (Task 3, ~line 495).
-        if (type_is_error(arg_val->goo_type)) {
-            LLVMValueRef to_print = codegen_error_display_string(codegen, arg_val->llvm_value, a->pos);
-            if (!to_print) { value_info_free(arg_val); return NULL; }
-
-            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
-            if (!str_fn) {
-                codegen_error(codegen, a->pos, "goo_print_string not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef pargs[] = { to_print };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
-                          str_fn, pargs, 1, "");
-        } else if (kind == TYPE_STRING) {
-            // Pass the whole goo_string struct to the length-aware printer.
-            // Extracting just the data ptr and calling goo_print (strlen) is
-            // wrong for a substring (F5): a shared-buffer slice like
-            // "hello"[1:3] has no '\0' after "el", so strlen would read past
-            // the logical length. goo_print_string honours the length field.
-            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
-            if (!str_fn) {
-                codegen_error(codegen, a->pos, "goo_print_string not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef args[] = { arg_val->llvm_value };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
-                          str_fn, args, 1, "");
-        } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
-            LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_print_int");
-            LLVMValueRef widened = LLVMBuildSExt(codegen->builder, arg_val->llvm_value,
-                                                 LLVMInt64TypeInContext(codegen->context), "sext");
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
-                          int_fn, args, 1, "");
-        } else if (kind == TYPE_UINT8 || kind == TYPE_UINT16 || kind == TYPE_UINT32 || kind == TYPE_UINT64) {
-            // Unsigned: zero-extend (not sign-extend) to u64 and use the unsigned
-            // printer so large values print correctly (uint64 above INT64_MAX
-            // would show negative through goo_print_int).
-            LLVMValueRef uint_fn = LLVMGetNamedFunction(codegen->module, "goo_print_uint");
-            LLVMValueRef widened = LLVMBuildZExt(codegen->builder, arg_val->llvm_value,
-                                                 LLVMInt64TypeInContext(codegen->context), "zext");
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(uint_fn),
-                          uint_fn, args, 1, "");
-        } else if (kind == TYPE_BOOL) {
-            LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_print_bool");
-            LLVMValueRef widened = LLVMBuildZExt(codegen->builder, arg_val->llvm_value,
-                                                 LLVMInt32TypeInContext(codegen->context), "zext");
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
-                          bool_fn, args, 1, "");
-        } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
-            LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_print_float");
-            LLVMValueRef widened = (kind == TYPE_FLOAT32)
-                ? LLVMBuildFPExt(codegen->builder, arg_val->llvm_value,
-                                 LLVMDoubleTypeInContext(codegen->context), "fpext")
-                : arg_val->llvm_value;
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
-                          float_fn, args, 1, "");
-        } else if (kind == TYPE_INTERFACE) {
-            // Print an interface value by its dynamic type: {vtable,data} ->
-            // goo_iface_format (runtime helper: nil vtable -> "<nil>", else
-            // vtable[0]=desc, desc.fmt_fn(data)) -> goo_print_string.
-            LLVMValueRef ival = arg_val->llvm_value;   // {ptr vtable, ptr data}
-            LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, ival, 0, "ifvt");
-            LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, ival, 1, "ifdata");
-
-            LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
-            if (!fmtcall) {
-                codegen_error(codegen, a->pos, "goo_iface_format not found");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef fargs[] = { vtab, data };
-            LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
-                                            fmtcall, fargs, 2, "ifstr");
-
-            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
-            if (!str_fn) {
-                codegen_error(codegen, a->pos, "goo_print_string not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef pargs[] = { s };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn), str_fn, pargs, 1, "");
-        } else {
-            // P0-3: an unsupported argument type is a clean source-located
-            // codegen error, not a type-mismatched goo_print call that only
-            // surfaces (as invalid IR) at the LLVM verifier.
-            codegen_error(codegen, a->pos,
-                          "fmt.Println: unsupported argument type (only string, integer, "
-                          "bool, and float are supported in v1)");
+        // Type-dispatched value formatting (scalar/string/bool/float/error/
+        // interface, plus struct and pointer-to-struct) lives in the
+        // recursive codegen_emit_fmt_value helper — depth 0 for a top-level
+        // Println argument.
+        if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
+                                     arg_val->goo_type, 0, a->pos)) {
             value_info_free(arg_val);
             return NULL;
         }
