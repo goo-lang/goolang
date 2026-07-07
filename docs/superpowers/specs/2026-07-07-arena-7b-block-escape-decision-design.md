@@ -84,6 +84,13 @@ Identical set to 7a, with the boundary reframed to the block:
    correctly treats it as an ordinary call), but at block granularity it fires past the
    block boundary and must escape. (Regression: `examples/arena_defer_escape_probe.goo`,
    block_escape_test row 16.)
+4b. **Channel send** — `ch <- v` (a `BinaryExprNode` with the `TOKEN_ARROW`
+   operator): `taint(v)` escapes. The sent value is received by another goroutine or
+   by code after the block, so it outlives the block/function. Unlike `defer`, a send is
+   a true escape at BOTH granularities, so param-escape and block-escape both handle it.
+   (`<-ch` receive is a UNARY ARROW — a fresh in-bound value — correctly not a sink.)
+   Regression: `examples/arena_chan_send_probe.goo`, block_escape_test row 17,
+   param_escape_test row 16.
 5. **Retaining call argument** — call `G(a_0…a_m)`, `a_k` tainted, and position k retains:
    `summaries` says `G.escapes[k]` (via `param_escape_param_escapes`), OR G is
    external/unregistered/selector/body-less → **all positions retain** (pure-conservative,

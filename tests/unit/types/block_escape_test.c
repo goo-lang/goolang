@@ -245,6 +245,23 @@ static TestRow rows[] = {
         "}\n",
         1, { true }
     },
+    {
+        // A value sent on a channel leaves the block — a receiver reads it
+        // after the arena is freed. `ch <- p` is a BinaryExprNode with the
+        // ARROW operator; before the fix walk_stmt only handled assign
+        // operators here, so the send fell through to a discarded taint and
+        // p was wrongly kept in the arena (a use-after-free — see
+        // examples/arena_chan_send_probe.goo).
+        17, "sent on a channel -> true (receiver reads it past the block)",
+        "package main\n"
+        "func f(ch chan *int) {\n"
+        "    arena {\n"
+        "        p := new(int)\n"
+        "        ch <- p\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
 };
 
 static int g_pass = 0;

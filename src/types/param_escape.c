@@ -604,6 +604,21 @@ static void walk_stmt(Ctx* ctx, ASTNode* stmt, bool* env_changed) {
                         taint_set_free(&rhs);
                         break;
                     }
+                    if (b->operator == TOKEN_ARROW) {
+                        // Channel send `ch <- v`: the sent value is received by
+                        // another goroutine or by the caller, so it outlives
+                        // this function — taint(v)'s params escape. (Unlike a
+                        // defer, this is a true escape at BOTH function and
+                        // block granularity, so param_escape and block_escape
+                        // both handle it. `<-ch` receive is a UNARY ARROW, a
+                        // fresh in-bound value, correctly not a sink.)
+                        TaintSet lt = expr_taint(ctx, b->left);
+                        taint_set_free(&lt);
+                        TaintSet rhs = expr_taint(ctx, b->right);
+                        mark_escapes(ctx, &rhs);
+                        taint_set_free(&rhs);
+                        break;
+                    }
                 }
                 TaintSet t = expr_taint(ctx, e);
                 taint_set_free(&t);

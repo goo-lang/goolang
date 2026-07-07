@@ -209,6 +209,21 @@ static TestRow rows[] = {
         "}\n",
         { { "m", 1, { true }, false, false } }, 1
     },
+    {
+        // A param sent on a channel is received by another goroutine or the
+        // caller, so it outlives the function -> escapes. `ch <- p` is a
+        // BinaryExprNode with the ARROW operator; before the fix walk_stmt
+        // only handled assign operators, so the send was a discarded taint and
+        // `p` was wrongly summarized non-retaining (which then let
+        // block_escape keep a sent value in an arena -> use-after-free). `ch`
+        // itself (param 0) is not sent, so it does not escape.
+        16, "param sent on a channel -> true (ch does not, the sent value does)",
+        "package main\n"
+        "func send(ch chan *int, p *int) {\n"
+        "    ch <- p\n"
+        "}\n",
+        { { "send", 2, { false, true }, false, false } }, 1
+    },
 };
 
 static int g_pass = 0;
