@@ -1,0 +1,23 @@
+// arena-channel-send regression probe. A value sent on a channel LEAVES the
+// block: a receiver (here, `<-ch` after the block; in general another
+// goroutine) reads it once the arena is already freed. Before the escape-sink
+// fix for channel send, `p` was routed into the arena and the post-block
+// receive dereferenced freed arena memory — a use-after-free that produced
+// visibly garbage output (a wild pointer value) and a valgrind Invalid read.
+// After the fix, `ch <- p` escapes the block (like a goroutine/defer arg), so
+// `p` is heap-promoted and survives to the receive. Buffered channel of size 1
+// makes the send/receive deterministic within main.
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan *int, 1)
+	arena {
+		p := new(int)
+		*p = 5
+		ch <- p
+	}
+	got := <-ch
+	fmt.Println(*got)
+}
