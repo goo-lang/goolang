@@ -171,12 +171,18 @@ Token* lexer_next_token(Lexer* lexer) {
             // the token before the newline is not value-ending and this does not
             // fire. `{` is deliberately excluded (`if cond` <nl> `{` must not
             // split). The `/` sub-condition still guards a comment-opening `//`
-            // or `/*` from being treated as a continuation operator.
+            // or `/*` from being treated as a continuation operator. The `.`
+            // sub-condition similarly must not fire on the first char of `...`
+            // (TOKEN_ELLIPSIS, variadic/spread) — that token has to flow onto
+            // the next line (e.g. `sum(a` <nl> `...)`), not be split from its
+            // value; there is no `..` range operator in Goo, so excluding it
+            // is unambiguous.
             if (token_ends_value(lexer->prev_token_type) &&
                 (char_starts_continuation_op(lexer->ch) ||
                  lexer->ch == '(' || lexer->ch == '[' || lexer->ch == '.') &&
                 !(lexer->ch == '/' &&
-                  (lexer_peek_char(lexer) == '/' || lexer_peek_char(lexer) == '*'))) {
+                  (lexer_peek_char(lexer) == '/' || lexer_peek_char(lexer) == '*')) &&
+                !(lexer->ch == '.' && lexer_peek_char(lexer) == '.')) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
