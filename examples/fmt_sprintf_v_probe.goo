@@ -1,0 +1,42 @@
+// fmt.Sprintf %v of struct and pointer-to-struct (the string-building
+// counterpart to fmt.Println/fmt.Printf's %v struct formatting — Println
+// and Printf %v reuse the PRINT-based codegen_emit_fmt_value formatter,
+// which Sprintf can't reuse since it builds a goo_string instead of
+// printing; this exercises the new codegen_build_fmt_value_string helper).
+//
+// Covers: a plain struct value ("{3 4}"), a pointer-to-struct ("&{5 6}",
+// exercising the phi-joined nil/non-nil branch's non-nil arm), a nil
+// pointer-to-struct ("<nil>", exercising the phi's nil arm), and a nested
+// struct (a struct field whose own type is a struct) to exercise recursion
+// + concat threading through the accumulator.
+package main
+
+import "fmt"
+
+type Point struct {
+	x int
+	y int
+}
+
+type Line struct {
+	a Point
+	b Point
+}
+
+func main() {
+	p := Point{x: 3, y: 4}
+	s := fmt.Sprintf("[%v]", p)
+	fmt.Println(s)
+
+	q := &Point{x: 5, y: 6}
+	t := fmt.Sprintf("<%v>", q)
+	fmt.Println(t)
+
+	var np *Point
+	u := fmt.Sprintf("%v", np)
+	fmt.Println(u)
+
+	l := Line{a: Point{x: 1, y: 2}, b: Point{x: 9, y: 8}}
+	v := fmt.Sprintf("%v", l)
+	fmt.Println(v)
+}
