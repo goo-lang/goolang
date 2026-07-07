@@ -768,6 +768,29 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         }
     }
 
+    // Comptime-value params gap-fix: a comptime parameter is not yet
+    // supported together with [T] type parameters — this cut supports
+    // comptime-value specialization OR [T] generics on a function, not both
+    // (design spec §6). Without this, a generic function's comptime param
+    // silently fell through as an ordinary runtime int: the call-argument
+    // check (type_check_call_expr) is bypassed entirely for a generic callee
+    // (routed to type_check_generic_call instead), so no compile-time-
+    // constant requirement and no per-value monomorphization ever applied —
+    // a footgun, not a supported combination. Checked before the variadic
+    // check below so this points at the more fundamental rejection first.
+    if (func->type_params) {
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_comptime_param) {
+                type_error(checker, p->pos,
+                    "comptime parameters are not yet supported together with type parameters");
+                type_checker_pop_type_params(checker, saved_tp);
+                return 0;
+            }
+        }
+    }
+
     // Task 2: a variadic parameter (`name ...T`) must be the LAST parameter
     // (Go: "can only use ... with final parameter in list"). Check this
     // BEFORE building param_types below — an earlier variadic param there
@@ -3017,6 +3040,23 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 }
                 if (m->type != AST_FUNC_DECL) continue;
                 FuncDeclNode* fn = (FuncDeclNode*)m;
+
+                // Comptime-value params gap-fix: an interface method's
+                // per-argument comptime check is never reached at a call
+                // site — type_check_call_expr's is_comptime_param lookup
+                // walks a concrete callee Variable's func_decl_node, which
+                // an InterfaceMethod (no Variable) never has, so a comptime
+                // parameter here would silently behave as an ordinary
+                // runtime int for every implementer's call. Reject it here,
+                // at interface-type build time, instead.
+                for (ASTNode* p = fn->params; p; p = p->next) {
+                    if (p->type != AST_VAR_DECL) continue;
+                    if (((VarDeclNode*)p)->is_comptime_param) {
+                        type_error(checker, p->pos,
+                            "comptime parameters are not supported on interface methods");
+                        return NULL;
+                    }
+                }
 
                 size_t pcount = 0;
                 for (ASTNode* p = fn->params; p; p = p->next) {

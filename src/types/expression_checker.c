@@ -143,7 +143,21 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
 
     size_t param_count = 0;
     for (ASTNode* p = lit->params; p; p = p->next) {
-        if (p->type == AST_VAR_DECL) param_count++;
+        if (p->type != AST_VAR_DECL) continue;
+        // Comptime-value params gap-fix: a comptime parameter demands a
+        // concrete callee Variable with a func_decl_node (Task 2's
+        // type_check_call_expr walks that back-reference to find
+        // is_comptime_param) — a func literal is called through its
+        // expression's Type alone, never resolving to such a Variable, so
+        // the check silently never fires and `comptime n` behaves as a
+        // plain runtime int. Reject it here, at the literal's own
+        // signature-build time.
+        if (((VarDeclNode*)p)->is_comptime_param) {
+            type_error(checker, p->pos,
+                "comptime parameters are only supported on named functions");
+            return NULL;
+        }
+        param_count++;
     }
 
     Type** param_types = NULL;
