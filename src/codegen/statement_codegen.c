@@ -357,6 +357,8 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_unsafe_stmt(codegen, checker, stmt);
         case AST_ASM_STMT:
             return codegen_generate_asm_stmt(codegen, checker, stmt);
+        case AST_ARENA_BLOCK:
+            return codegen_generate_arena_stmt(codegen, checker, stmt);
         case AST_BREAK_STMT:
             if (codegen->loop_depth == 0) { codegen_error(codegen, stmt->pos, "break outside loop"); return 0; }
             LLVMBuildBr(codegen->builder, codegen->loop_break_bb[codegen->loop_depth - 1]);
@@ -2554,6 +2556,20 @@ int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     
     // Generate the body of the unsafe block
     return codegen_generate_statement(codegen, checker, unsafe_stmt->body);
+#endif
+}
+
+// Arena region statement generation
+int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_ARENA_BLOCK) return 0;
+    ArenaBlockNode* arena_blk = (ArenaBlockNode*)stmt;
+    // Transparent for now: emit the body directly. Task 6 pushes a real
+    // arena onto codegen->arena_stack here and frees it at block exit.
+    return codegen_generate_statement(codegen, checker, arena_blk->body);
 #endif
 }
 

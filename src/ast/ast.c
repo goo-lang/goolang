@@ -31,6 +31,7 @@ static const char* ast_node_type_strings[] = {
     [AST_DEFAULT_CLAUSE] = "DefaultClause",
     [AST_UNSAFE_STMT] = "UnsafeStmt",
     [AST_ASM_STMT] = "AsmStmt",
+    [AST_ARENA_BLOCK] = "ArenaBlock",
     
     [AST_IDENTIFIER] = "Identifier",
     [AST_LITERAL] = "Literal",
@@ -283,6 +284,11 @@ void ast_node_free(ASTNode* node) {
         case AST_UNSAFE_STMT: {
             UnsafeStmtNode* unsafe_stmt = (UnsafeStmtNode*)node;
             ast_node_free(unsafe_stmt->body);
+            break;
+        }
+        case AST_ARENA_BLOCK: {
+            ArenaBlockNode* arena_blk = (ArenaBlockNode*)node;
+            ast_node_free(arena_blk->body);
             break;
         }
         case AST_ASM_STMT: {

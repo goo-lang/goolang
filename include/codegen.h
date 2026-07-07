@@ -375,6 +375,7 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
+int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 
 // Select statement helper functions
 #if LLVM_AVAILABLE

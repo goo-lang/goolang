@@ -495,6 +495,17 @@ UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos) {
     return node;
 }
 
+ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos) {
+    ArenaBlockNode* node = (ArenaBlockNode*)malloc(sizeof(ArenaBlockNode));
+    if (!node) return NULL;
+    node->base.type = AST_ARENA_BLOCK;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->body = body;
+    return node;
+}
+
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos) {
     AsmStmtNode* node = (AsmStmtNode*)malloc(sizeof(AsmStmtNode));
     if (!node) return NULL;

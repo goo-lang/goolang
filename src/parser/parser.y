@@ -165,7 +165,7 @@ static ASTNode* g_func_signature_result = NULL;
 %token TRUE FALSE NIL
 
 // Goo Extension Keywords
-%token COMPTIME CONCEPT PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM
+%token COMPTIME CONCEPT PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM ARENA
 %token EXTERN FROM VOLATILE INLINE NO_STD
 %token PARALLEL REDUCE BARRIER ATOMIC THREAD_LOCAL
 %token OWNED BORROWED SHARED LET MATCH
@@ -228,7 +228,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> switch_stmt case_clause_list case_clause
 %type <node> type_case_list type_case_clause type_list
 %type <guard> type_switch_guard
-%type <node> unsafe_stmt asm_stmt parallel_for_stmt
+%type <node> unsafe_stmt asm_stmt parallel_for_stmt arena_stmt
 %type <node> parallel_reduce_expr barrier_call atomic_expr thread_local_decl
 %type <node> expression primary_expr unary_expr postfix_expr binary_expr
 %type <node> call_expr index_expr selector_expr
@@ -1140,6 +1140,7 @@ statement:
     | block { $$ = $1; }
     | comptime_block { $$ = $1; }  // Goo extension
     | unsafe_stmt { $$ = $1; }     // Goo extension
+    | arena_stmt { $$ = $1; }      // Goo extension
     | asm_stmt SEMICOLON { $$ = $1; } // Goo extension
     | asm_stmt { $$ = $1; }        // Goo extension
     | parallel_for_stmt { $$ = $1; } // Goo extension
@@ -2776,6 +2777,13 @@ unsafe_stmt:
     UNSAFE block {
         UnsafeStmtNode* unsafe_node = ast_unsafe_stmt_new($2, get_current_position());
         $$ = (ASTNode*)unsafe_node;
+    }
+    ;
+
+arena_stmt:
+    ARENA block {
+        ArenaBlockNode* arena_node = ast_arena_block_new($2, get_current_position());
+        $$ = (ASTNode*)arena_node;
     }
     ;
 

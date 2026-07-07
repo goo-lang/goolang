@@ -1,0 +1,9 @@
+package main
+import "fmt"
+func main() {
+	arena {
+		x := 21 * 2
+		fmt.Println(x)
+	}
+	fmt.Println("after")
+}

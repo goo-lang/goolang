@@ -1868,6 +1868,11 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             if (!cb->body) return 1;
             return type_check_statement(checker, cb->body);
         }
+        case AST_ARENA_BLOCK: {
+            ArenaBlockNode* ab = (ArenaBlockNode*)stmt;
+            if (!ab->body) return 1;
+            return type_check_statement(checker, ab->body);
+        }
         default:
             type_error(checker, stmt->pos, "Unknown statement type");
             return 0;
