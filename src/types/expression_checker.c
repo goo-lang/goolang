@@ -579,6 +579,13 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             const char* method = NULL;
             const char* reason = NULL;
             if (!type_interface_satisfied(checker, operand_type, target_type, &method, &reason)) {
+                // Fix 2: the "comptime" sentinel gets the dedicated one-place
+                // diagnostic — see report_comptime_method_not_satisfied's doc
+                // comment (every type_interface_satisfied caller does this).
+                if (reason && strcmp(reason, "comptime") == 0) {
+                    report_comptime_method_not_satisfied(checker, expr->pos, method);
+                    return NULL;
+                }
                 const char* iname = operand_type->data.interface.name
                                          ? operand_type->data.interface.name : "interface";
                 const char* cname = type_receiver_name(target_type);
@@ -2386,6 +2393,18 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
         Type* at = type_check_expression(checker, a);
         if (!at) { free(bindings); return NULL; }
 
+        // Fix 2 (comptime-param functions are not first-class values): a
+        // generic call bypasses type_check_call_expr's argument loop entirely
+        // (this function is its replacement for generic callees), so it needs
+        // its own copy of that loop's gate — `Apply(fill, 5)` into
+        // `func Apply[T any](f func(int, int) int, x T)` captured fill's
+        // VALUE into a func-typed parameter with zero diagnostics.
+        if (!reject_comptime_function_value(checker, a, at, a->pos,
+                                            "passed as an argument")) {
+            free(bindings);
+            return NULL;
+        }
+
         Type* pt = gsig->data.function.param_types[k];
         if (pt && pt->kind == TYPE_PARAM) {
             int idx = pt->data.type_param.index;
@@ -2450,6 +2469,15 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
             } else {
                 const char* method = NULL; const char* reason = NULL;
                 if (!type_interface_satisfied(checker, bound, bindings[i], &method, &reason)) {
+                    // Fix 2: the "comptime" sentinel gets the dedicated
+                    // one-place diagnostic — see
+                    // report_comptime_method_not_satisfied's doc comment
+                    // (every type_interface_satisfied caller does this).
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, expr->pos, method);
+                        free(bindings);
+                        return NULL;
+                    }
                     const char* cn = type_receiver_name(bindings[i]);
                     type_error(checker, expr->pos,
                         "%s does not implement %s (%s method %s)",
@@ -2800,6 +2828,23 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* elem_t = type_check_expression(checker, call->args->next);
             if (!elem_t) return NULL;
+            // Fix 2 (comptime-param functions are not first-class values):
+            // append is special-cased ABOVE the generic argument loop (it
+            // returns early), so the loop's per-argument gate never sees its
+            // element — `append(s, fill)` stored fill into a slice with zero
+            // diagnostics. The slice argument (arg 1) and a spread source
+            // (`append(s, s2...)`) need no gate: both must be TYPE_SLICE
+            // (rejected above otherwise), and a slice ELEMENT type is built
+            // by type_from_ast from a type annotation, which never carries
+            // has_comptime_params — only a named function's own declared
+            // signature Type does, and every way of getting one INTO a slice
+            // is gated (composite literal, this element path, index-assign
+            // via the assignment gate).
+            if (!reject_comptime_function_value(checker, call->args->next, elem_t,
+                                                call->args->next->pos,
+                                                "passed as an argument")) {
+                return NULL;
+            }
             // The element must be assignable to the slice's element type:
             // codegen sizes the copy from the slice element type, so a
             // mismatch (e.g. append([]int, "s")) would otherwise miscompile.
