@@ -14,6 +14,8 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                                TypeKind return_kind, int unused_extra);
 static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_fmt_sprintln_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
@@ -911,6 +913,12 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
                 return codegen_generate_sprintf_call(codegen, checker, expr);
+            }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprint") == 0) {
+                return codegen_generate_fmt_sprint_call(codegen, checker, expr);
+            }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintln") == 0) {
+                return codegen_generate_fmt_sprintln_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
                 return codegen_generate_errorf_call(codegen, checker, expr);
@@ -3356,6 +3364,87 @@ static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen,
     }
 
     return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+#endif
+}
+
+// fmt.Sprint(args...) -> string. The string-returning counterpart to fmt.Print:
+// operands are formatted via the string-building helper
+// codegen_build_fmt_value_string (scalars, structs, pointers-to-struct), with
+// Go's Sprint spacing rule — a space is inserted between two adjacent operands
+// only when NEITHER is a string — and no trailing newline.
+static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+
+    LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+    if (!concat_fn) { codegen_error(codegen, expr->pos, "goo_string_concat not found in module"); return NULL; }
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+
+    LLVMValueRef acc = fmt_sprintf_lit(codegen, string_llvm, "");  // empty goo_string
+    int first = 1, prev_is_string = 0;
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
+        if (!arg_val) { codegen_error(codegen, expr->pos, "Failed to generate argument for fmt.Sprint"); return NULL; }
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) { arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "sprint_arg"); arg_val->is_lvalue = 0; }
+        }
+        int is_string = arg_val->goo_type && arg_val->goo_type->kind == TYPE_STRING;
+        if (!first && !prev_is_string && !is_string) {
+            LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+            LLVMValueRef ca[] = { acc, sp };
+            acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprint_sep");
+        }
+        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos);
+        if (!acc) { value_info_free(arg_val); return NULL; }
+        prev_is_string = is_string; first = 0;
+        value_info_free(arg_val);
+    }
+    return value_info_new(NULL, acc, type_checker_get_builtin(checker, TYPE_STRING));
+#endif
+}
+
+// fmt.Sprintln(args...) -> string. The string-returning counterpart to
+// fmt.Println: operands are ALWAYS space-separated with a trailing newline.
+static ValueInfo* codegen_generate_fmt_sprintln_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+
+    LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+    if (!concat_fn) { codegen_error(codegen, expr->pos, "goo_string_concat not found in module"); return NULL; }
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+
+    LLVMValueRef acc = fmt_sprintf_lit(codegen, string_llvm, "");
+    int first = 1;
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
+        if (!arg_val) { codegen_error(codegen, expr->pos, "Failed to generate argument for fmt.Sprintln"); return NULL; }
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) { arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "sprintln_arg"); arg_val->is_lvalue = 0; }
+        }
+        if (!first) {
+            LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+            LLVMValueRef ca[] = { acc, sp };
+            acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprintln_sep");
+        }
+        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos);
+        if (!acc) { value_info_free(arg_val); return NULL; }
+        first = 0;
+        value_info_free(arg_val);
+    }
+    LLVMValueRef nl = fmt_sprintf_lit(codegen, string_llvm, "\n");
+    LLVMValueRef ca[] = { acc, nl };
+    acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprintln_nl");
+    return value_info_new(NULL, acc, type_checker_get_builtin(checker, TYPE_STRING));
 #endif
 }
 
