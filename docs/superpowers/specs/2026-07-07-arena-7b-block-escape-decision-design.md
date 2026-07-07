@@ -75,7 +75,15 @@ Identical set to 7a, with the boundary reframed to the block:
 3. **Closure capture** — a `FuncLitNode` whose `captured_names[]` contains a block-local
    tainted with the site. (Bodies not walked — relies on the checker's capture analysis,
    same precondition as 7a: run AFTER `type_check_program`.)
-4. **Goroutine** — `go G(...)`: every argument tainted with the site escapes.
+4. **Goroutine / deferred call** — `go G(...)` OR `defer G(...)`: every argument
+   tainted with the site escapes unconditionally. A goroutine may outlive the block;
+   a `defer` runs at the enclosing *function's* exit, which is always after the arena
+   block frees its arena — so a deferred call's (defer-time-snapshotted) arguments also
+   outlive the block. This is the one sink where block-escape must diverge from
+   param-escape: at function granularity a `defer` runs within the frame (param-escape
+   correctly treats it as an ordinary call), but at block granularity it fires past the
+   block boundary and must escape. (Regression: `examples/arena_defer_escape_probe.goo`,
+   block_escape_test row 16.)
 5. **Retaining call argument** — call `G(a_0…a_m)`, `a_k` tainted, and position k retains:
    `summaries` says `G.escapes[k]` (via `param_escape_param_escapes`), OR G is
    external/unregistered/selector/body-less → **all positions retain** (pure-conservative,

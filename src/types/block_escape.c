@@ -683,14 +683,19 @@ static void handle_go_call(Ctx* ctx, ASTNode* call_node) {
     }
 }
 
-// A defer'd call executes synchronously as part of the block's own
-// teardown, before the block (and its arena) is gone — unlike `go`, so it
-// gets sink #5 treatment only (ordinary call), not #4's unconditional
-// treatment. Identical judgment call to param_escape.c's handle_defer_call.
+// A defer'd call runs at the enclosing FUNCTION's exit, which always happens
+// AFTER this arena block has closed and freed its arena. So a value passed to
+// a defer outlives the block exactly the way a goroutine argument does — its
+// arguments (snapshotted at defer-time and read at function exit) must escape
+// the block, or they would be arena-freed before the deferred call reads them
+// (a use-after-free). This is the ONE place block-escape must diverge from
+// param_escape.c: at FUNCTION granularity a defer runs within the frame, so
+// param_escape.c correctly treats it as an ordinary call; at BLOCK granularity
+// the defer fires past the block boundary, so here it is an unconditional
+// escape — identical treatment to handle_go_call above (sink #4), NOT the
+// retention-based sink #5.
 static void handle_defer_call(Ctx* ctx, ASTNode* call_node) {
-    if (!call_node) return;
-    TaintSet t = expr_taint(ctx, call_node);
-    taint_set_free(&t);
+    handle_go_call(ctx, call_node);
 }
 
 static TaintSet expr_taint(Ctx* ctx, ASTNode* expr) {
