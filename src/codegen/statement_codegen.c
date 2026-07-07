@@ -29,6 +29,10 @@ static int codegen_push_loop(CodeGenerator* cg, LLVMBasicBlockRef brk, LLVMBasic
 }
 static void codegen_pop_loop(CodeGenerator* cg) { if (cg->loop_depth > 0) cg->loop_depth--; }
 
+// Arena-regions early-exit free: defined below, used by the break/continue
+// arms of codegen_generate_statement above its definition.
+static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth);
+
 // Push a break-only scope for switch/select clause bodies. In Go/Goo a `break`
 // inside a switch or select terminates that construct (not the enclosing loop),
 // while `continue` is NOT bound by switch/select and must thread through to the
@@ -361,6 +365,10 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_arena_stmt(codegen, checker, stmt);
         case AST_BREAK_STMT:
             if (codegen->loop_depth == 0) { codegen_error(codegen, stmt->pos, "break outside loop"); return 0; }
+            // Free the arenas pushed INSIDE the loop we are breaking out of
+            // (arena_loop_depth >= this loop's depth), before the branch — an
+            // enclosing-loop arena (shallower depth) is left alive.
+            codegen_emit_arena_frees(codegen, codegen->loop_depth);
             LLVMBuildBr(codegen->builder, codegen->loop_break_bb[codegen->loop_depth - 1]);
             // Subsequent statements in this block are unreachable; start a fresh
             // block so later codegen has a valid (dead) insertion point.
@@ -373,6 +381,9 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 codegen->loop_continue_bb[codegen->loop_depth - 1] == NULL) {
                 codegen_error(codegen, stmt->pos, "continue outside loop"); return 0;
             }
+            // Free the arenas pushed inside this loop iteration before jumping
+            // to the loop post/condition; the next iteration re-creates them.
+            codegen_emit_arena_frees(codegen, codegen->loop_depth);
             LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[codegen->loop_depth - 1]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
@@ -1934,7 +1945,15 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 // free once a return has terminated the block — so no path frees an arena
 // twice. `break`/`continue` do NOT reach here (they are loop exits, not
 // function exits) and still leak their arenas — safe, a documented follow-up.
-static void codegen_emit_active_arena_frees(CodeGenerator* codegen) {
+// Emit goo_arena_free for every active arena whose push-time loop_depth is
+// >= min_loop_depth, innermost first. `return` passes min_loop_depth 0 to free
+// ALL active arenas (it exits the whole function); `break`/`continue` pass the
+// current codegen->loop_depth to free only the arenas pushed INSIDE the loop
+// they exit, never an enclosing-loop arena the loop keeps using. Does NOT
+// modify arena_depth/arena_loop_depth — the arena_stmt still owns each pop, and
+// the terminated-block guard in codegen_generate_arena_stmt keeps any exit path
+// from also taking the fall-through free (so no arena is freed twice).
+static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth) {
 #if LLVM_AVAILABLE
     if (!codegen || codegen->arena_depth <= 0) return;
     LLVMContextRef ctx = codegen->context;
@@ -1943,11 +1962,12 @@ static void codegen_emit_active_arena_frees(CodeGenerator* codegen) {
     LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_free");
     if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_arena_free", free_fn_ty);
     for (int i = codegen->arena_depth - 1; i >= 0; i--) {
+        if (codegen->arena_loop_depth[i] < min_loop_depth) continue;
         LLVMValueRef arena = codegen->arena_stack[i];
         if (arena) LLVMBuildCall2(codegen->builder, free_fn_ty, free_fn, &arena, 1, "");
     }
 #else
-    (void)codegen;
+    (void)codegen; (void)min_loop_depth;
 #endif
 }
 
@@ -1970,8 +1990,9 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
     // arguments escaped to the heap (a defer inside an arena block marks its
     // args escaping — see block_escape.c), so they never point into these
     // arenas and the ordering is immaterial for correctness. Runs on every
-    // exit path; a no-op when no arena is active (arena_depth == 0).
-    codegen_emit_active_arena_frees(codegen);
+    // exit path; a no-op when no arena is active (arena_depth == 0). A return
+    // exits the whole function, so it frees ALL active arenas (min_loop_depth 0).
+    codegen_emit_arena_frees(codegen, 0);
     FunctionInfo* fi = codegen->current_function_info;
     if (!fi || fi->deferred_count == 0) return;
     if (g_defer_info_owner != fi || g_defer_info_count < fi->deferred_count) return;

@@ -1,0 +1,91 @@
+// arena break/continue early-exit-free safety probe. A `break`/`continue` exits
+// only the innermost loop, so it frees exactly the arenas pushed INSIDE that
+// loop — never an arena enclosing the loop, which the loop (or code after it)
+// keeps using. Freeing an enclosing arena would be a use-after-free.
+//
+// Each case reads an ENCLOSING arena's value AFTER the inner loop via an
+// if-condition (whose taint is discarded, so the value stays non-escaping / in
+// the arena — a plain print would heap-promote it and defeat the test) and
+// panics if it was corrupted. valgrind (arena-valgrind-probe) additionally
+// catches a read of freed arena memory.
+package main
+
+import "fmt"
+
+type Node struct {
+	v int
+}
+
+// break out of an inner-loop arena; the outer arena's `keep` must survive.
+func withBreak() {
+	arena {
+		keep := &Node{v: 100}
+		i := 0
+		for {
+			arena {
+				tmp := &Node{v: 7}
+				_ = tmp
+				i = i + 1
+				if i >= 3 {
+					break
+				}
+			}
+		}
+		if keep.v != 100 {
+			panic("break freed the enclosing arena")
+		}
+	}
+}
+
+// continue from an inner-loop arena; the outer arena's `keep` must survive.
+func withContinue() {
+	arena {
+		keep := &Node{v: 55}
+		i := 0
+		for i < 4 {
+			arena {
+				tmp := &Node{v: 1}
+				_ = tmp
+				i = i + 1
+				if i == 2 {
+					continue
+				}
+			}
+		}
+		if keep.v != 55 {
+			panic("continue freed the enclosing arena")
+		}
+	}
+}
+
+// break the INNER loop only; the arena in the OUTER loop must survive.
+func nested() {
+	o := 0
+	for o < 2 {
+		arena {
+			outerNode := &Node{v: 88}
+			j := 0
+			for j < 5 {
+				arena {
+					inner := &Node{v: 2}
+					_ = inner
+					j = j + 1
+					if j >= 2 {
+						break
+					}
+				}
+			}
+			if outerNode.v != 88 {
+				panic("inner break freed the outer-loop arena")
+			}
+			o = o + 1
+		}
+	}
+}
+
+func main() {
+	withBreak()
+	withContinue()
+	nested()
+	fmt.Println("loopexit ok")
+}

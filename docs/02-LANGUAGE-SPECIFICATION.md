@@ -528,12 +528,10 @@ func build() *Node {
 
 Semantics and current limits:
 
-- The arena is freed on the **normal fall-through** exit of the block and on any
-  **`return`** that leaves it (a `return` out of one or more nested arena blocks
-  frees each of their arenas before returning). Leaving via `break`/`continue`
-  still *leaks* the arena for now — safe (no use-after-free), but it forgoes
-  reclamation on those paths; freeing on `break`/`continue` is a planned
-  refinement.
+- The arena is freed on **every** exit from the block: the normal fall-through,
+  a `return` (which frees every arena it unwinds through), and a `break`/`continue`
+  (which frees the arenas inside the loop it exits, while leaving any arena that
+  *encloses* the loop alive). Each exit path frees the arena exactly once.
 - Arena blocks nest, and an arena block inside a loop allocates and frees a fresh
   arena per iteration — the concrete win: a loop that builds many temporary
   objects inside an `arena { }` keeps resident memory flat instead of growing.

@@ -20,7 +20,7 @@ skip() { echo "arena-rss-probe: SKIPPED ($1)"; exit 0; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPILER="${COMPILER:-$ROOT/bin/goo}"
-PROBES="arena_loop_reclaim_probe arena_return_reclaim_probe"
+PROBES="arena_loop_reclaim_probe arena_return_reclaim_probe arena_loopexit_reclaim_probe"
 
 [ -x "$COMPILER" ] || fail "compiler not found at $COMPILER (run 'make')"
 

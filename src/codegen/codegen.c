@@ -769,6 +769,9 @@ void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena) {
     if (!codegen) return;
     size_t cap = sizeof(codegen->arena_stack) / sizeof(codegen->arena_stack[0]);
     if ((size_t)codegen->arena_depth >= cap) return;
+    // Record the loop nesting at push time so a break/continue can free only
+    // the arenas pushed inside the loop it exits (see arena_loop_depth's doc).
+    codegen->arena_loop_depth[codegen->arena_depth] = codegen->loop_depth;
     codegen->arena_stack[codegen->arena_depth++] = arena;
 }
 
