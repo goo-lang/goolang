@@ -115,11 +115,11 @@ static TestRow rows[] = {
         1, { true }
     },
     {
-        7, "passed to an external/unregistered callee -> true",
+        7, "passed to a non-whitelisted external/unregistered callee -> true",
         "package main\n"
         "func f() {\n"
         "    arena {\n"
-        "        fmt.Println(new(int))\n"
+        "        stash(new(int))\n"
         "    }\n"
         "}\n",
         1, { true }
@@ -261,6 +261,22 @@ static TestRow rows[] = {
         "    }\n"
         "}\n",
         1, { true }
+    },
+    {
+        // 7a' non-retaining whitelist: fmt.Println does not retain its args, so
+        // an arena value passed ONLY to it does not escape the block and stays
+        // arena-eligible (was `true` under the pure-conservative external rule).
+        // Codegen-inert today (fmt.Println(*int) does not type-check yet), but
+        // the analysis decision is exercised here.
+        18, "passed only to fmt.Println -> false (7a' whitelist, arena-eligible)",
+        "package main\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        p := new(int)\n"
+        "        fmt.Println(p)\n"
+        "    }\n"
+        "}\n",
+        1, { false }
     },
 };
 

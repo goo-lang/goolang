@@ -56,6 +56,7 @@
 // ---------------------------------------------------------------------
 
 #include "block_escape.h"
+#include "nonretaining.h"
 #include "token.h"
 #include <stdlib.h>
 #include <string.h>
@@ -631,11 +632,17 @@ static TaintSet call_taint(Ctx* ctx, CallExprNode* call) {
         taint_set_free(&ft);
     }
     const ParamEscapeSummary* callee = param_escape_lookup(ctx->summaries, callee_name);
+    // 7a' non-retaining whitelist: only for calls that do NOT resolve to a user
+    // function (callee == NULL) — a user body, even one shadowing a builtin
+    // name, is analysed by its real summary above.
+    bool whitelisted = (callee == NULL) && goo_callee_is_non_retaining(call->function);
 
     for (i = 0; i < argc; i++) {
         bool retains;
         bool variadic_tail = call->has_spread && (i == argc - 1);
-        if (variadic_tail) {
+        if (whitelisted) {
+            retains = false; // whitelisted external retains no argument (7a')
+        } else if (variadic_tail) {
             retains = true;
         } else if (callee) {
             retains = (i < callee->param_count) ? callee->escapes[i] : true;
@@ -646,7 +653,11 @@ static TaintSet call_taint(Ctx* ctx, CallExprNode* call) {
     }
 
     TaintSet result = taint_set_new(n);
-    if (callee) {
+    if (whitelisted) {
+        // A whitelisted external returns no argument-derived pointer (len/cap ->
+        // int, print* -> void/(int,error), Sprintf -> a fresh string), so its
+        // result carries none of the arguments' taint.
+    } else if (callee) {
         if (callee->return_escapes) {
             for (i = 0; i < argc; i++) taint_set_union_into(&result, &arg_taints[i]);
         }

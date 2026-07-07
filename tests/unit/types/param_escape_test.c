@@ -56,10 +56,10 @@ static TestRow rows[] = {
         { { "f", 1, { false }, false, false } }, 1
     },
     {
-        2, "param only read via EXTERNAL call -> true (external retains, pure-conservative)",
+        2, "param passed to a NON-whitelisted external -> true (pure-conservative retain)",
         "package main\n"
         "func f(p *int) {\n"
-        "    fmt.Println(p)\n"
+        "    stash(p)\n"
         "}\n",
         { { "f", 1, { true }, false, false } }, 1
     },
@@ -223,6 +223,25 @@ static TestRow rows[] = {
         "    ch <- p\n"
         "}\n",
         { { "send", 2, { false, true }, false, false } }, 1
+    },
+    {
+        // 7a' non-retaining whitelist: fmt.Println does not retain its args, so
+        // a param only passed to it does NOT escape (was `true` pre-whitelist).
+        17, "param passed to fmt.Println -> false (7a' whitelist, non-retaining)",
+        "package main\n"
+        "func f(p *int) {\n"
+        "    fmt.Println(p)\n"
+        "}\n",
+        { { "f", 1, { false }, false, false } }, 1
+    },
+    {
+        // A whitelisted builtin (len) likewise does not retain its argument.
+        18, "param passed to len -> false (7a' whitelist)",
+        "package main\n"
+        "func f(p *int) {\n"
+        "    _ = len(p)\n"
+        "}\n",
+        { { "f", 1, { false }, false, false } }, 1
     },
 };
 

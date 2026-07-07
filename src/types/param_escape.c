@@ -12,6 +12,7 @@
 // does not even need memory_safety.h — it exposes its own bool escapes[]).
 
 #include "param_escape.h"
+#include "nonretaining.h"
 #include "token.h"
 #include <stdlib.h>
 #include <string.h>
@@ -345,15 +346,22 @@ static TaintSet call_taint(Ctx* ctx, CallExprNode* call) {
         TaintSet ft = expr_taint(ctx, call->function);
         taint_set_free(&ft);
     }
+    // 7a' non-retaining whitelist: only for calls that do NOT resolve to a user
+    // function (callee == NULL) — a user body, even one shadowing a builtin
+    // name, is analysed by its real summary.
+    bool whitelisted = (callee == NULL) && goo_callee_is_non_retaining(call->function);
 
     for (i = 0; i < argc; i++) {
         bool retains;
         bool variadic_tail = call->has_spread && (i == argc - 1);
-        if (variadic_tail) {
+        if (whitelisted) {
+            // A whitelisted external (len/cap/print/println, fmt.Print*/Sprintf)
+            // provably retains no argument — even a spread one.
+            retains = false;
+        } else if (variadic_tail) {
             // Spread/variadic tail: conservative — retain unless every
             // covered position is known non-retaining, which this module
-            // does not attempt to prove (7a defers the non-retaining
-            // whitelist to 7a'). Always retain.
+            // does not attempt to prove. Always retain.
             retains = true;
         } else if (callee) {
             retains = (i < callee->param_count) ? callee->escapes[i] : true;
@@ -369,7 +377,10 @@ static TaintSet call_taint(Ctx* ctx, CallExprNode* call) {
     // callee summary says it MAY return an arg-derived value, we cannot
     // tell which arg, so the result is tainted by the union of ALL args.
     TaintSet result = taint_set_new(n);
-    if (callee) {
+    if (whitelisted) {
+        // A whitelisted external returns no argument-derived pointer, so its
+        // result carries none of the arguments' taint (result stays ∅).
+    } else if (callee) {
         if (callee->return_escapes) {
             for (i = 0; i < argc; i++) taint_set_union_into(&result, &arg_taints[i]);
         }
