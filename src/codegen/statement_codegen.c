@@ -2560,6 +2560,22 @@ int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 }
 
 // Arena region statement generation
+//
+// Arena-regions Task 6: allocate a real arena on entry, push it so 7c's
+// gate routes the body's non-escaping allocations into it
+// (codegen_arena_eligible / codegen_emit_alloc), and free it on normal
+// fall-through exit. See docs/superpowers/specs/2026-07-07-arena-6-
+// arena-free-at-block-exit-design.md for the soundness argument.
+//
+// Free-only-on-fall-through is deliberate: a `return`/`break`/`continue`
+// inside the body already emitted a terminator and branched away before
+// reaching the free, so on those paths the arena leaks (safe — no worse
+// than today's allocate-and-leak baseline) rather than risking a
+// free-before-jump or a double free. Nothing reachable after the block can
+// still point into this arena: an escaping value (or a value embedded in
+// an escaping value, via 7b's field-taint union) is routed to the heap by
+// 7c, never the arena — so freeing the whole arena cannot dangle a live
+// pointer.
 int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available");
@@ -2567,9 +2583,41 @@ int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 #else
     if (!codegen || !checker || !stmt || stmt->type != AST_ARENA_BLOCK) return 0;
     ArenaBlockNode* arena_blk = (ArenaBlockNode*)stmt;
-    // Transparent for now: emit the body directly. Task 6 pushes a real
-    // arena onto codegen->arena_stack here and frees it at block exit.
-    return codegen_generate_statement(codegen, checker, arena_blk->body);
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_type = LLVMInt64TypeInContext(ctx);
+
+    // get-or-declare goo_arena_new : i8* (i64) — same LLVMGetNamedFunction-
+    // or-LLVMAddFunction pattern codegen_emit_alloc uses for goo_arena_alloc
+    // (both are already declared into the module by
+    // codegen_declare_runtime_functions, so this normally just looks them
+    // up; the fallback keeps this function safe to call standalone, e.g.
+    // from a lightweight test harness that skips that declaration pass).
+    LLVMTypeRef new_fn_ty = LLVMFunctionType(ptr_type, &size_type, 1, 0);
+    LLVMValueRef new_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_new");
+    if (!new_fn) new_fn = LLVMAddFunction(codegen->module, "goo_arena_new", new_fn_ty);
+
+    LLVMTypeRef free_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_free");
+    if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_arena_free", free_fn_ty);
+
+    // 0 lets the runtime pick GOO_ARENA_DEFAULT_BLOCK_SIZE (arena.c).
+    LLVMValueRef zero_size = LLVMConstInt(size_type, 0, 0);
+    LLVMValueRef arena = LLVMBuildCall2(codegen->builder, new_fn_ty, new_fn, &zero_size, 1, "arena_new");
+
+    codegen_arena_push(codegen, arena);
+    int ok = codegen_generate_statement(codegen, checker, arena_blk->body);
+    codegen_arena_pop(codegen);
+    if (!ok) return 0;
+
+    // Free ONLY on normal fall-through: any return/break/continue inside
+    // the body already emitted a terminator and jumped away, so this point
+    // is reachable iff control fell off the end of the body.
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        LLVMBuildCall2(codegen->builder, free_fn_ty, free_fn, &arena, 1, "");
+    }
+    return 1;
 #endif
 }
 

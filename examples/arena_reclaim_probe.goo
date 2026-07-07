@@ -1,0 +1,37 @@
+// arena-reclaim probe (Task 6): allocations made with new(int) inside an
+// arena {} block, used only inside the block, are non-escaping (7b) so 7c
+// routes them to goo_arena_alloc. The block falls through normally, which
+// must free the arena (Task 6), and execution continues unaffected.
+//
+// The `fmt.Println(*p + *q)` shape that would read naturally here is
+// deliberately avoided: 7b's taint tracking is viral through dereference
+// (see src/types/block_escape.c's AST_UNARY_EXPR case — `*p`'s taint is
+// literally `p`'s taint), and fmt.Println is an external/unregistered
+// callee that retains every argument unconditionally (same file's
+// call_taint, "external/unregistered/no-summaries: pure-conservative") —
+// so printing *p+*q directly would mark p/q escaping and defeat the
+// point of this probe (proving goo_arena_alloc is actually exercised).
+// An if-condition's taint is computed and discarded, never fed to a sink
+// (see the AST_IF_STMT case), so branching on `*p+*q == 42` and printing
+// only a literal constant in each arm keeps p and q genuinely block-local
+// while still observably proving the arena-backed arithmetic is correct:
+// a corrupted/miscompiled arena would take the panic arm and the golden
+// diff would fail (missing "42"/"after", or a nonzero exit).
+package main
+
+import "fmt"
+
+func main() {
+	arena {
+		p := new(int)
+		*p = 21
+		q := new(int)
+		*q = 21
+		if *p+*q == 42 {
+			fmt.Println(42)
+		} else {
+			panic("arena-reclaim: mismatch")
+		}
+	}
+	fmt.Println("after")
+}

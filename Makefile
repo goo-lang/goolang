@@ -115,7 +115,7 @@ TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp gmod coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test
+.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp gmod coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe
 
 all: lexer
 
@@ -2013,7 +2013,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -3275,6 +3275,72 @@ arena_routing_test: $(TEST_UNIT_DIR)/codegen/arena_routing_test.c $(SRC_OBJS)
 arena-routing-test: arena_routing_test
 	@echo "Running arena-routing predicate tests..."
 	./arena_routing_test
+
+# Arena leg Task 6: golden + valgrind probe matrix for `arena {}` actually
+# freeing memory at block exit (see docs/superpowers/specs/2026-07-07-
+# arena-6-arena-free-at-block-exit-design.md). Five examples/*.goo probes,
+# each a distinct escape shape: reclaim (non-escaping, freed on
+# fall-through), escape-via-return, escape-via-store-to-an-outer-local,
+# escape-via-embedding-in-a-returned-composite (7b's field-taint union),
+# and a 100000-iteration loop capstone (per-iteration arena reclaimed, no
+# unbounded growth). Every one of these already has a sibling
+# examples/*.expected.txt, so `make test-golden` also covers them — this
+# target exists as the named, scoped-to-Task-6 entry point the design doc
+# asks for.
+ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe
+
+arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== arena-free-probe: Task 6 golden matrix (compile+run+diff) ==="
+	@fail=0; \
+	for name in $(ARENA_FREE_PROBE_NAMES); do \
+	  if ! $(COMPILER) -o build/$$name examples/$$name.goo > build/$$name.cerr 2>&1; then \
+	    echo "$$name: FAIL (compile/link)"; cat build/$$name.cerr; fail=1; continue; \
+	  fi; \
+	  ./build/$$name > build/$$name.actual.txt 2>/dev/null; \
+	  if diff -u examples/$$name.expected.txt build/$$name.actual.txt > build/$$name.diff; then \
+	    echo "$$name: PASS"; \
+	  else \
+	    echo "$$name: FAIL (output mismatch)"; cat build/$$name.diff; fail=1; \
+	  fi; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "arena-free-probe: FAIL"; exit 1; fi; \
+	echo "arena-free-probe: PASS (5/5)"
+
+# Same 5 binaries, run under the UAF/double-free gate:
+#   valgrind --leak-check=no --error-exitcode=99 ./probe
+# Leaks are IGNORED (--leak-check=no; the prototype's goo_alloc never
+# frees, so every heap allocation is a "leak" — expected, not a bug). Only
+# a genuine memory-access error trips this: exit 99 (from --error-exitcode)
+# or the literal "Invalid read"/"Invalid write"/"Invalid free"/"double
+# free" text in valgrind's own diagnostic is what would indicate the arena
+# free-at-block-exit design has a use-after-free or double-free. If
+# valgrind isn't installed, SKIP loudly rather than silently passing.
+arena-valgrind-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@if ! which valgrind > /dev/null 2>&1; then \
+	  echo "valgrind not found — SKIPPED"; \
+	  exit 0; \
+	fi
+	@echo "=== arena-valgrind-probe: Task 6 UAF/double-free gate (valgrind) ==="
+	@fail=0; \
+	for name in $(ARENA_FREE_PROBE_NAMES); do \
+	  if ! $(COMPILER) -o build/$$name examples/$$name.goo > build/$$name.cerr 2>&1; then \
+	    echo "$$name: FAIL (compile/link)"; cat build/$$name.cerr; fail=1; continue; \
+	  fi; \
+	  valgrind --leak-check=no --error-exitcode=99 ./build/$$name \
+	    > build/$$name.vg.out 2> build/$$name.vg.err; \
+	  rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -qE "Invalid read|Invalid write|Invalid free|double free" build/$$name.vg.err; then \
+	    echo "$$name: FAIL (valgrind rc=$$rc — see build/$$name.vg.err)"; \
+	    tail -40 build/$$name.vg.err; \
+	    fail=1; \
+	  else \
+	    echo "$$name: PASS (valgrind clean, rc=$$rc)"; \
+	  fi; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "arena-valgrind-probe: FAIL"; exit 1; fi; \
+	echo "arena-valgrind-probe: PASS (5/5 clean)"
 
 runtime_optimization_test_simple: $(TEST_UNIT_DIR)/runtime/runtime_optimization_test_simple.c $(SRCDIR)/types/runtime_optimization_simple.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
