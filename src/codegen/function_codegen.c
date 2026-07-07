@@ -182,13 +182,6 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     if (!force_promote && !escape_is_promoted(name))
         return codegen_create_entry_alloca(codegen, type, name);
 
-    LLVMContextRef ctx = codegen->context;
-    LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx);
-    LLVMTypeRef vp = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
-    LLVMTypeRef alloc_ty = LLVMFunctionType(vp, &i64t, 1, 0);
-    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-    if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
-
     LLVMValueRef size = LLVMSizeOf(type);
 
     // Closures Task 2 (loop-variable capture fix, DECL-SITE allocation): a
@@ -211,8 +204,7 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     // decl's zero-init/initializer store (emitted at this same position by
     // every caller) always has.
     if (force_promote) {
-        return LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1,
-                              name ? name : "captured_local");
+        return codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
     }
 
     // M8b goroutine-escape path (unchanged): emit the goo_alloc in the entry
@@ -226,8 +218,7 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     if (first) LLVMPositionBuilderBefore(codegen->builder, first);
     else       LLVMPositionBuilderAtEnd(codegen->builder, entry);
 
-    LLVMValueRef p = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1,
-                                    name ? name : "go_escape_local");
+    LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
     if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);
     return p;
 }
@@ -590,12 +581,8 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
                                                      (unsigned)lit->captured_count, 0);
         free(env_fields);
 
-        LLVMTypeRef i64t = LLVMInt64TypeInContext(codegen->context);
-        LLVMTypeRef alloc_ty = LLVMFunctionType(vp, &i64t, 1, 0);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
         LLVMValueRef env_size = LLVMSizeOf(env_ty);
-        env_ptr = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &env_size, 1, "closure_env");
+        env_ptr = codegen_emit_alloc(codegen, env_size, ALLOC_KIND_DEFAULT);
 
         for (size_t i = 0; i < lit->captured_count; i++) {
             // Current slot address for this name, in the ENCLOSING

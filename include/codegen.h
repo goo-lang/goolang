@@ -29,6 +29,16 @@ typedef struct CodeGenerator CodeGenerator;
 typedef struct FunctionInfo FunctionInfo;
 typedef struct ValueInfo ValueInfo;
 
+// Allocation routing (arena-regions groundwork): every heap-allocation call
+// site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
+// the only kind today (always routes to goo_alloc) — a later task adds
+// region-aware kinds that branch inside that single helper instead of at
+// each of the ~9 call sites that used to inline the goo_alloc lookup+call
+// idiom themselves.
+typedef enum {
+    ALLOC_KIND_DEFAULT = 0,
+} AllocKind;
+
 #if LLVM_AVAILABLE
 // Deferred global initializer (Task 2 / var-init cluster): a package-level
 // `var y = x` (or any initializer needing an identifier, call, or other
@@ -690,8 +700,15 @@ LLVMValueRef codegen_error_union_get_error(CodeGenerator* codegen, LLVMValueRef 
 #if LLVM_AVAILABLE
 LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen);
 LLVMValueRef codegen_get_runtime_function(CodeGenerator* codegen, const char* name);
-LLVMValueRef codegen_call_runtime_function(CodeGenerator* codegen, const char* name, 
+LLVMValueRef codegen_call_runtime_function(CodeGenerator* codegen, const char* name,
                                           LLVMValueRef* args, unsigned arg_count);
+
+// Single funnel for every direct goo_alloc call site (new(T), &StructLiteral,
+// slice-literal backing, closure env, escape-promoted locals, map value/key
+// boxing, interface boxing, go-arg boxing). `kind` is unused today — every
+// kind routes to goo_alloc — but gives the arena-region follow-up task one
+// branch point instead of ~9 call sites. See definition in codegen.c.
+LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind);
 #else
 int codegen_declare_runtime_functions(CodeGenerator* codegen);
 int codegen_get_runtime_function(CodeGenerator* codegen, const char* name);

@@ -2392,16 +2392,8 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
                     lit_val = LLVMBuildLoad2(codegen->builder, struct_llvm,
                                              lit_val, "addr_lit_load");
                 }
-                LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-                if (!alloc_fn) {
-                    codegen_error(codegen, expr->pos, "&literal: goo_alloc unavailable");
-                    value_info_free(operand);
-                    return NULL;
-                }
                 LLVMValueRef size = LLVMSizeOf(struct_llvm);
-                LLVMValueRef heap_ptr = LLVMBuildCall2(codegen->builder,
-                                                       LLVMGlobalGetValueType(alloc_fn),
-                                                       alloc_fn, &size, 1, "addr_lit");
+                LLVMValueRef heap_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
                 LLVMBuildStore(codegen->builder, lit_val, heap_ptr);
                 result = heap_ptr;
                 result_type = type_pointer(operand->goo_type);

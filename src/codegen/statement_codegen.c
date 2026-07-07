@@ -1811,8 +1811,6 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     }
     LLVMTypeRef callee_ty = LLVMGlobalGetValueType(callee);
 
-    LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx);
-
     // Count + evaluate the call arguments (in the caller's block).
     size_t arg_count = 0;
     for (ASTNode* a = call->args; a; a = a->next) arg_count++;
@@ -1855,12 +1853,8 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     if (arg_count > 0) {
         box_struct = LLVMStructTypeInContext(ctx, arg_types, (unsigned)arg_count, 0);
 
-        LLVMTypeRef alloc_ty = LLVMFunctionType(void_ptr_type, &i64_type, 1, 0);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
-
         LLVMValueRef box_size = LLVMSizeOf(box_struct);  // i64 target-size constant
-        boxed = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &box_size, 1, "go_box");
+        boxed = codegen_emit_alloc(codegen, box_size, ALLOC_KIND_DEFAULT);
 
         for (size_t i = 0; i < arg_count; i++) {
             LLVMValueRef field = LLVMBuildStructGEP2(codegen->builder, box_struct, boxed,

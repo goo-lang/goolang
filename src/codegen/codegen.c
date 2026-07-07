@@ -604,12 +604,9 @@ LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef valu
         // Boxes leak on overwrite/delete by decision (no GC yet; same as
         // closure envs and interface boxes).
         LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_type);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!vt || !alloc_fn) return NULL;
+        if (!vt) return NULL;
         LLVMValueRef size = LLVMSizeOf(vt);
-        LLVMValueRef box = LLVMBuildCall2(codegen->builder,
-                                          LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "map_box");
+        LLVMValueRef box = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
         LLVMBuildStore(codegen->builder, value, box);
         return LLVMBuildPtrToInt(codegen->builder, box, i64, "map_slot");
     }
@@ -715,6 +712,31 @@ static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
     LLVMTypeRef params[2] = { i8p, i8p };
     LLVMTypeRef fnty = LLVMFunctionType(i32, params, 2, 0);
     return LLVMAddFunction(codegen->module, "strcmp", fnty);
+}
+
+// Single funnel point for every heap allocation the compiler emits: new(T),
+// &StructLiteral{}, slice-literal backing, closure environments,
+// escape/capture-promoted locals, map value/key boxing, interface boxing, and
+// go-statement argument boxing all used to inline their own copy of "get or
+// declare goo_alloc, LLVMBuildCall2, use the raw pointer" — nine near-identical
+// copies of the same idiom (see git history pre-dating this helper for the
+// scattered originals). Consolidated here so a later arena-region task has
+// exactly ONE place to branch `kind` on instead of nine.
+//
+// `kind` is accepted but unused today: every kind routes to goo_alloc, so this
+// is a pure refactor with no behavioral change (verified by the unchanged
+// golden suite). Do not add region/arena logic here yet — that is the next
+// task's job.
+LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind) {
+    (void)kind;  // routing point for the arena-region follow-up task
+    if (!codegen || !size) return NULL;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_type = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef alloc_ty = LLVMFunctionType(ptr_type, &size_type, 1, 0);
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+    if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
+    return LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1, "alloc");
 }
 
 // Struct-typed map keys (Task 2): synthesize (or return the cached) per-field
@@ -1149,11 +1171,9 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         // literals and identifiers both yield rvalues here; the is_lvalue
         // load above already ran for lvalue key expressions).
         LLVMTypeRef sty = codegen_type_to_llvm(codegen, kt);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!sty || !alloc_fn) return NULL;
+        if (!sty) return NULL;
         LLVMValueRef size = LLVMSizeOf(sty);
-        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "skey_mem");
+        LLVMValueRef mem = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "skey_slot");
     }
@@ -1172,11 +1192,9 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         // goo_iface_key_eq (not pointer identity) provides — the slot only
         // needs to carry an address the comparator can dereference.
         LLVMTypeRef ifty = codegen_type_to_llvm(codegen, kt);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!ifty || !alloc_fn) return NULL;
+        if (!ifty) return NULL;
         LLVMValueRef size = LLVMSizeOf(ifty);
-        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "ikey_mem");
+        LLVMValueRef mem = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "ikey_slot");
     }

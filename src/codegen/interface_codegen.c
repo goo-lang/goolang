@@ -500,14 +500,8 @@ LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
     if (!llvm_T) return NULL;
 
     // Heap-box the concrete value so the interface can outlive the current frame.
-    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-    if (!alloc_fn) {
-        codegen_error(codegen, (Position){0}, "goo_alloc missing for interface boxing");
-        return NULL;
-    }
     LLVMValueRef size = LLVMSizeOf(llvm_T);
-    LLVMValueRef data = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                       alloc_fn, &size, 1, "iface_data");
+    LLVMValueRef data = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT);
     LLVMBuildStore(codegen->builder, value, data);
 
     LLVMTypeRef ifacety = codegen_type_to_llvm(codegen, iface);  // { ptr, ptr }
