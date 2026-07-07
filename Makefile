@@ -3287,7 +3287,7 @@ arena-routing-test: arena_routing_test
 # examples/*.expected.txt, so `make test-golden` also covers them — this
 # target exists as the named, scoped-to-Task-6 entry point the design doc
 # asks for.
-ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe
+ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe
 
 arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
@@ -3305,7 +3305,7 @@ arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "arena-free-probe: FAIL"; exit 1; fi; \
-	echo "arena-free-probe: PASS (7/7)"
+	echo "arena-free-probe: PASS (8/8)"
 
 # Same 5 binaries, run under the UAF/double-free gate:
 #   valgrind --leak-check=no --error-exitcode=99 ./probe
@@ -3340,7 +3340,7 @@ arena-valgrind-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "arena-valgrind-probe: FAIL"; exit 1; fi; \
-	echo "arena-valgrind-probe: PASS (7/7 clean)"
+	echo "arena-valgrind-probe: PASS (8/8 clean)"
 
 # Arena RSS capstone (Task 9): the concrete reclamation proof. Compiles the
 # 100k-iteration temporary-building loop with `arena { }` (freed each iteration)
