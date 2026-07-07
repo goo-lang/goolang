@@ -225,6 +225,26 @@ static TestRow rows[] = {
         "}\n",
         1, { true }
     },
+    {
+        // A `defer`'d call runs at the enclosing FUNCTION's exit, which is
+        // AFTER this arena block frees its arena — so the deferred call's
+        // arguments outlive the block and must escape, like a goroutine arg.
+        // `sink` is genuinely non-retaining (it derefs q into the blank
+        // discard, never stashing q), so the ONLY reason p escapes is the
+        // defer treatment — this row fails if handle_defer_call regresses to
+        // the ordinary-call (retention-based) handling that caused a
+        // use-after-free (see examples/arena_defer_escape_probe.goo).
+        16, "passed to a deferred call -> true (defer fires past the block)",
+        "package main\n"
+        "func sink(q *int) { _ = *q }\n"
+        "func f() {\n"
+        "    arena {\n"
+        "        p := new(int)\n"
+        "        defer sink(p)\n"
+        "    }\n"
+        "}\n",
+        1, { true }
+    },
 };
 
 static int g_pass = 0;
