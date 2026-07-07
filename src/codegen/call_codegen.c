@@ -903,6 +903,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
                 return codegen_generate_println_call(codegen, checker, expr);
             }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Print") == 0) {
+                return codegen_generate_fmt_print_call(codegen, checker, expr);
+            }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Printf") == 0) {
                 return codegen_generate_printf_call(codegen, checker, expr);
             }
@@ -2631,15 +2634,74 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
 #endif
 }
 
+// fmt.Print: variadic, no trailing newline. Go's rule: a space is written
+// between two adjacent operands iff NEITHER is a string. Each operand is
+// formatted by the shared recursive helper codegen_emit_fmt_value (same as
+// Println/Printf %v), so structs, pointers-to-struct, and every scalar kind
+// format identically here.
+ValueInfo* codegen_generate_fmt_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+
+    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
+    if (!print_func) {
+        codegen_error(codegen, expr->pos, "goo_print function not found in module");
+        return NULL;
+    }
+
+    int first = 1;
+    int prev_is_string = 0;
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
+        if (!arg_val) {
+            codegen_error(codegen, expr->pos, "Failed to generate argument for fmt.Print");
+            return NULL;
+        }
+        // Load through an lvalue (field/index selectors arrive as an address).
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at,
+                                                     arg_val->llvm_value, "fmt_print_arg");
+                arg_val->is_lvalue = 0;
+            }
+        }
+        int is_string = arg_val->goo_type && arg_val->goo_type->kind == TYPE_STRING;
+        // Separator: a space between two adjacent operands only when NEITHER is
+        // a string (Go's fmt.Print rule — distinct from Println's always-space).
+        if (!first && !prev_is_string && !is_string) {
+            LLVMValueRef sp = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_print_sep");
+            LLVMValueRef spargs[] = { sp };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                          print_func, spargs, 1, "");
+        }
+        if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
+                                    arg_val->goo_type, 0, a->pos)) {
+            value_info_free(arg_val);
+            return NULL;
+        }
+        prev_is_string = is_string;
+        first = 0;
+        value_info_free(arg_val);
+    }
+    // fmt.Print writes no trailing newline.
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+#endif
+}
+
 ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
-    
+
     CallExprNode* call = (CallExprNode*)expr;
-    
+
     // Get the goo_print function from the module
     LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
     if (!print_func) {
