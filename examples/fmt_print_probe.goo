@@ -1,0 +1,18 @@
+// fmt.Print: variadic, no trailing newline, Go's spacing rule (a space between
+// two operands only when neither is a string). Uses the shared formatter, so
+// structs/pointers format like Println/Printf.
+package main
+import "fmt"
+type Node struct { v int }
+func main() {
+	fmt.Print("a", "b")     // ab
+	fmt.Print("|")
+	fmt.Print(1, 2)         // 1 2
+	fmt.Print("|")
+	fmt.Print("x", 1)       // x1
+	fmt.Print("|")
+	fmt.Print(1, 2, "z", 3) // 1 2z3
+	fmt.Print("|")
+	fmt.Print(&Node{v: 5})  // &{5}
+	fmt.Println("")
+}

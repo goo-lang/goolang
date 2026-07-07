@@ -784,6 +784,10 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
 // Built-in function helpers
 ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+// fmt.Print: variadic, no trailing newline; a space separates two operands only
+// when neither is a string (Go's fmt.Print rule). Distinct from the builtin
+// `print` (codegen_generate_print_call) and from Println.
+ValueInfo* codegen_generate_fmt_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 // Error return helper - works with LLVM types
 LLVMValueRef codegen_generate_error_return(CodeGenerator* codegen, LLVMValueRef return_value, 

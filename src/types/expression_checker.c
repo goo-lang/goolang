@@ -3425,6 +3425,12 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_function(NULL, 0, void_t);
     }
 
+    // fmt.Print(args...) -> void  (like Println but no trailing newline, and a
+    // space is inserted between two operands only when neither is a string)
+    if (strcmp(package, "fmt") == 0 && strcmp(name, "Print") == 0) {
+        return type_function(NULL, 0, void_t);
+    }
+
     // fmt.Printf(format string, args...) -> void  (compile-time format walker)
     if (strcmp(package, "fmt") == 0 && strcmp(name, "Printf") == 0) {
         return type_function(NULL, 0, void_t);
