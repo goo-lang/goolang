@@ -2013,7 +2013,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2171,15 +2171,17 @@ iface-satisfaction-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/iface_ok.err; then echo "iface-satisfaction-probe: FAIL (implementer reached the verifier)"; cat build/iface_ok.err; exit 1; fi
 	@echo "iface-satisfaction-probe: PASS"
 
-# Function generics Task 4: generic-declaration invariants (Tier A). An
-# un-inferable type param (never appears in a parameter type) is rejected; a
-# non-`any` type constraint is rejected; arithmetic on an opaque type param is
+# Function generics Task 4: generic-declaration invariants. An un-inferable
+# type param (never appears in a parameter type) is rejected; a non-interface
+# type constraint is rejected (Tier B: interface bounds incl. named
+# interfaces are legal — see generics-bound-reject-probe for the
+# interface-vs-non-interface boundary); arithmetic on an opaque type param is
 # rejected. No invalid IR may escape in any case.
 generics-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== generics-reject-probe: generic function declaration invariants ==="
 	@printf 'package main\nfunc Zero[T any]() T { var z T\n return z }\nfunc main() {}\n' > build/gen_uninferable.goo
-	@printf 'package main\ntype Stringer interface { String() string }\nfunc F[T Stringer](x T) T { return x }\nfunc main() {}\n' > build/gen_badconstraint.goo
+	@printf 'package main\nfunc F[T int](x T) T { return x }\nfunc main() {}\n' > build/gen_badconstraint.goo
 	@printf 'package main\nfunc Add[T any](x T) T { return x + 1 }\nfunc main() {}\n' > build/gen_opaque_op.goo
 	@printf 'package main\nfunc Pair[T any](a T, b T) T { return a }\nfunc main() { _ = Pair(1, "x") }\n' > build/gen_conflict.goo
 	@"$(COMPILER)" build/gen_uninferable.goo -o build/gen_uninferable.out 2>build/gen_uninferable.err; rc=$$?; \
@@ -2187,8 +2189,8 @@ generics-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/gen_uninferable.err; then echo "generics-reject-probe: FAIL (invalid IR)"; cat build/gen_uninferable.err; exit 1; fi; \
 	  if ! grep -qiE "never used in a parameter|cannot be inferred" build/gen_uninferable.err; then echo "generics-reject-probe: FAIL (no un-inferable diagnostic)"; cat build/gen_uninferable.err; exit 1; fi
 	@"$(COMPILER)" build/gen_badconstraint.goo -o build/gen_badconstraint.out 2>build/gen_badconstraint.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "generics-reject-probe: FAIL (non-any constraint compiled)"; exit 1; fi; \
-	  if ! grep -qiE "only .any. type constraints|constraint" build/gen_badconstraint.err; then echo "generics-reject-probe: FAIL (no constraint diagnostic)"; cat build/gen_badconstraint.err; exit 1; fi
+	  if [ $$rc -eq 0 ]; then echo "generics-reject-probe: FAIL (non-interface constraint compiled)"; exit 1; fi; \
+	  if ! grep -qiE "constraint must be an interface|constraint" build/gen_badconstraint.err; then echo "generics-reject-probe: FAIL (no constraint diagnostic)"; cat build/gen_badconstraint.err; exit 1; fi
 	@"$(COMPILER)" build/gen_opaque_op.goo -o build/gen_opaque_op.out 2>build/gen_opaque_op.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "generics-reject-probe: FAIL (arithmetic on opaque T compiled)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/gen_opaque_op.err; then echo "generics-reject-probe: FAIL (invalid IR)"; cat build/gen_opaque_op.err; exit 1; fi
@@ -2197,6 +2199,40 @@ generics-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/gen_conflict.err; then echo "generics-reject-probe: FAIL (invalid IR)"; cat build/gen_conflict.err; exit 1; fi; \
 	  if ! grep -qi "conflicting types" build/gen_conflict.err; then echo "generics-reject-probe: FAIL (no conflicting-types diagnostic)"; cat build/gen_conflict.err; exit 1; fi
 	@echo "generics-reject-probe: PASS"
+
+# Function generics Tier B Task 1: a type constraint must be an interface
+# (named interface, or `any` the 0-method interface). A non-interface bound
+# (e.g. `[T int]`) is rejected here with a dedicated diagnostic.
+generics-bound-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== generics-bound-reject-probe: interface-constraint bounds ==="
+	@printf 'package main\nfunc F[T int](x T) T { return x }\nfunc main() {}\n' > build/genb_noniface.goo
+	@"$(COMPILER)" build/genb_noniface.goo -o build/genb_noniface.out 2>build/genb_noniface.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (non-interface bound compiled)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/genb_noniface.err; then echo "generics-bound-reject-probe: FAIL (invalid IR)"; cat build/genb_noniface.err; exit 1; fi; \
+	  if ! grep -qiE "constraint must be an interface" build/genb_noniface.err; then echo "generics-bound-reject-probe: FAIL (no constraint diagnostic)"; cat build/genb_noniface.err; exit 1; fi
+	@printf 'package main\ntype Stringer interface { String() string }\ntype Pt struct { x int }\nfunc Show[T Stringer](v T) string { return v.String() }\nfunc main() { _ = Show(Pt{x: 1}) }\n' > build/genb_notsat.goo
+	@"$(COMPILER)" build/genb_notsat.goo -o build/genb_notsat.out 2>build/genb_notsat.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (non-satisfying arg compiled)"; exit 1; fi; \
+	  if ! grep -qiE "does not implement" build/genb_notsat.err; then echo "generics-bound-reject-probe: FAIL (no satisfaction diagnostic)"; cat build/genb_notsat.err; exit 1; fi
+	@printf 'package main\ntype Stringer interface { String() string }\ntype Pt struct { x int }\nfunc (p Pt) String() string { return "p" }\nfunc Bad[T Stringer](v T) string { return v.Nope() }\nfunc main() { _ = Bad(Pt{x: 1}) }\n' > build/genb_nomethod.goo
+	@"$(COMPILER)" build/genb_nomethod.goo -o build/genb_nomethod.out 2>build/genb_nomethod.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (unknown bound method compiled)"; exit 1; fi; \
+	  if ! grep -qiE "has no method" build/genb_nomethod.err; then echo "generics-bound-reject-probe: FAIL (no unknown-method diagnostic)"; cat build/genb_nomethod.err; exit 1; fi
+	@printf 'package main\ntype Stringer interface { String() string }\nfunc Op[T Stringer](a T, b T) T { return a + b }\nfunc main() {}\n' > build/genb_op.goo
+	@"$(COMPILER)" build/genb_op.goo -o build/genb_op.out 2>build/genb_op.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (operator on bounded T compiled)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/genb_op.err; then echo "generics-bound-reject-probe: FAIL (invalid IR)"; cat build/genb_op.err; exit 1; fi
+	@# Transitive bound with a same-named but DIFFERENT-signature method: Outer's
+	@# bound A requires M() int, Inner's bound B requires M(int) int. The abstract
+	@# transitive check (interface_covers) must compare signatures, not just names,
+	@# and reject at type-check — NOT let a wrong-arity call reach the LLVM verifier.
+	@printf 'package main\ntype A interface { M() int }\ntype B interface { M(x int) int }\ntype C struct { n int }\nfunc (c C) M() int { return c.n }\nfunc Inner[U B](u U) int { return u.M(5) }\nfunc Outer[T A](t T) int { return Inner(t) + 1 }\nfunc main() { _ = Outer(C{n: 3}) }\n' > build/genb_sigmismatch.goo
+	@"$(COMPILER)" build/genb_sigmismatch.goo -o build/genb_sigmismatch.out 2>build/genb_sigmismatch.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "generics-bound-reject-probe: FAIL (transitive signature-mismatch bound compiled)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/genb_sigmismatch.err; then echo "generics-bound-reject-probe: FAIL (invalid IR — mismatch reached codegen instead of type-check)"; cat build/genb_sigmismatch.err; exit 1; fi; \
+	  if ! grep -qiE "does not satisfy" build/genb_sigmismatch.err; then echo "generics-bound-reject-probe: FAIL (no satisfaction diagnostic)"; cat build/genb_sigmismatch.err; exit 1; fi
+	@echo "generics-bound-reject-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void
 # expression) recovers with that expression's value, so its type must be

@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "embedding.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1171,9 +1172,54 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             return r;
         }
 
+        // Function generics Tier B: if the receiver's static type is a type
+        // parameter, resolve it through the active monomorphization subst env
+        // so `T.M()` dispatches to the concrete `C__M` (not the never-emitted
+        // `T__M`). Identity on the non-generic path (active_subst is NULL).
+        recv_type = (Type*)codegen_resolve_type(codegen, recv_type);
+
         const char* tn = type_receiver_name(recv_type);
         char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
         LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
+
+        // Function generics Tier B: a bound method PROMOTED through an
+        // embedded field (e.g. `Wrap` embeds `Base`, which declares
+        // `Label`) has no direct `Wrap__Label` symbol — methods are only
+        // ever emitted under their DECLARING type's mangled name. The
+        // ordinary (non-generic) call path never hits this: the type
+        // checker rewrites a promoted call's receiver expression to the
+        // owning embedded field at type-check time (embed_wrap_base,
+        // expression_checker.c's struct-selector path), so by codegen
+        // recv_type is already the owner. A bounded T's method call is
+        // checked differently — type_check_selector_expr's TYPE_PARAM
+        // branch resolves directly against the interface bound with no AST
+        // rewrite (expression_checker.c ~3628) — so after substitution the
+        // receiver here is still the OUTER struct. Fall back to the same
+        // embedding-resolve BFS the interface-thunk codegen already uses
+        // (interface_codegen.c's build_thunk) to find the owning type, and
+        // remember the hop path in `promo` so the receiver-address
+        // construction below can walk it with GEPs (mirroring build_thunk's
+        // own hop-walking loop) instead of the ordinary single-level
+        // receiver logic.
+        EmbedResult promo;
+        memset(&promo, 0, sizeof(promo));
+        if (!fn && recv_type && recv_type->kind == TYPE_STRUCT) {
+            EmbedResult er = embedding_resolve(checker, recv_type, msel->selector);
+            if (er.kind == EMBED_METHOD) {
+                const char* otn = type_receiver_name(er.owner);
+                char* omangled = otn ? type_method_mangled_name(otn, msel->selector) : NULL;
+                LLVMValueRef ofn = omangled ? LLVMGetNamedFunction(codegen->module, omangled) : NULL;
+                if (ofn) {
+                    free(mangled);
+                    mangled = omangled;
+                    fn = ofn;
+                    promo = er;
+                } else {
+                    free(omangled);
+                }
+            }
+        }
+
         if (fn) {
             // Receiver kind comes from the method's registered type: a pointer
             // receiver (`func (c *T) m()`) takes params[0] as a pointer. For an
@@ -1205,7 +1251,65 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
 
             LLVMValueRef recv_arg = NULL;
-            if (ptr_recv && !recv_is_ptr_value) {
+            if (promo.kind == EMBED_METHOD) {
+                // Promoted-through-embedding receiver: address the outer
+                // struct, then GEP through each hop field (mirrors
+                // build_thunk's hop-walking loop in interface_codegen.c),
+                // following pointer indirection when a hop field is itself
+                // an embedded pointer, landing on the owner's address. Then
+                // pointer receivers take that address directly; value
+                // receivers load through it.
+                ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, msel->expr);
+                if (!addr || !addr->is_lvalue) {
+                    codegen_error(codegen, expr->pos,
+                        "cannot call promoted method '%s' on non-addressable value",
+                        msel->selector);
+                    free(mangled);
+                    return NULL;
+                }
+                // Identifier lvalues alias the value table; do not free addr
+                // (mirrors the `&x` address-of path below and in
+                // expression_codegen.c).
+                LLVMValueRef recv_ptr = addr->llvm_value;
+                Type* cur = recv_type;
+                for (size_t h = 0; h < promo.len; h++) {
+                    unsigned fidx = 0;
+                    int found = 0;
+                    for (size_t fi = 0; fi < cur->data.struct_type.field_count; fi++) {
+                        if (strcmp(cur->data.struct_type.fields[fi].name, promo.path[h]) == 0) {
+                            fidx = (unsigned)fi;
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        codegen_error(codegen, expr->pos,
+                            "internal: embedding hop '%s' not found resolving promoted method '%s'",
+                            promo.path[h], msel->selector);
+                        free(mangled);
+                        return NULL;
+                    }
+                    LLVMTypeRef cur_llvm = codegen_get_struct_type(codegen, cur);
+                    recv_ptr = LLVMBuildStructGEP2(codegen->builder, cur_llvm, recv_ptr, fidx, "embed.hop");
+                    Type* ft = cur->data.struct_type.fields[fidx].type;
+                    if (ft->kind == TYPE_POINTER) {
+                        recv_ptr = LLVMBuildLoad2(codegen->builder,
+                            LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                            recv_ptr, "embed.load");
+                        cur = ft->data.pointer.pointee_type;
+                    } else {
+                        cur = ft;
+                    }
+                }
+                if (ptr_recv) {
+                    recv_arg = recv_ptr;
+                } else {
+                    LLVMTypeRef owner_llvm = codegen_type_to_llvm(codegen, cur);
+                    recv_arg = owner_llvm
+                        ? LLVMBuildLoad2(codegen->builder, owner_llvm, recv_ptr, "recv_load")
+                        : recv_ptr;
+                }
+            } else if (ptr_recv && !recv_is_ptr_value) {
                 // Auto-address-of: the receiver must be an addressable lvalue.
                 ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, msel->expr);
                 if (!addr || !addr->is_lvalue) {

@@ -2242,6 +2242,81 @@ static int slice_or_string_assignable(Type* src_t, Type* dst_t) {
 // to produce a "conflicting types" diagnostic naming both types, rather than
 // unify_types' generic 0 return folding into the same message as an
 // unrelated structural mismatch (e.g. []int against *int).
+// Tier B: find the bound (constraint interface) for type-param index `idx` by
+// locating a TYPE_PARAM with that index anywhere in a generic signature's
+// param types. Every type param appears in a parameter (Tier A invariant), so
+// this finds it. Returns the constraint Type* (a TYPE_INTERFACE), or NULL.
+static Type* generic_param_constraint(Type* t, int idx) {
+    if (!t) return NULL;
+    switch (t->kind) {
+        case TYPE_PARAM:
+            return t->data.type_param.index == idx ? t->data.type_param.constraint : NULL;
+        case TYPE_SLICE:   return generic_param_constraint(t->data.slice.element_type, idx);
+        case TYPE_POINTER: return generic_param_constraint(t->data.pointer.pointee_type, idx);
+        case TYPE_FUNCTION: {
+            for (size_t i = 0; i < t->data.function.param_count; i++) {
+                Type* c = generic_param_constraint(t->data.function.param_types[i], idx);
+                if (c) return c;
+            }
+            return generic_param_constraint(t->data.function.return_type, idx);
+        }
+        default: return NULL;
+    }
+}
+
+// Tier B transitive-bound support: does the abstract constraint interface
+// `have_iface` (a type parameter's OWN bound) structurally cover every
+// method required by `want_iface` (the callee's bound)? Used when a
+// generic call's inferred binding is itself an abstract TYPE_PARAM — e.g.
+// `Inner(x)` called from inside `Outer`'s body, where `x`'s type is
+// `Outer`'s own type parameter `T`, not a concrete type yet. There is no
+// concrete method table to consult in that case (type_interface_satisfied
+// looks up mangled "Concrete__method" names and would always report
+// "missing" for an abstract T), so satisfaction is checked by comparing
+// method names between the two interfaces instead. Name match is
+// sufficient for Tier B. A NULL/non-interface `have_iface` (a bare `any`
+// type parameter, i.e. no constraint) covers only an empty `want_iface`.
+// True if two interface-method function types have identical signatures.
+// Both carry NO receiver (unlike a registered concrete method, whose params[0]
+// is the receiver — see type_interface_satisfied), so params line up directly.
+// A missing return type and TYPE_VOID are treated as equivalent.
+static int iface_method_sig_equals(Type* have_fn, Type* want_fn) {
+    if (!have_fn || have_fn->kind != TYPE_FUNCTION ||
+        !want_fn || want_fn->kind != TYPE_FUNCTION) return 0;
+    if (have_fn->data.function.param_count != want_fn->data.function.param_count)
+        return 0;
+    for (size_t k = 0; k < want_fn->data.function.param_count; k++) {
+        if (!type_equals(have_fn->data.function.param_types[k],
+                         want_fn->data.function.param_types[k]))
+            return 0;
+    }
+    Type* hr = have_fn->data.function.return_type;
+    Type* wr = want_fn->data.function.return_type;
+    int h_void = !hr || hr->kind == TYPE_VOID;
+    int w_void = !wr || wr->kind == TYPE_VOID;
+    if (h_void != w_void) return 0;
+    if (!h_void && !type_equals(hr, wr)) return 0;
+    return 1;
+}
+
+static int interface_covers(Type* have_iface, Type* want_iface) {
+    if (!want_iface || want_iface->kind != TYPE_INTERFACE) return 0;
+    if (want_iface->data.interface.method_count == 0) return 1;
+    if (!have_iface || have_iface->kind != TYPE_INTERFACE) return 0;
+    for (InterfaceMethod* wm = want_iface->data.interface.methods; wm; wm = wm->next) {
+        int found = 0;
+        for (InterfaceMethod* hm = have_iface->data.interface.methods; hm; hm = hm->next) {
+            // A name match is not enough: the signatures must be identical, or a
+            // caller-side bound could smuggle in a same-named method with a
+            // different arity/type and miscompile at the concrete call site.
+            if (hm->name && wm->name && strcmp(hm->name, wm->name) == 0 &&
+                iface_method_sig_equals(hm->type, wm->type)) { found = 1; break; }
+        }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
 static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
                                       CallExprNode* call, Variable* callee_var,
                                       const char* callee_name) {
@@ -2301,6 +2376,52 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
                        "cannot infer type parameter %zu of %s", i, callee_name);
             free(bindings);
             return NULL;
+        }
+    }
+
+    // Tier B: enforce interface-constraint bounds — each inferred concrete type
+    // must satisfy its type param's bound. `any` / 0-method bounds are
+    // satisfied by everything, so skip them.
+    for (size_t i = 0; i < n; i++) {
+        Type* bound = NULL;
+        for (size_t p = 0; p < pc && !bound; p++)
+            bound = generic_param_constraint(gsig->data.function.param_types[p], (int)i);
+        if (bound && bound->kind == TYPE_INTERFACE &&
+            bound->data.interface.method_count > 0) {
+            if (bindings[i] && bindings[i]->kind == TYPE_PARAM) {
+                // Transitive case: the inferred binding is itself an
+                // abstract type parameter (e.g. calling Inner(x) from
+                // inside Outer's body, where x : Outer's own T). Check that
+                // T's own constraint structurally covers `bound` instead of
+                // running the concrete-only type_interface_satisfied,
+                // which would always report "missing" against an abstract
+                // receiver name.
+                Type* have = bindings[i]->data.type_param.constraint;
+                if (!interface_covers(have, bound)) {
+                    const char* pname = bindings[i]->data.type_param.name;
+                    const char* hname = (have && have->kind == TYPE_INTERFACE &&
+                                          have->data.interface.name)
+                                             ? have->data.interface.name : "any";
+                    type_error(checker, expr->pos,
+                        "type parameter %s (constraint %s) does not satisfy %s",
+                        pname ? pname : "T", hname,
+                        bound->data.interface.name ? bound->data.interface.name : "interface");
+                    free(bindings);
+                    return NULL;
+                }
+            } else {
+                const char* method = NULL; const char* reason = NULL;
+                if (!type_interface_satisfied(checker, bound, bindings[i], &method, &reason)) {
+                    const char* cn = type_receiver_name(bindings[i]);
+                    type_error(checker, expr->pos,
+                        "%s does not implement %s (%s method %s)",
+                        cn ? cn : type_to_string(bindings[i]),
+                        bound->data.interface.name ? bound->data.interface.name : "interface",
+                        reason ? reason : "missing", method ? method : "?");
+                    free(bindings);
+                    return NULL;
+                }
+            }
         }
     }
 
@@ -3573,6 +3694,29 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = m->type;
             return m->type;
         }
+    }
+
+    // Function generics Tier B: a method call on a bounded type parameter.
+    // `x.M()` where x : TYPE_PARAM resolves M against the bound interface's
+    // method set (the checker sees the abstract T; monomorphization later
+    // dispatches to the concrete type's M). An `any` (0-method) bound has no
+    // methods, so an attempted method call correctly reaches the reject below.
+    if (expr_type->kind == TYPE_PARAM &&
+        expr_type->data.type_param.constraint &&
+        expr_type->data.type_param.constraint->kind == TYPE_INTERFACE) {
+        Type* bound = expr_type->data.type_param.constraint;
+        for (InterfaceMethod* im = bound->data.interface.methods; im; im = im->next) {
+            if (im->name && strcmp(im->name, selector->selector) == 0) {
+                expr->node_type = im->type;
+                return im->type;
+            }
+        }
+        type_error(checker, expr->pos,
+                   "type parameter %s (constraint %s) has no method '%s'",
+                   expr_type->data.type_param.name ? expr_type->data.type_param.name : "T",
+                   bound->data.interface.name ? bound->data.interface.name : "interface",
+                   selector->selector);
+        return NULL;
     }
 
     type_error(checker, expr->pos, "Selector on non-struct, non-package type");
