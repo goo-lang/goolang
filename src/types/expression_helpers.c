@@ -312,8 +312,20 @@ Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_t
     return integer_binop_result_type(left_type, right_type, is_shift);
 }
 
-Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos) {
+Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, ASTNode* value_expr, Position pos) {
     if (!checker || !target || !target_type || !value_type) return NULL;
+
+    // Fix 2 (comptime-param functions are not first-class values): `f = fill`
+    // (f a func-typed variable) would rebind f to a Variable with no
+    // func_decl_node — the SAME silent bypass adapt_var_decl_initializer's
+    // sibling check guards against for `var f ... = fill`. Checked before the
+    // ordinary compatibility logic below since a function type is never
+    // numeric/interface and would otherwise just fall through the
+    // type_compatible check unremarked.
+    if (!reject_comptime_function_value(checker, value_expr, value_type, pos,
+                                        "used as a value")) {
+        return NULL;
+    }
 
     // The grammar accepts any expression as an assignment LHS; enforce
     // addressability here. Lvalues are identifiers, index, selector, and deref

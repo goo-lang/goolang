@@ -813,6 +813,11 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
 
     Type** param_types = NULL;
     int is_variadic = 0;
+    // Fix 2: does ANY parameter carry `comptime`? Walked alongside
+    // param_types below (methods included — the receiver is never a
+    // AST_VAR_DECL param here, so it can't itself be comptime) and stamped
+    // onto func_type once built, below.
+    int has_comptime_params = 0;
     if (param_count > 0) {
         param_types = calloc(param_count, sizeof(Type*));
         size_t idx = 0;
@@ -830,6 +835,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
                 pt = type_slice(pt);
                 is_variadic = 1;
             }
+            if (pd->is_comptime_param) has_comptime_params = 1;
             param_types[idx++] = pt;
         }
     }
@@ -867,7 +873,10 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         : type_checker_get_builtin(checker, TYPE_VOID);
 
     Type* func_type = type_function(param_types, param_count, return_type);
-    if (func_type) func_type->data.function.is_variadic = is_variadic;
+    if (func_type) {
+        func_type->data.function.is_variadic = is_variadic;
+        func_type->data.function.has_comptime_params = has_comptime_params;
+    }
     char* mangled = NULL;
     const char* reg_name = func->name;
     if (func->receiver) {
@@ -1075,6 +1084,22 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
             impl = mv->type;
         }
 
+        // Fix 2 (comptime-param functions are not first-class values): a
+        // method with any `comptime` parameter cannot satisfy an interface
+        // method — interface dispatch calls (`d.Do(x)`) never resolve a
+        // concrete checked_callee, so type_check_call_expr's per-argument
+        // comptime-constant check (which walks checked_callee->
+        // func_decl_node) is never reached for them. Without this gate a
+        // comptime-param method structurally satisfied a plain interface
+        // method (matched by Type equality alone — is_comptime_param lives
+        // only on the AST) and a runtime value reached the comptime slot in
+        // total silence. reason_out="comptime" is a sentinel every caller of
+        // type_interface_satisfied special-cases for a dedicated diagnostic
+        // instead of the generic "does not implement" message.
+        if (impl->kind == TYPE_FUNCTION && impl->data.function.has_comptime_params) {
+            *method_out = im->name; *reason_out = "comptime"; return 0;
+        }
+
         // The registered method carries the receiver as params[0]; the interface
         // method's function type has no receiver. So a match requires
         // impl.param_count == want.param_count + 1 and the tails to be equal.
@@ -1098,6 +1123,47 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
     return 1;  // every method satisfied (or empty interface)
 }
 
+// Fix 2: see the declaration in types.h. One place for the
+// comptime-method-can't-satisfy-an-interface wording so all three
+// type_interface_satisfied callers (check_interface_assign below, the
+// call-argument interface check in expression_checker.c, and the type-switch
+// case check above) report it identically instead of falling through to
+// their own generic "X does not implement Y (reason method M)" message,
+// which would otherwise render the "comptime" sentinel as if it were a
+// method name ("... (comptime method Do)").
+void report_comptime_method_not_satisfied(TypeChecker* checker, Position pos,
+                                          const char* method) {
+    type_error(checker, pos,
+        "method '%s' has comptime parameters and cannot satisfy an interface method",
+        method ? method : "?");
+}
+
+// Fix 2: see the declaration in types.h. Deliberately does NOT walk into
+// call->function — every caller of this helper is a VALUE-consuming site
+// (var-decl init, assignment RHS, return expression, a non-callee call
+// argument); the callee position of a direct call is checked separately
+// (type_check_call_expr's existing checked_callee->func_decl_node walk) and
+// must keep accepting a flagged type there.
+int reject_comptime_function_value(TypeChecker* checker, ASTNode* src_expr,
+                                   Type* t, Position pos, const char* context) {
+    if (!t || t->kind != TYPE_FUNCTION || !t->data.function.has_comptime_params)
+        return 1;
+    const char* name = NULL;
+    if (src_expr) {
+        if (src_expr->type == AST_IDENTIFIER) {
+            name = ((IdentifierNode*)src_expr)->name;
+        } else if (src_expr->type == AST_SELECTOR_EXPR) {
+            // A bound method value (`s.Fill`, no call) — the selector IS the
+            // method name.
+            name = ((SelectorExprNode*)src_expr)->selector;
+        }
+    }
+    type_error(checker, pos,
+        "function '%s' has comptime parameters and cannot be %s",
+        name ? name : type_to_string(t), context ? context : "used as a value");
+    return 0;
+}
+
 // P4-3: assignability into an interface-typed target. When `target` is an
 // interface, accept iff `src` is that interface (or a concrete implementer);
 // otherwise fall back to ordinary type_compatible. Emits the implementation
@@ -1113,6 +1179,10 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
     const char* reason = NULL;
     if (type_interface_satisfied(checker, target, src, &method, &reason)) return 1;
 
+    if (reason && strcmp(reason, "comptime") == 0) {
+        report_comptime_method_not_satisfied(checker, pos, method);
+        return 0;
+    }
     const char* iname = target->data.interface.name ? target->data.interface.name
                                                     : "interface";
     const char* cname = src ? type_receiver_name(src) : NULL;
@@ -1236,6 +1306,22 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
             // nothing to fall back on: type_check_expression returned no
             // type at all, so there is no sound type to register — this
             // is the `:=` residual recorded in the task-3 report.
+            register_declared_names_after_failure(checker, var_decl, declared_type);
+            return 0;
+        }
+        // Fix 2 (comptime-param functions are not first-class values): a
+        // comptime-parameterized function captured into a variable — typed
+        // (`var f func(int,int) int = fill`) OR inferred (`f := fill`) —
+        // strips away the func_decl_node back-reference that
+        // type_check_call_expr's per-argument comptime-constant check relies
+        // on (a var-decl'd Variable is never built from a FuncDeclNode), so a
+        // later call through `f` would silently accept a runtime argument
+        // into the comptime slot. Reject the capture itself, before that
+        // Variable is ever bound. Checked before adapt_var_decl_initializer
+        // below since that path is numeric-only and would no-op on a
+        // function type anyway.
+        if (!reject_comptime_function_value(checker, var_decl->values, inferred_type,
+                                            var_decl->base.pos, "used as a value")) {
             register_declared_names_after_failure(checker, var_decl, declared_type);
             return 0;
         }
@@ -2211,6 +2297,16 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
         Type* return_type = type_check_expression(checker, ret_stmt->values);
         if (!return_type) return 0;
 
+        // Fix 2 (comptime-param functions are not first-class values):
+        // `return fill` would hand the caller a Variable-less function VALUE
+        // with no func_decl_node to check a later call's arguments against —
+        // the same bypass the var-decl/assignment guards close, for the
+        // return-value channel.
+        if (!reject_comptime_function_value(checker, ret_stmt->values, return_type,
+                                            stmt->pos, "returned")) {
+            return 0;
+        }
+
         // When the enclosing function returns an error union (!T), the returned
         // expression is valid iff it is an error(...) construction / another !T
         // forwarded whole (its resolved type is THE SAME error union) OR its
@@ -2558,6 +2654,11 @@ int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                 const char* method = NULL;
                 const char* reason = NULL;
                 if (!type_interface_satisfied(checker, iface_type, case_type, &method, &reason)) {
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, t->pos, method);
+                        ok = 0;
+                        continue;
+                    }
                     const char* iname = iface_type->data.interface.name
                                              ? iface_type->data.interface.name : "interface";
                     const char* cname = type_receiver_name(case_type);

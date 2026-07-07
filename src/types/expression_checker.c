@@ -1951,7 +1951,7 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_XOR_ASSIGN:
         case TOKEN_LSHIFT_ASSIGN:
         case TOKEN_RSHIFT_ASSIGN:
-            result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, expr->pos);
+            result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, binary->right, expr->pos);
             break;
             
         // Channel send operator
@@ -3146,6 +3146,19 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
 
+        // Fix 2 (comptime-param functions are not first-class values):
+        // `takesFunc(fill)` would capture fill's VALUE into takesFunc's
+        // func-typed parameter — a Variable with no func_decl_node on the
+        // other side, the same bypass the var-decl/assignment/return guards
+        // close, for the argument-passing channel. `arg` here is a VALUE
+        // argument, never the callee itself (call->function is checked
+        // separately, above this loop), so this cannot false-reject a direct
+        // call's callee.
+        if (!reject_comptime_function_value(checker, arg, arg_type, arg->pos,
+                                            "passed as an argument")) {
+            return NULL;
+        }
+
         // Comptime value params Task 2: a `comptime name T` parameter demands
         // a compile-time-constant argument — evaluate it through the
         // comptime engine and require an int result. Independent of (and
@@ -3290,6 +3303,10 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 const char* reason = NULL;
                 if (!type_interface_satisfied(checker, param_type, arg_type,
                                               &method, &reason)) {
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, arg->pos, method);
+                        return NULL;
+                    }
                     const char* iname = param_type->data.interface.name
                                             ? param_type->data.interface.name : "interface";
                     const char* cname = type_receiver_name(arg_type);

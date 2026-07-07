@@ -113,6 +113,24 @@ struct Type {
             // Concept constraints for generic functions
             struct ConceptDefinition** concept_constraints;
             size_t concept_constraint_count;
+            // Fix 2 (comptime-param functions are not first-class values):
+            // set by declare_function_signature whenever the FuncDeclNode
+            // this signature was built from has ANY is_comptime_param
+            // parameter (methods included). A function/method with this set
+            // may only be the CALLEE of a direct call (identifier, method
+            // selector on a concrete receiver, or package selector) — never
+            // used as a plain value (interface satisfaction, var-decl init,
+            // assignment, argument, return, composite storage). Without this
+            // gate, aliasing such a function into a value strips away its
+            // func_decl_node back-reference (a fresh Variable — e.g. a var,
+            // a parameter, an interface method slot — has none), so
+            // type_check_call_expr's per-argument comptime-constant check
+            // (which walks checked_callee->func_decl_node) can never fire
+            // again for that alias: a runtime value silently reaches the
+            // comptime slot. New Type structs are calloc/memset-zeroed
+            // (type_new), so every OTHER creation site defaults this to 0
+            // with no explicit initialization needed.
+            int has_comptime_params;
         } function;
         
         // Pointer type
@@ -549,10 +567,20 @@ const char* type_receiver_name(const Type* type);
 
 // P4-3: does `concrete`'s method set satisfy interface `iface`? Returns 1 if so
 // (or for the empty interface). On failure returns 0 and writes the offending
-// method name and reason ("missing" / "signature mismatch") to the out params.
+// method name and reason ("missing" / "signature mismatch" / "comptime" — a
+// method with a `comptime` parameter, see report_comptime_method_not_satisfied
+// below) to the out params.
 int type_interface_satisfied(TypeChecker* checker, Type* iface,
                              Type* concrete, const char** method_out,
                              const char** reason_out);
+
+// Fix 2 (comptime-param functions are not first-class values): shared
+// diagnostic for the reason_out == "comptime" case above — every caller of
+// type_interface_satisfied special-cases that reason with this instead of
+// its own generic "X does not implement Y" message, so the wording stays in
+// one place. `method` is the offending method name (method_out).
+void report_comptime_method_not_satisfied(TypeChecker* checker, Position pos,
+                                          const char* method);
 
 // Validate assigning `src` into a `target`-typed location. For an interface
 // target this accepts any concrete implementer (emitting "X does not implement
@@ -560,6 +588,23 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
 // falls back to type_compatible. Returns 1 if the assignment is allowed.
 int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
                            Position pos);
+
+// Fix 2 (comptime-param functions are not first-class values): a function
+// with any `comptime` parameter may only be the CALLEE of a direct call
+// (identifier, method selector on a concrete receiver, or package selector)
+// — never captured as a plain value. `t` is the VALUE's type at a
+// value-consuming site (var-decl init, assignment RHS, call argument, return
+// expression, composite storage — NOT the callee position of a call, which
+// must stay unchecked here). No-ops (returns 1) unless `t` is a TYPE_FUNCTION
+// with has_comptime_params set. `src_expr`, if the identifier or bound-method
+// selector the value came from, supplies the function's declared name for
+// the diagnostic; pass NULL if unavailable (falls back to the type's
+// rendered name). `context` is a short verb phrase completing "function 'x'
+// has comptime parameters and cannot be <context>" (e.g. "used as a value",
+// "passed as an argument", "returned"). Emits that diagnostic and returns 0
+// on rejection.
+int reject_comptime_function_value(TypeChecker* checker, struct ASTNode* src_expr,
+                                   Type* t, Position pos, const char* context);
 
 // Type checking utilities
 int type_is_integer(const Type* type);
@@ -700,7 +745,10 @@ Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type*
 Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Position pos);
 Type* type_check_logical_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
-Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos);
+// `value_expr` is the RHS expression node (Fix 2: supplies a captured
+// comptime-parameterized function's declared name for its rejection
+// diagnostic — see reject_comptime_function_value); pass NULL if unavailable.
+Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, ASTNode* value_expr, Position pos);
 
 // Fold an integer constant expression at 128-bit precision (see
 // expression_helpers.c). Returns 1 and sets *out on success; 0 if the
