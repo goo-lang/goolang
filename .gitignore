@@ -30,6 +30,7 @@ examples/*.out
 /contracts_test
 /proof_generation_test
 /param_escape_test
+/block_escape_test
 /runtime_optimization_demo
 /runtime_optimization_test
 /runtime_optimization_test_simple
