@@ -1,0 +1,34 @@
+// arena-return-reclaim probe (early-exit free, RSS gate). build() allocates a
+// large NON-escaping object in an arena and RETURNS A CONSTANT out of the block
+// (an early-exit return, not fall-through), 200k times. Because the object does
+// not escape, it lives in the arena and is reclaimed when the early-exit return
+// frees the arena — so RSS stays bounded. The plain-block variant (arena{}->{},
+// used by arena_rss_probe.sh) heap-leaks all 200k big objects. A big object is
+// used so the leaked bytes dominate process baseline.
+package main
+
+import "fmt"
+
+type Big struct {
+	data [256]int
+}
+
+func build(n int) int {
+	arena {
+		b := &Big{}
+		b.data[0] = n
+		return 5
+	}
+	return 0
+}
+
+func main() {
+	total := 0
+	for i := 0; i < 200000; i++ {
+		total = total + build(i%7)
+	}
+	if total < 0 {
+		fmt.Println("neg")
+	}
+	fmt.Println("done")
+}

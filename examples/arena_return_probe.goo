@@ -1,0 +1,45 @@
+// arena-return safety probe (early-exit free). A `return` OUT of an arena
+// block frees that block's arena (and every enclosing arena block's arena)
+// before the ret, instead of leaking it — the fall-through free only fires when
+// control reaches the physical end of the block, which a return jumps past.
+// This exercises the double-free / use-after-free surface of that free:
+//   - build(true):  returns an escaping &Node from the OUTER arena -> outer
+//     arena freed on the return; the returned node is heap (escapes) and
+//     survives.
+//   - build(false): returns from a NESTED arena -> BOTH the inner and outer
+//     arenas are freed on that one return; scratch/inner (non-escaping) are
+//     reclaimed, the returned node is heap.
+// Two distinct return sites each free the same arena SSA, but only one runs per
+// call and the terminated-block guard skips the fall-through free — so no arena
+// is freed twice. valgrind (arena-valgrind-probe) is the gate: a double free or
+// a read of the freed arena would trip it.
+package main
+
+import "fmt"
+
+type Node struct {
+	v int
+}
+
+func build(early bool) *Node {
+	arena {
+		scratch := &Node{v: 1}
+		_ = scratch
+		if early {
+			return &Node{v: 99}
+		}
+		arena {
+			inner := &Node{v: 7}
+			_ = inner
+			return &Node{v: 42}
+		}
+	}
+	return nil
+}
+
+func main() {
+	a := build(true)
+	b := build(false)
+	fmt.Println(a.v)
+	fmt.Println(b.v)
+}

@@ -1920,6 +1920,37 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 #endif
 }
 
+// Arena-regions early-exit free (Task 6 follow-up): emit goo_arena_free for
+// every arena currently on codegen->arena_stack, innermost first. Called on
+// every function-exit path (from codegen_emit_deferred_calls) so a `return`
+// OUT of one or more arena blocks reclaims their arenas instead of leaking
+// them — the fall-through free in codegen_generate_arena_stmt only fires when
+// control reaches the physical end of the block, which a `return` jumps past.
+//
+// Soundness: this does NOT modify arena_depth (the arena_stmt that pushed each
+// arena still owns its pop). Multiple return sites each emit their own free of
+// the same arena SSA, but only one return executes per run, and the
+// terminated-block guard in codegen_generate_arena_stmt skips the fall-through
+// free once a return has terminated the block — so no path frees an arena
+// twice. `break`/`continue` do NOT reach here (they are loop exits, not
+// function exits) and still leak their arenas — safe, a documented follow-up.
+static void codegen_emit_active_arena_frees(CodeGenerator* codegen) {
+#if LLVM_AVAILABLE
+    if (!codegen || codegen->arena_depth <= 0) return;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef free_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_free");
+    if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_arena_free", free_fn_ty);
+    for (int i = codegen->arena_depth - 1; i >= 0; i--) {
+        LLVMValueRef arena = codegen->arena_stack[i];
+        if (arena) LLVMBuildCall2(codegen->builder, free_fn_ty, free_fn, &arena, 1, "");
+    }
+#else
+    (void)codegen;
+#endif
+}
+
 // Emit the current function's deferred calls in LIFO (last-registered-first)
 // order. Called at every function-exit path immediately before the `ret`.
 // No-op when the function registered no defers, so existing functions are
@@ -1935,6 +1966,12 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
 #if LLVM_AVAILABLE
     if (!codegen || !checker) return;
+    // Free the arenas this return is leaving BEFORE running defers. Defers'
+    // arguments escaped to the heap (a defer inside an arena block marks its
+    // args escaping — see block_escape.c), so they never point into these
+    // arenas and the ordering is immaterial for correctness. Runs on every
+    // exit path; a no-op when no arena is active (arena_depth == 0).
+    codegen_emit_active_arena_frees(codegen);
     FunctionInfo* fi = codegen->current_function_info;
     if (!fi || fi->deferred_count == 0) return;
     if (g_defer_info_owner != fi || g_defer_info_count < fi->deferred_count) return;
