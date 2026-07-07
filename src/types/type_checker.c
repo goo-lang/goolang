@@ -1811,6 +1811,19 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
     for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
         Type* vt = type_check_expression(checker, v);
         if (!vt) return 0;
+        // Fix 2 (comptime-param functions are not first-class values):
+        // `a, b := fill, 1` / `a, b = fill, 1` capture fill's VALUE into a
+        // Variable with no func_decl_node — the same alias bypass the
+        // single-name var-decl / assignment guards close. Gated here on the
+        // VALUE expression, before the target loop binds/stores anything.
+        // A destructure RHS (`a, b = f()`) is a CALL value, whose own callee
+        // was already checked by type_check_call_expr — its result type is
+        // never a flagged function type unless `return fill` slipped out,
+        // which the return-statement guard already rejects at f's decl.
+        if (!reject_comptime_function_value(checker, v, vt, v->pos,
+                                            "used as a value")) {
+            return 0;
+        }
         vtypes[n++] = vt;
     }
 
@@ -2501,6 +2514,14 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
                 } else {
                     Type* val_t = type_check_expression(checker, send->right);
                     if (!val_t) {
+                        ok = 0;
+                    // Fix 2: sibling of the TOKEN_ARROW gate in
+                    // type_check_binary_expr — this select-send comm path
+                    // checks left/right individually and never routes
+                    // through that case, so it needs its own gate.
+                    } else if (!reject_comptime_function_value(
+                                   checker, send->right, val_t,
+                                   send->right->pos, "sent on a channel")) {
                         ok = 0;
                     } else if (!type_compatible(val_t, chan_t->data.channel.element_type)) {
                         type_error(checker, send->right->pos,

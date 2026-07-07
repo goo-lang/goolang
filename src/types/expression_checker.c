@@ -638,6 +638,19 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 // sites; the semantics (including the #100 float->int asymmetry and the
 // task-3 range check) are identical for all four.
 static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* field_type, Type* vt) {
+    // Fix 2 (comptime-param functions are not first-class values): this is
+    // the one sink every composite-literal value routes through (struct
+    // field, slice element, array element, map value — see the Task 3b note
+    // above), so the "cannot store a comptime-param function in a composite"
+    // rule lives here instead of four copies at the call sites. Checked
+    // BEFORE the numeric early-return below — a function type is never
+    // numeric, so it would otherwise sail through untouched. NULL signals
+    // rejection (error already emitted), exactly like the range-check
+    // rejections below; every caller already propagates NULL.
+    if (!reject_comptime_function_value(checker, v, vt, v->pos,
+                                        "stored in a composite literal")) {
+        return NULL;
+    }
     if (!field_type || !type_is_numeric(field_type)) return vt;
     if (type_is_float(field_type)) {
         if (is_untyped_float_rooted(v)) {
@@ -1956,6 +1969,17 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
             
         // Channel send operator
         case TOKEN_ARROW:  // ch <- value
+            // Fix 2 (comptime-param functions are not first-class values):
+            // `ch <- fill` transports fill's VALUE to a receiver with no
+            // func_decl_node to check a later call against — the same alias
+            // bypass as assignment. type_check_channel_send_op sees only
+            // TYPES, so the expression-carrying gate lives here (the
+            // select-statement send comm has its own sibling gate in
+            // type_check_select_stmt).
+            if (!reject_comptime_function_value(checker, binary->right, right_type,
+                                                expr->pos, "sent on a channel")) {
+                return NULL;
+            }
             result_type = type_check_channel_send_op(checker, left_type, right_type, expr->pos);
             break;
             
