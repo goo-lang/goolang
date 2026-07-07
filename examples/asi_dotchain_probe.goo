@@ -1,0 +1,16 @@
+package main
+
+import "fmt"
+
+type B struct{ v int }
+
+func (b B) Add() B { return B{v: b.v + 1} }
+
+// gofmt fluent chains put the dot at the END of the line. The token before each
+// newline is `.` (not value-ending), so the ASI guard must never fire here.
+func main() {
+	r := B{v: 0}.
+		Add().
+		Add()
+	fmt.Println(r.v)
+}

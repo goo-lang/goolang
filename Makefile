@@ -2234,6 +2234,33 @@ generics-bound-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -qiE "does not satisfy" build/genb_sigmismatch.err; then echo "generics-bound-reject-probe: FAIL (no satisfaction diagnostic)"; cat build/genb_sigmismatch.err; exit 1; fi
 	@echo "generics-bound-reject-probe: PASS"
 
+# ASI greedy-join hardening: a value-ending token must NOT silently absorb a
+# following `(`, `[`, or `.` across a newline. These three cases cannot be
+# run-and-diff goldens (the un-joined line 2 — `(5)`, `[0]`, `.x` — is not a
+# valid standalone statement), so each asserts the implementation-agnostic
+# invariant: the program must NOT compile-and-print the joined-WRONG value, and
+# must never reach the LLVM verifier with a crash. A clean front-end rejection
+# or a correct reparse both pass.
+asi-hardening-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== asi-hardening-probe: value-ending token must not join ( [ . across a newline ==="
+	@# Case 1: `g := id` <nl> `(5)` — pre-fix joins to `g := id(5)` -> prints 5.
+	@printf 'package main\nimport "fmt"\nfunc id(n int) int { return n }\nfunc main() {\n\tg := id\n\t(5)\n\tfmt.Println(g)\n}\n' > build/asi_call.goo
+	@"$(COMPILER)" build/asi_call.goo -o build/asi_call.out 2>build/asi_call.err; rc=$$?; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/asi_call.err; then echo "asi-hardening-probe: FAIL (call case reached verifier)"; cat build/asi_call.err; exit 1; fi; \
+	  if [ $$rc -eq 0 ] && [ "$$(./build/asi_call.out 2>/dev/null)" = "5" ]; then echo "asi-hardening-probe: FAIL (call case silently joined -> printed 5)"; exit 1; fi
+	@# Case 2: `b := a` <nl> `[0]` — pre-fix joins to `b := a[0]` -> prints 10.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\ta := []int{10, 20, 30}\n\tb := a\n\t[0]\n\tfmt.Println(b)\n}\n' > build/asi_index.goo
+	@"$(COMPILER)" build/asi_index.goo -o build/asi_index.out 2>build/asi_index.err; rc=$$?; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/asi_index.err; then echo "asi-hardening-probe: FAIL (index case reached verifier)"; cat build/asi_index.err; exit 1; fi; \
+	  if [ $$rc -eq 0 ] && [ "$$(./build/asi_index.out 2>/dev/null)" = "10" ]; then echo "asi-hardening-probe: FAIL (index case silently joined -> printed 10)"; exit 1; fi
+	@# Case 3: `q := p` <nl> `.x` — pre-fix joins to `q := p.x` -> prints 7.
+	@printf 'package main\nimport "fmt"\ntype P struct { x int; y int }\nfunc main() {\n\tp := P{x: 7, y: 9}\n\tq := p\n\t.x\n\tfmt.Println(q)\n}\n' > build/asi_sel.goo
+	@"$(COMPILER)" build/asi_sel.goo -o build/asi_sel.out 2>build/asi_sel.err; rc=$$?; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/asi_sel.err; then echo "asi-hardening-probe: FAIL (selector case reached verifier)"; cat build/asi_sel.err; exit 1; fi; \
+	  if [ $$rc -eq 0 ] && [ "$$(./build/asi_sel.out 2>/dev/null)" = "7" ]; then echo "asi-hardening-probe: FAIL (selector case silently joined -> printed 7)"; exit 1; fi
+	@echo "asi-hardening-probe: PASS"
+
 # P2-1: a value-producing catch handler (final statement is a non-void
 # expression) recovers with that expression's value, so its type must be
 # assignable to the error union's value type T. A string handler over an !int
