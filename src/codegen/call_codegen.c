@@ -29,6 +29,15 @@ static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMVal
 // (near codegen_generate_println_call) for the full contract.
 static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
                                    LLVMValueRef val, Type* ty, int depth, Position pos);
+
+// fmt.Sprintf %v value formatter: the string-building counterpart to
+// codegen_emit_fmt_value above. Same recursive dispatch/shape (struct,
+// pointer-to-struct, depth cap) but CONCATENATES into a goo_string
+// accumulator (via goo_string_concat) instead of calling goo_print. See its
+// definition (right after codegen_emit_fmt_value) for the full contract.
+static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeChecker* checker,
+                                                    LLVMValueRef acc, LLVMValueRef val,
+                                                    Type* ty, int depth, Position pos);
 #endif
 
 // Defined in expression_codegen.c: storage address of an addressable
@@ -2308,6 +2317,225 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
 
     return 1;
 }
+
+// fmt_sprintf_lit: build a literal goo_string_t {data, len} from a C string
+// constant. Used by codegen_build_fmt_value_string for the punctuation it
+// concatenates around struct/pointer values ("{", "}", "&", " ", "<nil>",
+// "..."). Mirrors the literal-chunk construction fmt_emit_segments does for
+// each literal format-string chunk (~line 2589-2598 below).
+static LLVMValueRef fmt_sprintf_lit(CodeGenerator* codegen, LLVMTypeRef string_llvm, const char* s) {
+    LLVMValueRef ptr = LLVMBuildGlobalStringPtr(codegen->builder, s, "sp_lit");
+    LLVMValueRef len = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), strlen(s), 0);
+    LLVMValueRef str = LLVMGetUndef(string_llvm);
+    str = LLVMBuildInsertValue(codegen->builder, str, ptr, 0, "sp_lit_ptr");
+    str = LLVMBuildInsertValue(codegen->builder, str, len, 1, "sp_lit_len");
+    return str;
+}
+
+// codegen_build_fmt_value_string: fmt.Sprintf %v value formatter (struct /
+// pointer-to-struct formatting task). String-building counterpart to
+// codegen_emit_fmt_value directly above: identical recursive per-kind
+// dispatch (error/string/int/uint/bool/float/interface/struct/pointer-to-
+// struct) and the same depth>6 termination cap (required for the same
+// reason — a self-referential struct type recurses over TYPES at codegen
+// time, not a bounded runtime value, so without the cap the compiler itself
+// would never terminate on `type Node struct { next *Node }`). The
+// difference: instead of calling goo_print for side effects, each case
+// concatenates its piece onto a goo_string accumulator via
+// goo_string_concat and returns the new accumulator.
+//
+// This is also why pointer-to-struct needs a phi where codegen_emit_fmt_value
+// didn't: printing has no data dependency between the nil/non-nil arms (both
+// just emit side-effecting print calls and fall through to a shared
+// continuation block), but building a STRING value does — the result differs
+// per arm, so the cont block must phi the two arms' produced accumulators.
+//
+// Returns the new accumulator goo_string, or NULL after emitting a
+// source-located codegen_error.
+static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeChecker* checker,
+                                                    LLVMValueRef acc, LLVMValueRef val,
+                                                    Type* ty, int depth, Position pos) {
+    (void)checker;
+    LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+    if (!concat_fn) {
+        codegen_error(codegen, pos, "goo_string_concat function not found in module");
+        return NULL;
+    }
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+
+    // Recursion cap (REQUIRED, see codegen_emit_fmt_value's doc comment
+    // above for why): mirrors that cap exactly so Sprintf agrees with
+    // Println/Printf on where a deeply-nested/self-referential type gets
+    // truncated.
+    if (depth > 6) {
+        LLVMValueRef dots = fmt_sprintf_lit(codegen, string_llvm, "...");
+        LLVMValueRef cargs[] = { acc, dots };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    }
+
+    TypeKind kind = (ty ? ty->kind : TYPE_VOID);
+
+    if (type_is_error(ty)) {
+        LLVMValueRef disp = codegen_error_display_string(codegen, val, pos);
+        if (!disp) return NULL;
+        LLVMValueRef cargs[] = { acc, disp };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_STRING) {
+        LLVMValueRef cargs[] = { acc, val };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
+        LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_int_to_string");
+        if (!int_fn) { codegen_error(codegen, pos, "goo_int_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = LLVMBuildSExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "sext");
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
+                                        int_fn, sargs, 1, "sp_int");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_UINT8 || kind == TYPE_UINT16 || kind == TYPE_UINT32 || kind == TYPE_UINT64) {
+        LLVMValueRef uint_fn = LLVMGetNamedFunction(codegen->module, "goo_uint_to_string");
+        if (!uint_fn) { codegen_error(codegen, pos, "goo_uint_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "zext");
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(uint_fn),
+                                        uint_fn, sargs, 1, "sp_uint");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_BOOL) {
+        LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_bool_to_string");
+        if (!bool_fn) { codegen_error(codegen, pos, "goo_bool_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt32TypeInContext(codegen->context), "zext");
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
+                                        bool_fn, sargs, 1, "sp_bool");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
+        LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_float_to_string");
+        if (!float_fn) { codegen_error(codegen, pos, "goo_float_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = (kind == TYPE_FLOAT32)
+            ? LLVMBuildFPExt(codegen->builder, val,
+                             LLVMDoubleTypeInContext(codegen->context), "fpext")
+            : val;
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
+                                        float_fn, sargs, 1, "sp_float");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_INTERFACE) {
+        LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, val, 0, "ifvt");
+        LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, val, 1, "ifdata");
+        LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
+        if (!fmtcall) { codegen_error(codegen, pos, "goo_iface_format not found"); return NULL; }
+        LLVMValueRef fargs[] = { vtab, data };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
+                                        fmtcall, fargs, 2, "ifstr");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_STRUCT) {
+        // "{" field0 " " field1 ... "}" — Go-style struct formatting,
+        // threaded through the accumulator (same shape as
+        // codegen_emit_fmt_value's TYPE_STRUCT case, but concatenating
+        // instead of printing).
+        LLVMValueRef brace_open = fmt_sprintf_lit(codegen, string_llvm, "{");
+        LLVMValueRef oargs[] = { acc, brace_open };
+        acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                             concat_fn, oargs, 2, "sp_acc");
+
+        size_t fcount = ty->data.struct_type.field_count;
+        StructField* fields = ty->data.struct_type.fields;
+        for (size_t i = 0; i < fcount; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+                LLVMValueRef spargs[] = { acc, sp };
+                acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                     concat_fn, spargs, 2, "sp_acc");
+            }
+            LLVMValueRef fv = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_struct_field");
+            acc = codegen_build_fmt_value_string(codegen, checker, acc, fv, fields[i].type, depth + 1, pos);
+            if (!acc) return NULL;
+        }
+
+        LLVMValueRef brace_close = fmt_sprintf_lit(codegen, string_llvm, "}");
+        LLVMValueRef cargs2[] = { acc, brace_close };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs2, 2, "sp_acc");
+    } else if (kind == TYPE_POINTER && ty->data.pointer.pointee_type &&
+               ty->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+        // Pointer-to-struct: nil check -> "<nil>", else "&" + the pointee
+        // struct's own formatting. Unlike codegen_emit_fmt_value's twin
+        // case, the two arms here produce DIFFERENT VALUES (not just side
+        // effects), so the cont block needs a phi over the two arms'
+        // accumulators.
+        LLVMValueRef null_ptr = LLVMConstNull(LLVMTypeOf(val));
+        LLVMValueRef is_null = LLVMBuildICmp(codegen->builder, LLVMIntEQ, val, null_ptr, "fmt_ptr_isnull");
+        LLVMBasicBlockRef nil_bb    = codegen_create_block(codegen, "spfmt.nil");
+        LLVMBasicBlockRef nonnil_bb = codegen_create_block(codegen, "spfmt.nonnil");
+        LLVMBasicBlockRef cont_bb   = codegen_create_block(codegen, "spfmt.cont");
+        LLVMBuildCondBr(codegen->builder, is_null, nil_bb, nonnil_bb);
+
+        codegen_set_insert_point(codegen, nil_bb);
+        LLVMValueRef nil_lit = fmt_sprintf_lit(codegen, string_llvm, "<nil>");
+        LLVMValueRef nargs[] = { acc, nil_lit };
+        LLVMValueRef acc_nil = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                              concat_fn, nargs, 2, "sp_acc_nil");
+        // Capture the block we're actually leaving from — flushing the
+        // chunk above can't branch, so this is still nil_bb here, but we
+        // capture it the same way as the non-nil arm below for symmetry
+        // and so a future edit that adds control flow to this arm can't
+        // silently invalidate the phi's incoming block.
+        LLVMBasicBlockRef nil_end = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, nonnil_bb);
+        LLVMValueRef amp_lit = fmt_sprintf_lit(codegen, string_llvm, "&");
+        LLVMValueRef aargs[] = { acc, amp_lit };
+        LLVMValueRef acc1 = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                           concat_fn, aargs, 2, "sp_acc_amp");
+
+        Type* pointee = ty->data.pointer.pointee_type;
+        LLVMTypeRef struct_llvm = codegen_type_to_llvm(codegen, pointee);
+        if (!struct_llvm) {
+            codegen_error(codegen, pos, "fmt.Sprintf: cannot lower pointee struct type");
+            return NULL;
+        }
+        LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, struct_llvm, val, "fmt_ptr_load");
+        LLVMValueRef acc_nn = codegen_build_fmt_value_string(codegen, checker, acc1, loaded,
+                                                              pointee, depth + 1, pos);
+        if (!acc_nn) return NULL;
+        // Captured AFTER the recursive call, NOT nonnil_bb: recursing into
+        // a nested struct/pointer field can itself append basic blocks
+        // (e.g. a nested pointer field runs this same nil-check), so the
+        // block the builder is actually in now is the true predecessor for
+        // the phi below — using nonnil_bb here would build a phi with a
+        // stale/wrong incoming block and fail the LLVM verifier.
+        LLVMBasicBlockRef nn_end = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, cont_bb);
+        LLVMValueRef phi = LLVMBuildPhi(codegen->builder, string_llvm, "sp_ptr_phi");
+        LLVMValueRef incoming_vals[]   = { acc_nil, acc_nn };
+        LLVMBasicBlockRef incoming_blocks[] = { nil_end, nn_end };
+        LLVMAddIncoming(phi, incoming_vals, incoming_blocks, 2);
+        return phi;
+    } else {
+        codegen_error(codegen, pos,
+                      "fmt.Sprintf: %%v: unsupported argument type (only string, integer, "
+                      "bool, float, struct, and pointer-to-struct are supported in v1)");
+        return NULL;
+    }
+}
 #endif
 
 ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -2915,18 +3143,17 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                 // %v of a struct / pointer-to-struct. Printf mode reuses the
                 // recursive print-based formatter shared with fmt.Println
                 // (codegen_emit_fmt_value -> {f0 f1} / &{...}). Sprintf mode
-                // can't: that helper PRINTS, it does not accumulate a
-                // goo_string, so a string-building formatter is needed —
-                // deferred as a documented follow-up.
+                // uses the string-building counterpart (codegen_build_fmt_value_string)
+                // since that helper PRINTS rather than accumulating a goo_string.
                 if (sprintf_mode) {
-                    codegen_error(c, arg_cursor->pos,
-                                  "fmt.Sprintf: %%v of a struct/pointer-to-struct is not yet "
-                                  "supported (needs a string-building formatter; use fmt.Printf)");
-                    value_info_free(arg_val);
-                    ok = 0;
-                    break;
-                }
-                if (!codegen_emit_fmt_value(c, tc, arg_val->llvm_value,
+                    acc = codegen_build_fmt_value_string(c, tc, acc, arg_val->llvm_value,
+                                                          arg_val->goo_type, 0, arg_cursor->pos);
+                    if (!acc) {
+                        value_info_free(arg_val);
+                        ok = 0;
+                        break;
+                    }
+                } else if (!codegen_emit_fmt_value(c, tc, arg_val->llvm_value,
                                             arg_val->goo_type, 0, arg_cursor->pos)) {
                     value_info_free(arg_val);
                     ok = 0;
@@ -2936,8 +3163,8 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                 codegen_error(c, arg_cursor->pos,
                               sprintf_mode
                               ? "fmt.Sprintf: %%v: unsupported argument type "
-                                "(only string, integer, bool, float, and — in Printf — "
-                                "struct/pointer-to-struct supported in v1)"
+                                "(only string, integer, bool, float, struct, "
+                                "pointer-to-struct supported in v1)"
                               : "fmt.Printf: %%v: unsupported argument type "
                                 "(only string, integer, bool, float, struct, "
                                 "pointer-to-struct supported in v1)");
