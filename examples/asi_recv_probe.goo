@@ -16,9 +16,14 @@
 // statement.
 //
 // Expected output derived from `go run` on the equivalent Go program
-// (value printed is `2`); Go's builtin `println` writes to stderr while
-// Goo's writes to stdout (an existing, frozen convention difference — see
-// print_builtin_probe.goo), so the value is compared against Goo's stdout.
+// (go1.26.1 prints `2` — on stderr, since Go's builtin println targets
+// stderr while Goo's targets stdout; the VALUE is the go-run-derived
+// artifact, the stream is Goo's documented convention). Equivalent Go:
+//   func main() { ch := make(chan int, 1)
+//     go func() { ch <- 1 }()
+//     x := 2
+//     <-ch
+//     println(x) }
 package main
 
 func main() {
