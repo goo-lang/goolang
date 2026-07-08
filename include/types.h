@@ -84,6 +84,19 @@ struct Type {
         struct {
             Type* element_type;
             size_t length;
+            // Comptime value params (fix round 4): set when this array
+            // type's LENGTH expression references a comptime parameter
+            // (stamped by type_from_ast's AST_ARRAY_TYPE case and the
+            // array-literal checker via goo_expr_references_comptime_param).
+            // In a comptime TEMPLATE body, `length` is then the placeholder
+            // — const-index and literal-count validation defer to instance
+            // time (the checker skips its upper-bound rejection; codegen's
+            // index paths re-check against the instance's re-derived REAL
+            // length and hard-fail on a genuine violation). 0 for every
+            // ordinary array, whose template-time validation is unchanged.
+            // Tail-appended within the union member (type_new memsets the
+            // whole Type, so it starts 0 on every construction path).
+            int comptime_length;
         } array;
         
         // Slice type
@@ -823,6 +836,17 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
 // binding — only array LENGTHS can differ per instance, so anything with no
 // array anywhere can keep the cached Type object untouched.
 int goo_type_contains_array(const Type* t);
+
+// Comptime value params (fix round 3/4): does `expr` contain any identifier
+// that resolves, in checker's CURRENT scope, to a comptime PARAMETER
+// (Variable whose decl_node is a VarDeclNode with is_comptime_param)?
+// Recurses through the same expression shapes goo_fold_const_int_ctx folds.
+// Three consumers: the comptime-argument capture site (expression_checker.c
+// — keeps the const folder away from the enclosing param's placeholder),
+// the array-literal checker (defer count-vs-length validation to instance
+// time), and type_from_ast's AST_ARRAY_TYPE case (stamp
+// Type.data.array.comptime_length so const-index validation defers too).
+int goo_expr_references_comptime_param(TypeChecker* checker, ASTNode* expr);
 
 // Fold a compile-time string constant — string literals joined by `+` — into a
 // freshly malloc'd byte buffer. On success returns 1, writes *out (the buffer,

@@ -116,6 +116,30 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         case TYPE_ARRAY: {
             element_type = base_type->data.array.element_type;
 
+            // Fix round 4: instance-time enforcement of the const-index
+            // upper bound the checker DEFERRED for a comptime-length array
+            // (comptime_length flag — see type_check_index_expr's skip).
+            // base_type here is the instance's RE-DERIVED type (real
+            // length), so a genuinely out-of-range const index at THIS
+            // instance is a clean compile failure — named with the
+            // instance symbol (symbol_override is installed for the
+            // duration of instance stamping) — instead of a runtime
+            // bounds panic. Ordinary arrays never carry the flag; their
+            // const OOB indices were already rejected at type-check.
+            if (base_type->data.array.comptime_length) {
+                uint64_t ci;
+                if (goo_fold_const_int_ctx(checker, index_expr->index, &ci) &&
+                    ci >= (uint64_t)base_type->data.array.length) {
+                    codegen_error(codegen, index_expr->index->pos,
+                        "array index %llu out of bounds [0:%zu] in comptime instance '%s'",
+                        (unsigned long long)ci, base_type->data.array.length,
+                        codegen->symbol_override ? codegen->symbol_override : "?");
+                    value_info_free(base_val);
+                    value_info_free(index_val);
+                    return NULL;
+                }
+            }
+
             // Bounds-check the read against the fixed length (static N) before
             // the element GEP — arrays previously skipped this (only slices
             // checked), so arr[i] could read past the array.

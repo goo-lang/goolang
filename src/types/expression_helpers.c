@@ -88,6 +88,32 @@ int goo_type_contains_array(const Type* t) {
     return 0;
 }
 
+// Comptime value params (fix round 4): see the header doc comment. Promoted
+// from expression_checker.c's file-local helper (fix round 2's I2 guard)
+// when type_from_ast (type_checker.c) became its third consumer — the
+// comptime_length stamping on array types.
+int goo_expr_references_comptime_param(TypeChecker* checker, ASTNode* expr) {
+    if (!expr) return 0;
+    switch (expr->type) {
+        case AST_IDENTIFIER: {
+            Variable* v = type_checker_lookup_variable(checker,
+                ((IdentifierNode*)expr)->name);
+            return v && v->decl_node && v->decl_node->type == AST_VAR_DECL &&
+                   ((VarDeclNode*)v->decl_node)->is_comptime_param;
+        }
+        case AST_UNARY_EXPR:
+            return goo_expr_references_comptime_param(checker,
+                ((UnaryExprNode*)expr)->operand);
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            return goo_expr_references_comptime_param(checker, b->left) ||
+                   goo_expr_references_comptime_param(checker, b->right);
+        }
+        default:
+            return 0;
+    }
+}
+
 // Checker-aware sibling of goo_fold_const_int (see header): additionally
 // resolves AST_IDENTIFIER against checker's scope chain, using the constant's
 // cached integer value (Variable->const_int_value, set by

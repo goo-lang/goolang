@@ -1018,6 +1018,27 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
         LLVMValueRef idx64 = codegen_widen_index(codegen, index_val);
 
         if (base_type->kind == TYPE_ARRAY) {
+            // Fix round 4: instance-time const-index enforcement for a
+            // comptime-length array's WRITE path (`buf[3] = s`), mirroring
+            // codegen_generate_index_expr's read-path check exactly — see
+            // the comment there for the deferral contract
+            // (type_check_index_expr skips the upper bound for
+            // comptime_length arrays; this re-derived type carries the
+            // instance's real length).
+            if (base_type->data.array.comptime_length) {
+                uint64_t ci;
+                if (goo_fold_const_int_ctx(checker, ix->index, &ci) &&
+                    ci >= (uint64_t)base_type->data.array.length) {
+                    codegen_error(codegen, ix->index->pos,
+                        "array index %llu out of bounds [0:%zu] in comptime instance '%s'",
+                        (unsigned long long)ci, base_type->data.array.length,
+                        codegen->symbol_override ? codegen->symbol_override : "?");
+                    value_info_free(base);
+                    value_info_free(index_val);
+                    return NULL;
+                }
+            }
+
             // base->llvm_value is a pointer to the array; GEP the element.
             // Bounds-check against the fixed length (static N) first — mirrors
             // the slice-write arm; arr[i]=x aborts on out-of-range.

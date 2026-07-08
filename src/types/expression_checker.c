@@ -35,10 +35,8 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
 static int is_untyped_float_rooted(ASTNode* n);
 static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* target,
                                         int negated);
-// Comptime value params (fix round 3): defined near type_check_call_expr;
-// forward-declared here for the array-literal checker's comptime-length
-// detection (defer count-vs-length validation to instance time).
-static int expr_references_comptime_param(TypeChecker* checker, ASTNode* expr);
+// Comptime value params (fix round 4): goo_expr_references_comptime_param
+// now lives in expression_helpers.c, declared in types.h.
 // Task 3b: the composite-value adaptation helper (defined below, near
 // type_check_struct_literal, its original #101 sink) is now ALSO the
 // element-value hook for slice literals (check_slice_elements), array
@@ -474,7 +472,7 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             // zero-fills/places elements against that real length. Element
             // TYPE checking below is unaffected — only the index bound is
             // skipped for comptime-length literals.
-            int comptime_len = expr_references_comptime_param(checker, at->length);
+            int comptime_len = goo_expr_references_comptime_param(checker, at->length);
             // Elements may be keyed (`index: value`, a sparse Go table like
             // utf8 acceptRanges) or bare. A keyed element places its value at
             // the const index; an unkeyed element continues at previous + 1
@@ -529,6 +527,11 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 }
             }
             Type* arr = type_array(want, (size_t)n);
+            // Fix round 4: mark a comptime-length literal's type so
+            // const-INDEX validation (type_check_index_expr) defers to
+            // instance time too, exactly like the count-vs-length deferral
+            // above — the flag rides the Type to every consumer.
+            if (arr && comptime_len) arr->data.array.comptime_length = 1;
             expr->node_type = arr;
             return arr;
         }
@@ -2554,10 +2557,12 @@ static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
     return NULL;
 }
 
-// Comptime value params Task 3 (fix round 2, I2 guard): does `expr` contain
-// any identifier that resolves to a comptime PARAMETER of the enclosing
-// function? Guards the const-folding fast path at the comptime-argument
-// capture site below: goo_fold_const_int_ctx resolves ANY Variable with
+// Comptime value params (fix round 2's I2 guard; promoted in fix round 4):
+// the comptime-param-reference walk now lives in expression_helpers.c as
+// goo_expr_references_comptime_param — type_from_ast (type_checker.c)
+// became its third consumer for comptime_length stamping. At the
+// comptime-argument capture site below, it guards the const-folding fast
+// path: goo_fold_const_int_ctx resolves ANY Variable with
 // has_const_int_value — which inside a comptime function's TEMPLATE body
 // includes the comptime param itself, bound to a PLACEHOLDER (see
 // type_check_function_decl's is_comptime_param binding). Folding
@@ -2566,31 +2571,7 @@ static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
 // transitive comptime forwarding a documented restriction (design doc,
 // Scope/YAGNI): such an argument must fall through to the comptime engine,
 // which cannot resolve the param and rejects with the standard
-// "must be a compile-time constant" diagnostic. A comptime param is
-// recognizable by its Variable's decl_node being a VarDeclNode with
-// is_comptime_param set (a const's Variable carries no decl_node).
-// Recurses through the same expression shapes goo_fold_const_int_ctx folds.
-static int expr_references_comptime_param(TypeChecker* checker, ASTNode* expr) {
-    if (!expr) return 0;
-    switch (expr->type) {
-        case AST_IDENTIFIER: {
-            Variable* v = type_checker_lookup_variable(checker,
-                ((IdentifierNode*)expr)->name);
-            return v && v->decl_node && v->decl_node->type == AST_VAR_DECL &&
-                   ((VarDeclNode*)v->decl_node)->is_comptime_param;
-        }
-        case AST_UNARY_EXPR:
-            return expr_references_comptime_param(checker,
-                ((UnaryExprNode*)expr)->operand);
-        case AST_BINARY_EXPR: {
-            BinaryExprNode* b = (BinaryExprNode*)expr;
-            return expr_references_comptime_param(checker, b->left) ||
-                   expr_references_comptime_param(checker, b->right);
-        }
-        default:
-            return 0;
-    }
-}
+// "must be a compile-time constant" diagnostic.
 
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
@@ -3348,7 +3329,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 // cached const_int_value; the comptime ENGINE alone (tier 2)
                 // has no view of checker-scope constants and rejected all
                 // of them, contradicting the spec's surface. Guarded by
-                // expr_references_comptime_param (see its doc comment):
+                // goo_expr_references_comptime_param (see types.h):
                 // inside a comptime template body the folder would resolve
                 // the enclosing comptime PARAM to its placeholder — such an
                 // argument skips the fold and falls to the engine, which
@@ -3360,7 +3341,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 int64_t comptime_arg_value = 0;
                 int resolved = 0;
                 uint64_t folded = 0;
-                if (!expr_references_comptime_param(checker, arg) &&
+                if (!goo_expr_references_comptime_param(checker, arg) &&
                     goo_fold_const_int_ctx(checker, arg, &folded)) {
                     comptime_arg_value = (int64_t)folded;
                     resolved = 1;
@@ -3658,7 +3639,18 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
                                "array index %lld must not be negative", (long long)ci);
                     return NULL;
                 }
-                if (ci >= (uint64_t)expr_type->data.array.length) {
+                // Fix round 4: a comptime-length array's `length` here is
+                // the TEMPLATE placeholder — validating a const index
+                // against it falsely rejected `buf[3]` on `[n]int` with
+                // "out of bounds [0:1]", a bound the user never wrote.
+                // Defer the upper-bound check to instance time (the codegen
+                // index paths re-check against the instance's re-derived
+                // REAL length and hard-fail a genuine violation); ordinary
+                // arrays (comptime_length == 0) keep this check unchanged.
+                // The negative-index rejection above stays unconditional —
+                // invalid at every instance.
+                if (!expr_type->data.array.comptime_length &&
+                    ci >= (uint64_t)expr_type->data.array.length) {
                     type_error(checker, index->index->pos,
                                "array index %llu out of bounds [0:%zu]",
                                (unsigned long long)ci, expr_type->data.array.length);

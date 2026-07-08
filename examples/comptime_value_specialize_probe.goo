@@ -143,6 +143,22 @@ func litInit(comptime n int, seed int) int {
     return sum
 }
 
+// Fix round 4: CONST-INDEXING a comptime-length array — the upper-bound
+// check is deferred from template time (where the placeholder falsely
+// bounded it at 1) to instance time, where the re-derived real length
+// admits buf[3] for n=4 (and cleanly rejects it at compile time for n<4,
+// naming the instance — see the reject matrix's const-index case).
+func pick(comptime n int, seed int) int {
+    var buf [n]int
+    i := 0
+    for i < n {
+        buf[i] = seed + i
+        i = i + 1
+    }
+    buf[3] = buf[3] * 2
+    return buf[3]
+}
+
 func main() {
     fmt.Println(fill(4, 10))     // 46
     fmt.Println(fill(2, 100))    // 201
@@ -151,4 +167,5 @@ func main() {
     fmt.Println(grid(3, 10))     // 10+11+12+13+14+15 = 75
     fmt.Println(fillLit(4, 10))  // 46
     fmt.Println(litInit(4, 10))  // 1+2+12+13 = 28
+    fmt.Println(pick(4, 10))     // buf[3]=13, doubled = 26
 }

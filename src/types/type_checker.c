@@ -3058,7 +3058,20 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 return NULL;
             }
             size_t length = (size_t)length64;
-            return type_array(element_type, length);
+            Type* arr_t = type_array(element_type, length);
+            // Fix round 4: a length expression referencing a comptime
+            // parameter folded through that param's binding — the TEMPLATE
+            // placeholder during body check, the REAL value during instance
+            // re-derivation. Stamp the type either way so const-index and
+            // literal-count validation know this length is per-instance:
+            // the checker defers its upper-bound checks
+            // (type_check_index_expr), and codegen's index paths enforce
+            // against the instance's re-derived length instead
+            // (codegen_generate_index_expr / codegen_emit_lvalue_address).
+            if (arr_t && goo_expr_references_comptime_param(checker, array->length)) {
+                arr_t->data.array.comptime_length = 1;
+            }
+            return arr_t;
         }
         
         case AST_SLICE_TYPE: {
