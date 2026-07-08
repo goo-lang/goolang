@@ -6,8 +6,9 @@
 // `lane` is a comptime-specialized slice kernel: it copies a `tile`-sized
 // window into a local `[tile]int64` buffer, then reduces the buffer by
 // summation. `tile` is a comptime value parameter, so each distinct tile
-// SIZE gets its own compiled instance of `lane` (verified below via
-// --emit-llvm during development — see the task report for the IR excerpt).
+// SIZE gets its own compiled instance of `lane`: `lane__n4` (the two
+// TILE=4 windows) and `lane__n2` (the REM=2 remainder), confirmed via
+// `bin/goo --emit-llvm` — both `define` in the emitted IR.
 //
 // `main` partitions a 10-element slice with LEN()-ARITHMETIC bounds (nfull
 // and remStart are computed from len(data), not hardcoded) into a `[][]int64`

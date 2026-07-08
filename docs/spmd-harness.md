@@ -13,7 +13,9 @@ Every snippet below is either a verbatim excerpt from a committed golden
 
 `examples/spmd_fanout_probe.goo` is the keystone golden: a comptime-specialized
 slice-reduction kernel, `len()`-arithmetic partitioning into even tiles plus an
-uneven remainder tile, and buffered-channel fan-in. Reproduced verbatim:
+uneven remainder tile, and buffered-channel fan-in. Reproduced code-verbatim
+below (the golden's standalone header/inline comments are elided; the code
+itself is unchanged):
 
 ```goo
 package main
@@ -84,7 +86,10 @@ Walkthrough:
   fixed-size stack array per instance rather than a dynamically-sized one.
 - **Partitioning is derived from `len(data)`, not hardcoded.** `nfull` and
   `remStart` are computed from `n := len(data)`, so the same shape holds for
-  any input length — only `data` and `TILE` need to change.
+  any input length by changing only `data` and `TILE` — **except** the
+  channel capacity (`make(chan int64, 3)`) and the receive count
+  (`for i < 3`), which encode `nfull + 1` (the lane count) and must be
+  updated in step with `data`/`TILE` too, e.g. `nlanes := nfull + 1`.
 - **`TILE`/`REM` are `const`; the slice bounds (`lo`, `hi`, `remStart`) are
   ordinary runtime `int`s.** A comptime parameter's argument must itself be
   a compile-time constant; the arithmetic that produces slice *bounds* has

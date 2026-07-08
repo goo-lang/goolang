@@ -2082,12 +2082,17 @@ static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth)
 // unaffected.
 //
 // Each deferred call's arguments were snapshotted into entry-block allocas at
-// the defer site (Go's defer-time arg evaluation), and the call's argument AST
-// nodes were rewritten to synthetic identifiers referencing those snapshots.
-// Here we (1) re-bind those synthetic names to their snapshot slots in the
-// value table (the originating block's locals are long gone), then (2) emit
-// each call guarded by its runtime "active" flag, so a defer that was never
-// reached at runtime (e.g. inside a not-taken branch) does not run.
+// the defer site (Go's defer-time arg evaluation), and synthetic identifier
+// nodes referencing those snapshots were built there too — but NOT linked
+// into the call's argument list at that point (`call` is a node in the
+// shared template AST; a permanent rewrite would corrupt it for the next
+// instantiation). Here we (1) re-bind those synthetic names to their
+// snapshot slots in the value table (the originating block's locals are long
+// gone), then (2) emit each call guarded by its runtime "active" flag (so a
+// defer that was never reached at runtime, e.g. inside a not-taken branch,
+// does not run), splicing the synthetic nodes into the call transactionally
+// for the duration of that one emission and restoring the originals
+// immediately after (see the splice/restore below).
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
 #if LLVM_AVAILABLE
     if (!codegen || !checker) return;
@@ -2223,9 +2228,13 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     defer_entry_store_zero(codegen, flag, i1);
 
     // Snapshot each argument NOW (defer-time evaluation), store it into an
-    // entry-block alloca, and rewrite the argument node to a synthetic
-    // identifier that resolves to that snapshot when the call is emitted at
-    // function exit.
+    // entry-block alloca, and build (but do not yet link in) a synthetic
+    // identifier node that resolves to that snapshot when the call is
+    // emitted at function exit. The original argument node is left
+    // untouched here — `call` is shared template AST, so a permanent
+    // rewrite would corrupt it for the next instantiation; the synthetic
+    // node is only spliced in transactionally, per emission, by
+    // codegen_emit_deferred_calls.
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
 
