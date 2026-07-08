@@ -35,6 +35,8 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
 static int is_untyped_float_rooted(ASTNode* n);
 static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* target,
                                         int negated);
+// Comptime value params (fix round 4): goo_expr_references_comptime_param
+// now lives in expression_helpers.c, declared in types.h.
 // Task 3b: the composite-value adaptation helper (defined below, near
 // type_check_struct_literal, its original #101 sink) is now ALSO the
 // element-value hook for slice literals (check_slice_elements), array
@@ -143,7 +145,21 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
 
     size_t param_count = 0;
     for (ASTNode* p = lit->params; p; p = p->next) {
-        if (p->type == AST_VAR_DECL) param_count++;
+        if (p->type != AST_VAR_DECL) continue;
+        // Comptime-value params gap-fix: a comptime parameter demands a
+        // concrete callee Variable with a func_decl_node (Task 2's
+        // type_check_call_expr walks that back-reference to find
+        // is_comptime_param) — a func literal is called through its
+        // expression's Type alone, never resolving to such a Variable, so
+        // the check silently never fires and `comptime n` behaves as a
+        // plain runtime int. Reject it here, at the literal's own
+        // signature-build time.
+        if (((VarDeclNode*)p)->is_comptime_param) {
+            type_error(checker, p->pos,
+                "comptime parameters are only supported on named functions");
+            return NULL;
+        }
+        param_count++;
     }
 
     Type** param_types = NULL;
@@ -436,6 +452,27 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                            "array literal: length must be a constant expression");
                 return NULL;
             }
+            // Fix round 3 (minor 3): negative length — same clean rejection
+            // as type_from_ast's AST_ARRAY_TYPE case (a wrapped size_t hung
+            // the compiler downstream).
+            if ((int64_t)n < 0) {
+                type_error(checker, expr->pos,
+                           "array length must be non-negative");
+                return NULL;
+            }
+            // Fix round 3 (minor 1): when the length derives from a comptime
+            // parameter (`[n]int{1, 2}` inside a comptime function's
+            // TEMPLATE body), `n` here is Step 3's PLACEHOLDER — validating
+            // the element count against it produced a placeholder-derived
+            // rejection ("index 1 out of bounds for length 1") for a length
+            // the user never wrote. Defer count-vs-length validation to
+            // instance time: codegen's re-derivation
+            // (codegen_generate_array_lit, composite_codegen.c) sizes the
+            // instance's array from the REAL value, and its const fast path
+            // zero-fills/places elements against that real length. Element
+            // TYPE checking below is unaffected — only the index bound is
+            // skipped for comptime-length literals.
+            int comptime_len = goo_expr_references_comptime_param(checker, at->length);
             // Elements may be keyed (`index: value`, a sparse Go table like
             // utf8 acceptRanges) or bare. A keyed element places its value at
             // the const index; an unkeyed element continues at previous + 1
@@ -458,7 +495,7 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 } else {
                     cur += 1;
                 }
-                if (cur < 0 || (uint64_t)cur >= n) {
+                if (cur < 0 || (!comptime_len && (uint64_t)cur >= n)) {
                     type_error(checker, e->pos,
                                "array literal: index %lld out of bounds for "
                                "length %llu",
@@ -490,6 +527,13 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 }
             }
             Type* arr = type_array(want, (size_t)n);
+            // Fix round 4: mark a comptime-length literal's type so
+            // const-INDEX validation (type_check_index_expr) defers to
+            // instance time too, exactly like the count-vs-length deferral
+            // above — the flag rides the Type to every consumer. Round 6
+            // (M-r5c): the shared marker also rewrites the display name so
+            // diagnostics never show the placeholder length.
+            if (arr && comptime_len) type_array_mark_comptime(arr, at->length);
             expr->node_type = arr;
             return arr;
         }
@@ -565,6 +609,13 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             const char* method = NULL;
             const char* reason = NULL;
             if (!type_interface_satisfied(checker, operand_type, target_type, &method, &reason)) {
+                // Fix 2: the "comptime" sentinel gets the dedicated one-place
+                // diagnostic — see report_comptime_method_not_satisfied's doc
+                // comment (every type_interface_satisfied caller does this).
+                if (reason && strcmp(reason, "comptime") == 0) {
+                    report_comptime_method_not_satisfied(checker, expr->pos, method);
+                    return NULL;
+                }
                 const char* iname = operand_type->data.interface.name
                                          ? operand_type->data.interface.name : "interface";
                 const char* cname = type_receiver_name(target_type);
@@ -624,6 +675,19 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 // sites; the semantics (including the #100 float->int asymmetry and the
 // task-3 range check) are identical for all four.
 static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* field_type, Type* vt) {
+    // Fix 2 (comptime-param functions are not first-class values): this is
+    // the one sink every composite-literal value routes through (struct
+    // field, slice element, array element, map value — see the Task 3b note
+    // above), so the "cannot store a comptime-param function in a composite"
+    // rule lives here instead of four copies at the call sites. Checked
+    // BEFORE the numeric early-return below — a function type is never
+    // numeric, so it would otherwise sail through untouched. NULL signals
+    // rejection (error already emitted), exactly like the range-check
+    // rejections below; every caller already propagates NULL.
+    if (!reject_comptime_function_value(checker, v, vt, v->pos,
+                                        "stored in a composite literal")) {
+        return NULL;
+    }
     if (!field_type || !type_is_numeric(field_type)) return vt;
     if (type_is_float(field_type)) {
         if (is_untyped_float_rooted(v)) {
@@ -1937,11 +2001,22 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_XOR_ASSIGN:
         case TOKEN_LSHIFT_ASSIGN:
         case TOKEN_RSHIFT_ASSIGN:
-            result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, expr->pos);
+            result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, binary->right, expr->pos);
             break;
             
         // Channel send operator
         case TOKEN_ARROW:  // ch <- value
+            // Fix 2 (comptime-param functions are not first-class values):
+            // `ch <- fill` transports fill's VALUE to a receiver with no
+            // func_decl_node to check a later call against — the same alias
+            // bypass as assignment. type_check_channel_send_op sees only
+            // TYPES, so the expression-carrying gate lives here (the
+            // select-statement send comm has its own sibling gate in
+            // type_check_select_stmt).
+            if (!reject_comptime_function_value(checker, binary->right, right_type,
+                                                expr->pos, "sent on a channel")) {
+                return NULL;
+            }
             result_type = type_check_channel_send_op(checker, left_type, right_type, expr->pos);
             break;
             
@@ -2317,6 +2392,37 @@ static int interface_covers(Type* have_iface, Type* want_iface) {
     return 1;
 }
 
+// Fix round 7 (I-r6): does `t` contain a TYPE_PARAM anywhere in its
+// structure? Checker-side sibling of the monomorphizer's static
+// args_contain_typeparam (monomorphize.c) — same Tier-A shapes unify_types
+// recurses, plus arrays/nullables for completeness. Used by
+// type_check_generic_call to detect a parameter position that would BIND a
+// type parameter from an argument (as opposed to a fully concrete position).
+static int type_contains_type_param(const Type* t) {
+    if (!t) return 0;
+    switch (t->kind) {
+        case TYPE_PARAM:
+            return 1;
+        case TYPE_SLICE:
+            return type_contains_type_param(t->data.slice.element_type);
+        case TYPE_POINTER:
+            return type_contains_type_param(t->data.pointer.pointee_type);
+        case TYPE_ARRAY:
+            return type_contains_type_param(t->data.array.element_type);
+        case TYPE_NULLABLE:
+            return type_contains_type_param(t->data.nullable.base_type);
+        case TYPE_FUNCTION: {
+            for (size_t i = 0; i < t->data.function.param_count; i++) {
+                if (type_contains_type_param(t->data.function.param_types[i]))
+                    return 1;
+            }
+            return type_contains_type_param(t->data.function.return_type);
+        }
+        default:
+            return 0;
+    }
+}
+
 static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
                                       CallExprNode* call, Variable* callee_var,
                                       const char* callee_name) {
@@ -2348,7 +2454,52 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
         Type* at = type_check_expression(checker, a);
         if (!at) { free(bindings); return NULL; }
 
+        // Fix 2 (comptime-param functions are not first-class values): a
+        // generic call bypasses type_check_call_expr's argument loop entirely
+        // (this function is its replacement for generic callees), so it needs
+        // its own copy of that loop's gate — `Apply(fill, 5)` into
+        // `func Apply[T any](f func(int, int) int, x T)` captured fill's
+        // VALUE into a func-typed parameter with zero diagnostics.
+        if (!reject_comptime_function_value(checker, a, at, a->pos,
+                                            "passed as an argument")) {
+            free(bindings);
+            return NULL;
+        }
+
         Type* pt = gsig->data.function.param_types[k];
+
+        // Fix round 7 (I-r6): a comptime-length array VALUE meeting the
+        // generic axis. Two cases, split by whether this parameter position
+        // binds a type parameter:
+        // - BINDS one (`Id(a)` with a: [n]int into `x T`, or any pt shape
+        //   containing a TYPE_PARAM): reject at template time. The generic
+        //   instance would otherwise be stamped against the TEMPLATE's
+        //   placeholder-length Type (the recorded binding) while the call
+        //   site passes the instance-real array — the mismatch failed
+        //   closed, but only at the LLVM verifier ("Call parameter type
+        //   does not match function signature"), violating the
+        //   clean-diagnostics bar. Per-value re-binding of generic
+        //   instances is the composition follow-up (design doc,
+        //   Scope/YAGNI).
+        // - CONCRETE array position (`g(1, a)` into `arr [4]int`): the
+        //   wave-6 length deferral applies — element types must match now,
+        //   unify is skipped (it compares the placeholder length), and the
+        //   call codegen's argument loop enforces the instance-real length
+        //   (instance-named rejection on a genuine mismatch).
+        if (goo_type_contains_comptime_array(at)) {
+            if (type_contains_type_param(pt)) {
+                type_error(checker, a->pos,
+                    "comptime-length array cannot bind a generic type parameter (not yet supported)");
+                free(bindings);
+                return NULL;
+            }
+            if (pt && pt->kind == TYPE_ARRAY && at->kind == TYPE_ARRAY &&
+                type_equals(pt->data.array.element_type,
+                            at->data.array.element_type)) {
+                continue; // length deferred to instance time (call codegen)
+            }
+        }
+
         if (pt && pt->kind == TYPE_PARAM) {
             int idx = pt->data.type_param.index;
             if (idx >= 0 && (size_t)idx < n && bindings[idx] &&
@@ -2412,6 +2563,15 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
             } else {
                 const char* method = NULL; const char* reason = NULL;
                 if (!type_interface_satisfied(checker, bound, bindings[i], &method, &reason)) {
+                    // Fix 2: the "comptime" sentinel gets the dedicated
+                    // one-place diagnostic — see
+                    // report_comptime_method_not_satisfied's doc comment
+                    // (every type_interface_satisfied caller does this).
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, expr->pos, method);
+                        free(bindings);
+                        return NULL;
+                    }
                     const char* cn = type_receiver_name(bindings[i]);
                     type_error(checker, expr->pos,
                         "%s does not implement %s (%s method %s)",
@@ -2445,10 +2605,71 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
     return result;
 }
 
+// Comptime value params Task 2: the VarDeclNode at parameter position `idx`
+// in a FuncDeclNode's parameter list (skipping any non-VarDeclNode entries —
+// none are expected today, but declare_function_signature's own param_types
+// build loop applies the same guard). idx is 0-based over parameters only,
+// matching func_type->data.function.param_types[idx] indexing. Returns NULL
+// past the end of the list (e.g. a trailing variadic-packed argument beyond
+// the fixed prefix, which has no per-argument VarDeclNode of its own).
+static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
+    if (!fd) return NULL;
+    size_t i = 0;
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (i == idx) return (VarDeclNode*)p;
+        i++;
+    }
+    return NULL;
+}
+
+// Comptime value params (fix round 2's I2 guard; promoted in fix round 4):
+// the comptime-param-reference walk now lives in expression_helpers.c as
+// goo_expr_references_comptime_param — type_from_ast (type_checker.c)
+// became its third consumer for comptime_length stamping. At the
+// comptime-argument capture site below, it guards the const-folding fast
+// path: goo_fold_const_int_ctx resolves ANY Variable with
+// has_const_int_value — which inside a comptime function's TEMPLATE body
+// includes the comptime param itself, bound to a PLACEHOLDER (see
+// type_check_function_decl's is_comptime_param binding). Folding
+// `helper(n, seed)`'s `n` there would silently record the placeholder as
+// the instance value — a miscompile — where the design instead makes
+// transitive comptime forwarding a documented restriction (design doc,
+// Scope/YAGNI): such an argument must fall through to the comptime engine,
+// which cannot resolve the param and rejects with the standard
+// "must be a compile-time constant" diagnostic.
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
     CallExprNode* call = (CallExprNode*)expr;
+
+    // Comptime value params: comptime_value_args/comptime_value_arg_count
+    // are zeroed at every parser.y CallExprNode construction site (fix
+    // round 3 — see ast.h's field doc comment for the ownership contract),
+    // and this function owns them thereafter. It is NOT called exactly
+    // once per call node: codegen re-invokes it on the same CallExprNode
+    // (call_codegen.c's method-call return-type recomputation and defer
+    // re-emission paths), and recapturing there would clobber the values
+    // captured on the first pass with a re-evaluation against whatever
+    // scope codegen currently has mirrored (fix round 1, finding 4).
+    // `expr->node_type` is the first-visit discriminator: reliably NULL at
+    // parse time (every construction site zeroes base.node_type) and set
+    // at the end of this function's successful main path — so node_type !=
+    // NULL means the values were already captured by an earlier full check
+    // and the capture/record sites below (gated on this same flag) must
+    // leave them untouched.
+    int comptime_first_check = (expr->node_type == NULL);
+    if (comptime_first_check) {
+        // Fields are zeroed from birth, so this free is unconditionally
+        // safe: a true first visit frees NULL (no-op); a re-attempt after
+        // a FAILED first check (node_type still NULL) frees that attempt's
+        // partial capture instead of orphaning it (closes fix round 2's
+        // residual transient leak completely).
+        free(call->comptime_value_args);
+        call->comptime_value_args = NULL;
+        call->comptime_value_arg_count = 0;
+    }
 
     // A type in call-argument position (map_type/slice_type/chan_type — the
     // grammar alternative added for `make(...)`) only means something when
@@ -2744,6 +2965,23 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* elem_t = type_check_expression(checker, call->args->next);
             if (!elem_t) return NULL;
+            // Fix 2 (comptime-param functions are not first-class values):
+            // append is special-cased ABOVE the generic argument loop (it
+            // returns early), so the loop's per-argument gate never sees its
+            // element — `append(s, fill)` stored fill into a slice with zero
+            // diagnostics. The slice argument (arg 1) and a spread source
+            // (`append(s, s2...)`) need no gate: both must be TYPE_SLICE
+            // (rejected above otherwise), and a slice ELEMENT type is built
+            // by type_from_ast from a type annotation, which never carries
+            // has_comptime_params — only a named function's own declared
+            // signature Type does, and every way of getting one INTO a slice
+            // is gated (composite literal, this element path, index-assign
+            // via the assignment gate).
+            if (!reject_comptime_function_value(checker, call->args->next, elem_t,
+                                                call->args->next->pos,
+                                                "passed as an argument")) {
+                return NULL;
+            }
             // The element must be assignable to the slice's element type:
             // codegen sizes the copy from the slice element type, so a
             // mismatch (e.g. append([]int, "s")) would otherwise miscompile.
@@ -2956,6 +3194,14 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     int check_signature = 0;
     size_t recv_offset = 0;
     const char* callee_name = NULL;
+    // Comptime value params Task 2: the resolved callee Variable, captured
+    // whenever check_signature is set below (identifier, struct-method, or
+    // source-package-function call), so the per-argument loop can walk its
+    // func_decl_node (FuncDeclNode) to find each parameter's
+    // is_comptime_param flag. Stays NULL for interface-method calls (no
+    // concrete Variable to resolve to) — comptime params on an interface
+    // method are simply not checked here.
+    Variable* checked_callee = NULL;
     if (call->function && call->function->type == AST_IDENTIFIER
         && !skip_variadic_builtin) {
         IdentifierNode* callee_ident = (IdentifierNode*)call->function;
@@ -2976,6 +3222,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         if (callee && !callee->is_builtin) {
             check_signature = 1;
             callee_name = callee_ident->name;
+            checked_callee = callee;
         }
     } else if (call->function && call->function->type == AST_SELECTOR_EXPR
                && !skip_variadic_builtin) {
@@ -3005,6 +3252,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         check_signature = 1;
                         recv_offset = 1;
                         callee_name = sel->selector;
+                        checked_callee = m;
                     }
                 }
             } else if (st->kind == TYPE_INTERFACE) {
@@ -3045,6 +3293,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         check_signature = 1;
                         recv_offset = 0;
                         callee_name = sel->selector;
+                        checked_callee = exp;
                     }
                 }
             }
@@ -3102,6 +3351,118 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     while (arg) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
+
+        // Fix 2 (comptime-param functions are not first-class values):
+        // `takesFunc(fill)` would capture fill's VALUE into takesFunc's
+        // func-typed parameter — a Variable with no func_decl_node on the
+        // other side, the same bypass the var-decl/assignment/return guards
+        // close, for the argument-passing channel. `arg` here is a VALUE
+        // argument, never the callee itself (call->function is checked
+        // separately, above this loop), so this cannot false-reject a direct
+        // call's callee.
+        if (!reject_comptime_function_value(checker, arg, arg_type, arg->pos,
+                                            "passed as an argument")) {
+            return NULL;
+        }
+
+        // Comptime value params Task 2: a `comptime name T` parameter demands
+        // a compile-time-constant argument — evaluate it through the
+        // comptime engine and require an int result. Independent of (and
+        // checked before) the type-compatibility logic below: this is a
+        // constness requirement, not a type mismatch, so it gets its own
+        // diagnostic rather than falling through to "cannot use T as U".
+        // Only reachable when checked_callee's real FuncDeclNode is known
+        // (identifier/struct-method/source-package calls); an interface
+        // method call has no concrete Variable to resolve is_comptime_param
+        // from and is not checked here.
+        //
+        // Fix round 1 (finding 4): gated on comptime_first_check — on a
+        // codegen-phase RE-invocation of this function over the same node,
+        // the values were already validated and captured by the first pass;
+        // re-appending would duplicate them, and re-EVALUATING can even
+        // false-fail (defer's re-emission path rewrites argument nodes to
+        // synthetic identifiers the comptime engine can't evaluate).
+        if (comptime_first_check &&
+            checked_callee && checked_callee->func_decl_node &&
+            checked_callee->func_decl_node->type == AST_FUNC_DECL) {
+            VarDeclNode* param_vd = func_decl_param_at(
+                (FuncDeclNode*)checked_callee->func_decl_node, arg_count + recv_offset);
+            if (param_vd && param_vd->is_comptime_param) {
+                // Fix round 2 (I2): resolve the argument in two tiers.
+                // Tier 1 — the checker-aware const folder, which resolves
+                // scope-registered constants (`const K = 3`, package-level
+                // consts, `comptime const M int = 2+2`) via each Variable's
+                // cached const_int_value; the comptime ENGINE alone (tier 2)
+                // has no view of checker-scope constants and rejected all
+                // of them, contradicting the spec's surface. Guarded by
+                // goo_expr_references_comptime_param (see types.h):
+                // inside a comptime template body the folder would resolve
+                // the enclosing comptime PARAM to its placeholder — such an
+                // argument skips the fold and falls to the engine, which
+                // rejects it (transitive comptime forwarding is a
+                // documented restriction).
+                // Tier 2 — the comptime engine, for everything the folder
+                // doesn't handle (e.g. comptime block results). A runtime
+                // variable fails both tiers -> clean rejection.
+                int64_t comptime_arg_value = 0;
+                int resolved = 0;
+                uint64_t folded = 0;
+                if (!goo_expr_references_comptime_param(checker, arg) &&
+                    goo_fold_const_int_ctx(checker, arg, &folded)) {
+                    comptime_arg_value = (int64_t)folded;
+                    resolved = 1;
+                }
+                if (!resolved) {
+                    ComptimeContext* raw_ctx = checker->comptime_type_ctx
+                        ? checker->comptime_type_ctx->comptime_ctx : NULL;
+                    ComptimeResult* res = raw_ctx
+                        ? comptime_eval_expression(raw_ctx, arg) : NULL;
+                    int ok = res && res->value && !res->error &&
+                             res->value->type == COMPTIME_VALUE_INT;
+                    if (!ok) {
+                        if (res) comptime_result_free(res);
+                        type_error(checker, arg->pos,
+                            "argument to comptime parameter '%s' must be a compile-time constant",
+                            param_vd->names[0]);
+                        // Error-path hygiene: drop any values captured for
+                        // EARLIER comptime args of this same failing call so
+                        // the node leaves this function in the clean (NULL,0)
+                        // state at the point of failure (the entry-gate free
+                        // would also catch it on a re-visit; this just
+                        // doesn't wait for one).
+                        free(call->comptime_value_args);
+                        call->comptime_value_args = NULL;
+                        call->comptime_value_arg_count = 0;
+                        return NULL;
+                    }
+                    comptime_arg_value = res->value->int_value;
+                    comptime_result_free(res);
+                }
+                // Comptime value params Task 3: capture the resolved int for
+                // the monomorphizer, in parameter order (ast.h's field doc
+                // comment) — a compact grow-by-one. Only reachable on the
+                // FIRST check of this node (comptime_first_check gates the
+                // enclosing block), where the entry reset above guarantees a
+                // clean grow-from-empty for THIS call node.
+                int64_t* grown = realloc(call->comptime_value_args,
+                    (call->comptime_value_arg_count + 1) * sizeof(int64_t));
+                if (!grown) {
+                    type_error(checker, arg->pos,
+                        "out of memory recording comptime argument '%s'",
+                        param_vd->names[0]);
+                    // Error-path hygiene: same clean-state teardown as the
+                    // rejection path above (realloc failure leaves the old
+                    // allocation valid — free it, don't leak it).
+                    free(call->comptime_value_args);
+                    call->comptime_value_args = NULL;
+                    call->comptime_value_arg_count = 0;
+                    return NULL;
+                }
+                call->comptime_value_args = grown;
+                call->comptime_value_args[call->comptime_value_arg_count++] =
+                    comptime_arg_value;
+            }
+        }
 
         // Argument type compatibility: position-named so the diagnostic
         // points at the offending argument rather than the LLVM verifier.
@@ -3215,6 +3576,10 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 const char* reason = NULL;
                 if (!type_interface_satisfied(checker, param_type, arg_type,
                                               &method, &reason)) {
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, arg->pos, method);
+                        return NULL;
+                    }
                     const char* iname = param_type->data.interface.name
                                             ? param_type->data.interface.name : "interface";
                     const char* cname = type_receiver_name(arg_type);
@@ -3225,11 +3590,30 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                     return NULL;
                 }
             } else if (param_type && !type_compatible(arg_type, param_type)) {
-                type_error(checker, arg->pos,
-                           "argument %zu: cannot use %s as %s",
-                           arg_count + 1,
-                           type_to_string(arg_type), type_to_string(param_type));
-                return NULL;
+                // Fix round 6 (M-r5a): a comptime-length array ARGUMENT
+                // (`sum4(a)` with a: [n]int into a [4]int param) — the
+                // template-time length here is the placeholder, so the
+                // length comparison is meaningless until instance time.
+                // Same deferral as assignment (type_check_assignment_op,
+                // fix round 5): element types must still match now; the
+                // call codegen's argument loop enforces the real
+                // per-instance lengths (instance-named rejection on a
+                // genuine mismatch). Ordinary array arguments reject here
+                // exactly as before.
+                int comptime_len_deferred =
+                    arg_type && arg_type->kind == TYPE_ARRAY &&
+                    param_type->kind == TYPE_ARRAY &&
+                    (arg_type->data.array.comptime_length ||
+                     param_type->data.array.comptime_length) &&
+                    type_equals(arg_type->data.array.element_type,
+                                param_type->data.array.element_type);
+                if (!comptime_len_deferred) {
+                    type_error(checker, arg->pos,
+                               "argument %zu: cannot use %s as %s",
+                               arg_count + 1,
+                               type_to_string(arg_type), type_to_string(param_type));
+                    return NULL;
+                }
             }
         }
 
@@ -3261,6 +3645,40 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                        callee_name, arg_count, declared);
             return NULL;
         }
+    }
+
+    // Comptime value params Task 3: record this call site as a
+    // monomorphization seed once every argument (including each comptime
+    // one, above) has validated — mirrors type_check_record_instantiation's
+    // generic-axis recording (type_check_generic_call) but keyed on int64_t
+    // comptime VALUES instead of concrete Types. A plain identifier callee
+    // is the ONLY shape that can reach here with comptime values (fix
+    // round 1): a struct-method selector cannot (declare_function_signature
+    // rejects comptime params on methods outright) and a package-function
+    // selector cannot either (same rejection for package declarations — see
+    // the current_package block there for the three lifetime reasons real
+    // cross-package support is deferred). Gated on comptime_first_check so
+    // a codegen-phase re-invocation doesn't append duplicate seeds after
+    // the monomorphizer already ran (see the entry-reset comment at the top
+    // of this function).
+    if (comptime_first_check &&
+        call->comptime_value_arg_count > 0 && call->function && checked_callee &&
+        call->function->type == AST_IDENTIFIER) {
+        int64_t* rec_values = malloc(call->comptime_value_arg_count * sizeof(int64_t));
+        if (!rec_values) {
+            // Fix round 1 (finding 5): a silent skip here would surface much
+            // later as an undefined-symbol failure at the (never-stamped)
+            // instance's call site — fail loudly at the point of the actual
+            // problem instead, mirroring the capture-site realloc error above.
+            type_error(checker, expr->pos,
+                "out of memory recording comptime instantiation of '%s'",
+                callee_name ? callee_name : "?");
+            return NULL;
+        }
+        memcpy(rec_values, call->comptime_value_args,
+               call->comptime_value_arg_count * sizeof(int64_t));
+        type_check_record_comptime_instantiation(checker, checked_callee,
+            rec_values, call->comptime_value_arg_count, expr);
     }
 
     expr->node_type = func_type->data.function.return_type;
@@ -3306,7 +3724,18 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
                                "array index %lld must not be negative", (long long)ci);
                     return NULL;
                 }
-                if (ci >= (uint64_t)expr_type->data.array.length) {
+                // Fix round 4: a comptime-length array's `length` here is
+                // the TEMPLATE placeholder — validating a const index
+                // against it falsely rejected `buf[3]` on `[n]int` with
+                // "out of bounds [0:1]", a bound the user never wrote.
+                // Defer the upper-bound check to instance time (the codegen
+                // index paths re-check against the instance's re-derived
+                // REAL length and hard-fail a genuine violation); ordinary
+                // arrays (comptime_length == 0) keep this check unchanged.
+                // The negative-index rejection above stays unconditional —
+                // invalid at every instance.
+                if (!expr_type->data.array.comptime_length &&
+                    ci >= (uint64_t)expr_type->data.array.length) {
                     type_error(checker, index->index->pos,
                                "array index %llu out of bounds [0:%zu]",
                                (unsigned long long)ci, expr_type->data.array.length);

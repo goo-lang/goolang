@@ -46,6 +46,9 @@ TypeChecker* type_checker_new(void) {
     // Function generics Task 6: no recorded generic-call instantiations yet.
     checker->instantiations = NULL;
 
+    // Comptime value params Task 3: no recorded comptime-call instantiations yet.
+    checker->comptime_instantiations = NULL;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -118,6 +121,18 @@ void type_checker_free(TypeChecker* checker) {
         free(inst->args);
         free(inst);
         inst = next;
+    }
+
+    // Comptime value params Task 3: free the comptime-instantiation-record
+    // list itself, mirroring the GenericInstantiation teardown just above —
+    // fn is a Scope-owned Variable* freed by scope_free above; only the
+    // values array and the list nodes are this list's own allocations.
+    ComptimeInstantiation* cinst = checker->comptime_instantiations;
+    while (cinst) {
+        ComptimeInstantiation* next = cinst->next;
+        free(cinst->values);
+        free(cinst);
+        cinst = next;
     }
 
     free(checker->current_file);
@@ -471,6 +486,27 @@ void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
     checker->instantiations = inst;
 }
 
+// Comptime value params Task 3: record one resolved comptime-call
+// instantiation, pushed onto the head of checker->comptime_instantiations
+// for the monomorphizer (codegen_monomorphize, monomorphize.c) to consume
+// after type checking finishes. Mirrors type_check_record_instantiation
+// immediately above, one axis over — see that function's doc comment for
+// the shared ownership/ordering rationale. Sole caller: type_check_call_expr
+// (expression_checker.c), once per call site with comptime_value_arg_count > 0.
+void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn,
+                                               int64_t* values, size_t n,
+                                               struct ASTNode* call_site) {
+    (void)call_site;
+    if (!checker || !fn) { free(values); return; }
+    ComptimeInstantiation* inst = malloc(sizeof(ComptimeInstantiation));
+    if (!inst) { free(values); return; }
+    inst->fn = fn;
+    inst->values = values;
+    inst->n = n;
+    inst->next = checker->comptime_instantiations;
+    checker->comptime_instantiations = inst;
+}
+
 // Innermost-first: a nested function (were that ever legal) would shadow an
 // outer type param of the same name, matching ordinary scope lookup.
 Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name) {
@@ -768,6 +804,89 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         }
     }
 
+    // Comptime-value params gap-fix: a comptime parameter is not yet
+    // supported together with [T] type parameters — this cut supports
+    // comptime-value specialization OR [T] generics on a function, not both
+    // (design spec §6). Without this, a generic function's comptime param
+    // silently fell through as an ordinary runtime int: the call-argument
+    // check (type_check_call_expr) is bypassed entirely for a generic callee
+    // (routed to type_check_generic_call instead), so no compile-time-
+    // constant requirement and no per-value monomorphization ever applied —
+    // a footgun, not a supported combination. Checked before the variadic
+    // check below so this points at the more fundamental rejection first.
+    if (func->type_params) {
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_comptime_param) {
+                type_error(checker, p->pos,
+                    "comptime parameters are not yet supported together with type parameters");
+                type_checker_pop_type_params(checker, saved_tp);
+                return 0;
+            }
+        }
+    }
+
+    // Comptime value params Task 3 (fix round 1): comptime parameters are
+    // rejected on METHOD declarations too, same shape as the generics
+    // rejection just above. The monomorphization machinery (codegen.c's
+    // skip-guard, monomorphize.c's worklist, call_codegen.c's rewiring) is
+    // deliberately scoped to PLAIN functions for now — a comptime-param
+    // method would instead take the ordinary single-emission path, where
+    // the template body-check's placeholder binding (see the
+    // is_comptime_param block in type_check_function_decl below) is baked
+    // into any `[n]int` type PERMANENTLY: `func (s S) Fill(comptime n int)`
+    // with `var buf [n]int` compiled clean and then panicked at runtime
+    // with a 1-element array. Rejecting beats miscompiling. NOTE: this
+    // deliberately supersedes the earlier Task 2-era behavior where a
+    // comptime-param method's direct call "worked" (with n as a plain
+    // runtime parameter) — method specialization is a documented follow-up
+    // (reviewed controller decision, Task 3 fix round 1).
+    if (func->receiver) {
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_comptime_param) {
+                type_error(checker, p->pos,
+                    "comptime parameters are not yet supported on methods");
+                type_checker_pop_type_params(checker, saved_tp);
+                return 0;
+            }
+        }
+    }
+
+    // Comptime value params Task 3 (fix round 1, finding 3 — FALLBACK): a
+    // function declared inside an imported PACKAGE cannot carry comptime
+    // parameters yet. Real cross-package monomorphization fights the
+    // package lifetime model on three fronts: (a) the package's scope and
+    // current_package are torn down (scope_pop FREES its Variables — see
+    // compile_resolved_packages' lifetime contract, goo.c) before main's
+    // type-check ever records a `pkg.Fill(4, ...)` seed, so the
+    // monomorphizer, which runs at main-pass codegen, could neither resolve
+    // the function's signature (codegen_generate_function_decl's
+    // type_checker_lookup_variable) nor any package-level symbol its body
+    // references; (b) an INTERNAL package call would record a seed whose
+    // `fn` Variable is freed by that same scope_pop — a use-after-free in
+    // the worklist, not just a missing symbol; (c) instance symbols would
+    // need package-qualified mangling threaded through both mangle sites to
+    // avoid cross-package `Fill__n4` collisions. Rejecting at DECLARATION
+    // time (rather than only at main's call sites, the narrower fallback)
+    // is what closes (b): if no package can declare one, no dangling seed
+    // can exist. Documented follow-up; reviewed controller decision
+    // (Task 3 fix round 1).
+    if (checker->current_package) {
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_comptime_param) {
+                type_error(checker, p->pos,
+                    "comptime parameters on package functions are not yet supported");
+                type_checker_pop_type_params(checker, saved_tp);
+                return 0;
+            }
+        }
+    }
+
     // Task 2: a variadic parameter (`name ...T`) must be the LAST parameter
     // (Go: "can only use ... with final parameter in list"). Check this
     // BEFORE building param_types below — an earlier variadic param there
@@ -790,6 +909,11 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
 
     Type** param_types = NULL;
     int is_variadic = 0;
+    // Fix 2: does ANY parameter carry `comptime`? Walked alongside
+    // param_types below (methods included — the receiver is never a
+    // AST_VAR_DECL param here, so it can't itself be comptime) and stamped
+    // onto func_type once built, below.
+    int has_comptime_params = 0;
     if (param_count > 0) {
         param_types = calloc(param_count, sizeof(Type*));
         size_t idx = 0;
@@ -807,6 +931,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
                 pt = type_slice(pt);
                 is_variadic = 1;
             }
+            if (pd->is_comptime_param) has_comptime_params = 1;
             param_types[idx++] = pt;
         }
     }
@@ -842,9 +967,24 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     Type* return_type = func->return_type
         ? type_from_ast(checker, func->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
+    // Fix round 6 (M-r5c): a declared return type that fails to resolve
+    // (type_from_ast has already printed the positioned diagnostic — e.g.
+    // "array length must be a constant expression" for `[n]int` in return
+    // position, which is signature-scoped and cannot see the body's
+    // comptime-param binding) is a pass-1 failure HERE, not a
+    // register-with-NULL-return-and-continue: previously the function was
+    // registered anyway and pass 2's body check re-resolved the same bad
+    // node, printing the identical diagnostic a second time.
+    if (func->return_type && !return_type) {
+        type_checker_pop_type_params(checker, saved_tp);
+        return 0;
+    }
 
     Type* func_type = type_function(param_types, param_count, return_type);
-    if (func_type) func_type->data.function.is_variadic = is_variadic;
+    if (func_type) {
+        func_type->data.function.is_variadic = is_variadic;
+        func_type->data.function.has_comptime_params = has_comptime_params;
+    }
     char* mangled = NULL;
     const char* reg_name = func->name;
     if (func->receiver) {
@@ -860,6 +1000,11 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     free(mangled);  // variable_new copied the name
     if (func_var) {
         func_var->is_initialized = 1;
+        // Comptime value params Task 2: back-reference to this FuncDeclNode
+        // for EVERY function/method (unlike generic_decl below, which stays
+        // NULL for non-generic functions) — the call-argument checker needs
+        // it to find each parameter's is_comptime_param flag.
+        func_var->func_decl_node = (struct ASTNode*)func;
         // Function generics Task 4: mark this Variable as a generic template
         // so codegen (predeclare AND the declaration loop) can skip it — a
         // template is only ever emitted per concrete instantiation by the
@@ -956,6 +1101,31 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
                             // VarDeclNode so a capture of this param can
                             // stamp is_captured for codegen's promotion pass.
                             param_var->decl_node = (struct ASTNode*)param_decl;
+
+                            // Comptime value params Task 3: bind the SAME
+                            // fields `comptime const` sets (type_check_const_decl,
+                            // above) so goo_fold_const_int_ctx resolves this
+                            // param inside the body — e.g. `var buf [n]int`'s
+                            // length, or any other compile-time-constant use.
+                            // This is the TEMPLATE body-check pass (run once,
+                            // before any call site is known): a placeholder
+                            // value is all that's needed here for type
+                            // validity. The monomorphizer
+                            // (codegen_generate_comptime_function_instance,
+                            // monomorphize.c) rebinds this same field set to
+                            // the REAL per-instance value on its own copy of
+                            // this Variable during codegen, which is what
+                            // the emitted array length/constant actually
+                            // uses — this placeholder never reaches codegen.
+                            if (param_decl->is_comptime_param) {
+                                param_var->has_const_int_value = 1;
+                                param_var->const_int_value = 1;
+                                param_var->comptime_value = comptime_value_new(COMPTIME_VALUE_INT);
+                                if (param_var->comptime_value) {
+                                    param_var->comptime_value->int_value = 1;
+                                }
+                            }
+
                             scope_add_variable(checker->current_scope, param_var);
                         }
                     }
@@ -1047,6 +1217,27 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
             impl = mv->type;
         }
 
+        // Fix 2 (comptime-param functions are not first-class values): a
+        // method with any `comptime` parameter cannot satisfy an interface
+        // method — interface dispatch calls (`d.Do(x)`) never resolve a
+        // concrete checked_callee, so type_check_call_expr's per-argument
+        // comptime-constant check (which walks checked_callee->
+        // func_decl_node) is never reached for them. Without this gate a
+        // comptime-param method structurally satisfied a plain interface
+        // method (matched by Type equality alone — is_comptime_param lives
+        // only on the AST) and a runtime value reached the comptime slot in
+        // total silence. reason_out="comptime" is a sentinel every caller of
+        // type_interface_satisfied special-cases for a dedicated diagnostic
+        // instead of the generic "does not implement" message. Fix round 2
+        // note: since declare_function_signature now rejects comptime
+        // parameters on method DECLARATIONS outright, this gate is
+        // currently an unreachable backstop — kept so interface
+        // satisfaction stays safe on its own terms if method declarations
+        // are ever re-admitted (the method-specialization follow-up).
+        if (impl->kind == TYPE_FUNCTION && impl->data.function.has_comptime_params) {
+            *method_out = im->name; *reason_out = "comptime"; return 0;
+        }
+
         // The registered method carries the receiver as params[0]; the interface
         // method's function type has no receiver. So a match requires
         // impl.param_count == want.param_count + 1 and the tails to be equal.
@@ -1070,6 +1261,47 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
     return 1;  // every method satisfied (or empty interface)
 }
 
+// Fix 2: see the declaration in types.h. One place for the
+// comptime-method-can't-satisfy-an-interface wording so all three
+// type_interface_satisfied callers (check_interface_assign below, the
+// call-argument interface check in expression_checker.c, and the type-switch
+// case check above) report it identically instead of falling through to
+// their own generic "X does not implement Y (reason method M)" message,
+// which would otherwise render the "comptime" sentinel as if it were a
+// method name ("... (comptime method Do)").
+void report_comptime_method_not_satisfied(TypeChecker* checker, Position pos,
+                                          const char* method) {
+    type_error(checker, pos,
+        "method '%s' has comptime parameters and cannot satisfy an interface method",
+        method ? method : "?");
+}
+
+// Fix 2: see the declaration in types.h. Deliberately does NOT walk into
+// call->function — every caller of this helper is a VALUE-consuming site
+// (var-decl init, assignment RHS, return expression, a non-callee call
+// argument); the callee position of a direct call is checked separately
+// (type_check_call_expr's existing checked_callee->func_decl_node walk) and
+// must keep accepting a flagged type there.
+int reject_comptime_function_value(TypeChecker* checker, ASTNode* src_expr,
+                                   Type* t, Position pos, const char* context) {
+    if (!t || t->kind != TYPE_FUNCTION || !t->data.function.has_comptime_params)
+        return 1;
+    const char* name = NULL;
+    if (src_expr) {
+        if (src_expr->type == AST_IDENTIFIER) {
+            name = ((IdentifierNode*)src_expr)->name;
+        } else if (src_expr->type == AST_SELECTOR_EXPR) {
+            // A bound method value (`s.Fill`, no call) — the selector IS the
+            // method name.
+            name = ((SelectorExprNode*)src_expr)->selector;
+        }
+    }
+    type_error(checker, pos,
+        "function '%s' has comptime parameters and cannot be %s",
+        name ? name : type_to_string(t), context ? context : "used as a value");
+    return 0;
+}
+
 // P4-3: assignability into an interface-typed target. When `target` is an
 // interface, accept iff `src` is that interface (or a concrete implementer);
 // otherwise fall back to ordinary type_compatible. Emits the implementation
@@ -1085,6 +1317,10 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
     const char* reason = NULL;
     if (type_interface_satisfied(checker, target, src, &method, &reason)) return 1;
 
+    if (reason && strcmp(reason, "comptime") == 0) {
+        report_comptime_method_not_satisfied(checker, pos, method);
+        return 0;
+    }
     const char* iname = target->data.interface.name ? target->data.interface.name
                                                     : "interface";
     const char* cname = src ? type_receiver_name(src) : NULL;
@@ -1211,6 +1447,22 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
             register_declared_names_after_failure(checker, var_decl, declared_type);
             return 0;
         }
+        // Fix 2 (comptime-param functions are not first-class values): a
+        // comptime-parameterized function captured into a variable — typed
+        // (`var f func(int,int) int = fill`) OR inferred (`f := fill`) —
+        // strips away the func_decl_node back-reference that
+        // type_check_call_expr's per-argument comptime-constant check relies
+        // on (a var-decl'd Variable is never built from a FuncDeclNode), so a
+        // later call through `f` would silently accept a runtime argument
+        // into the comptime slot. Reject the capture itself, before that
+        // Variable is ever bound. Checked before adapt_var_decl_initializer
+        // below since that path is numeric-only and would no-op on a
+        // function type anyway.
+        if (!reject_comptime_function_value(checker, var_decl->values, inferred_type,
+                                            var_decl->base.pos, "used as a value")) {
+            register_declared_names_after_failure(checker, var_decl, declared_type);
+            return 0;
+        }
         // Task 3: reject an unrepresentable literal constant (`var b int8 =
         // 300`) BEFORE the compatibility check below, which permits int<->int
         // and int->float width mismatches unconditionally — only codegen's
@@ -1251,12 +1503,29 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 return 0;
             }
         } else if (!type_compatible(inferred_type, declared_type)) {
-            type_error(checker, var_decl->base.pos,
-                      "Cannot assign %s to %s",
-                      type_to_string(inferred_type),
-                      type_to_string(declared_type));
-            register_declared_names_after_failure(checker, var_decl, declared_type);
-            return 0;
+            // Fix round 6 (M-r5b): `var b [4]int = a` with a comptime-length
+            // initializer — same length deferral as assignment
+            // (type_check_assignment_op) and call arguments
+            // (type_check_call_expr): the template-time length is the
+            // placeholder, so compare only element types now; codegen's
+            // var-decl init path enforces the real per-instance lengths
+            // (instance-named rejection on a genuine mismatch). Ordinary
+            // array initializers reject here exactly as before.
+            int comptime_len_deferred =
+                inferred_type->kind == TYPE_ARRAY &&
+                declared_type->kind == TYPE_ARRAY &&
+                (inferred_type->data.array.comptime_length ||
+                 declared_type->data.array.comptime_length) &&
+                type_equals(inferred_type->data.array.element_type,
+                            declared_type->data.array.element_type);
+            if (!comptime_len_deferred) {
+                type_error(checker, var_decl->base.pos,
+                          "Cannot assign %s to %s",
+                          type_to_string(inferred_type),
+                          type_to_string(declared_type));
+                register_declared_names_after_failure(checker, var_decl, declared_type);
+                return 0;
+            }
         }
     }
     
@@ -1697,6 +1966,19 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
     for (ASTNode* v = ma->values; v && n < ma->count && n < 2; v = v->next) {
         Type* vt = type_check_expression(checker, v);
         if (!vt) return 0;
+        // Fix 2 (comptime-param functions are not first-class values):
+        // `a, b := fill, 1` / `a, b = fill, 1` capture fill's VALUE into a
+        // Variable with no func_decl_node — the same alias bypass the
+        // single-name var-decl / assignment guards close. Gated here on the
+        // VALUE expression, before the target loop binds/stores anything.
+        // A destructure RHS (`a, b = f()`) is a CALL value, whose own callee
+        // was already checked by type_check_call_expr — its result type is
+        // never a flagged function type unless `return fill` slipped out,
+        // which the return-statement guard already rejects at f's decl.
+        if (!reject_comptime_function_value(checker, v, vt, v->pos,
+                                            "used as a value")) {
+            return 0;
+        }
         vtypes[n++] = vt;
     }
 
@@ -2183,6 +2465,16 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
         Type* return_type = type_check_expression(checker, ret_stmt->values);
         if (!return_type) return 0;
 
+        // Fix 2 (comptime-param functions are not first-class values):
+        // `return fill` would hand the caller a Variable-less function VALUE
+        // with no func_decl_node to check a later call's arguments against —
+        // the same bypass the var-decl/assignment guards close, for the
+        // return-value channel.
+        if (!reject_comptime_function_value(checker, ret_stmt->values, return_type,
+                                            stmt->pos, "returned")) {
+            return 0;
+        }
+
         // When the enclosing function returns an error union (!T), the returned
         // expression is valid iff it is an error(...) construction / another !T
         // forwarded whole (its resolved type is THE SAME error union) OR its
@@ -2378,6 +2670,14 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
                     Type* val_t = type_check_expression(checker, send->right);
                     if (!val_t) {
                         ok = 0;
+                    // Fix 2: sibling of the TOKEN_ARROW gate in
+                    // type_check_binary_expr — this select-send comm path
+                    // checks left/right individually and never routes
+                    // through that case, so it needs its own gate.
+                    } else if (!reject_comptime_function_value(
+                                   checker, send->right, val_t,
+                                   send->right->pos, "sent on a channel")) {
+                        ok = 0;
                     } else if (!type_compatible(val_t, chan_t->data.channel.element_type)) {
                         type_error(checker, send->right->pos,
                                    "select send: cannot use %s as %s channel element",
@@ -2530,6 +2830,11 @@ int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                 const char* method = NULL;
                 const char* reason = NULL;
                 if (!type_interface_satisfied(checker, iface_type, case_type, &method, &reason)) {
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, t->pos, method);
+                        ok = 0;
+                        continue;
+                    }
                     const char* iname = iface_type->data.interface.name
                                              ? iface_type->data.interface.name : "interface";
                     const char* cname = type_receiver_name(case_type);
@@ -2767,8 +3072,36 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                            "array length must be a constant expression");
                 return NULL;
             }
+            // Fix round 3 (minor 3): a folded NEGATIVE length previously
+            // wrapped to a huge size_t and hung the compiler downstream
+            // (LLVM array/zero-init of ~2^64 elements). Both routes land
+            // here: the pre-existing `const N = -1; var buf [N]int`, and —
+            // one token away since comptime value params — a comptime
+            // instance re-derivation with `fill(-1, ...)` and `[n]int` in
+            // the body (the instance-bound mirror Variable folds to -1).
+            // A negative comptime value NOT used as an array length stays
+            // legal — this check is length-position-only.
+            if ((int64_t)length64 < 0) {
+                type_error(checker, type_node->pos,
+                           "array length must be non-negative");
+                return NULL;
+            }
             size_t length = (size_t)length64;
-            return type_array(element_type, length);
+            Type* arr_t = type_array(element_type, length);
+            // Fix round 4: a length expression referencing a comptime
+            // parameter folded through that param's binding — the TEMPLATE
+            // placeholder during body check, the REAL value during instance
+            // re-derivation. Stamp the type either way so const-index and
+            // literal-count validation know this length is per-instance:
+            // the checker defers its upper-bound checks
+            // (type_check_index_expr), and codegen's index paths enforce
+            // against the instance's re-derived length instead
+            // (codegen_generate_index_expr / codegen_emit_lvalue_address).
+            if (arr_t && goo_expr_references_comptime_param(checker, array->length)) {
+                // M-r5c: flag + diagnostic-name rewrite in one place.
+                type_array_mark_comptime(arr_t, array->length);
+            }
+            return arr_t;
         }
         
         case AST_SLICE_TYPE: {
@@ -3012,6 +3345,37 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 }
                 if (m->type != AST_FUNC_DECL) continue;
                 FuncDeclNode* fn = (FuncDeclNode*)m;
+
+                // Comptime-value params gap-fix: an interface method's
+                // per-argument comptime check is never reached at a call
+                // site — type_check_call_expr's is_comptime_param lookup
+                // walks a concrete callee Variable's func_decl_node, which
+                // an InterfaceMethod (no Variable) never has, so a comptime
+                // parameter here would silently behave as an ordinary
+                // runtime int for every implementer's call. Reject it here,
+                // at interface-type build time, instead.
+                for (ASTNode* p = fn->params; p; p = p->next) {
+                    if (p->type != AST_VAR_DECL) continue;
+                    if (((VarDeclNode*)p)->is_comptime_param) {
+                        type_error(checker, p->pos,
+                            "comptime parameters are not supported on interface methods");
+                        // Fix round 3 (minor 4): free the InterfaceMethod
+                        // list partially built for EARLIER members of this
+                        // interface before erroring out (names are strdup'd
+                        // and list nodes calloc'd above; the method's
+                        // function Type is shared/checker-owned, never freed
+                        // here). Scoped to THIS branch's error path only —
+                        // the sibling pre-existing error paths leak
+                        // identically and are deliberately left untouched.
+                        while (head) {
+                            InterfaceMethod* next_im = head->next;
+                            free(head->name);
+                            free(head);
+                            head = next_im;
+                        }
+                        return NULL;
+                    }
+                }
 
                 size_t pcount = 0;
                 for (ASTNode* p = fn->params; p; p = p->next) {

@@ -135,6 +135,7 @@ VarDeclNode* ast_var_decl_new(Position pos) {
     node->is_variadic_param = 0;
     node->is_captured = 0;
     node->is_embedded = 0;
+    node->is_comptime_param = 0;
 
     return node;
 }

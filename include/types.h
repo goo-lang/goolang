@@ -84,6 +84,19 @@ struct Type {
         struct {
             Type* element_type;
             size_t length;
+            // Comptime value params (fix round 4): set when this array
+            // type's LENGTH expression references a comptime parameter
+            // (stamped by type_from_ast's AST_ARRAY_TYPE case and the
+            // array-literal checker via goo_expr_references_comptime_param).
+            // In a comptime TEMPLATE body, `length` is then the placeholder
+            // — const-index and literal-count validation defer to instance
+            // time (the checker skips its upper-bound rejection; codegen's
+            // index paths re-check against the instance's re-derived REAL
+            // length and hard-fail on a genuine violation). 0 for every
+            // ordinary array, whose template-time validation is unchanged.
+            // Tail-appended within the union member (type_new memsets the
+            // whole Type, so it starts 0 on every construction path).
+            int comptime_length;
         } array;
         
         // Slice type
@@ -113,6 +126,24 @@ struct Type {
             // Concept constraints for generic functions
             struct ConceptDefinition** concept_constraints;
             size_t concept_constraint_count;
+            // Fix 2 (comptime-param functions are not first-class values):
+            // set by declare_function_signature whenever the FuncDeclNode
+            // this signature was built from has ANY is_comptime_param
+            // parameter (methods included). A function/method with this set
+            // may only be the CALLEE of a direct call (identifier, method
+            // selector on a concrete receiver, or package selector) — never
+            // used as a plain value (interface satisfaction, var-decl init,
+            // assignment, argument, return, composite storage). Without this
+            // gate, aliasing such a function into a value strips away its
+            // func_decl_node back-reference (a fresh Variable — e.g. a var,
+            // a parameter, an interface method slot — has none), so
+            // type_check_call_expr's per-argument comptime-constant check
+            // (which walks checked_callee->func_decl_node) can never fire
+            // again for that alias: a runtime value silently reaches the
+            // comptime slot. New Type structs are calloc/memset-zeroed
+            // (type_new), so every OTHER creation site defaults this to 0
+            // with no explicit initialization needed.
+            int has_comptime_params;
         } function;
         
         // Pointer type
@@ -322,6 +353,16 @@ typedef struct Variable {
     int is_generic;
     struct ASTNode* generic_decl;
     size_t type_param_count;
+    // Comptime value parameters (Task 2): the FuncDeclNode this Variable was
+    // registered from (declare_function_signature), for EVERY function/method
+    // Variable — not just generic templates (contrast generic_decl, which
+    // stays NULL here). Lets the call-argument checker (expression_checker.c)
+    // walk the callee's real parameter list and read each VarDeclNode's
+    // is_comptime_param flag, positionally matched against param_types[idx]
+    // (recv_offset already accounts for a spliced method receiver). NULL for
+    // every non-function Variable (ordinary locals, consts, package markers).
+    // Not owned — the FuncDeclNode is owned by the AST, freed independently.
+    struct ASTNode* func_decl_node;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by
@@ -418,6 +459,34 @@ typedef struct GenericInstantiation {
     struct GenericInstantiation* next;
 } GenericInstantiation;
 
+// Comptime value params Task 3: one resolved call-site instantiation for a
+// comptime-parameterized function, appended by
+// type_check_record_comptime_instantiation (type_checker.c) whenever a
+// direct call to a has_comptime_params function type-checks successfully.
+// Mirrors GenericInstantiation (the type-arg axis) but keys on int64_t
+// comptime VALUES instead of concrete Types. Kept as its own list rather
+// than folded into GenericInstantiation: a comptime-param function is never
+// itself generic (Task 2 rejects `comptime` on a type-param'd function), so
+// the two axes never coexist on one FuncDeclNode today, and neither axis's
+// consumer (mono_instantiate's type-substitution walk vs. the comptime
+// worklist in monomorphize.c) has to guard against the other's fields being
+// absent/meaningless. `fn` is the plain-function Variable itself (fn->
+// func_decl_node is the FuncDeclNode the monomorphizer instantiates from —
+// see that field's own doc comment: unlike generic_decl, it is set for
+// EVERY function, not just templates). `values`/`n` are a malloc'd COPY of
+// the call site's CallExprNode.comptime_value_args, independently owned and
+// freed with this list (type_checker_free), same ownership split
+// GenericInstantiation uses for its own `args`. The same {fn,values} tuple
+// may be recorded more than once for repeated calls with identical comptime
+// arguments — dedup is the monomorphizer's job (mirrors GenericInstantiation
+// here too).
+typedef struct ComptimeInstantiation {
+    Variable* fn;
+    int64_t* values;
+    size_t n;
+    struct ComptimeInstantiation* next;
+} ComptimeInstantiation;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -491,6 +560,16 @@ struct TypeChecker {
     // type_check_program returns to know which concrete instantiations of
     // each generic function to emit; torn down in type_checker_free.
     GenericInstantiation* instantiations;
+
+    // Comptime value params Task 3: head of the linked list of resolved
+    // comptime-call instantiations recorded by
+    // type_check_record_comptime_instantiation during call checking. NULL
+    // until the first comptime call type-checks successfully. The
+    // monomorphizer (codegen_monomorphize, monomorphize.c) walks this list
+    // after type_check_program returns, alongside `instantiations` above, to
+    // know which concrete value-specializations of each comptime-param
+    // function to emit; torn down in type_checker_free.
+    ComptimeInstantiation* comptime_instantiations;
 };
 
 // Type creation functions
@@ -539,10 +618,20 @@ const char* type_receiver_name(const Type* type);
 
 // P4-3: does `concrete`'s method set satisfy interface `iface`? Returns 1 if so
 // (or for the empty interface). On failure returns 0 and writes the offending
-// method name and reason ("missing" / "signature mismatch") to the out params.
+// method name and reason ("missing" / "signature mismatch" / "comptime" — a
+// method with a `comptime` parameter, see report_comptime_method_not_satisfied
+// below) to the out params.
 int type_interface_satisfied(TypeChecker* checker, Type* iface,
                              Type* concrete, const char** method_out,
                              const char** reason_out);
+
+// Fix 2 (comptime-param functions are not first-class values): shared
+// diagnostic for the reason_out == "comptime" case above — every caller of
+// type_interface_satisfied special-cases that reason with this instead of
+// its own generic "X does not implement Y" message, so the wording stays in
+// one place. `method` is the offending method name (method_out).
+void report_comptime_method_not_satisfied(TypeChecker* checker, Position pos,
+                                          const char* method);
 
 // Validate assigning `src` into a `target`-typed location. For an interface
 // target this accepts any concrete implementer (emitting "X does not implement
@@ -550,6 +639,23 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
 // falls back to type_compatible. Returns 1 if the assignment is allowed.
 int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
                            Position pos);
+
+// Fix 2 (comptime-param functions are not first-class values): a function
+// with any `comptime` parameter may only be the CALLEE of a direct call
+// (identifier, method selector on a concrete receiver, or package selector)
+// — never captured as a plain value. `t` is the VALUE's type at a
+// value-consuming site (var-decl init, assignment RHS, call argument, return
+// expression, composite storage — NOT the callee position of a call, which
+// must stay unchecked here). No-ops (returns 1) unless `t` is a TYPE_FUNCTION
+// with has_comptime_params set. `src_expr`, if the identifier or bound-method
+// selector the value came from, supplies the function's declared name for
+// the diagnostic; pass NULL if unavailable (falls back to the type's
+// rendered name). `context` is a short verb phrase completing "function 'x'
+// has comptime parameters and cannot be <context>" (e.g. "used as a value",
+// "passed as an argument", "returned"). Emits that diagnostic and returns 0
+// on rejection.
+int reject_comptime_function_value(TypeChecker* checker, struct ASTNode* src_expr,
+                                   Type* t, Position pos, const char* context);
 
 // Type checking utilities
 int type_is_integer(const Type* type);
@@ -621,6 +727,15 @@ void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
                                      Type** args, size_t n,
                                      struct ASTNode* call_site);
 
+// Comptime value params Task 3: append {fn, values, n} to
+// checker->comptime_instantiations. Takes ownership of `values` (a malloc'd
+// copy the caller must not free or reuse afterward) — mirrors
+// type_check_record_instantiation's ownership contract for `args` above,
+// one axis over.
+void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn,
+                                               int64_t* values, size_t n,
+                                               struct ASTNode* call_site);
+
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);
 
@@ -690,7 +805,10 @@ Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type*
 Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Position pos);
 Type* type_check_logical_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
-Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos);
+// `value_expr` is the RHS expression node (Fix 2: supplies a captured
+// comptime-parameterized function's declared name for its rejection
+// diagnostic — see reject_comptime_function_value); pass NULL if unavailable.
+Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, ASTNode* value_expr, Position pos);
 
 // Fold an integer constant expression at 128-bit precision (see
 // expression_helpers.c). Returns 1 and sets *out on success; 0 if the
@@ -709,6 +827,48 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out);
 // resolution); the original context-free goo_fold_const_int above is
 // unchanged and keeps its existing (non-identifier) call sites.
 int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
+
+// Comptime value params Task 3 (fix round 2): does `t` contain a TYPE_ARRAY
+// anywhere in its structure (through nested arrays, slices, pointers,
+// nullables)? Used by comptime-instance codegen (function_codegen.c /
+// composite_codegen.c) to decide whether a template-cached Type must be
+// re-derived from its AST type node under the instance's comptime-param
+// binding — only array LENGTHS can differ per instance, so anything with no
+// array anywhere can keep the cached Type object untouched.
+int goo_type_contains_array(const Type* t);
+
+// Comptime value params (fix round 6, C-r5): does `t` contain a
+// comptime_length-FLAGGED array anywhere in its structure (recursing
+// through array ELEMENTS as well as slices/pointers/nullables — `[2][n]int`
+// is unflagged outside, flagged inside)? This — not the any-array walk
+// above — is the correct gate for the comptime instance re-derivation
+// sites: gating on ANY array re-derived types whose template resolution was
+// never placeholder-tainted, so a block-local `const n = 3` SHADOWING the
+// comptime param split-brained (the checker resolved the shadow's length,
+// while codegen's mirror-scope re-derivation resolved the PARAM instead —
+// wrong length, or a false instance-named rejection). An unflagged array's
+// template type is already correct and must be left untouched.
+int goo_type_contains_comptime_array(const Type* t);
+
+// Comptime value params (fix round 6, M-r5c): set comptime_length on an
+// array Type AND rewrite its display name so diagnostics render the
+// comptime dimension as `[<param-name>]` (identifier length expression) or
+// `[comptime]` (compound expression) instead of the template placeholder
+// ("[1]int64"). The single stamping entry point — both stamp sites
+// (type_from_ast's AST_ARRAY_TYPE case, the array-literal checker) call
+// this instead of setting the flag directly.
+void type_array_mark_comptime(Type* t, ASTNode* length_expr);
+
+// Comptime value params (fix round 3/4): does `expr` contain any identifier
+// that resolves, in checker's CURRENT scope, to a comptime PARAMETER
+// (Variable whose decl_node is a VarDeclNode with is_comptime_param)?
+// Recurses through the same expression shapes goo_fold_const_int_ctx folds.
+// Three consumers: the comptime-argument capture site (expression_checker.c
+// — keeps the const folder away from the enclosing param's placeholder),
+// the array-literal checker (defer count-vs-length validation to instance
+// time), and type_from_ast's AST_ARRAY_TYPE case (stamp
+// Type.data.array.comptime_length so const-index validation defers too).
+int goo_expr_references_comptime_param(TypeChecker* checker, ASTNode* expr);
 
 // Fold a compile-time string constant — string literals joined by `+` — into a
 // freshly malloc'd byte buffer. On success returns 1, writes *out (the buffer,

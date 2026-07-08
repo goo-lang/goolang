@@ -662,6 +662,20 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
 // codegen_generate_error_union_function when the decl is reached, and no plain
 // leaf package forward-references one (that case is deferred). Returns 1 on
 // success (including the skip), 0 on failure.
+// Comptime value params Task 3: does this (non-method) function declaration
+// carry any `comptime` parameter? Duplicated (not shared) with codegen.c's
+// identically-named static helper — per-TU static helper is this codebase's
+// existing idiom for a small single-purpose function with no shared header
+// (see e.g. monomorphize.c's str_dup). See that copy's doc comment for the
+// method-scoping rationale.
+static int func_decl_has_comptime_param(FuncDeclNode* fd) {
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (((VarDeclNode*)p)->is_comptime_param) return 1;
+    }
+    return 0;
+}
+
 static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* checker,
                                        FuncDeclNode* func_decl) {
     // Function generics Task 4: a generic function template's signature
@@ -674,6 +688,11 @@ static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* chec
     // Task 4's other guard covers) and re-triggers "Unknown type 'T'" /
     // return-type lowering failures even though type-checking passed.
     if (func_decl->type_params) return 1;
+    // Comptime value params Task 3: same reasoning, for the comptime axis —
+    // a plain function's `[n]int`-shaped signature/body can't be lowered
+    // under the template's own placeholder binding either. Methods are
+    // excluded; see codegen.c's identically-scoped skip-guard.
+    if (!func_decl->receiver && func_decl_has_comptime_param(func_decl)) return 1;
 
     Type* return_type = func_decl->return_type
         ? type_from_ast(checker, func_decl->return_type)
@@ -985,6 +1004,13 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // type_check_function_decl's identical marking (type_checker.c).
     checker->current_scope->is_function_boundary = 1;
     if (func_decl->params) {
+        // Comptime value params Task 3: which comptime parameter (0-based,
+        // declaration order) the next is_comptime_param entry below binds —
+        // matches CallExprNode.comptime_value_args' own compact ordering
+        // (ast.h) and codegen->active_comptime_values' indexing (codegen.h),
+        // both set up by codegen_generate_comptime_function_instance
+        // (monomorphize.c) before this function's body is walked.
+        size_t comptime_idx = 0;
         for (ASTNode* p = func_decl->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
             VarDeclNode* pd = (VarDeclNode*)p;
@@ -1005,9 +1031,33 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
                     // real AST node instead of tripping the "unsupported
                     // binding form" rejection against a mirror-only NULL.
                     pv->decl_node = (struct ASTNode*)pd;
+                    // Comptime value params Task 3: this instance's concrete
+                    // value for a `comptime` parameter — see
+                    // codegen_generate_comptime_function_instance's doc
+                    // comment (monomorphize.c). Binds the SAME field set
+                    // type_check_function_decl's template pass binds to a
+                    // placeholder (type_checker.c); this mirror Variable's
+                    // binding is what goo_fold_const_int_ctx actually
+                    // resolves during THIS instance's codegen (e.g.
+                    // codegen_generate_var_decl's array-length re-fold,
+                    // below). Guarded on the index staying in range — always
+                    // true once a comptime-param function only ever reaches
+                    // here via codegen_generate_comptime_function_instance
+                    // (codegen.c's skip-guard keeps it off the ordinary
+                    // single-emission path); out-of-range is a silent no-op
+                    // rather than a crash if that invariant is ever violated.
+                    if (pd->is_comptime_param &&
+                        comptime_idx < codegen->active_comptime_value_n) {
+                        int64_t v = codegen->active_comptime_values[comptime_idx];
+                        pv->has_const_int_value = 1;
+                        pv->const_int_value = (uint64_t)v;
+                        pv->comptime_value = comptime_value_new(COMPTIME_VALUE_INT);
+                        if (pv->comptime_value) pv->comptime_value->int_value = v;
+                    }
                     scope_add_variable(checker->current_scope, pv);
                 }
             }
+            if (pd->is_comptime_param) comptime_idx++;
         }
     }
 
@@ -1444,12 +1494,104 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     if (!codegen || !checker || !decl || decl->type != AST_VAR_DECL) return 0;
     
     VarDeclNode* var_decl = (VarDeclNode*)decl;
-    
+
     // Get type from AST node (set during type checking)
     Type* var_type = decl->node_type;
     if (!var_type) {
         codegen_error(codegen, decl->pos, "Variable declaration has no type information");
         return 0;
+    }
+
+    // Comptime value params Task 3 (generalized in fix round 2): `decl->
+    // node_type` was resolved ONCE during the template body-check pass
+    // (type_check_function_decl), with any comptime parameter bound to
+    // Step 3's PLACEHOLDER value — so an array length depending on it
+    // (`var buf [n]int`, `var m [2][n]int`, `buf := [n]int{}`) is baked
+    // into this cached Type with the placeholder, shared by every
+    // monomorphized instance of this function since they all codegen from
+    // the SAME template AST node (this exact VarDeclNode). Whenever a
+    // comptime instance is active (active_comptime_value_n > 0 — set by
+    // codegen_generate_comptime_function_instance, monomorphize.c, which
+    // rebinds each comptime param's mirror Variable to THIS instance's
+    // concrete value in codegen_generate_function_decl's param loop, before
+    // the body is walked), re-derive the FULL declared type fresh from its
+    // AST type node via type_from_ast against the checker's CURRENT scope:
+    // its AST_ARRAY_TYPE case folds every length (at every nesting depth)
+    // with goo_fold_const_int_ctx, which now resolves the comptime param to
+    // this instance's literal. This is the array-length analogue of
+    // codegen_type_to_llvm's TYPE_PARAM substitution (type_mapping.c),
+    // which re-resolves a generic template's types per instance for the
+    // exact same "one shared cached Type, many instances" reason. Round 1's
+    // narrower version rebuilt only the OUTERMOST length of an explicit
+    // `[expr]elem` annotation — `var m [2][n]int` kept its placeholder
+    // INNER length and `buf := [n]int{}` (no annotation; the type rides on
+    // the literal, handled in codegen_generate_array_lit) got nothing, both
+    // compiling clean and then bounds-panicking at runtime. Gated (fix
+    // round 6, C-r5) on the cached type containing a comptime_length-FLAGGED
+    // array (goo_type_contains_comptime_array) — NOT just any array: an
+    // unflagged array's template resolution was never placeholder-tainted
+    // (its length doesn't reference the comptime param), and re-deriving it
+    // here against the MIRROR scope split-brained under a block-local
+    // `const n = 3` shadowing the param — the checker had resolved the
+    // shadow, the mirror-scope re-derivation resolved the PARAM (the mirror
+    // pre-registers params before any body statement, so at re-derivation
+    // time the shadow may not even exist yet in the mirror chain). A
+    // flagged array's length references the param by construction, so its
+    // mirror-scope resolution is exactly right. Only the LOCAL var_type is
+    // replaced, never decl->node_type: the template node is shared across
+    // instances.
+    if (codegen->active_comptime_value_n > 0 && goo_type_contains_comptime_array(var_type)) {
+        ASTNode* type_node = var_decl->type;
+        // Short decl with the type riding on an array literal
+        // (`buf := [n]int{}`): re-derive from the literal's own type node.
+        if (!type_node && var_decl->values &&
+            var_decl->values->type == AST_ARRAY_LITERAL) {
+            type_node = ((ArrayLitNode*)var_decl->values)->array_type;
+        }
+        if (type_node) {
+            Type* fresh = type_from_ast(checker, type_node);
+            // Fix round 3 (minor 3): a failed re-derivation is a HARD
+            // codegen failure, not a fall-back to the placeholder type.
+            // type_from_ast already emitted the real, positioned diagnostic
+            // (e.g. "array length must be non-negative" for a negative
+            // comptime instance value) — but on the CHECKER's error counter,
+            // which codegen success doesn't consult; continuing with the
+            // placeholder previously emitted a placeholder-sized binary
+            // with exit 0 despite the printed error.
+            if (!fresh) {
+                codegen_error(codegen, decl->pos,
+                    "cannot instantiate declared type for this comptime instance");
+                return 0;
+            }
+            var_type = fresh;
+        } else if (var_decl->values && var_decl->name_count == 1) {
+            // Fix round 5 (C-r4): an INFERRED declaration (`c := a`) has no
+            // AST type node anywhere — neither an annotation nor an
+            // array-literal RHS — so the branches above never fired and
+            // `c`'s alloca silently kept the template-cached PLACEHOLDER
+            // type while `a` (already re-derived) carried the real length:
+            // compiled clean, bounds-panicked at runtime on the first
+            // c[1] access. Resolve the RHS expression's type against the
+            // mirror scope instead: an identifier RHS resolves to the
+            // mirror Variable's already-re-derived type, and a general
+            // expression re-checks against the same instance-bound scope
+            // (the established codegen re-invocation pattern). Chained
+            // inference (`d := c`) works because each fixed decl registers
+            // its mirror Variable and ValueInfo with the re-derived type
+            // below. Scoped to single-name decls (multi-name destructures
+            // never bind a whole comptime-length array to one name — their
+            // node_type is a struct/error-union, which the contains-array
+            // gate above already filters out; the guard is belt and
+            // braces). Same hard-fail contract as the annotation branch:
+            // never fall back to the placeholder.
+            Type* fresh = type_check_expression(checker, var_decl->values);
+            if (!fresh || !goo_type_contains_array(fresh)) {
+                codegen_error(codegen, decl->pos,
+                    "cannot resolve inferred type for this comptime instance");
+                return 0;
+            }
+            var_type = fresh;
+        }
     }
 
 
@@ -1923,6 +2065,29 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
                 if (!init_value) {
                     codegen_error(codegen, decl->pos, "Failed to generate initializer for variable '%s'", var_name);
+                    return 0;
+                }
+
+                // Fix round 6 (M-r5b): instance-time enforcement of the
+                // array-length compatibility the checker DEFERRED for a
+                // comptime-length array initializer (`var b [4]int = a` —
+                // type_check_var_decl's comptime_len_deferred). Both types
+                // here are instance-real; a genuine mismatch is a clean,
+                // instance-named compile failure instead of an invalid-IR
+                // store. Mirrors the assignment arm (expression_codegen.c)
+                // and the call-argument arm (call_codegen.c) exactly.
+                if (var_type && init_value->goo_type &&
+                    var_type->kind == TYPE_ARRAY &&
+                    init_value->goo_type->kind == TYPE_ARRAY &&
+                    (var_type->data.array.comptime_length ||
+                     init_value->goo_type->data.array.comptime_length) &&
+                    var_type->data.array.length != init_value->goo_type->data.array.length) {
+                    codegen_error(codegen, decl->pos,
+                        "cannot initialize [%zu]-length array from [%zu]-length array in comptime instance '%s'",
+                        var_type->data.array.length,
+                        init_value->goo_type->data.array.length,
+                        codegen->symbol_override ? codegen->symbol_override : "?");
+                    value_info_free(init_value);
                     return 0;
                 }
 

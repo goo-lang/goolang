@@ -131,6 +131,13 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // instance installs one around a single instantiation's stamping.
     codegen->symbol_override = NULL;
 
+    // Comptime value params Task 3: no active comptime instance until
+    // codegen_generate_comptime_function_instance installs one around a
+    // single instantiation's stamping (monomorphize.c) — mirrors
+    // active_subst/active_subst_n just above, one axis over.
+    codegen->active_comptime_values = NULL;
+    codegen->active_comptime_value_n = 0;
+
     // Declare runtime functions
     codegen_declare_runtime_functions(codegen);
     
@@ -410,15 +417,42 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     return codegen->error_count == 0;
 }
 
+// Comptime value params Task 3: does this (non-method) function declaration
+// carry any `comptime` parameter? Scoped to plain functions only — a
+// comptime-param METHOD is intentionally left on the ordinary single-
+// emission codegen path for now (its `n` stays an actual runtime parameter,
+// same as before this task): Part B's call-rewiring (call_codegen.c) only
+// rewrites a bare identifier call site today, so skipping a method's bare
+// emission here without a matching call-site rewrite would leave any
+// `obj.M(4)` call resolving to nothing. Not a regression — comptime-param
+// methods already worked exactly this way (single emission, runtime `n`)
+// before this task; this only changes PLAIN functions. See
+// monomorphize.c's comptime worklist doc comment for the same scoping.
+static int func_decl_has_comptime_param(FuncDeclNode* fd) {
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (((VarDeclNode*)p)->is_comptime_param) return 1;
+    }
+    return 0;
+}
+
 int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl) {
     if (!codegen || !checker || !decl) return 0;
-    
+
     switch (decl->type) {
         case AST_FUNC_DECL:
             // Function generics Task 4: a generic function template
             // (type_params != NULL) is never emitted directly — it is
             // monomorphized per concrete instantiation (M3). Skip here.
             if (((FuncDeclNode*)decl)->type_params) return 1;
+            // Comptime value params Task 3: likewise, a plain (non-method)
+            // function with a `comptime` parameter is monomorphized per
+            // distinct value tuple (codegen_monomorphize's comptime
+            // worklist, monomorphize.c) rather than emitted once under its
+            // bare name. See func_decl_has_comptime_param's doc comment for
+            // why methods are excluded from this skip.
+            if (!((FuncDeclNode*)decl)->receiver &&
+                func_decl_has_comptime_param((FuncDeclNode*)decl)) return 1;
             return codegen_generate_function_decl(codegen, checker, decl);
         case AST_VAR_DECL:
             return codegen_generate_var_decl(codegen, checker, decl);

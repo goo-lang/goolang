@@ -116,6 +116,30 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         case TYPE_ARRAY: {
             element_type = base_type->data.array.element_type;
 
+            // Fix round 4: instance-time enforcement of the const-index
+            // upper bound the checker DEFERRED for a comptime-length array
+            // (comptime_length flag — see type_check_index_expr's skip).
+            // base_type here is the instance's RE-DERIVED type (real
+            // length), so a genuinely out-of-range const index at THIS
+            // instance is a clean compile failure — named with the
+            // instance symbol (symbol_override is installed for the
+            // duration of instance stamping) — instead of a runtime
+            // bounds panic. Ordinary arrays never carry the flag; their
+            // const OOB indices were already rejected at type-check.
+            if (base_type->data.array.comptime_length) {
+                uint64_t ci;
+                if (goo_fold_const_int_ctx(checker, index_expr->index, &ci) &&
+                    ci >= (uint64_t)base_type->data.array.length) {
+                    codegen_error(codegen, index_expr->index->pos,
+                        "array index %llu out of bounds [0:%zu] in comptime instance '%s'",
+                        (unsigned long long)ci, base_type->data.array.length,
+                        codegen->symbol_override ? codegen->symbol_override : "?");
+                    value_info_free(base_val);
+                    value_info_free(index_val);
+                    return NULL;
+                }
+            }
+
             // Bounds-check the read against the fixed length (static N) before
             // the element GEP — arrays previously skipped this (only slices
             // checked), so arr[i] could read past the array.
@@ -1283,6 +1307,38 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
     if (!arr_type || arr_type->kind != TYPE_ARRAY) {
         codegen_error(codegen, expr->pos, "array literal missing TYPE_ARRAY node_type");
         return NULL;
+    }
+
+    // Comptime value params Task 3 (fix round 2): inside a monomorphized
+    // comptime instance, the checker-stamped node_type was resolved ONCE at
+    // template body-check time with the comptime param bound to a
+    // placeholder — `buf := [n]int{}`'s literal carried the placeholder
+    // length permanently, compiling clean and bounds-panicking at runtime.
+    // Re-derive the literal's type fresh from its own AST type node under
+    // the instance binding (the mirror Variable for `n` carries this
+    // instance's value), exactly like codegen_generate_var_decl's
+    // re-derivation (function_codegen.c — see the long comment there).
+    // Local replacement only; expr->node_type stays untouched (the template
+    // node is shared across instances). Gated (fix round 6, C-r5) on the
+    // cached type carrying a comptime_length-flagged array — an unflagged
+    // literal's template type was never placeholder-tainted (e.g. its
+    // length names a block-local const SHADOWING the param), and
+    // re-deriving it against the mirror scope would resolve the PARAM
+    // instead of the shadow. See codegen_generate_var_decl's identical
+    // gate rationale (function_codegen.c).
+    if (codegen->active_comptime_value_n > 0 && lit->array_type &&
+        goo_type_contains_comptime_array(arr_type)) {
+        Type* fresh = type_from_ast(checker, lit->array_type);
+        // Fix round 3 (minor 3): a failed re-derivation is a HARD codegen
+        // failure — see codegen_generate_var_decl's identical branch
+        // (function_codegen.c) for why falling back to the placeholder
+        // type let an error-bearing compile still emit a binary.
+        if (!fresh || fresh->kind != TYPE_ARRAY) {
+            codegen_error(codegen, expr->pos,
+                "cannot instantiate array literal type for this comptime instance");
+            return NULL;
+        }
+        arr_type = fresh;
     }
     Type* elem_type = arr_type->data.array.element_type;
     size_t n = arr_type->data.array.length;

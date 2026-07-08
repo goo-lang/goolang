@@ -1473,6 +1473,37 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         }
         free(concrete_args);
     }
+
+    // Comptime value params Task 3 (call rewiring): a comptime call site
+    // (call->comptime_value_arg_count > 0, stamped by type_check_call_expr
+    // in expression_checker.c only for a plain identifier callee — see that
+    // function's recording-site doc comment) must dispatch to its
+    // MONOMORPHIZED INSTANCE symbol, never the template's own bare name:
+    // codegen_generate_declaration (codegen.c) skips emitting a plain
+    // comptime-param function's template directly, so e.g. `fill` is never
+    // registered in this module under its bare name — only instances like
+    // `fill__n4` are, by codegen_monomorphize's comptime worklist
+    // (monomorphize.c), which runs to completion BEFORE any function body
+    // (including this one) is emitted. Mirrors the generic-call rewiring
+    // immediately above, one axis over: no type_substitute needed here, since
+    // a comptime value doesn't change the callee's TYPE (only which literal
+    // `n` resolves to inside its body) — the signature is just the plain
+    // Variable's own type, unchanged. Mutually exclusive with the generic
+    // block above by construction (a comptime-param function is never
+    // itself generic), so func_val is still NULL here whenever this fires.
+    if (!func_val && call->comptime_value_arg_count > 0 &&
+        call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* cid = (IdentifierNode*)call->function;
+        char* sym = codegen_mangle_comptime_instance(cid->name,
+            call->comptime_value_args, call->comptime_value_arg_count);
+        LLVMValueRef inst = sym ? LLVMGetNamedFunction(codegen->module, sym) : NULL;
+        free(sym);
+        if (inst) {
+            Variable* cvar = type_checker_lookup_variable(checker, cid->name);
+            func_val = value_info_new(cid->name, inst, cvar ? cvar->type : NULL);
+        }
+    }
+
     if (!func_val) {
         // See codegen_resolve_callee's comment: a bare identifier not
         // shadowed by a local variable/parameter resolves to the BARE LLVM
@@ -1550,6 +1581,32 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
 
             ValueInfo* arg_val = codegen_generate_expression(codegen, checker, arg);
             if (!arg_val) {
+                free(args);
+                value_info_free(func_val);
+                return NULL;
+            }
+
+            // Fix round 6 (M-r5a): instance-time enforcement of the
+            // array-length compatibility the checker DEFERRED for a
+            // comptime-length array argument (type_check_call_expr's
+            // comptime_len_deferred). arg_val->goo_type is the instance's
+            // re-derived REAL type, so a genuine mismatch at THIS instance
+            // is a clean, instance-named compile failure instead of an
+            // invalid-IR pass of a differently-sized aggregate. Gated on
+            // the comptime_length flag (either side) — ordinary mismatched
+            // array arguments never reach codegen.
+            if (param_type && arg_val->goo_type &&
+                param_type->kind == TYPE_ARRAY &&
+                arg_val->goo_type->kind == TYPE_ARRAY &&
+                (param_type->data.array.comptime_length ||
+                 arg_val->goo_type->data.array.comptime_length) &&
+                param_type->data.array.length != arg_val->goo_type->data.array.length) {
+                codegen_error(codegen, arg->pos,
+                    "cannot pass [%zu]-length array to [%zu]-length array parameter in comptime instance '%s'",
+                    arg_val->goo_type->data.array.length,
+                    param_type->data.array.length,
+                    codegen->symbol_override ? codegen->symbol_override : "?");
+                value_info_free(arg_val);
                 free(args);
                 value_info_free(func_val);
                 return NULL;

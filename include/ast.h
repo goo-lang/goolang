@@ -3,6 +3,7 @@
 
 #include "token.h"
 #include <stddef.h>
+#include <stdint.h>
 
 // Forward declarations
 typedef struct ASTNode ASTNode;
@@ -345,6 +346,12 @@ typedef struct {
     // (src/types/embedding.c) keys off this flag. Appended at the STRUCT TAIL
     // per the no-header-deps convention above.
     int is_embedded;
+    // Comptime-value-specialized functions: set on a parameter written
+    // `comptime name type`. The argument bound to it at a call must be a
+    // compile-time constant; the function is monomorphized per distinct value
+    // (the value is substituted as a literal in the specialized body). Appended
+    // at the STRUCT TAIL per the no-header-deps convention above.
+    int is_comptime_param;
 } VarDeclNode;
 
 // Constant declaration
@@ -545,6 +552,24 @@ typedef struct {
     // (the parser arms building CallExprNode directly) must zero both.
     struct Type** type_args;
     size_t type_arg_count;
+    // Comptime-value-specialized calls: the compile-time int value bound to
+    // each comptime parameter at THIS call site, in parameter order (0 for
+    // non-comptime positions is not stored — index by comptime-param slot).
+    // Set by the type checker (Task 2/3), read by the monomorphizer.
+    // Tail-appended, no-header-deps convention.
+    //
+    // Invariant (fix round 3): zeroed at construction — every parser.y
+    // call_expr arm NULLs both, exactly like type_args above — and owned
+    // by the type checker thereafter: type_check_call_expr's FIRST visit
+    // to the node (discriminated via base.node_type, NULL until the first
+    // successful check stamps it) captures the values; every re-visit
+    // (codegen re-invokes the checker on the same node — method-call
+    // return-type recomputation, defer re-emission) leaves them untouched,
+    // so once captured they are stable for the node's lifetime. No code
+    // other than type_check_call_expr may write them. Freed exactly once,
+    // in ast_node_free's AST_CALL_EXPR case.
+    int64_t* comptime_value_args;
+    size_t   comptime_value_arg_count;
 } CallExprNode;
 
 // Index expression

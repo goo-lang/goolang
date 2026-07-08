@@ -60,6 +60,86 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
     }
 }
 
+// Comptime value params Task 3 (fix round 2): see the header doc comment.
+// Recurses through the wrapper kinds whose inner type a local declaration
+// can nest an array under; every other kind is a no-array leaf. (Function
+// types are deliberately not recursed: a comptime param cannot appear in a
+// function TYPE's array lengths — declare_function_signature resolves
+// signatures before any param binding exists, so such a length was already
+// rejected at declaration.)
+int goo_type_contains_array(const Type* t) {
+    while (t) {
+        switch (t->kind) {
+            case TYPE_ARRAY:
+                return 1;
+            case TYPE_SLICE:
+                t = t->data.slice.element_type;
+                break;
+            case TYPE_POINTER:
+                t = t->data.pointer.pointee_type;
+                break;
+            case TYPE_NULLABLE:
+                t = t->data.nullable.base_type;
+                break;
+            default:
+                return 0;
+        }
+    }
+    return 0;
+}
+
+// Comptime value params (fix round 6, C-r5): see the header doc comment.
+// Unlike goo_type_contains_array above, this walk must descend into array
+// ELEMENTS — `[2][n]int` carries the flag only on the INNER array type.
+int goo_type_contains_comptime_array(const Type* t) {
+    while (t) {
+        switch (t->kind) {
+            case TYPE_ARRAY:
+                if (t->data.array.comptime_length) return 1;
+                t = t->data.array.element_type;
+                break;
+            case TYPE_SLICE:
+                t = t->data.slice.element_type;
+                break;
+            case TYPE_POINTER:
+                t = t->data.pointer.pointee_type;
+                break;
+            case TYPE_NULLABLE:
+                t = t->data.nullable.base_type;
+                break;
+            default:
+                return 0;
+        }
+    }
+    return 0;
+}
+
+// Comptime value params (fix round 4): see the header doc comment. Promoted
+// from expression_checker.c's file-local helper (fix round 2's I2 guard)
+// when type_from_ast (type_checker.c) became its third consumer — the
+// comptime_length stamping on array types.
+int goo_expr_references_comptime_param(TypeChecker* checker, ASTNode* expr) {
+    if (!expr) return 0;
+    switch (expr->type) {
+        case AST_IDENTIFIER: {
+            Variable* v = type_checker_lookup_variable(checker,
+                ((IdentifierNode*)expr)->name);
+            return v && v->decl_node && v->decl_node->type == AST_VAR_DECL &&
+                   ((VarDeclNode*)v->decl_node)->is_comptime_param;
+        }
+        case AST_UNARY_EXPR:
+            return goo_expr_references_comptime_param(checker,
+                ((UnaryExprNode*)expr)->operand);
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            return goo_expr_references_comptime_param(checker, b->left) ||
+                   goo_expr_references_comptime_param(checker, b->right);
+        }
+        default:
+            return 0;
+    }
+}
+
 // Checker-aware sibling of goo_fold_const_int (see header): additionally
 // resolves AST_IDENTIFIER against checker's scope chain, using the constant's
 // cached integer value (Variable->const_int_value, set by
@@ -312,8 +392,20 @@ Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_t
     return integer_binop_result_type(left_type, right_type, is_shift);
 }
 
-Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos) {
+Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, ASTNode* value_expr, Position pos) {
     if (!checker || !target || !target_type || !value_type) return NULL;
+
+    // Fix 2 (comptime-param functions are not first-class values): `f = fill`
+    // (f a func-typed variable) would rebind f to a Variable with no
+    // func_decl_node — the SAME silent bypass adapt_var_decl_initializer's
+    // sibling check guards against for `var f ... = fill`. Checked before the
+    // ordinary compatibility logic below since a function type is never
+    // numeric/interface and would otherwise just fall through the
+    // type_compatible check unremarked.
+    if (!reject_comptime_function_value(checker, value_expr, value_type, pos,
+                                        "used as a value")) {
+        return NULL;
+    }
 
     // The grammar accepts any expression as an assignment LHS; enforce
     // addressability here. Lvalues are identifiers, index, selector, and deref
@@ -338,9 +430,29 @@ Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* targ
 
     // Check that value is compatible with target
     if (!type_compatible(value_type, target_type)) {
-        type_error(checker, pos, "Cannot assign %s to %s",
-                  type_to_string(value_type), type_to_string(target_type));
-        return NULL;
+        // Fix round 5 (M-r4): whole-array assignment where EITHER side is a
+        // comptime-length array (`b = a` with a: [n]int, or a2 = b) — the
+        // template-time length here is the placeholder, so the length
+        // comparison is meaningless until instance time; `[1]int64 vs
+        // [4]int64` falsely rejected a valid program. Defer exactly the
+        // LENGTH: element types must still match now (type_equals — Go's
+        // array-assignment rule), and codegen's assignment path enforces
+        // the real per-instance lengths (instance-named rejection on a
+        // genuine mismatch — see codegen_generate_assignment's array arm).
+        // Ordinary array assignments (no comptime_length on either side)
+        // reject here exactly as before.
+        int comptime_len_deferred =
+            value_type && target_type &&
+            value_type->kind == TYPE_ARRAY && target_type->kind == TYPE_ARRAY &&
+            (value_type->data.array.comptime_length ||
+             target_type->data.array.comptime_length) &&
+            type_equals(value_type->data.array.element_type,
+                        target_type->data.array.element_type);
+        if (!comptime_len_deferred) {
+            type_error(checker, pos, "Cannot assign %s to %s",
+                      type_to_string(value_type), type_to_string(target_type));
+            return NULL;
+        }
     }
     
     // TODO: Check that target is assignable (lvalue)
