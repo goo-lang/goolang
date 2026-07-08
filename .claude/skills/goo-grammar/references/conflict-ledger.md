@@ -270,7 +270,7 @@ justified families in this ledger's history, not two:
 2. **struct-lit-vs-bare-tag / `type_switch_guard` family** (type-assertions Task 3, +1;
    recurs as gofmt-syntax-a Task 2's Conflict 2, +1, brand-new state 713). This is the ONE
    family whose ambiguous token sequence is proven lexically unreachable, by the LBRACE_BODY
-   bridge (workarounds.md §1, `lexer_bridge.c:235-246`): the M10 bridge unconditionally
+   bridge (workarounds.md §1, `lexer_bridge.c:289-311`): the M10 bridge unconditionally
    tokenizes the first depth-0 `{` after `SWITCH` as `LBRACE_BODY`, which `struct_lit`
    cannot consume, so an unparenthesized struct literal in tag/guard position is a parse
    error, not a silent misparse, for either switch form (see "Corrected justification"
@@ -302,7 +302,7 @@ out of the grammar/lexer boundary before it becomes a countable LALR conflict at
   ambiguity (bare-identifier struct embedding, `struct { Base }`, which would otherwise need
   its own S/R-conflicted production) from ever entering the grammar; deliberately scoped to
   struct bodies only (enum bodies get none). This is distinct from the broader per-statement
-  optional-`SEMICOLON` design (`parser.y:1136-1160`, `simple_stmt SEMICOLON | simple_stmt`)
+  optional-`SEMICOLON` design (`parser.y:1193-1195`, `simple_stmt SEMICOLON | simple_stmt`)
   that makes most of Goo's "ASI" a grammar-level choice rather than a lexer-inserted token —
   that design keeps statement-boundary ambiguity out of the conflict count by construction,
   but is not itself one of the two named workarounds.md mechanisms.
@@ -344,7 +344,7 @@ validation model, and nothing in the family structure above needs it: family 2 i
 resolved by lexer feedback, families 1 and 3 are already resolved (and verified) by
 shift-wins.
 
-**Recursive-descent rewrite rejected.** `src/parser/parser.y` is ~3.7k lines carrying five
+**Recursive-descent rewrite rejected.** `src/parser/parser.y` is 3,907 lines (at this record's commit) carrying five
 conflict-avoidance techniques that are individually localized and ledgered (workarounds.md
 §1-5: LBRACE_BODY bridge, RBRACKET_SLICE token split, `type_call_arg` lookahead split,
 struct-body-scoped ASI, COMMA-before-RBRACE arms). A hand-written recursive-descent parser
