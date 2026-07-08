@@ -2534,6 +2534,18 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
 
     CallExprNode* call = (CallExprNode*)expr;
 
+    // Comptime value params Task 3: comptime_value_args/comptime_value_arg_count
+    // are malloc-uninitialized at every parser.y CallExprNode construction
+    // site (parser.y is off-limits for this task — see ast.h's field doc
+    // comment for the full reasoning), so establish the NULL/0 invariant
+    // here instead: unconditionally, as the very first thing done with this
+    // node, before any early-return path below. Every call is type-checked
+    // exactly once, here, before codegen (including the monomorphizer) ever
+    // reads these fields, so this single reset is sufficient — nothing
+    // upstream of this function ever touches them.
+    call->comptime_value_args = NULL;
+    call->comptime_value_arg_count = 0;
+
     // A type in call-argument position (map_type/slice_type/chan_type — the
     // grammar alternative added for `make(...)`) only means something when
     // the callee is the `make` builtin. Any other callee reaching here with
@@ -3256,6 +3268,23 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         param_vd->names[0]);
                     return NULL;
                 }
+                // Comptime value params Task 3: capture the resolved int for
+                // the monomorphizer, in parameter order (ast.h's field doc
+                // comment) — a compact grow-by-one; call->comptime_value_args
+                // was reset to NULL/0 at function entry above, so this is
+                // always a clean grow-from-empty for THIS call node.
+                int64_t* grown = realloc(call->comptime_value_args,
+                    (call->comptime_value_arg_count + 1) * sizeof(int64_t));
+                if (!grown) {
+                    comptime_result_free(res);
+                    type_error(checker, arg->pos,
+                        "out of memory recording comptime argument '%s'",
+                        param_vd->names[0]);
+                    return NULL;
+                }
+                call->comptime_value_args = grown;
+                call->comptime_value_args[call->comptime_value_arg_count++] =
+                    res->value->int_value;
                 comptime_result_free(res);
             }
         }
@@ -3421,6 +3450,27 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                        "call to %s: wrong number of arguments (have %zu, want %zu)",
                        callee_name, arg_count, declared);
             return NULL;
+        }
+    }
+
+    // Comptime value params Task 3: record this call site as a
+    // monomorphization seed once every argument (including each comptime
+    // one, above) has validated — mirrors type_check_record_instantiation's
+    // generic-axis recording (type_check_generic_call) but keyed on int64_t
+    // comptime VALUES instead of concrete Types. Scoped to a plain
+    // identifier callee only: comptime-param functions are direct-call-only
+    // by design (generics/closures/interface methods already reject
+    // `comptime` params outright), and Part B's call-rewiring
+    // (call_codegen.c) currently only rewrites this one call shape — see its
+    // doc comment for the method/package-call-site follow-up this leaves.
+    if (call->comptime_value_arg_count > 0 && call->function &&
+        call->function->type == AST_IDENTIFIER && checked_callee) {
+        int64_t* rec_values = malloc(call->comptime_value_arg_count * sizeof(int64_t));
+        if (rec_values) {
+            memcpy(rec_values, call->comptime_value_args,
+                   call->comptime_value_arg_count * sizeof(int64_t));
+            type_check_record_comptime_instantiation(checker, checked_callee,
+                rec_values, call->comptime_value_arg_count, expr);
         }
     }
 

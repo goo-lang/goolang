@@ -446,6 +446,34 @@ typedef struct GenericInstantiation {
     struct GenericInstantiation* next;
 } GenericInstantiation;
 
+// Comptime value params Task 3: one resolved call-site instantiation for a
+// comptime-parameterized function, appended by
+// type_check_record_comptime_instantiation (type_checker.c) whenever a
+// direct call to a has_comptime_params function type-checks successfully.
+// Mirrors GenericInstantiation (the type-arg axis) but keys on int64_t
+// comptime VALUES instead of concrete Types. Kept as its own list rather
+// than folded into GenericInstantiation: a comptime-param function is never
+// itself generic (Task 2 rejects `comptime` on a type-param'd function), so
+// the two axes never coexist on one FuncDeclNode today, and neither axis's
+// consumer (mono_instantiate's type-substitution walk vs. the comptime
+// worklist in monomorphize.c) has to guard against the other's fields being
+// absent/meaningless. `fn` is the plain-function Variable itself (fn->
+// func_decl_node is the FuncDeclNode the monomorphizer instantiates from —
+// see that field's own doc comment: unlike generic_decl, it is set for
+// EVERY function, not just templates). `values`/`n` are a malloc'd COPY of
+// the call site's CallExprNode.comptime_value_args, independently owned and
+// freed with this list (type_checker_free), same ownership split
+// GenericInstantiation uses for its own `args`. The same {fn,values} tuple
+// may be recorded more than once for repeated calls with identical comptime
+// arguments — dedup is the monomorphizer's job (mirrors GenericInstantiation
+// here too).
+typedef struct ComptimeInstantiation {
+    Variable* fn;
+    int64_t* values;
+    size_t n;
+    struct ComptimeInstantiation* next;
+} ComptimeInstantiation;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -519,6 +547,16 @@ struct TypeChecker {
     // type_check_program returns to know which concrete instantiations of
     // each generic function to emit; torn down in type_checker_free.
     GenericInstantiation* instantiations;
+
+    // Comptime value params Task 3: head of the linked list of resolved
+    // comptime-call instantiations recorded by
+    // type_check_record_comptime_instantiation during call checking. NULL
+    // until the first comptime call type-checks successfully. The
+    // monomorphizer (codegen_monomorphize, monomorphize.c) walks this list
+    // after type_check_program returns, alongside `instantiations` above, to
+    // know which concrete value-specializations of each comptime-param
+    // function to emit; torn down in type_checker_free.
+    ComptimeInstantiation* comptime_instantiations;
 };
 
 // Type creation functions
@@ -675,6 +713,15 @@ int unify_types(Type* param, Type* arg, Type** bindings, size_t n);
 void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
                                      Type** args, size_t n,
                                      struct ASTNode* call_site);
+
+// Comptime value params Task 3: append {fn, values, n} to
+// checker->comptime_instantiations. Takes ownership of `values` (a malloc'd
+// copy the caller must not free or reuse afterward) — mirrors
+// type_check_record_instantiation's ownership contract for `args` above,
+// one axis over.
+void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn,
+                                               int64_t* values, size_t n,
+                                               struct ASTNode* call_site);
 
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);

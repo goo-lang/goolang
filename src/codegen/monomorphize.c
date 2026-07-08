@@ -152,6 +152,74 @@ int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* chec
 #endif
 }
 
+// Comptime value params Task 3: `base` + comptime int values -> mangled
+// instance symbol, e.g. `fill` + {4} -> `fill__n4`. `__n` is a fixed axis
+// marker (not the source parameter's own name) — see the declaration's doc
+// comment (codegen.h) for why. Mirrors codegen_mangle_instance above, one
+// axis over; caller frees.
+char* codegen_mangle_comptime_instance(const char* base, const int64_t* values, size_t n) {
+    if (!base) return NULL;
+    // Worst case per value: "__n" (3) + a sign + 20 digits (INT64_MIN) — 32
+    // bytes is generous headroom.
+    size_t cap = strlen(base) + 1 + n * 32;
+    char* out = malloc(cap);
+    if (!out) return NULL;
+    strcpy(out, base);
+    for (size_t i = 0; i < n; i++) {
+        char tok[40];
+        snprintf(tok, sizeof(tok), "__n%lld", (long long)values[i]);
+        strcat(out, tok);
+    }
+    return out;
+}
+
+// Comptime value params Task 3: stamp one concrete comptime instantiation.
+// See the doc comment at the declaration (codegen.h) for the substitution
+// contract. Mirrors codegen_generate_function_instance above (Task 9's
+// type-arg axis) but installs codegen->active_comptime_values(_n) instead of
+// active_subst — a comptime-param function is never generic (Task 2 rejects
+// `comptime` on a type-param'd function), so `tmpl->type_params` is always
+// NULL and there is no active-type-param stack push to mirror here. The
+// non-LLVM stub build has neither field on CodeGenerator nor a real
+// codegen_generate_function_decl to reuse, so it just reports failure
+// (mirrors codegen_generate_function_instance's own !LLVM_AVAILABLE stub
+// branch above).
+int codegen_generate_comptime_function_instance(CodeGenerator* codegen, TypeChecker* checker,
+                                                 FuncDeclNode* tmpl, const char* sym,
+                                                 const int64_t* values, size_t n) {
+#if !LLVM_AVAILABLE
+    (void)tmpl; (void)sym; (void)values; (void)n;
+    codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !tmpl || !sym) return 0;
+
+    const int64_t* saved_values = codegen->active_comptime_values;
+    size_t saved_n = codegen->active_comptime_value_n;
+    const char* saved_override = codegen->symbol_override;
+    codegen->active_comptime_values = values;
+    codegen->active_comptime_value_n = n;
+    // Forces the emitted LLVM symbol to `sym` (e.g. `fill__n4`) instead of
+    // the template's bare name — see codegen_generate_function_instance's
+    // identical use just above for the full rationale.
+    codegen->symbol_override = sym;
+
+    // Called DIRECTLY (not through codegen_generate_declaration) for the
+    // same reason codegen_generate_function_instance is: the Task 4 /
+    // comptime "skip bare emission" guards living in
+    // codegen_generate_declaration exist to stop the ORDINARY declaration
+    // loop from emitting the template directly, not to block this
+    // deliberate per-instance call.
+    int ok = codegen_generate_function_decl(codegen, checker, (ASTNode*)tmpl);
+
+    codegen->symbol_override = saved_override;
+    codegen->active_comptime_values = saved_values;
+    codegen->active_comptime_value_n = saved_n;
+
+    return ok;
+#endif
+}
+
 // Task 10 (Part A — transitivity): does any of args[0..n) still contain an
 // unbound TYPE_PARAM anywhere in its structure? Recurses through the same
 // Tier-A shapes type_substitute/unify_types do (slice element / pointer
@@ -551,6 +619,52 @@ int codegen_monomorphize(CodeGenerator* codegen, TypeChecker* checker) {
         if (args_contain_typeparam(it->args, it->n)) continue; // symbolic seed — rediscovered concretely below
         if (!mono_instantiate(codegen, checker, &seen, &stamped_count,
                               it->fn, it->args, it->n, 0)) {
+            ok = 0;
+        }
+    }
+
+    // Comptime value params Task 3: a second, independent worklist over
+    // checker->comptime_instantiations — the comptime-value axis alongside
+    // the type-arg axis just above. No nested-call discovery here (contrast
+    // mono_instantiate's recursive walk): a comptime-param function's body
+    // calling ANOTHER comptime-param function with a value derived from its
+    // OWN comptime parameter is not resolved by this task (the template
+    // body-check pass only ever sees Step 3's placeholder for such a nested
+    // argument) — out of scope for the two-test-case brief this task
+    // implements; every seed actually recorded today (type_check_call_expr,
+    // expression_checker.c) carries fully-resolved literal values already.
+    // Shares `seen`/`stamped_count` with the generic worklist above: a
+    // mangled comptime symbol (`fill__n4`) and a mangled generic symbol
+    // (`Id__int64`) live in the same LLVM module namespace, so one dedup set
+    // and one instantiation cap correctly cover both.
+    for (ComptimeInstantiation* it = checker->comptime_instantiations; it && ok; it = it->next) {
+        ASTNode* decl_node = it->fn->func_decl_node;
+        if (!decl_node || decl_node->type != AST_FUNC_DECL) continue; // defensive; always set (declare_function_signature)
+        FuncDeclNode* tmpl = (FuncDeclNode*)decl_node;
+
+        char* sym = codegen_mangle_comptime_instance(it->fn->name, it->values, it->n);
+        if (!sym) { ok = 0; break; }
+        if (LLVMGetNamedFunction(codegen->module, sym) || mono_seen_has(seen, sym)) {
+            free(sym);
+            continue; // already stamped, or already in flight — dedup (same value, 2+ call sites)
+        }
+        if (stamped_count >= MONO_INSTANTIATION_CAP) {
+            codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                          "monomorphization exceeded instantiation cap (possible runaway comptime recursion)");
+            free(sym);
+            ok = 0;
+            break;
+        }
+        stamped_count++;
+
+        MonoSeen* sn = malloc(sizeof(MonoSeen));
+        if (!sn) { free(sym); ok = 0; break; }
+        sn->sym = sym; // ownership moves to the seen list; freed once below
+        sn->next = seen;
+        seen = sn;
+
+        if (!codegen_generate_comptime_function_instance(codegen, checker, tmpl, sym,
+                                                          it->values, it->n)) {
             ok = 0;
         }
     }

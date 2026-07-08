@@ -229,6 +229,21 @@ struct CodeGenerator {
     // active arenas regardless (min_loop_depth 0). Parallel to arena_stack;
     // tail-appended per the no-header-deps convention above.
     int arena_loop_depth[16];
+
+    // Comptime value params Task 3: substitution environment for binding a
+    // comptime-param function's parameter(s) to their concrete int64_t
+    // value(s) during monomorphized codegen — the comptime-value analogue of
+    // active_subst above (Task 8's TYPE_PARAM substitution). Set (and
+    // restored) by codegen_generate_comptime_function_instance
+    // (monomorphize.c) around a single instance's codegen;
+    // active_comptime_values[i] is the value bound to the i-th comptime
+    // parameter ENCOUNTERED IN DECLARATION ORDER (matching
+    // CallExprNode.comptime_value_args' own compact ordering — see that
+    // field's doc comment, ast.h). NULL/0 (the default — see codegen_new)
+    // means "no active comptime instance", which is the state for every
+    // ordinary (non-comptime) function's codegen.
+    const int64_t* active_comptime_values;
+    size_t active_comptime_value_n;
 };
 
 // Function information for code generation
@@ -348,6 +363,35 @@ int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* chec
 // codegen_generate_program: a caller's body emitted in that loop may
 // (Task 10) call a mangled instance symbol, which must already exist.
 int codegen_monomorphize(CodeGenerator* codegen, TypeChecker* checker);
+
+// Comptime value params Task 3: `base` + comptime int values -> mangled
+// instance symbol, e.g. `fill` + {4} -> `fill__n4`. Mirrors
+// codegen_mangle_instance (the type-arg axis) but for int64_t values. `__n`
+// is a fixed axis marker, NOT the source parameter's own name: the mangled
+// symbol must be determined by the function's identity plus these
+// instantiation values alone, independent of what the comptime parameter
+// happened to be called. Returns a malloc'd string; caller frees.
+char* codegen_mangle_comptime_instance(const char* base, const int64_t* values, size_t n);
+
+// Comptime value params Task 3: stamp ONE concrete instantiation of a
+// comptime-parameterized function template `tmpl` under mangled symbol
+// `sym`, with `values[i]` bound to the i-th comptime parameter encountered
+// in declaration order (n == that function's comptime-param count).
+// Installs `values`/`n` on codegen->active_comptime_values(_n) for the
+// duration of the call — codegen_generate_function_decl's parameter
+// mirror-scope loop (function_codegen.c) reads it to bind each comptime
+// parameter's Variable to its concrete value (has_const_int_value /
+// const_int_value / comptime_value), which is what lets an array length
+// depending on it (`[n]int`) and any other compile-time use resolve to THIS
+// instance's literal instead of the template body-check's placeholder.
+// Restored before returning, mirroring codegen_generate_function_instance's
+// active_subst/symbol_override save-restore exactly (comptime values are a
+// second, independent instantiation axis — a comptime-param function is
+// never itself generic, so the two never need to combine on one call).
+// Returns 1 on success, 0 on codegen failure.
+int codegen_generate_comptime_function_instance(CodeGenerator* codegen, TypeChecker* checker,
+                                                FuncDeclNode* tmpl, const char* sym,
+                                                const int64_t* values, size_t n);
 
 // Code generation entry points
 int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNode* program);

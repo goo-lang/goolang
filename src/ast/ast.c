@@ -562,6 +562,11 @@ void ast_node_free(ASTNode* node) {
             // only the array itself is freed here, not the Types it points to.
             CallExprNode* call = (CallExprNode*)node;
             free(call->type_args);
+            // Comptime value params Task 3: comptime_value_args is a plain
+            // int64_t buffer wholly owned by this node (unlike type_args'
+            // ELEMENTS, which alias the type checker's Type objects) — free
+            // it outright, no ownership caveat needed.
+            free(call->comptime_value_args);
             break;
         }
         case AST_SWITCH_STMT: {

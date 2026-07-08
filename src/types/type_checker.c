@@ -46,6 +46,9 @@ TypeChecker* type_checker_new(void) {
     // Function generics Task 6: no recorded generic-call instantiations yet.
     checker->instantiations = NULL;
 
+    // Comptime value params Task 3: no recorded comptime-call instantiations yet.
+    checker->comptime_instantiations = NULL;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -118,6 +121,18 @@ void type_checker_free(TypeChecker* checker) {
         free(inst->args);
         free(inst);
         inst = next;
+    }
+
+    // Comptime value params Task 3: free the comptime-instantiation-record
+    // list itself, mirroring the GenericInstantiation teardown just above —
+    // fn is a Scope-owned Variable* freed by scope_free above; only the
+    // values array and the list nodes are this list's own allocations.
+    ComptimeInstantiation* cinst = checker->comptime_instantiations;
+    while (cinst) {
+        ComptimeInstantiation* next = cinst->next;
+        free(cinst->values);
+        free(cinst);
+        cinst = next;
     }
 
     free(checker->current_file);
@@ -469,6 +484,27 @@ void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
     inst->n = n;
     inst->next = checker->instantiations;
     checker->instantiations = inst;
+}
+
+// Comptime value params Task 3: record one resolved comptime-call
+// instantiation, pushed onto the head of checker->comptime_instantiations
+// for the monomorphizer (codegen_monomorphize, monomorphize.c) to consume
+// after type checking finishes. Mirrors type_check_record_instantiation
+// immediately above, one axis over — see that function's doc comment for
+// the shared ownership/ordering rationale. Sole caller: type_check_call_expr
+// (expression_checker.c), once per call site with comptime_value_arg_count > 0.
+void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn,
+                                               int64_t* values, size_t n,
+                                               struct ASTNode* call_site) {
+    (void)call_site;
+    if (!checker || !fn) { free(values); return; }
+    ComptimeInstantiation* inst = malloc(sizeof(ComptimeInstantiation));
+    if (!inst) { free(values); return; }
+    inst->fn = fn;
+    inst->values = values;
+    inst->n = n;
+    inst->next = checker->comptime_instantiations;
+    checker->comptime_instantiations = inst;
 }
 
 // Innermost-first: a nested function (were that ever legal) would shadow an
@@ -993,6 +1029,31 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
                             // VarDeclNode so a capture of this param can
                             // stamp is_captured for codegen's promotion pass.
                             param_var->decl_node = (struct ASTNode*)param_decl;
+
+                            // Comptime value params Task 3: bind the SAME
+                            // fields `comptime const` sets (type_check_const_decl,
+                            // above) so goo_fold_const_int_ctx resolves this
+                            // param inside the body — e.g. `var buf [n]int`'s
+                            // length, or any other compile-time-constant use.
+                            // This is the TEMPLATE body-check pass (run once,
+                            // before any call site is known): a placeholder
+                            // value is all that's needed here for type
+                            // validity. The monomorphizer
+                            // (codegen_generate_comptime_function_instance,
+                            // monomorphize.c) rebinds this same field set to
+                            // the REAL per-instance value on its own copy of
+                            // this Variable during codegen, which is what
+                            // the emitted array length/constant actually
+                            // uses — this placeholder never reaches codegen.
+                            if (param_decl->is_comptime_param) {
+                                param_var->has_const_int_value = 1;
+                                param_var->const_int_value = 1;
+                                param_var->comptime_value = comptime_value_new(COMPTIME_VALUE_INT);
+                                if (param_var->comptime_value) {
+                                    param_var->comptime_value->int_value = 1;
+                                }
+                            }
+
                             scope_add_variable(checker->current_scope, param_var);
                         }
                     }

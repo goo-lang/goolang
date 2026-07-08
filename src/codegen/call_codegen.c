@@ -1473,6 +1473,37 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         }
         free(concrete_args);
     }
+
+    // Comptime value params Task 3 (call rewiring): a comptime call site
+    // (call->comptime_value_arg_count > 0, stamped by type_check_call_expr
+    // in expression_checker.c only for a plain identifier callee — see that
+    // function's recording-site doc comment) must dispatch to its
+    // MONOMORPHIZED INSTANCE symbol, never the template's own bare name:
+    // codegen_generate_declaration (codegen.c) skips emitting a plain
+    // comptime-param function's template directly, so e.g. `fill` is never
+    // registered in this module under its bare name — only instances like
+    // `fill__n4` are, by codegen_monomorphize's comptime worklist
+    // (monomorphize.c), which runs to completion BEFORE any function body
+    // (including this one) is emitted. Mirrors the generic-call rewiring
+    // immediately above, one axis over: no type_substitute needed here, since
+    // a comptime value doesn't change the callee's TYPE (only which literal
+    // `n` resolves to inside its body) — the signature is just the plain
+    // Variable's own type, unchanged. Mutually exclusive with the generic
+    // block above by construction (a comptime-param function is never
+    // itself generic), so func_val is still NULL here whenever this fires.
+    if (!func_val && call->comptime_value_arg_count > 0 &&
+        call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* cid = (IdentifierNode*)call->function;
+        char* sym = codegen_mangle_comptime_instance(cid->name,
+            call->comptime_value_args, call->comptime_value_arg_count);
+        LLVMValueRef inst = sym ? LLVMGetNamedFunction(codegen->module, sym) : NULL;
+        free(sym);
+        if (inst) {
+            Variable* cvar = type_checker_lookup_variable(checker, cid->name);
+            func_val = value_info_new(cid->name, inst, cvar ? cvar->type : NULL);
+        }
+    }
+
     if (!func_val) {
         // See codegen_resolve_callee's comment: a bare identifier not
         // shadowed by a local variable/parameter resolves to the BARE LLVM

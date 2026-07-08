@@ -3,6 +3,7 @@
 
 #include "token.h"
 #include <stddef.h>
+#include <stdint.h>
 
 // Forward declarations
 typedef struct ASTNode ASTNode;
@@ -551,6 +552,22 @@ typedef struct {
     // (the parser arms building CallExprNode directly) must zero both.
     struct Type** type_args;
     size_t type_arg_count;
+    // Comptime-value-specialized calls: the compile-time int value bound to
+    // each comptime parameter at THIS call site, in parameter order (0 for
+    // non-comptime positions is not stored — index by comptime-param slot).
+    // Set by the type checker (Task 2/3), read by the monomorphizer. malloc'd
+    // call sites must zero both — tail-appended, no-header-deps convention.
+    //
+    // Unlike type_args above, these two fields are NOT zeroed at the
+    // parser.y construction sites (parser.y is off-limits for this task).
+    // Instead type_check_call_expr (expression_checker.c) establishes the
+    // NULL/0 invariant itself, unconditionally, as the first thing it does
+    // with every CallExprNode it visits — every call is type-checked
+    // exactly once before codegen (including the monomorphizer) ever reads
+    // these fields, so that single reset is sufficient; see the comment
+    // there for the full reasoning.
+    int64_t* comptime_value_args;
+    size_t   comptime_value_arg_count;
 } CallExprNode;
 
 // Index expression
