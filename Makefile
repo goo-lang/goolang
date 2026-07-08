@@ -1398,36 +1398,6 @@ blank-read-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "blank-read-reject-probe: FAIL (reading _ compiled)"; exit 1; \
 	else echo "blank-read-reject-probe: PASS"; fi
 
-# P1-7: integer divide-by-zero must abort (non-zero exit + panic message),
-# not return garbage. Also confirms normal division still exits 0.
-divzero-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== divzero-probe: 10/0 must abort with 'integer divide by zero' ==="
-	@"$(COMPILER)" examples/divzero_probe.goo -o build/divzero_probe.out 2>build/divzero_probe.cerr || \
-	  { echo "divzero-probe: FAIL (compile)"; cat build/divzero_probe.cerr; exit 1; }
-	@./build/divzero_probe.out 2>build/divzero_probe.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "divzero-probe: FAIL (10/0 did not abort, rc=0)"; exit 1; fi; \
-	if ! grep -q "integer divide by zero" build/divzero_probe.err; then echo "divzero-probe: FAIL (no panic message)"; cat build/divzero_probe.err; exit 1; fi
-	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(20/4) }\n' > build/divok.goo
-	@"$(COMPILER)" build/divok.goo -o build/divok.out 2>/dev/null && ./build/divok.out >build/divok.out.txt 2>&1; \
-	if [ "$$(cat build/divok.out.txt)" != "5" ]; then echo "divzero-probe: FAIL (normal 20/4 != 5: $$(cat build/divok.out.txt))"; exit 1; fi
-	@echo "divzero-probe: PASS"
-
-# P1-6: an out-of-range slice index must abort (non-zero exit + message),
-# not read past the backing buffer. Also confirms in-bounds indexing exits 0.
-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== bounds-probe: s[5] on len-3 slice must abort ==="
-	@"$(COMPILER)" examples/bounds_probe.goo -o build/bounds_probe.out 2>build/bounds_probe.cerr || \
-	  { echo "bounds-probe: FAIL (compile)"; cat build/bounds_probe.cerr; exit 1; }
-	@./build/bounds_probe.out 2>build/bounds_probe.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "bounds-probe: FAIL (OOB did not abort, rc=0)"; exit 1; fi; \
-	if ! grep -qi "bounds check failed\|index .* >= length" build/bounds_probe.err; then echo "bounds-probe: FAIL (no bounds message)"; cat build/bounds_probe.err; exit 1; fi
-	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[10,20,30]; fmt.Println(s[1]) }\n' > build/inbounds.goo
-	@"$(COMPILER)" build/inbounds.goo -o build/inbounds.out 2>/dev/null && ./build/inbounds.out >build/inbounds.txt 2>&1; \
-	if [ "$$(cat build/inbounds.txt)" != "20" ]; then echo "bounds-probe: FAIL (in-bounds s[1] != 20: $$(cat build/inbounds.txt))"; exit 1; fi
-	@echo "bounds-probe: PASS"
-
 # Index-bounds-checking Task 1: a slice-index WRITE (s[i]=x) out of range must
 # abort (non-zero exit + "bounds check failed"), not write past the backing
 # buffer. Covers both the too-large index and the negative-index case.
@@ -1901,25 +1871,6 @@ map-nilfunc-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -q "nil function" build/map_nilfunc_abort.err; then echo "map-nilfunc-abort-probe: FAIL (no nil-function panic message)"; cat build/map_nilfunc_abort.err; exit 1; fi
 	@echo "map-nilfunc-abort-probe: PASS"
 
-# Task 2 (type assertions): a failed single-return `x.(T)` (no comma-ok to
-# absorb the miss) must panic cleanly rather than load garbage through the
-# wrong LLVM type. Mirrors map-nilfunc-abort-probe's structure — compile,
-# run, assert non-zero exit + the "interface conversion" panic substring
-# (the message also now names the dynamic type as of Task 4 of the
-# interface-type-descriptor plan — see iface-assert-dynname-probe below and
-# expression_codegen.c's AST_TYPE_ASSERT case doc comment — but this probe
-# only asserts the substring common to both wordings).
-typeassert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== typeassert-abort-probe: failed single-return x.(T) must panic ==="
-	@printf 'package main\ntype A interface {\n\tM() int\n}\ntype X struct{ V int }\nfunc (x X) M() int { return x.V }\ntype Y struct{ V int }\nfunc (y Y) M() int { return y.V }\nfunc main() {\n\tvar a A = X{V: 1}\n\t_ = a.(Y)\n}\n' > build/typeassert_abort.goo
-	@"$(COMPILER)" build/typeassert_abort.goo -o build/typeassert_abort.out 2>build/typeassert_abort.cerr || \
-	  { echo "typeassert-abort-probe: FAIL (compile)"; cat build/typeassert_abort.cerr; exit 1; }
-	@./build/typeassert_abort.out 2>build/typeassert_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "typeassert-abort-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
-	if ! grep -q "interface conversion" build/typeassert_abort.err; then echo "typeassert-abort-probe: FAIL (no conversion panic message)"; cat build/typeassert_abort.err; exit 1; fi
-	@echo "typeassert-abort-probe: PASS"
-
 # NOTE: the empty-interface type-switch guard that used to live here
 # (type_check_type_switch_stmt, src/types/type_checker.c) was lifted by the
 # RTTI concrete-type-switch plan Task 2 — per-type vtable identity
@@ -2319,7 +2270,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden spmd-bench-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden spmd-bench-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 

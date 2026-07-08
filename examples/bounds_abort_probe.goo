@@ -1,0 +1,14 @@
+// bounds_abort_probe (P1-6): an out-of-range slice index must abort
+// (non-zero exit + message), not read past the backing buffer. Migrated
+// from the standalone `bounds-probe` Makefile target into the golden suite
+// (Phase 0 Task 1) — see examples/bounds_abort_probe.exit (expected exit
+// code, 134 today — SIGABRT; Task 6 flips panics to exit 2) and
+// .stderr.txt (panic message substring).
+package main
+
+import "fmt"
+
+func main() {
+	s := [10, 20, 30]
+	fmt.Println(s[5])
+}
