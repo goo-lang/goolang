@@ -43,7 +43,8 @@ Makefile probes, no double-touching.
 
 Ordering constraint: **P0.2 lands before P0.3**, so the `!?int` SIGILL reproducer proves the
 verify gate converts a signal crash into a clean diagnostic before the type checker learns
-to reject the construct earlier.
+to reject the construct earlier. *(Premise refuted during implementation — the reproducer
+passes the verifier; see the P0.2 item below.)*
 
 - **P0.2 — LLVMVerifyModule gate before executable emission.** `codegen_emit_executable`
   (the `codegen.c:1592` path) runs `LLVMVerifyModule` before `LLVMTargetMachineEmitToFile`.
