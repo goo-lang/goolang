@@ -495,34 +495,6 @@ strindex-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -qiE "error" build/strindex_reject.err; then echo "strindex-reject-probe: FAIL (no diagnostic)"; cat build/strindex_reject.err; exit 1; fi; \
 	echo "strindex-reject-probe: PASS (rejected rc=$$rc)"
 
-# &T{} supports STRUCT literals only — & on a slice/array/map literal must be
-# a clean type error naming the literal kind, never the generic non-lvalue
-# codegen error or a crash. Guards the expression_checker.c rejection.
-addrlit-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== addrlit-reject-probe: & on a slice literal must reject ==="
-	@printf 'package main\nfunc main(){ p := &[]int{1, 2}; _ = p }\n' > build/addrlit_reject.goo
-	@rm -f build/addrlit_reject
-	@$(COMPILER) -o build/addrlit_reject build/addrlit_reject.goo > build/addrlit_reject.out 2> build/addrlit_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "addrlit-reject-probe: FAIL (compiled rc=0 — &slice-literal silently accepted)"; exit 1; fi; \
-	if [ -x build/addrlit_reject ]; then echo "addrlit-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "address of a slice literal" build/addrlit_reject.err; then echo "addrlit-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/addrlit_reject.err; exit 1; fi; \
-	echo "addrlit-reject-probe: PASS (rejected rc=$$rc)"
-
-# !x is boolean-only — !5 must be a clean type error (the TOKEN_NOT typecheck
-# arm), not a parse error or a crash. Guards the BANG unary_expr production's
-# routing into the boolean-NOT semantic.
-boolnot-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== boolnot-reject-probe: ! on a non-bool must reject ==="
-	@printf 'package main\nfunc main(){ x := !5; _ = x }\n' > build/boolnot_reject.goo
-	@rm -f build/boolnot_reject
-	@$(COMPILER) -o build/boolnot_reject build/boolnot_reject.goo > build/boolnot_reject.out 2> build/boolnot_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "boolnot-reject-probe: FAIL (compiled rc=0 — !5 silently accepted)"; exit 1; fi; \
-	if [ -x build/boolnot_reject ]; then echo "boolnot-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "Logical not requires boolean" build/boolnot_reject.err; then echo "boolnot-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/boolnot_reject.err; exit 1; fi; \
-	echo "boolnot-reject-probe: PASS (rejected rc=$$rc)"
-
 # Select comms are now type-checked — sending the wrong element type must be
 # a clean compile error, not silent slot-machinery corruption at runtime.
 selectsend-reject-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -601,30 +573,10 @@ floatint-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	out="$$(./build/fi_int2float)"; if [ "$$out" != "3 1 2.5" ]; then echo "floatint-reject-probe: FAIL (int->float positive control output '$$out' != '3 1 2.5')"; exit 1; fi
 	@echo "floatint-reject-probe: PASS (all four float->int shapes rejected; int->float still permitted)"
 
-# Task 2 float-context exclusion, negative gate: an all-int `/` subtree
-# meeting a float operand in an arithmetic context must be REJECTED, not
-# silently computed. Go legally computes `(1/2)*g` as 0 (constant-folds the
-# int division to 0 BEFORE promoting to float), which a stamp-and-compute
-# checker (no constant-folding pass) cannot reproduce — rejecting beats
-# silently computing the wrong value (task-2 review adjudication; see the
-# is_untyped_int_rooted for_float_context doc comment in
-# expression_checker.c and examples/constdiv_reject.goo). This was
-# previously verified only by hand; this probe locks it in against
-# refactors.
-constdiv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== constdiv-reject-probe: (1/2)*g float-context division must reject ==="
-	@rm -f build/constdiv_reject
-	@$(COMPILER) -o build/constdiv_reject examples/constdiv_reject.goo > build/constdiv_reject.out 2> build/constdiv_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "constdiv-reject-probe: FAIL (compiled rc=0 — (1/2)*g silently accepted)"; exit 1; fi; \
-	if [ -x build/constdiv_reject ]; then echo "constdiv-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if grep -qiE "Module verification failed|LLVM ERROR" build/constdiv_reject.err; then echo "constdiv-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constdiv_reject.err; exit 1; fi; \
-	if ! grep -q "no implicit int/float conversion" build/constdiv_reject.err; then echo "constdiv-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constdiv_reject.err; exit 1; fi; \
-	echo "constdiv-reject-probe: PASS (rejected rc=$$rc)"
-
 # Same float-context exclusion, modulo shape: `(1 % 2) * g`. Go legally
 # computes this as 2.5 (constant-folds `1%2` to the int 1 before promoting);
-# Goo rejects for the same reason as constdiv-reject-probe above. See
+# Goo rejects for the same reason the migrated constdiv reject fixture does
+# (tests/golden/reject/constdiv-reject-probe.{goo,err.txt}). See
 # examples/constmod_reject.goo.
 constmod-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
@@ -1952,28 +1904,6 @@ if-init-scope-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "if-init-scope-reject-probe: FAIL (x leaked past if)"; exit 1; \
 	else echo "if-init-scope-reject-probe: PASS"; fi
 
-# Task 3 (func-values): a func VALUE with a mismatched signature must be
-# REJECTED at compile time (Go: "cannot use two (value of type func(int,
-# int) int) as func(int) int value in assignment"). Task 1 already made
-# TYPE_FUNCTION structurally comparable (type_equals/type_compatible), so
-# the mismatch itself was already rejected before this task — this probe
-# locks in the DIAGNOSTIC WORDING: type_function() used to name every
-# signature the literal "func" ("Cannot assign func to func" regardless of
-# either side's actual shape), and now renders the full signature. Goo's
-# "int" is 64-bit (type_checker.c: "Default int (Go: int is 64-bit here)"),
-# so the rendered param/return name is "int64" — grepping the actual
-# rendering, not Go's own wording (same idiom as constconv-reject-probe).
-funcsig-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== funcsig-reject-probe: func(int64,int64)int64 assigned to func(int64)int64 var must reject ==="
-	@rm -f build/funcsig_reject
-	@$(COMPILER) -o build/funcsig_reject examples/funcsig_reject.goo > build/funcsig_reject.out 2> build/funcsig_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "funcsig-reject-probe: FAIL (compiled rc=0 — signature mismatch silently accepted)"; exit 1; fi; \
-	if [ -x build/funcsig_reject ]; then echo "funcsig-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if grep -qiE "Module verification failed|LLVM ERROR" build/funcsig_reject.err; then echo "funcsig-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/funcsig_reject.err; exit 1; fi; \
-	if ! grep -q "func(int64, int64) int64" build/funcsig_reject.err; then echo "funcsig-reject-probe: FAIL (wrong/missing diagnostic — type_to_string regressed to bare 'func')"; cat build/funcsig_reject.err; exit 1; fi; \
-	echo "funcsig-reject-probe: PASS (rejected rc=$$rc)"
-
 # Closures Task 2 fix: capturing a LOOP VARIABLE in a closure must be a clean
 # checker error. Modern Go (1.22+) ACCEPTS examples/loopcapture_reject.goo and
 # prints 3 (per-iteration loopvar semantics); Goo's one-slot-per-declaration
@@ -2270,7 +2200,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden spmd-bench-probe
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin selectsend-reject-probe globalcall-init-probe floatint-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden test-golden-reject spmd-bench-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2874,20 +2804,6 @@ iface-map-key-uncomparable-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -qi "comparing uncomparable" build/imk_unc.err; then echo "iface-map-key-uncomparable-probe: FAIL (wrong message)"; cat build/imk_unc.err; exit 1; fi
 	@echo "iface-map-key-uncomparable-probe: PASS"
 
-# Trailing commas in struct/map literals are now accepted (see
-# struct_lit / map_lit in parser.y), but a BARE comma with no preceding
-# entry (`{,}`) must stay a syntax error — the COMMA arms require a
-# non-empty entries/inits list before the trailing comma.
-trailingcomma-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== trailingcomma-reject-probe: bare comma literal must reject ==="
-	@printf 'package main\nfunc main(){\n\tm := map[string]int{,}\n\t_ = m\n}\n' > build/tc_reject.goo
-	@if $(COMPILER) -o build/tc_reject build/tc_reject.goo 2>build/tc_reject.err; then \
-	  echo "trailingcomma-reject-probe: FAIL (bare-comma literal compiled)"; exit 1; \
-	else \
-	  echo "trailingcomma-reject-probe: PASS (rejected)"; \
-	fi
-
 # Task 2 (stdlib unblocker): `[]T(expr)` is only supported for []byte(string)
 # in v1 (expression_checker.c's AST_SLICE_CONVERSION case) — any other
 # element type (`[]int("x")`) must reject with the v1-scoped diagnostic,
@@ -3094,10 +3010,22 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden test-golden-reject
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
+
+# P0.9: data-driven compile-REJECT golden suite — the negative-space sibling
+# of test-golden. Every tests/golden/reject/<name>.goo must fail to compile;
+# see scripts/run_golden_reject.sh's header for the exact per-fixture
+# assertions (exit nonzero, no binary emitted, stderr contains the sidecar's
+# .err.txt substring). Five Makefile reject-probes (addrlit, boolnot,
+# constdiv, funcsig, trailingcomma) migrated here as the pilot fixtures;
+# later tasks add more by dropping a .goo + .err.txt pair in, no Makefile
+# changes required.
+test-golden-reject: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== test-golden-reject: data-driven compile-reject golden suite ==="
+	@COMPILER="$(COMPILER)" bash scripts/run_golden_reject.sh
 
 # Switch-statement probe: compile + run examples/switch_probe.goo and diff
 # stdout against expected.txt (m10-probe pattern). Covers first/middle case
