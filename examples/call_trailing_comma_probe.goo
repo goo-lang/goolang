@@ -1,0 +1,77 @@
+// call_trailing_comma_probe (P1.3, gofmt-syntax Task 4): trailing comma in
+// call-argument lists. gofmt's canonical multi-line call shape
+// (`f(\n    a,\n    b,\n)`) was a parse error before this task; this probe
+// exercises the new COMMA-before-RPAREN call arms: a free-function call
+// broken across lines (the gofmt shape), the same trailing comma on a
+// single line, a method call (through selector_expr, no dedicated arm
+// needed), and both make() forms (single type arg, and type arg + size).
+// Spread (`f(xs...,)`) is deliberately untouched/still a parse error — see
+// call-args-spread-trailing-comma-reject-probe in tests/golden/reject/.
+//
+// Expected output produced by `go run` on the equivalent Go program (real
+// Go's own Arguments grammar already permits an optional trailing comma
+// here, including after make()'s type argument — verified directly with
+// `go run`; note plain `gofmt` would collapse the single-line trailing
+// comma away, but the unformatted source below is still valid input):
+//
+//   package main
+//   import "fmt"
+//   func add(a int, b int) int {
+//       return a + b
+//   }
+//   type Adder struct {
+//       Base int
+//   }
+//   func (a Adder) Sum(x int, y int) int {
+//       return a.Base + x + y
+//   }
+//   func main() {
+//       fmt.Println(add(
+//           4,
+//           5,
+//       ))
+//       fmt.Println(add(1, 2,))
+//       ad := Adder{Base: 10}
+//       fmt.Println(ad.Sum(
+//           1,
+//           2,
+//       ))
+//       m := make(map[string]int,)
+//       m["a"] = 1
+//       fmt.Println(m["a"])
+//       s := make([]int, 3,)
+//       fmt.Println(len(s))
+//   }
+package main
+
+import "fmt"
+
+func add(a int, b int) int {
+	return a + b
+}
+
+type Adder struct {
+	Base int
+}
+
+func (a Adder) Sum(x int, y int) int {
+	return a.Base + x + y
+}
+
+func main() {
+	fmt.Println(add(
+		4,
+		5,
+	))
+	fmt.Println(add(1, 2,))
+	ad := Adder{Base: 10}
+	fmt.Println(ad.Sum(
+		1,
+		2,
+	))
+	m := make(map[string]int,)
+	m["a"] = 1
+	fmt.Println(m["a"])
+	s := make([]int, 3,)
+	fmt.Println(len(s))
+}

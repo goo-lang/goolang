@@ -2037,6 +2037,33 @@ call_expr:
         call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
+    // Task 4 (trailing comma in call args): gofmt's canonical multi-line
+    // call shape (`f(\n    a,\n    b,\n)`) needs this arm — after a COMMA,
+    // RPAREN can immediately follow. LR(1)-clean by the same argument as
+    // the composite-literal COMMA-before-RBRACE arms (workarounds.md §5):
+    // after `expression_list COMMA`, lookahead RPAREN reduces here, any
+    // expression-starting token instead shifts into one more element via
+    // expression_list's own COMMA-chaining production. Deliberately NOT
+    // folded into expression_list itself — that nonterminal is shared with
+    // non-call contexts (return, tuple assignment) where a trailing comma
+    // must stay illegal (spec open point 2). This arm also covers method
+    // calls for free: `obj.Method(a, b,)` reaches here because
+    // selector_expr reduces to primary_expr before LPAREN is seen.
+    | primary_expr LPAREN expression_list COMMA RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        call->args = $3;
+        call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
+        $$ = (ASTNode*)call;
+    }
     // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
     // immediately above; only has_spread differs. Spread is grammatically
     // FINAL-ONLY — ELLIPSIS sits directly before RPAREN, so it can only ever
@@ -2095,6 +2122,26 @@ call_expr:
         call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
+    // Task 4: trailing comma after make()'s sole type argument, e.g.
+    // `make(\n    map[string]int,\n)`. `make` is an ordinary call target
+    // (not a keyword) so it gets the same gofmt-shape tolerance as any
+    // other call; real Go's own Arguments grammar allows this too
+    // (verified with `go run` on `make(map[string]int,)`).
+    | primary_expr LPAREN type_call_arg COMMA RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        call->args = $3;
+        call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
+        $$ = (ASTNode*)call;
+    }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
         CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
         call->base.type = AST_CALL_EXPR;
@@ -2109,6 +2156,25 @@ call_expr:
         // a freshly malloc'd node whose ->next is NULL, so this direct
         // assignment does not drop a pre-existing tail — no ast_add_child
         // walk is needed.
+        $3->next = $5;
+        call->args = $3;
+        call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
+        $$ = (ASTNode*)call;
+    }
+    // Task 4: trailing comma after make()'s two-arg form, e.g.
+    // `make(\n    []int,\n    3,\n)`. Same splice as the arm above, plus
+    // the trailing COMMA before RPAREN.
+    | primary_expr LPAREN type_call_arg COMMA expression_list COMMA RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
         $3->next = $5;
         call->args = $3;
         call->has_spread = 0;
