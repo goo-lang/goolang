@@ -452,11 +452,28 @@ typedef struct ComptimeTypeContext {
 // head at TypeChecker.instantiations (below); the same {fn,args} tuple may be
 // recorded more than once for repeated calls with the same type arguments —
 // deduplication is the monomorphizer's job (Task 9), not this recorder's.
+//
+// Comptime+generic composition (sub-project 2): `comptime_values`/
+// `comptime_value_n` carry the comptime axis for a function that declares
+// BOTH `[T]` type params and `comptime` value params — a composed call's
+// SINGLE seed on this list carries both payloads, keyed together (see
+// type_check_generic_call, expression_checker.c). A generic-only function
+// (no comptime params) always records `comptime_value_n == 0`,
+// `comptime_values == NULL` here — the plain ComptimeInstantiation list
+// below is untouched by generic calls and continues to serve ONLY
+// non-generic comptime-param functions (see that struct's doc comment for
+// which functions land on which list). Like `args` above, `comptime_values`
+// is a malloc'd COPY the caller hands off ownership of; freed alongside
+// `args` in type_checker_free, same non-double-free reasoning. Appended at
+// the STRUCT TAIL per the no-header-deps convention (ast.h's note) — a
+// mid-list field insertion would shift every field after it.
 typedef struct GenericInstantiation {
     Variable* fn;
     Type** args;
     size_t n;
     struct GenericInstantiation* next;
+    int64_t* comptime_values;
+    size_t comptime_value_n;
 } GenericInstantiation;
 
 // Comptime value params Task 3: one resolved call-site instantiation for a
@@ -464,22 +481,30 @@ typedef struct GenericInstantiation {
 // type_check_record_comptime_instantiation (type_checker.c) whenever a
 // direct call to a has_comptime_params function type-checks successfully.
 // Mirrors GenericInstantiation (the type-arg axis) but keys on int64_t
-// comptime VALUES instead of concrete Types. Kept as its own list rather
-// than folded into GenericInstantiation: a comptime-param function is never
-// itself generic (Task 2 rejects `comptime` on a type-param'd function), so
-// the two axes never coexist on one FuncDeclNode today, and neither axis's
-// consumer (mono_instantiate's type-substitution walk vs. the comptime
-// worklist in monomorphize.c) has to guard against the other's fields being
-// absent/meaningless. `fn` is the plain-function Variable itself (fn->
-// func_decl_node is the FuncDeclNode the monomorphizer instantiates from —
-// see that field's own doc comment: unlike generic_decl, it is set for
-// EVERY function, not just templates). `values`/`n` are a malloc'd COPY of
-// the call site's CallExprNode.comptime_value_args, independently owned and
-// freed with this list (type_checker_free), same ownership split
-// GenericInstantiation uses for its own `args`. The same {fn,values} tuple
-// may be recorded more than once for repeated calls with identical comptime
-// arguments — dedup is the monomorphizer's job (mirrors GenericInstantiation
-// here too).
+// comptime VALUES instead of concrete Types. Kept as its own list for a
+// PLAIN (non-generic) comptime-parameterized function. UPDATE (sub-project 2,
+// comptime+generic composition): the two axes CAN now coexist on one
+// FuncDeclNode (`func kernel[T any](comptime n int, data T)`), but a
+// composed function's instantiations never land here — they're recorded on
+// GenericInstantiation's comptime_values/comptime_value_n tail fields
+// instead (type_check_generic_call, expression_checker.c), since a call
+// through a generic Variable is dispatched there entirely, never reaching
+// this list's sole recording site (type_check_call_expr, gated on a plain
+// non-generic identifier callee). So the split is still exact — every
+// FuncDeclNode's instantiations live on exactly one of the two lists, keyed
+// on whether it declares `[T]` type params — and neither axis's consumer
+// (mono_instantiate's type-substitution walk vs. the comptime worklist in
+// monomorphize.c) has to guard against the other's fields being
+// absent/meaningless for the entries it actually walks. `fn` is the
+// plain-function Variable itself (fn->func_decl_node is the FuncDeclNode the
+// monomorphizer instantiates from — see that field's own doc comment: unlike
+// generic_decl, it is set for EVERY function, not just templates). `values`/
+// `n` are a malloc'd COPY of the call site's CallExprNode.comptime_value_args,
+// independently owned and freed with this list (type_checker_free), same
+// ownership split GenericInstantiation uses for its own `args`. The same
+// {fn,values} tuple may be recorded more than once for repeated calls with
+// identical comptime arguments — dedup is the monomorphizer's job (mirrors
+// GenericInstantiation here too).
 typedef struct ComptimeInstantiation {
     Variable* fn;
     int64_t* values;
@@ -718,13 +743,30 @@ Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name);
 Type* type_substitute(Type* t, Type** bindings, size_t n);
 int unify_types(Type* param, Type* arg, Type** bindings, size_t n);
 
+// Fix round 7 (I-r6), exposed non-static for sub-project 2: does `t` contain
+// a TYPE_PARAM anywhere in its structure (Tier-A recursion: slice/pointer/
+// array/nullable/function)? Originally private to expression_checker.c's
+// generic-call inference; declare_function_signature (type_checker.c) now
+// reuses it for the `comptime n T` declaration wall (a comptime parameter
+// typed by, or containing, a type parameter is rejected) instead of growing
+// a near-duplicate walker in a second file.
+int type_contains_type_param(const Type* t);
+
 // Function generics Task 6: append {fn, args, n} to checker->instantiations.
 // Takes ownership of `args` (the caller's calloc'd bindings array — do not
 // free or reuse it after this call). `call_site` is the call expression that
 // produced this instantiation; kept for a possible future per-callsite
 // diagnostic (not read by Task 9's monomorphizer, which only needs fn/args/n).
+//
+// Comptime+generic composition (sub-project 2): `comptime_values`/
+// `comptime_value_n` extend this same recorder to carry the comptime axis
+// for a composed call (see GenericInstantiation's doc comment above) —
+// takes ownership of `comptime_values` exactly like `args`. A generic-only
+// call passes NULL/0, matching GenericInstantiation's 0/NULL default for a
+// generic-only seed.
 void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
                                      Type** args, size_t n,
+                                     int64_t* comptime_values, size_t comptime_value_n,
                                      struct ASTNode* call_site);
 
 // Comptime value params Task 3: append {fn, values, n} to

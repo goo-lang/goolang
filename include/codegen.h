@@ -336,6 +336,20 @@ char* codegen_type_mangle_token(const Type* t);
 // `Map` + {int, string} -> `Map__int__string`.
 char* codegen_mangle_instance(const char* base, Type* const* args, size_t n);
 
+// Comptime+generic composition (sub-project 2), decision 3: `base` + type
+// args + comptime int values -> `base__tok0__tok1..__n<v0>__n<v1>...` — types
+// first, then `__n<value>` segments, e.g. `kernel` + {int64} + {4} ->
+// `kernel__int64__n4`. Pure composition of the two existing schemes (each
+// reused verbatim as a segment, in the order the spec fixes: types before
+// values), not a third mangling scheme — collision-safe because a single
+// function's type-arity and value-arity are both fixed by its declaration,
+// so segment counts are unambiguous, and distinct base names already share
+// one symbol namespace unambiguously (codegen_monomorphize below). Returns a
+// malloc'd string; caller frees. `nv == 0` degenerates to
+// codegen_mangle_instance's own output byte-for-byte (no `__n` suffix).
+char* codegen_mangle_combined_instance(const char* base, Type* const* targs, size_t nt,
+                                        const int64_t* values, size_t nv);
+
 // Function-generics Task 9: stamp ONE concrete instantiation of a generic
 // function template `tmpl` under mangled symbol `sym`, with `args[i]` bound
 // to `tmpl`'s type-param index i (n == the template's type-param count).
@@ -349,9 +363,25 @@ char* codegen_mangle_instance(const char* base, Type* const* args, size_t n);
 // codegen_generate_function_decl, which this calls directly — so it is NOT
 // blocked by the Task 4 "skip generic template" guard living in
 // codegen_generate_declaration).
+//
+// Comptime+generic composition (sub-project 2), decision 4: `comptime_values`/
+// `comptime_value_n` extend this SAME generator (not a separate one) to also
+// install codegen->active_comptime_values(_n) — mirroring
+// codegen_generate_comptime_function_instance's own install below — for the
+// duration of the call, alongside active_subst/symbol_override. Both axes'
+// fields are saved and restored UNCONDITIONALLY, regardless of whether this
+// particular call is generic-only (comptime_value_n == 0, NULL) or composed:
+// a generic-only call installs NULL/0, which is the value these fields
+// already carry between top-level instantiations (see codegen_new / the
+// driver's non-overlapping call sequencing), so the generic-only path is
+// byte-for-byte unchanged. Once installed, the existing comptime mirror-scope
+// rebinding (function_codegen.c) and `[n]T` re-derivation
+// (function_codegen.c, composite_codegen.c) — both gated purely on
+// active_comptime_value_n > 0 — pick the values up with no further changes.
 int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* checker,
                                        FuncDeclNode* tmpl, const char* sym,
-                                       Type** args, size_t n);
+                                       Type** args, size_t n,
+                                       const int64_t* comptime_values, size_t comptime_value_n);
 // Function-generics Task 9: worklist over checker->instantiations (Task 6) —
 // emits one specialized LLVM function per unique {template, args} tuple
 // recorded during type-checking, skipping any symbol already present in the
@@ -389,6 +419,14 @@ char* codegen_mangle_comptime_instance(const char* base, const int64_t* values, 
 // second, independent instantiation axis — a comptime-param function is
 // never itself generic, so the two never need to combine on one call).
 // Returns 1 on success, 0 on codegen failure.
+//
+// Comptime+generic composition (sub-project 2): this generator remains for
+// PLAIN (non-generic) comptime-param functions only — still true post-
+// composition, since a composed function IS generic (is_generic) and its
+// instantiations are recorded on GenericInstantiation, never
+// ComptimeInstantiation (see that struct's doc comment, types.h). A composed
+// instance is stamped by codegen_generate_function_instance's own extended
+// comptime payload above instead.
 int codegen_generate_comptime_function_instance(CodeGenerator* codegen, TypeChecker* checker,
                                                 FuncDeclNode* tmpl, const char* sym,
                                                 const int64_t* values, size_t n);

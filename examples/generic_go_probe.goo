@@ -1,0 +1,37 @@
+// generic_go_probe: `go GenericFn(...)` — a GENERIC-ONLY (no comptime axis)
+// function as the direct target of a go statement. This is NEW behavior from
+// the comptime-generic composition branch: before it, statement_codegen's
+// go-stmt rewiring had no generic arm at all, so `go send(...)` on a generic
+// function failed with "Undefined identifier 'send'" even though the same
+// call worked fine as an ordinary call expression. The composition work
+// turned the go-stmt dispatch into a genuine three-way (combined /
+// generic-only / comptime-only); this probe pins the generic-only middle arm,
+// which the composed golden (comptime_generic_compose_probe) never exercises
+// on its own.
+//
+// Two distinct instances (T=int64, T=float64) are dispatched via `go`, each
+// identified by a concrete int64 tag it sends back — `tag` rather than a
+// T-typed value because a `chan T` parameter cannot infer T at a call site
+// (pre-existing unify_types gap, out of scope) and printing a T-typed value
+// inside a template body is likewise unsupported. The received sum (10+20=30)
+// is order-independent on purpose: the scheduler interleaves the goroutines
+// nondeterministically, but the sum is deterministic — and a misdispatch
+// (wrong instance symbol) is a link failure, not a wrong number.
+package main
+
+import "fmt"
+
+func send[T any](x T, tag int64, ch chan int64) {
+	y := x
+	_ = y
+	ch <- tag
+}
+
+func main() {
+	ch := make(chan int64, 2)
+	go send(int64(7), 10, ch)
+	go send(2.5, 20, ch)
+	a := <-ch
+	b := <-ch
+	fmt.Println(a + b)
+}

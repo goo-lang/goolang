@@ -1594,8 +1594,12 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "method-declaration" "not yet supported on methods"; \
 	printf 'package main\nimport "cpkg"\nfunc main() { _ = cpkg.Fill(2, 1) }\n' > build/cvm.goo; \
 	run_case "package-declaration" "comptime parameters on package functions are not yet supported"; \
-	printf 'package main\nfunc bad[T any](comptime n int, x T) T { return x }\nfunc main() { }\n' > build/cvm.goo; \
-	run_case "generic-declaration" "not yet supported together with type parameters"; \
+	printf 'package main\nfunc bad[T any](comptime n T) T { return n }\nfunc main() { }\n' > build/cvm.goo; \
+	run_case "composed-tparam-comptime-type" "comptime parameter type cannot be a type parameter"; \
+	printf 'package main\nfunc kernel[T any](comptime n int, seed T) T { return seed }\nfunc main() { x := 5; _ = kernel(x, 10) }\n' > build/cvm.goo; \
+	run_case "composed-runtime-comptime-arg" "must be a compile-time constant"; \
+	printf 'package main\nfunc kernel[T any](comptime n int, seed T) T { return seed }\nfunc main() { f := kernel; _ = f }\n' > build/cvm.goo; \
+	run_case "composed-fn-as-value" "cannot be used as a value"; \
 	printf 'package main\nfunc main() {\n    f := func(comptime n int, s int) int { return s }\n    _ = f\n}\n' > build/cvm.goo; \
 	run_case "closure-declaration" "only supported on named functions"; \
 	printf 'package main\nfunc fill(comptime n int, s int) int {\n    var buf [n]int\n    _ = buf\n    return s\n}\nfunc main() { _ = fill(-1, 1) }\n' > build/cvm.goo; \
@@ -1610,7 +1614,80 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "var-init-mismatch-instance" "length array in comptime instance"; \
 	printf 'package main\nfunc Id[T any](x T) T { return x }\nfunc f(comptime n int, s int) int {\n    var a [n]int\n    a[0] = s\n    b := Id(a)\n    return b[0]\n}\nfunc main() { _ = f(4, 5) }\n' > build/cvm.goo; \
 	run_case "generic-typeparam-comptime-array" "cannot bind a generic type parameter"; \
-	echo "comptime-value-reject-matrix: PASS (16/16 walls hold)"
+	echo "comptime-value-reject-matrix: PASS (18/18 walls hold)"
+
+# Composed generic+comptime IR pin (sub-project 2, Task 4 step 4): the golden
+# probe's stdout diff alone can't tell "one specialized instance reused
+# correctly" from "three instances that happen to compute the same numbers",
+# so this greps the emitted LLVM IR directly for the three distinct combined
+# mangled symbols the design doc's mangling scheme predicts
+# (`base__<typetok>...__n<value>...`, monomorphize.c) — kernel__int64__n4,
+# kernel__int64__n2, kernel__float64__n4 — each defined EXACTLY ONCE despite
+# multiple call sites per tuple (dedup: kernel__int64__n4 alone is called
+# from three call sites in the probe — two direct, one inside the `go`
+# wrapper — and must still have only one `define`). Distinct alloca array
+# sizes/types per instance are also pinned as the codegen-level proof that
+# `[n]T` actually re-derived a real per-instance length and element type,
+# not a shared template placeholder.
+#
+# The per-symbol exactly-once greps catch collapse (count 0) and misnaming,
+# but NOT duplication: if the monomorphizer's dedup guard
+# (LLVMGetNamedFunction / mono_seen_has) were bypassed, LLVM auto-uniquifies
+# the second insertion to `@"kernel__int64__n4.1"` — the base symbol still
+# counts exactly 1, so the per-symbol check passes. The TOTAL-count assertion
+# (exactly 3 `kernel__`-prefixed defines) closes that hole: a `.1`-suffixed
+# duplicate bumps the total to 4 and FAILs.
+#
+# Call-EDGE greps pin the call-site -> instance WIRING, not just instance
+# generation: without them, a cross-wired dispatch (main's `kernel(2, ...)`
+# call linking to `__n4`) would pass every other gate — the defines all
+# exist, and the probe's stdout happens to be dispatch-insensitive for some
+# shapes. Three edges are pinned: main's two direct literal-argument calls
+# (the comptime value is baked into the FIRST argument, so `(i64 4, i64 10)`
+# vs `(i64 2, i64 100)` ties each call site to its exact instance), and at
+# least one register-argument edge to `__n2` — only the defer trampoline and
+# the go-thunk call with loaded (register) first arguments, so `\(i64 %` after
+# the symbol matches exactly those paths without pinning the volatile
+# register names themselves.
+comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== comptime-generic-compose-ir-pin: composed instances are real and deduped ==="
+	@"$(COMPILER)" --emit-llvm examples/comptime_generic_compose_probe.goo -o build/cgc_ir >build/cgc_ir.err 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "comptime-generic-compose-ir-pin: FAIL (compile failed)"; cat build/cgc_ir.err; exit 1; fi
+	@for sym in kernel__int64__n4 kernel__int64__n2 kernel__float64__n4; do \
+	  n=$$(grep -cE "^define[^{]*@\"?$${sym}\"?\(" build/cgc_ir.ll); \
+	  if [ "$$n" != "1" ]; then echo "comptime-generic-compose-ir-pin: FAIL ($$sym: expected exactly 1 define, found $$n)"; exit 1; fi; \
+	  echo "  PASS $$sym defined exactly once"; \
+	done
+	@total=$$(grep -cE "^define[^{]*@\"?kernel__" build/cgc_ir.ll); \
+	  if [ "$$total" != "3" ]; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (expected exactly 3 kernel__ instance defines total, found $$total — a uniquified duplicate escaped dedup)"; \
+	    grep -nE "^define[^{]*@\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS exactly 3 kernel__ instance defines total (no uniquified duplicates)"
+	@if ! grep -qE "call i64 @\"?kernel__int64__n4\"?\(i64 4, i64 10\)" build/cgc_ir.ll; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (missing call edge: kernel(4, 10) -> kernel__int64__n4)"; \
+	    grep -nE "call [a-z0-9]+ @\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS call edge kernel(4, 10) -> kernel__int64__n4"
+	@if ! grep -qE "call i64 @\"?kernel__int64__n2\"?\(i64 2, i64 100\)" build/cgc_ir.ll; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (missing call edge: kernel(2, 100) -> kernel__int64__n2)"; \
+	    grep -nE "call [a-z0-9]+ @\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS call edge kernel(2, 100) -> kernel__int64__n2"
+	@if ! grep -qE "call i64 @\"?kernel__int64__n2\"?\(i64 %" build/cgc_ir.ll; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (missing defer/go-thunk register-arg call edge to kernel__int64__n2)"; \
+	    grep -nE "call [a-z0-9]+ @\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS defer/go-thunk register-arg call edge -> kernel__int64__n2"
+	@n4_alloca=$$(awk '/^define i64 @"?kernel__int64__n4"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[4 x i64\]"); \
+	  n2_alloca=$$(awk '/^define i64 @"?kernel__int64__n2"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[2 x i64\]"); \
+	  f4_alloca=$$(awk '/^define double @"?kernel__float64__n4"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[4 x double\]"); \
+	  if [ "$$n4_alloca" -lt 1 ] || [ "$$n2_alloca" -lt 1 ] || [ "$$f4_alloca" -lt 1 ]; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (distinct per-instance alloca sizes/types not found: n4=$$n4_alloca n2=$$n2_alloca f4=$$f4_alloca)"; exit 1; \
+	  fi; \
+	  echo "  PASS distinct alloca sizes/types ([4 x i64], [2 x i64], [4 x double])"
+	@echo "comptime-generic-compose-ir-pin: PASS"
 
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
@@ -2078,7 +2155,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2902,7 +2979,7 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix test-golden
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin test-golden
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
