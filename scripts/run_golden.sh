@@ -64,7 +64,16 @@ for goo in "$EX_DIR"/*.goo; do
 
     exitfile="${goo%.goo}.exit"
     want_rc=0
-    [ -f "$exitfile" ] && want_rc="$(cat "$exitfile")"
+    if [ -f "$exitfile" ]; then
+        # Strip all whitespace (stray spaces/CRLF would make `[ -ne ]` error
+        # out and silently skip this check) and demand pure digits.
+        want_rc="$(tr -d '[:space:]' < "$exitfile")"
+        case "$want_rc" in
+            ''|*[!0-9]*)
+                echo "FAIL  $base (malformed .exit sidecar: '$want_rc')"
+                fail=$((fail+1)); failed+=("$base"); continue;;
+        esac
+    fi
     if [ "$rc" -ne "$want_rc" ]; then
         echo "FAIL  $base (exit code: got $rc, want $want_rc)"
         fail=$((fail+1)); failed+=("$base"); continue
