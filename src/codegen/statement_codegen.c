@@ -1716,22 +1716,77 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 
     CallExprNode* call = (CallExprNode*)go_stmt->call;
 
-    // Comptime value params Task 3 (fix round 2): `go fill(4, 10)` must
-    // dispatch to the monomorphized instance symbol (`fill__n4`), never the
-    // bare name — a plain comptime-param function's template is never
-    // emitted under its bare name, so codegen_resolve_callee below would
-    // fail with a misleading "Undefined identifier 'fill'". This mirrors
-    // codegen_generate_call_expr's rewiring block (call_codegen.c) exactly;
-    // the go statement's call was type-checked (type_check_go_stmt), so
-    // comptime_value_args is established and captured per ast.h's
-    // invariant. The instance value is a real LLVM function
-    // (LLVMIsAFunction holds), so the arg-boxing/thunk path below handles
-    // it like any other direct top-level callee — the comptime argument
-    // stays an ordinary boxed parameter at the call boundary (it is a
-    // constant only INSIDE the specialized body).
+    // Comptime+generic composition (sub-project 2, Task 3): `go` targets a
+    // monomorphized instance's mangled symbol exactly like an ordinary call
+    // site (codegen_generate_call_expr, call_codegen.c) — a template is
+    // never emitted under its bare name for ANY axis that specializes it, so
+    // codegen_resolve_callee below would misreport "Undefined identifier".
+    // This mirrors call_codegen's three-way (combined / generic-only /
+    // comptime-only) byte-for-byte, one call-site type over: the generic-only
+    // case is NEW here (pre-existing gap — `go GenericFn(...)` previously had
+    // no rewiring at all, only the comptime-only case below existed), added
+    // as required substrate for the combined case. `call->function` is
+    // guaranteed non-NULL by the AST_CALL_EXPR check above, but each branch
+    // still guards it defensively like the pre-existing comptime-only arm did.
     ValueInfo* func_val = NULL;
-    if (call->comptime_value_arg_count > 0 && call->function &&
-        call->function->type == AST_IDENTIFIER) {
+    if (call->type_arg_count > 0 && call->comptime_value_arg_count > 0 &&
+        call->function && call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return 0;
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
+        }
+        char* sym = codegen_mangle_combined_instance(gid->name, concrete_args,
+            call->type_arg_count, call->comptime_value_args,
+            call->comptime_value_arg_count);
+        LLVMValueRef inst = sym ? LLVMGetNamedFunction(codegen->module, sym) : NULL;
+        free(sym);
+        if (inst) {
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    } else if (call->type_arg_count > 0 && call->function &&
+               call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return 0;
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
+        }
+        char* sym = codegen_mangle_instance(gid->name, concrete_args, call->type_arg_count);
+        LLVMValueRef inst = LLVMGetNamedFunction(codegen->module, sym);
+        free(sym);
+        if (inst) {
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    } else if (call->comptime_value_arg_count > 0 && call->function &&
+               call->function->type == AST_IDENTIFIER) {
+        // Comptime value params Task 3 (fix round 2): `go fill(4, 10)` must
+        // dispatch to the monomorphized instance symbol (`fill__n4`), never the
+        // bare name — a plain comptime-param function's template is never
+        // emitted under its bare name, so codegen_resolve_callee below would
+        // fail with a misleading "Undefined identifier 'fill'". The go
+        // statement's call was type-checked (type_check_go_stmt), so
+        // comptime_value_args is established and captured per ast.h's
+        // invariant. The instance value is a real LLVM function
+        // (LLVMIsAFunction holds), so the arg-boxing/thunk path below handles
+        // it like any other direct top-level callee — the comptime argument
+        // stays an ordinary boxed parameter at the call boundary (it is a
+        // constant only INSIDE the specialized body). Reached only when the
+        // combined branch above did NOT fire (call->type_arg_count == 0
+        // here), by construction of this if/else-if/else-if chain.
         IdentifierNode* cid = (IdentifierNode*)call->function;
         char* csym = codegen_mangle_comptime_instance(cid->name,
             call->comptime_value_args, call->comptime_value_arg_count);

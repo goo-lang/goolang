@@ -1447,8 +1447,60 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     // rewrites a bare top-level TYPE_PARAM, so a composite type-arg like
     // `[]T` would keep its unbound element (`[]T` instead of `[]int`) and
     // mangle to a symbol Part A never stamped.
+    // Comptime+generic composition (sub-project 2, Task 3): a call site can
+    // carry BOTH axes at once (call->type_arg_count > 0 AND
+    // call->comptime_value_arg_count > 0), e.g. `kernel[int64](4, arr)` where
+    // `kernel` is declared `func kernel[T](comptime n int, arr [n]T)`. That
+    // combined instance was stamped by the monomorphizer under
+    // codegen_mangle_combined_instance's name (types first, then `__n<v>`
+    // segments — monomorphize.c), NOT under either single-axis mangling, so
+    // it must be looked up FIRST, before either single-axis branch below gets
+    // a chance to mangle-and-miss (a per-type-only or per-value-only lookup
+    // against a combined symbol always fails, which is exactly the
+    // `Undefined identifier` regression this three-way replaces). This is a
+    // genuine three-way dispatch (if / else-if / else-if): combined, then
+    // generic-only, then comptime-only — never more than one branch can fire
+    // for a given call, so `func_val` is unambiguous going into the fallback
+    // below.
     ValueInfo* func_val = NULL;
-    if (call->type_arg_count > 0 && call->function->type == AST_IDENTIFIER) {
+    if (call->type_arg_count > 0 && call->comptime_value_arg_count > 0 &&
+        call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return NULL;
+        // Same substitution discipline as the generic-only branch below:
+        // when this call site sits inside an enclosing generic instance
+        // currently being stamped, its own type_args are still expressed in
+        // terms of the ENCLOSING instance's type params and must be resolved
+        // through codegen->active_subst before mangling, or the lookup below
+        // targets a symbol Part A (monomorphize.c) never stamped.
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
+        }
+        char* sym = codegen_mangle_combined_instance(gid->name, concrete_args,
+            call->type_arg_count, call->comptime_value_args,
+            call->comptime_value_arg_count);
+        LLVMValueRef inst = sym ? LLVMGetNamedFunction(codegen->module, sym) : NULL;
+        free(sym);
+        if (inst) {
+            // Mirror the generic-only branch's substituted-signature
+            // discipline: downstream nullable-wrap / interface-box /
+            // numeric-width-coercion logic needs the concrete
+            // (post-type-substitution) parameter/return types the emitted
+            // LLVM function actually has, not the template's TYPE_PARAM-
+            // bearing signature. The comptime axis never changes the
+            // callee's TYPE (only which literal a `comptime` param resolves
+            // to inside the body), so only the type args need substituting
+            // here — exactly like the generic-only branch.
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    } else if (call->type_arg_count > 0 && call->function->type == AST_IDENTIFIER) {
         IdentifierNode* gid = (IdentifierNode*)call->function;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return NULL;
@@ -1472,27 +1524,25 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             func_val = value_info_new(gid->name, inst, concrete_sig);
         }
         free(concrete_args);
-    }
-
-    // Comptime value params Task 3 (call rewiring): a comptime call site
-    // (call->comptime_value_arg_count > 0, stamped by type_check_call_expr
-    // in expression_checker.c only for a plain identifier callee — see that
-    // function's recording-site doc comment) must dispatch to its
-    // MONOMORPHIZED INSTANCE symbol, never the template's own bare name:
-    // codegen_generate_declaration (codegen.c) skips emitting a plain
-    // comptime-param function's template directly, so e.g. `fill` is never
-    // registered in this module under its bare name — only instances like
-    // `fill__n4` are, by codegen_monomorphize's comptime worklist
-    // (monomorphize.c), which runs to completion BEFORE any function body
-    // (including this one) is emitted. Mirrors the generic-call rewiring
-    // immediately above, one axis over: no type_substitute needed here, since
-    // a comptime value doesn't change the callee's TYPE (only which literal
-    // `n` resolves to inside its body) — the signature is just the plain
-    // Variable's own type, unchanged. Mutually exclusive with the generic
-    // block above by construction (a comptime-param function is never
-    // itself generic), so func_val is still NULL here whenever this fires.
-    if (!func_val && call->comptime_value_arg_count > 0 &&
-        call->function->type == AST_IDENTIFIER) {
+    } else if (call->comptime_value_arg_count > 0 &&
+               call->function->type == AST_IDENTIFIER) {
+        // Comptime value params Task 3 (call rewiring): a comptime call site
+        // (call->comptime_value_arg_count > 0, stamped by type_check_call_expr
+        // in expression_checker.c only for a plain identifier callee — see that
+        // function's recording-site doc comment) must dispatch to its
+        // MONOMORPHIZED INSTANCE symbol, never the template's own bare name:
+        // codegen_generate_declaration (codegen.c) skips emitting a plain
+        // comptime-param function's template directly, so e.g. `fill` is never
+        // registered in this module under its bare name — only instances like
+        // `fill__n4` are, by codegen_monomorphize's comptime worklist
+        // (monomorphize.c), which runs to completion BEFORE any function body
+        // (including this one) is emitted. Mirrors the generic-call rewiring
+        // above, one axis over: no type_substitute needed here, since a
+        // comptime value doesn't change the callee's TYPE (only which literal
+        // `n` resolves to inside its body) — the signature is just the plain
+        // Variable's own type, unchanged. Reached only when the combined
+        // branch above did NOT fire (call->type_arg_count == 0 here), by
+        // construction of this if/else-if/else-if chain.
         IdentifierNode* cid = (IdentifierNode*)call->function;
         char* sym = codegen_mangle_comptime_instance(cid->name,
             call->comptime_value_args, call->comptime_value_arg_count);
