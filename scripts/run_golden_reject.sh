@@ -38,8 +38,10 @@ for goo in "$REJECT_DIR"/*.goo; do
         echo "FAIL  $base (missing .err.txt sidecar)"
         fail=$((fail+1)); failed+=("$base"); continue
     fi
-    if [ ! -s "$errfile" ]; then
-        echo "FAIL  $base (empty .err.txt sidecar — would vacuously match any stderr)"
+    if ! grep -q '[^[:space:]]' "$errfile"; then
+        # -s alone misses whitespace-only sidecars: command substitution
+        # strips the trailing newline and `grep -qF -- ""` matches anything.
+        echo "FAIL  $base (empty/whitespace-only .err.txt sidecar — would vacuously match any stderr)"
         fail=$((fail+1)); failed+=("$base"); continue
     fi
 
@@ -53,6 +55,17 @@ for goo in "$REJECT_DIR"/*.goo; do
 
     if [ -e "$out_bin" ]; then
         echo "FAIL  $base (binary emitted at $out_bin despite rejection)"
+        fail=$((fail+1)); failed+=("$base"); continue
+    fi
+
+    # Global negative assertion (spec: "no LLVM verifier noise reaching
+    # users"): a rejection whose diagnostic is followed by raw verifier
+    # output means the checker's reject path still fell through to codegen.
+    # Carried over from the deleted constdiv/funcsig probe recipes, applied
+    # to every fixture uniformly.
+    if grep -qiE 'Module verification failed|LLVM ERROR' "$out_stderr"; then
+        echo "FAIL  $base (LLVM verifier noise in rejection stderr)"
+        sed 's/^/    /' "$out_stderr" | head -10
         fail=$((fail+1)); failed+=("$base"); continue
     fi
 
