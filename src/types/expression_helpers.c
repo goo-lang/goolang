@@ -404,9 +404,29 @@ Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* targ
 
     // Check that value is compatible with target
     if (!type_compatible(value_type, target_type)) {
-        type_error(checker, pos, "Cannot assign %s to %s",
-                  type_to_string(value_type), type_to_string(target_type));
-        return NULL;
+        // Fix round 5 (M-r4): whole-array assignment where EITHER side is a
+        // comptime-length array (`b = a` with a: [n]int, or a2 = b) — the
+        // template-time length here is the placeholder, so the length
+        // comparison is meaningless until instance time; `[1]int64 vs
+        // [4]int64` falsely rejected a valid program. Defer exactly the
+        // LENGTH: element types must still match now (type_equals — Go's
+        // array-assignment rule), and codegen's assignment path enforces
+        // the real per-instance lengths (instance-named rejection on a
+        // genuine mismatch — see codegen_generate_assignment's array arm).
+        // Ordinary array assignments (no comptime_length on either side)
+        // reject here exactly as before.
+        int comptime_len_deferred =
+            value_type && target_type &&
+            value_type->kind == TYPE_ARRAY && target_type->kind == TYPE_ARRAY &&
+            (value_type->data.array.comptime_length ||
+             target_type->data.array.comptime_length) &&
+            type_equals(value_type->data.array.element_type,
+                        target_type->data.array.element_type);
+        if (!comptime_len_deferred) {
+            type_error(checker, pos, "Cannot assign %s to %s",
+                      type_to_string(value_type), type_to_string(target_type));
+            return NULL;
+        }
     }
     
     // TODO: Check that target is assignable (lvalue)

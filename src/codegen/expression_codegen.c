@@ -1631,6 +1631,31 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             }
         }
 
+        // Fix round 5 (M-r4): instance-time enforcement of the array-length
+        // compatibility the checker DEFERRED for a comptime-length array
+        // assignment (type_check_assignment_op's comptime_len_deferred —
+        // see there). Both goo_types here are the instance's re-derived
+        // REAL types, so a genuine length mismatch at THIS instance is a
+        // clean, instance-named compile failure instead of an invalid-IR
+        // store of a differently-sized aggregate. Matching lengths store
+        // like any ordinary whole-array assignment. Gated on the
+        // comptime_length flag (either side) — an ordinary mismatched
+        // array assignment never reaches codegen (the checker rejected it).
+        if (target->goo_type && value->goo_type &&
+            target->goo_type->kind == TYPE_ARRAY &&
+            value->goo_type->kind == TYPE_ARRAY &&
+            (target->goo_type->data.array.comptime_length ||
+             value->goo_type->data.array.comptime_length) &&
+            target->goo_type->data.array.length != value->goo_type->data.array.length) {
+            codegen_error(codegen, expr->pos,
+                "cannot assign [%zu]-length array to [%zu]-length array in comptime instance '%s'",
+                value->goo_type->data.array.length,
+                target->goo_type->data.array.length,
+                codegen->symbol_override ? codegen->symbol_override : "?");
+            value_info_free(value);
+            return NULL;
+        }
+
         // Box a concrete implementer into an interface-typed lvalue's
         // {vtable, data} value (mirrors var-decl init / call-arg boxing).
         // interface→interface needs no box — same layout, store directly.

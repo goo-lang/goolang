@@ -1557,6 +1557,33 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 return 0;
             }
             var_type = fresh;
+        } else if (var_decl->values && var_decl->name_count == 1) {
+            // Fix round 5 (C-r4): an INFERRED declaration (`c := a`) has no
+            // AST type node anywhere — neither an annotation nor an
+            // array-literal RHS — so the branches above never fired and
+            // `c`'s alloca silently kept the template-cached PLACEHOLDER
+            // type while `a` (already re-derived) carried the real length:
+            // compiled clean, bounds-panicked at runtime on the first
+            // c[1] access. Resolve the RHS expression's type against the
+            // mirror scope instead: an identifier RHS resolves to the
+            // mirror Variable's already-re-derived type, and a general
+            // expression re-checks against the same instance-bound scope
+            // (the established codegen re-invocation pattern). Chained
+            // inference (`d := c`) works because each fixed decl registers
+            // its mirror Variable and ValueInfo with the re-derived type
+            // below. Scoped to single-name decls (multi-name destructures
+            // never bind a whole comptime-length array to one name — their
+            // node_type is a struct/error-union, which the contains-array
+            // gate above already filters out; the guard is belt and
+            // braces). Same hard-fail contract as the annotation branch:
+            // never fall back to the placeholder.
+            Type* fresh = type_check_expression(checker, var_decl->values);
+            if (!fresh || !goo_type_contains_array(fresh)) {
+                codegen_error(codegen, decl->pos,
+                    "cannot resolve inferred type for this comptime instance");
+                return 0;
+            }
+            var_type = fresh;
         }
     }
 

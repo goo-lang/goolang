@@ -159,6 +159,35 @@ func pick(comptime n int, seed int) int {
     return buf[3]
 }
 
+// Fix round 5: value-copy shapes of a comptime-length array. `c := a` (an
+// INFERRED declaration — no annotation, no literal type node) resolves its
+// type from the RHS against the instance-bound mirror scope, so the copy's
+// alloca gets the instance's real length instead of the template
+// placeholder (which compiled clean and bounds-panicked at runtime);
+// `d := c` covers chained inference, and `b = a` covers whole-array
+// assignment into a fixed-length variable (length compatibility deferred
+// to instance time; a genuine mismatch rejects instance-named — see the
+// reject matrix's array-assign case).
+func copies(comptime n int, seed int) int {
+    var a [n]int
+    i := 0
+    for i < n {
+        a[i] = seed + i
+        i = i + 1
+    }
+    c := a
+    d := c
+    var b [4]int
+    b = d
+    sum := 0
+    j := 0
+    for j < n {
+        sum = sum + b[j]
+        j = j + 1
+    }
+    return sum
+}
+
 func main() {
     fmt.Println(fill(4, 10))     // 46
     fmt.Println(fill(2, 100))    // 201
@@ -168,4 +197,5 @@ func main() {
     fmt.Println(fillLit(4, 10))  // 46
     fmt.Println(litInit(4, 10))  // 1+2+12+13 = 28
     fmt.Println(pick(4, 10))     // buf[3]=13, doubled = 26
+    fmt.Println(copies(4, 10))   // a copied through c, d, b: 10+11+12+13 = 46
 }

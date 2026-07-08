@@ -1602,7 +1602,9 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "negative-length" "array length must be non-negative"; \
 	printf 'package main\nfunc pick(comptime n int, s int) int {\n    var buf [n]int\n    buf[3] = s\n    return buf[3]\n}\nfunc main() { _ = pick(2, 1) }\n' > build/cvm.goo; \
 	run_case "const-index-oob-instance" "out of bounds .0:2. in comptime instance"; \
-	echo "comptime-value-reject-matrix: PASS (12/12 walls hold)"
+	printf 'package main\nfunc asgn(comptime n int, s int) int {\n    var a [n]int\n    var b [4]int\n    b = a\n    return b[0] + s\n}\nfunc main() { _ = asgn(2, 1) }\n' > build/cvm.goo; \
+	run_case "array-assign-mismatch-instance" "length array in comptime instance"; \
+	echo "comptime-value-reject-matrix: PASS (13/13 walls hold)"
 
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
