@@ -1,0 +1,40 @@
+// var_group_probe (P1.2): grouped `var ( ... )` blocks.
+//
+// Before P1.2, a grouped var block was a parse error — only the single
+// `var NAME [TYPE] [= expr]` form parsed. This probe exercises:
+//
+//   1. a file-scope group with CONSTANT (literal) initializers only —
+//      package-scope non-constant globals are P3.7's roadmap item, out of
+//      scope here, same constraint single top-level `var x = <const-expr>`
+//      already has, so this group deliberately does not reference one
+//      global from another's initializer
+//   2. an in-function group using all three spec forms: `= value`,
+//      `type = value`, and bare `type` (no initializer -> zero value,
+//      matching single `var z int`'s representation exactly)
+//   3. declaration order within that in-function group: `d`'s initializer
+//      reads `a` and `b`, proving specs desugar into a chain evaluated in
+//      source order, not simultaneously (safe to test at function scope,
+//      unlike file scope which is constant-initializer-only)
+//
+// Expected output produced by `go run` on the equivalent Go program.
+package main
+
+import "fmt"
+
+var (
+	g1 = 10
+	g2 = 20
+	g3 int
+)
+
+func main() {
+	fmt.Println(g1, g2, g3)
+
+	var (
+		a = 1
+		b int = 2
+		c int
+		d = a + b
+	)
+	fmt.Println(a, b, c, d)
+}

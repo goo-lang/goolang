@@ -32,6 +32,14 @@ static void substitute_iota(ASTNode** slot, long idx);
 static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value);
 static ASTNode* desugar_const_group(ASTNode* spec_chain);
 
+// P1.2 grouped-var desugaring: mirrors the F4 const-group mechanism above
+// (var_spec_list uses the identical newline-blind-but-unambiguous
+// juxtaposition as const_spec_list/import_spec_list — no SEMICOLON token),
+// but carries NONE of const's iota/value-inheritance semantics — see
+// var_spec_new/desugar_var_group definitions after the second %%.
+static ASTNode* var_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value);
+static ASTNode* desugar_var_group(ASTNode* spec_chain);
+
 // F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` / `a,b = v1,v2`).
 static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
                                    ASTNode* v1, ASTNode* v2, int is_short_decl);
@@ -220,6 +228,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
 %type <node> const_spec const_spec_list
+%type <node> var_spec var_spec_list
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
@@ -852,6 +861,15 @@ var_decl:
         ast_node_free($3);
         $$ = (ASTNode*)var;
     }
+    // P1.2: grouped var block. Desugar into a chain of ordinary single
+    // VarDeclNodes (one per spec), same splice mechanism as CONST's grouped
+    // block above. Package-scope groups reuse the same `declaration` path a
+    // single top-level `var` already goes through, so they inherit that
+    // path's existing constant-initializer-only constraint unchanged
+    // (non-constant package-scope globals are P3.7, out of scope here).
+    | VAR LPAREN var_spec_list RPAREN {
+        $$ = desugar_var_group($3);
+    }
     ;
 
 // Short variable declaration
@@ -982,6 +1000,46 @@ const_spec_list:
         $$ = $1;
     }
     | const_spec_list const_spec {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+// P1.2: one spec inside a grouped var block. Mirrors const_spec_list's
+// separator mechanism EXACTLY: var_spec_list below is plain juxtaposition
+// (`var_spec_list var_spec`, no SEMICOLON token), the same newline-blind-
+// but-unambiguous shape const_spec_list and import_spec_list already use —
+// each spec ends where the next can't extend it (an `expression` can't be
+// directly followed by another `identifier`/type-start token with no
+// operator between them), so no scoped ASI or explicit separator is needed.
+//
+// UNLIKE const_spec, there is deliberately NO bare `identifier`-alone arm:
+// const's bare spec means "repeat the previous value" (iota inheritance,
+// see desugar_const_group); var has no such semantics; a Go var spec must
+// carry a type and/or an initializer. Omitting that arm means `var (x)`
+// (bare name, no type, no value) is already a grammar-level syntax error —
+// nothing extra to reject downstream.
+var_spec:
+    identifier type {
+        // `NAME TYPE`, no initializer: values stays NULL, exactly the same
+        // representation single `var z int` already uses (ast_var_decl_new
+        // zero-inits `values`) — the existing zero-value codegen/typecheck
+        // path for a typed-no-initializer var handles this unchanged.
+        $$ = var_spec_new($1, $2, NULL);
+    }
+    | identifier ASSIGN expression {
+        $$ = var_spec_new($1, NULL, $3);
+    }
+    | identifier type ASSIGN expression {
+        $$ = var_spec_new($1, $2, $4);
+    }
+    ;
+
+var_spec_list:
+    var_spec {
+        $$ = $1;
+    }
+    | var_spec_list var_spec {
         ast_add_child($1, $2);
         $$ = $1;
     }
@@ -3603,6 +3661,37 @@ static ASTNode* desugar_const_group(ASTNode* spec_chain) {
     }
 
     if (template) ast_node_free(template);
+    return spec_chain;
+}
+
+// P1.2: build one VarDeclNode for a grouped-var spec. Exactly one of `type`
+// / `value` may be NULL (never both — var_spec's grammar has no bare
+// `identifier`-alone arm) depending on which of the three spec forms
+// matched. Mirrors const_spec_new's shape; unlike it, nothing is deferred
+// for a later desugar pass to fill in.
+static ASTNode* var_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
+    VarDeclNode* var = ast_var_decl_new(get_current_position());
+
+    IdentifierNode* ident = (IdentifierNode*)name_ident;
+    var->names = malloc(sizeof(char*));
+    var->names[0] = strdup(ident->name);
+    var->name_count = 1;
+    var->type = type;
+    var->values = value;
+
+    ast_node_free(name_ident);
+    return (ASTNode*)var;
+}
+
+// P1.2: turn a chain of grouped-var specs into a chain of ordinary single
+// var decls. Unlike desugar_const_group, there is no iota ordinal and no
+// value-inheritance pass to run here: every var_spec already built a
+// complete, self-contained VarDeclNode (var_spec_new, above). Kept as its
+// own function — mirroring desugar_const_group's shape/call site in the
+// VAR LPAREN var_spec_list RPAREN arm — as the natural extension point if
+// grouped var ever needs a group-wide pass (e.g. shared type inference
+// across specs); today it is deliberately a pass-through.
+static ASTNode* desugar_var_group(ASTNode* spec_chain) {
     return spec_chain;
 }
 
