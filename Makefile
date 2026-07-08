@@ -1558,6 +1558,48 @@ comptime-value-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/cvr.err; then echo "comptime-value-reject-probe: FAIL (invalid IR reached verifier)"; cat build/cvr.err; exit 1; fi; \
 	  if grep -qiE "compile-time constant|comptime parameter" build/cvr.err; then echo "comptime-value-reject-probe: PASS"; else echo "comptime-value-reject-probe: FAIL (no clean diagnostic)"; cat build/cvr.err; exit 1; fi
 
+# Comptime-value params reject matrix (fix round 2, I3): one target sweeping
+# EVERY safety wall around comptime-param functions. Each case must FAIL to
+# compile, emit its specific diagnostic, and never leak LLVM-verifier noise.
+# The single-case comptime-value-reject-probe above stays as-is (it predates
+# this matrix and other docs reference it); this is the breadth net. The
+# package-declaration case compiles against a throwaway GOOROOT tree under
+# build/ (same env contract as import_resolver's goo_gooroot_dir).
+comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build/cvm_gooroot/goostd/cpkg
+	@printf 'package cpkg\nfunc Fill(comptime n int, s int) int { return s }\n' > build/cvm_gooroot/goostd/cpkg/cpkg.go
+	@echo "=== comptime-value-reject-matrix: every comptime-param safety wall rejects cleanly ==="
+	@set -e; \
+	run_case() { \
+	  name="$$1"; pat="$$2"; \
+	  rc=0; GOOROOT=build/cvm_gooroot "$(COMPILER)" build/cvm.goo -o build/cvm_bin >build/cvm.err 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "comptime-value-reject-matrix: FAIL ($$name compiled — wall is down)"; cat build/cvm.err; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/cvm.err; then echo "comptime-value-reject-matrix: FAIL ($$name: invalid IR reached the verifier)"; cat build/cvm.err; exit 1; fi; \
+	  if ! grep -qE "$$pat" build/cvm.err; then echo "comptime-value-reject-matrix: FAIL ($$name: missing diagnostic /$$pat/)"; cat build/cvm.err; exit 1; fi; \
+	  echo "  PASS $$name"; \
+	}; \
+	printf 'package main\nfunc fill(comptime n int, s int) int { return s }\nfunc main() { x := 5; _ = fill(x, 1) }\n' > build/cvm.goo; \
+	run_case "runtime-arg" "must be a compile-time constant"; \
+	printf 'package main\nfunc fill(comptime n int, s int) int { return s }\nfunc main() { f := fill; _ = f }\n' > build/cvm.goo; \
+	run_case "assign-as-value" "cannot be used as a value"; \
+	printf 'package main\nfunc fill(comptime n int, s int) int { return s }\nfunc takes(f func(int, int) int) int { return f(1, 2) }\nfunc main() { _ = takes(fill) }\n' > build/cvm.goo; \
+	run_case "call-arg" "cannot be passed as an argument"; \
+	printf 'package main\nfunc fill(comptime n int, s int) int { return s }\nfunc Apply[T any](f func(int, int) int, x T) T { return x }\nfunc main() { _ = Apply(fill, 5) }\n' > build/cvm.goo; \
+	run_case "generic-call-arg" "cannot be passed as an argument"; \
+	printf 'package main\ntype Holder struct { f func(int, int) int }\nfunc fill(comptime n int, s int) int { return s }\nfunc main() { h := Holder{f: fill}; _ = h }\n' > build/cvm.goo; \
+	run_case "composite-literal" "cannot be stored in a composite literal"; \
+	printf 'package main\nfunc fill(comptime n int, s int) int { return s }\nfunc main() {\n    ch := make_chan(int, 1)\n    ch <- fill\n}\n' > build/cvm.goo; \
+	run_case "channel-send" "cannot be sent on a channel"; \
+	printf 'package main\ntype S struct { v int }\nfunc (s S) Fill(comptime n int, x int) int { return x }\nfunc main() { }\n' > build/cvm.goo; \
+	run_case "method-declaration" "not yet supported on methods"; \
+	printf 'package main\nimport "cpkg"\nfunc main() { _ = cpkg.Fill(2, 1) }\n' > build/cvm.goo; \
+	run_case "package-declaration" "comptime parameters on package functions are not yet supported"; \
+	printf 'package main\nfunc bad[T any](comptime n int, x T) T { return x }\nfunc main() { }\n' > build/cvm.goo; \
+	run_case "generic-declaration" "not yet supported together with type parameters"; \
+	printf 'package main\nfunc main() {\n    f := func(comptime n int, s int) int { return s }\n    _ = f\n}\n' > build/cvm.goo; \
+	run_case "closure-declaration" "only supported on named functions"; \
+	echo "comptime-value-reject-matrix: PASS (10/10 walls hold)"
+
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
 # not jump to a NULL instruction pointer. `var f func(int) int` zero-values
@@ -2024,7 +2066,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2848,7 +2890,7 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe test-golden
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix test-golden
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh

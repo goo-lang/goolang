@@ -124,6 +124,12 @@ in `verify`.
 - No comptime control-flow that *emits* code (`comptime if`/`comptime for` selecting/emitting
   bodies) — that is the separate Zig-style-metaprogramming option we did not pick for the
   first deliverable.
+- **No function address-of interaction:** `&f` of any function (comptime-param or not) already
+  rejects via codegen's non-lvalue rule — revisit this surface if function address-of ever lands.
+- **Comptime params do not propagate transitively:** `outer(comptime n)` cannot forward `n` to
+  `inner(comptime m)` (`inner(n, ...)` rejects as "must be a compile-time constant") — a
+  documented restriction that doubles as the guard against template-placeholder poisoning of a
+  nested instance's value.
 
 ## Testing
 
