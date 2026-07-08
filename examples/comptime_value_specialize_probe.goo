@@ -1,0 +1,27 @@
+// Comptime-value-specialized functions: `n` is a comptime parameter, so
+// `var buf [n]int` (a fixed array whose length must be a compile-time
+// constant) is legal and the function is specialized per value.
+package main
+
+import "fmt"
+
+func fill(comptime n int, seed int) int {
+    var buf [n]int
+    i := 0
+    for i < n {
+        buf[i] = seed + i
+        i = i + 1
+    }
+    sum := 0
+    j := 0
+    for j < n {
+        sum = sum + buf[j]
+        j = j + 1
+    }
+    return sum
+}
+
+func main() {
+    fmt.Println(fill(4, 10))  // 46
+    fmt.Println(fill(2, 100)) // 201
+}
