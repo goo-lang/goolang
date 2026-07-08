@@ -14,12 +14,16 @@
 // differs, so this exercises TWO DISTINCT (T, n) instances of the same
 // composed template (kernel__int64__n4, kernel__float64__n4), each
 // dispatched via `go` inside the closure wrapper — the SPMD shape applied
-// to a composed kernel.
+// to a composed kernel. BOTH closures are spawned before either channel is
+// drained (fan-out first, then fan-in — the same discipline as the other
+// SPMD goldens), so the two composed instances are genuinely in flight
+// concurrently.
 //
 // Output is deterministic: buf[n-1] always equals the seed that was copied
-// into every slot, so a=42 (the int64 seed) and b=2.5 (the float64 seed),
-// independent of goroutine interleaving (each closure owns its own
-// channel).
+// into every slot, so a=42 (the int64 seed) and b=2.5 (the float64 seed).
+// Each lane owns its own single-purpose channel, so draining ich then fch
+// fixes the print order without depending on which goroutine's send lands
+// first — the receives don't race each other.
 package main
 
 import "fmt"
@@ -36,17 +40,20 @@ func kernel[T any](comptime n int, seed T) T {
 
 func main() {
 	ich := make(chan int64, 1)
+	fch := make(chan float64, 1)
 	x := int64(42)
+	y := 2.5
+
+	// Fan-out: both composed instances dispatched before any receive.
 	go func() {
 		ich <- kernel(4, x)
 	}()
-	a := <-ich
-
-	fch := make(chan float64, 1)
-	y := 2.5
 	go func() {
 		fch <- kernel(4, y)
 	}()
+
+	// Fan-in: drain in a fixed order (separate channels, so no race).
+	a := <-ich
 	b := <-fch
 
 	fmt.Println(a)
