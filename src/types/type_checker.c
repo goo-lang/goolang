@@ -3614,7 +3614,22 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             ErrorUnionTypeNode* error_union = (ErrorUnionTypeNode*)type_node;
             Type* value_type = type_from_ast(checker, error_union->value_type);
             if (!value_type) return NULL;
-            
+
+            // P0.3: reject !?T (error union whose payload is nullable) here,
+            // at the single chokepoint every !T spelling resolves through
+            // (return types, params, var decls, struct fields, ...) —
+            // codegen has no valid lowering for the nested tagged-struct
+            // shape this produces and previously SIGILLed with zero
+            // diagnostics (see the P0.2 verify-gate commit for the audit
+            // trail). ?!int (nullable of error union) is unaffected: it
+            // resolves through AST_NULLABLE_TYPE below, wrapping a
+            // TYPE_ERROR_UNION value_type, which this check never sees.
+            if (value_type->kind == TYPE_NULLABLE) {
+                type_error(checker, type_node->pos,
+                           "error union of nullable type is not supported in v1");
+                return NULL;
+            }
+
             Type* error_type = NULL;
             if (error_union->error_type) {
                 error_type = type_from_ast(checker, error_union->error_type);

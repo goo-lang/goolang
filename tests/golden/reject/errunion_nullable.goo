@@ -1,0 +1,18 @@
+// errunion_nullable (Task 3, P0.3): !?T (an error union whose payload is a
+// nullable type) has no valid codegen lowering — LLVMVerifyModule considers
+// the resulting nested tagged-struct IR structurally "valid" (see the P0.2
+// verify-gate commit's audit trail), yet the SelectionDAG backend SIGILLs
+// inside llvm::EVT::getExtendedSizeInBits while lowering the `ret`. Rejected
+// at the type-checker's single !T-resolution chokepoint instead, well before
+// codegen ever runs — this fixture locks in that diagnostic. ?!int (nullable
+// of error union, the reverse nesting) is unaffected and stays compiling.
+package main
+
+func f() !?int {
+    return 42
+}
+
+func main() {
+    x := f()
+    _ = x
+}

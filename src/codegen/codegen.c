@@ -1587,9 +1587,32 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         return 0;
     }
     sprintf(object_filename, "%s.o", filename);
-    
+
+    // Final gate before handing the module to the backend: LLVMVerifyModule
+    // above (codegen_verify_module) only catches IR-level structural
+    // violations (SSA form, matching operand types, etc). It does NOT catch
+    // every shape that crashes SelectionDAG's instruction selection —
+    // notably, aggregate `ret` values assembled from mismatched nested
+    // struct constants can pass the verifier yet SIGILL inside
+    // llvm::EVT::getExtendedSizeInBits during LLVMTargetMachineEmitToFile
+    // (see error-union-of-nullable audit). Re-verify immediately before
+    // emission so any such module is rejected as an ICE with a diagnostic
+    // instead of crashing the process with zero output.
+    char* verify_error_message = NULL;
+    if (LLVMVerifyModule(codegen->module, LLVMReturnStatusAction, &verify_error_message)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "internal compiler error: generated invalid IR (please report): %s",
+                     verify_error_message);
+        LLVMDisposeMessage(verify_error_message);
+        free(object_filename);
+        return 0;
+    }
+    if (verify_error_message) {
+        LLVMDisposeMessage(verify_error_message);
+    }
+
     char* error_message = NULL;
-    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module, 
+    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module,
                                    object_filename, LLVMObjectFile, &error_message)) {
         codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to emit object file: %s", error_message);
         LLVMDisposeMessage(error_message);
