@@ -1588,16 +1588,16 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
     }
     sprintf(object_filename, "%s.o", filename);
 
-    // Final gate before handing the module to the backend: LLVMVerifyModule
-    // above (codegen_verify_module) only catches IR-level structural
-    // violations (SSA form, matching operand types, etc). It does NOT catch
-    // every shape that crashes SelectionDAG's instruction selection —
-    // notably, aggregate `ret` values assembled from mismatched nested
-    // struct constants can pass the verifier yet SIGILL inside
-    // llvm::EVT::getExtendedSizeInBits during LLVMTargetMachineEmitToFile
-    // (see error-union-of-nullable audit). Re-verify immediately before
-    // emission so any such module is rejected as an ICE with a diagnostic
-    // instead of crashing the process with zero output.
+    // Defensive backstop, not a live gate today: the verify at this
+    // function's entry already rejects any verifier-visible IR, and nothing
+    // mutates the module between there and here (target-machine setup only
+    // stamps a data layout), so this second check can only fire if a future
+    // refactor removes/reorders the entry check or adds IR mutation in
+    // between. Know its limits either way: LLVMVerifyModule accepts some
+    // shapes that still crash SelectionDAG — the error-union-of-nullable
+    // (!?T) module SIGILLs in llvm::EVT::getExtendedSizeInBits despite
+    // verifying clean. That class is closed upstream by the type checker's
+    // !?T rejection, not here.
     char* verify_error_message = NULL;
     if (LLVMVerifyModule(codegen->module, LLVMReturnStatusAction, &verify_error_message)) {
         codegen_error(codegen, (Position){0, 0, 0, "codegen"},

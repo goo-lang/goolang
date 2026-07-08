@@ -47,9 +47,16 @@ to reject the construct earlier.
 
 - **P0.2 — LLVMVerifyModule gate before executable emission.** `codegen_emit_executable`
   (the `codegen.c:1592` path) runs `LLVMVerifyModule` before `LLVMTargetMachineEmitToFile`.
-  Any invalid IR produces a printed compiler-bug diagnostic and exit 1 instead of a signal.
-  Verified with the `!?int` reproducer (today: SIGILL/exit 132, zero diagnostics, backtrace
-  into `SelectionDAGBuilder::visitRet`).
+  Any verifier-visible invalid IR produces a printed compiler-bug diagnostic and exit 1
+  instead of a signal.
+  **Premise refuted during implementation (recorded 2026-07-08):** the `!?int` module
+  passes `LLVMVerifyModule` clean — the struct-constant mismatch is invisible to the
+  verifier and only crashes later in SelectionDAG — so the gate cannot be proven with that
+  reproducer; the SIGILL class is closed by P0.3's type-checker rejection instead. A
+  pre-existing verify at `codegen_emit_executable`'s entry (audit missed it) already
+  rejects verifier-visible IR (empirically proven with `math.Sqrt("x")`: exit 1,
+  diagnostic, no binary). The pre-emission gate ships as a defensive backstop against
+  future refactors, documented as such in-code.
 - **P0.3 — Reject composed `!?T` in the type checker.** `func f() !?int` (any `!?T`) yields
   a clear diagnostic ("error union of nullable not supported in v1") and exit 1. No
   SIGILL/exit 132. Regression fixture in the P0.9 reject suite. Note the asymmetry: `?!int`
