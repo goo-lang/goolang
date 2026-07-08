@@ -1,0 +1,46 @@
+// spmd_multilane_probe: multi-lane same-tuple SPMD shape (SPMD harness
+// sub-project, Task 2 — the pinned pattern; scout P2). Unlike
+// spmd_fanout_probe (which fans out across DIFFERENT comptime tuples), this
+// golden fans out 8 goroutines onto the SAME instance (lane__n8) — the
+// common case where a fixed lane width spawns many lanes over per-iteration
+// data, and each `go` statement must capture its OWN loop-variable argument
+// rather than a shared/aliased one.
+//
+// `lane` fills a `[tile]int64` local buffer with its `id` argument and sends
+// `buf[0] * tile`. `main` spawns 8 goroutines in a `for` loop, each with
+// `id = int64(i)` for that iteration — the loop variable is captured
+// PER-ITERATION at the `go` call (not by reference to a shared loop var), so
+// each lane observes its own `i`.
+//
+// Buffered-channel fan-in (cap 8) is the join; the aggregate is
+// order-independent (summation is commutative). Hand-computed: lane(i)
+// sends i*8, so the total is 8 * (0+1+...+7) = 8*28 = 224.
+package main
+
+import "fmt"
+
+func lane(comptime tile int, id int64, out chan int64) {
+	var buf [tile]int64
+	i := 0
+	for i < tile {
+		buf[i] = id
+		i = i + 1
+	}
+	out <- buf[0] * int64(tile)
+}
+
+func main() {
+	results := make(chan int64, 8)
+	i := 0
+	for i < 8 {
+		go lane(8, int64(i), results)
+		i = i + 1
+	}
+	total := int64(0)
+	i = 0
+	for i < 8 {
+		total = total + <-results
+		i = i + 1
+	}
+	fmt.Println(total)
+}
