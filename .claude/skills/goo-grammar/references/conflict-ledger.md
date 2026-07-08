@@ -237,3 +237,129 @@ below).
 
 `EXPECTED_SR` is 84 in `scripts/grammar-tripwire.sh`, updated in the same commit as
 this ledger entry.
+
+## v1 parser strategy: LALR(1) + lexer feedback (decision record, 2026-07-08)
+
+**Current baseline: 84 shift/reduce + 256 reduce/reduce**, established by gofmt-syntax-a
+Task 2 (82 → 84, justified above) and unchanged through the rest of this arc's tasks —
+Tasks 1, 3, 4, and 5 (interface-newline-termination fix, grouped `var (...)`, trailing-comma
+call args, raw string literals) all landed at zero delta, and Task 6 (ASI before a
+line-starting `<-`) and Task 7 (the ASI regression probe) touch the lexer/tests only, no
+grammar productions. Verified directly by this task's own `scripts/grammar-tripwire.sh` run:
+PASS at 84/256, both before this docs-only change and (trivially) after it. Full delta
+history is the table at the top of this file — seven ledgered grammar changes since the
+pre-#92 baseline of 78/256: four landed a non-zero S/R delta (#92 +1, #106/#107 +2,
+type-assertions Task 3 +1, gofmt-syntax-a Task 2 +2, summing 78 → 84) and three landed zero
+delta (#108, #109, #111). R/R has held at 256 across every one of those seven changes.
+
+**The conflict families, precisely — not "two," the ledger documents finer structure than
+that.** The roadmap's P1.12 acceptance criterion shorthands this as "two understood
+families neutralized by ASI + LBRACE_BODY," but that phrase conflates two different axes:
+(a) lexer/grammar techniques that keep a would-be ambiguity from ever reaching the LALR
+tables, and (b) the S/R conflicts that DO land in the 84-count baseline, each individually
+classified and justified as it was added. Axis (b) alone has three named, independently
+justified families in this ledger's history, not two:
+
+1. **Func-result shift-wins family** (`func_signature`→`func_result` states; #92 grew it by
+   1 for BANG, #106/#107 grew it by 2 for closures). Resolved by LALR's default shift-wins,
+   verified behavior-neutral by differential testing at each addition — no lexer bridge
+   involved. Its residual hazard is documented separately in workarounds.md §6
+   (newline-blind func-result absorption): a type-start token on the next line still gets
+   silently absorbed into the result type. That is a correctness caveat riding on this
+   family's win condition, not an unresolved conflict.
+2. **struct-lit-vs-bare-tag / `type_switch_guard` family** (type-assertions Task 3, +1;
+   recurs as gofmt-syntax-a Task 2's Conflict 2, +1, brand-new state 713). This is the ONE
+   family whose ambiguous token sequence is proven lexically unreachable, by the LBRACE_BODY
+   bridge (workarounds.md §1, `lexer_bridge.c:235-246`): the M10 bridge unconditionally
+   tokenizes the first depth-0 `{` after `SWITCH` as `LBRACE_BODY`, which `struct_lit`
+   cannot consume, so an unparenthesized struct literal in tag/guard position is a parse
+   error, not a silent misparse, for either switch form (see "Corrected justification"
+   above).
+3. **`simple_stmt` tuple-assignment-vs-tuple-short-decl COMMA family** (gofmt-syntax-a
+   Task 2's Conflict 1, +1): an existing state — 539, which already carried a family-2
+   conflict on `LBRACE` — gained a second, independent conflict on `COMMA`; the underlying
+   ambiguity itself was already present at baseline states 439 and 526 (the corrected
+   family sites — see the 2026-07-08 review correction above). Resolved by shift-wins, NOT
+   by a lexer bridge: `a, s[0] = 1, 2` (the reduce-side shape) is a loud parse error at
+   every position this family reaches (statement, IF-init, FOR-init, SWITCH-init alike) —
+   an accepted, probed, pre-existing limitation, not something ASI or LBRACE_BODY
+   neutralizes.
+
+R/R conflicts (256) are tracked only as an aggregate invariant across every row in the
+delta-history table ("R/R count unchanged, confirming no new reduce/reduce ambiguity") —
+the ledger has never decomposed them into named families the way it has for S/R, and this
+record does not claim otherwise.
+
+**The two neutralization mechanisms that actually apply.** Of workarounds.md's eight
+cataloged techniques, the roadmap's "ASI + LBRACE_BODY" shorthand names exactly two that are
+conflict-avoidance mechanisms in the sense that matters here — keeping a would-be ambiguity
+out of the grammar/lexer boundary before it becomes a countable LALR conflict at all:
+
+- **LBRACE_BODY lexer bridge** (workarounds.md §1) — neutralizes family 2 above, and is the
+  general mechanism any new `identifier LBRACE`-shaped condition-body construct must reuse
+  to avoid re-opening the same fight.
+- **Targeted, struct-body-scoped ASI** (workarounds.md §4) — prevents a *different*
+  ambiguity (bare-identifier struct embedding, `struct { Base }`, which would otherwise need
+  its own S/R-conflicted production) from ever entering the grammar; deliberately scoped to
+  struct bodies only (enum bodies get none). This is distinct from the broader per-statement
+  optional-`SEMICOLON` design (`parser.y:1136-1160`, `simple_stmt SEMICOLON | simple_stmt`)
+  that makes most of Goo's "ASI" a grammar-level choice rather than a lexer-inserted token —
+  that design keeps statement-boundary ambiguity out of the conflict count by construction,
+  but is not itself one of the two named workarounds.md mechanisms.
+
+Neither mechanism resolves families 1 or 3 above — those are accepted, differentially
+verified shift-wins outcomes, not neutralized ambiguities.
+
+**Four historically-blamed constructs, verified working at runtime.**
+`docs/2026-07-08-v1-roadmap.md`'s "Adversarial verdicts" section REFUTES the claims that
+these were broken, with compiled `bin/goo` evidence:
+
+- **ASI / "no automatic semicolon insertion is the root blocker"** — REFUTED: a
+  zero-semicolon multi-statement function body (`x:=1` / `y:=2` / `z:=x+y` / `println(z)`)
+  compiles and runs, prints `3`, exit 0 (roadmap lines 30-31).
+- **Linking / "has never produced a runnable executable"** — REFUTED: an empty
+  `func main(){}` compiles to an 87008-byte ELF executable that runs and exits 0 (roadmap
+  lines 32-33).
+- **Structs and methods / "effectively zero end-to-end support"** — REFUTED: `struct1.goo`
+  (struct decl, literal, field access) prints `7`; `method1.goo` (value receiver `Sum()`
+  plus pointer receiver `Scale()` mutating fields) prints `7` then `14`, confirming
+  pointer-receiver mutation is observed (roadmap lines 34-35).
+- **Interfaces / "effectively zero end-to-end support"** — REFUTED as part of the same
+  verdict, third test case (`iface1.goo`); the roadmap's own evidence text is truncated
+  mid-sentence at the source (`docs/2026-07-08-v1-roadmap.md:35`, cuts off after
+  "(3) iface1.g"), so this record cites the verdict's existence and REFUTED status without
+  inventing the missing runtime-output detail.
+
+**GLR rejected.** `%glr-parser` moves ambiguity resolution from compile-time table
+construction to parse-time splits/merges of the parse forest. That trades away the
+tripwire's exact-count regression net — today every S/R and R/R delta is caught,
+classified, and ledgered before merge — for a runtime signal that only fires when an
+ambiguous input is actually fed through the compiled parser, i.e. exactly the "silent
+misparse" failure mode this ledger's discipline exists to prevent. `%glr-parser` also
+changes conflict semantics wholesale: bison stops reporting most S/R and R/R conflicts as
+build-time configuration facts and instead defers them to the GLR runtime, so
+`scripts/grammar-tripwire.sh`'s exact-count assertion would no longer mean what it means
+today. This is not a tuning knob on top of the current grammar — it is a different
+validation model, and nothing in the family structure above needs it: family 2 is already
+resolved by lexer feedback, families 1 and 3 are already resolved (and verified) by
+shift-wins.
+
+**Recursive-descent rewrite rejected.** `src/parser/parser.y` is ~3.7k lines carrying five
+conflict-avoidance techniques that are individually localized and ledgered (workarounds.md
+§1-5: LBRACE_BODY bridge, RBRACKET_SLICE token split, `type_call_arg` lookahead split,
+struct-body-scoped ASI, COMMA-before-RBRACE arms). A hand-written recursive-descent parser
+would have to re-derive every one of these as ad-hoc lookahead/backtracking logic scattered
+through hand-written functions, all at once, mid-v1 — with no equivalent of the
+counterexample-to-ledger-entry discipline this file enforces, against a parser whose
+characteristic failure mode (silent wrong-parse) is harder to catch than a bison conflict
+count. Cost/risk is disproportionate to the gain: nothing in the "four historically-blamed
+constructs" list above is actually blocked on LALR(1), and the remaining Go-compat gaps this
+arc's Phase 1 still tracks (labels/goto/fallthrough, select value-binding) are additive
+grammar arms, not architectural blockers a parser rewrite would newly unlock.
+
+**Decision.** Stay LALR(1) + lexer feedback for v1. The tripwire-and-ledger discipline has
+absorbed every grammar change in this project's history (seven rows, four non-zero) at the
+cost of documenting each one, in exchange for a compile-time, exact-count regression net
+that GLR and recursive-descent alternatives would both give up in different ways. Revisit
+only if a future construct proves genuinely inexpressible in LALR(1) with lexer feedback —
+none has yet.
