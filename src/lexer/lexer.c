@@ -313,7 +313,19 @@ Token* lexer_next_token(Lexer* lexer) {
                 while (lexer->ch != '\n' && lexer->ch != 0) {
                     lexer_read_char(lexer);
                 }
-                return lexer_next_token(lexer); // Recursively get next token
+                // P0-5: iterate rather than tail-recurse over skipped comments,
+                // mirroring the newline path above (P0-3). A run of consecutive
+                // `//` comments previously recursed once per comment (`return
+                // lexer_next_token(lexer)`), overflowing the stack on large
+                // inputs (400,000 comment lines -> SIGSEGV). `continue` re-enters
+                // the enclosing `for (;;)` at the top, which re-runs
+                // lexer_skip_whitespace and re-derives current_pos exactly as the
+                // recursive call did — same behavior, no new stack frame.
+                // prev_token_type is untouched here (as it was in the recursive
+                // version, which only updates it via the `if (token) ...` line
+                // below on the eventual real token), so ASI across a skipped
+                // comment behaves identically to ASI across a skipped blank line.
+                continue;
             } else if (lexer_peek_char(lexer) == '*') {
                 // Block comment - skip to */
                 lexer_read_char(lexer); // skip /
@@ -326,7 +338,17 @@ Token* lexer_next_token(Lexer* lexer) {
                     }
                     lexer_read_char(lexer);
                 }
-                return lexer_next_token(lexer); // Recursively get next token
+                // See the P0-5 note above the `//` case: same iterate-not-
+                // recurse fix, same prev_token_type preservation. A block
+                // comment may itself span newlines (e.g. `/* line1\nline2 */`);
+                // those interior newlines are consumed silently by the skip loop
+                // above and never reach the '\n' case's ASI logic — this matches
+                // the pre-existing recursive behavior exactly (the recursive
+                // call also started scanning fresh AFTER the closing `*/`, never
+                // seeing the interior newlines as lexer_next_token input), so a
+                // block comment spanning a newline does not trigger ASI even
+                // when it sits where a real newline would have.
+                continue;
             } else {
                 token = token_new(TOKEN_DIVIDE, "/", 1, current_pos);
                 lexer_read_char(lexer);
@@ -538,23 +560,39 @@ Token* lexer_next_token(Lexer* lexer) {
                     token = token_new(TOKEN_ERROR, "invalid number", 14, current_pos);
                 }
             } else {
-                token = token_new(TOKEN_UNKNOWN, NULL, 0, current_pos);
+                // Capture the offending byte as the token's literal (instead of
+                // NULL) so the P0.4 gate below can name it in the diagnostic —
+                // e.g. `#` — rather than printing an empty/placeholder string.
+                char unknown_ch[2] = { lexer->ch, '\0' };
+                token = token_new(TOKEN_UNKNOWN, unknown_ch, 1, current_pos);
                 lexer_read_char(lexer);
             }
             break;
     }
 
-    // Surface lexical errors so the Bison bridge's silent skip of TOKEN_ERROR
-    // cannot drop a malformed token (e.g. '', '\z', an unterminated 'a) and let
-    // the surrounding program compile to a running binary. We record the error
-    // (and print a positioned diagnostic); the type checker refuses to emit code
-    // while the count is non-zero, which is the actual "rejected cleanly" gate.
+    // Surface lexical errors so the Bison bridge's silent skip of TOKEN_ERROR /
+    // TOKEN_UNKNOWN cannot drop a malformed or unrecognized token (e.g. '',
+    // '\z', an unterminated 'a, or a stray '#') and let the surrounding
+    // program compile to a running binary. We record the error (and print a
+    // positioned diagnostic); the type checker refuses to emit code while the
+    // count is non-zero, which is the actual "rejected cleanly" gate.
+    // TOKEN_UNKNOWN is only ever produced by the `default` case above, for a
+    // byte that is neither a letter, digit, nor any recognized punctuation —
+    // there is no legitimate Goo construct that lexes to it (a `#` inside a
+    // string literal, for instance, is consumed byte-for-byte by
+    // lexer_read_string and never reaches this switch).
     if (token && token->type == TOKEN_ERROR) {
         goo_lexer_error_count++;
         fprintf(stderr, "%s:%d:%d: error: %s\n",
                 token->pos.filename ? token->pos.filename : "<input>",
                 token->pos.line, token->pos.column,
                 token->literal ? token->literal : "lexical error");
+    } else if (token && token->type == TOKEN_UNKNOWN) {
+        goo_lexer_error_count++;
+        fprintf(stderr, "%s:%d:%d: error: unknown token '%s'\n",
+                token->pos.filename ? token->pos.filename : "<input>",
+                token->pos.line, token->pos.column,
+                token->literal ? token->literal : "?");
     }
 
     if (token) lexer->prev_token_type = token->type; // for newline-driven ASI

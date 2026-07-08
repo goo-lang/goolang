@@ -1587,9 +1587,32 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         return 0;
     }
     sprintf(object_filename, "%s.o", filename);
-    
+
+    // Defensive backstop, not a live gate today: the verify at this
+    // function's entry already rejects any verifier-visible IR, and nothing
+    // mutates the module between there and here (target-machine setup only
+    // stamps a data layout), so this second check can only fire if a future
+    // refactor removes/reorders the entry check or adds IR mutation in
+    // between. Know its limits either way: LLVMVerifyModule accepts some
+    // shapes that still crash SelectionDAG — the error-union-of-nullable
+    // (!?T) module SIGILLs in llvm::EVT::getExtendedSizeInBits despite
+    // verifying clean. That class is closed upstream by the type checker's
+    // !?T rejection, not here.
+    char* verify_error_message = NULL;
+    if (LLVMVerifyModule(codegen->module, LLVMReturnStatusAction, &verify_error_message)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "internal compiler error: generated invalid IR (please report): %s",
+                     verify_error_message);
+        LLVMDisposeMessage(verify_error_message);
+        free(object_filename);
+        return 0;
+    }
+    if (verify_error_message) {
+        LLVMDisposeMessage(verify_error_message);
+    }
+
     char* error_message = NULL;
-    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module, 
+    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module,
                                    object_filename, LLVMObjectFile, &error_message)) {
         codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to emit object file: %s", error_message);
         LLVMDisposeMessage(error_message);

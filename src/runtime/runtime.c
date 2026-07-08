@@ -100,10 +100,36 @@ int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_
     return (int32_t)n;
 }
 
+// Go-conformant default: an unrecovered panic prints to stderr and exits
+// with status 2 (no core dump). GOO_PANIC_ABORT=1 restores the old abort()
+// behavior — SIGABRT + core dump — as a debugging escape hatch so a panic
+// can still be caught live in a debugger or produce a core for postmortem
+// analysis.
+//
+// The env var is read exactly once, via a constructor that runs before
+// main() (same pattern as the self-registering test fixtures in
+// test_framework.h) rather than a check on every goo_panic call. A
+// repeated getenv() per panic would be harmless — panics are by
+// definition not a hot path — but it would also make g_panic_abort racy
+// under concurrent goroutines calling goo_panic on separate OS threads
+// (this runtime is multithreaded; see concurrency.c). Resolving it once,
+// before any thread exists, sidesteps that entirely rather than relying on
+// the race being benign.
+static int g_panic_abort = 0;
+
+__attribute__((constructor))
+static void goo_panic_init_abort_flag(void) {
+    const char* env = getenv("GOO_PANIC_ABORT");
+    g_panic_abort = (env != NULL && strcmp(env, "1") == 0);
+}
+
 void goo_panic(const char* message) {
     fprintf(stderr, "panic: %s\n", message ? message : "unknown error");
     fflush(stderr);
-    abort();
+    if (g_panic_abort) {
+        abort();
+    }
+    exit(2);
 }
 
 goo_error_t* goo_new_error(const char* message) {

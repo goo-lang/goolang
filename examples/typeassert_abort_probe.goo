@@ -1,0 +1,24 @@
+// typeassert_abort_probe: a failed single-return x.(T) type assertion must
+// panic. Migrated from the standalone `typeassert-abort-probe` Makefile
+// target (which generated this same program body via printf) into the
+// golden suite (Phase 0 Task 1) — see examples/typeassert_abort_probe.exit
+// (expected exit code: 2 — Go-conformant panic exit per Task 6,
+// GOO_PANIC_ABORT=1 restores the prior SIGABRT/134 abort() for debugging)
+// and .stderr.txt (panic message substring).
+package main
+
+type A interface {
+	M() int
+}
+type X struct{ V int }
+
+func (x X) M() int { return x.V }
+
+type Y struct{ V int }
+
+func (y Y) M() int { return y.V }
+
+func main() {
+	var a A = X{V: 1}
+	_ = a.(Y)
+}

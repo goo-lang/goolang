@@ -73,6 +73,10 @@ This project uses a Makefile for building:
 - `make test-reference` - Run reference manager tests
 - `make test-interface` - Run interface system tests
 - `make test-flow` - Run flow analysis tests
+- `make verify-core` - Full probe net, no CompCert required. Authoritative
+  ccomp-free gate; safe for pre-push on any machine.
+- `make verify` - `verify-core` plus the CompCert bootstrap pilot
+  (`v2-bootstrap-pilot`); requires an opam CompCert switch.
 
 ## Project Structure
 

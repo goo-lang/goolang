@@ -495,34 +495,6 @@ strindex-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if ! grep -qiE "error" build/strindex_reject.err; then echo "strindex-reject-probe: FAIL (no diagnostic)"; cat build/strindex_reject.err; exit 1; fi; \
 	echo "strindex-reject-probe: PASS (rejected rc=$$rc)"
 
-# &T{} supports STRUCT literals only — & on a slice/array/map literal must be
-# a clean type error naming the literal kind, never the generic non-lvalue
-# codegen error or a crash. Guards the expression_checker.c rejection.
-addrlit-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== addrlit-reject-probe: & on a slice literal must reject ==="
-	@printf 'package main\nfunc main(){ p := &[]int{1, 2}; _ = p }\n' > build/addrlit_reject.goo
-	@rm -f build/addrlit_reject
-	@$(COMPILER) -o build/addrlit_reject build/addrlit_reject.goo > build/addrlit_reject.out 2> build/addrlit_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "addrlit-reject-probe: FAIL (compiled rc=0 — &slice-literal silently accepted)"; exit 1; fi; \
-	if [ -x build/addrlit_reject ]; then echo "addrlit-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "address of a slice literal" build/addrlit_reject.err; then echo "addrlit-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/addrlit_reject.err; exit 1; fi; \
-	echo "addrlit-reject-probe: PASS (rejected rc=$$rc)"
-
-# !x is boolean-only — !5 must be a clean type error (the TOKEN_NOT typecheck
-# arm), not a parse error or a crash. Guards the BANG unary_expr production's
-# routing into the boolean-NOT semantic.
-boolnot-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== boolnot-reject-probe: ! on a non-bool must reject ==="
-	@printf 'package main\nfunc main(){ x := !5; _ = x }\n' > build/boolnot_reject.goo
-	@rm -f build/boolnot_reject
-	@$(COMPILER) -o build/boolnot_reject build/boolnot_reject.goo > build/boolnot_reject.out 2> build/boolnot_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "boolnot-reject-probe: FAIL (compiled rc=0 — !5 silently accepted)"; exit 1; fi; \
-	if [ -x build/boolnot_reject ]; then echo "boolnot-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if ! grep -q "Logical not requires boolean" build/boolnot_reject.err; then echo "boolnot-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/boolnot_reject.err; exit 1; fi; \
-	echo "boolnot-reject-probe: PASS (rejected rc=$$rc)"
-
 # Select comms are now type-checked — sending the wrong element type must be
 # a clean compile error, not silent slot-machinery corruption at runtime.
 selectsend-reject-probe: $(COMPILER) $(RUNTIME_LIB)
@@ -601,30 +573,10 @@ floatint-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	out="$$(./build/fi_int2float)"; if [ "$$out" != "3 1 2.5" ]; then echo "floatint-reject-probe: FAIL (int->float positive control output '$$out' != '3 1 2.5')"; exit 1; fi
 	@echo "floatint-reject-probe: PASS (all four float->int shapes rejected; int->float still permitted)"
 
-# Task 2 float-context exclusion, negative gate: an all-int `/` subtree
-# meeting a float operand in an arithmetic context must be REJECTED, not
-# silently computed. Go legally computes `(1/2)*g` as 0 (constant-folds the
-# int division to 0 BEFORE promoting to float), which a stamp-and-compute
-# checker (no constant-folding pass) cannot reproduce — rejecting beats
-# silently computing the wrong value (task-2 review adjudication; see the
-# is_untyped_int_rooted for_float_context doc comment in
-# expression_checker.c and examples/constdiv_reject.goo). This was
-# previously verified only by hand; this probe locks it in against
-# refactors.
-constdiv-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== constdiv-reject-probe: (1/2)*g float-context division must reject ==="
-	@rm -f build/constdiv_reject
-	@$(COMPILER) -o build/constdiv_reject examples/constdiv_reject.goo > build/constdiv_reject.out 2> build/constdiv_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "constdiv-reject-probe: FAIL (compiled rc=0 — (1/2)*g silently accepted)"; exit 1; fi; \
-	if [ -x build/constdiv_reject ]; then echo "constdiv-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if grep -qiE "Module verification failed|LLVM ERROR" build/constdiv_reject.err; then echo "constdiv-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/constdiv_reject.err; exit 1; fi; \
-	if ! grep -q "no implicit int/float conversion" build/constdiv_reject.err; then echo "constdiv-reject-probe: FAIL (wrong/missing diagnostic)"; cat build/constdiv_reject.err; exit 1; fi; \
-	echo "constdiv-reject-probe: PASS (rejected rc=$$rc)"
-
 # Same float-context exclusion, modulo shape: `(1 % 2) * g`. Go legally
 # computes this as 2.5 (constant-folds `1%2` to the int 1 before promoting);
-# Goo rejects for the same reason as constdiv-reject-probe above. See
+# Goo rejects for the same reason the migrated constdiv reject fixture does
+# (tests/golden/reject/constdiv-reject-probe.{goo,err.txt}). See
 # examples/constmod_reject.goo.
 constmod-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
@@ -918,8 +870,9 @@ variadic-range-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	echo "variadic-range-reject-probe: PASS (rejected rc=$$rc)"
 
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
-# that both taken panics abort with the runtime-error message (the non-panic
-# paths are in bits_div_probe).
+# that both taken panics exit 2 (Go-conformant per Task 6; GOO_PANIC_ABORT=1
+# restores the old abort()/134 for debugging) with the runtime-error message
+# (the non-panic paths are in bits_div_probe).
 bits-div-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== bits-div-abort-probe: Div y==0 / y<=hi abort ==="
@@ -928,25 +881,26 @@ bits-div-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@$(COMPILER) -o build/div_dz build/div_dz.goo >/dev/null 2>build/div_dz.cerr || (echo "bits-div-abort-probe: FAIL (dz did not compile)"; cat build/div_dz.cerr; exit 1)
 	@$(COMPILER) -o build/div_of build/div_of.goo >/dev/null 2>build/div_of.cerr || (echo "bits-div-abort-probe: FAIL (of did not compile)"; cat build/div_of.cerr; exit 1)
 	@./build/div_dz >/dev/null 2>build/div_dz.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "bits-div-abort-probe: FAIL (divide-by-zero did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "bits-div-abort-probe: FAIL (divide-by-zero exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -qiE "integer divide by zero" build/div_dz.err; then echo "bits-div-abort-probe: FAIL (no divide-by-zero message)"; cat build/div_dz.err; exit 1; fi
 	@./build/div_of >/dev/null 2>build/div_of.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "bits-div-abort-probe: FAIL (overflow did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "bits-div-abort-probe: FAIL (overflow exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -qiE "integer overflow" build/div_of.err; then echo "bits-div-abort-probe: FAIL (no overflow message)"; cat build/div_of.err; exit 1; fi
 	@echo "bits-div-abort-probe: PASS"
 
-# panic(v) builtin: a taken panic must abort — print "panic: <msg>" to stderr
-# and exit non-zero (the runtime goo_panic calls abort()). Guards the runtime
-# behavior that panic_probe (untaken branch) cannot.
+# panic(v) builtin: a taken panic must exit 2 (Go-conformant per Task 6;
+# GOO_PANIC_ABORT=1 restores the old abort()/134 for debugging) and print
+# "panic: <msg>" to stderr. Guards the runtime behavior that panic_probe
+# (untaken branch) cannot.
 panic-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== panic-abort-probe: a taken panic aborts with a message ==="
 	@printf 'package main\nfunc main(){ panic("boom") }\n' > build/panic_abort.goo
 	@$(COMPILER) -o build/panic_abort build/panic_abort.goo >/dev/null 2>build/panic_abort.cerr || (echo "panic-abort-probe: FAIL (did not compile)"; cat build/panic_abort.cerr; exit 1)
 	@./build/panic_abort > build/panic_abort.out 2> build/panic_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "panic-abort-probe: FAIL (panic did not abort — exit 0)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "panic-abort-probe: FAIL (exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -qiE "panic: boom" build/panic_abort.err; then echo "panic-abort-probe: FAIL (no 'panic: boom' on stderr)"; cat build/panic_abort.err; exit 1; fi; \
-	echo "panic-abort-probe: PASS (aborted rc=$$rc)"
+	echo "panic-abort-probe: PASS (exit rc=$$rc)"
 
 # Stdlib table enabler B: hex byte escapes `\xNN` in string literals. The const
 # lookup tables in math/bits are strings of raw bytes written as `\x00\x01...`,
@@ -1377,6 +1331,7 @@ link-cleanup-probe: $(COMPILER) $(RUNTIME_LIB)
 # handler now iterates instead of tail-recursing, so 1,000,000 consecutive
 # blank lines lex without a SIGSEGV. The fixture is generated at test time
 # (1MB+), never committed. Guards against a regression back to recursion.
+.PHONY: blank-lines-probe comment-lines-probe
 blank-lines-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== blank-lines-probe: 1e6 blank lines must not crash the lexer ==="
@@ -1386,6 +1341,21 @@ blank-lines-probe: $(COMPILER) $(RUNTIME_LIB)
 	./build/blank_lines_probe.out; rrc=$$?; \
 	if [ $$rrc -ne 0 ]; then echo "blank-lines-probe: FAIL (run rc=$$rrc)"; exit 1; fi; \
 	echo "blank-lines-probe: PASS"
+
+# P0-5: a run of consecutive line comments must NOT overflow the stack. The
+# `//` and `/* */` comment-skip paths now iterate (continue the scan loop)
+# instead of tail-recursing, so 400,000 consecutive comment lines lex without
+# a SIGSEGV. The fixture is generated at test time, never committed. Guards
+# against a regression back to recursion (sibling of blank-lines-probe).
+comment-lines-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== comment-lines-probe: 4e5 comment lines must not crash the lexer ==="
+	@{ printf 'package main\nfunc main() {\n'; yes '// c' | head -n 400000; printf '}\n'; } > build/comment_lines_probe.goo
+	@"$(COMPILER)" build/comment_lines_probe.goo -o build/comment_lines_probe.out 2>build/comment_lines_probe.err; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "comment-lines-probe: FAIL (compile rc=$$rc — stack overflow regression?)"; cat build/comment_lines_probe.err; exit 1; fi; \
+	./build/comment_lines_probe.out; rrc=$$?; \
+	if [ $$rrc -ne 0 ]; then echo "comment-lines-probe: FAIL (run rc=$$rrc)"; exit 1; fi; \
+	echo "comment-lines-probe: PASS"
 
 # Blank identifier `_` is a discard, never a binding: it may repeat across `:=`
 # in one scope, but it can NEVER be read back as a value (Go: "cannot use _ as
@@ -1398,36 +1368,6 @@ blank-read-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "blank-read-reject-probe: FAIL (reading _ compiled)"; exit 1; \
 	else echo "blank-read-reject-probe: PASS"; fi
 
-# P1-7: integer divide-by-zero must abort (non-zero exit + panic message),
-# not return garbage. Also confirms normal division still exits 0.
-divzero-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== divzero-probe: 10/0 must abort with 'integer divide by zero' ==="
-	@"$(COMPILER)" examples/divzero_probe.goo -o build/divzero_probe.out 2>build/divzero_probe.cerr || \
-	  { echo "divzero-probe: FAIL (compile)"; cat build/divzero_probe.cerr; exit 1; }
-	@./build/divzero_probe.out 2>build/divzero_probe.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "divzero-probe: FAIL (10/0 did not abort, rc=0)"; exit 1; fi; \
-	if ! grep -q "integer divide by zero" build/divzero_probe.err; then echo "divzero-probe: FAIL (no panic message)"; cat build/divzero_probe.err; exit 1; fi
-	@printf 'package main\nimport "fmt"\nfunc main(){ fmt.Println(20/4) }\n' > build/divok.goo
-	@"$(COMPILER)" build/divok.goo -o build/divok.out 2>/dev/null && ./build/divok.out >build/divok.out.txt 2>&1; \
-	if [ "$$(cat build/divok.out.txt)" != "5" ]; then echo "divzero-probe: FAIL (normal 20/4 != 5: $$(cat build/divok.out.txt))"; exit 1; fi
-	@echo "divzero-probe: PASS"
-
-# P1-6: an out-of-range slice index must abort (non-zero exit + message),
-# not read past the backing buffer. Also confirms in-bounds indexing exits 0.
-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== bounds-probe: s[5] on len-3 slice must abort ==="
-	@"$(COMPILER)" examples/bounds_probe.goo -o build/bounds_probe.out 2>build/bounds_probe.cerr || \
-	  { echo "bounds-probe: FAIL (compile)"; cat build/bounds_probe.cerr; exit 1; }
-	@./build/bounds_probe.out 2>build/bounds_probe.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "bounds-probe: FAIL (OOB did not abort, rc=0)"; exit 1; fi; \
-	if ! grep -qi "bounds check failed\|index .* >= length" build/bounds_probe.err; then echo "bounds-probe: FAIL (no bounds message)"; cat build/bounds_probe.err; exit 1; fi
-	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[10,20,30]; fmt.Println(s[1]) }\n' > build/inbounds.goo
-	@"$(COMPILER)" build/inbounds.goo -o build/inbounds.out 2>/dev/null && ./build/inbounds.out >build/inbounds.txt 2>&1; \
-	if [ "$$(cat build/inbounds.txt)" != "20" ]; then echo "bounds-probe: FAIL (in-bounds s[1] != 20: $$(cat build/inbounds.txt))"; exit 1; fi
-	@echo "bounds-probe: PASS"
-
 # Index-bounds-checking Task 1: a slice-index WRITE (s[i]=x) out of range must
 # abort (non-zero exit + "bounds check failed"), not write past the backing
 # buffer. Covers both the too-large index and the negative-index case.
@@ -1438,13 +1378,13 @@ slice-write-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/swb_oob.goo -o build/swb_oob.out 2>build/swb_oob.cerr || \
 	  { echo "slice-write-bounds-probe: FAIL (compile)"; cat build/swb_oob.cerr; exit 1; }
 	@./build/swb_oob.out 2>build/swb_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-write-bounds-probe: FAIL (OOB write did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-write-bounds-probe: FAIL (OOB write expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/swb_oob.err; then echo "slice-write-bounds-probe: FAIL (no bounds message)"; cat build/swb_oob.err; exit 1; fi
 	@printf 'package main\nfunc main(){ s:=[]int{1,2,3}; i:=-1; s[i]=9; _=s }\n' > build/swb_neg.goo
 	@"$(COMPILER)" build/swb_neg.goo -o build/swb_neg.out 2>build/swb_neg.cerr || \
 	  { echo "slice-write-bounds-probe: FAIL (compile neg)"; cat build/swb_neg.cerr; exit 1; }
 	@./build/swb_neg.out 2>build/swb_neg.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-write-bounds-probe: FAIL (negative-index write did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-write-bounds-probe: FAIL (negative-index write expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/swb_neg.err; then echo "slice-write-bounds-probe: FAIL (no bounds message on neg)"; cat build/swb_neg.err; exit 1; fi
 	@echo "slice-write-bounds-probe: PASS"
 
@@ -1459,13 +1399,13 @@ array-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/awb_oob.goo -o build/awb_oob.out 2>build/awb_oob.cerr || \
 	  { echo "array-bounds-probe: FAIL (compile write)"; cat build/awb_oob.cerr; exit 1; }
 	@./build/awb_oob.out 2>build/awb_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "array-bounds-probe: FAIL (OOB array write did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "array-bounds-probe: FAIL (OOB array write expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/awb_oob.err; then echo "array-bounds-probe: FAIL (no bounds message on write)"; cat build/awb_oob.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ var arr [3]int; i:=5; fmt.Println(arr[i]) }\n' > build/arb_oob.goo
 	@"$(COMPILER)" build/arb_oob.goo -o build/arb_oob.out 2>build/arb_oob.cerr || \
 	  { echo "array-bounds-probe: FAIL (compile read)"; cat build/arb_oob.cerr; exit 1; }
 	@./build/arb_oob.out 2>build/arb_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "array-bounds-probe: FAIL (OOB array read did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "array-bounds-probe: FAIL (OOB array read expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/arb_oob.err; then echo "array-bounds-probe: FAIL (no bounds message on read)"; cat build/arb_oob.err; exit 1; fi
 	@echo "array-bounds-probe: PASS"
 
@@ -1482,25 +1422,25 @@ slice-expr-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/sebp_highcap.goo -o build/sebp_highcap.out 2>build/sebp_highcap.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile high>cap)"; cat build/sebp_highcap.cerr; exit 1; }
 	@./build/sebp_highcap.out 2>build/sebp_highcap.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (high>cap did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (high>cap expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_highcap.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on high>cap)"; cat build/sebp_highcap.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[]int{1,2,3}; t:=s[3:1]; fmt.Println(len(t)) }\n' > build/sebp_lowhigh.goo
 	@"$(COMPILER)" build/sebp_lowhigh.goo -o build/sebp_lowhigh.out 2>build/sebp_lowhigh.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile low>high)"; cat build/sebp_lowhigh.cerr; exit 1; }
 	@./build/sebp_lowhigh.out 2>build/sebp_lowhigh.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (low>high did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (low>high expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_lowhigh.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on low>high)"; cat build/sebp_lowhigh.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[]int{1,2,3}; i:=-1; t:=s[i:]; fmt.Println(len(t)) }\n' > build/sebp_neg.goo
 	@"$(COMPILER)" build/sebp_neg.goo -o build/sebp_neg.out 2>build/sebp_neg.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile negative low)"; cat build/sebp_neg.cerr; exit 1; }
 	@./build/sebp_neg.out 2>build/sebp_neg.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (negative low did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (negative low expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_neg.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on negative low)"; cat build/sebp_neg.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ str:="hello"; sub:=str[0:99]; fmt.Println(sub) }\n' > build/sebp_str.goo
 	@"$(COMPILER)" build/sebp_str.goo -o build/sebp_str.out 2>build/sebp_str.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile string OOB)"; cat build/sebp_str.cerr; exit 1; }
 	@./build/sebp_str.out 2>build/sebp_str.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (string OOB did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (string OOB expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_str.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on string OOB)"; cat build/sebp_str.err; exit 1; fi
 	@echo "slice-expr-bounds-probe: PASS"
 
@@ -1522,14 +1462,14 @@ const-array-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/cabp_oob.goo -o build/cabp_oob.out 2>build/cabp_oob.cerr || \
 	  { echo "const-array-bounds-probe: FAIL (compile)"; cat build/cabp_oob.cerr; exit 1; }
 	@./build/cabp_oob.out 2>build/cabp_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "const-array-bounds-probe: FAIL (OOB write against const-sized array did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "const-array-bounds-probe: FAIL (OOB write against const-sized array expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/cabp_oob.err; then echo "const-array-bounds-probe: FAIL (no bounds message)"; cat build/cabp_oob.err; exit 1; fi; \
 	  if ! grep -q "length 3" build/cabp_oob.err; then echo "const-array-bounds-probe: FAIL (checked against wrong length — placeholder-10 regression?)"; cat build/cabp_oob.err; exit 1; fi
 	@printf 'package main\nfunc main(){ var arr [2+3]int; i:=5; arr[i]=9; _=arr }\n' > build/cabp_expr.goo
 	@"$(COMPILER)" build/cabp_expr.goo -o build/cabp_expr.out 2>build/cabp_expr.cerr || \
 	  { echo "const-array-bounds-probe: FAIL (compile expr-length)"; cat build/cabp_expr.cerr; exit 1; }
 	@./build/cabp_expr.out 2>build/cabp_expr.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "const-array-bounds-probe: FAIL (OOB write against expr-sized [2+3]int did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "const-array-bounds-probe: FAIL (OOB write against expr-sized [2+3]int expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -q "length 5" build/cabp_expr.err; then echo "const-array-bounds-probe: FAIL (expr length not resolved to 5)"; cat build/cabp_expr.err; exit 1; fi
 	@echo "const-array-bounds-probe: PASS"
 
@@ -1857,15 +1797,16 @@ spmd-bench-probe: $(COMPILER) $(RUNTIME_LIB)
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
 # not jump to a NULL instruction pointer. `var f func(int) int` zero-values
 # to the fat pointer {NULL, NULL}. Mirrors bits-div-abort-probe/divzero-
-# probe's runtime-abort pattern: compiles cleanly (rc=0), the RUN aborts
-# non-zero, and the abort message is grepped.
+# probe's runtime-abort pattern: compiles cleanly (rc=0), the RUN exits 2
+# (Go-conformant per Task 6; GOO_PANIC_ABORT=1 restores the old abort()/134
+# for debugging), and the panic message is grepped.
 funcnil-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== funcnil-abort-probe: nil func value call must abort with 'nil function' ==="
 	@"$(COMPILER)" examples/funcnil_abort.goo -o build/funcnil_abort.out 2>build/funcnil_abort.cerr || \
 	  { echo "funcnil-abort-probe: FAIL (compile)"; cat build/funcnil_abort.cerr; exit 1; }
 	@./build/funcnil_abort.out 2>build/funcnil_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "funcnil-abort-probe: FAIL (nil call did not abort, rc=0)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "funcnil-abort-probe: FAIL (nil call exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "nil function" build/funcnil_abort.err; then echo "funcnil-abort-probe: FAIL (no nil-function panic message)"; cat build/funcnil_abort.err; exit 1; fi
 	@echo "funcnil-abort-probe: PASS"
 
@@ -1888,8 +1829,9 @@ funcval-nilcmp-probe: $(COMPILER) $(RUNTIME_LIB)
 # hit the existing nil-func panic (zero-guard unbox yields the {NULL,NULL}
 # fat pointer), not segfault. Mirrors funcnil-abort-probe's structure — same
 # panic mechanism (call_codegen.c's indirect-call guard), same assertions
-# (non-zero exit + "nil function" on stderr) — with the func value read out
-# of a map lookup instead of a bare zero-valued var.
+# (exit 2, Go-conformant per Task 6, GOO_PANIC_ABORT=1 restores the old
+# abort()/134 for debugging + "nil function" on stderr) — with the func
+# value read out of a map lookup instead of a bare zero-valued var.
 map-nilfunc-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== map-nilfunc-abort-probe: ops[missing]() must panic cleanly ==="
@@ -1897,28 +1839,9 @@ map-nilfunc-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/map_nilfunc_abort.goo -o build/map_nilfunc_abort.out 2>build/map_nilfunc_abort.cerr || \
 	  { echo "map-nilfunc-abort-probe: FAIL (compile)"; cat build/map_nilfunc_abort.cerr; exit 1; }
 	@./build/map_nilfunc_abort.out 2>build/map_nilfunc_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "map-nilfunc-abort-probe: FAIL (nil call did not abort, rc=0)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "map-nilfunc-abort-probe: FAIL (nil call exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "nil function" build/map_nilfunc_abort.err; then echo "map-nilfunc-abort-probe: FAIL (no nil-function panic message)"; cat build/map_nilfunc_abort.err; exit 1; fi
 	@echo "map-nilfunc-abort-probe: PASS"
-
-# Task 2 (type assertions): a failed single-return `x.(T)` (no comma-ok to
-# absorb the miss) must panic cleanly rather than load garbage through the
-# wrong LLVM type. Mirrors map-nilfunc-abort-probe's structure — compile,
-# run, assert non-zero exit + the "interface conversion" panic substring
-# (the message also now names the dynamic type as of Task 4 of the
-# interface-type-descriptor plan — see iface-assert-dynname-probe below and
-# expression_codegen.c's AST_TYPE_ASSERT case doc comment — but this probe
-# only asserts the substring common to both wordings).
-typeassert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== typeassert-abort-probe: failed single-return x.(T) must panic ==="
-	@printf 'package main\ntype A interface {\n\tM() int\n}\ntype X struct{ V int }\nfunc (x X) M() int { return x.V }\ntype Y struct{ V int }\nfunc (y Y) M() int { return y.V }\nfunc main() {\n\tvar a A = X{V: 1}\n\t_ = a.(Y)\n}\n' > build/typeassert_abort.goo
-	@"$(COMPILER)" build/typeassert_abort.goo -o build/typeassert_abort.out 2>build/typeassert_abort.cerr || \
-	  { echo "typeassert-abort-probe: FAIL (compile)"; cat build/typeassert_abort.cerr; exit 1; }
-	@./build/typeassert_abort.out 2>build/typeassert_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "typeassert-abort-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
-	if ! grep -q "interface conversion" build/typeassert_abort.err; then echo "typeassert-abort-probe: FAIL (no conversion panic message)"; cat build/typeassert_abort.err; exit 1; fi
-	@echo "typeassert-abort-probe: PASS"
 
 # NOTE: the empty-interface type-switch guard that used to live here
 # (type_check_type_switch_stmt, src/types/type_checker.c) was lifted by the
@@ -2000,28 +1923,6 @@ if-init-scope-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	@if $(COMPILER) -o build/ifscope build/ifscope.goo 2>build/ifscope.err; then \
 	  echo "if-init-scope-reject-probe: FAIL (x leaked past if)"; exit 1; \
 	else echo "if-init-scope-reject-probe: PASS"; fi
-
-# Task 3 (func-values): a func VALUE with a mismatched signature must be
-# REJECTED at compile time (Go: "cannot use two (value of type func(int,
-# int) int) as func(int) int value in assignment"). Task 1 already made
-# TYPE_FUNCTION structurally comparable (type_equals/type_compatible), so
-# the mismatch itself was already rejected before this task — this probe
-# locks in the DIAGNOSTIC WORDING: type_function() used to name every
-# signature the literal "func" ("Cannot assign func to func" regardless of
-# either side's actual shape), and now renders the full signature. Goo's
-# "int" is 64-bit (type_checker.c: "Default int (Go: int is 64-bit here)"),
-# so the rendered param/return name is "int64" — grepping the actual
-# rendering, not Go's own wording (same idiom as constconv-reject-probe).
-funcsig-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== funcsig-reject-probe: func(int64,int64)int64 assigned to func(int64)int64 var must reject ==="
-	@rm -f build/funcsig_reject
-	@$(COMPILER) -o build/funcsig_reject examples/funcsig_reject.goo > build/funcsig_reject.out 2> build/funcsig_reject.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "funcsig-reject-probe: FAIL (compiled rc=0 — signature mismatch silently accepted)"; exit 1; fi; \
-	if [ -x build/funcsig_reject ]; then echo "funcsig-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
-	if grep -qiE "Module verification failed|LLVM ERROR" build/funcsig_reject.err; then echo "funcsig-reject-probe: FAIL (invalid IR reached the LLVM verifier instead of a clean rejection)"; cat build/funcsig_reject.err; exit 1; fi; \
-	if ! grep -q "func(int64, int64) int64" build/funcsig_reject.err; then echo "funcsig-reject-probe: FAIL (wrong/missing diagnostic — type_to_string regressed to bare 'func')"; cat build/funcsig_reject.err; exit 1; fi; \
-	echo "funcsig-reject-probe: PASS (rejected rc=$$rc)"
 
 # Closures Task 2 fix: capturing a LOOP VARIABLE in a closure must be a clean
 # checker error. Modern Go (1.22+) ACCEPTS examples/loopcapture_reject.goo and
@@ -2310,16 +2211,184 @@ goostd-resolver-probe:
 	$(CC) $(CFLAGS) tests/package/resolver_probe.c $(SRCDIR)/package/import_resolver.c -o build/resolver_probe
 	./build/resolver_probe
 
-# Aggregate verification net per `verification_gates.md`. Runs the
-# green gates in sequence: baseline-probe, smoke-stdlib,
-# v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe,
-# exit-code-probe, methods-probe.
-# Exits non-zero on any failure. Use this on cross-cutting changes;
-# use individual targets when iterating on a specific area.
+# Full aggregate probe net — the single source of truth for `verify`'s
+# dependency list (per `verification_gates.md`). Extend THIS list when a
+# new gate is promoted in; do not add a second literal list anywhere else
+# (verify-core below derives from it, so a second list would drift).
+#
+# ccomp-gated: v2-bootstrap-pilot depends on ccomp-build, which requires
+# an opam CompCert switch. It is the only target in VERIFY_ALL_DEPS that
+# does — verified via `make -n verify 2>&1 | grep -i ccomp`.
+#
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden spmd-bench-probe
+VERIFY_ALL_DEPS := \
+    baseline-probe \
+    lvalue-probe \
+    file-io-probe \
+    pointer-probe \
+    smoke-stdlib \
+    v2-bootstrap-pilot \
+    comptime-block-probe \
+    comptime-probe \
+    m10-probe \
+    exit-code-probe \
+    switch-probe \
+    methods-probe \
+    pointer-write-probe \
+    new-probe \
+    enum-probe \
+    match-probe \
+    append-probe \
+    cap-probe \
+    conv-probe \
+    conv-reject-probe \
+    charlit-probe \
+    charlit-reject-probe \
+    strindex-probe \
+    strindex-reject-probe \
+    hexesc-probe \
+    hexesc-reject-probe \
+    panic-abort-probe \
+    bits-div-abort-probe \
+    conststr-nul-probe \
+    conststr-probe \
+    map-probe \
+    int64-probe \
+    commaok-probe \
+    guard-probe \
+    nullable-iflet-probe \
+    nullable-nilcmp-probe \
+    nullable-abi-probe \
+    nullable-intret-probe \
+    nullable-assign-probe \
+    nullable-width-probe \
+    erru-catch-probe \
+    erru-error-probe \
+    erru-abi-probe \
+    chan-probe \
+    chan-elem-probe \
+    chan-padded-probe \
+    chan-uint-probe \
+    go-probe \
+    unbuffered-probe \
+    select-probe \
+    block-scope-probe \
+    escape-probe \
+    escape-range-probe \
+    mt-scheduler-stress \
+    yield-stress \
+    chan-mt-stress \
+    deadlock-probe \
+    deadlock-goroutine-probe \
+    default-thread-count-test \
+    parallel-soak-probe \
+    parallel-select-soak-probe \
+    cwd-link-probe \
+    outoftree-probe \
+    break-probe \
+    continue-probe \
+    break-nested-probe \
+    println-badtype-probe \
+    error-arity-probe \
+    return-type-erru-probe \
+    erru-catch-type-reject-probe \
+    iface-parse-probe \
+    iface-satisfaction-probe \
+    try-nonerru-probe \
+    return-mismatch-probe \
+    named-return-reject-probe \
+    composite-literal-reject-probe \
+    call-arity-probe \
+    call-argtype-probe \
+    pkg-argcheck-probe \
+    forward-ref-probe \
+    print-aggregate-probe \
+    ptr-recv-nonaddr-probe \
+    link-cleanup-probe \
+    blank-lines-probe \
+    comment-lines-probe \
+    slice-write-bounds-probe \
+    array-bounds-probe \
+    slice-expr-bounds-probe \
+    const-array-bounds-probe \
+    nonconst-arraylen-reject-probe \
+    comptime-value-reject-probe \
+    comptime-value-reject-matrix \
+    comptime-generic-compose-ir-pin \
+    selectsend-reject-probe \
+    globalcall-init-probe \
+    floatint-reject-probe \
+    constmod-reject-probe \
+    baremod-reject-probe \
+    constint8-reject-probe \
+    constuint8-reject-probe \
+    constf32-reject-probe \
+    constf64-reject-probe \
+    constconv-reject-probe \
+    consttrunc-reject-probe \
+    constelem-reject-probe \
+    constnul-reject-probe \
+    floatmod-reject-probe \
+    cascade-reject-probe \
+    multivar-reject-probe \
+    variadic-reject-probe \
+    variadic-range-reject-probe \
+    funcnil-abort-probe \
+    funcval-nilcmp-probe \
+    map-nilfunc-abort-probe \
+    loopcapture-reject-probe \
+    osargs-probe \
+    embed-iface-reject-probe \
+    embed-dup-reject-probe \
+    embed-badtype-reject-probe \
+    embed-enum-reject-probe \
+    embed-ambiguous-reject-probe \
+    embed-literal-reject-probe \
+    map-addr-reject-probe \
+    mapkey-reject-probe \
+    struct-map-key-reject-probe \
+    iface-map-key-uncomparable-probe \
+    bytesconv-reject-probe \
+    spread-reject-probe \
+    copy-reject-probe \
+    typeassert-reject-probe \
+    typeswitch-reject-probe \
+    if-init-scope-reject-probe \
+    blank-read-reject-probe \
+    const-index-reject-probe \
+    rtti-assert-panic-probe \
+    iface-assert-dynname-probe \
+    iface-target-assert-abort-probe \
+    generics-reject-probe \
+    generics-bound-reject-probe \
+    asi-hardening-probe \
+    param-escape-test \
+    block-escape-test \
+    arena-routing-test \
+    arena-free-probe \
+    arena-valgrind-probe \
+    arena-rss-probe \
+    test-golden \
+    test-golden-reject \
+    spmd-bench-probe
+
+# verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
+# authoritative ccomp-free gate: green on any machine, no CompCert / opam
+# switch required. Use it for pre-push everywhere; use `verify` (below)
+# only where the CompCert bootstrap pilot toolchain is set up.
+VERIFY_CORE_DEPS := $(filter-out v2-bootstrap-pilot,$(VERIFY_ALL_DEPS))
+
+.PHONY: verify verify-core
+
+# Exits non-zero on any failure. Use this on cross-cutting changes;
+# use individual targets when iterating on a specific area.
+verify-core: $(VERIFY_CORE_DEPS)
+	@echo ""
+	@echo "verify-core: ALL GREEN GATES PASSED (ccomp-free)"
+
+verify: $(VERIFY_ALL_DEPS)
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2923,20 +2992,6 @@ iface-map-key-uncomparable-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -qi "comparing uncomparable" build/imk_unc.err; then echo "iface-map-key-uncomparable-probe: FAIL (wrong message)"; cat build/imk_unc.err; exit 1; fi
 	@echo "iface-map-key-uncomparable-probe: PASS"
 
-# Trailing commas in struct/map literals are now accepted (see
-# struct_lit / map_lit in parser.y), but a BARE comma with no preceding
-# entry (`{,}`) must stay a syntax error — the COMMA arms require a
-# non-empty entries/inits list before the trailing comma.
-trailingcomma-reject-probe: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p build
-	@echo "=== trailingcomma-reject-probe: bare comma literal must reject ==="
-	@printf 'package main\nfunc main(){\n\tm := map[string]int{,}\n\t_ = m\n}\n' > build/tc_reject.goo
-	@if $(COMPILER) -o build/tc_reject build/tc_reject.goo 2>build/tc_reject.err; then \
-	  echo "trailingcomma-reject-probe: FAIL (bare-comma literal compiled)"; exit 1; \
-	else \
-	  echo "trailingcomma-reject-probe: PASS (rejected)"; \
-	fi
-
 # Task 2 (stdlib unblocker): `[]T(expr)` is only supported for []byte(string)
 # in v1 (expression_checker.c's AST_SLICE_CONVERSION case) — any other
 # element type (`[]int("x")`) must reject with the v1-scoped diagnostic,
@@ -3143,10 +3198,22 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden test-golden-reject
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
+
+# P0.9: data-driven compile-REJECT golden suite — the negative-space sibling
+# of test-golden. Every tests/golden/reject/<name>.goo must fail to compile;
+# see scripts/run_golden_reject.sh's header for the exact per-fixture
+# assertions (exit nonzero, no binary emitted, stderr contains the sidecar's
+# .err.txt substring). Five Makefile reject-probes (addrlit, boolnot,
+# constdiv, funcsig, trailingcomma) migrated here as the pilot fixtures;
+# later tasks add more by dropping a .goo + .err.txt pair in, no Makefile
+# changes required.
+test-golden-reject: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== test-golden-reject: data-driven compile-reject golden suite ==="
+	@COMPILER="$(COMPILER)" bash scripts/run_golden_reject.sh
 
 # Switch-statement probe: compile + run examples/switch_probe.goo and diff
 # stdout against expected.txt (m10-probe pattern). Covers first/middle case
@@ -4024,11 +4091,14 @@ const-index-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 # empty interface (no comma-ok to absorb the miss) must still panic cleanly
 # now that the empty-interface guard is lifted — mirrors typeassert-abort-probe
 # but with an `interface{}` operand instead of a method-bearing interface.
+# exit 2 is Go-conformant per Task 6 (GOO_PANIC_ABORT=1 restores the old
+# abort()/134 for debugging).
 rtti-assert-panic-probe: lexer
 	@printf 'package main\nfunc main(){ var x interface{} = "s"; _ = x.(int) }\n' > build/rtti_panic.goo
 	@$(COMPILER) build/rtti_panic.goo -o build/rtti_panic 2>/dev/null || (echo "FAIL: should compile"; exit 1)
-	@if build/rtti_panic; then echo "FAIL: expected panic, got clean exit"; exit 1; fi
-	@echo "PASS rtti-assert-panic-probe (assert-miss on any panics)"
+	@build/rtti_panic; rc=$$?; \
+	if [ $$rc -ne 2 ]; then echo "FAIL: expected exit 2 on assert-miss, got $$rc"; exit 1; fi
+	@echo "PASS rtti-assert-panic-probe (assert-miss panics, exit 2)"
 
 # RTTI concrete-type-switch plan, Task 3 — retired by the interface-target
 # RTTI plan's Task 3: this probe used to lock in that `case Interface:` in a
@@ -4047,13 +4117,15 @@ rtti-assert-panic-probe: lexer
 # runtime.c) — not just the static interface/target names the old message
 # was limited to. examples/iface_assert_dynname_probe.goo holds a bool and
 # asserts to string; mirrors typeassert-abort-probe's compile/run/grep shape.
+# exit 2 is Go-conformant per Task 6 (GOO_PANIC_ABORT=1 restores the old
+# abort()/134 for debugging).
 iface-assert-dynname-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== iface-assert-dynname-probe: failed x.(T) names the dynamic type ==="
 	@"$(COMPILER)" -o build/iface_assert_dynname examples/iface_assert_dynname_probe.goo 2>build/iface_assert_dynname.cerr || \
 	  { echo "iface-assert-dynname-probe: FAIL (compile)"; cat build/iface_assert_dynname.cerr; exit 1; }
 	@./build/iface_assert_dynname 2>build/iface_assert_dynname.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "iface-assert-dynname-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "iface-assert-dynname-probe: FAIL (bad assert exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "is bool, not string" build/iface_assert_dynname.err; then echo "iface-assert-dynname-probe: FAIL (dynamic type not named)"; cat build/iface_assert_dynname.err; exit 1; fi
 	@echo "iface-assert-dynname-probe: PASS"
 
@@ -4063,14 +4135,15 @@ iface-assert-dynname-probe: $(COMPILER) $(RUNTIME_LIB)
 # (goo_panic_iface_notimpl, runtime.c — distinct from goo_panic_iface_conversion's
 # concrete-target "X is Y, not Z"). examples/iface_target_assert_abort_probe.goo
 # boxes an int (Goo names it "int64") that does not implement Speaker; mirrors
-# typeassert-abort-probe's compile/run/grep shape.
+# typeassert-abort-probe's compile/run/grep shape. exit 2 is Go-conformant
+# per Task 6 (GOO_PANIC_ABORT=1 restores the old abort()/134 for debugging).
 iface-target-assert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== iface-target-assert-abort-probe: failed x.(I) on an interface target must panic ==="
 	@"$(COMPILER)" -o build/iface_target_assert_abort examples/iface_target_assert_abort_probe.goo 2>build/iface_target_assert_abort.cerr || \
 	  { echo "iface-target-assert-abort-probe: FAIL (compile)"; cat build/iface_target_assert_abort.cerr; exit 1; }
 	@./build/iface_target_assert_abort 2>build/iface_target_assert_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "iface-target-assert-abort-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "iface-target-assert-abort-probe: FAIL (bad assert exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "is not Speaker" build/iface_target_assert_abort.err; then echo "iface-target-assert-abort-probe: FAIL (dynamic type not named)"; cat build/iface_target_assert_abort.err; exit 1; fi
 	@echo "iface-target-assert-abort-probe: PASS"
 
