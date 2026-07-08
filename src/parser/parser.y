@@ -1549,6 +1549,46 @@ switch_stmt:
         TypeSwitchNode* tsw = ast_type_switch_new($2.bind_name, $2.expr, $4, get_current_position());
         $$ = (ASTNode*)tsw;
     }
+    // `switch init; tag { }` — the idiomatic Go guard form (e.g.
+    // `switch x := 2; x { case 2: ... }`). Desugared to a wrapping block
+    // `{ init; switch tag {...} }`, mirroring IF's init arm (parser.y:1270)
+    // and FOR's C-style init clause: the init var's scope is naturally
+    // bounded to the wrapper block (out of scope after the switch, matching
+    // Go), with zero AST/codegen changes to SwitchStmtNode.
+    | SWITCH simple_stmt SEMICOLON expression LBRACE_BODY case_clause_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new($4, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON expression LBRACE case_clause_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new($4, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    // `switch init; [v :=] x.(type) { }` — same init-guard shape for the
+    // type-switch form. Reuses type_switch_guard unmodified (no new
+    // type-switch surface — spec open point 3): the bind form
+    // `identifier SHORT_ASSIGN primary_expr DOT LPAREN TYPE RPAREN` already
+    // parses at base without init (Task 3, type-assertions branch), so this
+    // mirrors the same init-wrapper desugar onto it.
+    | SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE_BODY type_case_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_type_switch_new($4.bind_name, $4.expr, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE type_case_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_type_switch_new($4.bind_name, $4.expr, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
     ;
 
 // Type assertions branch, Task 3: the type-switch guard. The bind-less form

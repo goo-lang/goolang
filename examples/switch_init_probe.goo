@@ -1,0 +1,37 @@
+// P1.4 switch-with-init: `switch init; tag { }` — init var visible in every
+// case (including default), NOT visible after the switch. Middle case
+// selected (proves case-matching still works, not just first/last) and
+// default is NOT reached (proves no accidental fallthrough). Expected
+// output produced by `go run` on the equivalent Go program (see below).
+//
+// Equivalent Go program:
+//   package main
+//   import "fmt"
+//   func main() {
+//   	switch x := 5; x {
+//   	case 3:
+//   		fmt.Println("three")
+//   	case 5:
+//   		fmt.Println("five", x*2)
+//   	case 7:
+//   		fmt.Println("seven")
+//   	default:
+//   		fmt.Println("other")
+//   	}
+//   }
+package main
+
+import "fmt"
+
+func main() {
+	switch x := 5; x {
+	case 3:
+		fmt.Println("three")
+	case 5:
+		fmt.Println("five", x*2)
+	case 7:
+		fmt.Println("seven")
+	default:
+		fmt.Println("other")
+	}
+}
