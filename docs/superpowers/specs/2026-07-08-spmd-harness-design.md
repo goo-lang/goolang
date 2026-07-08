@@ -104,8 +104,12 @@ workarounds (below); the measured parallelism numbers with the measurement metho
 
 ## Testing
 
-- Defer fix: golden for two-tuple defer (direct-call + closure forms), on comptime-only
-  AND generic-only AND composed axes; single-tuple defer regression pinned (existing
+- Defer fix, PINNED as committed goldens (comptime axis, two distinct tuples each):
+  closure-literal form (`spmd_defer_probe.goo`), direct-call form
+  (`spmd_defer_direct_probe.goo`), and method-receiver form
+  (`spmd_defer_method_probe.goo`, exercising the recv_synth splice path). Generic-only
+  and composed-axis defer were SESSION-VERIFIED ONLY during Task 1, via ad hoc `/tmp`
+  programs — not committed as goldens. Single-tuple defer regression pinned (existing
   behavior frozen); the exact scout repro shapes.
 - The goldens above wired into `test-golden` (suite currently 315/0 → grows).
 - `spmd-bench-probe` in `verify` (correctness-asserting).
