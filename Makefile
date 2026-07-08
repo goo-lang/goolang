@@ -1795,9 +1795,9 @@ spmd-bench-probe: $(COMPILER) $(RUNTIME_LIB)
 		'fmt.Println(total)' \
 		'}' \
 		> build/spmd_bench_serial.goo
-	$(COMPILER) -o build/spmd_bench_8lane build/spmd_bench_8lane.goo > build/spmd_bench_8lane.cerr 2>&1; rc=$$?; \
+	@$(COMPILER) -o build/spmd_bench_8lane build/spmd_bench_8lane.goo > build/spmd_bench_8lane.cerr 2>&1; rc=$$?; \
 	if [ $$rc -ne 0 ]; then echo "spmd-bench-probe: FAIL (8-lane compile rc=$$rc)"; cat build/spmd_bench_8lane.cerr; exit 1; fi
-	$(COMPILER) -o build/spmd_bench_serial build/spmd_bench_serial.goo > build/spmd_bench_serial.cerr 2>&1; rc=$$?; \
+	@$(COMPILER) -o build/spmd_bench_serial build/spmd_bench_serial.goo > build/spmd_bench_serial.cerr 2>&1; rc=$$?; \
 	if [ $$rc -ne 0 ]; then echo "spmd-bench-probe: FAIL (serial compile rc=$$rc)"; cat build/spmd_bench_serial.cerr; exit 1; fi
 	@TIME_MODE=none; \
 	if [ -x /usr/bin/time ] && /usr/bin/time -v true >/dev/null 2>&1; then TIME_MODE=gnu; \
