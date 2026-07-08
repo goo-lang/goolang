@@ -1502,32 +1502,48 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         return 0;
     }
 
-    // Comptime value params Task 3: `decl->node_type` was resolved ONCE
-    // during the template body-check pass (type_check_function_decl), with
-    // any comptime parameter bound to Step 3's PLACEHOLDER value — so an
-    // array length depending on it (`var buf [n]int`) is baked into this
-    // cached Type with the placeholder, shared by every monomorphized
-    // instance of this function since they all codegen from the SAME
-    // template AST node (this exact VarDeclNode). Re-fold the length fresh
-    // from the checker's CURRENT scope whenever a comptime instance is
-    // active (active_comptime_value_n > 0 — set by
+    // Comptime value params Task 3 (generalized in fix round 2): `decl->
+    // node_type` was resolved ONCE during the template body-check pass
+    // (type_check_function_decl), with any comptime parameter bound to
+    // Step 3's PLACEHOLDER value — so an array length depending on it
+    // (`var buf [n]int`, `var m [2][n]int`, `buf := [n]int{}`) is baked
+    // into this cached Type with the placeholder, shared by every
+    // monomorphized instance of this function since they all codegen from
+    // the SAME template AST node (this exact VarDeclNode). Whenever a
+    // comptime instance is active (active_comptime_value_n > 0 — set by
     // codegen_generate_comptime_function_instance, monomorphize.c, which
     // rebinds each comptime param's mirror Variable to THIS instance's
-    // concrete value just above, in codegen_generate_function_decl's param
-    // loop, before the body is walked): this is the array-length analogue
-    // of codegen_type_to_llvm's TYPE_PARAM substitution (type_mapping.c),
+    // concrete value in codegen_generate_function_decl's param loop, before
+    // the body is walked), re-derive the FULL declared type fresh from its
+    // AST type node via type_from_ast against the checker's CURRENT scope:
+    // its AST_ARRAY_TYPE case folds every length (at every nesting depth)
+    // with goo_fold_const_int_ctx, which now resolves the comptime param to
+    // this instance's literal. This is the array-length analogue of
+    // codegen_type_to_llvm's TYPE_PARAM substitution (type_mapping.c),
     // which re-resolves a generic template's types per instance for the
-    // exact same "one shared cached Type, many instances" reason. Scoped
-    // narrowly (only when a comptime instance is active, and only for an
-    // explicit `[expr]elem`-typed declaration) rather than unconditionally
-    // re-deriving every var_decl's type here, to keep this a comptime-only
-    // change with no effect on ordinary (non-comptime) codegen.
-    if (codegen->active_comptime_value_n > 0 && var_type->kind == TYPE_ARRAY &&
-        var_decl->type && var_decl->type->type == AST_ARRAY_TYPE) {
-        ArrayTypeNode* at = (ArrayTypeNode*)var_decl->type;
-        uint64_t fresh_len;
-        if (at->length && goo_fold_const_int_ctx(checker, at->length, &fresh_len)) {
-            var_type = type_array(var_type->data.array.element_type, (size_t)fresh_len);
+    // exact same "one shared cached Type, many instances" reason. Round 1's
+    // narrower version rebuilt only the OUTERMOST length of an explicit
+    // `[expr]elem` annotation — `var m [2][n]int` kept its placeholder
+    // INNER length and `buf := [n]int{}` (no annotation; the type rides on
+    // the literal, handled in codegen_generate_array_lit) got nothing, both
+    // compiling clean and then bounds-panicking at runtime. Gated on the
+    // cached type actually containing a TYPE_ARRAY (goo_type_contains_array)
+    // so a comptime body's non-array declarations keep the checker's cached
+    // Type object untouched — named struct types etc. resolve identically
+    // either way, but not re-deriving what can't have changed is the
+    // smaller-blast-radius choice. Only the LOCAL var_type is replaced,
+    // never decl->node_type: the template node is shared across instances.
+    if (codegen->active_comptime_value_n > 0 && goo_type_contains_array(var_type)) {
+        ASTNode* type_node = var_decl->type;
+        // Short decl with the type riding on an array literal
+        // (`buf := [n]int{}`): re-derive from the literal's own type node.
+        if (!type_node && var_decl->values &&
+            var_decl->values->type == AST_ARRAY_LITERAL) {
+            type_node = ((ArrayLitNode*)var_decl->values)->array_type;
+        }
+        if (type_node) {
+            Type* fresh = type_from_ast(checker, type_node);
+            if (fresh) var_type = fresh;
         }
     }
 

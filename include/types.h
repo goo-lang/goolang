@@ -815,6 +815,15 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out);
 // unchanged and keeps its existing (non-identifier) call sites.
 int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
 
+// Comptime value params Task 3 (fix round 2): does `t` contain a TYPE_ARRAY
+// anywhere in its structure (through nested arrays, slices, pointers,
+// nullables)? Used by comptime-instance codegen (function_codegen.c /
+// composite_codegen.c) to decide whether a template-cached Type must be
+// re-derived from its AST type node under the instance's comptime-param
+// binding — only array LENGTHS can differ per instance, so anything with no
+// array anywhere can keep the cached Type object untouched.
+int goo_type_contains_array(const Type* t);
+
 // Fold a compile-time string constant — string literals joined by `+` — into a
 // freshly malloc'd byte buffer. On success returns 1, writes *out (the buffer,
 // which the caller must free) and *out_len (the byte length, embedded NULs

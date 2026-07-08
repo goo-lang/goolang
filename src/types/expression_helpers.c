@@ -60,6 +60,34 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
     }
 }
 
+// Comptime value params Task 3 (fix round 2): see the header doc comment.
+// Recurses through the wrapper kinds whose inner type a local declaration
+// can nest an array under; every other kind is a no-array leaf. (Function
+// types are deliberately not recursed: a comptime param cannot appear in a
+// function TYPE's array lengths — declare_function_signature resolves
+// signatures before any param binding exists, so such a length was already
+// rejected at declaration.)
+int goo_type_contains_array(const Type* t) {
+    while (t) {
+        switch (t->kind) {
+            case TYPE_ARRAY:
+                return 1;
+            case TYPE_SLICE:
+                t = t->data.slice.element_type;
+                break;
+            case TYPE_POINTER:
+                t = t->data.pointer.pointee_type;
+                break;
+            case TYPE_NULLABLE:
+                t = t->data.nullable.base_type;
+                break;
+            default:
+                return 0;
+        }
+    }
+    return 0;
+}
+
 // Checker-aware sibling of goo_fold_const_int (see header): additionally
 // resolves AST_IDENTIFIER against checker's scope chain, using the constant's
 // cached integer value (Variable->const_int_value, set by

@@ -1284,6 +1284,22 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
         codegen_error(codegen, expr->pos, "array literal missing TYPE_ARRAY node_type");
         return NULL;
     }
+
+    // Comptime value params Task 3 (fix round 2): inside a monomorphized
+    // comptime instance, the checker-stamped node_type was resolved ONCE at
+    // template body-check time with the comptime param bound to a
+    // placeholder — `buf := [n]int{}`'s literal carried the placeholder
+    // length permanently, compiling clean and bounds-panicking at runtime.
+    // Re-derive the literal's type fresh from its own AST type node under
+    // the instance binding (the mirror Variable for `n` carries this
+    // instance's value), exactly like codegen_generate_var_decl's
+    // re-derivation (function_codegen.c — see the long comment there).
+    // Local replacement only; expr->node_type stays untouched (the template
+    // node is shared across instances).
+    if (codegen->active_comptime_value_n > 0 && lit->array_type) {
+        Type* fresh = type_from_ast(checker, lit->array_type);
+        if (fresh && fresh->kind == TYPE_ARRAY) arr_type = fresh;
+    }
     Type* elem_type = arr_type->data.array.element_type;
     size_t n = arr_type->data.array.length;
     LLVMTypeRef llvm_elem = codegen_type_to_llvm(codegen, elem_type);
