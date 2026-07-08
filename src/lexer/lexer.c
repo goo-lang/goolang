@@ -186,6 +186,24 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
+            // Part 2.5 — line-starting channel-receive guard. A value-ending
+            // token followed across a newline by `<-` would otherwise flow
+            // straight into a send expression (`x := 2` <nl> `<-ch` ->
+            // `2 <- ch`, rejected as "send to non-channel type"). Go treats
+            // the newline as a statement terminator here; `<-ch` alone on
+            // its own line is a receive (wait) statement, not a
+            // continuation of the previous line. `<` by itself is
+            // deliberately NOT in char_starts_continuation_op — plain
+            // comparisons (`x := 1` <nl> `< y`) and `<=`/`<<` at a line
+            // start are not this hazard and must keep joining as today, so
+            // this guard needs its own two-character, non-consuming
+            // lookahead (`<` then `-`) rather than widening Part 2's
+            // single-character peek.
+            if (token_ends_value(lexer->prev_token_type) &&
+                lexer->ch == '<' && lexer_peek_char(lexer) == '-') {
+                lexer->prev_token_type = TOKEN_SEMICOLON;
+                return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
+            }
             // Struct/interface-body ASI (embedding; method specs): inside a
             // struct or interface body, a newline after a value-ending token
             // ends the member — Go's semicolon rule scoped to these bodies,

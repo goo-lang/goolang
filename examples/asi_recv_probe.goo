@@ -1,0 +1,30 @@
+// asi_recv_probe (Task 6): ASI terminates the line before a line-starting
+// channel receive.
+//
+// `x := 2` <nl> `<-ch` used to join across the newline into a send
+// expression (`2 <- ch`), rejected by the type checker as "Cannot send to
+// non-channel type int64" — because `<` was not treated as a hazard char at
+// a line start, the newline was simply skipped like whitespace. Go treats
+// the newline as a statement terminator here: `<-ch` alone on its own line
+// is a receive (wait) statement, not a continuation of the value-ending
+// token on the previous line.
+//
+// The receive here also doubles as the goroutine join: main blocks on
+// `<-ch` until the spawned goroutine's `ch <- 1` send completes, so the
+// `println(x)` after it is guaranteed to run only after the goroutine has
+// finished — deterministic output across repeated runs despite the `go`
+// statement.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (value printed is `2`); Go's builtin `println` writes to stderr while
+// Goo's writes to stdout (an existing, frozen convention difference — see
+// print_builtin_probe.goo), so the value is compared against Goo's stdout.
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	go func() { ch <- 1 }()
+	x := 2
+	<-ch
+	println(x)
+}
