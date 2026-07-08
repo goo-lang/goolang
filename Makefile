@@ -1378,13 +1378,13 @@ slice-write-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/swb_oob.goo -o build/swb_oob.out 2>build/swb_oob.cerr || \
 	  { echo "slice-write-bounds-probe: FAIL (compile)"; cat build/swb_oob.cerr; exit 1; }
 	@./build/swb_oob.out 2>build/swb_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-write-bounds-probe: FAIL (OOB write did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-write-bounds-probe: FAIL (OOB write expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/swb_oob.err; then echo "slice-write-bounds-probe: FAIL (no bounds message)"; cat build/swb_oob.err; exit 1; fi
 	@printf 'package main\nfunc main(){ s:=[]int{1,2,3}; i:=-1; s[i]=9; _=s }\n' > build/swb_neg.goo
 	@"$(COMPILER)" build/swb_neg.goo -o build/swb_neg.out 2>build/swb_neg.cerr || \
 	  { echo "slice-write-bounds-probe: FAIL (compile neg)"; cat build/swb_neg.cerr; exit 1; }
 	@./build/swb_neg.out 2>build/swb_neg.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-write-bounds-probe: FAIL (negative-index write did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-write-bounds-probe: FAIL (negative-index write expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/swb_neg.err; then echo "slice-write-bounds-probe: FAIL (no bounds message on neg)"; cat build/swb_neg.err; exit 1; fi
 	@echo "slice-write-bounds-probe: PASS"
 
@@ -1399,13 +1399,13 @@ array-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/awb_oob.goo -o build/awb_oob.out 2>build/awb_oob.cerr || \
 	  { echo "array-bounds-probe: FAIL (compile write)"; cat build/awb_oob.cerr; exit 1; }
 	@./build/awb_oob.out 2>build/awb_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "array-bounds-probe: FAIL (OOB array write did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "array-bounds-probe: FAIL (OOB array write expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/awb_oob.err; then echo "array-bounds-probe: FAIL (no bounds message on write)"; cat build/awb_oob.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ var arr [3]int; i:=5; fmt.Println(arr[i]) }\n' > build/arb_oob.goo
 	@"$(COMPILER)" build/arb_oob.goo -o build/arb_oob.out 2>build/arb_oob.cerr || \
 	  { echo "array-bounds-probe: FAIL (compile read)"; cat build/arb_oob.cerr; exit 1; }
 	@./build/arb_oob.out 2>build/arb_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "array-bounds-probe: FAIL (OOB array read did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "array-bounds-probe: FAIL (OOB array read expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/arb_oob.err; then echo "array-bounds-probe: FAIL (no bounds message on read)"; cat build/arb_oob.err; exit 1; fi
 	@echo "array-bounds-probe: PASS"
 
@@ -1422,25 +1422,25 @@ slice-expr-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/sebp_highcap.goo -o build/sebp_highcap.out 2>build/sebp_highcap.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile high>cap)"; cat build/sebp_highcap.cerr; exit 1; }
 	@./build/sebp_highcap.out 2>build/sebp_highcap.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (high>cap did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (high>cap expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_highcap.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on high>cap)"; cat build/sebp_highcap.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[]int{1,2,3}; t:=s[3:1]; fmt.Println(len(t)) }\n' > build/sebp_lowhigh.goo
 	@"$(COMPILER)" build/sebp_lowhigh.goo -o build/sebp_lowhigh.out 2>build/sebp_lowhigh.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile low>high)"; cat build/sebp_lowhigh.cerr; exit 1; }
 	@./build/sebp_lowhigh.out 2>build/sebp_lowhigh.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (low>high did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (low>high expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_lowhigh.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on low>high)"; cat build/sebp_lowhigh.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ s:=[]int{1,2,3}; i:=-1; t:=s[i:]; fmt.Println(len(t)) }\n' > build/sebp_neg.goo
 	@"$(COMPILER)" build/sebp_neg.goo -o build/sebp_neg.out 2>build/sebp_neg.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile negative low)"; cat build/sebp_neg.cerr; exit 1; }
 	@./build/sebp_neg.out 2>build/sebp_neg.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (negative low did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (negative low expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_neg.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on negative low)"; cat build/sebp_neg.err; exit 1; fi
 	@printf 'package main\nimport "fmt"\nfunc main(){ str:="hello"; sub:=str[0:99]; fmt.Println(sub) }\n' > build/sebp_str.goo
 	@"$(COMPILER)" build/sebp_str.goo -o build/sebp_str.out 2>build/sebp_str.cerr || \
 	  { echo "slice-expr-bounds-probe: FAIL (compile string OOB)"; cat build/sebp_str.cerr; exit 1; }
 	@./build/sebp_str.out 2>build/sebp_str.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "slice-expr-bounds-probe: FAIL (string OOB did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "slice-expr-bounds-probe: FAIL (string OOB expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "slice bounds out of range" build/sebp_str.err; then echo "slice-expr-bounds-probe: FAIL (no slice-bounds message on string OOB)"; cat build/sebp_str.err; exit 1; fi
 	@echo "slice-expr-bounds-probe: PASS"
 
@@ -1462,14 +1462,14 @@ const-array-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/cabp_oob.goo -o build/cabp_oob.out 2>build/cabp_oob.cerr || \
 	  { echo "const-array-bounds-probe: FAIL (compile)"; cat build/cabp_oob.cerr; exit 1; }
 	@./build/cabp_oob.out 2>build/cabp_oob.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "const-array-bounds-probe: FAIL (OOB write against const-sized array did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "const-array-bounds-probe: FAIL (OOB write against const-sized array expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -qi "bounds check failed" build/cabp_oob.err; then echo "const-array-bounds-probe: FAIL (no bounds message)"; cat build/cabp_oob.err; exit 1; fi; \
 	  if ! grep -q "length 3" build/cabp_oob.err; then echo "const-array-bounds-probe: FAIL (checked against wrong length — placeholder-10 regression?)"; cat build/cabp_oob.err; exit 1; fi
 	@printf 'package main\nfunc main(){ var arr [2+3]int; i:=5; arr[i]=9; _=arr }\n' > build/cabp_expr.goo
 	@"$(COMPILER)" build/cabp_expr.goo -o build/cabp_expr.out 2>build/cabp_expr.cerr || \
 	  { echo "const-array-bounds-probe: FAIL (compile expr-length)"; cat build/cabp_expr.cerr; exit 1; }
 	@./build/cabp_expr.out 2>build/cabp_expr.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "const-array-bounds-probe: FAIL (OOB write against expr-sized [2+3]int did not abort, rc=0)"; exit 1; fi; \
+	  if [ $$rc -ne 2 ]; then echo "const-array-bounds-probe: FAIL (OOB write against expr-sized [2+3]int expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
 	  if ! grep -q "length 5" build/cabp_expr.err; then echo "const-array-bounds-probe: FAIL (expr length not resolved to 5)"; cat build/cabp_expr.err; exit 1; fi
 	@echo "const-array-bounds-probe: PASS"
 
