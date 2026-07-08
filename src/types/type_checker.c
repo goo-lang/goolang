@@ -848,7 +848,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
             VarDeclNode* pd = (VarDeclNode*)p;
             if (pd->is_comptime_param) {
                 type_error(checker, p->pos,
-                    "comptime parameters are not supported on methods");
+                    "comptime parameters are not yet supported on methods");
                 type_checker_pop_type_params(checker, saved_tp);
                 return 0;
             }
@@ -1216,7 +1216,12 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         // only on the AST) and a runtime value reached the comptime slot in
         // total silence. reason_out="comptime" is a sentinel every caller of
         // type_interface_satisfied special-cases for a dedicated diagnostic
-        // instead of the generic "does not implement" message.
+        // instead of the generic "does not implement" message. Fix round 2
+        // note: since declare_function_signature now rejects comptime
+        // parameters on method DECLARATIONS outright, this gate is
+        // currently an unreachable backstop — kept so interface
+        // satisfaction stays safe on its own terms if method declarations
+        // are ever re-admitted (the method-specialization follow-up).
         if (impl->kind == TYPE_FUNCTION && impl->data.function.has_comptime_params) {
             *method_out = im->name; *reason_out = "comptime"; return 0;
         }

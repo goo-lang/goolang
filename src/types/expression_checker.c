@@ -2529,6 +2529,44 @@ static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
     return NULL;
 }
 
+// Comptime value params Task 3 (fix round 2, I2 guard): does `expr` contain
+// any identifier that resolves to a comptime PARAMETER of the enclosing
+// function? Guards the const-folding fast path at the comptime-argument
+// capture site below: goo_fold_const_int_ctx resolves ANY Variable with
+// has_const_int_value — which inside a comptime function's TEMPLATE body
+// includes the comptime param itself, bound to a PLACEHOLDER (see
+// type_check_function_decl's is_comptime_param binding). Folding
+// `helper(n, seed)`'s `n` there would silently record the placeholder as
+// the instance value — a miscompile — where the design instead makes
+// transitive comptime forwarding a documented restriction (design doc,
+// Scope/YAGNI): such an argument must fall through to the comptime engine,
+// which cannot resolve the param and rejects with the standard
+// "must be a compile-time constant" diagnostic. A comptime param is
+// recognizable by its Variable's decl_node being a VarDeclNode with
+// is_comptime_param set (a const's Variable carries no decl_node).
+// Recurses through the same expression shapes goo_fold_const_int_ctx folds.
+static int expr_references_comptime_param(TypeChecker* checker, ASTNode* expr) {
+    if (!expr) return 0;
+    switch (expr->type) {
+        case AST_IDENTIFIER: {
+            Variable* v = type_checker_lookup_variable(checker,
+                ((IdentifierNode*)expr)->name);
+            return v && v->decl_node && v->decl_node->type == AST_VAR_DECL &&
+                   ((VarDeclNode*)v->decl_node)->is_comptime_param;
+        }
+        case AST_UNARY_EXPR:
+            return expr_references_comptime_param(checker,
+                ((UnaryExprNode*)expr)->operand);
+        case AST_BINARY_EXPR: {
+            BinaryExprNode* b = (BinaryExprNode*)expr;
+            return expr_references_comptime_param(checker, b->left) ||
+                   expr_references_comptime_param(checker, b->right);
+        }
+        default:
+            return 0;
+    }
+}
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
@@ -2557,6 +2595,18 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     // (compilation is failing anyway).
     int comptime_first_check = (expr->node_type == NULL);
     if (comptime_first_check) {
+        // Fix round 2 (parked minor 6): this reset CANNOT free first — on a
+        // virgin node the pointer is parser-uninitialized garbage
+        // (free(garbage) crashes), and node_type == NULL cannot distinguish
+        // "never visited" from "previous visit failed with a type error".
+        // The transient error-path leak is instead closed at the capture
+        // block's own error returns (which free + re-null the partial array
+        // — see there); a partial array retained across a LATER argument's
+        // failure stays owned by the node and is freed exactly once by
+        // ast_node_free. The only residual is a re-visit of a failed call
+        // during an already-failing compile clobbering that retained array
+        // — bounded, and closable only by zeroing at the parser
+        // construction sites (out of bounds for this feature branch).
         call->comptime_value_args = NULL;
         call->comptime_value_arg_count = 0;
     }
@@ -3278,18 +3328,55 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             VarDeclNode* param_vd = func_decl_param_at(
                 (FuncDeclNode*)checked_callee->func_decl_node, arg_count + recv_offset);
             if (param_vd && param_vd->is_comptime_param) {
-                ComptimeContext* raw_ctx = checker->comptime_type_ctx
-                    ? checker->comptime_type_ctx->comptime_ctx : NULL;
-                ComptimeResult* res = raw_ctx
-                    ? comptime_eval_expression(raw_ctx, arg) : NULL;
-                int ok = res && res->value && !res->error &&
-                         res->value->type == COMPTIME_VALUE_INT;
-                if (!ok) {
-                    if (res) comptime_result_free(res);
-                    type_error(checker, arg->pos,
-                        "argument to comptime parameter '%s' must be a compile-time constant",
-                        param_vd->names[0]);
-                    return NULL;
+                // Fix round 2 (I2): resolve the argument in two tiers.
+                // Tier 1 — the checker-aware const folder, which resolves
+                // scope-registered constants (`const K = 3`, package-level
+                // consts, `comptime const M int = 2+2`) via each Variable's
+                // cached const_int_value; the comptime ENGINE alone (tier 2)
+                // has no view of checker-scope constants and rejected all
+                // of them, contradicting the spec's surface. Guarded by
+                // expr_references_comptime_param (see its doc comment):
+                // inside a comptime template body the folder would resolve
+                // the enclosing comptime PARAM to its placeholder — such an
+                // argument skips the fold and falls to the engine, which
+                // rejects it (transitive comptime forwarding is a
+                // documented restriction).
+                // Tier 2 — the comptime engine, for everything the folder
+                // doesn't handle (e.g. comptime block results). A runtime
+                // variable fails both tiers -> clean rejection.
+                int64_t comptime_arg_value = 0;
+                int resolved = 0;
+                uint64_t folded = 0;
+                if (!expr_references_comptime_param(checker, arg) &&
+                    goo_fold_const_int_ctx(checker, arg, &folded)) {
+                    comptime_arg_value = (int64_t)folded;
+                    resolved = 1;
+                }
+                if (!resolved) {
+                    ComptimeContext* raw_ctx = checker->comptime_type_ctx
+                        ? checker->comptime_type_ctx->comptime_ctx : NULL;
+                    ComptimeResult* res = raw_ctx
+                        ? comptime_eval_expression(raw_ctx, arg) : NULL;
+                    int ok = res && res->value && !res->error &&
+                             res->value->type == COMPTIME_VALUE_INT;
+                    if (!ok) {
+                        if (res) comptime_result_free(res);
+                        type_error(checker, arg->pos,
+                            "argument to comptime parameter '%s' must be a compile-time constant",
+                            param_vd->names[0]);
+                        // Parked minor 6: drop any values captured for
+                        // EARLIER comptime args of this same failing call so
+                        // the node leaves this function in the clean (NULL,0)
+                        // state — safe here (the entry reset ran this
+                        // invocation), and it keeps a hypothetical re-visit's
+                        // entry reset from orphaning the partial array.
+                        free(call->comptime_value_args);
+                        call->comptime_value_args = NULL;
+                        call->comptime_value_arg_count = 0;
+                        return NULL;
+                    }
+                    comptime_arg_value = res->value->int_value;
+                    comptime_result_free(res);
                 }
                 // Comptime value params Task 3: capture the resolved int for
                 // the monomorphizer, in parameter order (ast.h's field doc
@@ -3300,16 +3387,20 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 int64_t* grown = realloc(call->comptime_value_args,
                     (call->comptime_value_arg_count + 1) * sizeof(int64_t));
                 if (!grown) {
-                    comptime_result_free(res);
                     type_error(checker, arg->pos,
                         "out of memory recording comptime argument '%s'",
                         param_vd->names[0]);
+                    // Parked minor 6: same clean-state teardown as the
+                    // rejection path above (realloc failure leaves the old
+                    // allocation valid — free it, don't leak it).
+                    free(call->comptime_value_args);
+                    call->comptime_value_args = NULL;
+                    call->comptime_value_arg_count = 0;
                     return NULL;
                 }
                 call->comptime_value_args = grown;
                 call->comptime_value_args[call->comptime_value_arg_count++] =
-                    res->value->int_value;
-                comptime_result_free(res);
+                    comptime_arg_value;
             }
         }
 

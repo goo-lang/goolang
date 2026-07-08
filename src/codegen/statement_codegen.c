@@ -1716,6 +1716,33 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 
     CallExprNode* call = (CallExprNode*)go_stmt->call;
 
+    // Comptime value params Task 3 (fix round 2): `go fill(4, 10)` must
+    // dispatch to the monomorphized instance symbol (`fill__n4`), never the
+    // bare name — a plain comptime-param function's template is never
+    // emitted under its bare name, so codegen_resolve_callee below would
+    // fail with a misleading "Undefined identifier 'fill'". This mirrors
+    // codegen_generate_call_expr's rewiring block (call_codegen.c) exactly;
+    // the go statement's call was type-checked (type_check_go_stmt), so
+    // comptime_value_args is established and captured per ast.h's
+    // invariant. The instance value is a real LLVM function
+    // (LLVMIsAFunction holds), so the arg-boxing/thunk path below handles
+    // it like any other direct top-level callee — the comptime argument
+    // stays an ordinary boxed parameter at the call boundary (it is a
+    // constant only INSIDE the specialized body).
+    ValueInfo* func_val = NULL;
+    if (call->comptime_value_arg_count > 0 && call->function &&
+        call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* cid = (IdentifierNode*)call->function;
+        char* csym = codegen_mangle_comptime_instance(cid->name,
+            call->comptime_value_args, call->comptime_value_arg_count);
+        LLVMValueRef inst = csym ? LLVMGetNamedFunction(codegen->module, csym) : NULL;
+        free(csym);
+        if (inst) {
+            Variable* cvar = type_checker_lookup_variable(checker, cid->name);
+            func_val = value_info_new(cid->name, inst, cvar ? cvar->type : NULL);
+        }
+    }
+
     // Resolve the target function value and its type. Task 2 (universal
     // fat-pointer function values): MUST go through codegen_resolve_callee
     // (call_codegen.c), NOT codegen_generate_expression directly. A bare
@@ -1728,7 +1755,9 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     // one shape it supports; anything else still yields a function VALUE
     // and is still cleanly rejected by the LLVMIsAFunction check (pre-Task-2
     // this could crash instead — see the Task 2 report's crash-site #1).
-    ValueInfo* func_val = codegen_resolve_callee(codegen, checker, call->function);
+    if (!func_val) {
+        func_val = codegen_resolve_callee(codegen, checker, call->function);
+    }
     if (!func_val) return 0;
     LLVMValueRef callee = func_val->llvm_value;
 
