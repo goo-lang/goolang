@@ -1637,6 +1637,18 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 # counts exactly 1, so the per-symbol check passes. The TOTAL-count assertion
 # (exactly 3 `kernel__`-prefixed defines) closes that hole: a `.1`-suffixed
 # duplicate bumps the total to 4 and FAILs.
+#
+# Call-EDGE greps pin the call-site -> instance WIRING, not just instance
+# generation: without them, a cross-wired dispatch (main's `kernel(2, ...)`
+# call linking to `__n4`) would pass every other gate — the defines all
+# exist, and the probe's stdout happens to be dispatch-insensitive for some
+# shapes. Three edges are pinned: main's two direct literal-argument calls
+# (the comptime value is baked into the FIRST argument, so `(i64 4, i64 10)`
+# vs `(i64 2, i64 100)` ties each call site to its exact instance), and at
+# least one register-argument edge to `__n2` — only the defer trampoline and
+# the go-thunk call with loaded (register) first arguments, so `\(i64 %` after
+# the symbol matches exactly those paths without pinning the volatile
+# register names themselves.
 comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== comptime-generic-compose-ir-pin: composed instances are real and deduped ==="
@@ -1653,6 +1665,21 @@ comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	    grep -nE "^define[^{]*@\"?kernel__" build/cgc_ir.ll; exit 1; \
 	  fi; \
 	  echo "  PASS exactly 3 kernel__ instance defines total (no uniquified duplicates)"
+	@if ! grep -qE "call i64 @\"?kernel__int64__n4\"?\(i64 4, i64 10\)" build/cgc_ir.ll; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (missing call edge: kernel(4, 10) -> kernel__int64__n4)"; \
+	    grep -nE "call [a-z0-9]+ @\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS call edge kernel(4, 10) -> kernel__int64__n4"
+	@if ! grep -qE "call i64 @\"?kernel__int64__n2\"?\(i64 2, i64 100\)" build/cgc_ir.ll; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (missing call edge: kernel(2, 100) -> kernel__int64__n2)"; \
+	    grep -nE "call [a-z0-9]+ @\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS call edge kernel(2, 100) -> kernel__int64__n2"
+	@if ! grep -qE "call i64 @\"?kernel__int64__n2\"?\(i64 %" build/cgc_ir.ll; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (missing defer/go-thunk register-arg call edge to kernel__int64__n2)"; \
+	    grep -nE "call [a-z0-9]+ @\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS defer/go-thunk register-arg call edge -> kernel__int64__n2"
 	@n4_alloca=$$(awk '/^define i64 @"?kernel__int64__n4"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[4 x i64\]"); \
 	  n2_alloca=$$(awk '/^define i64 @"?kernel__int64__n2"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[2 x i64\]"); \
 	  f4_alloca=$$(awk '/^define double @"?kernel__float64__n4"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[4 x double\]"); \
