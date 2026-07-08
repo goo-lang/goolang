@@ -4,7 +4,7 @@
 
 **Goal:** The compiler and its harness made trustworthy: both silent miscompiles fixed, the zero-diagnostic crash and lexer overflow closed, panics Go-conformant, and a golden harness that sees timeouts, exit codes, stderr, and compile-rejects — capped by a ccomp-free `verify-core` gate.
 
-**Architecture:** Harness first (Tasks 1–2) so every soundness fix (Tasks 3–6) pins its audit reproducer as a native fixture; `verify-core` (Task 7) aggregates last. Inside Task 3, the LLVMVerifyModule gate lands BEFORE the `!?T` type-checker rejection so the SIGILL reproducer proves the gate.
+**Architecture:** Harness first (Tasks 1–2) so every soundness fix (Tasks 3–6) pins its audit reproducer as a native fixture; `verify-core` (Task 7) aggregates last. Inside Task 3, the LLVMVerifyModule gate lands BEFORE the `!?T` type-checker rejection so the SIGILL reproducer proves the gate. *(Premise refuted during implementation — the reproducer passes the verifier; the gate ships as a defensive backstop and the type checker closes the SIGILL. See the spec's P0.2 item.)*
 
 **Tech Stack:** C23, bash (scripts/run_golden.sh), GNU make, LLVM-C API.
 

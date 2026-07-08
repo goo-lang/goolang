@@ -80,9 +80,19 @@ for goo in "$EX_DIR"/*.goo; do
     fi
 
     stderrfile="${goo%.goo}.stderr.txt"
-    if [ -f "$stderrfile" ] && ! grep -qF -- "$(cat "$stderrfile")" "$out_stderr"; then
-        echo "FAIL  $base (stderr mismatch)"
-        fail=$((fail+1)); failed+=("$base"); continue
+    if [ -f "$stderrfile" ]; then
+        # Same guard as run_golden_reject.sh: an empty/whitespace-only
+        # sidecar would vacuously match any stderr via `grep -qF ""`.
+        # Sidecar contract: single-line fixed string (grep -F treats each
+        # line of a multi-line pattern as an independent alternative).
+        if ! grep -q '[^[:space:]]' "$stderrfile"; then
+            echo "FAIL  $base (empty/whitespace-only .stderr.txt sidecar)"
+            fail=$((fail+1)); failed+=("$base"); continue
+        fi
+        if ! grep -qF -- "$(cat "$stderrfile")" "$out_stderr"; then
+            echo "FAIL  $base (stderr mismatch)"
+            fail=$((fail+1)); failed+=("$base"); continue
+        fi
     fi
 
     echo "PASS  $base"; pass=$((pass+1))

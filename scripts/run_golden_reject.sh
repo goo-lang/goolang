@@ -13,7 +13,9 @@
 #     here rather than silently passing (same class of bug run_golden.sh's
 #     review flagged for .stderr.txt).
 #   - stderr-substring miss: the sidecar's contents (fixed string, matched
-#     with `grep -qF --`) do not appear in the captured stderr.
+#     with `grep -qF --`) do not appear in the captured stderr. Sidecar
+#     contract: single-line — grep -F treats each line of a multi-line
+#     pattern as an independent alternative, silently weakening the check.
 # Exit non-zero iff any case fails.
 #
 # Exit statuses are always captured directly off the invocation (`rc=$?`),
@@ -80,4 +82,10 @@ for goo in "$REJECT_DIR"/*.goo; do
     echo "PASS  $base"; pass=$((pass+1))
 done
 echo "--- golden-reject: $pass passed, $fail failed ---"
+# Floor: an empty fixture directory (e.g. a path typo silently matching
+# nothing) must not report success — this suite exists to reject things.
+if [ "$pass" -eq 0 ] && [ "$fail" -eq 0 ]; then
+    echo "FAIL  golden-reject: no fixtures found under $REJECT_DIR"
+    exit 1
+fi
 [ "$fail" -eq 0 ]
