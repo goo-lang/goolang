@@ -1543,7 +1543,20 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         }
         if (type_node) {
             Type* fresh = type_from_ast(checker, type_node);
-            if (fresh) var_type = fresh;
+            // Fix round 3 (minor 3): a failed re-derivation is a HARD
+            // codegen failure, not a fall-back to the placeholder type.
+            // type_from_ast already emitted the real, positioned diagnostic
+            // (e.g. "array length must be non-negative" for a negative
+            // comptime instance value) — but on the CHECKER's error counter,
+            // which codegen success doesn't consult; continuing with the
+            // placeholder previously emitted a placeholder-sized binary
+            // with exit 0 despite the printed error.
+            if (!fresh) {
+                codegen_error(codegen, decl->pos,
+                    "cannot instantiate declared type for this comptime instance");
+                return 0;
+            }
+            var_type = fresh;
         }
     }
 

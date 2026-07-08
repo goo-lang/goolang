@@ -1298,7 +1298,16 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
     // node is shared across instances).
     if (codegen->active_comptime_value_n > 0 && lit->array_type) {
         Type* fresh = type_from_ast(checker, lit->array_type);
-        if (fresh && fresh->kind == TYPE_ARRAY) arr_type = fresh;
+        // Fix round 3 (minor 3): a failed re-derivation is a HARD codegen
+        // failure — see codegen_generate_var_decl's identical branch
+        // (function_codegen.c) for why falling back to the placeholder
+        // type let an error-bearing compile still emit a binary.
+        if (!fresh || fresh->kind != TYPE_ARRAY) {
+            codegen_error(codegen, expr->pos,
+                "cannot instantiate array literal type for this comptime instance");
+            return NULL;
+        }
+        arr_type = fresh;
     }
     Type* elem_type = arr_type->data.array.element_type;
     size_t n = arr_type->data.array.length;

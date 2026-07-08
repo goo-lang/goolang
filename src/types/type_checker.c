@@ -3043,6 +3043,20 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                            "array length must be a constant expression");
                 return NULL;
             }
+            // Fix round 3 (minor 3): a folded NEGATIVE length previously
+            // wrapped to a huge size_t and hung the compiler downstream
+            // (LLVM array/zero-init of ~2^64 elements). Both routes land
+            // here: the pre-existing `const N = -1; var buf [N]int`, and —
+            // one token away since comptime value params — a comptime
+            // instance re-derivation with `fill(-1, ...)` and `[n]int` in
+            // the body (the instance-bound mirror Variable folds to -1).
+            // A negative comptime value NOT used as an array length stays
+            // legal — this check is length-position-only.
+            if ((int64_t)length64 < 0) {
+                type_error(checker, type_node->pos,
+                           "array length must be non-negative");
+                return NULL;
+            }
             size_t length = (size_t)length64;
             return type_array(element_type, length);
         }
@@ -3302,6 +3316,20 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                     if (((VarDeclNode*)p)->is_comptime_param) {
                         type_error(checker, p->pos,
                             "comptime parameters are not supported on interface methods");
+                        // Fix round 3 (minor 4): free the InterfaceMethod
+                        // list partially built for EARLIER members of this
+                        // interface before erroring out (names are strdup'd
+                        // and list nodes calloc'd above; the method's
+                        // function Type is shared/checker-owned, never freed
+                        // here). Scoped to THIS branch's error path only —
+                        // the sibling pre-existing error paths leak
+                        // identically and are deliberately left untouched.
+                        while (head) {
+                            InterfaceMethod* next_im = head->next;
+                            free(head->name);
+                            free(head);
+                            head = next_im;
+                        }
                         return NULL;
                     }
                 }

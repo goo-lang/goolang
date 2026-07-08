@@ -35,6 +35,10 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
 static int is_untyped_float_rooted(ASTNode* n);
 static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* target,
                                         int negated);
+// Comptime value params (fix round 3): defined near type_check_call_expr;
+// forward-declared here for the array-literal checker's comptime-length
+// detection (defer count-vs-length validation to instance time).
+static int expr_references_comptime_param(TypeChecker* checker, ASTNode* expr);
 // Task 3b: the composite-value adaptation helper (defined below, near
 // type_check_struct_literal, its original #101 sink) is now ALSO the
 // element-value hook for slice literals (check_slice_elements), array
@@ -450,6 +454,27 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                            "array literal: length must be a constant expression");
                 return NULL;
             }
+            // Fix round 3 (minor 3): negative length — same clean rejection
+            // as type_from_ast's AST_ARRAY_TYPE case (a wrapped size_t hung
+            // the compiler downstream).
+            if ((int64_t)n < 0) {
+                type_error(checker, expr->pos,
+                           "array length must be non-negative");
+                return NULL;
+            }
+            // Fix round 3 (minor 1): when the length derives from a comptime
+            // parameter (`[n]int{1, 2}` inside a comptime function's
+            // TEMPLATE body), `n` here is Step 3's PLACEHOLDER — validating
+            // the element count against it produced a placeholder-derived
+            // rejection ("index 1 out of bounds for length 1") for a length
+            // the user never wrote. Defer count-vs-length validation to
+            // instance time: codegen's re-derivation
+            // (codegen_generate_array_lit, composite_codegen.c) sizes the
+            // instance's array from the REAL value, and its const fast path
+            // zero-fills/places elements against that real length. Element
+            // TYPE checking below is unaffected — only the index bound is
+            // skipped for comptime-length literals.
+            int comptime_len = expr_references_comptime_param(checker, at->length);
             // Elements may be keyed (`index: value`, a sparse Go table like
             // utf8 acceptRanges) or bare. A keyed element places its value at
             // the const index; an unkeyed element continues at previous + 1
@@ -472,7 +497,7 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 } else {
                     cur += 1;
                 }
-                if (cur < 0 || (uint64_t)cur >= n) {
+                if (cur < 0 || (!comptime_len && (uint64_t)cur >= n)) {
                     type_error(checker, e->pos,
                                "array literal: index %lld out of bounds for "
                                "length %llu",
