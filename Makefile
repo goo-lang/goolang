@@ -2211,16 +2211,184 @@ goostd-resolver-probe:
 	$(CC) $(CFLAGS) tests/package/resolver_probe.c $(SRCDIR)/package/import_resolver.c -o build/resolver_probe
 	./build/resolver_probe
 
-# Aggregate verification net per `verification_gates.md`. Runs the
-# green gates in sequence: baseline-probe, smoke-stdlib,
-# v2-bootstrap-pilot, comptime-block-probe, comptime-probe, m10-probe,
-# exit-code-probe, methods-probe.
-# Exits non-zero on any failure. Use this on cross-cutting changes;
-# use individual targets when iterating on a specific area.
+# Full aggregate probe net — the single source of truth for `verify`'s
+# dependency list (per `verification_gates.md`). Extend THIS list when a
+# new gate is promoted in; do not add a second literal list anywhere else
+# (verify-core below derives from it, so a second list would drift).
+#
+# ccomp-gated: v2-bootstrap-pilot depends on ccomp-build, which requires
+# an opam CompCert switch. It is the only target in VERIFY_ALL_DEPS that
+# does — verified via `make -n verify 2>&1 | grep -i ccomp`.
+#
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe comment-lines-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin selectsend-reject-probe globalcall-init-probe floatint-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden test-golden-reject spmd-bench-probe
+VERIFY_ALL_DEPS := \
+    baseline-probe \
+    lvalue-probe \
+    file-io-probe \
+    pointer-probe \
+    smoke-stdlib \
+    v2-bootstrap-pilot \
+    comptime-block-probe \
+    comptime-probe \
+    m10-probe \
+    exit-code-probe \
+    switch-probe \
+    methods-probe \
+    pointer-write-probe \
+    new-probe \
+    enum-probe \
+    match-probe \
+    append-probe \
+    cap-probe \
+    conv-probe \
+    conv-reject-probe \
+    charlit-probe \
+    charlit-reject-probe \
+    strindex-probe \
+    strindex-reject-probe \
+    hexesc-probe \
+    hexesc-reject-probe \
+    panic-abort-probe \
+    bits-div-abort-probe \
+    conststr-nul-probe \
+    conststr-probe \
+    map-probe \
+    int64-probe \
+    commaok-probe \
+    guard-probe \
+    nullable-iflet-probe \
+    nullable-nilcmp-probe \
+    nullable-abi-probe \
+    nullable-intret-probe \
+    nullable-assign-probe \
+    nullable-width-probe \
+    erru-catch-probe \
+    erru-error-probe \
+    erru-abi-probe \
+    chan-probe \
+    chan-elem-probe \
+    chan-padded-probe \
+    chan-uint-probe \
+    go-probe \
+    unbuffered-probe \
+    select-probe \
+    block-scope-probe \
+    escape-probe \
+    escape-range-probe \
+    mt-scheduler-stress \
+    yield-stress \
+    chan-mt-stress \
+    deadlock-probe \
+    deadlock-goroutine-probe \
+    default-thread-count-test \
+    parallel-soak-probe \
+    parallel-select-soak-probe \
+    cwd-link-probe \
+    outoftree-probe \
+    break-probe \
+    continue-probe \
+    break-nested-probe \
+    println-badtype-probe \
+    error-arity-probe \
+    return-type-erru-probe \
+    erru-catch-type-reject-probe \
+    iface-parse-probe \
+    iface-satisfaction-probe \
+    try-nonerru-probe \
+    return-mismatch-probe \
+    named-return-reject-probe \
+    composite-literal-reject-probe \
+    call-arity-probe \
+    call-argtype-probe \
+    pkg-argcheck-probe \
+    forward-ref-probe \
+    print-aggregate-probe \
+    ptr-recv-nonaddr-probe \
+    link-cleanup-probe \
+    blank-lines-probe \
+    comment-lines-probe \
+    slice-write-bounds-probe \
+    array-bounds-probe \
+    slice-expr-bounds-probe \
+    const-array-bounds-probe \
+    nonconst-arraylen-reject-probe \
+    comptime-value-reject-probe \
+    comptime-value-reject-matrix \
+    comptime-generic-compose-ir-pin \
+    selectsend-reject-probe \
+    globalcall-init-probe \
+    floatint-reject-probe \
+    constmod-reject-probe \
+    baremod-reject-probe \
+    constint8-reject-probe \
+    constuint8-reject-probe \
+    constf32-reject-probe \
+    constf64-reject-probe \
+    constconv-reject-probe \
+    consttrunc-reject-probe \
+    constelem-reject-probe \
+    constnul-reject-probe \
+    floatmod-reject-probe \
+    cascade-reject-probe \
+    multivar-reject-probe \
+    variadic-reject-probe \
+    variadic-range-reject-probe \
+    funcnil-abort-probe \
+    funcval-nilcmp-probe \
+    map-nilfunc-abort-probe \
+    loopcapture-reject-probe \
+    osargs-probe \
+    embed-iface-reject-probe \
+    embed-dup-reject-probe \
+    embed-badtype-reject-probe \
+    embed-enum-reject-probe \
+    embed-ambiguous-reject-probe \
+    embed-literal-reject-probe \
+    map-addr-reject-probe \
+    mapkey-reject-probe \
+    struct-map-key-reject-probe \
+    iface-map-key-uncomparable-probe \
+    bytesconv-reject-probe \
+    spread-reject-probe \
+    copy-reject-probe \
+    typeassert-reject-probe \
+    typeswitch-reject-probe \
+    if-init-scope-reject-probe \
+    blank-read-reject-probe \
+    const-index-reject-probe \
+    rtti-assert-panic-probe \
+    iface-assert-dynname-probe \
+    iface-target-assert-abort-probe \
+    generics-reject-probe \
+    generics-bound-reject-probe \
+    asi-hardening-probe \
+    param-escape-test \
+    block-escape-test \
+    arena-routing-test \
+    arena-free-probe \
+    arena-valgrind-probe \
+    arena-rss-probe \
+    test-golden \
+    test-golden-reject \
+    spmd-bench-probe
+
+# verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
+# authoritative ccomp-free gate: green on any machine, no CompCert / opam
+# switch required. Use it for pre-push everywhere; use `verify` (below)
+# only where the CompCert bootstrap pilot toolchain is set up.
+VERIFY_CORE_DEPS := $(filter-out v2-bootstrap-pilot,$(VERIFY_ALL_DEPS))
+
+.PHONY: verify verify-core
+
+# Exits non-zero on any failure. Use this on cross-cutting changes;
+# use individual targets when iterating on a specific area.
+verify-core: $(VERIFY_CORE_DEPS)
+	@echo ""
+	@echo "verify-core: ALL GREEN GATES PASSED (ccomp-free)"
+
+verify: $(VERIFY_ALL_DEPS)
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
