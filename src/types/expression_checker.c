@@ -2392,6 +2392,37 @@ static int interface_covers(Type* have_iface, Type* want_iface) {
     return 1;
 }
 
+// Fix round 7 (I-r6): does `t` contain a TYPE_PARAM anywhere in its
+// structure? Checker-side sibling of the monomorphizer's static
+// args_contain_typeparam (monomorphize.c) — same Tier-A shapes unify_types
+// recurses, plus arrays/nullables for completeness. Used by
+// type_check_generic_call to detect a parameter position that would BIND a
+// type parameter from an argument (as opposed to a fully concrete position).
+static int type_contains_type_param(const Type* t) {
+    if (!t) return 0;
+    switch (t->kind) {
+        case TYPE_PARAM:
+            return 1;
+        case TYPE_SLICE:
+            return type_contains_type_param(t->data.slice.element_type);
+        case TYPE_POINTER:
+            return type_contains_type_param(t->data.pointer.pointee_type);
+        case TYPE_ARRAY:
+            return type_contains_type_param(t->data.array.element_type);
+        case TYPE_NULLABLE:
+            return type_contains_type_param(t->data.nullable.base_type);
+        case TYPE_FUNCTION: {
+            for (size_t i = 0; i < t->data.function.param_count; i++) {
+                if (type_contains_type_param(t->data.function.param_types[i]))
+                    return 1;
+            }
+            return type_contains_type_param(t->data.function.return_type);
+        }
+        default:
+            return 0;
+    }
+}
+
 static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
                                       CallExprNode* call, Variable* callee_var,
                                       const char* callee_name) {
@@ -2436,6 +2467,39 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
         }
 
         Type* pt = gsig->data.function.param_types[k];
+
+        // Fix round 7 (I-r6): a comptime-length array VALUE meeting the
+        // generic axis. Two cases, split by whether this parameter position
+        // binds a type parameter:
+        // - BINDS one (`Id(a)` with a: [n]int into `x T`, or any pt shape
+        //   containing a TYPE_PARAM): reject at template time. The generic
+        //   instance would otherwise be stamped against the TEMPLATE's
+        //   placeholder-length Type (the recorded binding) while the call
+        //   site passes the instance-real array — the mismatch failed
+        //   closed, but only at the LLVM verifier ("Call parameter type
+        //   does not match function signature"), violating the
+        //   clean-diagnostics bar. Per-value re-binding of generic
+        //   instances is the composition follow-up (design doc,
+        //   Scope/YAGNI).
+        // - CONCRETE array position (`g(1, a)` into `arr [4]int`): the
+        //   wave-6 length deferral applies — element types must match now,
+        //   unify is skipped (it compares the placeholder length), and the
+        //   call codegen's argument loop enforces the instance-real length
+        //   (instance-named rejection on a genuine mismatch).
+        if (goo_type_contains_comptime_array(at)) {
+            if (type_contains_type_param(pt)) {
+                type_error(checker, a->pos,
+                    "comptime-length array cannot bind a generic type parameter (not yet supported)");
+                free(bindings);
+                return NULL;
+            }
+            if (pt && pt->kind == TYPE_ARRAY && at->kind == TYPE_ARRAY &&
+                type_equals(pt->data.array.element_type,
+                            at->data.array.element_type)) {
+                continue; // length deferred to instance time (call codegen)
+            }
+        }
+
         if (pt && pt->kind == TYPE_PARAM) {
             int idx = pt->data.type_param.index;
             if (idx >= 0 && (size_t)idx < n && bindings[idx] &&

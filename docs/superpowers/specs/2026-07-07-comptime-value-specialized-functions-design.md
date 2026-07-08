@@ -120,7 +120,14 @@ in `verify`.
 - **Explicit values only** — the comptime argument is supplied at the call; no inference.
 - **Comptime-value params OR `[T]` type generics, not both simultaneously.** Composing the two
   monomorphization axes (per-type × per-value — the full SPMD "per-type kernel × per-tile"
-  goal) is a documented follow-up once the single-axis value specialization is proven.
+  goal) is a documented follow-up once the single-axis value specialization is proven. This
+  covers VALUES crossing the axis too: a comptime-length array value binding a generic TYPE
+  parameter (`Id(a)` with `a: [n]int`) is cleanly rejected at the call site ("comptime-length
+  array cannot bind a generic type parameter (not yet supported)") — the generic instance
+  would otherwise stamp against the template's placeholder-length type while the call passes
+  the instance-real array. Passing such a value to a CONCRETE (non-type-param) array
+  parameter of a generic function stays supported, with the length checked per instance like
+  any other fixed-length parameter.
 - No comptime control-flow that *emits* code (`comptime if`/`comptime for` selecting/emitting
   bodies) — that is the separate Zig-style-metaprogramming option we did not pick for the
   first deliverable.

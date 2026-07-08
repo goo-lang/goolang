@@ -1608,7 +1608,9 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "call-arg-mismatch-instance" "length array parameter in comptime instance"; \
 	printf 'package main\nfunc f(comptime n int, s int) int {\n    var a [n]int\n    a[0] = s\n    var b [4]int = a\n    return b[0]\n}\nfunc main() { _ = f(2, 5) }\n' > build/cvm.goo; \
 	run_case "var-init-mismatch-instance" "length array in comptime instance"; \
-	echo "comptime-value-reject-matrix: PASS (15/15 walls hold)"
+	printf 'package main\nfunc Id[T any](x T) T { return x }\nfunc f(comptime n int, s int) int {\n    var a [n]int\n    a[0] = s\n    b := Id(a)\n    return b[0]\n}\nfunc main() { _ = f(4, 5) }\n' > build/cvm.goo; \
+	run_case "generic-typeparam-comptime-array" "cannot bind a generic type parameter"; \
+	echo "comptime-value-reject-matrix: PASS (16/16 walls hold)"
 
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
