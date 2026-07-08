@@ -1920,6 +1920,8 @@ call_expr:
         call->has_spread = 0;
         call->type_args = NULL;      // Function generics Task 6
         call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN expression_list RPAREN {
@@ -1933,6 +1935,8 @@ call_expr:
         call->has_spread = 0;
         call->type_args = NULL;      // Function generics Task 6
         call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
@@ -1958,6 +1962,8 @@ call_expr:
         call->has_spread = 1;
         call->type_args = NULL;      // Function generics Task 6
         call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     // `make(map[K]V)` / `make([]T, n)`: a type in call-argument position.
@@ -1987,6 +1993,8 @@ call_expr:
         call->has_spread = 0;
         call->type_args = NULL;      // Function generics Task 6
         call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
@@ -2008,6 +2016,8 @@ call_expr:
         call->has_spread = 0;
         call->type_args = NULL;      // Function generics Task 6
         call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
     ;

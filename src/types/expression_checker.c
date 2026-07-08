@@ -2572,41 +2572,29 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
 
     CallExprNode* call = (CallExprNode*)expr;
 
-    // Comptime value params Task 3: comptime_value_args/comptime_value_arg_count
-    // are malloc-uninitialized at every parser.y CallExprNode construction
-    // site (parser.y is off-limits for this task — see ast.h's field doc
-    // comment for the full reasoning), so establish the NULL/0 invariant
-    // here instead — but only on the FIRST visit to this node. This
-    // function is NOT called exactly once per call node: codegen re-invokes
-    // it on the same CallExprNode (call_codegen.c's method-call return-type
-    // recomputation and defer re-emission paths), and an unconditional
-    // reset here would clobber the values captured on the first pass with a
-    // re-evaluation against whatever scope codegen currently has mirrored
-    // (fix round 1, finding 4). `expr->node_type` is the first-visit
-    // discriminator: reliably NULL at parse time (every parser.y
-    // construction site zeroes base.node_type) and set at the end of this
-    // function's successful main path — so node_type != NULL means the
-    // comptime fields were already established (and possibly populated) by
-    // an earlier full check, and both the reset here and the capture/record
-    // sites below (gated on this same flag) must leave them untouched. A
-    // first check that FAILED mid-way (type error) leaves node_type NULL,
-    // so a re-check resets and recaptures from scratch — correct, since
-    // nothing was recorded off the aborted pass's partial state
-    // (compilation is failing anyway).
+    // Comptime value params: comptime_value_args/comptime_value_arg_count
+    // are zeroed at every parser.y CallExprNode construction site (fix
+    // round 3 — see ast.h's field doc comment for the ownership contract),
+    // and this function owns them thereafter. It is NOT called exactly
+    // once per call node: codegen re-invokes it on the same CallExprNode
+    // (call_codegen.c's method-call return-type recomputation and defer
+    // re-emission paths), and recapturing there would clobber the values
+    // captured on the first pass with a re-evaluation against whatever
+    // scope codegen currently has mirrored (fix round 1, finding 4).
+    // `expr->node_type` is the first-visit discriminator: reliably NULL at
+    // parse time (every construction site zeroes base.node_type) and set
+    // at the end of this function's successful main path — so node_type !=
+    // NULL means the values were already captured by an earlier full check
+    // and the capture/record sites below (gated on this same flag) must
+    // leave them untouched.
     int comptime_first_check = (expr->node_type == NULL);
     if (comptime_first_check) {
-        // Fix round 2 (parked minor 6): this reset CANNOT free first — on a
-        // virgin node the pointer is parser-uninitialized garbage
-        // (free(garbage) crashes), and node_type == NULL cannot distinguish
-        // "never visited" from "previous visit failed with a type error".
-        // The transient error-path leak is instead closed at the capture
-        // block's own error returns (which free + re-null the partial array
-        // — see there); a partial array retained across a LATER argument's
-        // failure stays owned by the node and is freed exactly once by
-        // ast_node_free. The only residual is a re-visit of a failed call
-        // during an already-failing compile clobbering that retained array
-        // — bounded, and closable only by zeroing at the parser
-        // construction sites (out of bounds for this feature branch).
+        // Fields are zeroed from birth, so this free is unconditionally
+        // safe: a true first visit frees NULL (no-op); a re-attempt after
+        // a FAILED first check (node_type still NULL) frees that attempt's
+        // partial capture instead of orphaning it (closes fix round 2's
+        // residual transient leak completely).
+        free(call->comptime_value_args);
         call->comptime_value_args = NULL;
         call->comptime_value_arg_count = 0;
     }
@@ -3364,12 +3352,12 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         type_error(checker, arg->pos,
                             "argument to comptime parameter '%s' must be a compile-time constant",
                             param_vd->names[0]);
-                        // Parked minor 6: drop any values captured for
+                        // Error-path hygiene: drop any values captured for
                         // EARLIER comptime args of this same failing call so
                         // the node leaves this function in the clean (NULL,0)
-                        // state — safe here (the entry reset ran this
-                        // invocation), and it keeps a hypothetical re-visit's
-                        // entry reset from orphaning the partial array.
+                        // state at the point of failure (the entry-gate free
+                        // would also catch it on a re-visit; this just
+                        // doesn't wait for one).
                         free(call->comptime_value_args);
                         call->comptime_value_args = NULL;
                         call->comptime_value_arg_count = 0;
@@ -3390,7 +3378,7 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                     type_error(checker, arg->pos,
                         "out of memory recording comptime argument '%s'",
                         param_vd->names[0]);
-                    // Parked minor 6: same clean-state teardown as the
+                    // Error-path hygiene: same clean-state teardown as the
                     // rejection path above (realloc failure leaves the old
                     // allocation valid — free it, don't leak it).
                     free(call->comptime_value_args);
