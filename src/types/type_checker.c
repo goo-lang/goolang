@@ -115,10 +115,17 @@ void type_checker_free(TypeChecker* checker) {
     // Type* pointers owned by the type checker/interning system, same
     // non-ownership as everywhere else in this function — only the array and
     // the list nodes are this list's own allocations).
+    //
+    // Comptime+generic composition (sub-project 2): comptime_values is this
+    // same node's second malloc'd payload (0/NULL for a generic-only seed,
+    // so free(NULL) is a safe no-op) — freed here alongside args so a
+    // composed seed's two payloads are torn down exactly once, together,
+    // never independently.
     GenericInstantiation* inst = checker->instantiations;
     while (inst) {
         GenericInstantiation* next = inst->next;
         free(inst->args);
+        free(inst->comptime_values);
         free(inst);
         inst = next;
     }
@@ -472,16 +479,29 @@ void type_checker_pop_type_params(TypeChecker* checker, size_t to_count) {
 // caller's own copy, independent of e.g. the same call's CallExprNode.type_args)
 // and must not free or reuse it afterward. `call_site` is stored for a possible
 // future per-callsite diagnostic; the field is otherwise unused by Task 9.
+//
+// Comptime+generic composition (sub-project 2): `comptime_values`/
+// `comptime_value_n` extend this recorder for a composed call (function
+// declares both `[T]` and `comptime` params) — same ownership-transfer
+// contract as `args`, independent allocation, freed alongside it in
+// type_checker_free. A generic-only call passes NULL/0 (GenericInstantiation's
+// documented 0/NULL default for a generic-only seed) — malloc(0)-then-free
+// and a bare NULL both behave identically for `free`, so the on-error
+// `free(comptime_values)` paths below are safe regardless of which the
+// caller passed.
 void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
                                      Type** args, size_t n,
+                                     int64_t* comptime_values, size_t comptime_value_n,
                                      struct ASTNode* call_site) {
     (void)call_site;
-    if (!checker || !fn) { free(args); return; }
+    if (!checker || !fn) { free(args); free(comptime_values); return; }
     GenericInstantiation* inst = malloc(sizeof(GenericInstantiation));
-    if (!inst) { free(args); return; }
+    if (!inst) { free(args); free(comptime_values); return; }
     inst->fn = fn;
     inst->args = args;
     inst->n = n;
+    inst->comptime_values = comptime_values;
+    inst->comptime_value_n = comptime_value_n;
     inst->next = checker->instantiations;
     checker->instantiations = inst;
 }
@@ -804,23 +824,33 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         }
     }
 
-    // Comptime-value params gap-fix: a comptime parameter is not yet
-    // supported together with [T] type parameters — this cut supports
-    // comptime-value specialization OR [T] generics on a function, not both
-    // (design spec §6). Without this, a generic function's comptime param
-    // silently fell through as an ordinary runtime int: the call-argument
-    // check (type_check_call_expr) is bypassed entirely for a generic callee
-    // (routed to type_check_generic_call instead), so no compile-time-
-    // constant requirement and no per-value monomorphization ever applied —
-    // a footgun, not a supported combination. Checked before the variadic
-    // check below so this points at the more fundamental rejection first.
+    // Comptime+generic composition (sub-project 2): the blanket "comptime
+    // parameters are not yet supported together with type parameters" wall
+    // that used to live here is LIFTED — a function may now declare BOTH
+    // `[T]` type params and `comptime` value params (design doc, "Surface &
+    // semantics"); `type_check_generic_call` (expression_checker.c) captures
+    // the comptime axis at composed call sites, closing the exact gap this
+    // wall used to guard against (a generic callee's comptime param falling
+    // through as an ordinary runtime int with no compile-time-constant
+    // requirement). What remains narrower: a comptime parameter's own
+    // DECLARED type must be a plain concrete type — `comptime n T` (typed BY
+    // a type parameter, or containing one, e.g. `comptime n []T`) is
+    // rejected, because a value whose comptime evaluation depends on the
+    // type axis is out of scope for this composition (design doc, decision
+    // 1/5). Type params were already pushed above, so a bare `T` here
+    // resolves to its TYPE_PARAM Type instead of "Unknown type '<name>'";
+    // type_contains_type_param (expression_checker.c, exposed non-static for
+    // this reuse) walks the resolved shape structurally rather than the
+    // AST, so `comptime n []T` and `comptime n *T` are caught the same way.
     if (func->type_params) {
         for (ASTNode* p = func->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
             VarDeclNode* pd = (VarDeclNode*)p;
-            if (pd->is_comptime_param) {
+            if (!pd->is_comptime_param || !pd->type) continue;
+            Type* pt = type_from_ast(checker, pd->type);
+            if (pt && type_contains_type_param(pt)) {
                 type_error(checker, p->pos,
-                    "comptime parameters are not yet supported together with type parameters");
+                    "comptime parameter type cannot be a type parameter (not yet supported)");
                 type_checker_pop_type_params(checker, saved_tp);
                 return 0;
             }

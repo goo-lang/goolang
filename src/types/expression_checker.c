@@ -2398,7 +2398,10 @@ static int interface_covers(Type* have_iface, Type* want_iface) {
 // recurses, plus arrays/nullables for completeness. Used by
 // type_check_generic_call to detect a parameter position that would BIND a
 // type parameter from an argument (as opposed to a fully concrete position).
-static int type_contains_type_param(const Type* t) {
+// Non-static (declared in types.h): sub-project 2 reuses it from
+// type_checker.c's declare_function_signature for the `comptime n T`
+// declaration wall — see that call site's comment for why.
+int type_contains_type_param(const Type* t) {
     if (!t) return 0;
     switch (t->kind) {
         case TYPE_PARAM:
@@ -2423,9 +2426,138 @@ static int type_contains_type_param(const Type* t) {
     }
 }
 
+// Comptime value params Task 2: the VarDeclNode at parameter position `idx`
+// in a FuncDeclNode's parameter list (skipping any non-VarDeclNode entries —
+// none are expected today, but declare_function_signature's own param_types
+// build loop applies the same guard). idx is 0-based over parameters only,
+// matching func_type->data.function.param_types[idx] indexing. Returns NULL
+// past the end of the list (e.g. a trailing variadic-packed argument beyond
+// the fixed prefix, which has no per-argument VarDeclNode of its own).
+//
+// Moved above type_check_generic_call (sub-project 2): the generic-call loop
+// now needs this same lookup to detect a comptime position, so it must be
+// defined before its first use rather than only before type_check_call_expr's
+// fixed-arity loop further down.
+static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
+    if (!fd) return NULL;
+    size_t i = 0;
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (i == idx) return (VarDeclNode*)p;
+        i++;
+    }
+    return NULL;
+}
+
+// Comptime value params Task 3 (sub-project 2: shared across
+// type_check_call_expr's fixed-arity loop AND type_check_generic_call's
+// generic loop — the "3rd near-copy avoided" the composition map calls out).
+// Validates that `arg` is a compile-time-constant int via the same two-tier
+// fold (goo_fold_const_int_ctx, then the comptime engine) sub-project 1
+// established, and appends the resolved value to call->comptime_value_args,
+// growing by one. `param_vd` is the comptime parameter's own VarDeclNode
+// (used only for its name, in diagnostics). Preconditions the CALLER must
+// establish before invoking this (not re-checked here): comptime_first_check
+// holds for `call`'s CallExprNode, and param_vd->is_comptime_param is set —
+// this helper trusts both and unconditionally attempts the capture.
+//
+// Returns 1 with the value appended on success. On failure it emits the
+// diagnostic itself AND resets call->comptime_value_args/_arg_count to the
+// clean (NULL,0) state (matching the entry-reset every re-visit would
+// otherwise perform, without waiting for one) before returning 0 — every
+// caller must treat 0 as "a type error was already reported; propagate
+// NULL/failure up the stack without emitting a second diagnostic."
+static int type_check_capture_comptime_arg(TypeChecker* checker,
+                                            CallExprNode* call, ASTNode* arg,
+                                            VarDeclNode* param_vd) {
+    // Tier 1 — the checker-aware const folder, which resolves scope-
+    // registered constants (`const K = 3`, package-level consts, `comptime
+    // const M int = 2+2`) via each Variable's cached const_int_value; the
+    // comptime ENGINE alone (tier 2) has no view of checker-scope constants.
+    // Guarded by goo_expr_references_comptime_param: inside a comptime
+    // template body the folder would resolve the enclosing comptime PARAM to
+    // its placeholder — such an argument skips the fold and falls to the
+    // engine, which rejects it (transitive comptime forwarding is a
+    // documented restriction).
+    // Tier 2 — the comptime engine, for everything the folder doesn't handle
+    // (e.g. comptime block results). A runtime variable fails both tiers ->
+    // clean rejection.
+    int64_t comptime_arg_value = 0;
+    int resolved = 0;
+    uint64_t folded = 0;
+    if (!goo_expr_references_comptime_param(checker, arg) &&
+        goo_fold_const_int_ctx(checker, arg, &folded)) {
+        comptime_arg_value = (int64_t)folded;
+        resolved = 1;
+    }
+    if (!resolved) {
+        ComptimeContext* raw_ctx = checker->comptime_type_ctx
+            ? checker->comptime_type_ctx->comptime_ctx : NULL;
+        ComptimeResult* res = raw_ctx
+            ? comptime_eval_expression(raw_ctx, arg) : NULL;
+        int ok = res && res->value && !res->error &&
+                 res->value->type == COMPTIME_VALUE_INT;
+        if (!ok) {
+            if (res) comptime_result_free(res);
+            type_error(checker, arg->pos,
+                "argument to comptime parameter '%s' must be a compile-time constant",
+                param_vd->names[0]);
+            // Error-path hygiene: drop any values captured for EARLIER
+            // comptime args of this same failing call so the node leaves
+            // this function in the clean (NULL,0) state at the point of
+            // failure (the entry-gate free would also catch it on a
+            // re-visit; this just doesn't wait for one).
+            free(call->comptime_value_args);
+            call->comptime_value_args = NULL;
+            call->comptime_value_arg_count = 0;
+            return 0;
+        }
+        comptime_arg_value = res->value->int_value;
+        comptime_result_free(res);
+    }
+    // Capture the resolved int for the monomorphizer, in parameter order
+    // (ast.h's field doc comment) — a compact grow-by-one.
+    int64_t* grown = realloc(call->comptime_value_args,
+        (call->comptime_value_arg_count + 1) * sizeof(int64_t));
+    if (!grown) {
+        type_error(checker, arg->pos,
+            "out of memory recording comptime argument '%s'",
+            param_vd->names[0]);
+        // Error-path hygiene: same clean-state teardown as the rejection
+        // path above (realloc failure leaves the old allocation valid —
+        // free it, don't leak it).
+        free(call->comptime_value_args);
+        call->comptime_value_args = NULL;
+        call->comptime_value_arg_count = 0;
+        return 0;
+    }
+    call->comptime_value_args = grown;
+    call->comptime_value_args[call->comptime_value_arg_count++] = comptime_arg_value;
+    return 1;
+}
+
 static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
                                       CallExprNode* call, Variable* callee_var,
                                       const char* callee_name) {
+    // Comptime+generic composition (sub-project 2): honor the same
+    // first-visit contract type_check_call_expr enforces before dispatching
+    // here (its own comptime_first_check/entry-reset, above the callee-kind
+    // dispatch that forwards to this function) — codegen re-invokes
+    // type_check_call_expr on the same CallExprNode (call_codegen.c), which
+    // re-dispatches here for a generic callee every time. The caller's own
+    // entry-reset already runs before every dispatch into this function (so
+    // call->comptime_value_args is already (NULL,0) by the time a true
+    // first visit reaches here), but recomputing the flag locally keeps the
+    // per-arg capture loop below self-contained: it gates the capture
+    // helper call directly on this function's own local reasoning rather
+    // than trusting a value computed two stack frames away.
+    int comptime_first_check = (expr->node_type == NULL);
+    if (comptime_first_check) {
+        free(call->comptime_value_args);
+        call->comptime_value_args = NULL;
+        call->comptime_value_arg_count = 0;
+    }
+
     Type* gsig = callee_var->type;
     if (!gsig || gsig->kind != TYPE_FUNCTION) {
         type_error(checker, expr->pos,
@@ -2467,6 +2599,38 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
         }
 
         Type* pt = gsig->data.function.param_types[k];
+
+        // Comptime+generic composition (sub-project 2): a position whose
+        // declared param is_comptime_param never binds a type parameter —
+        // the declaration wall in declare_function_signature (`comptime n T`
+        // rejected) guarantees `pt` here is always a plain concrete type for
+        // a comptime position, never a bare/contained TYPE_PARAM. It
+        // validates as that concrete type and captures its value via the
+        // same helper type_check_call_expr's fixed-arity loop uses
+        // (type_check_capture_comptime_arg), then is EXCLUDED from
+        // unify_types entirely — unify_types would otherwise fall to its
+        // `type_equals` default-case comparison of `pt` against `at` (the
+        // argument's own static type, e.g. an untyped-literal's default
+        // width), and a spurious kind/width mismatch there would surface as
+        // "cannot infer type arguments", the wrong diagnostic for this
+        // position; the capture helper's own "must be a compile-time
+        // constant" is the correct rejection here instead. Gated on
+        // comptime_first_check exactly like the non-generic loop: a
+        // codegen-phase re-invocation must not re-capture (or re-evaluate,
+        // which can even false-fail against defer's rewritten argument
+        // nodes) values already captured on the first pass.
+        VarDeclNode* param_vd = (callee_var->func_decl_node &&
+                callee_var->func_decl_node->type == AST_FUNC_DECL)
+            ? func_decl_param_at((FuncDeclNode*)callee_var->func_decl_node, k)
+            : NULL;
+        if (param_vd && param_vd->is_comptime_param) {
+            if (comptime_first_check &&
+                !type_check_capture_comptime_arg(checker, call, a, param_vd)) {
+                free(bindings);
+                return NULL;
+            }
+            continue;
+        }
 
         // Fix round 7 (I-r6): a comptime-length array VALUE meeting the
         // generic axis. Two cases, split by whether this parameter position
@@ -2595,7 +2759,34 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
     Type** rec_args = n ? malloc(n * sizeof(Type*)) : NULL;
     if (n && !rec_args) { free(bindings); return NULL; }
     if (rec_args) memcpy(rec_args, bindings, n * sizeof(Type*));
-    type_check_record_instantiation(checker, callee_var, rec_args, n, expr);
+
+    // Comptime+generic composition (sub-project 2): copy this call's
+    // captured comptime values (0/NULL for a generic-only function — the
+    // per-arg loop above only grows call->comptime_value_arg_count for a
+    // genuinely comptime position) into the same independent-copy
+    // discipline rec_args uses just above, so the seed's second payload is
+    // torn down by type_checker_free without ever aliasing back to this
+    // CallExprNode's own comptime_value_args (ast_node_free's teardown).
+    // Correct on a re-invocation too: call->comptime_value_args retains the
+    // FIRST pass's captured values across a codegen re-check (the capture
+    // loop above only re-runs the helper when comptime_first_check holds),
+    // so this copy reads the right data whether this is a first visit or a
+    // re-visit — matching call->type_args/bindings' own unconditional
+    // rebuild-every-call pattern just above.
+    int64_t* rec_comptime = call->comptime_value_arg_count
+        ? malloc(call->comptime_value_arg_count * sizeof(int64_t)) : NULL;
+    if (call->comptime_value_arg_count && !rec_comptime) {
+        free(bindings);
+        free(rec_args);
+        return NULL;
+    }
+    if (rec_comptime) {
+        memcpy(rec_comptime, call->comptime_value_args,
+               call->comptime_value_arg_count * sizeof(int64_t));
+    }
+    type_check_record_instantiation(checker, callee_var, rec_args, n,
+                                     rec_comptime, call->comptime_value_arg_count,
+                                     expr);
 
     call->type_args = bindings;
     call->type_arg_count = n;
@@ -2603,24 +2794,6 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
     Type* result = type_substitute(gsig->data.function.return_type, bindings, n);
     expr->node_type = result;
     return result;
-}
-
-// Comptime value params Task 2: the VarDeclNode at parameter position `idx`
-// in a FuncDeclNode's parameter list (skipping any non-VarDeclNode entries —
-// none are expected today, but declare_function_signature's own param_types
-// build loop applies the same guard). idx is 0-based over parameters only,
-// matching func_type->data.function.param_types[idx] indexing. Returns NULL
-// past the end of the list (e.g. a trailing variadic-packed argument beyond
-// the fixed prefix, which has no per-argument VarDeclNode of its own).
-static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
-    if (!fd) return NULL;
-    size_t i = 0;
-    for (ASTNode* p = fd->params; p; p = p->next) {
-        if (p->type != AST_VAR_DECL) continue;
-        if (i == idx) return (VarDeclNode*)p;
-        i++;
-    }
-    return NULL;
 }
 
 // Comptime value params (fix round 2's I2 guard; promoted in fix round 4):
@@ -3388,79 +3561,14 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             VarDeclNode* param_vd = func_decl_param_at(
                 (FuncDeclNode*)checked_callee->func_decl_node, arg_count + recv_offset);
             if (param_vd && param_vd->is_comptime_param) {
-                // Fix round 2 (I2): resolve the argument in two tiers.
-                // Tier 1 — the checker-aware const folder, which resolves
-                // scope-registered constants (`const K = 3`, package-level
-                // consts, `comptime const M int = 2+2`) via each Variable's
-                // cached const_int_value; the comptime ENGINE alone (tier 2)
-                // has no view of checker-scope constants and rejected all
-                // of them, contradicting the spec's surface. Guarded by
-                // goo_expr_references_comptime_param (see types.h):
-                // inside a comptime template body the folder would resolve
-                // the enclosing comptime PARAM to its placeholder — such an
-                // argument skips the fold and falls to the engine, which
-                // rejects it (transitive comptime forwarding is a
-                // documented restriction).
-                // Tier 2 — the comptime engine, for everything the folder
-                // doesn't handle (e.g. comptime block results). A runtime
-                // variable fails both tiers -> clean rejection.
-                int64_t comptime_arg_value = 0;
-                int resolved = 0;
-                uint64_t folded = 0;
-                if (!goo_expr_references_comptime_param(checker, arg) &&
-                    goo_fold_const_int_ctx(checker, arg, &folded)) {
-                    comptime_arg_value = (int64_t)folded;
-                    resolved = 1;
-                }
-                if (!resolved) {
-                    ComptimeContext* raw_ctx = checker->comptime_type_ctx
-                        ? checker->comptime_type_ctx->comptime_ctx : NULL;
-                    ComptimeResult* res = raw_ctx
-                        ? comptime_eval_expression(raw_ctx, arg) : NULL;
-                    int ok = res && res->value && !res->error &&
-                             res->value->type == COMPTIME_VALUE_INT;
-                    if (!ok) {
-                        if (res) comptime_result_free(res);
-                        type_error(checker, arg->pos,
-                            "argument to comptime parameter '%s' must be a compile-time constant",
-                            param_vd->names[0]);
-                        // Error-path hygiene: drop any values captured for
-                        // EARLIER comptime args of this same failing call so
-                        // the node leaves this function in the clean (NULL,0)
-                        // state at the point of failure (the entry-gate free
-                        // would also catch it on a re-visit; this just
-                        // doesn't wait for one).
-                        free(call->comptime_value_args);
-                        call->comptime_value_args = NULL;
-                        call->comptime_value_arg_count = 0;
-                        return NULL;
-                    }
-                    comptime_arg_value = res->value->int_value;
-                    comptime_result_free(res);
-                }
-                // Comptime value params Task 3: capture the resolved int for
-                // the monomorphizer, in parameter order (ast.h's field doc
-                // comment) — a compact grow-by-one. Only reachable on the
-                // FIRST check of this node (comptime_first_check gates the
-                // enclosing block), where the entry reset above guarantees a
-                // clean grow-from-empty for THIS call node.
-                int64_t* grown = realloc(call->comptime_value_args,
-                    (call->comptime_value_arg_count + 1) * sizeof(int64_t));
-                if (!grown) {
-                    type_error(checker, arg->pos,
-                        "out of memory recording comptime argument '%s'",
-                        param_vd->names[0]);
-                    // Error-path hygiene: same clean-state teardown as the
-                    // rejection path above (realloc failure leaves the old
-                    // allocation valid — free it, don't leak it).
-                    free(call->comptime_value_args);
-                    call->comptime_value_args = NULL;
-                    call->comptime_value_arg_count = 0;
+                // Extracted (sub-project 2) into type_check_capture_comptime_arg,
+                // shared with type_check_generic_call's per-arg loop — see its
+                // doc comment above for the two-tier fold and the ownership/
+                // error-path contract. Behavior here is unchanged: on failure
+                // the helper has already emitted the diagnostic and reset
+                // call->comptime_value_args to (NULL,0).
+                if (!type_check_capture_comptime_arg(checker, call, arg, param_vd))
                     return NULL;
-                }
-                call->comptime_value_args = grown;
-                call->comptime_value_args[call->comptime_value_arg_count++] =
-                    comptime_arg_value;
             }
         }
 

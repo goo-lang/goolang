@@ -1594,8 +1594,8 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "method-declaration" "not yet supported on methods"; \
 	printf 'package main\nimport "cpkg"\nfunc main() { _ = cpkg.Fill(2, 1) }\n' > build/cvm.goo; \
 	run_case "package-declaration" "comptime parameters on package functions are not yet supported"; \
-	printf 'package main\nfunc bad[T any](comptime n int, x T) T { return x }\nfunc main() { }\n' > build/cvm.goo; \
-	run_case "generic-declaration" "not yet supported together with type parameters"; \
+	printf 'package main\nfunc bad[T any](comptime n T) T { return n }\nfunc main() { }\n' > build/cvm.goo; \
+	run_case "composed-tparam-comptime-type" "comptime parameter type cannot be a type parameter"; \
 	printf 'package main\nfunc main() {\n    f := func(comptime n int, s int) int { return s }\n    _ = f\n}\n' > build/cvm.goo; \
 	run_case "closure-declaration" "only supported on named functions"; \
 	printf 'package main\nfunc fill(comptime n int, s int) int {\n    var buf [n]int\n    _ = buf\n    return s\n}\nfunc main() { _ = fill(-1, 1) }\n' > build/cvm.goo; \
