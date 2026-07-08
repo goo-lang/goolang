@@ -1644,6 +1644,47 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         }
     }
 
+    // comma-ok channel receive: `v, ok := <-ch` — sibling of the map/type-
+    // assert arms above, same {V, bool} synthesis. `<-ch` is AST_UNARY_EXPR
+    // with operator TOKEN_ARROW (parser.y: `ARROW unary_expr`); its already-
+    // type-checked node_type (set by type_check_channel_receive_op via the
+    // initial `type_check_expression(checker, var_decl->values)` above) is
+    // just the channel's element type — read it back instead of re-checking,
+    // exactly as the map/type-assert arms do. Without this synthesis,
+    // final_type stays the bare element type and BOTH names bind to it below
+    // (per_name_types stays NULL), so `ok` silently gets the element type
+    // instead of bool (Task 5: this is the type-level half of the
+    // double-goo_chan_recv miscompile — the codegen half is the comma-ok arm
+    // in function_codegen.c).
+    if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+        var_decl->values && var_decl->values->type == AST_UNARY_EXPR &&
+        ((UnaryExprNode*)var_decl->values)->operator == TOKEN_ARROW) {
+        Type* elem_type = var_decl->values->node_type;
+        if (elem_type) {
+            Type* commaok_struct = type_new(TYPE_STRUCT);
+            if (commaok_struct) {
+                commaok_struct->data.struct_type.fields = calloc(2, sizeof(StructField));
+                if (commaok_struct->data.struct_type.fields) {
+                    commaok_struct->data.struct_type.field_count = 2;
+                    commaok_struct->data.struct_type.name = NULL;
+                    commaok_struct->data.struct_type.fields[0].name = strdup("v");
+                    commaok_struct->data.struct_type.fields[0].type = elem_type;
+                    commaok_struct->data.struct_type.fields[0].offset = 0;
+                    commaok_struct->data.struct_type.fields[0].ownership = OWNERSHIP_NONE;
+                    commaok_struct->data.struct_type.fields[0].mutability = MUTABILITY_MUTABLE;
+                    commaok_struct->data.struct_type.fields[1].name = strdup("ok");
+                    commaok_struct->data.struct_type.fields[1].type = type_checker_get_builtin(checker, TYPE_BOOL);
+                    commaok_struct->data.struct_type.fields[1].offset = 0;
+                    commaok_struct->data.struct_type.fields[1].ownership = OWNERSHIP_NONE;
+                    commaok_struct->data.struct_type.fields[1].mutability = MUTABILITY_MUTABLE;
+                    final_type = commaok_struct;
+                } else {
+                    type_free(commaok_struct);
+                }
+            }
+        }
+    }
+
     // Store the type on the AST node for code generation
     var_decl->base.node_type = final_type;
 

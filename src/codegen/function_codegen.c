@@ -1912,6 +1912,80 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             }
         }
 
+        // comma-ok channel receive: `v, ok := <-ch` (Task 5) — sibling of the
+        // comma-ok map/type-assert arms above. Calls goo_chan_recv EXACTLY
+        // ONCE (the pre-fix behavior fell through to the generic single-LHS
+        // loop below, which evaluates var_decl->values once per name — for
+        // name_count==2 that is TWICE — so the second call blocked on the
+        // now-drained channel and the runtime aborted with a spurious
+        // deadlock). Its i32 status return feeds `ok` (truncated to i1) and
+        // its void* out-param feeds `v`, packed into the same {V, i1}
+        // aggregate the generic ExtractValue loop below unpacks.
+        //
+        // Deliberately NOT routed through codegen_generate_channel_recv
+        // (lowlevel_codegen.c) — that helper discards the status and is the
+        // single-value receive's only caller (expression_codegen.c); reusing
+        // it here would need either a second call (the bug) or an ABI change
+        // that risks perturbing the single-value receive's IR, which must
+        // stay byte-identical (FROZEN, Task 5 brief). Duplicating the small
+        // alloca/call/load sequence at this destructuring site keeps that
+        // path untouched — the same trade-off the map/type-assert arms above
+        // already made.
+        if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+            var_decl->values->type == AST_UNARY_EXPR &&
+            ((UnaryExprNode*)var_decl->values)->operator == TOKEN_ARROW) {
+            UnaryExprNode* unary = (UnaryExprNode*)var_decl->values;
+
+            ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
+            if (!channel_val) {
+                codegen_error(codegen, decl->pos, "Failed to evaluate comma-ok channel receive operand");
+                return 0;
+            }
+
+            Type* chan_goo = channel_val->goo_type;
+            Type* elem_goo = (chan_goo && chan_goo->kind == TYPE_CHANNEL)
+                             ? chan_goo->data.channel.element_type : NULL;
+            LLVMTypeRef element_type = elem_goo
+                ? codegen_type_to_llvm(codegen, elem_goo)
+                : LLVMInt32TypeInContext(codegen->context);  // fallback, mirrors codegen_generate_channel_recv
+
+            LLVMValueRef result_alloca = LLVMBuildAlloca(codegen->builder, element_type, "recv_result");
+            LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMValueRef result_ptr = LLVMBuildBitCast(codegen->builder, result_alloca, void_ptr_type, "result_as_void_ptr");
+
+            LLVMTypeRef param_types_recv[] = { void_ptr_type, void_ptr_type };
+            LLVMTypeRef recv_func_type = LLVMFunctionType(LLVMInt32TypeInContext(codegen->context), param_types_recv, 2, 0);
+            LLVMValueRef recv_func = LLVMGetNamedFunction(codegen->module, "goo_chan_recv");
+            if (!recv_func) {
+                recv_func = LLVMAddFunction(codegen->module, "goo_chan_recv", recv_func_type);
+            }
+
+            // The one and only goo_chan_recv call for this statement.
+            LLVMValueRef recv_args[] = { channel_val->llvm_value, result_ptr };
+            LLVMValueRef status = LLVMBuildCall2(codegen->builder, recv_func_type, recv_func,
+                                                  recv_args, 2, "commaok_recv_status");
+            LLVMValueRef received_value = LLVMBuildLoad2(codegen->builder, element_type, result_alloca, "commaok_received_value");
+
+            value_info_free(channel_val);
+
+            // goo_chan_recv returns 1 on success, 0 on failure (runtime.c:
+            // closed channel with no data parked). No `close()` builtin
+            // reaches user code in v1 yet, so on every currently-reachable
+            // path this receive either delivers a value (status=1, ok=true)
+            // or blocks forever — status=0/ok=false is wired correctly for
+            // when close() ships but is not exercised by any v1 program.
+            LLVMTypeRef i1t = LLVMInt1TypeInContext(codegen->context);
+            LLVMValueRef ok_bit = LLVMBuildTrunc(codegen->builder, status, i1t, "commaok_recv_ok");
+
+            LLVMTypeRef agg_fields[2] = { element_type, i1t };
+            LLVMTypeRef agg_type = LLVMStructTypeInContext(codegen->context, agg_fields, 2, 0);
+            LLVMValueRef agg = LLVMGetUndef(agg_type);
+            agg = LLVMBuildInsertValue(codegen->builder, agg, received_value, 0, "commaok_recv_v");
+            agg = LLVMBuildInsertValue(codegen->builder, agg, ok_bit,         1, "commaok_recv_agg");
+
+            rhs = value_info_new(NULL, agg, var_type);
+        }
+
         // Non-map-ok path: generic struct-return destructure (e.g. `a, b := f()`).
         if (!rhs) {
             rhs = codegen_generate_expression(codegen, checker, var_decl->values);
