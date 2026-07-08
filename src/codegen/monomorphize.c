@@ -67,17 +67,47 @@ char* codegen_mangle_instance(const char* base, Type* const* args, size_t n) {
     free(toks); return out;
 }
 
+// Comptime+generic composition (sub-project 2), decision 3: types first (via
+// codegen_mangle_instance), then `__n<value>` segments (via
+// codegen_mangle_comptime_instance) — see the doc comment at the declaration
+// (codegen.h) for the collision-safety argument. Implemented as a literal
+// composition of the two existing manglers, run in that fixed order, rather
+// than a hand-rolled third scheme: both already produce a
+// deterministic/dedup-on-identical-tuple, distinct-on-any-differing-component
+// mangling for their own axis, and stringing them together preserves both
+// properties for the combined tuple (two combined calls mangle identically
+// iff both their type tuples AND their value tuples mangle identically).
+// `nv == 0` degenerates to codegen_mangle_instance(base, targs, nt) exactly
+// (codegen_mangle_comptime_instance appends nothing for an empty value list),
+// matching the "0/NULL = today's behavior" contract used throughout this
+// file. Caller frees.
+char* codegen_mangle_combined_instance(const char* base, Type* const* targs, size_t nt,
+                                        const int64_t* values, size_t nv) {
+    if (!base) return NULL;
+    char* typed = codegen_mangle_instance(base, targs, nt);
+    if (!typed) return NULL;
+    char* out = codegen_mangle_comptime_instance(typed, values, nv);
+    free(typed);
+    return out;
+}
+
 // Task 9: stamp one concrete instantiation. See the doc comment at the
 // declaration (include/codegen.h) for the two-substitution contract; the
 // non-LLVM stub build has neither `active_subst`/`symbol_override` on
 // CodeGenerator nor a real codegen_generate_function_decl to reuse, so it
 // just reports failure (mirrors codegen_generate_function_decl's own
 // !LLVM_AVAILABLE stub branch, function_codegen.c).
+//
+// Comptime+generic composition (sub-project 2), decision 4: `comptime_values`/
+// `comptime_value_n` are this SAME generator's second, independently
+// save/restored axis — see the declaration's doc comment (codegen.h) for the
+// full rationale on why 0/NULL is exactly today's generic-only behavior.
 int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* checker,
                                        FuncDeclNode* tmpl, const char* sym,
-                                       Type** args, size_t n) {
+                                       Type** args, size_t n,
+                                       const int64_t* comptime_values, size_t comptime_value_n) {
 #if !LLVM_AVAILABLE
-    (void)tmpl; (void)sym; (void)args; (void)n;
+    (void)tmpl; (void)sym; (void)args; (void)n; (void)comptime_values; (void)comptime_value_n;
     codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "LLVM support not available");
     return 0;
 #else
@@ -134,6 +164,24 @@ int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* chec
     // FuncDeclNode can be lowered more than once under distinct symbols.
     codegen->symbol_override = sym;
 
+    // Comptime+generic composition (sub-project 2), decision 4: install the
+    // comptime axis alongside active_subst/symbol_override above — SAME
+    // save/restore discipline, unconditional (installed even when
+    // comptime_value_n == 0, which is exactly the ambient NULL/0 these
+    // fields already carry between top-level instantiations, since this
+    // generator and codegen_generate_comptime_function_instance never run
+    // reentrantly/overlapping — see mono_instantiate's children-before-
+    // parent ordering). This is what lets a composed instance's `[n]T`
+    // re-derivation (function_codegen.c, composite_codegen.c) and the
+    // comptime-param mirror-scope rebinding (function_codegen.c) — both
+    // gated purely on active_comptime_value_n > 0 — see THIS instance's
+    // values, verified not reimplemented: neither of those call sites is
+    // touched by this task.
+    const int64_t* saved_comptime_values = codegen->active_comptime_values;
+    size_t saved_comptime_value_n = codegen->active_comptime_value_n;
+    codegen->active_comptime_values = comptime_values;
+    codegen->active_comptime_value_n = comptime_value_n;
+
     // codegen_generate_function_decl is called DIRECTLY here (not through
     // codegen_generate_declaration), so the Task 4 "skip generic template"
     // guard — `if (((FuncDeclNode*)decl)->type_params) return 1;` in
@@ -143,6 +191,8 @@ int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* chec
     // per-instance call.
     int ok = codegen_generate_function_decl(codegen, checker, (ASTNode*)tmpl);
 
+    codegen->active_comptime_values = saved_comptime_values;
+    codegen->active_comptime_value_n = saved_comptime_value_n;
     codegen->symbol_override = saved_override;
     codegen->active_subst = saved_subst;
     codegen->active_subst_n = saved_subst_n;
@@ -549,11 +599,28 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
 // symbol_override) BEFORE emitting its body, exactly like any other
 // recursive function; the self-call resolves once that body is actually
 // emitted, by the same Part B lookup every other call site uses.
+//
+// Comptime+generic composition (sub-project 2), decision 7: `comptime_values`/
+// `comptime_value_n` extend this SAME recursive instantiator (rather than a
+// parallel combined copy) to cover a composed {template, type-args,
+// comptime-values} tuple — 0/NULL (every pre-existing call site) is exactly
+// today's generic-only tuple, so this is additive: the mangling switches to
+// the combined form only when comptime_value_n > 0 (codegen_mangle_instance
+// byte-for-byte otherwise), and the final stamp call below forwards the pair
+// straight through to codegen_generate_function_instance's own extended
+// payload. `comptime_values` is always BORROWED here (owned by a
+// checker->instantiations record or a nested call node's
+// comptime_value_args — see GenericInstantiation/CallExprNode's own doc
+// comments) and never freed by this function, mirroring comptime_instantiate
+// below one axis over.
 static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
                              MonoSeen** seen, size_t* stamped_count,
                              Variable* tmpl_var, Type** args, size_t n,
-                             int owns_args) {
-    char* sym = codegen_mangle_instance(tmpl_var->name, args, n);
+                             int owns_args,
+                             const int64_t* comptime_values, size_t comptime_value_n) {
+    char* sym = comptime_value_n > 0
+        ? codegen_mangle_combined_instance(tmpl_var->name, args, n, comptime_values, comptime_value_n)
+        : codegen_mangle_instance(tmpl_var->name, args, n);
     if (LLVMGetNamedFunction(codegen->module, sym) || mono_seen_has(*seen, sym)) {
         free(sym);
         if (owns_args) free(args);
@@ -589,6 +656,43 @@ static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
         Variable* nested_var = type_checker_lookup_variable(checker,
             ((IdentifierNode*)ncall->function)->name);
 
+        // Comptime+generic composition (sub-project 2), decision 7: a nested
+        // COMBINED call (`kernel(4, x)` from inside another template's body,
+        // where `kernel` itself declares both axes) — checked BEFORE the
+        // pure-comptime branch below, since that branch's own guard
+        // (`comptime_value_arg_count > 0`) would otherwise also match a
+        // combined call and misroute it through comptime_instantiate under
+        // the WRONG (comptime-only) mangled symbol. Type args are
+        // substituted under the enclosing env exactly like the pure-generic
+        // case below (same `type_substitute` + `args_contain_typeparam`
+        // concreteness check); comptime values are always literal by
+        // construction (transitive forwarding through a non-comptime-const
+        // expression is rejected at type-check, upstream of this pass) and
+        // are borrowed straight off the call node — no substitution needed
+        // for that axis.
+        if (ncall->type_arg_count > 0 && ncall->comptime_value_arg_count > 0) {
+            if (nested_var && nested_var->is_generic && nested_var->generic_decl) {
+                size_t nn = ncall->type_arg_count;
+                Type** resolved = nn ? malloc(sizeof(Type*) * nn) : NULL;
+                if (nn && !resolved) { ok = 0; break; }
+                int concrete = 1;
+                for (size_t i = 0; i < nn; i++) {
+                    resolved[i] = type_substitute(ncall->type_args[i], args, n);
+                    if (!resolved[i]) { concrete = 0; break; }
+                }
+                if (concrete) concrete = !args_contain_typeparam(resolved, nn);
+                if (!concrete) { free(resolved); continue; }
+
+                if (!mono_instantiate(codegen, checker, seen, stamped_count,
+                                      nested_var, resolved, nn, 1,
+                                      ncall->comptime_value_args,
+                                      ncall->comptime_value_arg_count)) {
+                    ok = 0;
+                }
+            }
+            continue;
+        }
+
         // Comptime value params Task 3 (fix round 1): a nested COMPTIME call
         // inside this generic template's body (`fill(4, x)` from inside
         // `Twice[T]`) — its instance must exist before this template's own
@@ -598,7 +702,9 @@ static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
         // comptime engine can't resolve was already rejected at type-check),
         // so no substitution step is needed — recurse directly. Checked
         // before the is_generic filter: a comptime-param function is never
-        // generic, so the two branches are disjoint by construction.
+        // generic, so the two branches are disjoint by construction (the
+        // combined case above is carved out first, so by this point a
+        // comptime-arg-bearing call is a PLAIN comptime-only callee).
         if (ncall->comptime_value_arg_count > 0) {
             if (nested_var && nested_var->func_decl_node &&
                 nested_var->func_decl_node->type == AST_FUNC_DECL) {
@@ -630,14 +736,15 @@ static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
         if (!concrete) { free(resolved); continue; }
 
         if (!mono_instantiate(codegen, checker, seen, stamped_count,
-                              nested_var, resolved, nn, 1)) {
+                              nested_var, resolved, nn, 1, NULL, 0)) {
             ok = 0;
         }
     }
     mono_free_calls(calls);
 
     if (ok) {
-        ok = codegen_generate_function_instance(codegen, checker, tmpl, sym, args, n);
+        ok = codegen_generate_function_instance(codegen, checker, tmpl, sym, args, n,
+                                                comptime_values, comptime_value_n);
     }
     if (owns_args) free(args);
     return ok;
@@ -711,8 +818,36 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
             ((IdentifierNode*)ncall->function)->name);
         if (!nested_var) continue;
 
+        // Comptime+generic composition (sub-project 2), decision 7: nested
+        // comptime->COMBINED (cross-axis) — a plain comptime-only template's
+        // body calling a function that itself declares both axes
+        // (`kernel(4, x)` where `kernel[T any](comptime n int, data T)`).
+        // Checked before the pure-comptime branch below for the identical
+        // misrouting reason documented in mono_instantiate's own combined
+        // branch: the pure-comptime guard alone would otherwise match this
+        // call too and stamp it under the wrong (comptime-only) mangled
+        // symbol. `ncall->type_args` are already concrete here (a
+        // comptime-only enclosing template has no type params of its own for
+        // them to be symbolic against), so no substitution — mirrors the
+        // existing nested comptime->generic branch below, one axis added.
+        if (ncall->type_arg_count > 0 && ncall->comptime_value_arg_count > 0) {
+            if (nested_var->is_generic && nested_var->generic_decl &&
+                !args_contain_typeparam(ncall->type_args, ncall->type_arg_count)) {
+                if (!mono_instantiate(codegen, checker, seen, stamped_count,
+                                      nested_var, ncall->type_args,
+                                      ncall->type_arg_count, 0,
+                                      ncall->comptime_value_args,
+                                      ncall->comptime_value_arg_count)) {
+                    ok = 0;
+                }
+            }
+            continue;
+        }
+
         if (ncall->comptime_value_arg_count > 0) {
-            // Nested comptime->comptime: children first, same axis.
+            // Nested comptime->comptime: children first, same axis. (The
+            // combined case is carved out above, so by this point a
+            // comptime-arg-bearing call is a PLAIN comptime-only callee.)
             if (nested_var->func_decl_node &&
                 nested_var->func_decl_node->type == AST_FUNC_DECL) {
                 if (!comptime_instantiate(codegen, checker, seen, stamped_count,
@@ -734,7 +869,7 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
             !args_contain_typeparam(ncall->type_args, ncall->type_arg_count)) {
             if (!mono_instantiate(codegen, checker, seen, stamped_count,
                                   nested_var, ncall->type_args,
-                                  ncall->type_arg_count, 0)) {
+                                  ncall->type_arg_count, 0, NULL, 0)) {
                 ok = 0;
             }
         }
@@ -765,8 +900,16 @@ int codegen_monomorphize(CodeGenerator* codegen, TypeChecker* checker) {
 
     for (GenericInstantiation* it = checker->instantiations; it && ok; it = it->next) {
         if (args_contain_typeparam(it->args, it->n)) continue; // symbolic seed — rediscovered concretely below
+        // Comptime+generic composition (sub-project 2), decision 7: a seed
+        // with comptime_value_n > 0 is a composed {template, type-args,
+        // comptime-values} tuple (Task 1's capture — see GenericInstantiation's
+        // doc comment, types.h) — thread it straight into the SAME
+        // mono_instantiate, SAME seen/stamped_count pair as every other
+        // generic seed; 0/NULL for a generic-only seed takes exactly the
+        // pre-existing path (mono_instantiate's own 0/NULL contract).
         if (!mono_instantiate(codegen, checker, &seen, &stamped_count,
-                              it->fn, it->args, it->n, 0)) {
+                              it->fn, it->args, it->n, 0,
+                              it->comptime_values, it->comptime_value_n)) {
             ok = 0;
         }
     }
