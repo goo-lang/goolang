@@ -2538,13 +2538,28 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     // are malloc-uninitialized at every parser.y CallExprNode construction
     // site (parser.y is off-limits for this task — see ast.h's field doc
     // comment for the full reasoning), so establish the NULL/0 invariant
-    // here instead: unconditionally, as the very first thing done with this
-    // node, before any early-return path below. Every call is type-checked
-    // exactly once, here, before codegen (including the monomorphizer) ever
-    // reads these fields, so this single reset is sufficient — nothing
-    // upstream of this function ever touches them.
-    call->comptime_value_args = NULL;
-    call->comptime_value_arg_count = 0;
+    // here instead — but only on the FIRST visit to this node. This
+    // function is NOT called exactly once per call node: codegen re-invokes
+    // it on the same CallExprNode (call_codegen.c's method-call return-type
+    // recomputation and defer re-emission paths), and an unconditional
+    // reset here would clobber the values captured on the first pass with a
+    // re-evaluation against whatever scope codegen currently has mirrored
+    // (fix round 1, finding 4). `expr->node_type` is the first-visit
+    // discriminator: reliably NULL at parse time (every parser.y
+    // construction site zeroes base.node_type) and set at the end of this
+    // function's successful main path — so node_type != NULL means the
+    // comptime fields were already established (and possibly populated) by
+    // an earlier full check, and both the reset here and the capture/record
+    // sites below (gated on this same flag) must leave them untouched. A
+    // first check that FAILED mid-way (type error) leaves node_type NULL,
+    // so a re-check resets and recaptures from scratch — correct, since
+    // nothing was recorded off the aborted pass's partial state
+    // (compilation is failing anyway).
+    int comptime_first_check = (expr->node_type == NULL);
+    if (comptime_first_check) {
+        call->comptime_value_args = NULL;
+        call->comptime_value_arg_count = 0;
+    }
 
     // A type in call-argument position (map_type/slice_type/chan_type — the
     // grammar alternative added for `make(...)`) only means something when
@@ -3250,7 +3265,15 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         // (identifier/struct-method/source-package calls); an interface
         // method call has no concrete Variable to resolve is_comptime_param
         // from and is not checked here.
-        if (checked_callee && checked_callee->func_decl_node &&
+        //
+        // Fix round 1 (finding 4): gated on comptime_first_check — on a
+        // codegen-phase RE-invocation of this function over the same node,
+        // the values were already validated and captured by the first pass;
+        // re-appending would duplicate them, and re-EVALUATING can even
+        // false-fail (defer's re-emission path rewrites argument nodes to
+        // synthetic identifiers the comptime engine can't evaluate).
+        if (comptime_first_check &&
+            checked_callee && checked_callee->func_decl_node &&
             checked_callee->func_decl_node->type == AST_FUNC_DECL) {
             VarDeclNode* param_vd = func_decl_param_at(
                 (FuncDeclNode*)checked_callee->func_decl_node, arg_count + recv_offset);
@@ -3270,9 +3293,10 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 }
                 // Comptime value params Task 3: capture the resolved int for
                 // the monomorphizer, in parameter order (ast.h's field doc
-                // comment) — a compact grow-by-one; call->comptime_value_args
-                // was reset to NULL/0 at function entry above, so this is
-                // always a clean grow-from-empty for THIS call node.
+                // comment) — a compact grow-by-one. Only reachable on the
+                // FIRST check of this node (comptime_first_check gates the
+                // enclosing block), where the entry reset above guarantees a
+                // clean grow-from-empty for THIS call node.
                 int64_t* grown = realloc(call->comptime_value_args,
                     (call->comptime_value_arg_count + 1) * sizeof(int64_t));
                 if (!grown) {
@@ -3457,21 +3481,34 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     // monomorphization seed once every argument (including each comptime
     // one, above) has validated — mirrors type_check_record_instantiation's
     // generic-axis recording (type_check_generic_call) but keyed on int64_t
-    // comptime VALUES instead of concrete Types. Scoped to a plain
-    // identifier callee only: comptime-param functions are direct-call-only
-    // by design (generics/closures/interface methods already reject
-    // `comptime` params outright), and Part B's call-rewiring
-    // (call_codegen.c) currently only rewrites this one call shape — see its
-    // doc comment for the method/package-call-site follow-up this leaves.
-    if (call->comptime_value_arg_count > 0 && call->function &&
-        call->function->type == AST_IDENTIFIER && checked_callee) {
+    // comptime VALUES instead of concrete Types. A plain identifier callee
+    // is the ONLY shape that can reach here with comptime values (fix
+    // round 1): a struct-method selector cannot (declare_function_signature
+    // rejects comptime params on methods outright) and a package-function
+    // selector cannot either (same rejection for package declarations — see
+    // the current_package block there for the three lifetime reasons real
+    // cross-package support is deferred). Gated on comptime_first_check so
+    // a codegen-phase re-invocation doesn't append duplicate seeds after
+    // the monomorphizer already ran (see the entry-reset comment at the top
+    // of this function).
+    if (comptime_first_check &&
+        call->comptime_value_arg_count > 0 && call->function && checked_callee &&
+        call->function->type == AST_IDENTIFIER) {
         int64_t* rec_values = malloc(call->comptime_value_arg_count * sizeof(int64_t));
-        if (rec_values) {
-            memcpy(rec_values, call->comptime_value_args,
-                   call->comptime_value_arg_count * sizeof(int64_t));
-            type_check_record_comptime_instantiation(checker, checked_callee,
-                rec_values, call->comptime_value_arg_count, expr);
+        if (!rec_values) {
+            // Fix round 1 (finding 5): a silent skip here would surface much
+            // later as an undefined-symbol failure at the (never-stamped)
+            // instance's call site — fail loudly at the point of the actual
+            // problem instead, mirroring the capture-site realloc error above.
+            type_error(checker, expr->pos,
+                "out of memory recording comptime instantiation of '%s'",
+                callee_name ? callee_name : "?");
+            return NULL;
         }
+        memcpy(rec_values, call->comptime_value_args,
+               call->comptime_value_arg_count * sizeof(int64_t));
+        type_check_record_comptime_instantiation(checker, checked_callee,
+            rec_values, call->comptime_value_arg_count, expr);
     }
 
     expr->node_type = func_type->data.function.return_type;

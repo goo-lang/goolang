@@ -388,7 +388,18 @@ static void collect_generic_calls(ASTNode* node, MonoCallRef** out) {
                 break;
             case AST_CALL_EXPR: {
                 CallExprNode* c = (CallExprNode*)n;
-                if (c->type_arg_count > 0) mono_push_call(out, c);
+                // Comptime value params Task 3 (fix round 1): comptime call
+                // sites (comptime_value_arg_count > 0) are collected
+                // alongside generic ones — both consumers (mono_instantiate
+                // and comptime_instantiate below) filter for the axis they
+                // handle, and each recurses into the OTHER axis's helper for
+                // a nested cross-axis call. Reading comptime_value_arg_count
+                // here is safe: this walker only ever runs over the body of
+                // a successfully type-checked template, so every call node
+                // reachable from it has had its first type_check_call_expr
+                // visit (which establishes the field — see ast.h).
+                if (c->type_arg_count > 0 || c->comptime_value_arg_count > 0)
+                    mono_push_call(out, c);
                 collect_generic_calls(c->function, out);
                 collect_generic_calls(c->args, out);
                 break;
@@ -498,6 +509,15 @@ static int mono_seen_has(MonoSeen* seen, const char* sym) {
 // type instantiations). Not expected to bind on any real Tier-A program.
 #define MONO_INSTANTIATION_CAP 4096
 
+// Comptime value params Task 3 (fix round 1): forward declaration — the two
+// instantiators recurse into each other for nested CROSS-axis calls (a
+// generic instance body calling `fill(4, x)`, or a comptime instance body
+// calling `Id[int](x)`), so mono_instantiate below needs to see this before
+// its own definition. Defined after mono_instantiate.
+static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
+                                MonoSeen** seen, size_t* stamped_count,
+                                Variable* fn_var, const int64_t* values, size_t n);
+
 // Task 10 (Part A): recursively ensure `tmpl_var` is instantiated under
 // `args`/`n`, instantiating every nested generic-calls-generic dependency
 // FIRST — children before parents — so each nested instance's LLVM symbol
@@ -568,6 +588,29 @@ static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
         if (!ncall->function || ncall->function->type != AST_IDENTIFIER) continue;
         Variable* nested_var = type_checker_lookup_variable(checker,
             ((IdentifierNode*)ncall->function)->name);
+
+        // Comptime value params Task 3 (fix round 1): a nested COMPTIME call
+        // inside this generic template's body (`fill(4, x)` from inside
+        // `Twice[T]`) — its instance must exist before this template's own
+        // body is emitted, same children-first reasoning as the generic
+        // recursion below. The recorded values are always concrete literals
+        // (a comptime argument referencing an outer binding that the
+        // comptime engine can't resolve was already rejected at type-check),
+        // so no substitution step is needed — recurse directly. Checked
+        // before the is_generic filter: a comptime-param function is never
+        // generic, so the two branches are disjoint by construction.
+        if (ncall->comptime_value_arg_count > 0) {
+            if (nested_var && nested_var->func_decl_node &&
+                nested_var->func_decl_node->type == AST_FUNC_DECL) {
+                if (!comptime_instantiate(codegen, checker, seen, stamped_count,
+                                          nested_var, ncall->comptime_value_args,
+                                          ncall->comptime_value_arg_count)) {
+                    ok = 0;
+                }
+            }
+            continue;
+        }
+
         if (!nested_var || !nested_var->is_generic || !nested_var->generic_decl) continue;
 
         size_t nn = ncall->type_arg_count;
@@ -600,6 +643,111 @@ static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
     return ok;
 }
 
+// Comptime value params Task 3 (fix round 1): recursively ensure `fn_var` is
+// instantiated under comptime `values`/`n`, instantiating every nested
+// dependency FIRST — children before parents — mirroring mono_instantiate
+// above, one axis over, for the identical reason: `outer(comptime n)` whose
+// body calls `helper(4, seed)` needs `helper__n4` already present in the
+// module by the time outer's own body is emitted, or Part B's call rewiring
+// (call_codegen.c) falls through to the bare-name lookup, which fails
+// ("Undefined identifier") since a comptime-param function's template is
+// never emitted under its bare name. The linear worklist order alone can't
+// guarantee this (checker->comptime_instantiations is head-prepended, so
+// main's `outer(4, ...)` seed sits AHEAD of the earlier-recorded nested
+// `helper(4, ...)` seed).
+//
+// Two structural simplifications vs mono_instantiate, both consequences of
+// comptime values being plain int64_t literals rather than Types:
+// - No substitution step and no owns_args protocol: nested calls' recorded
+//   values are always concrete (a comptime argument the engine couldn't
+//   fully evaluate at template-check time was rejected there), and `values`
+//   is always BORROWED — from a checker->comptime_instantiations record
+//   (checker-owned) or from a nested call node's comptime_value_args
+//   (AST-owned) — never freed here.
+// - No symbolic-seed filtering: every recorded seed is concrete by
+//   construction.
+//
+// `seen` is marked before the nested walk, exactly like mono_instantiate —
+// so a self-recursive comptime call (same function, same values) is found
+// in-flight and skipped, which is correct for the same
+// prototype-declared-before-body reason documented there. Cross-axis: a
+// nested GENERIC call inside this comptime body (`Id[int](x)`) recurses
+// into mono_instantiate; its type_args are concrete since a comptime-param
+// function has no type params of its own for them to reference.
+static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
+                                MonoSeen** seen, size_t* stamped_count,
+                                Variable* fn_var, const int64_t* values, size_t n) {
+    ASTNode* decl_node = fn_var->func_decl_node;
+    if (!decl_node || decl_node->type != AST_FUNC_DECL) return 1; // defensive; always set (declare_function_signature)
+    FuncDeclNode* tmpl = (FuncDeclNode*)decl_node;
+
+    char* sym = codegen_mangle_comptime_instance(fn_var->name, values, n);
+    if (!sym) return 0;
+    if (LLVMGetNamedFunction(codegen->module, sym) || mono_seen_has(*seen, sym)) {
+        free(sym);
+        return 1; // already stamped, or already in flight (cycle guard) — no-op
+    }
+    if (*stamped_count >= MONO_INSTANTIATION_CAP) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                      "monomorphization exceeded instantiation cap (possible runaway comptime recursion)");
+        free(sym);
+        return 0;
+    }
+    (*stamped_count)++;
+
+    MonoSeen* sn = malloc(sizeof(MonoSeen));
+    if (!sn) { free(sym); return 0; }
+    sn->sym = sym; // ownership moves to the seen list; freed once by the top-level driver
+    sn->next = *seen;
+    *seen = sn;
+
+    MonoCallRef* calls = NULL;
+    collect_generic_calls(tmpl->body, &calls);
+    int ok = 1;
+    for (MonoCallRef* nc = calls; nc && ok; nc = nc->next) {
+        CallExprNode* ncall = nc->call;
+        if (!ncall->function || ncall->function->type != AST_IDENTIFIER) continue;
+        Variable* nested_var = type_checker_lookup_variable(checker,
+            ((IdentifierNode*)ncall->function)->name);
+        if (!nested_var) continue;
+
+        if (ncall->comptime_value_arg_count > 0) {
+            // Nested comptime->comptime: children first, same axis.
+            if (nested_var->func_decl_node &&
+                nested_var->func_decl_node->type == AST_FUNC_DECL) {
+                if (!comptime_instantiate(codegen, checker, seen, stamped_count,
+                                          nested_var, ncall->comptime_value_args,
+                                          ncall->comptime_value_arg_count)) {
+                    ok = 0;
+                }
+            }
+            continue;
+        }
+
+        // Nested comptime->generic (cross-axis): the recorded type_args are
+        // concrete (no enclosing type params to be symbolic against), so no
+        // substitution — but keep the defensive concreteness check
+        // mono_instantiate's own seeding applies. Borrowed args
+        // (owns_args=0): they belong to the call node.
+        if (ncall->type_arg_count > 0 &&
+            nested_var->is_generic && nested_var->generic_decl &&
+            !args_contain_typeparam(ncall->type_args, ncall->type_arg_count)) {
+            if (!mono_instantiate(codegen, checker, seen, stamped_count,
+                                  nested_var, ncall->type_args,
+                                  ncall->type_arg_count, 0)) {
+                ok = 0;
+            }
+        }
+    }
+    mono_free_calls(calls);
+
+    if (ok) {
+        ok = codegen_generate_comptime_function_instance(codegen, checker, tmpl, sym,
+                                                          values, n);
+    }
+    return ok;
+}
+
 // Task 9/10: the monomorphization driver. See the doc comment at the
 // declaration (include/codegen.h) for the dedup/no-op contract. Task 10
 // replaces Task 9's single linear pass over checker->instantiations with
@@ -623,48 +771,23 @@ int codegen_monomorphize(CodeGenerator* codegen, TypeChecker* checker) {
         }
     }
 
-    // Comptime value params Task 3: a second, independent worklist over
+    // Comptime value params Task 3: a second worklist over
     // checker->comptime_instantiations — the comptime-value axis alongside
-    // the type-arg axis just above. No nested-call discovery here (contrast
-    // mono_instantiate's recursive walk): a comptime-param function's body
-    // calling ANOTHER comptime-param function with a value derived from its
-    // OWN comptime parameter is not resolved by this task (the template
-    // body-check pass only ever sees Step 3's placeholder for such a nested
-    // argument) — out of scope for the two-test-case brief this task
-    // implements; every seed actually recorded today (type_check_call_expr,
-    // expression_checker.c) carries fully-resolved literal values already.
-    // Shares `seen`/`stamped_count` with the generic worklist above: a
-    // mangled comptime symbol (`fill__n4`) and a mangled generic symbol
-    // (`Id__int64`) live in the same LLVM module namespace, so one dedup set
-    // and one instantiation cap correctly cover both.
+    // the type-arg axis just above. Fix round 1: seeds are now routed
+    // through comptime_instantiate's RECURSIVE children-first discovery
+    // (mirroring mono_instantiate) instead of a flat linear stamp — the
+    // head-prepended seed list puts main's `outer(4, ...)` seed AHEAD of
+    // the earlier-recorded nested `helper(4, ...)` seed, so a linear pass
+    // emitted outer's body before helper__n4 existed and the call rewiring
+    // fell through to a failing bare-name lookup. Shares `seen`/
+    // `stamped_count` with the generic worklist above: a mangled comptime
+    // symbol (`fill__n4`) and a mangled generic symbol (`Id__int64`) live
+    // in the same LLVM module namespace, so one dedup set and one
+    // instantiation cap correctly cover both — and the two instantiators
+    // recurse into each other for nested cross-axis calls.
     for (ComptimeInstantiation* it = checker->comptime_instantiations; it && ok; it = it->next) {
-        ASTNode* decl_node = it->fn->func_decl_node;
-        if (!decl_node || decl_node->type != AST_FUNC_DECL) continue; // defensive; always set (declare_function_signature)
-        FuncDeclNode* tmpl = (FuncDeclNode*)decl_node;
-
-        char* sym = codegen_mangle_comptime_instance(it->fn->name, it->values, it->n);
-        if (!sym) { ok = 0; break; }
-        if (LLVMGetNamedFunction(codegen->module, sym) || mono_seen_has(seen, sym)) {
-            free(sym);
-            continue; // already stamped, or already in flight — dedup (same value, 2+ call sites)
-        }
-        if (stamped_count >= MONO_INSTANTIATION_CAP) {
-            codegen_error(codegen, (Position){0, 0, 0, "codegen"},
-                          "monomorphization exceeded instantiation cap (possible runaway comptime recursion)");
-            free(sym);
-            ok = 0;
-            break;
-        }
-        stamped_count++;
-
-        MonoSeen* sn = malloc(sizeof(MonoSeen));
-        if (!sn) { free(sym); ok = 0; break; }
-        sn->sym = sym; // ownership moves to the seen list; freed once below
-        sn->next = seen;
-        seen = sn;
-
-        if (!codegen_generate_comptime_function_instance(codegen, checker, tmpl, sym,
-                                                          it->values, it->n)) {
+        if (!comptime_instantiate(codegen, checker, &seen, &stamped_count,
+                                  it->fn, it->values, it->n)) {
             ok = 0;
         }
     }

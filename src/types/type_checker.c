@@ -827,6 +827,66 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         }
     }
 
+    // Comptime value params Task 3 (fix round 1): comptime parameters are
+    // rejected on METHOD declarations too, same shape as the generics
+    // rejection just above. The monomorphization machinery (codegen.c's
+    // skip-guard, monomorphize.c's worklist, call_codegen.c's rewiring) is
+    // deliberately scoped to PLAIN functions for now — a comptime-param
+    // method would instead take the ordinary single-emission path, where
+    // the template body-check's placeholder binding (see the
+    // is_comptime_param block in type_check_function_decl below) is baked
+    // into any `[n]int` type PERMANENTLY: `func (s S) Fill(comptime n int)`
+    // with `var buf [n]int` compiled clean and then panicked at runtime
+    // with a 1-element array. Rejecting beats miscompiling. NOTE: this
+    // deliberately supersedes the earlier Task 2-era behavior where a
+    // comptime-param method's direct call "worked" (with n as a plain
+    // runtime parameter) — method specialization is a documented follow-up
+    // (reviewed controller decision, Task 3 fix round 1).
+    if (func->receiver) {
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_comptime_param) {
+                type_error(checker, p->pos,
+                    "comptime parameters are not supported on methods");
+                type_checker_pop_type_params(checker, saved_tp);
+                return 0;
+            }
+        }
+    }
+
+    // Comptime value params Task 3 (fix round 1, finding 3 — FALLBACK): a
+    // function declared inside an imported PACKAGE cannot carry comptime
+    // parameters yet. Real cross-package monomorphization fights the
+    // package lifetime model on three fronts: (a) the package's scope and
+    // current_package are torn down (scope_pop FREES its Variables — see
+    // compile_resolved_packages' lifetime contract, goo.c) before main's
+    // type-check ever records a `pkg.Fill(4, ...)` seed, so the
+    // monomorphizer, which runs at main-pass codegen, could neither resolve
+    // the function's signature (codegen_generate_function_decl's
+    // type_checker_lookup_variable) nor any package-level symbol its body
+    // references; (b) an INTERNAL package call would record a seed whose
+    // `fn` Variable is freed by that same scope_pop — a use-after-free in
+    // the worklist, not just a missing symbol; (c) instance symbols would
+    // need package-qualified mangling threaded through both mangle sites to
+    // avoid cross-package `Fill__n4` collisions. Rejecting at DECLARATION
+    // time (rather than only at main's call sites, the narrower fallback)
+    // is what closes (b): if no package can declare one, no dangling seed
+    // can exist. Documented follow-up; reviewed controller decision
+    // (Task 3 fix round 1).
+    if (checker->current_package) {
+        for (ASTNode* p = func->params; p; p = p->next) {
+            if (p->type != AST_VAR_DECL) continue;
+            VarDeclNode* pd = (VarDeclNode*)p;
+            if (pd->is_comptime_param) {
+                type_error(checker, p->pos,
+                    "comptime parameters on package functions are not yet supported");
+                type_checker_pop_type_params(checker, saved_tp);
+                return 0;
+            }
+        }
+    }
+
     // Task 2: a variadic parameter (`name ...T`) must be the LAST parameter
     // (Go: "can only use ... with final parameter in list"). Check this
     // BEFORE building param_types below — an earlier variadic param there

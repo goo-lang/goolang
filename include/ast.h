@@ -555,17 +555,23 @@ typedef struct {
     // Comptime-value-specialized calls: the compile-time int value bound to
     // each comptime parameter at THIS call site, in parameter order (0 for
     // non-comptime positions is not stored — index by comptime-param slot).
-    // Set by the type checker (Task 2/3), read by the monomorphizer. malloc'd
-    // call sites must zero both — tail-appended, no-header-deps convention.
+    // Set by the type checker (Task 2/3), read by the monomorphizer.
+    // Tail-appended, no-header-deps convention.
     //
-    // Unlike type_args above, these two fields are NOT zeroed at the
-    // parser.y construction sites (parser.y is off-limits for this task).
-    // Instead type_check_call_expr (expression_checker.c) establishes the
-    // NULL/0 invariant itself, unconditionally, as the first thing it does
-    // with every CallExprNode it visits — every call is type-checked
-    // exactly once before codegen (including the monomorphizer) ever reads
-    // these fields, so that single reset is sufficient; see the comment
-    // there for the full reasoning.
+    // Invariant (fix round 1): unlike type_args above, these two fields are
+    // NOT zeroed at the parser.y construction sites (parser.y was
+    // off-limits for the task that added them) — they are uninitialized
+    // until the FIRST type_check_call_expr visit to this node, which
+    // establishes NULL/0 and then captures the values. type_check_call_expr
+    // is NOT once-per-node: codegen re-invokes it on the same CallExprNode
+    // (call_codegen.c's method-call return-type recomputation and defer
+    // re-emission paths). It discriminates first visit vs re-visit via
+    // base.node_type (NULL until the first successful check stamps it) and
+    // leaves these fields UNTOUCHED on every re-visit — once captured, the
+    // values are stable for the node's lifetime. Consequently: (1) no code
+    // may read these fields before the node has been type-checked; (2) no
+    // code other than type_check_call_expr's first-visit path may write
+    // them. Freed in ast_node_free's AST_CALL_EXPR case.
     int64_t* comptime_value_args;
     size_t   comptime_value_arg_count;
 } CallExprNode;
