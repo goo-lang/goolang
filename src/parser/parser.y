@@ -237,7 +237,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field field_name_tail
 %type <node> enum_type enum_variant_list enum_variant
-%type <node> interface_type interface_method_list interface_method
+%type <node> interface_type interface_method_list interface_member interface_method
 %type <node> slice_lit
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
@@ -2227,11 +2227,34 @@ interface_type:
     ;
 
 interface_method_list:
-    interface_method { $$ = $1; }
-    | interface_method_list interface_method {
+    interface_member { $$ = $1; }
+    | interface_method_list interface_member {
         ast_add_child($1, $2);
         $$ = $1;
     }
+    ;
+
+// Wraps an interface_method with an optional trailing ';' — explicit or
+// ASI-inserted (lexer.c asi_ctx, interface-body-scoped ASI mirroring the
+// struct-body pilot). Needed because bare juxtaposition alone is ambiguous
+// after a void method: `Inc()` followed by an identifier is grammatically
+// valid as BOTH `Inc`'s own func_result (a named return type) AND the next
+// method's name, and bison's shift-wins default silently picks the former
+// (workarounds.md §6), absorbing the next method's name into this one's
+// signature. A ';' sits outside func_result's FIRST set, so it disambiguates
+// for free (clean reduce, zero new conflicts). This mirrors struct_field's
+// own per-field trailing-SEMICOLON arms (parser.y struct_field, ~2295) —
+// SEMICOLON attached to the MEMBER, not a list-level separator arm. A
+// list-level `interface_method_list SEMICOLON interface_method` +
+// `interface_method_list SEMICOLON` (trailing) pair was tried first and
+// empirically produces a genuine LALR shift/reduce conflict (+1, verified
+// via bison -Wcounterexamples: "interface_method_list SEMICOLON •" on
+// IDENTIFIER lookahead can't distinguish "more list to come" from "trailing
+// terminator" without merging lookahead sets across the two rules) — not
+// adopted.
+interface_member:
+    interface_method { $$ = $1; }
+    | interface_method SEMICOLON { $$ = $1; }
     ;
 
 // A method signature: `Name`, `Name() ret`, `Name(params)`, `Name(params) ret`.

@@ -16,11 +16,13 @@ typedef struct {
     const char* filename;   // Name of the file being lexed
     TokenType prev_token_type; // Last significant token, for newline -> ';'
                                // insertion (targeted ASI; see lexer.c).
-    // Struct-body-scoped ASI (struct embedding): one entry per currently-open
-    // brace. asi_ctx[d] == 1 iff the '{' at depth d opened a struct body (it
-    // immediately followed the `struct` keyword), in which case a newline
-    // after a field-ending token inserts ';' so 1-token embedded fields
-    // (`Base`) terminate at the line break. All other braces (enum, interface,
+    // Struct/interface-body-scoped ASI (struct embedding; interface method
+    // specs): one entry per currently-open brace. asi_ctx[d] == 1 iff the '{'
+    // at depth d opened a struct OR interface body (it immediately followed
+    // the `struct`/`interface` keyword), in which case a newline after a
+    // value-ending token inserts ';' so a 1-token embedded struct field
+    // (`Base`) or a void interface method spec (`Inc()`) terminates at the
+    // line break instead of absorbing the next line. All other braces (enum,
     // composite literals, blocks) are no-emit. Depths beyond the array are
     // treated as no-emit (depth still tracked for correct pops). Appended at
     // the struct tail per the no-header-deps convention.

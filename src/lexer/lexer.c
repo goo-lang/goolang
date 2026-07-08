@@ -186,10 +186,13 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
-            // Struct-body ASI (embedding): inside a struct body, a newline
-            // after a field-ending token ends the field — Go's semicolon rule
-            // scoped to struct bodies, so a 1-token embedded field (`Base`)
-            // stops at the line break instead of absorbing the next line.
+            // Struct/interface-body ASI (embedding; method specs): inside a
+            // struct or interface body, a newline after a value-ending token
+            // ends the member — Go's semicolon rule scoped to these bodies,
+            // so a 1-token embedded field (`Base`) or a void method spec
+            // (`Inc()`) stops at the line break instead of absorbing the next
+            // line's token (e.g. a following method name mistaken for a
+            // return type via func_result's identifier-starting FIRST set).
             if (lexer->asi_depth > 0 &&
                 lexer->asi_depth <= (int)sizeof(lexer->asi_ctx) &&
                 lexer->asi_ctx[lexer->asi_depth - 1] &&
@@ -212,7 +215,8 @@ Token* lexer_next_token(Lexer* lexer) {
             token = token_new(TOKEN_LBRACE, "{", 1, current_pos);
             if (lexer->asi_depth >= 0 && lexer->asi_depth < (int)sizeof(lexer->asi_ctx)) {
                 lexer->asi_ctx[lexer->asi_depth] =
-                    (lexer->prev_token_type == TOKEN_STRUCT) ? 1 : 0;
+                    (lexer->prev_token_type == TOKEN_STRUCT ||
+                     lexer->prev_token_type == TOKEN_INTERFACE) ? 1 : 0;
             }
             lexer->asi_depth++;
             lexer_read_char(lexer);
