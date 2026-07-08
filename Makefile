@@ -1689,6 +1689,170 @@ comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	  echo "  PASS distinct alloca sizes/types ([4 x i64], [2 x i64], [4 x double])"
 	@echo "comptime-generic-compose-ir-pin: PASS"
 
+# spmd-bench-probe: SPMD harness sub-project, Task 3 — "the proof". Builds a
+# CPU-bound comptime-specialized kernel (`burn`: a tight LCG loop over a
+# comptime-fixed iteration count, deterministic and side-effect-free per
+# lane) TWICE from source generated inline into build/ (per the sub-project
+# plan: bench programs are not goldens, so they don't belong in examples/) —
+# once fanned out across N=8 goroutines via `go burn(...)`, once as a serial
+# baseline via N direct calls — and diffs their stdout. Buffered-channel
+# fan-in (cap N) makes the aggregate checksum order-independent (summation
+# is commutative), so both variants MUST print the identical total
+# regardless of goroutine interleaving or how many OS threads the M8
+# scheduler actually schedules onto. Correctness (compile + run + bit-
+# identical output) is the ONLY thing ASSERTED — wall-clock and CPU
+# utilization are REPORTED (informational echo lines), never asserted,
+# because timing is inherently noisy and this probe must pass on machines
+# with fewer cores than were available when the pattern was scouted (see
+# docs/spmd-harness.md's measured-numbers section: 787% CPU / ~6.2x wall
+# speedup, 8-lane vs serial, on a 32-core machine, method: external
+# `/usr/bin/time`).
+#
+# Timing detection is portable and best-effort, three tiers: `/usr/bin/time
+# -v` (GNU, reports Percent-of-CPU) is preferred; `/usr/bin/time -l`
+# (BSD/macOS, reports real/user/sys on one line) is the fallback; if neither
+# is available the shell's builtin `time` is used (real/user/sys only, no
+# CPU%, reported as "n/a"). Wall-clock for the report AND for the optional
+# gate below is measured independently via `date +%s.%N` deltas so it does
+# not depend on which timing tier is available — this trades a soft
+# dependency on GNU `date` (this repo's dev/CI environment) for not having
+# to parse three different wall-clock text formats; on a machine where
+# `date +%s.%N` is unsupported the wall-clock report degrades to a
+# nonsensical number but nothing here ever turns that into a FAIL.
+#
+# SPMD_BENCH_ASSERT_SPEEDUP=<factor>: OFF by default. When set to a number
+# > 1, additionally FAILS the target if serial-wall / 8lane-wall is below
+# that factor. Manual local runs only, e.g.:
+#   make spmd-bench-probe SPMD_BENCH_ASSERT_SPEEDUP=2
+# — wall-clock ratios are too noisy on shared/CI machines to be a
+# correctness gate, which is why this is opt-in and undocumented in `verify`.
+spmd-bench-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== spmd-bench-probe: CPU-bound parallelism proof (8-lane vs serial) ==="
+	@printf '%s\n' \
+		'package main' \
+		'' \
+		'import "fmt"' \
+		'' \
+		'func burn(comptime iters int, seed int64, ch chan int64) {' \
+		'x := seed' \
+		'i := 0' \
+		'for i < iters {' \
+		'x = x*1103515245 + 12345' \
+		'i = i + 1' \
+		'}' \
+		'ch <- x' \
+		'}' \
+		'' \
+		'func main() {' \
+		'const N = 8' \
+		'const ITERS = 200000000' \
+		'ch := make(chan int64, N)' \
+		'i := 0' \
+		'for i < N {' \
+		'go burn(ITERS, int64(i), ch)' \
+		'i = i + 1' \
+		'}' \
+		'total := int64(0)' \
+		'i = 0' \
+		'for i < N {' \
+		'total = total + <-ch' \
+		'i = i + 1' \
+		'}' \
+		'fmt.Println(total)' \
+		'}' \
+		> build/spmd_bench_8lane.goo
+	@printf '%s\n' \
+		'package main' \
+		'' \
+		'import "fmt"' \
+		'' \
+		'func burn(comptime iters int, seed int64, ch chan int64) {' \
+		'x := seed' \
+		'i := 0' \
+		'for i < iters {' \
+		'x = x*1103515245 + 12345' \
+		'i = i + 1' \
+		'}' \
+		'ch <- x' \
+		'}' \
+		'' \
+		'func main() {' \
+		'const N = 8' \
+		'const ITERS = 200000000' \
+		'ch := make(chan int64, N)' \
+		'i := 0' \
+		'for i < N {' \
+		'burn(ITERS, int64(i), ch)' \
+		'i = i + 1' \
+		'}' \
+		'total := int64(0)' \
+		'i = 0' \
+		'for i < N {' \
+		'total = total + <-ch' \
+		'i = i + 1' \
+		'}' \
+		'fmt.Println(total)' \
+		'}' \
+		> build/spmd_bench_serial.goo
+	@$(COMPILER) -o build/spmd_bench_8lane build/spmd_bench_8lane.goo > build/spmd_bench_8lane.cerr 2>&1; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "spmd-bench-probe: FAIL (8-lane compile rc=$$rc)"; cat build/spmd_bench_8lane.cerr; exit 1; fi
+	@$(COMPILER) -o build/spmd_bench_serial build/spmd_bench_serial.goo > build/spmd_bench_serial.cerr 2>&1; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "spmd-bench-probe: FAIL (serial compile rc=$$rc)"; cat build/spmd_bench_serial.cerr; exit 1; fi
+	@TIME_MODE=none; \
+	if [ -x /usr/bin/time ] && /usr/bin/time -v true >/dev/null 2>&1; then TIME_MODE=gnu; \
+	elif [ -x /usr/bin/time ] && /usr/bin/time -l true >/dev/null 2>&1; then TIME_MODE=bsd; \
+	fi; \
+	echo "spmd-bench-probe: timing method = $$TIME_MODE (report-only, never a pass/fail threshold)"; \
+	t0=$$(date +%s.%N); \
+	if [ "$$TIME_MODE" = "gnu" ]; then \
+	  /usr/bin/time -v ./build/spmd_bench_8lane > build/spmd_bench_8lane.out 2> build/spmd_bench_8lane.time; rc=$$?; \
+	elif [ "$$TIME_MODE" = "bsd" ]; then \
+	  /usr/bin/time -l ./build/spmd_bench_8lane > build/spmd_bench_8lane.out 2> build/spmd_bench_8lane.time; rc=$$?; \
+	else \
+	  { time ./build/spmd_bench_8lane > build/spmd_bench_8lane.out; } 2> build/spmd_bench_8lane.time; rc=$$?; \
+	fi; \
+	t1=$$(date +%s.%N); \
+	if [ $$rc -ne 0 ]; then echo "spmd-bench-probe: FAIL (8-lane run rc=$$rc)"; cat build/spmd_bench_8lane.time; exit 1; fi; \
+	wall_8lane=$$(awk -v a="$$t0" -v b="$$t1" 'BEGIN{printf "%.3f", b-a}'); \
+	t0=$$(date +%s.%N); \
+	if [ "$$TIME_MODE" = "gnu" ]; then \
+	  /usr/bin/time -v ./build/spmd_bench_serial > build/spmd_bench_serial.out 2> build/spmd_bench_serial.time; rc=$$?; \
+	elif [ "$$TIME_MODE" = "bsd" ]; then \
+	  /usr/bin/time -l ./build/spmd_bench_serial > build/spmd_bench_serial.out 2> build/spmd_bench_serial.time; rc=$$?; \
+	else \
+	  { time ./build/spmd_bench_serial > build/spmd_bench_serial.out; } 2> build/spmd_bench_serial.time; rc=$$?; \
+	fi; \
+	t1=$$(date +%s.%N); \
+	if [ $$rc -ne 0 ]; then echo "spmd-bench-probe: FAIL (serial run rc=$$rc)"; cat build/spmd_bench_serial.time; exit 1; fi; \
+	wall_serial=$$(awk -v a="$$t0" -v b="$$t1" 'BEGIN{printf "%.3f", b-a}'); \
+	if ! diff -u build/spmd_bench_8lane.out build/spmd_bench_serial.out; then \
+	  echo "spmd-bench-probe: FAIL (8-lane and serial outputs differ — not deterministic)"; exit 1; \
+	fi; \
+	cpu_8lane=""; cpu_serial=""; \
+	if [ "$$TIME_MODE" = "gnu" ]; then \
+	  cpu_8lane=$$(grep -F "Percent of CPU this job got" build/spmd_bench_8lane.time | grep -oE '[0-9]+%'); \
+	  cpu_serial=$$(grep -F "Percent of CPU this job got" build/spmd_bench_serial.time | grep -oE '[0-9]+%'); \
+	elif [ "$$TIME_MODE" = "bsd" ]; then \
+	  cpu_8lane=$$(awk '{for(i=1;i<=NF;i++){if($$i=="real")r=$$(i-1); if($$i=="user")u=$$(i-1); if($$i=="sys")s=$$(i-1)}} END{if(r>0) printf "%.0f%%", (u+s)/r*100}' build/spmd_bench_8lane.time); \
+	  cpu_serial=$$(awk '{for(i=1;i<=NF;i++){if($$i=="real")r=$$(i-1); if($$i=="user")u=$$(i-1); if($$i=="sys")s=$$(i-1)}} END{if(r>0) printf "%.0f%%", (u+s)/r*100}' build/spmd_bench_serial.time); \
+	fi; \
+	[ -n "$$cpu_8lane" ] || cpu_8lane="n/a"; \
+	[ -n "$$cpu_serial" ] || cpu_serial="n/a"; \
+	echo "spmd-bench-probe: REPORT 8-lane  wall=$${wall_8lane}s cpu=$$cpu_8lane"; \
+	echo "spmd-bench-probe: REPORT serial  wall=$${wall_serial}s cpu=$$cpu_serial"; \
+	speedup=$$(awk -v s="$$wall_serial" -v p="$$wall_8lane" 'BEGIN{if (p>0) printf "%.2f", s/p; else print "n/a"}'); \
+	echo "spmd-bench-probe: REPORT speedup (serial-wall / 8lane-wall) = $${speedup}x (informational only, never a pass/fail threshold)"; \
+	if [ -n "$$SPMD_BENCH_ASSERT_SPEEDUP" ]; then \
+	  ok=$$(awk -v got="$$speedup" -v want="$$SPMD_BENCH_ASSERT_SPEEDUP" 'BEGIN{print (got+0 >= want+0) ? 1 : 0}'); \
+	  if [ "$$ok" != "1" ]; then \
+	    echo "spmd-bench-probe: FAIL (SPMD_BENCH_ASSERT_SPEEDUP=$$SPMD_BENCH_ASSERT_SPEEDUP not met: got $${speedup}x)"; \
+	    exit 1; \
+	  fi; \
+	  echo "spmd-bench-probe: speedup gate PASS ($${speedup}x >= $${SPMD_BENCH_ASSERT_SPEEDUP}x)"; \
+	fi; \
+	echo "spmd-bench-probe: PASS (8-lane and serial compiled, ran, and produced bit-identical output)"
+
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
 # not jump to a NULL instruction pointer. `var f func(int) int` zero-values
@@ -2155,7 +2319,7 @@ goostd-resolver-probe:
 # comptime-probe joined the net once M11 closed (commits 605acaf,
 # 47b5ca2, d7bc61c); m10-probe joined as M10-probe-gate-v2 once
 # struct literals shipped (commit 1adab3c) — same promotion pattern.
-verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden
+verify: baseline-probe lvalue-probe file-io-probe pointer-probe smoke-stdlib v2-bootstrap-pilot comptime-block-probe comptime-probe m10-probe exit-code-probe switch-probe methods-probe pointer-write-probe new-probe enum-probe match-probe append-probe cap-probe conv-probe conv-reject-probe charlit-probe charlit-reject-probe strindex-probe strindex-reject-probe hexesc-probe hexesc-reject-probe panic-abort-probe bits-div-abort-probe conststr-nul-probe conststr-probe map-probe int64-probe commaok-probe guard-probe nullable-iflet-probe nullable-nilcmp-probe nullable-abi-probe nullable-intret-probe nullable-assign-probe nullable-width-probe erru-catch-probe erru-error-probe erru-abi-probe chan-probe chan-elem-probe chan-padded-probe chan-uint-probe go-probe unbuffered-probe select-probe block-scope-probe escape-probe escape-range-probe mt-scheduler-stress yield-stress chan-mt-stress deadlock-probe deadlock-goroutine-probe default-thread-count-test parallel-soak-probe parallel-select-soak-probe cwd-link-probe outoftree-probe break-probe continue-probe break-nested-probe println-badtype-probe error-arity-probe return-type-erru-probe erru-catch-type-reject-probe iface-parse-probe iface-satisfaction-probe try-nonerru-probe return-mismatch-probe named-return-reject-probe composite-literal-reject-probe call-arity-probe call-argtype-probe pkg-argcheck-probe forward-ref-probe print-aggregate-probe ptr-recv-nonaddr-probe link-cleanup-probe blank-lines-probe divzero-probe bounds-probe slice-write-bounds-probe array-bounds-probe slice-expr-bounds-probe const-array-bounds-probe nonconst-arraylen-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin addrlit-reject-probe boolnot-reject-probe selectsend-reject-probe globalcall-init-probe floatint-reject-probe constdiv-reject-probe constmod-reject-probe baremod-reject-probe constint8-reject-probe constuint8-reject-probe constf32-reject-probe constf64-reject-probe constconv-reject-probe consttrunc-reject-probe constelem-reject-probe constnul-reject-probe floatmod-reject-probe cascade-reject-probe multivar-reject-probe variadic-reject-probe variadic-range-reject-probe funcnil-abort-probe funcval-nilcmp-probe map-nilfunc-abort-probe funcsig-reject-probe loopcapture-reject-probe osargs-probe embed-iface-reject-probe embed-dup-reject-probe embed-badtype-reject-probe embed-enum-reject-probe embed-ambiguous-reject-probe embed-literal-reject-probe map-addr-reject-probe mapkey-reject-probe struct-map-key-reject-probe iface-map-key-uncomparable-probe trailingcomma-reject-probe bytesconv-reject-probe spread-reject-probe copy-reject-probe typeassert-abort-probe typeassert-reject-probe typeswitch-reject-probe if-init-scope-reject-probe blank-read-reject-probe const-index-reject-probe rtti-assert-panic-probe iface-assert-dynname-probe iface-target-assert-abort-probe generics-reject-probe generics-bound-reject-probe asi-hardening-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe test-golden spmd-bench-probe
 	@echo ""
 	@echo "verify: ALL GREEN GATES PASSED"
 
@@ -2979,7 +3143,7 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin test-golden
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh

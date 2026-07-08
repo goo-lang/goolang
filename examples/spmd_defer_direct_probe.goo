@@ -1,0 +1,47 @@
+// spmd_defer_direct_probe: defer arg-stash fix (SPMD harness sub-project,
+// Task 1), DIRECT-CALL form — `defer send(out, v)` where `send` is a named
+// function, not a closure literal (see spmd_defer_probe.goo for the closure
+// form). Exercises the call->args splice/restore path
+// (statement_codegen.c ~2148-2163) without the receiver-splice machinery,
+// on the same two-tuple comptime shape as the other defer probes: `lane`
+// reduces a `tile`-sized window and is go-dispatched at tile=4 and tile=2
+// concurrently, each instance running its own defer.
+//
+// Buffered fan-in (cap 2) makes the two receives order-independent; the
+// aggregate (1+2+3+4=10, 5+6=11, total 21) is deterministic regardless of
+// goroutine interleaving.
+package main
+
+import "fmt"
+
+func send(out chan int64, v int64) {
+	out <- v
+}
+
+func lane(comptime tile int, xs []int64, out chan int64) {
+	var buf [tile]int64
+	i := 0
+	for i < tile {
+		buf[i] = xs[i]
+		i = i + 1
+	}
+	sum := int64(0)
+	j := 0
+	for j < tile {
+		sum = sum + buf[j]
+		j = j + 1
+	}
+	defer send(out, sum)
+}
+
+func main() {
+	xs := []int64{1, 2, 3, 4, 5, 6}
+	out := make(chan int64, 2)
+
+	go lane(4, xs[0:4], out)
+	go lane(2, xs[4:6], out)
+
+	a := <-out
+	b := <-out
+	fmt.Println(a + b)
+}

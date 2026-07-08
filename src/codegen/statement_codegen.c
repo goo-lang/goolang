@@ -73,6 +73,19 @@ typedef struct {
     LLVMValueRef* arg_slots;     // entry-block alloca per snapshotted argument
     Type**        arg_types;     // goo type of each snapshot (for the exit load)
     char**        arg_names;     // synthetic identifier names bound at exit
+    // Destructive-splice fix: the synthetic identifier(s) built at defer-time
+    // to stand in for the original call arguments / method receiver. These
+    // are NOT linked into the shared template AST here — codegen_emit_
+    // deferred_calls splices them into the call node ONLY for the duration of
+    // a single emission and restores the originals immediately after (see
+    // that function). Ownership: both fields are allocated once per defer
+    // statement (via ast_identifier_new) and owned by this DeferCodegenInfo;
+    // freed in defer_info_reset. They are never attached to the permanent
+    // template AST, so nothing else can reach or double-free them, and the
+    // ORIGINAL argument/receiver nodes are untouched — still owned by the
+    // template AST exactly as the parser built it.
+    ASTNode*      args_synth_head; // synthetic chain standing in for call->args (NULL if no args)
+    ASTNode*      recv_synth;      // synthetic identifier standing in for the method receiver (NULL if none)
 } DeferCodegenInfo;
 
 static DeferCodegenInfo* g_defer_info = NULL;
@@ -87,6 +100,14 @@ static void defer_info_reset(FunctionInfo* owner) {
         free(g_defer_info[i].arg_names);
         free(g_defer_info[i].arg_slots);
         free(g_defer_info[i].arg_types);
+        // Free the synthetic identifier nodes built for this defer's transient
+        // AST splice (see codegen_emit_deferred_calls and the struct comment
+        // above). They are only ever linked into the call node for the
+        // duration of a single emission and unlinked immediately after, so by
+        // the time we get here nothing references them — this is their sole
+        // owner and sole free site.
+        ast_node_free(g_defer_info[i].args_synth_head);
+        ast_node_free(g_defer_info[i].recv_synth);
     }
     g_defer_info_count = 0;
     g_defer_info_owner = owner;
@@ -2061,12 +2082,17 @@ static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth)
 // unaffected.
 //
 // Each deferred call's arguments were snapshotted into entry-block allocas at
-// the defer site (Go's defer-time arg evaluation), and the call's argument AST
-// nodes were rewritten to synthetic identifiers referencing those snapshots.
-// Here we (1) re-bind those synthetic names to their snapshot slots in the
-// value table (the originating block's locals are long gone), then (2) emit
-// each call guarded by its runtime "active" flag, so a defer that was never
-// reached at runtime (e.g. inside a not-taken branch) does not run.
+// the defer site (Go's defer-time arg evaluation), and synthetic identifier
+// nodes referencing those snapshots were built there too — but NOT linked
+// into the call's argument list at that point (`call` is a node in the
+// shared template AST; a permanent rewrite would corrupt it for the next
+// instantiation). Here we (1) re-bind those synthetic names to their
+// snapshot slots in the value table (the originating block's locals are long
+// gone), then (2) emit each call guarded by its runtime "active" flag (so a
+// defer that was never reached at runtime, e.g. inside a not-taken branch,
+// does not run), splicing the synthetic nodes into the call transactionally
+// for the duration of that one emission and restoring the originals
+// immediately after (see the splice/restore below).
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
 #if LLVM_AVAILABLE
     if (!codegen || !checker) return;
@@ -2108,8 +2134,40 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
         LLVMBuildCondBr(codegen->builder, live, run_bb, cont_bb);
 
         LLVMPositionBuilderAtEnd(codegen->builder, run_bb);
+
+        // Destructive-splice fix: `call` (and its selector base, for a
+        // method-call defer) is a node in the SHARED template AST — this
+        // DeferStmtNode is revisited once per instantiation (comptime,
+        // generic, or composed), so leaving a mutation on it after this
+        // emission would corrupt the next instance's view of the same
+        // statement (the pre-fix bug: instance 2 found instance 1's synthetic
+        // `__goo_defer0_argN` identifiers where its own original argument
+        // expressions used to be). Splice the synthetic identifiers in only
+        // for this one call, and restore the saved originals immediately
+        // after — a transaction fully contained within this loop iteration,
+        // so no code outside it (including this same function's OWN next
+        // iteration, or the next instance's compilation) ever observes the
+        // mutated state. saved_args/saved_recv are borrowed pointers into the
+        // template AST — not owned here, not freed here, just parked for the
+        // duration of the transaction.
+        CallExprNode* call_expr = (CallExprNode*)call;
+        ASTNode* saved_args = call_expr->args;
+        SelectorExprNode* sel = NULL;
+        ASTNode* saved_recv = NULL;
+        if (info->recv_synth && call_expr->function &&
+            call_expr->function->type == AST_SELECTOR_EXPR) {
+            sel = (SelectorExprNode*)call_expr->function;
+            saved_recv = sel->expr;
+            sel->expr = info->recv_synth;
+        }
+        if (info->args_synth_head) call_expr->args = info->args_synth_head;
+
         ValueInfo* result = codegen_generate_expression(codegen, checker, call);
         if (result) value_info_free(result);
+
+        call_expr->args = saved_args;
+        if (sel) sel->expr = saved_recv;
+
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
             LLVMBuildBr(codegen->builder, cont_bb);
 
@@ -2170,9 +2228,13 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     defer_entry_store_zero(codegen, flag, i1);
 
     // Snapshot each argument NOW (defer-time evaluation), store it into an
-    // entry-block alloca, and rewrite the argument node to a synthetic
-    // identifier that resolves to that snapshot when the call is emitted at
-    // function exit.
+    // entry-block alloca, and build (but do not yet link in) a synthetic
+    // identifier node that resolves to that snapshot when the call is
+    // emitted at function exit. The original argument node is left
+    // untouched here — `call` is shared template AST, so a permanent
+    // rewrite would corrupt it for the next instantiation; the synthetic
+    // node is only spliced in transactionally, per emission, by
+    // codegen_emit_deferred_calls.
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
 
@@ -2206,8 +2268,14 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 
     size_t idx = 0;
 
-    // Snapshot the method receiver (if any) first, rewriting the selector base
-    // to a synthetic identifier that resolves to the snapshot at exit.
+    // Snapshot the method receiver (if any) first. A synthetic identifier
+    // that will resolve to the snapshot at exit is built now but NOT linked
+    // into call->function here — call is the shared template AST node (this
+    // DeferStmtNode is revisited once per instantiation), so splicing it in
+    // permanently would corrupt the template for the next instance (the
+    // destructive-splice bug). codegen_emit_deferred_calls links it in only
+    // for the duration of each emission and restores the original receiver
+    // immediately after.
     if (recv_base) {
         ValueInfo* rv = codegen_generate_expression(codegen, checker, recv_base);
         if (!rv) {
@@ -2234,11 +2302,18 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 
         IdentifierNode* rid = ast_identifier_new(nm, recv_base->pos);
         ((ASTNode*)rid)->node_type = rt;
-        ((SelectorExprNode*)call->function)->expr = (ASTNode*)rid;
+        cinfo.recv_synth = (ASTNode*)rid;
         idx++;
     }
 
-    ASTNode* prev = NULL;
+    // Build (but do not splice) a synthetic identifier chain standing in for
+    // call->args, in original argument order. Same reasoning as the receiver
+    // above: `a` (the original argument nodes) is left completely untouched —
+    // still owned by the template AST, still linked exactly as the parser
+    // built it — and cinfo.args_synth_head is a SEPARATE, independent chain
+    // that codegen_emit_deferred_calls splices into call->args only for the
+    // duration of each emission.
+    ASTNode* prev_synth = NULL;
     ASTNode* a = call->args;
     while (a) {
         ASTNode* nextarg = a->next;
@@ -2277,12 +2352,13 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
         // probe never surfaced this.
         type_checker_declare_synthetic(checker, nm, gt);
 
-        // Splice a synthetic identifier in place of the original argument.
+        // Chain a synthetic identifier onto cinfo.args_synth_head, standing
+        // in for this argument. NOT linked into call->args here — see the
+        // comment above the `while (a)` loop and codegen_emit_deferred_calls.
         IdentifierNode* id = ast_identifier_new(nm, a->pos);
         ASTNode* idn = (ASTNode*)id;
-        idn->next = nextarg;
-        if (prev) prev->next = idn; else call->args = idn;
-        prev = idn;
+        if (prev_synth) prev_synth->next = idn; else cinfo.args_synth_head = idn;
+        prev_synth = idn;
 
         a = nextarg;
         idx++;
@@ -2291,8 +2367,9 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // Mark this defer active at runtime (current block; runs only if reached).
     LLVMBuildStore(codegen->builder, LLVMConstInt(i1, 1, 0), flag);
 
-    // Register the (rewritten) call node on the FunctionInfo and its codegen
-    // info in the parallel cache. Both arrays grow in lock-step from index 0.
+    // Register the call node (still holding its ORIGINAL args/receiver —
+    // untouched by this function) on the FunctionInfo and its codegen info in
+    // the parallel cache. Both arrays grow in lock-step from index 0.
     if (fi->deferred_count >= fi->deferred_capacity) {
         size_t newcap = fi->deferred_capacity ? fi->deferred_capacity * 2 : 4;
         ASTNode** grown = realloc(fi->deferred_calls, newcap * sizeof(ASTNode*));

@@ -1,0 +1,53 @@
+// spmd_defer_method_probe: defer arg-stash fix (SPMD harness sub-project,
+// Task 1), METHOD-RECEIVER form — `defer r.send(out, sum)`, exercising the
+// recv_synth splice/restore path (statement_codegen.c:2152-2157) that
+// snapshots and restores the method-call receiver base, on the same
+// two-tuple comptime shape as the other defer probes: `lane` reduces a
+// `tile`-sized window and is go-dispatched at tile=4 and tile=2
+// concurrently. `Reducer.tag` is set to `int64(tile)` per lane so a
+// receiver mix-up between the two comptime instances (the pre-fix failure
+// mode) would show up as wrong arithmetic, not just a compile error.
+//
+// Buffered fan-in (cap 2) makes the two receives order-independent; the
+// aggregate ((1+2+3+4)+4=14, (5+6)+2=13, total 27) is deterministic
+// regardless of goroutine interleaving.
+package main
+
+import "fmt"
+
+type Reducer struct {
+	tag int64
+}
+
+func (r Reducer) send(out chan int64, v int64) {
+	out <- v + r.tag
+}
+
+func lane(comptime tile int, xs []int64, out chan int64) {
+	var buf [tile]int64
+	i := 0
+	for i < tile {
+		buf[i] = xs[i]
+		i = i + 1
+	}
+	sum := int64(0)
+	j := 0
+	for j < tile {
+		sum = sum + buf[j]
+		j = j + 1
+	}
+	r := Reducer{int64(tile)}
+	defer r.send(out, sum)
+}
+
+func main() {
+	xs := []int64{1, 2, 3, 4, 5, 6}
+	out := make(chan int64, 2)
+
+	go lane(4, xs[0:4], out)
+	go lane(2, xs[4:6], out)
+
+	a := <-out
+	b := <-out
+	fmt.Println(a + b)
+}

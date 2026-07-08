@@ -1,0 +1,100 @@
+// spmd_fanout_probe: the keystone SPMD shape (SPMD harness sub-project,
+// Task 2 — the pinned pattern). Scout P1-v2, extended with the P6 partition
+// idioms (uneven remainder tile + len()-arithmetic bounds) so one golden
+// pins the whole fan-out pattern together.
+//
+// `lane` is a comptime-specialized slice kernel: it copies a `tile`-sized
+// window into a local `[tile]int64` buffer, then reduces the buffer by
+// summation. `tile` is a comptime value parameter, so each distinct tile
+// SIZE gets its own compiled instance of `lane`: `lane__n4` (the two
+// TILE=4 windows) and `lane__n2` (the REM=2 remainder), confirmed via
+// `bin/goo --emit-llvm` — both `define` in the emitted IR.
+//
+// `main` partitions a 10-element slice with LEN()-ARITHMETIC bounds (nfull
+// and remStart are computed from len(data), not hardcoded) into a `[][]int64`
+// of TILE=4 windows, loop-spawns one goroutine per window
+// (`go lane(TILE, tiles[i], results)` — the P1-v2 shape), and then spawns
+// ONE MORE lane at the UNEVEN remainder size (tile=2, the P6-remainder
+// shape) over the leftover 2 elements. This puts two DISTINCT comptime
+// tuples of the same template (lane__n4 and lane__n2) in flight
+// concurrently — exactly the shape the defer-stash fix (Task 1 of this
+// sub-project) unblocked for defer-using kernels, and the general shape
+// every uneven partition takes in practice.
+//
+// The tile argument to a comptime parameter must itself be a compile-time
+// constant (a `const`-bound literal, not a `:=`-declared runtime variable —
+// see comptime-value-reject-matrix's "runtime-arg" case), so TILE and REM
+// are `const`. The PARTITION BOUNDS (lo/hi passed to the ordinary slice
+// expression `data[lo:hi]`) have no such restriction and are ordinary
+// runtime int arithmetic derived from len(data).
+//
+// Buffered-channel fan-in (cap 3, one slot per lane) is the join: all three
+// sends land before main drains them, so the three receives are
+// order-independent — summation is commutative, so the aggregate is
+// deterministic regardless of goroutine interleaving. The partition covers
+// every element exactly once, so the total is independently checkable as
+// plain sum(1..10) = 55.
+package main
+
+import "fmt"
+
+func lane(comptime tile int, xs []int64, out chan int64) {
+	var buf [tile]int64
+	i := 0
+	for i < tile {
+		buf[i] = xs[i]
+		i = i + 1
+	}
+	sum := buf[0]
+	i = 1
+	for i < tile {
+		sum = sum + buf[i]
+		i = i + 1
+	}
+	out <- sum
+}
+
+func main() {
+	const TILE = 4
+	const REM = 2
+	data := []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+
+	// len()-arithmetic partitioning: nfull and remStart are DERIVED from
+	// len(data), not literal indices.
+	n := len(data)
+	nfull := n / TILE       // 10 / 4 = 2 full TILE=4 windows
+	remStart := nfull * TILE // 8: first index of the leftover window
+
+	// [][]int64 partitioning: each element is a computed data[lo:hi]
+	// window (P6's computed-bounds idiom feeding P1-v2's tiles slice).
+	tiles := [][]int64{}
+	i := 0
+	for i < nfull {
+		lo := i * TILE
+		hi := lo + TILE
+		tiles = append(tiles, data[lo:hi])
+		i = i + 1
+	}
+
+	results := make(chan int64, 3)
+
+	// Loop-spawned fan-out over the even tiles: one goroutine per window,
+	// all instances of lane__n4.
+	i = 0
+	for i < nfull {
+		go lane(TILE, tiles[i], results)
+		i = i + 1
+	}
+	// The uneven remainder lane: a SECOND, distinct comptime tuple
+	// (lane__n2) fanned out concurrently with the lane__n4 goroutines
+	// above.
+	go lane(REM, data[remStart:n], results)
+
+	total := int64(0)
+	i = 0
+	for i < 3 {
+		total = total + <-results
+		i = i + 1
+	}
+	fmt.Println(total)
+}
