@@ -1588,7 +1588,7 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "generic-call-arg" "cannot be passed as an argument"; \
 	printf 'package main\ntype Holder struct { f func(int, int) int }\nfunc fill(comptime n int, s int) int { return s }\nfunc main() { h := Holder{f: fill}; _ = h }\n' > build/cvm.goo; \
 	run_case "composite-literal" "cannot be stored in a composite literal"; \
-	printf 'package main\nfunc fill(comptime n int, s int) int { return s }\nfunc main() {\n    ch := make_chan(int, 1)\n    ch <- fill\n}\n' > build/cvm.goo; \
+	printf 'package main\nfunc fill(comptime n int, s int) int { return s }\nfunc main() {\n    ch := make(chan int, 1)\n    ch <- fill\n}\n' > build/cvm.goo; \
 	run_case "channel-send" "cannot be sent on a channel"; \
 	printf 'package main\ntype S struct { v int }\nfunc (s S) Fill(comptime n int, x int) int { return x }\nfunc main() { }\n' > build/cvm.goo; \
 	run_case "method-declaration" "not yet supported on methods"; \
@@ -1598,7 +1598,9 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "generic-declaration" "not yet supported together with type parameters"; \
 	printf 'package main\nfunc main() {\n    f := func(comptime n int, s int) int { return s }\n    _ = f\n}\n' > build/cvm.goo; \
 	run_case "closure-declaration" "only supported on named functions"; \
-	echo "comptime-value-reject-matrix: PASS (10/10 walls hold)"
+	printf 'package main\nfunc fill(comptime n int, s int) int {\n    var buf [n]int\n    _ = buf\n    return s\n}\nfunc main() { _ = fill(-1, 1) }\n' > build/cvm.goo; \
+	run_case "negative-length" "array length must be non-negative"; \
+	echo "comptime-value-reject-matrix: PASS (11/11 walls hold)"
 
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),

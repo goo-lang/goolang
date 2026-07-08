@@ -122,6 +122,27 @@ func fillLit(comptime n int, seed int) int {
     return sum
 }
 
+// Fix round 3: NON-EMPTY comptime-length literal — the element-count-vs-
+// length check is deferred to instance time (the template placeholder must
+// not reject `{1, 2}` against a length the user never wrote), and the
+// instance's re-derived length sizes the array so the literal elements and
+// the loop-written tail both land.
+func litInit(comptime n int, seed int) int {
+    buf := [n]int{1, 2}
+    i := 2
+    for i < n {
+        buf[i] = seed + i
+        i = i + 1
+    }
+    sum := 0
+    j := 0
+    for j < n {
+        sum = sum + buf[j]
+        j = j + 1
+    }
+    return sum
+}
+
 func main() {
     fmt.Println(fill(4, 10))     // 46
     fmt.Println(fill(2, 100))    // 201
@@ -129,4 +150,5 @@ func main() {
     fmt.Println(outer(4, 100))   // helper(4,100)=406; +4 = 410
     fmt.Println(grid(3, 10))     // 10+11+12+13+14+15 = 75
     fmt.Println(fillLit(4, 10))  // 46
+    fmt.Println(litInit(4, 10))  // 1+2+12+13 = 28
 }
