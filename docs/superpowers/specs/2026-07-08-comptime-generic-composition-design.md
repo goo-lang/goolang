@@ -24,9 +24,11 @@ comptime axis; this doc only specifies the composition.
 - A function may declare BOTH `[T ...]` type parameters and `comptime` value parameters.
   This lifts the primary wall at `declare_function_signature`
   (src/types/type_checker.c:807-828, "not yet supported together with type parameters").
-- Type arguments are inferred per the existing generic machinery (or explicit
-  `kernel[int](4, x)` where that syntax already works); comptime arguments remain
-  explicit compile-time-constant ints (literals, const exprs, `const`, `comptime const`)
+- Type arguments are inferred per the existing generic machinery — inference-only
+  (explicit call syntax `kernel[int](4, x)` does not parse today: the `[int]` is
+  taken as an index expression, a pre-existing limitation of ALL generic calls,
+  not specific to composition); comptime arguments remain explicit
+  compile-time-constant ints (literals, const exprs, `const`, `comptime const`)
   exactly as in sub-project 1.
 - A comptime parameter's own declared type must be a plain concrete type (`int`):
   `comptime n T` (typed by a type parameter) is REJECTED at declaration — a value whose
@@ -130,7 +132,9 @@ comptime axis; this doc only specifies the composition.
 
 ## Scope (YAGNI, first cut)
 
-- Comptime `int` values only; explicit comptime arguments; type args inferred or explicit.
+- Comptime `int` values only; explicit comptime arguments; type args inferred only.
+- Explicit type-argument call syntax: not supported (open point 1 resolved — rejected
+  as index expression; diagnostic quality is a pre-existing generics-wide follow-up).
 - One function, both axes — values crossing BETWEEN separately-declared functions'
   axes stay governed by wall (b).
 - No comptime-dependent type-level computation (`[n]T` yes; `T[n]`-style type-level
