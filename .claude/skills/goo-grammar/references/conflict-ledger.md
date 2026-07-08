@@ -172,15 +172,24 @@ one conflict (`LBRACE`: shift continues `struct_lit: identifier LBRACE …`, vs.
 above, unchanged). Adding the plain-switch init arm makes `simple_stmt` reachable from
 the exact same LALR state (the one dispatching on `identifier` right after `SWITCH`),
 merging in `short_var_decl`'s tuple form (`identifier COMMA identifier SHORT_ASSIGN
-expression`, rules 69-70) and `simple_stmt`'s tuple-assignment form (`identifier COMMA
-identifier ASSIGN expression`, rules 138-139). Both start `identifier COMMA`, so the
-merge introduces a second conflict on token `COMMA` (shift continues short_var_decl;
-reduce continues toward tuple-assignment). This is the SAME shift/reduce ambiguity
-`simple_stmt` already has wherever it's reachable — IF-init and FOR-init already
-exhibit it at their own (unchanged, still-1-conflict) states (539/581/609/680 in the
-baseline numbering); the plain-switch arm just makes it ALSO reachable from the
-switch-tag state, which happened to already be conflicted for an unrelated reason.
-Same "family, new reachable position" shape as the #92 and Task 3 precedents.
+expression`, rules 69-70) and `simple_stmt`'s tuple-assignment forms. On token
+`COMMA`, the SHIFT side carries both `short_var_decl`'s tuple form AND the
+identifier-prefixed tuple-assignment arms (rules 138-139); the REDUCE side is
+`primary_expr: identifier` feeding the expression-prefixed tuple-assignment arm
+(rule 140). This is the SAME shift/reduce ambiguity `simple_stmt` already has
+wherever it's reachable — baseline states 439 (statement-position dispatch) and
+526 (`FOR identifier •`) hold the identical item-set + COMMA conflict; the
+plain-switch arm just makes it ALSO reachable from the switch-tag state, which
+happened to already be conflicted for an unrelated reason. Shift wins in all
+three positions: `a, s[0] = 1, 2` (reduce-side shape) is a loud parse error at
+statement, IF-init, and SWITCH-init positions alike — pre-existing limitation,
+unchanged (probed at review). Same "family, new reachable position" shape as
+the #92 and Task 3 precedents.
+*(Corrected at review 2026-07-08: the original entry cited baseline states
+539/581/609/680 as the pre-existing family sites — 581/609/680 are unrelated
+conflicts; the real sites are 439 and 526 — and had the shift/reduce sides of
+the tuple-assignment split mislabeled. Classification conclusion unchanged;
+verified by independent counterexample regeneration.)*
 
 **Conflict 2 (type-switch arms, +1, brand-new state 713 in the full build):** A
 genuinely new LALR state, but with the IDENTICAL core items and conflict shape as
@@ -191,7 +200,8 @@ state is reached after `SWITCH simple_stmt SEMICOLON`, i.e. the SECOND `identifi
 `switch init; v := x.(type)` — `type_switch_guard` becoming reachable from one more
 grammar position re-exposes the exact same ambiguity Task 3 already classified and
 proved lexically unreachable, for the same reason: the M10 bridge pushes SWITCH's
-cond-frame at `SWITCH` itself (lexer_bridge.c:23), not at the guard's position, so the
+cond-frame at `SWITCH` itself (src/parser/lexer_bridge.c:209-210,
+`m10_push_frame(M10_FRAME_KIND_SWITCH)`), not at the guard's position, so the
 first depth-0 `{` after SWITCH — whether or not an init clause precedes the guard —
 is unconditionally tokenized `LBRACE_BODY`, which `struct_lit` cannot consume. An
 unparenthesized struct literal as an init-ed type-switch guard's operand is therefore
