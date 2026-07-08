@@ -530,8 +530,10 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             // Fix round 4: mark a comptime-length literal's type so
             // const-INDEX validation (type_check_index_expr) defers to
             // instance time too, exactly like the count-vs-length deferral
-            // above — the flag rides the Type to every consumer.
-            if (arr && comptime_len) arr->data.array.comptime_length = 1;
+            // above — the flag rides the Type to every consumer. Round 6
+            // (M-r5c): the shared marker also rewrites the display name so
+            // diagnostics never show the placeholder length.
+            if (arr && comptime_len) type_array_mark_comptime(arr, at->length);
             expr->node_type = arr;
             return arr;
         }
@@ -3524,11 +3526,30 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                     return NULL;
                 }
             } else if (param_type && !type_compatible(arg_type, param_type)) {
-                type_error(checker, arg->pos,
-                           "argument %zu: cannot use %s as %s",
-                           arg_count + 1,
-                           type_to_string(arg_type), type_to_string(param_type));
-                return NULL;
+                // Fix round 6 (M-r5a): a comptime-length array ARGUMENT
+                // (`sum4(a)` with a: [n]int into a [4]int param) — the
+                // template-time length here is the placeholder, so the
+                // length comparison is meaningless until instance time.
+                // Same deferral as assignment (type_check_assignment_op,
+                // fix round 5): element types must still match now; the
+                // call codegen's argument loop enforces the real
+                // per-instance lengths (instance-named rejection on a
+                // genuine mismatch). Ordinary array arguments reject here
+                // exactly as before.
+                int comptime_len_deferred =
+                    arg_type && arg_type->kind == TYPE_ARRAY &&
+                    param_type->kind == TYPE_ARRAY &&
+                    (arg_type->data.array.comptime_length ||
+                     param_type->data.array.comptime_length) &&
+                    type_equals(arg_type->data.array.element_type,
+                                param_type->data.array.element_type);
+                if (!comptime_len_deferred) {
+                    type_error(checker, arg->pos,
+                               "argument %zu: cannot use %s as %s",
+                               arg_count + 1,
+                               type_to_string(arg_type), type_to_string(param_type));
+                    return NULL;
+                }
             }
         }
 

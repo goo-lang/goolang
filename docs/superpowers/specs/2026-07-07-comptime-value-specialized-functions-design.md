@@ -130,6 +130,13 @@ in `verify`.
   `inner(comptime m)` (`inner(n, ...)` rejects as "must be a compile-time constant") — a
   documented restriction that doubles as the guard against template-placeholder poisoning of a
   nested instance's value.
+- **Signature-position comptime lengths are rejected:** `[n]int` as a PARAMETER type
+  (`func f(comptime n int, arr [n]int)`) or a RETURN type (`func f(comptime n int) [n]int`)
+  rejects at signature time with a single "array length must be a constant expression" —
+  signatures are resolved before any comptime-param binding exists, and per the Surface
+  wording `n` is body-scoped only. Value flow across the call boundary uses fixed-length
+  array params instead (a `[n]int` local passes into a `[4]int` param; the length is
+  checked per instance).
 
 ## Testing
 

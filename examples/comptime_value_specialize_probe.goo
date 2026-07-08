@@ -188,6 +188,43 @@ func copies(comptime n int, seed int) int {
     return sum
 }
 
+// Fix round 6 (C-r5): a block-local const SHADOWING the comptime param.
+// The shadow's array is NOT placeholder-tainted (its length resolves to the
+// shadow const, not the param), so instance codegen must keep its
+// template-resolved type untouched — the re-derivation gate keys on the
+// comptime_length flag, not "any array". Both shadow directions: smaller
+// than the instance value (n=4, shadow 3) and larger (n=2, shadow 8).
+func shadowSmall(comptime n int, s int) int {
+    const n = 3
+    var z [n]int
+    z[2] = s
+    return z[2] + len(z) // s + 3
+}
+
+func shadowLarge(comptime n int, s int) int {
+    const n = 8
+    var z [n]int
+    z[5] = s
+    return z[5] + len(z) // s + 8
+}
+
+// Fix round 6 (M-r5a/M-r5b): a comptime-length array as a call ARGUMENT to
+// a fixed-length array parameter, and as a var-decl INITIALIZER with a
+// fixed-length annotation — both length checks defer to instance time
+// (valid here at n=4; a mismatched instance rejects instance-named — see
+// the reject matrix's call-arg/init cases).
+func sum4(arr [4]int) int {
+    return arr[0] + arr[3]
+}
+
+func passAndInit(comptime n int, s int) int {
+    var a [n]int
+    a[0] = s
+    a[3] = s + 3
+    var b [4]int = a
+    return sum4(a) + b[3] // (s + s+3) + (s+3)
+}
+
 func main() {
     fmt.Println(fill(4, 10))     // 46
     fmt.Println(fill(2, 100))    // 201
@@ -198,4 +235,7 @@ func main() {
     fmt.Println(litInit(4, 10))  // 1+2+12+13 = 28
     fmt.Println(pick(4, 10))     // buf[3]=13, doubled = 26
     fmt.Println(copies(4, 10))   // a copied through c, d, b: 10+11+12+13 = 46
+    fmt.Println(shadowSmall(4, 5)) // 5 + 3 = 8
+    fmt.Println(shadowLarge(2, 5)) // 5 + 8 = 13
+    fmt.Println(passAndInit(4, 5)) // (5+8) + 8 = 21
 }

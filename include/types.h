@@ -837,6 +837,28 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
 // array anywhere can keep the cached Type object untouched.
 int goo_type_contains_array(const Type* t);
 
+// Comptime value params (fix round 6, C-r5): does `t` contain a
+// comptime_length-FLAGGED array anywhere in its structure (recursing
+// through array ELEMENTS as well as slices/pointers/nullables — `[2][n]int`
+// is unflagged outside, flagged inside)? This — not the any-array walk
+// above — is the correct gate for the comptime instance re-derivation
+// sites: gating on ANY array re-derived types whose template resolution was
+// never placeholder-tainted, so a block-local `const n = 3` SHADOWING the
+// comptime param split-brained (the checker resolved the shadow's length,
+// while codegen's mirror-scope re-derivation resolved the PARAM instead —
+// wrong length, or a false instance-named rejection). An unflagged array's
+// template type is already correct and must be left untouched.
+int goo_type_contains_comptime_array(const Type* t);
+
+// Comptime value params (fix round 6, M-r5c): set comptime_length on an
+// array Type AND rewrite its display name so diagnostics render the
+// comptime dimension as `[<param-name>]` (identifier length expression) or
+// `[comptime]` (compound expression) instead of the template placeholder
+// ("[1]int64"). The single stamping entry point — both stamp sites
+// (type_from_ast's AST_ARRAY_TYPE case, the array-literal checker) call
+// this instead of setting the flag directly.
+void type_array_mark_comptime(Type* t, ASTNode* length_expr);
+
 // Comptime value params (fix round 3/4): does `expr` contain any identifier
 // that resolves, in checker's CURRENT scope, to a comptime PARAMETER
 // (Variable whose decl_node is a VarDeclNode with is_comptime_param)?

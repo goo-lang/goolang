@@ -1586,6 +1586,32 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return NULL;
             }
 
+            // Fix round 6 (M-r5a): instance-time enforcement of the
+            // array-length compatibility the checker DEFERRED for a
+            // comptime-length array argument (type_check_call_expr's
+            // comptime_len_deferred). arg_val->goo_type is the instance's
+            // re-derived REAL type, so a genuine mismatch at THIS instance
+            // is a clean, instance-named compile failure instead of an
+            // invalid-IR pass of a differently-sized aggregate. Gated on
+            // the comptime_length flag (either side) — ordinary mismatched
+            // array arguments never reach codegen.
+            if (param_type && arg_val->goo_type &&
+                param_type->kind == TYPE_ARRAY &&
+                arg_val->goo_type->kind == TYPE_ARRAY &&
+                (param_type->data.array.comptime_length ||
+                 arg_val->goo_type->data.array.comptime_length) &&
+                param_type->data.array.length != arg_val->goo_type->data.array.length) {
+                codegen_error(codegen, arg->pos,
+                    "cannot pass [%zu]-length array to [%zu]-length array parameter in comptime instance '%s'",
+                    arg_val->goo_type->data.array.length,
+                    param_type->data.array.length,
+                    codegen->symbol_override ? codegen->symbol_override : "?");
+                value_info_free(arg_val);
+                free(args);
+                value_info_free(func_val);
+                return NULL;
+            }
+
             // Auto-wrap a bare value into the param's nullable type. If the
             // argument is already nullable (e.g. passing a `?int` variable),
             // no wrapping is needed.

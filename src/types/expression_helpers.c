@@ -88,6 +88,32 @@ int goo_type_contains_array(const Type* t) {
     return 0;
 }
 
+// Comptime value params (fix round 6, C-r5): see the header doc comment.
+// Unlike goo_type_contains_array above, this walk must descend into array
+// ELEMENTS — `[2][n]int` carries the flag only on the INNER array type.
+int goo_type_contains_comptime_array(const Type* t) {
+    while (t) {
+        switch (t->kind) {
+            case TYPE_ARRAY:
+                if (t->data.array.comptime_length) return 1;
+                t = t->data.array.element_type;
+                break;
+            case TYPE_SLICE:
+                t = t->data.slice.element_type;
+                break;
+            case TYPE_POINTER:
+                t = t->data.pointer.pointee_type;
+                break;
+            case TYPE_NULLABLE:
+                t = t->data.nullable.base_type;
+                break;
+            default:
+                return 0;
+        }
+    }
+    return 0;
+}
+
 // Comptime value params (fix round 4): see the header doc comment. Promoted
 // from expression_checker.c's file-local helper (fix round 2's I2 guard)
 // when type_from_ast (type_checker.c) became its third consumer — the

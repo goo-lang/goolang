@@ -1319,8 +1319,15 @@ ValueInfo* codegen_generate_array_lit(CodeGenerator* codegen, TypeChecker* check
     // instance's value), exactly like codegen_generate_var_decl's
     // re-derivation (function_codegen.c — see the long comment there).
     // Local replacement only; expr->node_type stays untouched (the template
-    // node is shared across instances).
-    if (codegen->active_comptime_value_n > 0 && lit->array_type) {
+    // node is shared across instances). Gated (fix round 6, C-r5) on the
+    // cached type carrying a comptime_length-flagged array — an unflagged
+    // literal's template type was never placeholder-tainted (e.g. its
+    // length names a block-local const SHADOWING the param), and
+    // re-deriving it against the mirror scope would resolve the PARAM
+    // instead of the shadow. See codegen_generate_var_decl's identical
+    // gate rationale (function_codegen.c).
+    if (codegen->active_comptime_value_n > 0 && lit->array_type &&
+        goo_type_contains_comptime_array(arr_type)) {
         Type* fresh = type_from_ast(checker, lit->array_type);
         // Fix round 3 (minor 3): a failed re-derivation is a HARD codegen
         // failure — see codegen_generate_var_decl's identical branch

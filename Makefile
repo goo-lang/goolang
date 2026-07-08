@@ -1604,7 +1604,11 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "const-index-oob-instance" "out of bounds .0:2. in comptime instance"; \
 	printf 'package main\nfunc asgn(comptime n int, s int) int {\n    var a [n]int\n    var b [4]int\n    b = a\n    return b[0] + s\n}\nfunc main() { _ = asgn(2, 1) }\n' > build/cvm.goo; \
 	run_case "array-assign-mismatch-instance" "length array in comptime instance"; \
-	echo "comptime-value-reject-matrix: PASS (13/13 walls hold)"
+	printf 'package main\nfunc sum4(arr [4]int) int { return arr[0] }\nfunc f(comptime n int, s int) int {\n    var a [n]int\n    a[0] = s\n    return sum4(a)\n}\nfunc main() { _ = f(2, 5) }\n' > build/cvm.goo; \
+	run_case "call-arg-mismatch-instance" "length array parameter in comptime instance"; \
+	printf 'package main\nfunc f(comptime n int, s int) int {\n    var a [n]int\n    a[0] = s\n    var b [4]int = a\n    return b[0]\n}\nfunc main() { _ = f(2, 5) }\n' > build/cvm.goo; \
+	run_case "var-init-mismatch-instance" "length array in comptime instance"; \
+	echo "comptime-value-reject-matrix: PASS (15/15 walls hold)"
 
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),

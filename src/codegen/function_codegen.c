@@ -1526,14 +1526,21 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     // `[expr]elem` annotation — `var m [2][n]int` kept its placeholder
     // INNER length and `buf := [n]int{}` (no annotation; the type rides on
     // the literal, handled in codegen_generate_array_lit) got nothing, both
-    // compiling clean and then bounds-panicking at runtime. Gated on the
-    // cached type actually containing a TYPE_ARRAY (goo_type_contains_array)
-    // so a comptime body's non-array declarations keep the checker's cached
-    // Type object untouched — named struct types etc. resolve identically
-    // either way, but not re-deriving what can't have changed is the
-    // smaller-blast-radius choice. Only the LOCAL var_type is replaced,
-    // never decl->node_type: the template node is shared across instances.
-    if (codegen->active_comptime_value_n > 0 && goo_type_contains_array(var_type)) {
+    // compiling clean and then bounds-panicking at runtime. Gated (fix
+    // round 6, C-r5) on the cached type containing a comptime_length-FLAGGED
+    // array (goo_type_contains_comptime_array) — NOT just any array: an
+    // unflagged array's template resolution was never placeholder-tainted
+    // (its length doesn't reference the comptime param), and re-deriving it
+    // here against the MIRROR scope split-brained under a block-local
+    // `const n = 3` shadowing the param — the checker had resolved the
+    // shadow, the mirror-scope re-derivation resolved the PARAM (the mirror
+    // pre-registers params before any body statement, so at re-derivation
+    // time the shadow may not even exist yet in the mirror chain). A
+    // flagged array's length references the param by construction, so its
+    // mirror-scope resolution is exactly right. Only the LOCAL var_type is
+    // replaced, never decl->node_type: the template node is shared across
+    // instances.
+    if (codegen->active_comptime_value_n > 0 && goo_type_contains_comptime_array(var_type)) {
         ASTNode* type_node = var_decl->type;
         // Short decl with the type riding on an array literal
         // (`buf := [n]int{}`): re-derive from the literal's own type node.
@@ -2058,6 +2065,29 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
 
                 if (!init_value) {
                     codegen_error(codegen, decl->pos, "Failed to generate initializer for variable '%s'", var_name);
+                    return 0;
+                }
+
+                // Fix round 6 (M-r5b): instance-time enforcement of the
+                // array-length compatibility the checker DEFERRED for a
+                // comptime-length array initializer (`var b [4]int = a` —
+                // type_check_var_decl's comptime_len_deferred). Both types
+                // here are instance-real; a genuine mismatch is a clean,
+                // instance-named compile failure instead of an invalid-IR
+                // store. Mirrors the assignment arm (expression_codegen.c)
+                // and the call-argument arm (call_codegen.c) exactly.
+                if (var_type && init_value->goo_type &&
+                    var_type->kind == TYPE_ARRAY &&
+                    init_value->goo_type->kind == TYPE_ARRAY &&
+                    (var_type->data.array.comptime_length ||
+                     init_value->goo_type->data.array.comptime_length) &&
+                    var_type->data.array.length != init_value->goo_type->data.array.length) {
+                    codegen_error(codegen, decl->pos,
+                        "cannot initialize [%zu]-length array from [%zu]-length array in comptime instance '%s'",
+                        var_type->data.array.length,
+                        init_value->goo_type->data.array.length,
+                        codegen->symbol_override ? codegen->symbol_override : "?");
+                    value_info_free(init_value);
                     return 0;
                 }
 

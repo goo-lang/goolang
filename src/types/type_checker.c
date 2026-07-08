@@ -967,6 +967,18 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     Type* return_type = func->return_type
         ? type_from_ast(checker, func->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
+    // Fix round 6 (M-r5c): a declared return type that fails to resolve
+    // (type_from_ast has already printed the positioned diagnostic — e.g.
+    // "array length must be a constant expression" for `[n]int` in return
+    // position, which is signature-scoped and cannot see the body's
+    // comptime-param binding) is a pass-1 failure HERE, not a
+    // register-with-NULL-return-and-continue: previously the function was
+    // registered anyway and pass 2's body check re-resolved the same bad
+    // node, printing the identical diagnostic a second time.
+    if (func->return_type && !return_type) {
+        type_checker_pop_type_params(checker, saved_tp);
+        return 0;
+    }
 
     Type* func_type = type_function(param_types, param_count, return_type);
     if (func_type) {
@@ -1491,12 +1503,29 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 return 0;
             }
         } else if (!type_compatible(inferred_type, declared_type)) {
-            type_error(checker, var_decl->base.pos,
-                      "Cannot assign %s to %s",
-                      type_to_string(inferred_type),
-                      type_to_string(declared_type));
-            register_declared_names_after_failure(checker, var_decl, declared_type);
-            return 0;
+            // Fix round 6 (M-r5b): `var b [4]int = a` with a comptime-length
+            // initializer — same length deferral as assignment
+            // (type_check_assignment_op) and call arguments
+            // (type_check_call_expr): the template-time length is the
+            // placeholder, so compare only element types now; codegen's
+            // var-decl init path enforces the real per-instance lengths
+            // (instance-named rejection on a genuine mismatch). Ordinary
+            // array initializers reject here exactly as before.
+            int comptime_len_deferred =
+                inferred_type->kind == TYPE_ARRAY &&
+                declared_type->kind == TYPE_ARRAY &&
+                (inferred_type->data.array.comptime_length ||
+                 declared_type->data.array.comptime_length) &&
+                type_equals(inferred_type->data.array.element_type,
+                            declared_type->data.array.element_type);
+            if (!comptime_len_deferred) {
+                type_error(checker, var_decl->base.pos,
+                          "Cannot assign %s to %s",
+                          type_to_string(inferred_type),
+                          type_to_string(declared_type));
+                register_declared_names_after_failure(checker, var_decl, declared_type);
+                return 0;
+            }
         }
     }
     
@@ -3069,7 +3098,8 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
             // against the instance's re-derived length instead
             // (codegen_generate_index_expr / codegen_emit_lvalue_address).
             if (arr_t && goo_expr_references_comptime_param(checker, array->length)) {
-                arr_t->data.array.comptime_length = 1;
+                // M-r5c: flag + diagnostic-name rewrite in one place.
+                type_array_mark_comptime(arr_t, array->length);
             }
             return arr_t;
         }

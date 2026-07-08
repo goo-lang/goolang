@@ -149,6 +149,31 @@ Type* type_array(Type* element_type, size_t length) {
     return type;
 }
 
+// Comptime value params (fix round 6, M-r5c): mark `t` as a comptime-length
+// array AND rewrite its display name so template-time diagnostics never
+// print the meaningless placeholder length ("[1]int64") — the dimension
+// renders as the comptime parameter's name when the length expression is a
+// plain identifier (`[n]int64`), or "[comptime]" for a compound length
+// expression (`[n+1]...`). Safe to rewrite: type_equals compares arrays
+// STRUCTURALLY (length + element), never by name, and the name is this
+// type's own malloc from type_array.
+void type_array_mark_comptime(Type* t, ASTNode* length_expr) {
+    if (!t || t->kind != TYPE_ARRAY) return;
+    t->data.array.comptime_length = 1;
+    const char* dim = (length_expr && length_expr->type == AST_IDENTIFIER &&
+                       ((IdentifierNode*)length_expr)->name)
+                          ? ((IdentifierNode*)length_expr)->name
+                          : "comptime";
+    const char* elem = (t->data.array.element_type && t->data.array.element_type->name)
+                           ? t->data.array.element_type->name : "?";
+    size_t cap = strlen(dim) + strlen(elem) + 3;
+    char* name = malloc(cap);
+    if (!name) return; // keep the old (placeholder-length) name on OOM
+    snprintf(name, cap, "[%s]%s", dim, elem);
+    free(t->name);
+    t->name = name;
+}
+
 Type* type_slice(Type* element_type) {
     if (!element_type) return NULL;
     
