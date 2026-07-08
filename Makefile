@@ -870,8 +870,9 @@ variadic-range-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	echo "variadic-range-reject-probe: PASS (rejected rc=$$rc)"
 
 # math/bits Div panics on divide-by-zero (y==0) and overflow (y<=hi). Guards
-# that both taken panics abort with the runtime-error message (the non-panic
-# paths are in bits_div_probe).
+# that both taken panics exit 2 (Go-conformant per Task 6; GOO_PANIC_ABORT=1
+# restores the old abort()/134 for debugging) with the runtime-error message
+# (the non-panic paths are in bits_div_probe).
 bits-div-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== bits-div-abort-probe: Div y==0 / y<=hi abort ==="
@@ -880,25 +881,26 @@ bits-div-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@$(COMPILER) -o build/div_dz build/div_dz.goo >/dev/null 2>build/div_dz.cerr || (echo "bits-div-abort-probe: FAIL (dz did not compile)"; cat build/div_dz.cerr; exit 1)
 	@$(COMPILER) -o build/div_of build/div_of.goo >/dev/null 2>build/div_of.cerr || (echo "bits-div-abort-probe: FAIL (of did not compile)"; cat build/div_of.cerr; exit 1)
 	@./build/div_dz >/dev/null 2>build/div_dz.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "bits-div-abort-probe: FAIL (divide-by-zero did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "bits-div-abort-probe: FAIL (divide-by-zero exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -qiE "integer divide by zero" build/div_dz.err; then echo "bits-div-abort-probe: FAIL (no divide-by-zero message)"; cat build/div_dz.err; exit 1; fi
 	@./build/div_of >/dev/null 2>build/div_of.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "bits-div-abort-probe: FAIL (overflow did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "bits-div-abort-probe: FAIL (overflow exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -qiE "integer overflow" build/div_of.err; then echo "bits-div-abort-probe: FAIL (no overflow message)"; cat build/div_of.err; exit 1; fi
 	@echo "bits-div-abort-probe: PASS"
 
-# panic(v) builtin: a taken panic must abort — print "panic: <msg>" to stderr
-# and exit non-zero (the runtime goo_panic calls abort()). Guards the runtime
-# behavior that panic_probe (untaken branch) cannot.
+# panic(v) builtin: a taken panic must exit 2 (Go-conformant per Task 6;
+# GOO_PANIC_ABORT=1 restores the old abort()/134 for debugging) and print
+# "panic: <msg>" to stderr. Guards the runtime behavior that panic_probe
+# (untaken branch) cannot.
 panic-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== panic-abort-probe: a taken panic aborts with a message ==="
 	@printf 'package main\nfunc main(){ panic("boom") }\n' > build/panic_abort.goo
 	@$(COMPILER) -o build/panic_abort build/panic_abort.goo >/dev/null 2>build/panic_abort.cerr || (echo "panic-abort-probe: FAIL (did not compile)"; cat build/panic_abort.cerr; exit 1)
 	@./build/panic_abort > build/panic_abort.out 2> build/panic_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "panic-abort-probe: FAIL (panic did not abort — exit 0)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "panic-abort-probe: FAIL (exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -qiE "panic: boom" build/panic_abort.err; then echo "panic-abort-probe: FAIL (no 'panic: boom' on stderr)"; cat build/panic_abort.err; exit 1; fi; \
-	echo "panic-abort-probe: PASS (aborted rc=$$rc)"
+	echo "panic-abort-probe: PASS (exit rc=$$rc)"
 
 # Stdlib table enabler B: hex byte escapes `\xNN` in string literals. The const
 # lookup tables in math/bits are strings of raw bytes written as `\x00\x01...`,
@@ -1795,15 +1797,16 @@ spmd-bench-probe: $(COMPILER) $(RUNTIME_LIB)
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
 # not jump to a NULL instruction pointer. `var f func(int) int` zero-values
 # to the fat pointer {NULL, NULL}. Mirrors bits-div-abort-probe/divzero-
-# probe's runtime-abort pattern: compiles cleanly (rc=0), the RUN aborts
-# non-zero, and the abort message is grepped.
+# probe's runtime-abort pattern: compiles cleanly (rc=0), the RUN exits 2
+# (Go-conformant per Task 6; GOO_PANIC_ABORT=1 restores the old abort()/134
+# for debugging), and the panic message is grepped.
 funcnil-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== funcnil-abort-probe: nil func value call must abort with 'nil function' ==="
 	@"$(COMPILER)" examples/funcnil_abort.goo -o build/funcnil_abort.out 2>build/funcnil_abort.cerr || \
 	  { echo "funcnil-abort-probe: FAIL (compile)"; cat build/funcnil_abort.cerr; exit 1; }
 	@./build/funcnil_abort.out 2>build/funcnil_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "funcnil-abort-probe: FAIL (nil call did not abort, rc=0)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "funcnil-abort-probe: FAIL (nil call exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "nil function" build/funcnil_abort.err; then echo "funcnil-abort-probe: FAIL (no nil-function panic message)"; cat build/funcnil_abort.err; exit 1; fi
 	@echo "funcnil-abort-probe: PASS"
 
@@ -1826,8 +1829,9 @@ funcval-nilcmp-probe: $(COMPILER) $(RUNTIME_LIB)
 # hit the existing nil-func panic (zero-guard unbox yields the {NULL,NULL}
 # fat pointer), not segfault. Mirrors funcnil-abort-probe's structure — same
 # panic mechanism (call_codegen.c's indirect-call guard), same assertions
-# (non-zero exit + "nil function" on stderr) — with the func value read out
-# of a map lookup instead of a bare zero-valued var.
+# (exit 2, Go-conformant per Task 6, GOO_PANIC_ABORT=1 restores the old
+# abort()/134 for debugging + "nil function" on stderr) — with the func
+# value read out of a map lookup instead of a bare zero-valued var.
 map-nilfunc-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== map-nilfunc-abort-probe: ops[missing]() must panic cleanly ==="
@@ -1835,7 +1839,7 @@ map-nilfunc-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/map_nilfunc_abort.goo -o build/map_nilfunc_abort.out 2>build/map_nilfunc_abort.cerr || \
 	  { echo "map-nilfunc-abort-probe: FAIL (compile)"; cat build/map_nilfunc_abort.cerr; exit 1; }
 	@./build/map_nilfunc_abort.out 2>build/map_nilfunc_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "map-nilfunc-abort-probe: FAIL (nil call did not abort, rc=0)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "map-nilfunc-abort-probe: FAIL (nil call exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "nil function" build/map_nilfunc_abort.err; then echo "map-nilfunc-abort-probe: FAIL (no nil-function panic message)"; cat build/map_nilfunc_abort.err; exit 1; fi
 	@echo "map-nilfunc-abort-probe: PASS"
 
@@ -3919,11 +3923,14 @@ const-index-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 # empty interface (no comma-ok to absorb the miss) must still panic cleanly
 # now that the empty-interface guard is lifted — mirrors typeassert-abort-probe
 # but with an `interface{}` operand instead of a method-bearing interface.
+# exit 2 is Go-conformant per Task 6 (GOO_PANIC_ABORT=1 restores the old
+# abort()/134 for debugging).
 rtti-assert-panic-probe: lexer
 	@printf 'package main\nfunc main(){ var x interface{} = "s"; _ = x.(int) }\n' > build/rtti_panic.goo
 	@$(COMPILER) build/rtti_panic.goo -o build/rtti_panic 2>/dev/null || (echo "FAIL: should compile"; exit 1)
-	@if build/rtti_panic; then echo "FAIL: expected panic, got clean exit"; exit 1; fi
-	@echo "PASS rtti-assert-panic-probe (assert-miss on any panics)"
+	@build/rtti_panic; rc=$$?; \
+	if [ $$rc -ne 2 ]; then echo "FAIL: expected exit 2 on assert-miss, got $$rc"; exit 1; fi
+	@echo "PASS rtti-assert-panic-probe (assert-miss panics, exit 2)"
 
 # RTTI concrete-type-switch plan, Task 3 — retired by the interface-target
 # RTTI plan's Task 3: this probe used to lock in that `case Interface:` in a
@@ -3942,13 +3949,15 @@ rtti-assert-panic-probe: lexer
 # runtime.c) — not just the static interface/target names the old message
 # was limited to. examples/iface_assert_dynname_probe.goo holds a bool and
 # asserts to string; mirrors typeassert-abort-probe's compile/run/grep shape.
+# exit 2 is Go-conformant per Task 6 (GOO_PANIC_ABORT=1 restores the old
+# abort()/134 for debugging).
 iface-assert-dynname-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== iface-assert-dynname-probe: failed x.(T) names the dynamic type ==="
 	@"$(COMPILER)" -o build/iface_assert_dynname examples/iface_assert_dynname_probe.goo 2>build/iface_assert_dynname.cerr || \
 	  { echo "iface-assert-dynname-probe: FAIL (compile)"; cat build/iface_assert_dynname.cerr; exit 1; }
 	@./build/iface_assert_dynname 2>build/iface_assert_dynname.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "iface-assert-dynname-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "iface-assert-dynname-probe: FAIL (bad assert exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "is bool, not string" build/iface_assert_dynname.err; then echo "iface-assert-dynname-probe: FAIL (dynamic type not named)"; cat build/iface_assert_dynname.err; exit 1; fi
 	@echo "iface-assert-dynname-probe: PASS"
 
@@ -3958,14 +3967,15 @@ iface-assert-dynname-probe: $(COMPILER) $(RUNTIME_LIB)
 # (goo_panic_iface_notimpl, runtime.c — distinct from goo_panic_iface_conversion's
 # concrete-target "X is Y, not Z"). examples/iface_target_assert_abort_probe.goo
 # boxes an int (Goo names it "int64") that does not implement Speaker; mirrors
-# typeassert-abort-probe's compile/run/grep shape.
+# typeassert-abort-probe's compile/run/grep shape. exit 2 is Go-conformant
+# per Task 6 (GOO_PANIC_ABORT=1 restores the old abort()/134 for debugging).
 iface-target-assert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== iface-target-assert-abort-probe: failed x.(I) on an interface target must panic ==="
 	@"$(COMPILER)" -o build/iface_target_assert_abort examples/iface_target_assert_abort_probe.goo 2>build/iface_target_assert_abort.cerr || \
 	  { echo "iface-target-assert-abort-probe: FAIL (compile)"; cat build/iface_target_assert_abort.cerr; exit 1; }
 	@./build/iface_target_assert_abort 2>build/iface_target_assert_abort.err; rc=$$?; \
-	if [ $$rc -eq 0 ]; then echo "iface-target-assert-abort-probe: FAIL (bad assert did not abort)"; exit 1; fi; \
+	if [ $$rc -ne 2 ]; then echo "iface-target-assert-abort-probe: FAIL (bad assert exit $$rc, want 2)"; exit 1; fi; \
 	if ! grep -q "is not Speaker" build/iface_target_assert_abort.err; then echo "iface-target-assert-abort-probe: FAIL (dynamic type not named)"; cat build/iface_target_assert_abort.err; exit 1; fi
 	@echo "iface-target-assert-abort-probe: PASS"
 
