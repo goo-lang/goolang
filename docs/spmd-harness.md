@@ -174,7 +174,10 @@ func kernel[T any](comptime n int, seed T) T {
 func main() {
 	ich := make(chan int64, 1)
 	fch := make(chan float64, 1)
+	x := int64(42)
+	y := 2.5
 
+	// Fan-out: both composed instances dispatched before any receive.
 	go func() {
 		ich <- kernel(4, x)
 	}()
@@ -182,8 +185,12 @@ func main() {
 		fch <- kernel(4, y)
 	}()
 
+	// Fan-in: drain in a fixed order (separate channels, so no race).
 	a := <-ich
 	b := <-fch
+
+	fmt.Println(a)
+	fmt.Println(b)
 }
 ```
 
