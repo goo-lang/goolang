@@ -516,6 +516,28 @@ Token* lexer_next_token(Lexer* lexer) {
             }
             break;
             
+        case '`':
+            {
+                // Go spec raw string literal: content between backticks is
+                // taken literally — backslashes are ordinary data, never an
+                // escape introducer (`\n` here is backslash+n, two bytes,
+                // not a newline). May span multiple lines; those interior
+                // newlines are content and never reach the '\n' case above
+                // (the whole literal is consumed in this one call), so they
+                // cannot trigger ASI — this token still ends as TOKEN_STRING,
+                // matching a regular string, so prev_token_type is
+                // value-ending afterward exactly like `"..."` is.
+                size_t length;
+                char* raw_literal = lexer_read_raw_string(lexer, &length);
+                if (raw_literal) {
+                    token = token_new(TOKEN_STRING, raw_literal, length, current_pos);
+                    free(raw_literal);
+                } else {
+                    token = token_new(TOKEN_ERROR, "unterminated raw string", 24, current_pos);
+                }
+            }
+            break;
+
         case '\'':
             {
                 size_t length;
@@ -767,6 +789,45 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
     if (length) *length = out_len;
 
     lexer_read_char(lexer); // consume closing quote
+    return out;
+}
+
+// Raw string literal (backtick-delimited), per the Go spec: content is taken
+// literally between the backticks — no escape processing at all, so a
+// backslash is just a data byte (unlike lexer_read_string above, which
+// interprets `\n`, `\xNN`, etc.). May span multiple source lines; interior
+// newlines are copied through as content. The one transformation the spec
+// still requires is dropping carriage-return bytes (0x0D) so that raw
+// strings read from CRLF source files are line-ending-independent, matching
+// gc's cmd/compile behavior. Returns NULL on EOF before the closing
+// backtick (unterminated), mirroring lexer_read_string's contract so the
+// caller's TOKEN_ERROR path is identical.
+char* lexer_read_raw_string(Lexer* lexer, size_t* length) {
+    lexer_read_char(lexer); // consume opening backtick
+    size_t start_pos = lexer->position;
+
+    while (lexer->ch != '`' && lexer->ch != 0) {
+        lexer_read_char(lexer);
+    }
+
+    if (lexer->ch != '`') {
+        return NULL; // Unterminated raw string
+    }
+
+    size_t raw_len = lexer->position - start_pos;
+    char* out = malloc(raw_len + 1); // CR-stripping only ever shrinks
+    if (!out) return NULL;
+
+    size_t out_len = 0;
+    for (size_t i = 0; i < raw_len; i++) {
+        char c = lexer->input[start_pos + i];
+        if (c == '\r') continue; // Go spec: CR bytes are dropped, not content
+        out[out_len++] = c;
+    }
+    out[out_len] = '\0';
+    if (length) *length = out_len;
+
+    lexer_read_char(lexer); // consume closing backtick
     return out;
 }
 

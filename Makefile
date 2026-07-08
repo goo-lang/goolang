@@ -968,6 +968,28 @@ conststr-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# Task 5 (raw string literals): CR (0x0D) bytes must be STRIPPED from a raw
+# string's content per the Go spec (`a\r\nb` -> "a\nb"), so a raw string read
+# from a CRLF source file is line-ending-independent. A literal CR byte inside
+# a committed .goo golden fixture is risky — git autocrlf, an editor's line-
+# ending normalization, or a future `gofmt`-alike could silently rewrite CRLF
+# to LF before the compiler ever sees it, quietly defeating the coverage. This
+# probe sidesteps that by generating the source with `printf` at test time
+# (same technique as hexesc-reject-probe above), which writes the exact byte
+# every run instead of depending on a text file surviving untouched.
+rawstring-cr-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\ts := `a\r\nb`\n\tfmt.Println(len(s))\n\tfmt.Println(int(s[0]))\n\tfmt.Println(int(s[1]))\n\tfmt.Println(int(s[2]))\n}\n' > build/rawstring_cr_probe.goo
+	$(COMPILER) -o build/rawstring_cr_probe build/rawstring_cr_probe.goo
+	@./build/rawstring_cr_probe > build/rawstring_cr_probe.actual.txt
+	@printf '3\n97\n10\n98\n' > build/rawstring_cr_probe.expected.txt
+	@if diff -u build/rawstring_cr_probe.expected.txt build/rawstring_cr_probe.actual.txt; then \
+	  echo "rawstring-cr-probe: PASS (CR stripped: len 3, bytes 97/10/98 = 'a','\\n','b')"; \
+	else \
+	  echo "rawstring-cr-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # F3 negative gate: a MALFORMED char literal must be rejected cleanly, NOT
 # silently dropped. The lexer emits TOKEN_ERROR for ''/'\z'/unterminated 'a),
 # which the Bison bridge maps to an unknown token and skips — so before the fix
@@ -2254,6 +2276,7 @@ VERIFY_ALL_DEPS := \
     bits-div-abort-probe \
     conststr-nul-probe \
     conststr-probe \
+    rawstring-cr-probe \
     map-probe \
     int64-probe \
     commaok-probe \
