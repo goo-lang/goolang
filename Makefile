@@ -1629,6 +1629,14 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 # sizes/types per instance are also pinned as the codegen-level proof that
 # `[n]T` actually re-derived a real per-instance length and element type,
 # not a shared template placeholder.
+#
+# The per-symbol exactly-once greps catch collapse (count 0) and misnaming,
+# but NOT duplication: if the monomorphizer's dedup guard
+# (LLVMGetNamedFunction / mono_seen_has) were bypassed, LLVM auto-uniquifies
+# the second insertion to `@"kernel__int64__n4.1"` — the base symbol still
+# counts exactly 1, so the per-symbol check passes. The TOTAL-count assertion
+# (exactly 3 `kernel__`-prefixed defines) closes that hole: a `.1`-suffixed
+# duplicate bumps the total to 4 and FAILs.
 comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== comptime-generic-compose-ir-pin: composed instances are real and deduped ==="
@@ -1639,6 +1647,12 @@ comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	  if [ "$$n" != "1" ]; then echo "comptime-generic-compose-ir-pin: FAIL ($$sym: expected exactly 1 define, found $$n)"; exit 1; fi; \
 	  echo "  PASS $$sym defined exactly once"; \
 	done
+	@total=$$(grep -cE "^define[^{]*@\"?kernel__" build/cgc_ir.ll); \
+	  if [ "$$total" != "3" ]; then \
+	    echo "comptime-generic-compose-ir-pin: FAIL (expected exactly 3 kernel__ instance defines total, found $$total — a uniquified duplicate escaped dedup)"; \
+	    grep -nE "^define[^{]*@\"?kernel__" build/cgc_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS exactly 3 kernel__ instance defines total (no uniquified duplicates)"
 	@n4_alloca=$$(awk '/^define i64 @"?kernel__int64__n4"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[4 x i64\]"); \
 	  n2_alloca=$$(awk '/^define i64 @"?kernel__int64__n2"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[2 x i64\]"); \
 	  f4_alloca=$$(awk '/^define double @"?kernel__float64__n4"?\(/,/^}/' build/cgc_ir.ll | grep -c "alloca \[4 x double\]"); \
