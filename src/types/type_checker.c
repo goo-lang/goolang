@@ -2311,6 +2311,36 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
     return 1;
 }
 
+// gofmt-syntax-b Task 1, extracted for review Fix 5b: register one label in
+// the function-wide label table (duplicate-checked against every label seen
+// so far, capped at 64 — labels are function-scoped in Go, so the SAME name
+// used twice anywhere in one function is a duplicate even across unrelated
+// sibling blocks, not merely shadowing, which Go doesn't apply to labels at
+// all). Returns 1 on success, 0 (with a type_error already emitted) on
+// failure. Shared by type_check_statement's AST_LABEL_STMT case (the normal
+// path) and type_check_switch_like_body's clause-final labeled-fallthrough
+// unwrap below (Fix 5b) so both register labels identically — duplicating
+// this bookkeeping inline in both places would be exactly the kind of
+// two-copies-that-drift risk that caused Task 1's own label_stmt de-merge
+// analysis to need forensic reconstruction (see conflict-ledger.md).
+static int type_check_register_label(TypeChecker* checker, char* name, Position pos) {
+    for (size_t i = 0; i < checker->label_count; i++) {
+        if (checker->label_names[i] && name &&
+            strcmp(checker->label_names[i], name) == 0) {
+            type_error(checker, pos, "duplicate label '%s'", name);
+            return 0;
+        }
+    }
+    if (checker->label_count >= 64) {
+        type_error(checker, pos, "too many labels in one function (max 64)");
+        return 0;
+    }
+    checker->label_names[checker->label_count] = name;
+    checker->label_positions[checker->label_count] = pos;
+    checker->label_count++;
+    return 1;
+}
+
 // gofmt-syntax-b Task 3 (P1.7): shared clause-body walker for the three
 // switch-like constructs that host case-clause bodies (expression switch,
 // type switch, select). `fallthrough` is legal ONLY when `kind` is
@@ -2345,6 +2375,58 @@ static int type_check_switch_like_body(TypeChecker* checker, ASTNode* body,
                 ok = 0;
             }
             continue;
+        }
+        // review Fix 5b: `L: fallthrough` (or multiply-nested
+        // `L1: L2: fallthrough`) as a clause's LITERAL final statement is
+        // valid Go — the label exists only so an earlier `goto L` inside
+        // the SAME clause body can target it (unused labels are otherwise
+        // rejected). A non-mutating peek first: chase the AST_LABEL_STMT
+        // chain to see whether it bottoms out in AST_FALLTHROUGH_STMT
+        // WITHOUT touching checker->label_* yet, so a chain that turns out
+        // NOT to be fallthrough-terminated falls through unchanged to the
+        // ordinary `type_check_statement(checker, s)` call below (which
+        // registers it itself) with no risk of double-registering the same
+        // label and raising a bogus "duplicate label" error.
+        if (s->type == AST_LABEL_STMT) {
+            ASTNode* inner = s;
+            while (inner->type == AST_LABEL_STMT) {
+                inner = ((LabelStmtNode*)inner)->stmt;
+                if (!inner) break;
+            }
+            if (inner && inner->type == AST_FALLTHROUGH_STMT) {
+                // Confirmed fallthrough-terminated: now it's safe to
+                // register every label in the chain (the ordinary
+                // type_check_statement path below is skipped for this
+                // node via `continue`, so there is no double-registration
+                // risk) and apply THIS walker's own final-statement rules
+                // to the fallthrough directly. Routing the chain through
+                // type_check_statement instead would recurse into ITS
+                // AST_FALLTHROUGH_STMT case, which has no way to know the
+                // label wrapping it is this walker's own direct, final
+                // child — it would unconditionally reject with "must be
+                // the final statement" (see that case's comment), which is
+                // exactly the bug this unwrap fixes.
+                for (ASTNode* lbl = s; lbl != inner; ) {
+                    LabelStmtNode* label = (LabelStmtNode*)lbl;
+                    if (!type_check_register_label(checker, label->name, lbl->pos)) ok = 0;
+                    lbl = label->stmt;
+                }
+                if (kind != FALLTHROUGH_CTX_EXPR_SWITCH) {
+                    type_error(checker, inner->pos,
+                        kind == FALLTHROUGH_CTX_TYPE_SWITCH
+                            ? "fallthrough statement is not permitted in a type switch"
+                            : "fallthrough statement is not permitted in a select statement");
+                    ok = 0;
+                } else if (s->next != NULL) {
+                    type_error(checker, inner->pos,
+                        "fallthrough statement must be the final statement in a case clause");
+                    ok = 0;
+                } else if (is_last_clause) {
+                    type_error(checker, inner->pos, "cannot fallthrough final case in switch");
+                    ok = 0;
+                }
+                continue;
+            }
         }
         if (!type_check_statement(checker, s)) ok = 0;
     }
@@ -2428,26 +2510,12 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             }
             return 0;
         case AST_LABEL_STMT: {
-            // gofmt-syntax-b Task 1: labels are function-scoped, so the SAME
-            // name used twice anywhere in one function is a duplicate even
-            // across unrelated sibling blocks (not merely shadowing, which
-            // Go doesn't apply to labels at all).
+            // gofmt-syntax-b Task 1: registration extracted to
+            // type_check_register_label (see its doc comment) — shared with
+            // type_check_switch_like_body's clause-final labeled-fallthrough
+            // unwrap (Fix 5b).
             LabelStmtNode* label = (LabelStmtNode*)stmt;
-            for (size_t i = 0; i < checker->label_count; i++) {
-                if (checker->label_names[i] && label->name &&
-                    strcmp(checker->label_names[i], label->name) == 0) {
-                    type_error(checker, stmt->pos, "duplicate label '%s'", label->name);
-                    return 0;
-                }
-            }
-            if (checker->label_count < 64) {
-                checker->label_names[checker->label_count] = label->name;
-                checker->label_positions[checker->label_count] = stmt->pos;
-                checker->label_count++;
-            } else {
-                type_error(checker, stmt->pos, "too many labels in one function (max 64)");
-                return 0;
-            }
+            if (!type_check_register_label(checker, label->name, stmt->pos)) return 0;
             return label->stmt ? type_check_statement(checker, label->stmt) : 1;
         }
         case AST_GOTO_STMT: {
