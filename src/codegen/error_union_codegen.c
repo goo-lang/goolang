@@ -276,32 +276,86 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     // Generate it as a statement so block-level constructs (e.g. `return`) work.
     codegen_set_insert_point(codegen, error_block);
 
+    // Mirror the type-checker scope that type_check_catch_expr pushes around
+    // the error variable + catch body (expression_checker.c). Without this,
+    // a re-entrant type_check_expression call from inside body codegen (e.g.
+    // call_codegen.c's `e.Error()` method-call special case, which re-derives
+    // the receiver's type) can't resolve `e` and reports "Undefined variable"
+    // — same requirement composite_codegen.c's match-arm binding documents.
+    scope_push(checker);
+
     // Bind the error variable in the codegen value table so that uses of it
-    // inside the catch body (e.g. `fmt.Println(e)`) resolve correctly.
+    // inside the catch body (e.g. `fmt.Println(e)`, `e.Error()`) resolve
+    // correctly.
+    //
+    // P2-7: the type checker now binds catch_expr->error_var as the real
+    // `error` interface (type_checker_error_type — the nullable {i1 is_null,
+    // i8* handle} pointer, see expression_checker.c's type_check_catch_expr),
+    // matching the n,err destructure path. Codegen must box the union's raw
+    // error arm into that same shape via goo_error_from_string, mirroring
+    // function_codegen.c:1690-1761 exactly (including its documented
+    // non-string-arm degradation), so extraction later matches the working
+    // call_codegen.c:1119-1159 .Error()/fmt.Println read.
     if (catch_expr->error_var) {
-        // Extract the error value from the error union's data slot.
-        // After the type_mapping.c change, the default error type (NULL) maps
-        // to goo_string_t {i8*, i64}, so error_raw IS already the full string
-        // struct — no InsertValue wrapping needed. An explicitly typed error_type
-        // that is also TYPE_STRING follows the same direct path.
         LLVMValueRef error_raw = codegen_error_union_get_error(codegen, operand_info->llvm_value);
-        Type* error_type = operand_info->goo_type->data.error_union.error_type;
-        if (!error_type) {
-            error_type = type_checker_get_builtin(checker, TYPE_STRING);
-        }
-        if (error_raw && error_type) {
-            LLVMTypeRef error_llvm = codegen_type_to_llvm(codegen, error_type);
-            if (error_llvm) {
-                // error_raw is already of type error_llvm (goo_string_t when
-                // error_type is TYPE_STRING or the default NULL). Use it directly.
-                LLVMValueRef error_alloca = codegen_alloc_local(
-                    codegen, error_llvm, catch_expr->error_var);
-                LLVMBuildStore(codegen->builder, error_raw, error_alloca);
-                ValueInfo* error_vi = value_info_new(catch_expr->error_var,
-                                                     error_alloca, error_type);
-                error_vi->is_lvalue = 1;
-                error_vi->is_initialized = 1;
-                vscope_add(codegen, error_vi);
+        Type* err_arm_type = operand_info->goo_type->data.error_union.error_type;
+
+        Type* error_type = type_checker_error_type(checker);
+        LLVMTypeRef error_llvm = codegen_type_to_llvm(codegen, error_type);
+        LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+
+        if (error_raw && error_llvm) {
+            // Only a string-shaped arm (the default NULL arm, or an explicit
+            // TYPE_STRING arm — both are goo_string_t, see function_codegen.c:
+            // 1705-1720) is something goo_error_from_string can box. A
+            // genuinely non-string explicit error arm isn't a goo_string;
+            // boxing it would build invalid IR, so it degrades to a non-null
+            // marker instead — `e != nil` still holds, e.Error() yields ""
+            // (no message), same tradeoff the destructure path documents.
+            int default_arm = (err_arm_type == NULL) || (err_arm_type->kind == TYPE_STRING);
+
+            LLVMValueRef handle;
+            if (default_arm) {
+                LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+                if (!from_str) {
+                    codegen_error(codegen, expr->pos, "goo_error_from_string not found in module");
+                    value_info_free(operand_info);
+                    scope_pop(checker);
+                    return NULL;
+                }
+                LLVMValueRef fargs[] = { error_raw };
+                handle = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(from_str),
+                                        from_str, fargs, 1, "catch.err.boxed");
+            } else {
+                handle = LLVMBuildIntToPtr(codegen->builder,
+                    LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0),
+                    i8pt, "catch.err.marker");
+            }
+
+            // The catch error block only runs when is_error was true, so the
+            // bound variable's nullable is_null is unconditionally false here
+            // (unlike the destructure path, which PHIs across both branches
+            // because it binds unconditionally at the call site).
+            LLVMValueRef is_null = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+            LLVMValueRef error_val = LLVMGetUndef(error_llvm);
+            error_val = LLVMBuildInsertValue(codegen->builder, error_val, is_null, 0, "catch.err.is_null");
+            error_val = LLVMBuildInsertValue(codegen->builder, error_val, handle, 1, "catch.err.ptr");
+
+            LLVMValueRef error_alloca = codegen_alloc_local(
+                codegen, error_llvm, catch_expr->error_var);
+            LLVMBuildStore(codegen->builder, error_val, error_alloca);
+            ValueInfo* error_vi = value_info_new(catch_expr->error_var,
+                                                 error_alloca, error_type);
+            error_vi->is_lvalue = 1;
+            error_vi->is_initialized = 1;
+            vscope_add(codegen, error_vi);
+
+            // Mirror into the type-checker scope so any re-entrant
+            // type_check_* calls inside the catch body can resolve `e`.
+            Variable* error_tv = variable_new(catch_expr->error_var, error_type, expr->pos);
+            if (error_tv) {
+                error_tv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, error_tv);
             }
         }
     }
@@ -320,9 +374,13 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
         if (!generate_catch_body_value(codegen, checker, catch_expr->catch_body,
                                        vtype, &body_value)) {
             value_info_free(operand_info);
+            scope_pop(checker);
             return NULL;
         }
     }
+
+    // Restore the type-checker scope pushed above the error variable binding.
+    scope_pop(checker);
 
     // Recovery merge: if the error block fell through (the body did not end in
     // a terminator such as `return`, or there was no body), the catch recovers

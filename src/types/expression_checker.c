@@ -4412,11 +4412,17 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         scope_push(checker);
 
         // Add error variable to scope so the catch body can reference it.
+        //
+        // P2-7: bind the same `error` interface type the n,err destructure
+        // path binds (type_checker.c:1969's type_checker_error_type call),
+        // not the union's raw error arm (which defaults to plain
+        // TYPE_STRING and has no method set — e.Error() failed with
+        // "Selector on non-struct, non-package type"). This is unconditional
+        // regardless of the union's declared error arm, mirroring the
+        // destructure path exactly; codegen degrades a non-string arm
+        // identically (function_codegen.c:1705-1734 / error_union_codegen.c).
         if (catch_expr->error_var) {
-            Type* error_type = expr_type->data.error_union.error_type;
-            if (!error_type) {
-                error_type = type_checker_get_builtin(checker, TYPE_STRING);
-            }
+            Type* error_type = type_checker_error_type(checker);
 
             Variable* error_var = variable_new(catch_expr->error_var, error_type, expr->pos);
             if (error_var) {
