@@ -41,3 +41,18 @@
 ## Review regime
 
 Checker-semantics heavy: ONE Fable dimension (termination-analysis adversarial shapes — nested terminators, fallthrough chains ending switches, arena-in-if-in-switch compositions, dead-code-after-return, func literals as last statements; plus ?T equality edge shapes incl. width-mixed payloads `?int64 == ?int64` from narrow literals) + ONE Sonnet fixture/regression-accounting dimension; Opus verify critical/major only. Haiku gate.
+
+## Review outcome (2026-07-09)
+
+Right-sized review (1 Fable semantics + 1 Sonnet fixture dimension, Opus verifiers): **1 confirmed
+major, fixed pre-merge** — ?Struct types rendered as "??" in the new diagnostics (root-fixed in
+type_nullable via type_to_string, `1d084e6`; reject fixture pins ?Point). Two majors **refuted as
+pre-existing on main**, recorded as follow-ups:
+- Struct EMBEDDING a later-declared struct still rejected (embed check predates the shell pre-pass;
+  forward-ref via ordinary pointer/slice/map fields works).
+- Package-level var initializers cannot reference a later-declared struct's fields.
+Clean areas: three-way mutual recursion, method-body forward refs, composite-type forward refs,
+all termination edge shapes probed (labeled break targeting, fallthrough chains, for{} rules,
+dead-code-after-terminator through codegen), nullable NaN semantics, evaluation-once for ?T
+call operands, width-mixed payloads. T2 shipped two documented soundness-tightening deviations
+(break-tracking in switch; any-statement-terminates blocks matching Goo's dead-code grammar).
