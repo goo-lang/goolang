@@ -19,7 +19,7 @@ any delta as a stop-the-line event, not noise.
 | #111 (stdlib unblockers) | zero delta | three grammar-touching tasks (trailing commas, slice-conversion arm, spread arm), 0 new conflicts |
 | type-assertions Task 3 (type switch) | 81 → **82** S/R (+1) | **Corrected 2026-07-04** (the original row below was factually wrong — see "Corrected justification"). The new `type_switch_guard` nonterminal is reachable from switch_stmt's `SWITCH type_switch_guard LBRACE_BODY type_case_list RBRACE` arm — the LIVE arm every real type switch takes, NOT the plain-LBRACE fallback. Reaching `type_switch_guard` means `primary_expr`'s existing `struct_lit: identifier LBRACE …` alternative is now reachable from a new position (right after `SWITCH identifier`), which collides with the plain switch's OWN pre-existing fallback arm (`SWITCH expression LBRACE case_clause_list RBRACE`, already in baseline before Task 3) reducing the same bare `identifier` as a complete tag on the same LBRACE lookahead. Verified empirically NOT isolated to the plain-LBRACE type-switch fallback arm: removing EITHER type-switch arm alone (keeping the other) leaves the count at 82; only removing `type_switch_guard`'s reachability entirely (both arms) restores 81. Separately, the specific ambiguous token sequence (`identifier` directly followed by plain `LBRACE` in tag/guard position) is proven lexically unreachable for either switch form — the M10 bridge unconditionally converts the first depth-0 `{` after SWITCH to LBRACE_BODY (lexer_bridge.c:235-246), so a bare unparenthesized struct literal as a switch tag/guard operand is a parse error (verified with compiled probes), not a silent misparse; parenthesizing it works. See "Corrected justification" below. |
 | gofmt-syntax-a Task 2 (switch-with-init) | 82 → **84** S/R (+2) | `switch_stmt` gained four init arms mirroring IF's init pattern (parser.y:1552-1591): two for plain `SWITCH simple_stmt SEMICOLON expression LBRACE[_BODY] case_clause_list RBRACE`, two for type-switch `SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE[_BODY] type_case_list RBRACE` (reusing `type_switch_guard` unmodified — no new type-switch surface). Both new conflicts are the SAME already-documented families reappearing at new reachable LALR positions, not new ambiguity classes — see "Justification: gofmt-syntax-a Task 2" below. R/R count unchanged (256), confirming no new reduce/reduce ambiguity was introduced. |
-| gofmt-syntax-b Task 1 (labels + labeled break/continue) | 84 → **88** S/R (+4) | Two independent, isolated-and-recombined +2 deltas: `BREAK identifier`/`CONTINUE identifier` (+2, states 411/412) and `identifier COLON statement` / `label_stmt` (+2, incidental growth of the pre-existing func-result-adjacent shift-wins family, NOT the label grammar's own COLON position). R/R unchanged (256). Full justification below. |
+| gofmt-syntax-b Task 1 (labels + labeled break/continue) | 84 → **88** S/R (+4) | Two independent, isolated-and-recombined +2 deltas: `BREAK identifier`/`CONTINUE identifier` (+2, states 411/412) and `identifier COLON statement` / `label_stmt` (+2, a de-merge of the pre-existing LBRACE/COMMA `identifier •` dispatch state into a label-carrying and a label-free clone — NOT the label grammar's own COLON position, and NOT the func-result shift-wins family). R/R unchanged (256). Full justification below. |
 | gofmt-syntax-b Task 2 (goto) | **zero delta** | `goto_stmt: GOTO identifier` — a single arm with no bare/label-less alternative, unlike `break_stmt`/`continue_stmt` in Task 1 immediately above (which each had a competing `BREAK`/`CONTINUE`-alone reduce that manufactured the IDENTIFIER shift/reduce conflict). No such competing reduce exists for GOTO (the operand is mandatory), so there is nothing for a new state to conflict against; confirmed by direct tripwire run, not assumed. |
 | gofmt-syntax-b Task 3 (fallthrough) | **zero delta** | `fallthrough_stmt: FALLTHROUGH` — a single-token arm, no operand ever (unlike `goto`, which at least takes a mandatory identifier; unlike `break`/`continue`, which have a competing bare-vs-labeled reduce). FALLTHROUGH was already one of `src/lexer/lexer.c`'s unconditional keyword-terminator ASI tokens (same "Part 1" group as RETURN/BREAK/CONTINUE, present before this task — see Task 1's entry above) before this arm existed, so the grammar never sees `FALLTHROUGH <anything>` back to back on one line regardless; there is no competing reduce and no new FOLLOW-set collision for a new state to conflict against. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. |
 | gofmt-syntax-b Task 4 (select value-binding cases) | **zero delta** | `select_case` gained `CASE identifier SHORT_ASSIGN expression COLON statement_list`, `CASE identifier ASSIGN expression COLON statement_list`, and a grammar-accepted-but-always-type-rejected `CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list` (comma-ok) arm. Same "mandatory operand after a keyword/CASE token, no competing bare reduce" shape as `goto_stmt: GOTO identifier` (Task 2 immediately above): `CASE identifier` was already followed by a mandatory `SHORT_ASSIGN`/`ASSIGN`/`COLON`/`COMMA` in every existing `select_case`/`case_clause` arm, so there is no bare `CASE identifier`-alone reduce for the new arms' extra lookahead to conflict against. Receive-ness (`expression` must actually be a channel receive) is validated semantically, not encoded in the grammar, by design (spec T4) — keeping the grammar arm generic (`expression`, not `ARROW expression`) is exactly why there is nothing new for the token to fight over. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. This row was added retroactively in gofmt-syntax-b Task 5's docs truth pass — Task 4 shipped the zero-delta result correctly but, unlike Task 2 and Task 3 immediately above, did not add a history-table row at the time; recorded now for consistency with the "every ledgered task gets a row, delta or not" convention this table otherwise follows without a gap. |
@@ -299,32 +299,86 @@ divergence from Go, it's the same rule arrived at independently.
   labeled-break shift path and reports "label 'nope' not defined or not enclosing"
   (`tests/golden/reject/break_unknown_label.goo`).
 
-**Conflict family 2 (`label_stmt`, +2, incidental — NOT at the label's own COLON
-position):** verified the `identifier • COLON statement` item itself (the one new
-state genuinely introduced by this arm, reached only from `statement:`-start
-positions, confirmed merged into the SAME single state as every other
-"start of a new statement" context) carries ZERO new conflicts — its bracket-suppressed
-set is unchanged from baseline (still exactly the pre-existing LBRACE/COMMA
-struct-lit/tuple-assignment family, family 2/3 from the gofmt-syntax-a Task 2 entry
-above). The COLON transition itself is a clean, unconditional shift with no
-competing reduce at that state. Diffing the FULL isolated (label-only) build's
-conflict-state fingerprints against baseline instead surfaced the +2 at two
-UNRELATED states: a new 1-conflict state on token FUNC (an `expression`-continuation
-vs. `wasm_memory: MEMORY expression • expression` fork, nothing to do with labels)
-and the pre-existing giant `return_stmt`-adjacent expression-continuation state
-growing from 20 to 21 conflicts. **This is the SAME mechanism as the "func-result
-shift-wins family" (family 1 in the decision record below):** inserting essentially
-ANY new grammar rule shifts LALR state-merging boundaries and can incidentally
-split or re-expose an already-latent (previously-merged-away) conflict in this
-family, independent of what the new rule actually does — #92 (+1 for BANG) and
-#106/#107 (+2 for closures) grew this exact family for equally unrelated reasons.
-Confirms via a second, independent data point: the `BREAK`/`CONTINUE identifier`-only
-isolated build (family 1, textually unrelated to `identifier`/`statement`
-reachability) shows the IDENTICAL incidental 1-conflict state on FUNC/`wasm_memory`
-and the identical 20→21 growth — i.e. this specific incidental pair is not
-`label_stmt`-specific at all; it reappears whenever the grammar gains almost any new
-rule. Not classified as a new ambiguity class; recorded as this family's fourth
-growth event.
+**Conflict family 2 (`label_stmt`, +2, a de-merge of the pre-existing LBRACE/COMMA
+`identifier •` dispatch state — NOT at the label's own COLON position, and NOT the
+func-result shift-wins family):** *(Rewritten 2026-07-09 — the previous version of
+this entry described a FUNC-token conflict and a 20→21 `return_stmt`-state growth
+that do not exist in any build, plus a cross-check that was arithmetically
+impossible given family 1's own accounting. Re-derived from scratch below by
+rebuilding all four grammars — `git show main:src/parser/parser.y` for the 84/256
+base, the shipped branch `src/parser/parser.y` for 88/256, and two isolated variants
+— with `bison -v -d` (GNU Bison 3.8.2) and diffing item-set fingerprints
+(rule text, order-normalized, numbers stripped — the correct join key, since state
+NUMBERS renumber under any grammar edit) against the unmodified-baseline `.output`.
+Every state number below is read directly from that rebuild, not copied forward.)*
+
+Baseline (pre-Task-1) state 449 is a single LALR state reached on `identifier` from
+every "start of a new statement or statement-like construct" context that had, until
+now, an identical item set: ordinary `statement:`-start positions, IF-header
+positions (`if_stmt: IF • expression block | IF • simple_stmt SEMICOLON expression
+block | ...`), and FOR-post-stmt position (`for_stmt: FOR simple_stmt SEMICOLON
+expression SEMICOLON • simple_stmt block`) all funnel into it because the item set
+(`primary_expr: identifier •`, `short_var_decl: identifier • SHORT_ASSIGN
+expression`, `simple_stmt: identifier • COMMA identifier ASSIGN/SHORT_ASSIGN
+expression ...`, `struct_lit: identifier • LBRACE ...`) is the same regardless of
+which of those positions reached it — that's ordinary LALR state merging. It carries
+2 S/R (LBRACE and COMMA, shift-wins, reduce of `primary_expr: identifier •`
+bracketed): the same pre-existing struct-lit/tuple-assignment ambiguity documented
+above for gofmt-syntax-a Task 2.
+
+Adding `label_stmt: identifier COLON statement` gives ONLY the true
+`statement:`-start reachability path a new item, `label_stmt: identifier • COLON
+statement`. IF-header and FOR-post-stmt positions reach `identifier` through
+`simple_stmt`, which does not (and cannot) include `label_stmt` — Go labels are
+statement-position-only. That breaks the item-set identity the merge depended on, so
+LALR splits the one state into two:
+
+- **cur state 454** (label-carrying, reached from `statement:`-start): item set is
+  base 449's five items plus `label_stmt: identifier • COLON statement`. Conflicts:
+  2 S/R, on LBRACE (`[reduce using rule 260 (primary_expr)]`, bracketed, vs. shift
+  into `struct_lit`) and COMMA (same bracketed reduce vs. shift into
+  `short_var_decl`/`simple_stmt`'s tuple forms) — **identical** to base 449's
+  conflict shape, nothing new. `COLON  shift, and go to state 598` is a **clean,
+  unconditional shift with no competing reduce at 454, and state 598 itself carries
+  zero conflicts** — the label's own COLON position adds no ambiguity of any kind.
+- **cur state 552** (label-free, reached from IF-header states **418** and **784**
+  and FOR-post-stmt state **779** — confirmed by grep for `go to state 552` in the
+  `.output`, then walking each hit back to its enclosing state, whose items are
+  exactly the `if_stmt: IF • expression block | ...` / `for_stmt: FOR simple_stmt
+  SEMICOLON expression SEMICOLON • simple_stmt block` productions): item set and
+  conflict shape (2 S/R, same LBRACE/COMMA pair) are **fingerprint-identical to
+  base state 449** — it is the unmodified survivor of the split, not a new
+  ambiguity class.
+
+Net effect: one 2-conflict state becomes two 2-conflict states = +2 S/R, zero new R/R,
+zero new ambiguity *class* — both halves resolve LBRACE/COMMA by the same
+already-baselined shift-wins as base 449 did. **Cross-checked with an isolated
+label-only build** (base grammar + `label_stmt` alone, no `BREAK`/`CONTINUE
+identifier` arms): totals 86/256 (+2 from the 84/256 base, matching the combined
+build's contribution exactly); fingerprint-diffing against base surfaces exactly one
+genuinely NEW fingerprint (the label-carrying clone, isolated-build state 450, 2 S/R,
+reached from isolated-build states 416/774 — IF-header — and 769 — FOR post-stmt);
+the label-free clone in that isolated build (state 545) is fingerprint-identical to
+base 449, same as above. No other new-fingerprint conflicted state exists in the
+isolated build.
+
+**What the previous version of this entry got wrong, checked directly against the
+rebuilt `.output` files:** (1) there is no new conflict on token FUNC in any build —
+`grep -c 'FUNC.*\[reduce'` is exactly **10** in the base, branch, and both isolated
+`.output` files alike (the `wasm_memory: MEMORY expression • expression` FUNC
+bracketed-reduce sites the old text pointed to pre-exist unchanged in baseline; they
+have nothing to do with labels). (2) No state has 20 S/R conflicts anywhere, at
+baseline or in any variant — the `return_stmt`-adjacent state (base state 417, items
+`return_stmt: RETURN • | RETURN • expression | RETURN • expression COMMA
+expression_list`) already carries **21** S/R at the unmodified 84-conflict baseline
+and stays 21 in every build; there is no 20→21 growth to find. (3) The claim that the
+`BREAK`/`CONTINUE identifier`-only isolated build shows "the identical incidental
+pair" is arithmetically impossible on its own terms: that build's +2 is fully and
+exclusively two brand-new states — `break_stmt: BREAK • | BREAK • identifier` and the
+`continue_stmt` sibling, 1 S/R each — with no other new-fingerprint conflicted state
+anywhere in it; had the claimed FUNC state and 20→21 growth also been present, that
+build would total 88, not its actual 86. Family 1's own accounting (immediately
+above) was and is correct; it is this entry that was wrong.
 
 **Tooling note:** `bison -Wcounterexamples` times out (bison's internal per-state
 solver budget, ~6s) well before reaching either family in this grammar's full
