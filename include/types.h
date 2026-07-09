@@ -529,41 +529,37 @@ typedef enum {
     FALLTHROUGH_CTX_SELECT,       // inside a select-case body
 } FallthroughContext;
 
-// Type checker state
-struct TypeChecker {
-    Scope* current_scope;
-    int next_scope_id;
-    Type** builtin_types;   // Array of builtin types
-    
-    // Error reporting
-    char* current_file;
-    int error_count;
-    int warning_count;
-    
-    // Type cache for performance
-    Type** type_cache;
-    size_t type_cache_size;
-    size_t type_cache_capacity;
-    
-    // Enhanced interface system components
-    struct ConstraintInferenceEngine* constraint_engine;
-    struct ConceptRegistry* concept_registry;
-    struct HKTRegistry* hkt_registry;
-    struct ProtocolRegistry* protocol_registry;
-    
-    // Compile-time type computation support
-    ComptimeTypeContext* comptime_type_ctx;
-
-    // Return type of the enclosing function — set when entering a function body
-    // so that context-sensitive builtins (e.g. error()) can look it up.
-    Type* current_return_type;
-
-    // Imported-package registry (stdlib Phase 0 scaffolding). `packages` is the
-    // head of a linked list of resolved packages; `current_package` is the
-    // package whose body is being checked (NULL == the main package). Both are
-    // NULL until Task 3 wires import resolution in.
-    Package* packages;
-    Package* current_package;
+// Codegen-hardening R1-TC: per-function scratch state for the function (or
+// func literal) CURRENTLY being body-checked — active generic type
+// parameters, the open-func-literal stack, the label registry, the
+// goto-label registry, and the arena-nesting chain the latter snapshots.
+// Previously these were six separate field groups directly on TypeChecker
+// (active_type_params/active_type_param_count, literal_stack/
+// literal_stack_len, label_names/label_positions/label_count, goto_label_
+// names/goto_label_count, arena_chain/arena_chain_depth, goto_label_arena_
+// chain/goto_label_arena_depth); consolidating them here means
+// type_check_function_decl and type_check_func_lit save/restore the WHOLE
+// family with one struct assignment (tc_fctx_save/tc_fctx_restore) instead
+// of an enumerated local-variable save/restore per field, mirroring
+// ControlFlowContext's role for codegen (codegen_cfctx.h, R1) — see
+// docs/superpowers/specs/2026-07-09-codegen-hardening-design.md, section
+// R1-TC. NOTE this struct deliberately does NOT include fallthrough_ctx
+// (TypeChecker's own field, above): that field's independent-namespace
+// save/restore is unchanged by this refactor.
+typedef struct TcFunctionContext {
+    // Function generics Task 3: active generic type parameters, innermost
+    // function's params on top. Consulted by type_from_ast so a bare `T` in
+    // a generic function's signature/body resolves to its TYPE_PARAM Type
+    // instead of "Unknown type 'T'". Pushed by declare_function_signature
+    // and type_check_function_decl (popped on every return path of both —
+    // a missed pop leaks type params into sibling functions) via
+    // type_checker_push_type_param/type_checker_pop_type_params — NOT
+    // reset at a func-literal boundary (a closure inherits its enclosing
+    // function's type params; Go has no generic func literals of its own).
+    // Fixed array, not malloc'd: type-param-list nesting is bounded by
+    // source structure (Tier A functions are small).
+    Type* active_type_params[32];
+    size_t active_type_param_count;
 
     // Closures Task 2: stack of func literals currently being body-checked
     // (innermost = last, index literal_stack_len-1), pushed/popped by
@@ -579,39 +575,9 @@ struct TypeChecker {
     // bounded by source structure, not runtime data — no realistic program
     // nests closures anywhere near GOO_CLOSURE_MAX_NESTING deep; a program
     // that does silently stops recording further capture relaying past the
-    // cap rather than crashing (see type_check_func_lit's push). Tail-
-    // appended per the no-header-deps convention (ast.h's M10 note).
+    // cap rather than crashing (see type_check_func_lit's push).
     struct ASTNode* literal_stack[GOO_CLOSURE_MAX_NESTING];
     size_t literal_stack_len;
-
-    // Function generics Task 3: active generic type parameters, innermost
-    // function's params on top. Consulted by type_from_ast so a bare `T` in
-    // a generic function's signature/body resolves to its TYPE_PARAM Type
-    // instead of "Unknown type 'T'". Pushed by declare_function_signature
-    // and type_check_function_decl (popped on every return path of both —
-    // a missed pop leaks type params into sibling functions). Fixed array,
-    // not malloc'd: type-param-list nesting is bounded by source structure
-    // (Tier A functions are small), same rationale as literal_stack above.
-    Type* active_type_params[32];
-    size_t active_type_param_count;
-
-    // Function generics Task 6: head of the linked list of resolved
-    // generic-call instantiations recorded by type_check_record_instantiation
-    // during call checking. NULL until the first generic call type-checks
-    // successfully. The monomorphizer (Task 9) walks this list after
-    // type_check_program returns to know which concrete instantiations of
-    // each generic function to emit; torn down in type_checker_free.
-    GenericInstantiation* instantiations;
-
-    // Comptime value params Task 3: head of the linked list of resolved
-    // comptime-call instantiations recorded by
-    // type_check_record_comptime_instantiation during call checking. NULL
-    // until the first comptime call type-checks successfully. The
-    // monomorphizer (codegen_monomorphize, monomorphize.c) walks this list
-    // after type_check_program returns, alongside `instantiations` above, to
-    // know which concrete value-specializations of each comptime-param
-    // function to emit; torn down in type_checker_free.
-    ComptimeInstantiation* comptime_instantiations;
 
     // gofmt-syntax-b Task 1 (P1.5): per-function flat label registry. Labels
     // are FUNCTION-scoped in Go (not block/lexical-scoped — the same name
@@ -679,12 +645,105 @@ struct TypeChecker {
     // break/continue already free arenas above the target loop frame.
     void* goto_label_arena_chain[64][16];
     size_t goto_label_arena_depth[64];
+} TcFunctionContext;
+
+// Whole-struct save/restore — one assignment each, so type_check_function_decl
+// and type_check_func_lit save the enclosing (or outer-namespace) state,
+// reset what they must for their own fresh body-check, and restore the saved
+// state afterward, with no per-field enumeration to fall out of sync as this
+// struct grows. Mirrors cfctx_save/cfctx_restore (codegen_cfctx.h, R1)
+// exactly.
+void tc_fctx_save(TcFunctionContext* out, const TcFunctionContext* ctx);
+void tc_fctx_restore(TcFunctionContext* ctx, const TcFunctionContext* saved);
+
+// Per-function/per-func-literal reset: clears the two counters that are
+// UNCONDITIONALLY zeroed at every such boundary today (label_count,
+// goto_label_count — see their own doc comments above for why each needs an
+// explicit reset rather than self-balancing). Mirrors cfctx_reset's own
+// minimal scope (codegen_cfctx.h): active_type_params/literal_stack keep
+// their own dedicated push/pop APIs (type_checker_push_type_param et al.,
+// the literal_stack push in type_check_func_lit) untouched by this reset,
+// and arena_chain_depth's reset is func-literal-boundary-only — inlined at
+// that one call site exactly like ControlFlowContext.loop_depth's own extra
+// reset in codegen_generate_func_lit, rather than folded in here.
+void tc_fctx_reset(TcFunctionContext* ctx);
+
+// Type checker state
+struct TypeChecker {
+    Scope* current_scope;
+    int next_scope_id;
+    Type** builtin_types;   // Array of builtin types
+    
+    // Error reporting
+    char* current_file;
+    int error_count;
+    int warning_count;
+    
+    // Type cache for performance
+    Type** type_cache;
+    size_t type_cache_size;
+    size_t type_cache_capacity;
+    
+    // Enhanced interface system components
+    struct ConstraintInferenceEngine* constraint_engine;
+    struct ConceptRegistry* concept_registry;
+    struct HKTRegistry* hkt_registry;
+    struct ProtocolRegistry* protocol_registry;
+    
+    // Compile-time type computation support
+    ComptimeTypeContext* comptime_type_ctx;
+
+    // Return type of the enclosing function — set when entering a function body
+    // so that context-sensitive builtins (e.g. error()) can look it up.
+    Type* current_return_type;
+
+    // Imported-package registry (stdlib Phase 0 scaffolding). `packages` is the
+    // head of a linked list of resolved packages; `current_package` is the
+    // package whose body is being checked (NULL == the main package). Both are
+    // NULL until Task 3 wires import resolution in.
+    Package* packages;
+    Package* current_package;
+
+    // Function generics Task 6: head of the linked list of resolved
+    // generic-call instantiations recorded by type_check_record_instantiation
+    // during call checking. NULL until the first generic call type-checks
+    // successfully. The monomorphizer (Task 9) walks this list after
+    // type_check_program returns to know which concrete instantiations of
+    // each generic function to emit; torn down in type_checker_free.
+    GenericInstantiation* instantiations;
+
+    // Comptime value params Task 3: head of the linked list of resolved
+    // comptime-call instantiations recorded by
+    // type_check_record_comptime_instantiation during call checking. NULL
+    // until the first comptime call type-checks successfully. The
+    // monomorphizer (codegen_monomorphize, monomorphize.c) walks this list
+    // after type_check_program returns, alongside `instantiations` above, to
+    // know which concrete value-specializations of each comptime-param
+    // function to emit; torn down in type_checker_free.
+    ComptimeInstantiation* comptime_instantiations;
 
     // gofmt-syntax-b Task 3 (P1.7): current fallthrough legality context —
     // see FallthroughContext's doc comment above. Explicitly set to NONE in
     // type_checker_new (the struct is malloc'd, not calloc'd, same
     // convention as label_count/goto_label_count just above).
     FallthroughContext fallthrough_ctx;
+
+    // Codegen-hardening R1-TC: consolidated per-function scratch state —
+    // formerly active_type_params/active_type_param_count, literal_stack/
+    // literal_stack_len, label_names/label_positions/label_count,
+    // goto_label_names/goto_label_count, arena_chain/arena_chain_depth, and
+    // goto_label_arena_chain/goto_label_arena_depth as six separate field
+    // groups directly on TypeChecker. See TcFunctionContext's own doc
+    // comment above for the field-by-field detail and the tc_fctx_* API
+    // (save/restore/reset) that replaces the old hand-enumerated per-field
+    // save/reset/restore at each function- and func-literal-body-check
+    // boundary (type_check_function_decl, type_checker.c;
+    // type_check_func_lit, expression_checker.c) — the exact same
+    // information-leakage class R1's ControlFlowContext closes off for
+    // codegen (docs/superpowers/specs/2026-07-09-codegen-hardening-design.md,
+    // section R1-TC). Tail-appended per the no-header-deps convention
+    // (ast.h's M10 comment).
+    TcFunctionContext tc_fctx;
 };
 
 // Type creation functions

@@ -480,7 +480,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // from the target label's arena-nesting depth, computed at
             // type-check time (type_check_statement's AST_GOTO_STMT case,
             // type_checker.c) and looked up here by name from the SAME
-            // checker->goto_label_names table that case walks. The checker
+            // checker->tc_fctx.goto_label_names table that case walks. The checker
             // has already proven that depth's arena-chain is a prefix of
             // this goto's own (else it rejected the program with "goto
             // into arena block is not supported" before codegen ever
@@ -490,10 +490,10 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             GotoStmtNode* got = (GotoStmtNode*)stmt;
             int target_arena_depth = 0;
             if (checker && got->label) {
-                for (size_t i = 0; i < checker->goto_label_count; i++) {
-                    if (checker->goto_label_names[i] &&
-                        strcmp(checker->goto_label_names[i], got->label) == 0) {
-                        target_arena_depth = (int)checker->goto_label_arena_depth[i];
+                for (size_t i = 0; i < checker->tc_fctx.goto_label_count; i++) {
+                    if (checker->tc_fctx.goto_label_names[i] &&
+                        strcmp(checker->tc_fctx.goto_label_names[i], got->label) == 0) {
+                        target_arena_depth = (int)checker->tc_fctx.goto_label_arena_depth[i];
                         break;
                     }
                 }

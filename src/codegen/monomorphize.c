@@ -137,7 +137,7 @@ int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* chec
     // codegen (LLVMTypeOf on a NULL value). Popped unconditionally before
     // returning, on every path, so a failed instantiation can't leak type
     // params into whatever the worklist stamps next.
-    size_t saved_tp = checker->active_type_param_count;
+    size_t saved_tp = checker->tc_fctx.active_type_param_count;
     {
         int idx = 0;
         for (ASTNode* tp = tmpl->type_params; tp; tp = tp->next) {

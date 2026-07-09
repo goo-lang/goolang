@@ -37,32 +37,24 @@ TypeChecker* type_checker_new(void) {
     checker->packages = NULL;
     checker->current_package = NULL;
 
-    // Closures Task 2: no literal currently being checked.
-    checker->literal_stack_len = 0;
-
-    // Function generics Task 3: no generic function's type params in scope yet.
-    checker->active_type_param_count = 0;
-
     // Function generics Task 6: no recorded generic-call instantiations yet.
     checker->instantiations = NULL;
 
     // Comptime value params Task 3: no recorded comptime-call instantiations yet.
     checker->comptime_instantiations = NULL;
 
-    // gofmt-syntax-b Task 1: no labels registered yet (per-function reset
-    // happens in type_check_function_decl / type_check_func_lit).
-    checker->label_count = 0;
-
-    // gofmt-syntax-b Task 2: ditto for the goto forward-reference set.
-    checker->goto_label_count = 0;
-
-    // arena-goto fix: no enclosing arena block yet (see types.h's
-    // arena_chain doc comment); goto_label_arena_depth entries are only
-    // ever read up to goto_label_count, so they need no upfront init.
-    checker->arena_chain_depth = 0;
-
     // gofmt-syntax-b Task 3: not inside any switch/select clause body yet.
     checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
+
+    // Codegen-hardening R1-TC: zero every counter in the consolidated
+    // per-function scratch struct (literal_stack_len, active_type_param_
+    // count, label_count, goto_label_count, arena_chain_depth) in one shot —
+    // mirrors the six individual zero-inits this replaces. Array CONTENTS
+    // (label_names, goto_label_names, goto_label_arena_depth, ...) are only
+    // ever read up to their paired counter, so they need no upfront init;
+    // memset is used anyway (over leaving them uninitialized) since it's no
+    // more expensive and leaves no ambiguity for a future field added here.
+    memset(&checker->tc_fctx, 0, sizeof(checker->tc_fctx));
 
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
@@ -477,13 +469,13 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
 // sibling function checked afterward.
 void type_checker_push_type_param(TypeChecker* checker, Type* tp) {
     if (!checker || !tp) return;
-    if (checker->active_type_param_count < 32)
-        checker->active_type_params[checker->active_type_param_count++] = tp;
+    if (checker->tc_fctx.active_type_param_count < 32)
+        checker->tc_fctx.active_type_params[checker->tc_fctx.active_type_param_count++] = tp;
 }
 
 void type_checker_pop_type_params(TypeChecker* checker, size_t to_count) {
     if (!checker) return;
-    checker->active_type_param_count = to_count;
+    checker->tc_fctx.active_type_param_count = to_count;
 }
 
 // Function generics Task 6: record one resolved generic-call instantiation,
@@ -546,8 +538,8 @@ void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn
 // outer type param of the same name, matching ordinary scope lookup.
 Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name) {
     if (!checker || !name) return NULL;
-    for (size_t i = checker->active_type_param_count; i-- > 0; ) {
-        Type* tp = checker->active_type_params[i];
+    for (size_t i = checker->tc_fctx.active_type_param_count; i-- > 0; ) {
+        Type* tp = checker->tc_fctx.active_type_params[i];
         if (tp && tp->data.type_param.name &&
             strcmp(tp->data.type_param.name, name) == 0)
             return tp;
@@ -818,7 +810,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     // the signature (including inside `[]T`) resolves instead of erroring
     // "Unknown type 'T'". Popped on every return path of this function —
     // see the matching type_checker_pop_type_params before each `return`.
-    size_t saved_tp = checker->active_type_param_count;
+    size_t saved_tp = checker->tc_fctx.active_type_param_count;
     if (func->type_params) {
         int idx = 0;
         for (ASTNode* tp = func->type_params; tp; tp = tp->next) {
@@ -983,10 +975,10 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
 
     // Function generics Task 4: enforce the Tier A generic-declaration
     // invariants once the signature's param_types are built (and the type
-    // params are still pushed onto checker->active_type_params from above).
+    // params are still pushed onto checker->tc_fctx.active_type_params from above).
     size_t tpn = 0;
     if (func->type_params) {
-        tpn = checker->active_type_param_count - saved_tp;
+        tpn = checker->tc_fctx.active_type_param_count - saved_tp;
         // Every type param must appear in a parameter type (inference-only rule).
         int used[32] = {0};
         for (size_t i = 0; i < param_count; i++)
@@ -1077,7 +1069,7 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
 // from a statement via an expression, e.g. a var-decl initializer or an
 // expr-stmt), giving each function/literal its own independent label
 // namespace for free, with no explicit boundary check needed. Populates
-// checker->goto_label_names (capped at 64, silently — T1's own label_count
+// checker->tc_fctx.goto_label_names (capped at 64, silently — T1's own label_count
 // pass already reports "too many labels" for real overflows) so `goto`,
 // checked later in the SAME normal walk this pre-pass runs ahead of, can
 // see labels that are declared textually AFTER the goto (forward
@@ -1152,13 +1144,13 @@ void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt) {
             // body walk, so any AST_LABEL_STMT reached inside records this
             // block (and its ancestors) as part of its arena-nesting path.
             ArenaBlockNode* a = (ArenaBlockNode*)stmt;
-            int pushed = checker->arena_chain_depth < 16;
+            int pushed = checker->tc_fctx.arena_chain_depth < 16;
             if (pushed) {
-                checker->arena_chain[checker->arena_chain_depth] = a;
-                checker->arena_chain_depth++;
+                checker->tc_fctx.arena_chain[checker->tc_fctx.arena_chain_depth] = a;
+                checker->tc_fctx.arena_chain_depth++;
             }
             type_check_collect_goto_labels(checker, a->body);
-            if (pushed) checker->arena_chain_depth--;
+            if (pushed) checker->tc_fctx.arena_chain_depth--;
             return;
         }
         case AST_COMPTIME_BLOCK: {
@@ -1169,28 +1161,28 @@ void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt) {
         case AST_LABEL_STMT: {
             LabelStmtNode* label = (LabelStmtNode*)stmt;
             int already = 0;
-            for (size_t i = 0; i < checker->goto_label_count; i++) {
-                if (checker->goto_label_names[i] && label->name &&
-                    strcmp(checker->goto_label_names[i], label->name) == 0) {
+            for (size_t i = 0; i < checker->tc_fctx.goto_label_count; i++) {
+                if (checker->tc_fctx.goto_label_names[i] && label->name &&
+                    strcmp(checker->tc_fctx.goto_label_names[i], label->name) == 0) {
                     already = 1;
                     break;
                 }
             }
-            if (!already && checker->goto_label_count < 64) {
+            if (!already && checker->tc_fctx.goto_label_count < 64) {
                 // arena-goto fix: snapshot the CURRENT arena_chain (this
                 // label's arena-nesting path) alongside its name — see
                 // types.h's goto_label_arena_chain doc comment. Same index
                 // as the name just below, so goto_label_arena_depth[i]/
                 // goto_label_arena_chain[i] always correspond to
                 // goto_label_names[i].
-                size_t idx = checker->goto_label_count;
-                size_t depth = checker->arena_chain_depth;
+                size_t idx = checker->tc_fctx.goto_label_count;
+                size_t depth = checker->tc_fctx.arena_chain_depth;
                 if (depth > 16) depth = 16;  // defensive; cannot happen (push caps at 16)
                 for (size_t k = 0; k < depth; k++) {
-                    checker->goto_label_arena_chain[idx][k] = checker->arena_chain[k];
+                    checker->tc_fctx.goto_label_arena_chain[idx][k] = checker->tc_fctx.arena_chain[k];
                 }
-                checker->goto_label_arena_depth[idx] = depth;
-                checker->goto_label_names[checker->goto_label_count++] = label->name;
+                checker->tc_fctx.goto_label_arena_depth[idx] = depth;
+                checker->tc_fctx.goto_label_names[checker->tc_fctx.goto_label_count++] = label->name;
             }
             type_check_collect_goto_labels(checker, label->stmt);
             return;
@@ -1209,7 +1201,7 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     // return-type lookup just below (may reference `T`) and before the body
     // is checked. Symmetric with declare_function_signature's push; popped
     // right before this function's own `return result` below.
-    size_t saved_tp = checker->active_type_param_count;
+    size_t saved_tp = checker->tc_fctx.active_type_param_count;
     if (func->type_params) {
         int idx = 0;
         for (ASTNode* tp = func->type_params; tp; tp = tp->next) {
@@ -1335,21 +1327,23 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         }
     }
 
-    // gofmt-syntax-b Task 1: labels are function-scoped — start this
-    // function's body with an empty registry (save/restore, not a bare
-    // reset, so a func-literal body-check nested INSIDE another function's
-    // body-check — reachable only via mutual recursion through the AST, not
-    // in practice today, but symmetric with current_return_type's own
-    // save/restore just above) can never leak into or out of this function.
-    size_t saved_label_count = checker->label_count;
-    checker->label_count = 0;
-
-    // gofmt-syntax-b Task 2: same save/restore, for the goto forward-
-    // reference set — collected in a pre-pass over the WHOLE body before
-    // the normal walk below, so a `goto` reaches labels declared later in
-    // the source (see type_check_collect_goto_labels' doc comment above).
-    size_t saved_goto_label_count = checker->goto_label_count;
-    checker->goto_label_count = 0;
+    // Codegen-hardening R1-TC: labels/goto-labels are function-scoped —
+    // start this function's body with empty registries (save/restore, not a
+    // bare reset, so a func-literal body-check nested INSIDE another
+    // function's body-check — reachable only via mutual recursion through
+    // the AST, not in practice today, but symmetric with
+    // current_return_type's own save/restore just above) can never leak
+    // into or out of this function. tc_fctx_save snapshots the WHOLE
+    // per-function scratch struct in one assignment (active_type_params is
+    // ALREADY pushed above and untouched by tc_fctx_reset, so restoring it
+    // here is a no-op — the real unwind is type_checker_pop_type_params
+    // below); tc_fctx_reset zeroes label_count/goto_label_count only (see
+    // its own doc comment, types.h) — arena_chain_depth needs no explicit
+    // reset here, unlike at a func-literal boundary, since it is already 0
+    // between sibling top-level functions.
+    TcFunctionContext saved_tcfctx;
+    tc_fctx_save(&saved_tcfctx, &checker->tc_fctx);
+    tc_fctx_reset(&checker->tc_fctx);
     if (func->body) {
         type_check_collect_goto_labels(checker, func->body);
     }
@@ -1368,8 +1362,7 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     }
 
     checker->fallthrough_ctx = saved_fallthrough_ctx;
-    checker->goto_label_count = saved_goto_label_count;
-    checker->label_count = saved_label_count;
+    tc_fctx_restore(&checker->tc_fctx, &saved_tcfctx);
     checker->current_return_type = saved_return_type;
     scope_pop(checker);
     type_checker_pop_type_params(checker, saved_tp);
@@ -2324,20 +2317,20 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
 // two-copies-that-drift risk that caused Task 1's own label_stmt de-merge
 // analysis to need forensic reconstruction (see conflict-ledger.md).
 static int type_check_register_label(TypeChecker* checker, char* name, Position pos) {
-    for (size_t i = 0; i < checker->label_count; i++) {
-        if (checker->label_names[i] && name &&
-            strcmp(checker->label_names[i], name) == 0) {
+    for (size_t i = 0; i < checker->tc_fctx.label_count; i++) {
+        if (checker->tc_fctx.label_names[i] && name &&
+            strcmp(checker->tc_fctx.label_names[i], name) == 0) {
             type_error(checker, pos, "duplicate label '%s'", name);
             return 0;
         }
     }
-    if (checker->label_count >= 64) {
+    if (checker->tc_fctx.label_count >= 64) {
         type_error(checker, pos, "too many labels in one function (max 64)");
         return 0;
     }
-    checker->label_names[checker->label_count] = name;
-    checker->label_positions[checker->label_count] = pos;
-    checker->label_count++;
+    checker->tc_fctx.label_names[checker->tc_fctx.label_count] = name;
+    checker->tc_fctx.label_positions[checker->tc_fctx.label_count] = pos;
+    checker->tc_fctx.label_count++;
     return 1;
 }
 
@@ -2530,9 +2523,9 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             GotoStmtNode* got = (GotoStmtNode*)stmt;
             int found = 0;
             size_t found_idx = 0;
-            for (size_t i = 0; i < checker->goto_label_count; i++) {
-                if (checker->goto_label_names[i] && got->label &&
-                    strcmp(checker->goto_label_names[i], got->label) == 0) {
+            for (size_t i = 0; i < checker->tc_fctx.goto_label_count; i++) {
+                if (checker->tc_fctx.goto_label_names[i] && got->label &&
+                    strcmp(checker->tc_fctx.goto_label_names[i], got->label) == 0) {
                     found = 1;
                     found_idx = i;
                     break;
@@ -2555,11 +2548,11 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             // arena chain entirely — would require silently entering an
             // arena whose goo_arena_new never ran, which is exactly the
             // double-free/UAF SIGSEGV this check exists to close off.
-            size_t label_depth = checker->goto_label_arena_depth[found_idx];
-            int arena_ok = label_depth <= checker->arena_chain_depth;
+            size_t label_depth = checker->tc_fctx.goto_label_arena_depth[found_idx];
+            int arena_ok = label_depth <= checker->tc_fctx.arena_chain_depth;
             if (arena_ok) {
                 for (size_t k = 0; k < label_depth; k++) {
-                    if (checker->goto_label_arena_chain[found_idx][k] != checker->arena_chain[k]) {
+                    if (checker->tc_fctx.goto_label_arena_chain[found_idx][k] != checker->tc_fctx.arena_chain[k]) {
                         arena_ok = 0;
                         break;
                     }
@@ -2618,13 +2611,13 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             // part of its own current arena-nesting path.
             ArenaBlockNode* ab = (ArenaBlockNode*)stmt;
             if (!ab->body) return 1;
-            int pushed = checker->arena_chain_depth < 16;
+            int pushed = checker->tc_fctx.arena_chain_depth < 16;
             if (pushed) {
-                checker->arena_chain[checker->arena_chain_depth] = ab;
-                checker->arena_chain_depth++;
+                checker->tc_fctx.arena_chain[checker->tc_fctx.arena_chain_depth] = ab;
+                checker->tc_fctx.arena_chain_depth++;
             }
             int ok = type_check_statement(checker, ab->body);
-            if (pushed) checker->arena_chain_depth--;
+            if (pushed) checker->tc_fctx.arena_chain_depth--;
             return ok;
         }
         default:

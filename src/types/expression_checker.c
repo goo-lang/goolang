@@ -200,16 +200,27 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     scope_push(checker);
     checker->current_scope->is_function_boundary = 1;
 
+    // Codegen-hardening R1-TC: snapshot the WHOLE per-function scratch
+    // struct (active_type_params, literal_stack, label registry, goto-label
+    // registry, arena-nesting chain) in one assignment before this
+    // literal's own body-check mutates any of it — mirrors cfctx_save's
+    // role for codegen (function_codegen.c's codegen_generate_func_lit).
+    // Captured BEFORE the literal-stack push just below, so tc_fctx_restore
+    // at the end both restores the label/goto/arena namespaces AND pops
+    // this literal's own stack entry in the same single assignment — no
+    // separate literal_stack_len-restore line needed.
+    TcFunctionContext saved_tcfctx;
+    tc_fctx_save(&saved_tcfctx, &checker->tc_fctx);
+
     // Push this literal onto the checker's literal stack so
     // type_check_identifier can relay a transitive capture through every
-    // currently-open literal (types.h's TypeChecker.literal_stack doc
-    // comment). Saved slot index, not just a decrement on pop, so hitting
-    // GOO_CLOSURE_MAX_NESTING degrades gracefully (push silently skipped;
-    // pop still balances) instead of desyncing the stack.
-    size_t lit_stack_slot = checker->literal_stack_len;
-    if (lit_stack_slot < GOO_CLOSURE_MAX_NESTING) {
-        checker->literal_stack[lit_stack_slot] = expr;
-        checker->literal_stack_len++;
+    // currently-open literal (types.h's TcFunctionContext.literal_stack doc
+    // comment). Degrades gracefully at GOO_CLOSURE_MAX_NESTING (push
+    // silently skipped) instead of desyncing the stack — tc_fctx_restore
+    // above still balances it either way.
+    if (checker->tc_fctx.literal_stack_len < GOO_CLOSURE_MAX_NESTING) {
+        checker->tc_fctx.literal_stack[checker->tc_fctx.literal_stack_len] = expr;
+        checker->tc_fctx.literal_stack_len++;
     }
 
     // Track the return type so a `return` inside the literal's body checks
@@ -219,36 +230,28 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     Type* saved_return_type = checker->current_return_type;
     checker->current_return_type = return_type;
 
-    // gofmt-syntax-b Task 1: a func literal gets its own label namespace,
-    // same rationale as type_check_function_decl's save/restore (types.h's
-    // TypeChecker.label_count doc comment) — a label inside the closure must
-    // not collide with (or be visible to) the enclosing function's labels.
-    size_t saved_label_count = checker->label_count;
-    checker->label_count = 0;
-
-    // gofmt-syntax-b Task 2: same save/restore + pre-pass as
-    // type_check_function_decl (type_checker.c) for the goto forward-
-    // reference set — a closure's `goto` must not see the enclosing
-    // function's labels (or vice versa), matching label_count's own
-    // independent-namespace rule directly above.
-    size_t saved_goto_label_count = checker->goto_label_count;
-    checker->goto_label_count = 0;
-
-    // arena-goto fix: same independent-namespace save/restore as
-    // goto_label_count directly above — a closure's own arena-nesting
-    // path must be measured from ITS OWN body, not offset by however many
-    // `arena{}` blocks happen to lexically enclose the literal in the
-    // outer function (see types.h's arena_chain doc comment).
-    size_t saved_arena_chain_depth = checker->arena_chain_depth;
-    checker->arena_chain_depth = 0;
+    // Codegen-hardening R1-TC: a func literal gets its own label AND
+    // goto-label namespace, same rationale as type_check_function_decl's
+    // own tc_fctx_reset (type_checker.c) — a label/goto inside the closure
+    // must not collide with (or be visible to) the enclosing function's.
+    // Unlike that boundary, arena_chain_depth ALSO needs an explicit reset
+    // here (a closure's own arena-nesting path must be measured from ITS
+    // OWN body, not offset by however many `arena{}` blocks happen to
+    // lexically enclose the literal in the outer function) — inlined the
+    // same way ControlFlowContext.loop_depth gets an extra explicit reset
+    // in codegen_generate_func_lit beyond cfctx_reset's own minimal scope.
+    tc_fctx_reset(&checker->tc_fctx);
+    checker->tc_fctx.arena_chain_depth = 0;
     if (lit->body) {
         type_check_collect_goto_labels(checker, lit->body);
     }
 
     // gofmt-syntax-b Task 3: same independent-namespace save/restore as
-    // label_count/goto_label_count just above — `fallthrough` cannot cross
-    // a func-literal boundary even when the literal is lexically written
-    // inside a switch case's body (Go: the literal is its own function).
+    // the label/goto-label registries just above — `fallthrough` cannot
+    // cross a func-literal boundary even when the literal is lexically
+    // written inside a switch case's body (Go: the literal is its own
+    // function). Kept outside TcFunctionContext (see that struct's own doc
+    // comment, types.h).
     FallthroughContext saved_fallthrough_ctx = checker->fallthrough_ctx;
     checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
 
@@ -283,11 +286,8 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     }
 
     checker->fallthrough_ctx = saved_fallthrough_ctx;
-    checker->arena_chain_depth = saved_arena_chain_depth;
-    checker->goto_label_count = saved_goto_label_count;
-    checker->label_count = saved_label_count;
+    tc_fctx_restore(&checker->tc_fctx, &saved_tcfctx);
     checker->current_return_type = saved_return_type;
-    checker->literal_stack_len = lit_stack_slot;
     scope_pop(checker);
     checker->current_scope = enclosing_scope;
 
@@ -956,7 +956,7 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
 // scope walk. `depth` is the number of function/literal boundaries the walk
 // crossed to reach `var`'s declaring scope — exactly the count of
 // currently-open literals (innermost first, i.e. the TOP `depth` entries of
-// checker->literal_stack) that must ALSO carry this name through their own
+// checker->tc_fctx.literal_stack) that must ALSO carry this name through their own
 // env, per the transitive-capture rule: an inner literal's env is populated
 // correctly, but each INTERMEDIATE literal between the reference and the
 // declaration must relay the slot pointer inward through its own env too
@@ -1013,9 +1013,9 @@ static int type_checker_record_capture(TypeChecker* checker, Variable* var,
     var->is_captured = 1;
     ((VarDeclNode*)var->decl_node)->is_captured = 1;
 
-    if (depth > (int)checker->literal_stack_len) depth = (int)checker->literal_stack_len;
-    for (int i = (int)checker->literal_stack_len - depth; i < (int)checker->literal_stack_len; i++) {
-        FuncLitNode* lit = (FuncLitNode*)checker->literal_stack[i];
+    if (depth > (int)checker->tc_fctx.literal_stack_len) depth = (int)checker->tc_fctx.literal_stack_len;
+    for (int i = (int)checker->tc_fctx.literal_stack_len - depth; i < (int)checker->tc_fctx.literal_stack_len; i++) {
+        FuncLitNode* lit = (FuncLitNode*)checker->tc_fctx.literal_stack[i];
         int already = 0;
         for (size_t j = 0; j < lit->captured_count; j++) {
             if (strcmp(lit->captured_names[j], name) == 0) { already = 1; break; }
