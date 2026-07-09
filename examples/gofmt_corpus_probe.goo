@@ -1,0 +1,239 @@
+// gofmt_corpus_probe (spec T5 / plan Task 5): Phase 1 exit-gate corpus
+// probe. Composes EVERY Phase 1 gofmt-syntax construct in one program,
+// where sub-project A/B's per-feature fixtures each exercise exactly one
+// construct in isolation — this fixture is the integration check that
+// catches interactions per-feature probes structurally cannot (e.g. a
+// label immediately preceding a `for` whose body itself contains a
+// goto-loop and a fallthrough switch, all sharing one function's codegen
+// state: label registry, loop_break_bb stack, fallthrough-target stack,
+// goto's label->block table).
+//
+// Constructs exercised, in source order:
+//   1. grouped `var ( ... )` (P1.2) — `tag` (raw string) and `total` (int)
+//   2. a raw string literal (Task 5/A) as one of the group's initializers
+//   3. switch with an init statement (P1.4) + a fallthrough chain (P1.7)
+//      from case 5 into case 6 (case 7 must NOT run)
+//   4. a labeled outer `for` (P1.5) with `continue outer` (skips the inner
+//      loop's remaining iterations) and `break outer` (exits both loops)
+//   5. a backward `goto` loop (P1.6) printing 0, 1, 2
+//   6. a multi-line call with a trailing comma (P1.3) — `add3(1,\n2,\n3,)`
+//   7. a multi-method interface (P1.1-adjacent, gofmt-syntax-a Task 1)
+//      whose FIRST method (`Inc`) is void — dispatched through an
+//      interface-typed variable (`c Counter`), not just declared, so the
+//      newline-blind func-result hazard (workarounds.md §6) and dynamic
+//      dispatch both get exercised
+//   8. select (P1.10) with a value-binding case (`case v := <-a:`) —
+//      deterministic because only one of the two channels is fed before
+//      the select runs
+//   9. a bare line-starting `<-ch` immediately after a `for` block's
+//      closing `}` (Task 6 REGRESSION fix) — doubles as a goroutine join,
+//      so the two `iter` lines are guaranteed to print before `joined`
+//
+// Expected output derived from `go run` (go1.26.1) on the equivalent Go
+// program below — byte-identical Goo/Go source (println is stderr in Go
+// but this probe uses fmt.Println throughout, which is stdout in both, so
+// no stream-convention translation is needed here, unlike asi_recv_probe).
+// Verified deterministic across 5 repeated `go run` invocations.
+//
+//   package main
+//
+//   import "fmt"
+//
+//   type Counter interface {
+//   	Inc()
+//   	Get() int
+//   }
+//
+//   type Widget struct {
+//   	n int
+//   }
+//
+//   func (w *Widget) Inc() {
+//   	w.n = w.n + 1
+//   }
+//
+//   func (w *Widget) Get() int {
+//   	return w.n
+//   }
+//
+//   func add3(a int, b int, c int) int {
+//   	return a + b + c
+//   }
+//
+//   func main() {
+//   	var (
+//   		tag   = `raw#tag`
+//   		total = 0
+//   	)
+//   	fmt.Println(tag)
+//
+//   	switch x := 5; x {
+//   	case 5:
+//   		fmt.Println("five")
+//   		fallthrough
+//   	case 6:
+//   		fmt.Println("six")
+//   	case 7:
+//   		fmt.Println("seven")
+//   	}
+//
+//   outer:
+//   	for i := 0; i < 3; i++ {
+//   		for j := 0; j < 3; j++ {
+//   			if j == 1 {
+//   				continue outer
+//   			}
+//   			if i == 2 {
+//   				break outer
+//   			}
+//   			fmt.Println(i, j)
+//   		}
+//   	}
+//
+//   	k := 0
+//   Loop:
+//   	if k < 3 {
+//   		fmt.Println(k)
+//   		k++
+//   		goto Loop
+//   	}
+//
+//   	total = add3(
+//   		1,
+//   		2,
+//   		3,
+//   	)
+//   	fmt.Println(total)
+//
+//   	var c Counter = &Widget{n: 0}
+//   	c.Inc()
+//   	c.Inc()
+//   	fmt.Println(c.Get())
+//
+//   	a := make(chan int, 1)
+//   	b := make(chan int, 1)
+//   	a <- 99
+//   	select {
+//   	case v := <-a:
+//   		fmt.Println(v)
+//   	case v := <-b:
+//   		fmt.Println(v)
+//   	}
+//
+//   	ch := make(chan int, 1)
+//   	go func() { ch <- 1 }()
+//   	for i := 0; i < 2; i++ {
+//   		fmt.Println("iter", i)
+//   	}
+//   	<-ch
+//   	fmt.Println("joined")
+//   }
+//
+// `go run` stdout:
+//   raw#tag
+//   five
+//   six
+//   0 0
+//   1 0
+//   0
+//   1
+//   2
+//   6
+//   2
+//   99
+//   iter 0
+//   iter 1
+//   joined
+package main
+
+import "fmt"
+
+type Counter interface {
+	Inc()
+	Get() int
+}
+
+type Widget struct {
+	n int
+}
+
+func (w *Widget) Inc() {
+	w.n = w.n + 1
+}
+
+func (w *Widget) Get() int {
+	return w.n
+}
+
+func add3(a int, b int, c int) int {
+	return a + b + c
+}
+
+func main() {
+	var (
+		tag   = `raw#tag`
+		total = 0
+	)
+	fmt.Println(tag)
+
+	switch x := 5; x {
+	case 5:
+		fmt.Println("five")
+		fallthrough
+	case 6:
+		fmt.Println("six")
+	case 7:
+		fmt.Println("seven")
+	}
+
+outer:
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			if j == 1 {
+				continue outer
+			}
+			if i == 2 {
+				break outer
+			}
+			fmt.Println(i, j)
+		}
+	}
+
+	k := 0
+Loop:
+	if k < 3 {
+		fmt.Println(k)
+		k++
+		goto Loop
+	}
+
+	total = add3(
+		1,
+		2,
+		3,
+	)
+	fmt.Println(total)
+
+	var c Counter = &Widget{n: 0}
+	c.Inc()
+	c.Inc()
+	fmt.Println(c.Get())
+
+	a := make(chan int, 1)
+	b := make(chan int, 1)
+	a <- 99
+	select {
+	case v := <-a:
+		fmt.Println(v)
+	case v := <-b:
+		fmt.Println(v)
+	}
+
+	ch := make(chan int, 1)
+	go func() { ch <- 1 }()
+	for i := 0; i < 2; i++ {
+		fmt.Println("iter", i)
+	}
+	<-ch
+	fmt.Println("joined")
+}
