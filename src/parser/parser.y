@@ -1654,6 +1654,34 @@ switch_stmt:
         ast_add_child($2, switch_node);
         $$ = (ASTNode*)wrapper;
     }
+    // `switch init; { }` — the tagless (switch-true) form combined with an
+    // init statement (e.g. `switch x := 5; { case x < 10: ... }`). Fix C:
+    // Task 2 added init arms for the tagged and type-switch forms only,
+    // leaving this one out; mirrors the tagged-init arms above exactly the
+    // same way the bare tagless arm (parser.y:1604) mirrors the bare tagged
+    // arm (parser.y:1595) — synthesize a `true` tag, then reuse the same
+    // init-wrapper desugar (scope bounded to the wrapper block). No new
+    // conflict surface: `expression` cannot start with LBRACE/LBRACE_BODY
+    // (see composite_value's comment at parser.y:2809), so the token
+    // immediately after SEMICOLON already decides between this arm and the
+    // expression-tag arms above with one token of lookahead — the same
+    // disjointness the bare tagged/tagless pair already relies on.
+    | SWITCH simple_stmt SEMICOLON LBRACE_BODY case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new(t, $5, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON LBRACE case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new(t, $5, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
     // `switch init; [v :=] x.(type) { }` — same init-guard shape for the
     // type-switch form. Reuses type_switch_guard unmodified (no new
     // type-switch surface — spec open point 3): the bind form
