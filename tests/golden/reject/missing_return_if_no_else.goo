@@ -1,0 +1,15 @@
+// P2.4 reject: an if-statement with no else clause as the LAST statement of
+// a value-returning function's body does not guarantee a return on every
+// path — the false branch falls off the end. Go: "missing return at end of
+// function".
+package main
+
+func classify(x int) string {
+	if x > 0 {
+		return "pos"
+	}
+}
+
+func main() {
+	println(classify(1))
+}

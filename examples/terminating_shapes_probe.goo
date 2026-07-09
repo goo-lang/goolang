@@ -1,0 +1,232 @@
+// terminating_shapes_probe (P2.4): one function per composite terminating-
+// statement shape from the binding spec (docs/superpowers/specs/2026-07-09-
+// p2-typesystem-b-design.md, T2) — each function's body relies on the
+// missing-return analysis correctly recognizing that shape as terminating
+// to compile at all. A regression in the analysis (over- OR
+// under-restrictive) either rejects this file outright or, if it wrongly
+// accepts a non-terminating shape, would surface as a wrong printed value
+// (the codegen zero-return fallback firing on a path that should be
+// unreachable).
+//
+// NOT derivable via `go run`: if-let, arena{}, and the labeled-for/goto
+// shapes below use Goo-only syntax (if-let unwrap, arena blocks) or Goo-only
+// standalone-label placement that would not parse as the same program in
+// real Go even where individual constructs overlap. Every expected value
+// below is derived BY HAND from the design doc's semantics and each
+// function's own straight-line arithmetic (shown in the comment above each
+// call in main).
+package main
+
+import "fmt"
+
+// Shape 1: if/else, both branches terminate.
+func ifElseShape(x int) int {
+	if x > 0 {
+		return 1
+	} else {
+		return -1
+	}
+}
+
+// Shape 2: if-let/else, both branches terminate (Goo-only; AST_IF_LET_STMT
+// is a distinct node from AST_IF_STMT).
+func ifLetShape(p ?int) int {
+	if let v = p {
+		return v
+	} else {
+		return -1
+	}
+}
+
+// Shape 3: expression switch with a default clause where every clause body
+// terminates — including a clause that ends in `fallthrough` (delegates to
+// the next clause's terminator instead of terminating itself).
+func switchShape(x int) string {
+	switch x {
+	case 1:
+		fallthrough
+	case 2:
+		return "one-or-two"
+	default:
+		return "other"
+	}
+}
+
+type Named interface {
+	Name() string
+}
+
+type Cat struct{}
+
+func (c Cat) Name() string { return "meow" }
+
+type Dog struct{}
+
+func (d Dog) Name() string { return "woof" }
+
+type Fish struct{}
+
+func (f Fish) Name() string { return "blub" }
+
+// Shape 4: type switch with a default clause where every clause body
+// terminates (AST_TYPE_SWITCH is a distinct node from AST_SWITCH_STMT — no
+// fallthrough delegation needed, type switches cannot contain one).
+func typeSwitchShape(x Named) string {
+	switch x.(type) {
+	case Cat:
+		return "meow"
+	case Dog:
+		return "woof"
+	default:
+		return "other"
+	}
+}
+
+// Shape 5: condition-less `for {}` containing no break that targets it —
+// the only way out is the `return` inside.
+func forShape() int {
+	i := 0
+	for {
+		i++
+		if i == 3 {
+			return i
+		}
+	}
+}
+
+// Shape 6: a LABELED condition-less `for {}` (exercises "labeled statement
+// wrapping a terminating statement" together with the for-loop's own "no
+// break that targets it" rule). The inner labeled loop's `break Inner`
+// targets only the inner loop — it must NOT be mistaken for a break
+// targeting Outer. Outer only ever exits via the `return` below.
+func forLabeledShape() int {
+	count := 0
+Outer:
+	for {
+	Inner:
+		for j := 0; j < 5; j++ {
+			if j == 2 {
+				break Inner
+			}
+			count++
+		}
+		count++
+		if count > 4 {
+			return count
+		}
+	}
+}
+
+// Shape 7: a labeled statement wrapping a terminating statement directly
+// (no loop involved) — the minimal case of that rule.
+func labeledReturnShape(x int) int {
+Done:
+	return x * 2
+}
+
+// Shape 8: `goto` is itself a terminating statement. The `if` above it has
+// no `else`, so it does NOT terminate on its own — the block only
+// terminates because the `goto` (not the trailing labeled return) is a
+// statement in its own right that always transfers control.
+func gotoShape(x int) int {
+	if x >= 0 {
+		return x
+	}
+	goto Negative
+Negative:
+	return -x
+}
+
+// Shape 9: `arena { ... }` block whose final statement terminates,
+// delegating like a plain block (Goo-only).
+func arenaShape() int {
+	arena {
+		v := new(int)
+		*v = 55
+		return *v
+	}
+}
+
+// Shape 10: a plain nested `{ ... }` block (not attached to if/for/switch)
+// whose final statement terminates.
+func plainBlockShape() int {
+	x := 1
+	{
+		x = x + 41
+		return x
+	}
+}
+
+// Shape 11: a call to the `panic` builtin counts as terminating — the
+// non-panic branch is the only one actually exercised at runtime.
+func panicShape(x int) int {
+	if x < 0 {
+		panic("negative")
+	} else {
+		return x * 3
+	}
+}
+
+// Shape 12: select statement (Go rule — no break referring to it, every
+// case including default ends in a terminating statement). The channel is
+// left empty so the non-blocking `default` case always fires.
+func selectShape(ch chan int) int {
+	select {
+	case v := <-ch:
+		return v
+	default:
+		return -1
+	}
+}
+
+// Shape 13: a func literal is checked for missing-return independently of
+// its enclosing function — this literal's own if/else both terminate.
+func funcLitShape(x int) int {
+	f := func(y int) int {
+		if y > 0 {
+			return y * 10
+		} else {
+			return -y
+		}
+	}
+	return f(x)
+}
+
+func main() {
+	fmt.Println(ifElseShape(5))   // 5 > 0 -> 1
+	fmt.Println(ifElseShape(-2))  // -2 <= 0 -> -1
+
+	var p1 ?int = 42
+	var p2 ?int = nil
+	fmt.Println(ifLetShape(p1))   // unwraps to 42
+	fmt.Println(ifLetShape(p2))   // nil -> -1
+
+	fmt.Println(switchShape(1))   // case 1 falls through to case 2 -> "one-or-two"
+	fmt.Println(switchShape(2))   // case 2 directly -> "one-or-two"
+	fmt.Println(switchShape(9))   // no match -> default "other"
+
+	fmt.Println(typeSwitchShape(Cat{}))  // "meow"
+	fmt.Println(typeSwitchShape(Dog{}))  // "woof"
+	fmt.Println(typeSwitchShape(Fish{})) // no matching case -> default "other"
+
+	fmt.Println(forShape()) // i counts 1,2,3 -> returns 3
+
+	fmt.Println(forLabeledShape()) // two Outer iterations of +3 each -> 6
+
+	fmt.Println(labeledReturnShape(10)) // 10 * 2 = 20
+
+	fmt.Println(gotoShape(-7)) // x < 0 -> goto Negative -> -(-7) = 7
+	fmt.Println(gotoShape(4))  // x >= 0 -> returns 4 directly
+
+	fmt.Println(arenaShape()) // 55
+
+	fmt.Println(plainBlockShape()) // 1 + 41 = 42
+
+	fmt.Println(panicShape(5)) // 5 >= 0 -> 5 * 3 = 15 (panic branch untaken)
+
+	ch := make(chan int, 1)
+	fmt.Println(selectShape(ch)) // empty channel -> default -> -1
+
+	fmt.Println(funcLitShape(3))  // 3 > 0 -> 3 * 10 = 30
+	fmt.Println(funcLitShape(-4)) // -4 <= 0 -> -(-4) = 4
+}

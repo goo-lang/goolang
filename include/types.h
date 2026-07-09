@@ -972,6 +972,16 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt);
 // Type assertions branch, Task 3: `switch [v :=] x.(type) { case … }`.
 int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt);
 
+// P2.4 (missing-return analysis): the Go-spec terminating-statement
+// predicate, extended for Goo (if-let, arena{}, type-switch as a distinct
+// node) — see src/types/terminating_stmt.c for the full binding-spec
+// citation and implementation. Exposed here (not static) because both
+// type_check_function_decl (type_checker.c) and type_check_func_lit
+// (expression_checker.c) need it on their own body, from their own
+// translation unit — the same cross-file-helper shape as
+// type_check_collect_goto_labels just above.
+int stmt_is_terminating(ASTNode* body);
+
 // Helper functions
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node);
 

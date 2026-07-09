@@ -285,6 +285,17 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
         ok = type_check_statement(checker, lit->body);
     }
 
+    // P2.4: missing-return analysis — same rule and rationale as
+    // type_check_function_decl's identical check (type_checker.c), applied
+    // to a func literal's own declared return type/body instead of an
+    // enclosing named function's.
+    if (ok && lit->body && return_type && return_type->kind != TYPE_VOID) {
+        if (!stmt_is_terminating(lit->body)) {
+            type_error(checker, lit->body->pos, "missing return");
+            ok = 0;
+        }
+    }
+
     checker->fallthrough_ctx = saved_fallthrough_ctx;
     tc_fctx_restore(&checker->tc_fctx, &saved_tcfctx);
     checker->current_return_type = saved_return_type;

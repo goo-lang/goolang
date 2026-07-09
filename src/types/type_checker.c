@@ -1384,6 +1384,25 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         result = type_check_statement(checker, func->body);
     }
 
+    // P2.4: missing-return analysis. Only a value-returning function needs
+    // its body to end in a terminating statement (Go: a void function may
+    // always fall off the end) — checked only once the body itself passed
+    // ordinary type-checking, so a genuine type error inside the body is
+    // reported instead of being masked by this diagnostic. Positioned at
+    // func->body's own pos, which get_current_position() (parser_actions.c)
+    // stamps at the `LBRACE statement_list RBRACE` reduction — i.e. at (or
+    // immediately after) the function's closing brace. This makes codegen's
+    // ret-zero fallback (function_codegen.c, "Add return if missing")
+    // unreachable for well-typed user code — that fallback itself is
+    // intentionally left in place (load-bearing for the terminator-blind
+    // LLVM plumbing), not removed by this task.
+    if (result && func->body && return_type && return_type->kind != TYPE_VOID) {
+        if (!stmt_is_terminating(func->body)) {
+            type_error(checker, func->body->pos, "missing return");
+            result = 0;
+        }
+    }
+
     checker->fallthrough_ctx = saved_fallthrough_ctx;
     tc_fctx_restore(&checker->tc_fctx, &saved_tcfctx);
     checker->current_return_type = saved_return_type;

@@ -1,0 +1,17 @@
+// P2.4 reject: an expression switch with no default clause cannot be proven
+// to cover every value of x, so a value-returning function ending in one
+// still needs a return after it. Go: "missing return at end of function".
+package main
+
+func classify(x int) string {
+	switch x {
+	case 1:
+		return "one"
+	case 2:
+		return "two"
+	}
+}
+
+func main() {
+	println(classify(1))
+}
