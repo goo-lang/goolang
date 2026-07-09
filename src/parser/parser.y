@@ -3699,15 +3699,7 @@ wasm_value_type:
 
 %%
 
-// Error reporting function
-void yyerror(const char* msg) {
-    if (current_lexer) {
-        fprintf(stderr, "Parse error at %s:%d:%d: %s\n",
-                current_lexer->filename ? current_lexer->filename : "<stdin>",
-                current_lexer->pos.line,
-                current_lexer->pos.column,
-                msg);
-    } else {
-        fprintf(stderr, "Parse error: %s\n", msg);
-    }
-}
+// yyerror's definition now lives in src/parser/parser_errors.c (see
+// include/parser/parser_errors.h for its declaration); the `extern void
+// yyerror(const char* msg);` in this file's prologue is what parser.tab.c's
+// generated yyparse() links against.

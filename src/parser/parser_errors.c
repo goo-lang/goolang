@@ -1,7 +1,14 @@
 #include "parser/parser_errors.h"
+#include "lexer.h"
 #include "token.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Defined in src/parser/lexer_bridge.c; each consumer translation unit
+// declares its own extern (see parser.y's own declaration, which
+// parser.tab.c's generated code uses).
+extern Lexer* current_lexer;
 
 // Global parser error state
 ParserErrorState* g_parser_error_state = NULL;
@@ -225,5 +232,21 @@ const char* token_type_to_string(int token_type) {
         case TOKEN_FUNC:          return "'func'";
         case TOKEN_EOF:           return "end of file";
         default:                  return "unknown token";
+    }
+}
+
+// Bison-invoked error hook (declared in include/parser.h and, for
+// parser.y's own translation unit, re-declared extern in its prologue).
+// Formerly defined in parser.y's epilogue; moved here as its natural home
+// alongside the rest of the parser's error-handling machinery.
+void yyerror(const char* msg) {
+    if (current_lexer) {
+        fprintf(stderr, "Parse error at %s:%d:%d: %s\n",
+                current_lexer->filename ? current_lexer->filename : "<stdin>",
+                current_lexer->pos.line,
+                current_lexer->pos.column,
+                msg);
+    } else {
+        fprintf(stderr, "Parse error: %s\n", msg);
     }
 }

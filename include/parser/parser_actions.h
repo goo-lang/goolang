@@ -4,13 +4,14 @@
 // Semantic-action helpers and parser-owned globals for parser.y.
 //
 // This header is the C-extraction counterpart of parser.y's former
-// prologue/epilogue: every function bison's grammar actions call that isn't
-// yyerror itself (kept in parser.y — bison's %define api.* and yyparse's own
-// error path expect it colocated with the grammar) lives in
-// src/parser/parser_actions.c and is declared here. parser.y's prologue
-// includes this header instead of forward-declaring/defining these directly;
-// parser.tab.c (generated from parser.y) therefore links against
-// parser_actions.o for all of it.
+// prologue/epilogue: every function bison's grammar actions call — except
+// yyerror, which lives in src/parser/parser_errors.c alongside the rest of
+// the parser's error-handling machinery (see
+// include/parser/parser_errors.h) — lives in src/parser/parser_actions.c and
+// is declared here. parser.y's prologue includes this header instead of
+// forward-declaring/defining these directly; parser.tab.c (generated from
+// parser.y) therefore links against parser_actions.o and parser_errors.o for
+// all of it.
 //
 // None of this is external API — it exists so parser.tab.c and
 // parser_actions.c can see the same declarations, not for callers outside

@@ -1,6 +1,7 @@
 // Semantic-action helpers for parser.y's grammar rules, extracted from the
 // generated parser.tab.c's former epilogue (everything after the second %%
-// except yyerror, which stays colocated with the grammar in parser.y). See
+// except yyerror, which now lives in src/parser/parser_errors.c alongside
+// the rest of the parser's error-handling machinery). See
 // include/parser/parser_actions.h for the rationale and the declarations
 // parser.tab.c links against.
 //
