@@ -118,6 +118,14 @@ everywhere (workarounds §5; the migrated reject fixture pins it).
 - Grammar-conflict family cleanup (P5.10) — the ledger record documents, not shrinks,
   the baseline.
 
+## Known scope cuts (deferred, pre-existing on main)
+
+Verified against a fresh `main` build (identical pass/fail, not introduced by this
+branch): multi-name specs inside a `var (...)` group (`var (\n x, y int\n)`) and the
+empty group `var ()` are valid Go but are parse errors here. (Plain, ungrouped
+`var x, y int` without an initializer already works.) Deferred to the multi-name-
+declaration work item.
+
 ## Testing
 
 - TDD per task: RED = the roadmap's exact reproducer rejected/misparsed at base

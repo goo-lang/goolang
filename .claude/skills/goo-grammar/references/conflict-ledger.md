@@ -220,12 +220,12 @@ below).
   requirement holds exactly, not just "still compiles."
 - New forms all compile and run correctly: `switch x := 2; x { case 2: … }` (plain
   init); `switch a, b := 1, 2; a { … }` (tuple short-decl init, the shift side of
-  Conflict 1); `switch a, b = 1, 2; a { … }` (tuple assignment init, the reduce side —
-  LALR's single-token lookahead resolves this correctly at runtime despite the static
-  shift/reduce conflict, because the conflict only delays the decision, it doesn't
-  commit to one production; confirmed both forms parse identically whether reached via
-  IF-init or SWITCH-init); `switch v := f(); w := v.(type) { case int: … }` (the
-  spec's explicit acceptance criterion for type-switch-with-init, spec line 42).
+  Conflict 1); `switch a, b = 1, 2; a { … }` (tuple assignment init, ALSO the shift
+  side of Conflict 1 — rules 138-139 handle this identifier-prefixed assignment arm
+  directly, same mechanism as the short-decl form; confirmed both forms parse
+  identically whether reached via IF-init or SWITCH-init); `switch v := f(); w :=
+  v.(type) { case int: … }` (the spec's explicit acceptance criterion for
+  type-switch-with-init, spec line 41).
 - Init-var scoping verified end-to-end: visible in every case including `default`
   (`switch x := 9; x { default: fmt.Println(x) }` prints `9`); NOT visible after the
   switch (`switch x := 1; x { … }; fmt.Println(x)` rejects with `Type error …
