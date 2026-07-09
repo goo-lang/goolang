@@ -595,6 +595,22 @@ struct TypeChecker {
     // know which concrete value-specializations of each comptime-param
     // function to emit; torn down in type_checker_free.
     ComptimeInstantiation* comptime_instantiations;
+
+    // gofmt-syntax-b Task 1 (P1.5): per-function flat label registry. Labels
+    // are FUNCTION-scoped in Go (not block/lexical-scoped — the same name
+    // used in two disjoint sibling blocks of one function is still a
+    // duplicate), so a flat array reset at function entry (and around each
+    // func-literal body, which gets its own independent label namespace) is
+    // the right shape, not a stack. Fixed-size like active_type_params above
+    // (source-bounded, not runtime data). type_check_statement's
+    // AST_LABEL_STMT case appends here (positioned duplicate-label error on
+    // a name already present); labeled break/continue's "does this label
+    // exist and enclose me" check is a CODEGEN-time concern (mirrors the
+    // existing unlabeled break/continue, which is likewise unchecked at
+    // typecheck time — see type_check_statement's AST_BREAK_STMT case).
+    char* label_names[64];
+    Position label_positions[64];
+    size_t label_count;
 };
 
 // Type creation functions

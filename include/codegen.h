@@ -244,6 +244,25 @@ struct CodeGenerator {
     // ordinary (non-comptime) function's codegen.
     const int64_t* active_comptime_values;
     size_t active_comptime_value_n;
+
+    // gofmt-syntax-b Task 1 (P1.5): labeled break/continue. Parallel arrays
+    // to loop_break_bb/loop_continue_bb above, indexed in lockstep with
+    // loop_depth (same fixed-32 bound) — loop_label[i] is the label name (or
+    // NULL) attached to the i-th pushed frame, loop_is_loop[i] is 1 for a
+    // real loop frame (pushed by codegen_push_loop) and 0 for a break-only
+    // switch/select/type-switch frame (codegen_push_break_scope): `continue
+    // LABEL` must only match a loop_is_loop==1 frame (Go: continue targets a
+    // FOR, never a switch/select), while `break LABEL` matches either kind.
+    // pending_label is set by AST_LABEL_STMT (statement_codegen.c) just
+    // before dispatching its wrapped statement, and consumed (cleared) by
+    // the very next codegen_push_loop/codegen_push_break_scope call — so it
+    // only ever tags the ONE frame the label directly wraps. NULL (the
+    // default; codegen_new zeroes it explicitly since the struct is
+    // malloc'd, not calloc'd) means "no pending label", which is the state
+    // for every unlabeled for/switch/select/type-switch.
+    const char* loop_label[32];
+    int loop_is_loop[32];
+    const char* pending_label;
 };
 
 // Function information for code generation

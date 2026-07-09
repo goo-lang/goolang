@@ -92,6 +92,12 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // Loop-context stack (break/continue targets) starts empty.
     codegen->loop_depth = 0;
 
+    // gofmt-syntax-b Task 1: no label pending a push yet. loop_label/
+    // loop_is_loop need no init — every slot < loop_depth is written before
+    // it is ever read (set at push time, same convention as
+    // loop_break_bb/loop_continue_bb above, which also start uninitialized).
+    codegen->pending_label = NULL;
+
     // Arena-regions Task 3: arena stack starts empty — codegen_emit_alloc
     // stays on the goo_alloc path until Task 6's `arena{}` lowering pushes.
     codegen->arena_depth = 0;

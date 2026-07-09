@@ -219,6 +219,13 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     Type* saved_return_type = checker->current_return_type;
     checker->current_return_type = return_type;
 
+    // gofmt-syntax-b Task 1: a func literal gets its own label namespace,
+    // same rationale as type_check_function_decl's save/restore (types.h's
+    // TypeChecker.label_count doc comment) — a label inside the closure must
+    // not collide with (or be visible to) the enclosing function's labels.
+    size_t saved_label_count = checker->label_count;
+    checker->label_count = 0;
+
     if (lit->params) {
         for (ASTNode* p = lit->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
@@ -249,6 +256,7 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
         ok = type_check_statement(checker, lit->body);
     }
 
+    checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;
     checker->literal_stack_len = lit_stack_slot;
     scope_pop(checker);

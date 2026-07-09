@@ -1,0 +1,11 @@
+// P1.5 reject: `break nope` where `nope` is not an enclosing label (no
+// label with that name wraps this break at all). Codegen walks the
+// break-scope stack top-down and, finding no match, must emit a clean
+// positioned error rather than crash or silently no-op.
+package main
+
+func main() {
+	for i := 0; i < 3; i++ {
+		break nope
+	}
+}

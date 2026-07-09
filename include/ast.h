@@ -176,6 +176,20 @@ typedef enum {
     // deps). Mirrors AST_UNSAFE_STMT's shape (a wrapped body block).
     AST_ARENA_BLOCK,
 
+    // gofmt-syntax-b Task 1 (P1.5): labeled statements + `break label` /
+    // `continue label`. Three DISTINCT node types — AST_BREAK_LABEL_STMT and
+    // AST_CONTINUE_LABEL_STMT are NOT the existing bare AST_BREAK_STMT/
+    // AST_CONTINUE_STMT with a label field bolted on: every bare-break/
+    // continue alloc site builds a plain ASTNode (ast_node_new), so casting
+    // one of those to a derived struct with a trailing `char* label` would
+    // be an out-of-bounds read on every existing call site (the same
+    // ast_node_copy failure class documented in the skill's memory notes).
+    // Tail-appended per the M10 convention above (Makefile has no header
+    // deps).
+    AST_LABEL_STMT,          // `L: stmt`
+    AST_BREAK_LABEL_STMT,    // `break L`
+    AST_CONTINUE_LABEL_STMT, // `continue L`
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -1260,6 +1274,31 @@ typedef struct {
     struct ASTNode* body;    // Statement list for this clause
 } TypeCaseNode;
 
+// gofmt-syntax-b Task 1 (P1.5): `name: stmt`. `stmt` may be any statement;
+// when it is a for/switch/select/type-switch, codegen tags that construct's
+// pushed break-scope frame with `name` (via CodeGenerator.pending_label) so
+// a labeled break/continue elsewhere in the function can target it
+// specifically. A label on any OTHER statement is legal Go (a goto target,
+// not wired until Task 2) — codegen just emits `stmt` normally.
+typedef struct {
+    ASTNode base;
+    char* name;
+    struct ASTNode* stmt;
+} LabelStmtNode;
+
+// `break label` — see AST_BREAK_LABEL_STMT's enum-site comment for why this
+// is a separate node type from the bare AST_BREAK_STMT, not a shared struct.
+typedef struct {
+    ASTNode base;
+    char* label;
+} BreakLabelStmtNode;
+
+// `continue label` — sibling of BreakLabelStmtNode above.
+typedef struct {
+    ASTNode base;
+    char* label;
+} ContinueLabelStmtNode;
+
 // =============================================================================
 // Function declarations for AST manipulation
 // =============================================================================
@@ -1317,6 +1356,12 @@ DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos);
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
 ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos);
+// gofmt-syntax-b Task 1 (P1.5): label statement + labeled break/continue
+// constructors. `name`/`label` are copied (str_dup'd internally); callers
+// keep ownership of their own copy.
+LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos);
+BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos);
+ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);

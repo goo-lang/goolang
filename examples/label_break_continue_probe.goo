@@ -1,0 +1,43 @@
+// label_break_continue_probe (P1.5): labeled statements + `break label` /
+// `continue label`. Nested loops where `continue outer` skips straight to
+// the outer loop's next iteration (bypassing the inner loop entirely) and
+// `break outer` exits both loops at once — neither is expressible with
+// bare (unlabeled) break/continue, which only ever affect the innermost
+// loop.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the
+// VALUE below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func main() {
+//   outer:
+//   	for i := 0; i < 3; i++ {
+//   		for j := 0; j < 3; j++ {
+//   			if j == 1 {
+//   				continue outer
+//   			}
+//   			if i == 2 {
+//   				break outer
+//   			}
+//   			println(i, j)
+//   		}
+//   	}
+//   }
+// `go run` stderr: "0 0\n1 0\n"
+package main
+
+func main() {
+outer:
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			if j == 1 {
+				continue outer
+			}
+			if i == 2 {
+				break outer
+			}
+			println(i, j)
+		}
+	}
+}

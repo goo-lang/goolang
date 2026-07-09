@@ -32,7 +32,10 @@ static const char* ast_node_type_strings[] = {
     [AST_UNSAFE_STMT] = "UnsafeStmt",
     [AST_ASM_STMT] = "AsmStmt",
     [AST_ARENA_BLOCK] = "ArenaBlock",
-    
+    [AST_LABEL_STMT] = "LabelStmt",
+    [AST_BREAK_LABEL_STMT] = "BreakLabelStmt",
+    [AST_CONTINUE_LABEL_STMT] = "ContinueLabelStmt",
+
     [AST_IDENTIFIER] = "Identifier",
     [AST_LITERAL] = "Literal",
     [AST_BINARY_EXPR] = "BinaryExpr",
@@ -289,6 +292,22 @@ void ast_node_free(ASTNode* node) {
         case AST_ARENA_BLOCK: {
             ArenaBlockNode* arena_blk = (ArenaBlockNode*)node;
             ast_node_free(arena_blk->body);
+            break;
+        }
+        case AST_LABEL_STMT: {
+            LabelStmtNode* label = (LabelStmtNode*)node;
+            free(label->name);
+            ast_node_free(label->stmt);
+            break;
+        }
+        case AST_BREAK_LABEL_STMT: {
+            BreakLabelStmtNode* brk = (BreakLabelStmtNode*)node;
+            free(brk->label);
+            break;
+        }
+        case AST_CONTINUE_LABEL_STMT: {
+            ContinueLabelStmtNode* cont = (ContinueLabelStmtNode*)node;
+            free(cont->label);
             break;
         }
         case AST_ASM_STMT: {

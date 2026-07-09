@@ -1,0 +1,40 @@
+// label_switch_probe (P1.5 behavioral probe): `L: switch x { ... }` — a
+// label directly wrapping a switch statement, with `break L` inside a case
+// body. Proves the label grammar arm doesn't disturb the switch_stmt's own
+// M10 LBRACE_BODY handling, and that codegen's pending-label handoff tags
+// the switch's break-scope frame (codegen_push_break_scope), not the
+// enclosing (nonexistent, here) loop frame — `break L` must terminate the
+// switch, matching plain `break`'s existing switch semantics.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the
+// VALUE below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func main() {
+//   	x := 2
+//   L:
+//   	switch x {
+//   	case 1:
+//   		println(1)
+//   	case 2:
+//   		println(2)
+//   		break L
+//   	}
+//   	println(3)
+//   }
+// `go run` stderr: "2\n3\n"
+package main
+
+func main() {
+	x := 2
+L:
+	switch x {
+	case 1:
+		println(1)
+	case 2:
+		println(2)
+		break L
+	}
+	println(3)
+}

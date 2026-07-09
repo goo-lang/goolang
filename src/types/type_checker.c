@@ -49,6 +49,10 @@ TypeChecker* type_checker_new(void) {
     // Comptime value params Task 3: no recorded comptime-call instantiations yet.
     checker->comptime_instantiations = NULL;
 
+    // gofmt-syntax-b Task 1: no labels registered yet (per-function reset
+    // happens in type_check_function_decl / type_check_func_lit).
+    checker->label_count = 0;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -1190,12 +1194,22 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         }
     }
 
+    // gofmt-syntax-b Task 1: labels are function-scoped — start this
+    // function's body with an empty registry (save/restore, not a bare
+    // reset, so a func-literal body-check nested INSIDE another function's
+    // body-check — reachable only via mutual recursion through the AST, not
+    // in practice today, but symmetric with current_return_type's own
+    // save/restore just above) can never leak into or out of this function.
+    size_t saved_label_count = checker->label_count;
+    checker->label_count = 0;
+
     // Type check function body
     int result = 1;
     if (func->body) {
         result = type_check_statement(checker, func->body);
     }
 
+    checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;
     scope_pop(checker);
     type_checker_pop_type_params(checker, saved_tp);
@@ -2179,7 +2193,37 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_return_stmt(checker, stmt);
         case AST_BREAK_STMT:
         case AST_CONTINUE_STMT:
-            return 1;  // Always valid
+            return 1;  // Always valid; loop-nesting is a codegen-time check
+        case AST_BREAK_LABEL_STMT:
+        case AST_CONTINUE_LABEL_STMT:
+            // Whether the label exists AND encloses this break/continue is a
+            // codegen-time check (stack walk over the pushed loop/break-scope
+            // frames) — mirrors the bare-break/continue precedent directly
+            // above, which likewise defers "outside loop" to codegen.
+            return 1;
+        case AST_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: labels are function-scoped, so the SAME
+            // name used twice anywhere in one function is a duplicate even
+            // across unrelated sibling blocks (not merely shadowing, which
+            // Go doesn't apply to labels at all).
+            LabelStmtNode* label = (LabelStmtNode*)stmt;
+            for (size_t i = 0; i < checker->label_count; i++) {
+                if (checker->label_names[i] && label->name &&
+                    strcmp(checker->label_names[i], label->name) == 0) {
+                    type_error(checker, stmt->pos, "duplicate label '%s'", label->name);
+                    return 0;
+                }
+            }
+            if (checker->label_count < 64) {
+                checker->label_names[checker->label_count] = label->name;
+                checker->label_positions[checker->label_count] = stmt->pos;
+                checker->label_count++;
+            } else {
+                type_error(checker, stmt->pos, "too many labels in one function (max 64)");
+                return 0;
+            }
+            return label->stmt ? type_check_statement(checker, label->stmt) : 1;
+        }
         case AST_GO_STMT:
             return type_check_go_stmt(checker, stmt);
         case AST_DEFER_STMT:

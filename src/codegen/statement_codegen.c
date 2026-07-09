@@ -24,6 +24,14 @@ static int codegen_push_loop(CodeGenerator* cg, LLVMBasicBlockRef brk, LLVMBasic
     if (cg->loop_depth >= 32) return 0;       // too deep — caller emits codegen_error
     cg->loop_break_bb[cg->loop_depth] = brk;
     cg->loop_continue_bb[cg->loop_depth] = cont;
+    // gofmt-syntax-b Task 1: consume any label an immediately-enclosing
+    // AST_LABEL_STMT set for THIS push (see pending_label's doc comment,
+    // codegen.h) — cleared here so it can't leak onto a LATER, unrelated
+    // push (e.g. a second loop that follows the labeled one as a sibling
+    // statement).
+    cg->loop_label[cg->loop_depth] = cg->pending_label;
+    cg->loop_is_loop[cg->loop_depth] = 1;
+    cg->pending_label = NULL;
     cg->loop_depth++;
     return 1;
 }
@@ -46,6 +54,12 @@ static int codegen_push_break_scope(CodeGenerator* cg, LLVMBasicBlockRef brk) {
         cg->loop_depth > 0 ? cg->loop_continue_bb[cg->loop_depth - 1] : NULL;
     cg->loop_break_bb[cg->loop_depth] = brk;
     cg->loop_continue_bb[cg->loop_depth] = inherited_continue;
+    // gofmt-syntax-b Task 1: same pending-label handoff as codegen_push_loop
+    // above, but loop_is_loop is 0 — a switch/select/type-switch frame, so
+    // `continue LABEL` must skip over it (Go: continue only targets a FOR).
+    cg->loop_label[cg->loop_depth] = cg->pending_label;
+    cg->loop_is_loop[cg->loop_depth] = 0;
+    cg->pending_label = NULL;
     cg->loop_depth++;
     return 1;
 }
@@ -364,6 +378,21 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             value_info_free(nv);
             return then_ok && else_ok;
         }
+        case AST_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: `L: stmt`. Stash the name in
+            // pending_label so a wrapped for/switch/select/type-switch's OWN
+            // push (codegen_push_loop/codegen_push_break_scope) tags its
+            // frame with it; then generate the wrapped statement normally.
+            // Any OTHER statement shape (not itself a construct that
+            // pushes) just leaves pending_label unconsumed — cleared
+            // unconditionally below so it can never leak onto some later,
+            // unrelated sibling statement's push.
+            LabelStmtNode* label = (LabelStmtNode*)stmt;
+            codegen->pending_label = label->name;
+            int ok = label->stmt ? codegen_generate_statement(codegen, checker, label->stmt) : 1;
+            codegen->pending_label = NULL;
+            return ok;
+        }
         case AST_FOR_STMT:
             return codegen_generate_for_stmt(codegen, checker, stmt);
         case AST_RETURN_STMT:
@@ -408,6 +437,58 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[codegen->loop_depth - 1]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
+        case AST_BREAK_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: `break L` — walk the break-scope stack
+            // top-down (innermost first, matching Go's "nearest enclosing
+            // labeled statement" rule) for a frame tagged with L. Unlike
+            // bare `break`, a labeled break may match ANY frame kind (loop
+            // OR switch/select/type-switch) at ANY depth, not just the
+            // innermost.
+            BreakLabelStmtNode* bl = (BreakLabelStmtNode*)stmt;
+            int target = -1;
+            for (int i = codegen->loop_depth - 1; i >= 0; i--) {
+                if (codegen->loop_label[i] && bl->label &&
+                    strcmp(codegen->loop_label[i], bl->label) == 0) {
+                    target = i;
+                    break;
+                }
+            }
+            if (target < 0) {
+                codegen_error(codegen, stmt->pos, "label '%s' not defined or not enclosing", bl->label);
+                return 0;
+            }
+            // Free every arena pushed at or inside the target frame — same
+            // formula as bare `break` (which passes loop_depth, i.e. the
+            // target-plus-one for the innermost frame); generalized to
+            // target+1 for an arbitrary enclosing frame.
+            codegen_emit_arena_frees(codegen, target + 1);
+            LLVMBuildBr(codegen->builder, codegen->loop_break_bb[target]);
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
+            return 1;
+        }
+        case AST_CONTINUE_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: `continue L` — same stack walk as
+            // `break L`, but restricted to loop_is_loop==1 frames: Go only
+            // lets `continue` target an enclosing FOR, never a switch/
+            // select even if that construct happens to carry the label.
+            ContinueLabelStmtNode* cl = (ContinueLabelStmtNode*)stmt;
+            int target = -1;
+            for (int i = codegen->loop_depth - 1; i >= 0; i--) {
+                if (codegen->loop_is_loop[i] && codegen->loop_label[i] && cl->label &&
+                    strcmp(codegen->loop_label[i], cl->label) == 0) {
+                    target = i;
+                    break;
+                }
+            }
+            if (target < 0) {
+                codegen_error(codegen, stmt->pos, "label '%s' not defined or not enclosing", cl->label);
+                return 0;
+            }
+            codegen_emit_arena_frees(codegen, target + 1);
+            LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[target]);
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
+            return 1;
+        }
         case AST_COMPTIME_BLOCK: {
             // M11-block-dispatch: `comptime { ... }` blocks produce no
             // runtime code in the MVP scope. The type checker already

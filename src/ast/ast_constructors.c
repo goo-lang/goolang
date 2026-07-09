@@ -507,6 +507,41 @@ ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos) {
     return node;
 }
 
+// gofmt-syntax-b Task 1 (P1.5): label statement + labeled break/continue.
+LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos) {
+    LabelStmtNode* node = (LabelStmtNode*)malloc(sizeof(LabelStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_LABEL_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->name = str_dup(name);
+    node->stmt = stmt;
+    return node;
+}
+
+BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos) {
+    BreakLabelStmtNode* node = (BreakLabelStmtNode*)malloc(sizeof(BreakLabelStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_BREAK_LABEL_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->label = str_dup(label);
+    return node;
+}
+
+ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position pos) {
+    ContinueLabelStmtNode* node = (ContinueLabelStmtNode*)malloc(sizeof(ContinueLabelStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_CONTINUE_LABEL_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->label = str_dup(label);
+    return node;
+}
+
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos) {
     AsmStmtNode* node = (AsmStmtNode*)malloc(sizeof(AsmStmtNode));
     if (!node) return NULL;

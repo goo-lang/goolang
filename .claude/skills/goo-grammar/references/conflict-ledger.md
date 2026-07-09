@@ -1,10 +1,11 @@
 # Bison conflict ledger
 
-Baseline: **84 shift/reduce + 256 reduce/reduce** — verified 2026-07-08 on
+Baseline: **88 shift/reduce + 256 reduce/reduce** — verified 2026-07-09 on
+`feat/go-syntax-grammar-b` (gofmt-syntax sub-project B, Task 1, labels + labeled
+break/continue). Previous baseline 84/256 verified 2026-07-08 on
 `feat/go-syntax-grammar-a` (gofmt-syntax sub-project A, Task 2, switch-with-init).
-Previous baseline 82/256 verified 2026-07-04 on `feat/type-assertions` (Task 3, type
-switch). The tripwire (`scripts/grammar-tripwire.sh`) asserts these numbers exactly;
-treat any delta as a stop-the-line event, not noise.
+The tripwire (`scripts/grammar-tripwire.sh`) asserts these numbers exactly; treat
+any delta as a stop-the-line event, not noise.
 
 ## Baseline history (every change was justified in its PR, never absorbed silently)
 
@@ -18,6 +19,7 @@ treat any delta as a stop-the-line event, not noise.
 | #111 (stdlib unblockers) | zero delta | three grammar-touching tasks (trailing commas, slice-conversion arm, spread arm), 0 new conflicts |
 | type-assertions Task 3 (type switch) | 81 → **82** S/R (+1) | **Corrected 2026-07-04** (the original row below was factually wrong — see "Corrected justification"). The new `type_switch_guard` nonterminal is reachable from switch_stmt's `SWITCH type_switch_guard LBRACE_BODY type_case_list RBRACE` arm — the LIVE arm every real type switch takes, NOT the plain-LBRACE fallback. Reaching `type_switch_guard` means `primary_expr`'s existing `struct_lit: identifier LBRACE …` alternative is now reachable from a new position (right after `SWITCH identifier`), which collides with the plain switch's OWN pre-existing fallback arm (`SWITCH expression LBRACE case_clause_list RBRACE`, already in baseline before Task 3) reducing the same bare `identifier` as a complete tag on the same LBRACE lookahead. Verified empirically NOT isolated to the plain-LBRACE type-switch fallback arm: removing EITHER type-switch arm alone (keeping the other) leaves the count at 82; only removing `type_switch_guard`'s reachability entirely (both arms) restores 81. Separately, the specific ambiguous token sequence (`identifier` directly followed by plain `LBRACE` in tag/guard position) is proven lexically unreachable for either switch form — the M10 bridge unconditionally converts the first depth-0 `{` after SWITCH to LBRACE_BODY (lexer_bridge.c:235-246), so a bare unparenthesized struct literal as a switch tag/guard operand is a parse error (verified with compiled probes), not a silent misparse; parenthesizing it works. See "Corrected justification" below. |
 | gofmt-syntax-a Task 2 (switch-with-init) | 82 → **84** S/R (+2) | `switch_stmt` gained four init arms mirroring IF's init pattern (parser.y:1552-1591): two for plain `SWITCH simple_stmt SEMICOLON expression LBRACE[_BODY] case_clause_list RBRACE`, two for type-switch `SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE[_BODY] type_case_list RBRACE` (reusing `type_switch_guard` unmodified — no new type-switch surface). Both new conflicts are the SAME already-documented families reappearing at new reachable LALR positions, not new ambiguity classes — see "Justification: gofmt-syntax-a Task 2" below. R/R count unchanged (256), confirming no new reduce/reduce ambiguity was introduced. |
+| gofmt-syntax-b Task 1 (labels + labeled break/continue) | 84 → **88** S/R (+4) | Two independent, isolated-and-recombined +2 deltas: `BREAK identifier`/`CONTINUE identifier` (+2, states 411/412) and `identifier COLON statement` / `label_stmt` (+2, incidental growth of the pre-existing func-result-adjacent shift-wins family, NOT the label grammar's own COLON position). R/R unchanged (256). Full justification below. |
 
 ## What a justified delta looks like (the #92 precedent)
 
@@ -238,7 +240,133 @@ below).
 `EXPECTED_SR` is 84 in `scripts/grammar-tripwire.sh`, updated in the same commit as
 this ledger entry.
 
+## Justification: gofmt-syntax-b Task 1 (labels + labeled break/continue, 84 → 88 S/R)
+
+Three new grammar arms (parser.y): `statement: identifier COLON statement` (new
+`label_stmt` nonterminal, → `AST_LABEL_STMT`), `break_stmt: BREAK identifier` (→
+`AST_BREAK_LABEL_STMT`), `continue_stmt: CONTINUE identifier` (→
+`AST_CONTINUE_LABEL_STMT`).
+
+**Isolated the +4 into two independent +2s** the same way gofmt-syntax-a Task 2 did:
+built with only the `BREAK`/`CONTINUE identifier` arms first (84 → 86), then added
+`label_stmt` on top (86 → 88). R/R stayed 256 throughout both steps. Method: `bison -v
+-d` (not `-Wcounterexamples`, which times out on this grammar's size well before
+reaching either family — see "Tooling note" below) on each isolated variant, diffing
+the `.output` conflict-summary section (state → `N shift/reduce`) against the
+unmodified-baseline `.output`, matched by exact item-set fingerprint (not raw state
+number, which shifts under any insertion) to find genuinely NEW conflicted states.
+
+**Conflict family 1 (`BREAK`/`CONTINUE identifier`, +2, states 411/412 in the
+combined build):** two brand-new states, one each for `break_stmt: BREAK •` /
+`| BREAK • identifier` and the `continue_stmt` sibling. Both conflict on token
+IDENTIFIER: shift (continue toward the labeled form) vs. reduce the bare
+`break_stmt`/`continue_stmt` (valid whenever IDENTIFIER is in FOLLOW at this
+position — which it is, via `identifier`-led statements immediately following in the
+same `statement_list` with no semicolon). Bison's `.output` shows shift as the
+winning action (unbracketed) and the reduce bracketed/suppressed.
+
+**Proven lexically unreachable, not silently misparsed** — the SAME resolution
+pattern as the type-assertions Task 3 entry above, but via a different mechanism
+(lexer ASI here, LBRACE_BODY there). `src/lexer/lexer.c`'s existing "Part 1 —
+keyword terminators (unconditional)" ASI rule (lines 151-164, present before this
+task — it already covered `RETURN`/`FALLTHOUGH` for exactly this reason) inserts a
+semicolon immediately after `BREAK`/`CONTINUE` whenever a newline follows, with NO
+guard condition (unlike the value-ending-token guards elsewhere in the same
+function). This means the grammar NEVER actually sees `BREAK IDENTIFIER` back to
+back across a newline — it sees `BREAK SEMICOLON IDENTIFIER`, which is
+unambiguous (the bare-`break_stmt SEMICOLON` arm). The shift/reduce conflict is
+therefore only ever exercised when the identifier is on the SAME LINE as
+`BREAK`/`CONTINUE` (space-separated, no intervening newline) — which is exactly
+and only the intended `break L` / `continue L` syntax. This is not a Goo-specific
+workaround either: Go's own spec requires a break/continue label to be on the same
+line as the keyword, enforced by Go's OWN lexer-level ASI — so this isn't a new
+divergence from Go, it's the same rule arrived at independently.
+- Verified with compiled probes (`bin/goo`, real exit codes): `break`/`continue`
+  immediately followed (same line, no label intended) by an unrelated identifier is
+  not a shape that occurs in idiomatic code (break/continue is almost always a
+  block's last statement); grepped the full 336-fixture pre-existing corpus for a
+  bare `break`/`continue` line immediately followed by an identifier-starting
+  statement with no `;` — zero matches, so no existing code exercises this path.
+  `--emit-tokens` on a constructed probe (`break` <newline> `L := 5`, with `L` a
+  real enclosing label) confirms the lexer inserts `SEMICOLON` between `BREAK` and
+  `IDENT L`, and the compiled binary's runtime behavior (inner-loop-only break,
+  outer loop completes both iterations) confirms the BARE (unlabeled) reading was
+  taken — proving the ASI rule, not grammar luck, is what keeps this safe.
+  Same-line `break nope` (no enclosing label named `nope`) correctly takes the
+  labeled-break shift path and reports "label 'nope' not defined or not enclosing"
+  (`tests/golden/reject/break_unknown_label.goo`).
+
+**Conflict family 2 (`label_stmt`, +2, incidental — NOT at the label's own COLON
+position):** verified the `identifier • COLON statement` item itself (the one new
+state genuinely introduced by this arm, reached only from `statement:`-start
+positions, confirmed merged into the SAME single state as every other
+"start of a new statement" context) carries ZERO new conflicts — its bracket-suppressed
+set is unchanged from baseline (still exactly the pre-existing LBRACE/COMMA
+struct-lit/tuple-assignment family, family 2/3 from the gofmt-syntax-a Task 2 entry
+above). The COLON transition itself is a clean, unconditional shift with no
+competing reduce at that state. Diffing the FULL isolated (label-only) build's
+conflict-state fingerprints against baseline instead surfaced the +2 at two
+UNRELATED states: a new 1-conflict state on token FUNC (an `expression`-continuation
+vs. `wasm_memory: MEMORY expression • expression` fork, nothing to do with labels)
+and the pre-existing giant `return_stmt`-adjacent expression-continuation state
+growing from 20 to 21 conflicts. **This is the SAME mechanism as the "func-result
+shift-wins family" (family 1 in the decision record below):** inserting essentially
+ANY new grammar rule shifts LALR state-merging boundaries and can incidentally
+split or re-expose an already-latent (previously-merged-away) conflict in this
+family, independent of what the new rule actually does — #92 (+1 for BANG) and
+#106/#107 (+2 for closures) grew this exact family for equally unrelated reasons.
+Confirms via a second, independent data point: the `BREAK`/`CONTINUE identifier`-only
+isolated build (family 1, textually unrelated to `identifier`/`statement`
+reachability) shows the IDENTICAL incidental 1-conflict state on FUNC/`wasm_memory`
+and the identical 20→21 growth — i.e. this specific incidental pair is not
+`label_stmt`-specific at all; it reappears whenever the grammar gains almost any new
+rule. Not classified as a new ambiguity class; recorded as this family's fourth
+growth event.
+
+**Tooling note:** `bison -Wcounterexamples` times out (bison's internal per-state
+solver budget, ~6s) well before reaching either family in this grammar's full
+88-conflict table — the technique used for the type-assertions Task 3 and
+gofmt-syntax-a Task 2 entries above (full-run counterexamples) was not viable here.
+Used `bison -v -d` (cheap, always completes) plus a Python script diffing each
+state's item-set fingerprint (rule text with rule numbers stripped, order-normalized)
+between isolated-variant and baseline `.output` files instead — state NUMBERS are
+not stable across insertions (renumber under any grammar edit), but item-set
+CONTENT is, making it the correct join key for "is this state genuinely new."
+
+**Behavioral verification (compiled probes, `bin/goo`, real exit codes):**
+- Full golden suite: 340 passed, 0 failed (up from 336; +4 new: `label_break_continue_probe`,
+  `label_for_probe`, `label_switch_probe`, `label_composite_probe`). `make test`: 76
+  passed / 1 skipped — unchanged. Every pre-existing fixture's expected output is
+  untouched, differentially confirming no parse-behavior change for any construct
+  this arc's corpus already exercises (including heavy `return`-statement usage,
+  which the family-2 incidental growth touches).
+- Reject suite: 16 passed, 0 failed (up from 14; +2 new: `label_dup` — duplicate
+  label in one function, function-scoped not block-scoped; `break_unknown_label` —
+  `break nope` with no enclosing `nope` label).
+- M10 bridge behavioral probes (spec's explicit risk #1, "the bridge is stateful"):
+  `L: for { … }` (bare infinite loop), `L: switch x { … }` (switch), and a label
+  wrapping a `for` whose body's first statement is a composite literal
+  (`identifier LBRACE` immediately following the label's own `identifier COLON`,
+  the closest Go-compilable approximation of "label directly adjacent to a
+  composite-literal statement" — an UNREFERENCED label on a bare non-loop statement
+  cannot be used here since Go itself rejects unused labels, and this arc's fixture
+  convention requires a `go run`-compiling equivalent) — all three compile, run, and
+  match `go run`-derived expected output byte for byte.
+
+`EXPECTED_SR` is 88 in `scripts/grammar-tripwire.sh`, updated in the same commit as
+this ledger entry.
+
 ## v1 parser strategy: LALR(1) + lexer feedback (decision record, 2026-07-08)
+
+**Superseded 2026-07-09 by gofmt-syntax-b Task 1: baseline moved 84 → 88 S/R (+4,
+justified immediately above); R/R unchanged at 256.** The family analysis below
+(three S/R families, all shift-wins, none GLR/recursive-descent-motivating) is
+otherwise unaffected — Task 1's two new deltas are the fourth growth event of family
+1 (func-result-adjacent shift-wins) and a new, independently-classified,
+lexically-unreachable family (`BREAK`/`CONTINUE identifier`, resolved the same way
+family 2 is: proven-unreachable ambiguous input, via lexer ASI instead of the
+LBRACE_BODY bridge). Nothing below changes the "stay LALR(1) + lexer feedback"
+conclusion; if anything it is the SAME decision made a fourth and fifth time.
 
 **Current baseline: 84 shift/reduce + 256 reduce/reduce**, established by gofmt-syntax-a
 Task 2 (82 → 84, justified above) and unchanged through the rest of this arc's tasks —

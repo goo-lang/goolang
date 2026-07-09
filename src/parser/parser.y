@@ -232,7 +232,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
-%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
+%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt label_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> switch_stmt case_clause_list case_clause
 %type <node> type_case_list type_case_clause type_list
@@ -1242,6 +1242,21 @@ statement:
     | asm_stmt SEMICOLON { $$ = $1; } // Goo extension
     | asm_stmt { $$ = $1; }        // Goo extension
     | parallel_for_stmt { $$ = $1; } // Goo extension
+    | label_stmt { $$ = $1; }      // gofmt-syntax-b Task 1 (P1.5): `L: stmt`
+    ;
+
+label_stmt:
+    identifier COLON statement {
+        // `L: stmt` — labels are function-scoped in Go (not block-scoped),
+        // so duplicate detection lives in the type checker, not here; the
+        // grammar accepts any statement as the labeled target (goto's
+        // arrival in Task 2 is what makes labeling a non-loop statement
+        // useful — legal to parse today, a no-op target until then).
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
     ;
 
 simple_stmt:
@@ -1523,12 +1538,28 @@ break_stmt:
         ASTNode* break_node = ast_node_new(AST_BREAK_STMT, get_current_position());
         $$ = break_node;
     }
+    | BREAK identifier {
+        // `break L` — a distinct node from bare BREAK (see AST_BREAK_LABEL_STMT's
+        // enum-site comment); codegen resolves L by walking the break-scope
+        // stack, not the innermost frame.
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        BreakLabelStmtNode* node = ast_break_label_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
+    }
     ;
 
 continue_stmt:
     CONTINUE {
         ASTNode* continue_node = ast_node_new(AST_CONTINUE_STMT, get_current_position());
         $$ = continue_node;
+    }
+    | CONTINUE identifier {
+        // `continue L` — sibling of `break L` above.
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        ContinueLabelStmtNode* node = ast_continue_label_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
     }
     ;
 
