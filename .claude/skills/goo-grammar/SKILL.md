@@ -10,6 +10,13 @@ context-sensitive lexer workarounds. Grammar changes are safe here ONLY when
 run through this procedure — the failure mode otherwise is a silent parse
 behavior change, not a build break.
 
+Rule ACTION bodies are C code that lives in `src/parser/parser_actions.c`
+(helpers called from `parser.y`'s actions) and `src/parser/parser_errors.c`
+(`yyerror`); grammar RULES themselves — structure, ordering, token usage —
+stay in `parser.y`. This split moves C code around only: it never changes
+what parses, so it carries no tripwire risk by itself, but every `parser.y`
+line-number anchor below still has to point at the current file.
+
 ## Procedure
 
 1. **Before editing**: confirm a clean baseline.
