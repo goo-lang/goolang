@@ -1,0 +1,16 @@
+// slice_struct_render_reject (P2.8 T4.1): type_slice's display name used
+// the pointee's bare `->name` field, which is NULL for a struct (its
+// declared name lives in data.struct_type.name instead) — so []Point
+// rendered as "[]?" in diagnostics before this fix. Render via
+// type_to_string, not the bare field.
+package main
+
+type Point struct {
+	x int
+}
+
+func main() {
+	var s []Point
+	var n int = s
+	_ = n
+}

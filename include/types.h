@@ -57,6 +57,20 @@ typedef enum {
     TYPE_PACKAGE,
 
     TYPE_UNKNOWN,
+
+    // P2.8 T4.2 cascade suppression: the type bound to a name whose
+    // initializer already failed type-checking (see
+    // register_declared_names_after_failure in type_checker.c). Distinct
+    // from TYPE_UNKNOWN (the nil-literal type, which carries its own
+    // specific "assignable to nilable kinds" compatibility rules that must
+    // NOT apply to a poisoned binding) — a poisoned Type exists purely so a
+    // later reference to the name resolves as a known variable instead of
+    // re-erroring "Undefined variable", and so the handful of poison-aware
+    // choke points (type_check_binary_expr) can propagate it silently
+    // rather than emit a second, spurious diagnostic. Never reaches codegen:
+    // any diagnostic at all — the root one that caused the poisoning, if
+    // nothing else — fails type_check_program and skips code generation.
+    TYPE_POISON,
     TYPE_COUNT
 } TypeKind;
 
@@ -754,6 +768,7 @@ Type* type_int(int bits, int is_signed);
 Type* type_float(int bits);
 Type* type_string_type(void);
 Type* type_char(void);
+Type* type_poison(void);  // P2.8 T4.2 cascade-suppression marker — see TYPE_POISON
 
 Type* type_array(Type* element_type, size_t length);
 Type* type_slice(Type* element_type);
@@ -841,6 +856,7 @@ int type_is_nilable_ref_kind(const Type* type);
 int type_is_nullable(const Type* type);
 int type_is_error_union(const Type* type);
 int type_is_error(const Type* type);
+int type_is_poison(const Type* type);
 int type_is_error_result_tuple(const Type* type);
 
 // Type checker functions

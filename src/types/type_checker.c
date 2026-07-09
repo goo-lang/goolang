@@ -230,7 +230,8 @@ void type_checker_init_builtins(TypeChecker* checker) {
     checker->builtin_types[TYPE_FLOAT64] = type_float(64);
     checker->builtin_types[TYPE_STRING] = type_string_type();
     checker->builtin_types[TYPE_CHAR] = type_char();
-    
+    checker->builtin_types[TYPE_POISON] = type_poison();
+
     // Add built-in functions to the global scope
     type_checker_add_builtin_functions(checker);
 }
@@ -1681,16 +1682,25 @@ static int bind_var_decl_name(TypeChecker* checker, VarDeclNode* var_decl,
 // via emit_errors=0: the declaration is already failing, and a failed
 // recovery attempt should never inject a NEW error into that failure.
 //
-// No-op when `declared_type` is NULL — a `:=` short decl has no explicit
-// type to fall back on, so a failed RHS genuinely leaves nothing sound to
-// register here (see the task-3 report's `:=` residual finding).
+// P2.8 T4.2 (cascade suppression): a `:=` short decl has no explicit type to
+// fall back on when its RHS fails — the task-3 report's `:=` residual this
+// comment used to describe. Register the TYPE_POISON marker instead of
+// nothing: the name resolves as a known variable for the rest of the pass
+// (no more "Undefined variable" cascade), and the poison-aware choke points
+// (type_check_binary_expr) propagate it silently instead of re-erroring.
+// This never changes the ROOT diagnostic — that already fired above, and
+// this function only runs afterward, on the recovery path — and never
+// reaches codegen, since the failure already dooms type_check_program.
 static void register_declared_names_after_failure(TypeChecker* checker,
                                                     VarDeclNode* var_decl,
                                                     Type* declared_type) {
-    if (!declared_type) return;
+    Type* fallback_type = declared_type
+        ? declared_type
+        : type_checker_get_builtin(checker, TYPE_POISON);
+    if (!fallback_type) return;
     for (size_t i = 0; i < var_decl->name_count; i++) {
         bind_var_decl_name(checker, var_decl, var_decl->names[i],
-                            declared_type, 1, /*emit_errors=*/0);
+                            fallback_type, 1, /*emit_errors=*/0);
     }
 }
 
@@ -1712,9 +1722,25 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     // Check initial values
     Type* inferred_type = NULL;
     if (var_decl->values) {
+        // P2.8 T4.2 (cascade suppression): capture the error count BEFORE
+        // checking the initializer so the generic "Invalid initializer
+        // expression" wrapper below only fires when type_check_expression
+        // returned NULL WITHOUT itself reporting anything specific (a
+        // defensive fallback, so a silent failure is never left completely
+        // undiagnosed). The common case — type_check_expression already
+        // printed a precise cause ("Undefined variable 'f'", "Cannot call
+        // non-function type", etc.) — must not ALSO get this generic
+        // wrapper stacked on top of it: that redundant second line for the
+        // SAME failure is exactly the kind of noise the recon's cascade
+        // probe (`x := undefinedFn(); y := x + 1; println(y)`) counts
+        // against "exactly one diagnostic" once y/println no longer cascade
+        // on their own account (see the poison-registration branch below).
+        int errors_before = checker->error_count;
         inferred_type = type_check_expression(checker, var_decl->values);
         if (!inferred_type) {
-            type_error(checker, var_decl->base.pos, "Invalid initializer expression");
+            if (checker->error_count == errors_before) {
+                type_error(checker, var_decl->base.pos, "Invalid initializer expression");
+            }
             // Task 3: an explicit-type decl (`var b T = <bad-rhs>`) still
             // binds `b:T` so downstream uses don't cascade into "Undefined
             // variable". A `:=` decl (declared_type == NULL here) has
@@ -1796,19 +1822,60 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
                 type_equals(inferred_type->data.array.element_type,
                             declared_type->data.array.element_type);
             if (!comptime_len_deferred) {
-                type_error(checker, var_decl->base.pos,
-                          "Cannot assign %s to %s",
-                          type_to_string(inferred_type),
-                          type_to_string(declared_type));
+                // P2.8 T4.3: the same remedy hint as the unhandled-!T check
+                // below, appended here too — a raw !T assigned to a
+                // mismatched CONCRETE declared type (`var n int = f()`, f()
+                // returning !int) hits this generic incompatibility branch
+                // rather than that one (final_type never becomes the error
+                // union here — declared_type wins), so it needs its own
+                // copy of the hint to point the user at try/catch/destructure
+                // instead of leaving them to puzzle out a bare type mismatch.
+                if (inferred_type->kind == TYPE_ERROR_UNION) {
+                    type_error(checker, var_decl->base.pos,
+                              "Cannot assign %s to %s — error union must be "
+                              "handled: use try, catch, or v, err := destructuring",
+                              type_to_string(inferred_type),
+                              type_to_string(declared_type));
+                } else {
+                    type_error(checker, var_decl->base.pos,
+                              "Cannot assign %s to %s",
+                              type_to_string(inferred_type),
+                              type_to_string(declared_type));
+                }
                 register_declared_names_after_failure(checker, var_decl, declared_type);
                 return 0;
             }
         }
     }
-    
+
     if (!final_type) {
         type_error(checker, var_decl->base.pos,
                   "Variable declaration must have either type or initializer");
+        return 0;
+    }
+
+    // P2.8 T4.3 (unhandled error union at the binding): a single-name
+    // binding WITH AN INITIALIZER whose FINAL type is still the raw error
+    // union means the RHS was neither `try` nor `catch` (both unwrap to the
+    // value type before final_type is computed above) nor a 2-name
+    // destructure (that path is name_count==2, handled separately below, and
+    // never reassigns final_type away from TYPE_ERROR_UNION even on its OWN
+    // success — so this check must stay gated on name_count==1 or it would
+    // misfire on a perfectly legitimate `v, err := f()`). Gated on
+    // var_decl->values so a declare-only `var x !int` (no RHS at all — a
+    // zero-initialized union, the Go-style zero-value idiom, and not what
+    // the design doc's "RHS is not try/catch/destructure" phrasing targets)
+    // is left alone. Verified pre-fix: the WITH-initializer form bound
+    // SILENTLY, with no diagnostic at all — every later use of the name
+    // would need its own unwrap that never got enforced.
+    if (var_decl->name_count == 1 && var_decl->values &&
+        final_type->kind == TYPE_ERROR_UNION) {
+        type_error(checker, var_decl->base.pos,
+                  "error union must be handled: use try, catch, or v, err := destructuring");
+        // Poison rather than bind the raw union: a value the checker never
+        // required anyone to unwrap must not silently flow into later
+        // arithmetic/selector checks either (see TYPE_POISON's doc comment).
+        register_declared_names_after_failure(checker, var_decl, NULL);
         return 0;
     }
 
@@ -3069,6 +3136,17 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     {
         Type* return_type = type_check_expression(checker, ret_stmt->values);
         if (!return_type) return 0;
+
+        // P2.8 T4.2 (cascade suppression): a poisoned value (bound to a
+        // previously failed declaration — see
+        // register_declared_names_after_failure) must not spawn a SECOND
+        // diagnostic here either. Without this, `return x` on a poisoned
+        // `x` fell through to the mismatch check below and leaked the
+        // internal "<poisoned>" type name into a user-facing "return type
+        // mismatch" message — found by this task's own try-precedence-hint
+        // probe (`x := try f() + 1; return x`), not by the recon's original
+        // narrower `+`/println probe shape.
+        if (type_is_poison(return_type)) return 1;
 
         // Fix 2 (comptime-param functions are not first-class values):
         // `return fill` would hand the caller a Variable-less function VALUE

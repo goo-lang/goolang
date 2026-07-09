@@ -49,6 +49,20 @@ Type* type_bool(void) {
     return type;
 }
 
+// P2.8 T4.2: the cascade-suppression marker bound to a name whose
+// initializer already failed (see register_declared_names_after_failure).
+// Zero size/no real representation — it must never reach codegen, since any
+// diagnostic at all fails type_check_program and codegen never runs.
+Type* type_poison(void) {
+    Type* type = type_new(TYPE_POISON);
+    if (type) {
+        type->size = 0;
+        type->align = 1;
+        type->name = str_dup("<poisoned>");
+    }
+    return type;
+}
+
 Type* type_int(int bits, int is_signed) {
     TypeKind kind;
     const char* name;
@@ -183,10 +197,14 @@ Type* type_slice(Type* element_type) {
         type->size = sizeof(void*) + sizeof(size_t) + sizeof(size_t);  // ptr + len + cap
         type->align = sizeof(void*);
         
-        // Create name like "[]int"
+        // Create name like "[]int". Render via type_to_string, not bare
+        // ->name: structs keep their declared name in data.struct_type.name
+        // and have a NULL ->name, so the bare field rendered every []Struct
+        // as "[]?" in diagnostics (P2.8 sibling-constructor rendering pass;
+        // see type_nullable above for the original fix this mirrors).
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "[]%s", element_type->name ? element_type->name : "?");
+            snprintf(name, 64, "[]%s", type_to_string(element_type));
             type->name = name;
         }
     }
@@ -195,20 +213,21 @@ Type* type_slice(Type* element_type) {
 
 Type* type_map(Type* key_type, Type* value_type) {
     if (!key_type || !value_type) return NULL;
-    
+
     Type* type = type_new(TYPE_MAP);
     if (type) {
         type->data.map.key_type = key_type;
         type->data.map.value_type = value_type;
         type->size = sizeof(void*);  // Map is a pointer to internal structure
         type->align = sizeof(void*);
-        
-        // Create name like "map[string]int"
+
+        // Create name like "map[string]int". type_to_string, not bare
+        // ->name — see type_slice above (P2.8 sibling-constructor pass).
         char* name = malloc(128);
         if (name) {
-            snprintf(name, 128, "map[%s]%s", 
-                    key_type->name ? key_type->name : "?",
-                    value_type->name ? value_type->name : "?");
+            snprintf(name, 128, "map[%s]%s",
+                    type_to_string(key_type),
+                    type_to_string(value_type));
             type->name = name;
         }
     }
@@ -276,28 +295,34 @@ Type* type_function(Type** param_types, size_t param_count, Type* return_type) {
         // signature identically — a func(int,int)int assigned to a
         // func(int)int var reported "Cannot assign func to func" instead of
         // naming the actual mismatch.
+        //
+        // Param/return names render via type_to_string, not bare ->name (P2.8
+        // sibling-constructor pass): structs carry their declared name in
+        // data.struct_type.name and have a NULL ->name, so a func(Node) int
+        // otherwise rendered as "func(?) int". A NULL param_types[i] entry
+        // (defensive only — never produced by the parser) still falls back
+        // to "?" rather than type_to_string's "null", to keep the fallback
+        // glyph consistent with the historical local convention here.
         int has_return = return_type && return_type->kind != TYPE_VOID;
         size_t name_size = strlen("func()") + 1;
         for (size_t i = 0; i < param_count; i++) {
             if (i > 0) name_size += 2;  // ", "
-            name_size += strlen(param_types[i] && param_types[i]->name
-                                 ? param_types[i]->name : "?");
+            name_size += strlen(param_types[i] ? type_to_string(param_types[i]) : "?");
         }
         if (has_return) {
-            name_size += 1 + strlen(return_type->name ? return_type->name : "?");  // " " + name
+            name_size += 1 + strlen(type_to_string(return_type));  // " " + name
         }
         char* name = malloc(name_size);
         if (name) {
             strcpy(name, "func(");
             for (size_t i = 0; i < param_count; i++) {
                 if (i > 0) strcat(name, ", ");
-                strcat(name, param_types[i] && param_types[i]->name
-                             ? param_types[i]->name : "?");
+                strcat(name, param_types[i] ? type_to_string(param_types[i]) : "?");
             }
             strcat(name, ")");
             if (has_return) {
                 strcat(name, " ");
-                strcat(name, return_type->name ? return_type->name : "?");
+                strcat(name, type_to_string(return_type));
             }
             type->name = name;
         } else {
@@ -316,10 +341,13 @@ Type* type_pointer(Type* pointee_type) {
         type->size = sizeof(void*);
         type->align = sizeof(void*);
         
-        // Create name like "*int"
+        // Create name like "*int". type_to_string, not bare ->name — see
+        // type_slice above (P2.8 sibling-constructor rendering pass): a
+        // *Struct otherwise rendered as "*?" since structs carry their name
+        // in data.struct_type.name, not the shared ->name field.
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "*%s", pointee_type->name ? pointee_type->name : "?");
+            snprintf(name, 64, "*%s", type_to_string(pointee_type));
             type->name = name;
         }
     }
@@ -328,21 +356,22 @@ Type* type_pointer(Type* pointee_type) {
 
 Type* type_reference(Type* referenced_type, int is_mutable) {
     if (!referenced_type) return NULL;
-    
+
     Type* type = type_new(TYPE_REFERENCE);
     if (type) {
         type->data.reference.referenced_type = referenced_type;
         type->data.reference.is_mutable = is_mutable;
         type->size = sizeof(void*);
         type->align = sizeof(void*);
-        
-        // Create name like "&int" or "mut &int"
+
+        // Create name like "&int" or "mut &int". type_to_string, not bare
+        // ->name — see type_slice above (P2.8 sibling-constructor pass).
         char* name = malloc(80);
         if (name) {
             if (is_mutable) {
-                snprintf(name, 80, "mut &%s", referenced_type->name ? referenced_type->name : "?");
+                snprintf(name, 80, "mut &%s", type_to_string(referenced_type));
             } else {
-                snprintf(name, 80, "&%s", referenced_type->name ? referenced_type->name : "?");
+                snprintf(name, 80, "&%s", type_to_string(referenced_type));
             }
             type->name = name;
         }
@@ -364,10 +393,12 @@ Type* type_error_union(Type* value_type, Type* error_type) {
         type->size = value_type->size + sizeof(int);  // value + error flag
         type->align = (value_type->align > sizeof(int)) ? value_type->align : sizeof(int);
         
-        // Create name like "!int"
+        // Create name like "!int". type_to_string, not bare ->name — see
+        // type_slice above (P2.8 sibling-constructor pass): a !Struct
+        // otherwise rendered as "!?".
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "!%s", value_type->name ? value_type->name : "?");
+            snprintf(name, 64, "!%s", type_to_string(value_type));
             type->name = name;
         }
     }
@@ -917,6 +948,12 @@ int type_is_error_union(const Type* type) {
 // error-printing recognize errors identically.
 int type_is_error(const Type* t) {
     return t && t->name && strcmp(t->name, "error") == 0;
+}
+
+// P2.8 T4.2: true for the cascade-suppression marker bound to a name whose
+// initializer already failed. See TYPE_POISON's doc comment in types.h.
+int type_is_poison(const Type* type) {
+    return type && type->kind == TYPE_POISON;
 }
 
 // P2.6 (T2): a user-declared `(T, error)` result tuple — the structural shape

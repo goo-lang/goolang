@@ -1822,6 +1822,19 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
 
     if (!left_type || !right_type) return NULL;
 
+    // P2.8 T4.2 (cascade suppression): an operand bound to a previously
+    // failed declaration (see register_declared_names_after_failure) must
+    // not spawn a SECOND diagnostic here — propagate the poison silently,
+    // before any operator-specific check below gets a chance to reject it
+    // (e.g. "Arithmetic operation requires numeric operands"). Single choke
+    // point: type_check_arithmetic_op has exactly one caller, right here, so
+    // guarding this entry covers every binary operator uniformly.
+    if (type_is_poison(left_type) || type_is_poison(right_type)) {
+        Type* poison = type_is_poison(left_type) ? left_type : right_type;
+        expr->node_type = poison;
+        return poison;
+    }
+
     // Narrow integer-literal adaptation for binary ops: if exactly one operand
     // is an untyped integer literal and the other is a differently-sized integer,
     // retype the literal to the other operand's type. LLVM binary ops (and
