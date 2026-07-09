@@ -278,6 +278,23 @@ struct CodeGenerator {
     const char* goto_label_names[64];
     LLVMBasicBlockRef goto_label_blocks[64];
     size_t goto_label_count;
+
+    // gofmt-syntax-b Task 3 (P1.7): fixed-depth fallthrough-target stack.
+    // Pushed by codegen_generate_switch_stmt once per case body, in SOURCE
+    // ORDER, immediately before emitting that body's statements — entry i
+    // is body_blocks[i+1] (the NEXT clause's body block in source order,
+    // default included, per the Go spec), or NULL for the switch's last
+    // clause (fallthrough there is already rejected at type-check time by
+    // type_check_switch_like_body, type_checker.c — NULL is a defensive
+    // fallback, never expected to be read). AST_FALLTHROUGH_STMT
+    // (statement_codegen.c) branches to the top entry. Same fixed-32 bound
+    // and "nesting too deep" convention as loop_break_bb/loop_continue_bb
+    // above (a switch nested inside 32 other switches is not a realistic
+    // program). Self-balancing within codegen_generate_switch_stmt's own
+    // body-emission loop (push before, pop after) — no per-function reset
+    // needed, unlike goto_label_count above.
+    LLVMBasicBlockRef fallthrough_target_bb[32];
+    int fallthrough_depth;
 };
 
 // Function information for code generation

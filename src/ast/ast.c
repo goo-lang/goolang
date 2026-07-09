@@ -36,6 +36,7 @@ static const char* ast_node_type_strings[] = {
     [AST_BREAK_LABEL_STMT] = "BreakLabelStmt",
     [AST_CONTINUE_LABEL_STMT] = "ContinueLabelStmt",
     [AST_GOTO_STMT] = "GotoStmt",
+    [AST_FALLTHROUGH_STMT] = "FallthroughStmt",
 
     [AST_IDENTIFIER] = "Identifier",
     [AST_LITERAL] = "Literal",

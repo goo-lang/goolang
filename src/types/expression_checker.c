@@ -237,6 +237,13 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
         type_check_collect_goto_labels(checker, lit->body);
     }
 
+    // gofmt-syntax-b Task 3: same independent-namespace save/restore as
+    // label_count/goto_label_count just above — `fallthrough` cannot cross
+    // a func-literal boundary even when the literal is lexically written
+    // inside a switch case's body (Go: the literal is its own function).
+    FallthroughContext saved_fallthrough_ctx = checker->fallthrough_ctx;
+    checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
+
     if (lit->params) {
         for (ASTNode* p = lit->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
@@ -267,6 +274,7 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
         ok = type_check_statement(checker, lit->body);
     }
 
+    checker->fallthrough_ctx = saved_fallthrough_ctx;
     checker->goto_label_count = saved_goto_label_count;
     checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;

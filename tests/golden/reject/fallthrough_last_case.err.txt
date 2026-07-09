@@ -1,0 +1,1 @@
+cannot fallthrough final case in switch

@@ -563,6 +563,30 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.goto"));
             return 1;
         }
+        case AST_FALLTHROUGH_STMT:
+            // gofmt-syntax-b Task 3 (P1.7): `fallthrough` — br to the
+            // CURRENT case body's fallthrough target, pushed by
+            // codegen_generate_switch_stmt (statement_codegen.c) around
+            // each clause body's emission; top of stack is always the
+            // innermost/currently-emitting case body. The type checker
+            // (type_check_switch_like_body) has already proven this is
+            // legal — final statement of a non-last expression-switch
+            // clause — before codegen ever runs; the guards below are
+            // defensive only (mirrors codegen_push_loop's "too deep"
+            // convention elsewhere in this file).
+            if (codegen->fallthrough_depth == 0 ||
+                codegen->fallthrough_target_bb[codegen->fallthrough_depth - 1] == NULL) {
+                codegen_error(codegen, stmt->pos, "fallthrough has no target");
+                return 0;
+            }
+            LLVMBuildBr(codegen->builder,
+                        codegen->fallthrough_target_bb[codegen->fallthrough_depth - 1]);
+            // Same dead-code-continuation pattern as break/continue/goto
+            // above — fallthrough is a terminator, so subsequent (illegal,
+            // per the type checker) statements in this clause body still
+            // get a valid, if dead, insertion point.
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.fallthrough"));
+            return 1;
         case AST_COMPTIME_BLOCK: {
             // M11-block-dispatch: `comptime { ... }` blocks produce no
             // runtime code in the MVP scope. The type checker already
@@ -795,14 +819,37 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         return 0;
     }
 
-    // Emit clause bodies. No implicit fallthrough: each body ends at merge.
+    // Emit clause bodies. No implicit fallthrough: each body ends at merge
+    // unless it ends in an explicit `fallthrough` statement.
     i = 0;
     for (ASTNode* c = sw->cases; c; c = c->next, i++) {
         CaseClauseNode* clause = (CaseClauseNode*)c;
         codegen_set_insert_point(codegen, body_blocks[i]);
-        for (ASTNode* s = clause->body; s; s = s->next) {
-            if (!codegen_generate_statement(codegen, checker, s)) { codegen_pop_loop(codegen); free(body_blocks); return 0; }
+        // gofmt-syntax-b Task 3 (P1.7): push THIS body's fallthrough
+        // target — the NEXT clause's body block in SOURCE ORDER (the
+        // default clause participates in source order per the Go spec,
+        // exactly like body_blocks[] itself above), or NULL for the
+        // switch's last clause. NULL is a defensive fallback only: the
+        // type checker (type_check_switch_like_body) has already rejected
+        // `fallthrough` in the last clause before codegen ever runs.
+        if (codegen->fallthrough_depth >= 32) {
+            codegen_error(codegen, stmt->pos, "switch nested too deeply for fallthrough handling");
+            codegen_pop_loop(codegen);
+            free(body_blocks);
+            return 0;
         }
+        codegen->fallthrough_target_bb[codegen->fallthrough_depth] =
+            (i + 1 < clause_count) ? body_blocks[i + 1] : NULL;
+        codegen->fallthrough_depth++;
+        for (ASTNode* s = clause->body; s; s = s->next) {
+            if (!codegen_generate_statement(codegen, checker, s)) {
+                codegen->fallthrough_depth--;
+                codegen_pop_loop(codegen);
+                free(body_blocks);
+                return 0;
+            }
+        }
+        codegen->fallthrough_depth--;
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
             LLVMBuildBr(codegen->builder, merge_block);
         }

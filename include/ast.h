@@ -194,6 +194,17 @@ typedef enum {
     // convention above (Makefile has no header deps).
     AST_GOTO_STMT,
 
+    // gofmt-syntax-b Task 3 (P1.7): `fallthrough`. A bare marker node, no
+    // extra fields — same shape as AST_BREAK_STMT/AST_CONTINUE_STMT (built
+    // via ast_node_new, no dedicated struct or constructor, no
+    // ast_node_free case needed since there is nothing to free beyond the
+    // base node). Placement legality (final statement of a non-last
+    // expression-switch clause; illegal in a type switch, select, or
+    // outside any switch) is entirely semantic — see
+    // type_check_switch_like_body's doc comment, type_checker.c. Tail-
+    // appended per the M10 convention above (Makefile has no header deps).
+    AST_FALLTHROUGH_STMT,
+
     AST_NODE_COUNT
 } ASTNodeType;
 

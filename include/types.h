@@ -512,6 +512,23 @@ typedef struct ComptimeInstantiation {
     struct ComptimeInstantiation* next;
 } ComptimeInstantiation;
 
+// gofmt-syntax-b Task 3 (P1.7): fallthrough legality context. Persisted
+// TypeChecker state (not a call-stack parameter) so a `fallthrough` buried
+// in a NESTED block — an if/for/block inside a case clause's own body, not
+// the clause's direct statement list — still resolves to a meaningful
+// diagnostic instead of a misleading "outside any switch" one. See
+// type_check_switch_like_body's doc comment (type_checker.c) for the full
+// design; save/restored around each of the three clause-body-walking call
+// sites (expression switch, type switch, select) and reset to NONE for the
+// duration of a nested func-literal body (expression_checker.c), mirroring
+// label_count's own independent-namespace save/restore.
+typedef enum {
+    FALLTHROUGH_CTX_NONE = 0,     // not inside any switch/select clause body
+    FALLTHROUGH_CTX_EXPR_SWITCH,  // inside an expression-switch clause body
+    FALLTHROUGH_CTX_TYPE_SWITCH,  // inside a type-switch clause body
+    FALLTHROUGH_CTX_SELECT,       // inside a select-case body
+} FallthroughContext;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -628,6 +645,12 @@ struct TypeChecker {
     // body, same convention and bound as label_names.
     char* goto_label_names[64];
     size_t goto_label_count;
+
+    // gofmt-syntax-b Task 3 (P1.7): current fallthrough legality context —
+    // see FallthroughContext's doc comment above. Explicitly set to NONE in
+    // type_checker_new (the struct is malloc'd, not calloc'd, same
+    // convention as label_count/goto_label_count just above).
+    FallthroughContext fallthrough_ctx;
 };
 
 // Type creation functions

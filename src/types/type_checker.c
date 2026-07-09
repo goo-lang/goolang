@@ -56,6 +56,9 @@ TypeChecker* type_checker_new(void) {
     // gofmt-syntax-b Task 2: ditto for the goto forward-reference set.
     checker->goto_label_count = 0;
 
+    // gofmt-syntax-b Task 3: not inside any switch/select clause body yet.
+    checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -1323,12 +1326,20 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         type_check_collect_goto_labels(checker, func->body);
     }
 
+    // gofmt-syntax-b Task 3: a function body starts OUTSIDE any switch/
+    // select clause, regardless of what construct (if any) lexically
+    // encloses this function declaration — save/restore mirrors
+    // label_count's own independent-namespace convention directly above.
+    FallthroughContext saved_fallthrough_ctx = checker->fallthrough_ctx;
+    checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
+
     // Type check function body
     int result = 1;
     if (func->body) {
         result = type_check_statement(checker, func->body);
     }
 
+    checker->fallthrough_ctx = saved_fallthrough_ctx;
     checker->goto_label_count = saved_goto_label_count;
     checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;
@@ -2272,6 +2283,47 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
     return 1;
 }
 
+// gofmt-syntax-b Task 3 (P1.7): shared clause-body walker for the three
+// switch-like constructs that host case-clause bodies (expression switch,
+// type switch, select). `fallthrough` is legal ONLY when `kind` is
+// FALLTHROUGH_CTX_EXPR_SWITCH, only as the LITERAL final statement of the
+// body being walked here — not merely "somewhere in this clause": a
+// fallthrough followed by more statements in the same body is caught
+// below (`s->next != NULL`); one buried inside a nested block/if that is
+// itself a direct statement of this body is caught by the
+// AST_FALLTHROUGH_STMT case in type_check_statement instead, via the
+// fallthrough_ctx this function sets for the duration of the walk (see
+// that case's comment) — and only when `is_last_clause` is false (Go: the
+// switch's final clause has nothing to fall through TO).
+static int type_check_switch_like_body(TypeChecker* checker, ASTNode* body,
+                                        FallthroughContext kind, int is_last_clause) {
+    FallthroughContext saved = checker->fallthrough_ctx;
+    checker->fallthrough_ctx = kind;
+    int ok = 1;
+    for (ASTNode* s = body; s; s = s->next) {
+        if (s->type == AST_FALLTHROUGH_STMT) {
+            if (kind != FALLTHROUGH_CTX_EXPR_SWITCH) {
+                type_error(checker, s->pos,
+                    kind == FALLTHROUGH_CTX_TYPE_SWITCH
+                        ? "fallthrough statement is not permitted in a type switch"
+                        : "fallthrough statement is not permitted in a select statement");
+                ok = 0;
+            } else if (s->next != NULL) {
+                type_error(checker, s->pos,
+                    "fallthrough statement must be the final statement in a case clause");
+                ok = 0;
+            } else if (is_last_clause) {
+                type_error(checker, s->pos, "cannot fallthrough final case in switch");
+                ok = 0;
+            }
+            continue;
+        }
+        if (!type_check_statement(checker, s)) ok = 0;
+    }
+    checker->fallthrough_ctx = saved;
+    return ok;
+}
+
 int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt) return 0;
     switch (stmt->type) {
@@ -2322,6 +2374,31 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             // frames) — mirrors the bare-break/continue precedent directly
             // above, which likewise defers "outside loop" to codegen.
             return 1;
+        case AST_FALLTHROUGH_STMT:
+            // gofmt-syntax-b Task 3 (P1.7): reached only when `fallthrough`
+            // is NOT the direct, final statement of a switch/type-switch/
+            // select clause body — that position is special-cased in
+            // type_check_switch_like_body above, which never recurses into
+            // type_check_statement for such a node. Two remaining shapes
+            // land here: truly outside any switch/select construct
+            // (fallthrough_ctx == NONE), or nested one level deeper —
+            // inside an if/for/block that is itself a direct statement of
+            // a clause body (fallthrough_ctx still set, inherited through
+            // the nested recursive dispatch). Go gives the nested shape
+            // its own distinct wording ("fallthrough statement out of
+            // place"); this folds it into the same "not final statement"
+            // diagnostic family instead — nested is a species of "not
+            // literally final" — matching the design's 5-way split (last
+            // clause / not-last-statement / type switch / select /
+            // outside switch), which type_check_switch_like_body's own
+            // three error sites cover the rest of.
+            if (checker->fallthrough_ctx == FALLTHROUGH_CTX_NONE) {
+                type_error(checker, stmt->pos, "fallthrough statement outside switch");
+            } else {
+                type_error(checker, stmt->pos,
+                    "fallthrough statement must be the final statement in a case clause");
+            }
+            return 0;
         case AST_LABEL_STMT: {
             // gofmt-syntax-b Task 1: labels are function-scoped, so the SAME
             // name used twice anywhere in one function is a duplicate even
@@ -2390,9 +2467,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
                     if (!type_check_expression(checker, e)) ok = 0;
                 }
                 scope_push(checker);
-                for (ASTNode* s = clause->body; s; s = s->next) {
-                    if (!type_check_statement(checker, s)) ok = 0;
-                }
+                if (!type_check_switch_like_body(checker, clause->body,
+                        FALLTHROUGH_CTX_EXPR_SWITCH, c->next == NULL)) ok = 0;
                 scope_pop(checker);
             }
             return ok;
@@ -2965,10 +3041,12 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
 
         // Body: walk the statement chain like the AST_SWITCH_STMT clause loop
         // does (not a single type_check_statement dispatch — select-case bodies
-        // are never wrapped in an AST_BLOCK_STMT).
-        for (ASTNode* s = sc->body; s; s = s->next) {
-            if (!type_check_statement(checker, s)) ok = 0;
-        }
+        // are never wrapped in an AST_BLOCK_STMT). `fallthrough` is never
+        // legal in a select case regardless of clause position, so
+        // is_last_clause's value here is immaterial (kind !=
+        // FALLTHROUGH_CTX_EXPR_SWITCH always wins first).
+        if (!type_check_switch_like_body(checker, sc->body,
+                FALLTHROUGH_CTX_SELECT, 0)) ok = 0;
 
         scope_pop(checker);
     }
@@ -3140,9 +3218,8 @@ int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                 scope_add_variable(checker->current_scope, v);
             }
         }
-        for (ASTNode* s = clause->body; s; s = s->next) {
-            if (!type_check_statement(checker, s)) ok = 0;
-        }
+        if (!type_check_switch_like_body(checker, clause->body,
+                FALLTHROUGH_CTX_TYPE_SWITCH, c->next == NULL)) ok = 0;
         scope_pop(checker);
     }
 

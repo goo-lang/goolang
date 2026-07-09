@@ -232,7 +232,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
-%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt label_stmt goto_stmt
+%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt label_stmt goto_stmt fallthrough_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> switch_stmt case_clause_list case_clause
 %type <node> type_case_list type_case_clause type_list
@@ -1228,6 +1228,8 @@ statement:
     | continue_stmt { $$ = $1; }  // Allow continue without semicolon
     | goto_stmt SEMICOLON { $$ = $1; }
     | goto_stmt { $$ = $1; }  // Allow goto without semicolon
+    | fallthrough_stmt SEMICOLON { $$ = $1; }
+    | fallthrough_stmt { $$ = $1; }  // Allow fallthrough without semicolon
     | go_stmt SEMICOLON { $$ = $1; }
     | go_stmt { $$ = $1; }  // Allow go without semicolon
     | defer_stmt SEMICOLON { $$ = $1; }
@@ -1576,6 +1578,25 @@ goto_stmt:
         GotoStmtNode* node = ast_goto_stmt_new(lid->name, get_current_position());
         ast_node_free($2);
         $$ = (ASTNode*)node;
+    }
+    ;
+
+fallthrough_stmt:
+    FALLTHROUGH {
+        // gofmt-syntax-b Task 3 (P1.7): `fallthrough` — a bare marker
+        // statement (AST_FALLTHROUGH_STMT), no operand ever, unlike every
+        // other member of this keyword-statement family except bare
+        // BREAK/CONTINUE. FALLTHROUGH is already one of lexer.c's
+        // unconditional keyword-terminator ASI tokens (same "Part 1"
+        // group as RETURN/BREAK/CONTINUE — see the ledger's gofmt-syntax-b
+        // Task 1 entry), so this single-token arm is expected to add zero
+        // grammar-conflict delta: there is no competing reduce for the
+        // tripwire to newly conflict against (verified, not assumed).
+        // Placement legality (final statement of a non-last
+        // expression-switch clause; illegal in a type switch, select, or
+        // outside any switch) is entirely a type-check-time concern — see
+        // type_check_switch_like_body's doc comment, type_checker.c.
+        $$ = ast_node_new(AST_FALLTHROUGH_STMT, get_current_position());
     }
     ;
 
