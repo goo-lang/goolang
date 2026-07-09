@@ -1,0 +1,63 @@
+// nullable_field_param_probe (P2.11/T5): ?T in BOTH a struct field and a
+// function parameter, exercised beyond nullable_struct_lit_probe's
+// literal-construction-only coverage. Closes two capstone gaps in one
+// fixture:
+//   - struct-field MUTATION: a ?T field is reassigned post-construction
+//     (h.val = nil, then h.val = 9) via the ordinary selector-lvalue
+//     assignment path (expression_codegen.c's shared `target->goo_type->
+//     kind == TYPE_NULLABLE` handling — the same code path
+//     nullable_assign_probe/nullable_width_probe already pin for plain
+//     identifiers, now exercised through a field GEP instead), read back via
+//     if-let and a direct `== nil` comparison on the selector expression.
+//   - function PARAM: the (possibly-nil) field value is passed through a
+//     ?int parameter and returned, mirroring nullable_assign_probe's
+//     use(p ?int) but sourced from a struct field rather than a local.
+package main
+
+import "fmt"
+
+type Holder struct {
+	val ?int
+	tag int
+}
+
+func useField(p ?int) int {
+	if let v = p {
+		return v
+	}
+	return -1
+}
+
+func main() {
+	h := Holder{val: 5, tag: 1}
+
+	// direct `== nil` comparison on a selector expression (not just if-let).
+	if h.val != nil {
+		fmt.Println("PASS: field != nil")
+	} else {
+		fmt.Println("FAIL: field != nil")
+	}
+
+	// mutate the field to nil post-construction.
+	h.val = nil
+	if h.val == nil {
+		fmt.Println("PASS: field reassigned nil")
+	} else {
+		fmt.Println("FAIL: field reassigned nil")
+	}
+
+	// mutate the field to a value post-construction.
+	h.val = 9
+	if let v = h.val {
+		fmt.Println("PASS: field reassigned value:", v)
+	} else {
+		fmt.Println("FAIL: field reassigned value")
+	}
+
+	// pass the (non-nil) field value through a ?int param.
+	fmt.Println("param present:", useField(h.val))
+
+	// pass a nil field through the same ?int param.
+	h.val = nil
+	fmt.Println("param nil:", useField(h.val))
+}
