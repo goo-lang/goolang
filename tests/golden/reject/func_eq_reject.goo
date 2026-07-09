@@ -1,0 +1,16 @@
+// func_eq_reject (F2): a func value is comparable to nil ONLY, never to
+// another func value — Go: "invalid operation: f1 == f2 (func can only be
+// compared to nil)". Two non-nil func values used to slip past the type
+// checker (type_equals treats matching signatures as compatible) and die
+// in codegen with a generic "Failed to generate binary operation" instead
+// of a positioned, Go-shaped diagnostic.
+package main
+
+func add(a int, b int) int { return a + b }
+func sub(a int, b int) int { return a - b }
+
+func main() {
+	f1 := add
+	f2 := sub
+	_ = f1 == f2
+}

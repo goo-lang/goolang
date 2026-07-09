@@ -67,8 +67,17 @@ GooArena* goo_arena_new(size_t initial_size) {
 }
 
 void* goo_arena_alloc(GooArena* a, size_t size) {
-    if (!a || size == 0) {
+    if (!a) {
         return NULL;
+    }
+    if (size == 0) {
+        // Same zero-size sentinel as goo_alloc (runtime.c/runtime.h): a
+        // zero-size allocation (e.g. an empty slice literal inside an
+        // `arena{}` block) must still be Go non-nil. Safe to share: arena
+        // allocations are never individually freed/reallocated — only the
+        // whole arena is torn down (goo_arena_free) or reset in bulk
+        // (goo_arena_reset), neither of which touches goo_zerobase.
+        return &goo_zerobase;
     }
 
     GooArenaBlock* block = a->current;

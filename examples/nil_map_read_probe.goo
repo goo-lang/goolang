@@ -1,0 +1,24 @@
+// nil_map_read_probe (P2.2 option A, T2): reading from a nil map yields the
+// zero value (Go-parity read side) — the runtime's goo_map_get_sv /
+// goo_map_get_sv_ok already handle a NULL map pointer gracefully (pre-
+// existing), so this locks in that reading from a bare `nil`-comparable map
+// variable works end-to-end once the type checker/codegen accept nil for
+// TYPE_MAP. Nil-map WRITE semantics are explicitly out of scope (P3.9).
+// go-run-verified byte-for-byte against an equivalent .go program using the
+// same shape.
+package main
+
+import "fmt"
+
+func main() {
+	var m map[string]int
+	fmt.Println(len(m))
+	v := m["missing"]
+	fmt.Println(v)
+	v2, ok := m["missing"]
+	fmt.Println(v2)
+	fmt.Println(ok)
+	if m == nil {
+		fmt.Println("PASS: nil map")
+	}
+}

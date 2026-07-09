@@ -40,35 +40,52 @@ void goo_exit(int code) {
 
 // Memory management
 
+// Definition of the shared zero-size-allocation sentinel declared in
+// runtime.h (see the comment there). A single static byte: its address is
+// what's shared, never its contents, so it never needs writing or reading.
+unsigned char goo_zerobase;
+
 void* goo_alloc(size_t size) {
     if (size == 0) {
-        return NULL;
+        return &goo_zerobase;
     }
-    
+
     void* ptr = malloc(size);
     if (!ptr) {
         goo_panic("Out of memory");
     }
-    
+
     return ptr;
 }
 
 void* goo_realloc(void* ptr, size_t size) {
+    // The sentinel was never handed to malloc(), so it must never be handed
+    // to realloc() either — that would be undefined behavior. Growing
+    // "from" it is really just a fresh allocation: by construction, every
+    // zero-size allocation has nothing to preserve.
+    if (ptr == &goo_zerobase) {
+        ptr = NULL;
+    }
+
     if (size == 0) {
         goo_free(ptr);
         return NULL;
     }
-    
+
     void* new_ptr = realloc(ptr, size);
     if (!new_ptr) {
         goo_panic("Out of memory");
     }
-    
+
     return new_ptr;
 }
 
 void goo_free(void* ptr) {
-    if (ptr) {
+    // The sentinel is a static byte, not a heap allocation — freeing it
+    // would be undefined behavior. Every zero-size allocation aliases it,
+    // so this is reached routinely (e.g. releasing an empty slice literal's
+    // backing "allocation") and must be a silent no-op, not a bug.
+    if (ptr && ptr != &goo_zerobase) {
         free(ptr);
     }
 }

@@ -1,0 +1,12 @@
+// nil_ordered_cmp_reject (P2.2 option A, T2): nil is assignment- and
+// EQ/NE-comparable to a bare pointer per this task, but ordered comparison
+// (< <= > >=) against nil is never valid — Go: "invalid operation: p < nil
+// (operator < not defined on pointer)". Locks in that type_compatible's new
+// nil-assignability arm (reused by type_check_comparison_op's generic
+// fallback) doesn't leak into ordered operators.
+package main
+
+func main() {
+	var p *int
+	_ = p < nil
+}

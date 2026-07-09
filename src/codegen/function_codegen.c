@@ -2173,7 +2173,12 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 // receives the declared ?T type and emits {is_null=1, zero_value}.
                 // Without this intercept the generic nil fallback (a void* null pointer)
                 // lands in the auto-wrap block below and causes an LLVM type mismatch.
-                if (var_type && var_type->kind == TYPE_NULLABLE &&
+                // P2.2 option A: same intercept, widened to a bare (non-?T)
+                // pointer/slice/map/channel/function declared type — e.g.
+                // `var p *Node = nil` — for the same reason (a slice/func's
+                // aggregate representation mismatches the untyped fallback).
+                if (var_type &&
+                    (var_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(var_type)) &&
                     var_decl->values->type == AST_LITERAL &&
                     ((LiteralNode*)var_decl->values)->literal_type == TOKEN_NIL) {
                     init_value = codegen_generate_null_literal(codegen, checker, var_type);
@@ -2358,7 +2363,8 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
         }
 
         ValueInfo* init_value;
-        if (var_type && var_type->kind == TYPE_NULLABLE &&
+        if (var_type &&
+            (var_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(var_type)) &&
             d->expr->type == AST_LITERAL &&
             ((LiteralNode*)d->expr)->literal_type == TOKEN_NIL) {
             init_value = codegen_generate_null_literal(codegen, checker, var_type);

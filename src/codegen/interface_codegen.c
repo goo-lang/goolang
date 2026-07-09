@@ -680,7 +680,17 @@ size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Typ
 
         const char* method = NULL;
         const char* reason = NULL;
-        if (!type_interface_satisfied(checker, iface, v->type, &method, &reason)) continue;
+        // Receiver-kind soundness (type_checker.c type_interface_satisfied) now
+        // rejects a VALUE concrete for a pointer-receiver method. But this RTTI
+        // collector wants every struct that implements `iface` in EITHER boxing
+        // form — the loop below (Task 4) emits both the value- and pointer-form
+        // descriptors so a pointer-boxed `&C{}` still matches at runtime. Test
+        // the POINTER form (`*T`), whose method set is the superset: if `*T`
+        // satisfies, `T` is a candidate in some form. Checking the value form
+        // here would drop pointer-receiver implementers (examples/iface_target_ptr).
+        Type* ptr_form = type_pointer(v->type);
+        if (!ptr_form) continue;
+        if (!type_interface_satisfied(checker, iface, ptr_form, &method, &reason)) continue;
 
         if (count == cap) {
             size_t ncap = cap ? cap * 2 : 4;

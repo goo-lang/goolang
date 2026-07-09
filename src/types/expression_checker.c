@@ -3715,7 +3715,18 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             // Interface parameter (P4-3/P4-5): a concrete implementer may be
             // passed where an interface is expected. Check satisfaction here so
             // `f(Sq{})` into `func f(s Shape)` is accepted; codegen boxes it.
+            //
+            // F3 fix: this call-arg site duplicates check_interface_assign's
+            // logic inline (to keep the "argument %zu:" message prefix)
+            // rather than calling it, so it needs its own copy of the same
+            // bare-nil short-circuit: `take(nil)` must not be routed into
+            // type_interface_satisfied as if nil were a concrete type.
             if (param_type && param_type->kind == TYPE_INTERFACE &&
+                arg_type && arg_type->kind == TYPE_UNKNOWN) {
+                // accepted: nil is Go's sixth nilable kind for interfaces —
+                // codegen_interface_box already boxes a TYPE_UNKNOWN concrete
+                // to the zero {NULL,NULL} interface value.
+            } else if (param_type && param_type->kind == TYPE_INTERFACE &&
                 arg_type && arg_type->kind != TYPE_INTERFACE) {
                 const char* method = NULL;
                 const char* reason = NULL;

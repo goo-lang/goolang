@@ -1,0 +1,38 @@
+// iface_nil_probe (P2.2 follow-up, F3 fix): bare `nil` is Go's sixth
+// nilable kind — accepted for a non-empty interface TARGET in every
+// position (var-init, assignment, call-argument), not just return (which
+// already worked before this fix; see docs/superpowers/specs/
+// 2026-07-09-p2-typesystem-a-design.md T2 and the review finding it closes).
+// Exercises: `var i I = nil` compiles and `i == nil` is true; a box-then-nil
+// round trip (`i = &C{}` flips non-nil, `i = nil` flips back); and
+// `take(nil)` as a call argument into an interface-typed parameter.
+// go-run-verified byte-for-byte against an equivalent .go program using the
+// same I/C shape (see task provenance).
+package main
+
+import "fmt"
+
+type I interface{ M() int }
+
+type C struct{ v int }
+
+func (c *C) M() int { return c.v }
+
+func take(i I) bool {
+	return i == nil
+}
+
+func main() {
+	var i I = nil
+	fmt.Println(i == nil)
+
+	i = &C{v: 5}
+	fmt.Println(i == nil)
+	fmt.Println(i.M())
+
+	i = nil
+	fmt.Println(i == nil)
+
+	fmt.Println(take(nil))
+	fmt.Println(take(&C{v: 9}))
+}

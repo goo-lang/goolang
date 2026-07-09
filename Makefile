@@ -2333,6 +2333,7 @@ VERIFY_ALL_DEPS := \
     erru-catch-type-reject-probe \
     iface-parse-probe \
     iface-satisfaction-probe \
+    iface-recv-kind-probe \
     try-nonerru-probe \
     return-mismatch-probe \
     named-return-reject-probe \
@@ -2773,6 +2774,32 @@ asi-gocompat-probe: $(COMPILER) $(RUNTIME_LIB)
 	@printf '0\n1\njoined\n' > build/gc_recvafterbrace.expected.txt
 	@if ! diff -u build/gc_recvafterbrace.expected.txt build/gc_recvafterbrace.actual.txt; then echo "asi-gocompat-probe: FAIL (receive-after-brace: stdout mismatch)"; exit 1; fi
 	@echo "asi-gocompat-probe: PASS"
+
+# Receiver-kind soundness (Go method-set rule): a pointer-receiver method is in
+# the method set of *T only, not value T. So a VALUE concrete must NOT satisfy an
+# interface whose method has a pointer receiver — reject it here (not an
+# LLVM-verifier crash). Embedding composes: a value outer embedding a VALUE field
+# whose method has a pointer receiver is likewise rejected (the promoted method
+# needs an addressable owner). Over-rejection guards: a POINTER concrete, and a
+# value outer embedding a value field with a VALUE-receiver method, must compile.
+iface-recv-kind-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== iface-recv-kind-probe: value concrete must not satisfy a pointer-receiver interface ==="
+	@printf 'package main\ntype I interface { M() int }\ntype T struct { x int }\nfunc (t *T) M() int { return t.x }\nfunc main() { var i I = T{x: 1}\n _ = i }\n' > build/recvkind_direct.goo
+	@printf 'package main\ntype I interface { M() int }\ntype E struct { x int }\nfunc (e *E) M() int { return e.x }\ntype S struct {\n\tE\n}\nfunc main() { var i I = S{E: E{x: 1}}\n _ = i }\n' > build/recvkind_embed.goo
+	@printf 'package main\ntype I interface { M() int }\ntype T struct { x int }\nfunc (t *T) M() int { return t.x }\nfunc main() { var i I = &T{x: 1}\n _ = i }\n' > build/recvkind_ptr_ok.goo
+	@"$(COMPILER)" build/recvkind_direct.goo -o build/recvkind_direct.out 2>build/recvkind_direct.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "iface-recv-kind-probe: FAIL (value satisfied pointer-receiver interface)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/recvkind_direct.err; then echo "iface-recv-kind-probe: FAIL (invalid IR)"; cat build/recvkind_direct.err; exit 1; fi; \
+	  if ! grep -qiE "does not implement" build/recvkind_direct.err; then echo "iface-recv-kind-probe: FAIL (no satisfaction diagnostic)"; cat build/recvkind_direct.err; exit 1; fi
+	@"$(COMPILER)" build/recvkind_embed.goo -o build/recvkind_embed.out 2>build/recvkind_embed.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "iface-recv-kind-probe: FAIL (value outer w/ value-embedded pointer-receiver method satisfied interface)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/recvkind_embed.err; then echo "iface-recv-kind-probe: FAIL (invalid IR)"; cat build/recvkind_embed.err; exit 1; fi; \
+	  if ! grep -qiE "does not implement" build/recvkind_embed.err; then echo "iface-recv-kind-probe: FAIL (no satisfaction diagnostic)"; cat build/recvkind_embed.err; exit 1; fi
+	@"$(COMPILER)" build/recvkind_ptr_ok.goo -o build/recvkind_ptr_ok.out 2>build/recvkind_ptr_ok.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "iface-recv-kind-probe: FAIL (pointer concrete over-rejected)"; cat build/recvkind_ptr_ok.err; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/recvkind_ptr_ok.err; then echo "iface-recv-kind-probe: FAIL (pointer concrete reached the verifier)"; cat build/recvkind_ptr_ok.err; exit 1; fi
+	@echo "iface-recv-kind-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void
 # expression) recovers with that expression's value, so its type must be

@@ -1,0 +1,15 @@
+// nil_ordered_cmp_reversed_reject (F2 follow-up): the REVERSED-operand
+// direction `nil < p` — commit 199f94b's own message notes `p < nil` was
+// already safe by the fallback's asymmetry, and identifies `nil < p` as the
+// actual new-code risk: type_compatible's nil-assignability arm (types.c)
+// could in principle let this slip through the generic comparison fallback
+// if the ordered-comparison guard (expression_helpers.c) ever regressed.
+// Go: "invalid operation: nil < p (operator < not defined on untyped nil)".
+// This fixture is the regression pin nil_ordered_cmp_reject.goo (forward
+// direction only) was missing.
+package main
+
+func main() {
+	var p *int
+	_ = nil < p
+}

@@ -1389,6 +1389,8 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         Variable* mv = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
         free(mangled);
         Type* impl = NULL;
+        int via_embed = 0;
+        int embed_via_pointer = 0;
         if (!mv || !mv->type || mv->type->kind != TYPE_FUNCTION) {
             // Not directly declared — promoted method via embedding? Also
             // through a POINTER to a struct: Go's *Outer method set includes
@@ -1404,7 +1406,11 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
             Type* impl_via_embed = NULL;
             if (embed_root->kind == TYPE_STRUCT) {
                 EmbedResult er = embedding_resolve(checker, embed_root, im->name);
-                if (er.kind == EMBED_METHOD) impl_via_embed = er.type;
+                if (er.kind == EMBED_METHOD) {
+                    impl_via_embed = er.type;
+                    via_embed = 1;
+                    embed_via_pointer = er.via_pointer;
+                }
             }
             if (!impl_via_embed) {
                 *method_out = im->name; *reason_out = "missing"; return 0;
@@ -1433,6 +1439,23 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         // are ever re-admitted (the method-specialization follow-up).
         if (impl->kind == TYPE_FUNCTION && impl->data.function.has_comptime_params) {
             *method_out = im->name; *reason_out = "comptime"; return 0;
+        }
+
+        // Receiver-kind soundness (Go method-set rule): a pointer-receiver
+        // method is in the method set of *T only, not value T. Direct: reject a
+        // value concrete for a pointer-receiver method. Embedded: a value outer
+        // still holds the promoted method iff the embedding path crossed a
+        // pointer field (embed_via_pointer). A pointer concrete is always fine.
+        int concrete_is_ptr = (concrete->kind == TYPE_POINTER);
+        int method_is_ptr_recv =
+            impl->data.function.param_count >= 1 &&
+            impl->data.function.param_types[0] &&
+            impl->data.function.param_types[0]->kind == TYPE_POINTER;
+        if (method_is_ptr_recv && !concrete_is_ptr &&
+            (!via_embed || !embed_via_pointer)) {
+            *method_out = im->name;
+            *reason_out = "pointer-receiver";
+            return 0;
         }
 
         // The registered method carries the receiver as params[0]; the interface
@@ -1508,6 +1531,21 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
     if (!target || target->kind != TYPE_INTERFACE) {
         return type_compatible(src, target);
     }
+    // F3 fix: bare nil literal (TYPE_UNKNOWN, the sentinel type_check_literal
+    // gives TOKEN_NIL) is Go's SIXTH nilable kind — interface — alongside
+    // the five type_is_nilable_ref_kind covers. Must be short-circuited
+    // BEFORE the does-not-implement check below, or `var i I = nil` /
+    // `i = nil` are wrongly routed into type_interface_satisfied as if nil
+    // were a concrete type ("nil does not implement I (missing method M)").
+    // Return position already got this right via its own separate TYPE_
+    // UNKNOWN guard (type_checker.c's return-statement check, above this
+    // function); this brings var-init/assignment/struct-and-map-literal-
+    // field/index-assign/type-switch-case (every check_interface_assign
+    // caller) into agreement. Codegen already boxes a TYPE_UNKNOWN concrete
+    // to the zero {NULL,NULL} interface value (codegen_interface_box's own
+    // TYPE_UNKNOWN guard) — this is purely a type-check routing fix, no
+    // codegen change needed.
+    if (src && src->kind == TYPE_UNKNOWN) return 1;
     if (src && src->kind == TYPE_INTERFACE) return 1;  // interface→interface (v1: permissive)
 
     const char* method = NULL;

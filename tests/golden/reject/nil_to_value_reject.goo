@@ -1,0 +1,11 @@
+// nil_to_value_reject (P2.2 option A, T2): nil is Go-compatible with the
+// five reference-like kinds (pointer, slice, map, channel, func) but still
+// must be rejected for a plain VALUE kind — Go: "cannot use nil as int
+// value in variable declaration". Locks in that type_compatible's new nil
+// arm is gated on `to->kind` and does not widen to numeric/bool/string/etc.
+package main
+
+func main() {
+	var x int = nil
+	_ = x
+}

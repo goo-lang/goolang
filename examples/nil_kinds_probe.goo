@@ -1,0 +1,109 @@
+// nil_kinds_probe (P2.2 option A, T2): the assign+compare matrix over the
+// five Go-compatible bare-nil kinds — pointer, slice, map, channel, func.
+// Each kind: zero-value reads nil, explicit `= nil` assignment, assignment
+// of a real value flips it non-nil, and reassigning `= nil` afterward flips
+// it back. go-run-verified byte-for-byte against an equivalent .go program
+// using the same shape (see task provenance).
+package main
+
+import "fmt"
+
+func adder(a int, b int) int {
+	return a + b
+}
+
+func main() {
+	// pointer
+	var p *int
+	if p == nil {
+		fmt.Println("PASS: ptr zero is nil")
+	}
+	p = nil
+	if p == nil {
+		fmt.Println("PASS: ptr assigned nil")
+	}
+	x := 7
+	p = &x
+	if p != nil {
+		fmt.Println("PASS: ptr assigned non-nil")
+	}
+	p = nil
+	if p == nil {
+		fmt.Println("PASS: ptr reassigned nil")
+	}
+
+	// slice
+	var s []int
+	if s == nil {
+		fmt.Println("PASS: slice zero is nil")
+	}
+	s = nil
+	if s == nil {
+		fmt.Println("PASS: slice assigned nil")
+	}
+	s = []int{1, 2}
+	if s != nil {
+		fmt.Println("PASS: slice assigned non-nil")
+	}
+	s = nil
+	if s == nil {
+		fmt.Println("PASS: slice reassigned nil")
+	}
+
+	// map
+	var m map[string]int
+	if m == nil {
+		fmt.Println("PASS: map zero is nil")
+	}
+	m = nil
+	if m == nil {
+		fmt.Println("PASS: map assigned nil")
+	}
+	m = map[string]int{"a": 1}
+	if m != nil {
+		fmt.Println("PASS: map assigned non-nil")
+	}
+	m = nil
+	if m == nil {
+		fmt.Println("PASS: map reassigned nil")
+	}
+
+	// channel
+	var ch chan int
+	if ch == nil {
+		fmt.Println("PASS: chan zero is nil")
+	}
+	ch = nil
+	if ch == nil {
+		fmt.Println("PASS: chan assigned nil")
+	}
+	ch = make(chan int, 1)
+	if ch != nil {
+		fmt.Println("PASS: chan assigned non-nil")
+	}
+	ch = nil
+	if ch == nil {
+		fmt.Println("PASS: chan reassigned nil")
+	}
+
+	// func
+	var f func(int, int) int
+	if f == nil {
+		fmt.Println("PASS: func zero is nil")
+	}
+	f = nil
+	if f == nil {
+		fmt.Println("PASS: func assigned nil")
+	}
+	f = adder
+	if f != nil {
+		fmt.Println("PASS: func assigned non-nil")
+	}
+	if f(3, 4) == 7 {
+		fmt.Println("PASS: func still callable")
+	}
+	f = nil
+	if f == nil {
+		fmt.Println("PASS: func reassigned nil")
+	}
+}
