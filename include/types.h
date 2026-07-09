@@ -841,6 +841,7 @@ int type_is_nilable_ref_kind(const Type* type);
 int type_is_nullable(const Type* type);
 int type_is_error_union(const Type* type);
 int type_is_error(const Type* type);
+int type_is_error_result_tuple(const Type* type);
 
 // Type checker functions
 TypeChecker* type_checker_new(void);

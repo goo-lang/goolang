@@ -1,0 +1,40 @@
+// tuple_catch_probe (P2.6/T2): `catch` accepts a user-declared (T, error)
+// return directly (no !T needed). field 0 is the value on the success path;
+// field 1 is ALREADY the boxed `error` interface (type_checker_error_type),
+// so catch binds it directly with no re-boxing — e.Error() dispatches the
+// same as the !T catch path (T1). A value-producing handler (trailing
+// expression) supplies the recovery value on the error path, identically to
+// the !T catch semantics.
+//
+// classic() is an ordinary Go (int, error) function (valid Go); catch is
+// Goo-only. Expected output hand-derived per the design doc's semantics.
+package main
+
+import (
+	"errors"
+	"fmt"
+)
+
+func classic(bad bool) (int, error) {
+	if bad {
+		return 0, errors.New("boom")
+	}
+	return 7, nil
+}
+
+func main() {
+	// success path: catch body is skipped; field 0 (7) passes through.
+	ok := classic(false) catch e {
+		fmt.Println("unexpected:", e.Error())
+		-1
+	}
+	fmt.Println(ok)
+
+	// error path: catch body runs, e.Error() reads the original message, and
+	// the trailing expression (-1) recovers the result.
+	recovered := classic(true) catch e {
+		fmt.Println("caught:", e.Error())
+		-1
+	}
+	fmt.Println(recovered)
+}

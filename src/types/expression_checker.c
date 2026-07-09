@@ -4336,14 +4336,21 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_TRY_EXPR) return NULL;
-    
+
     TryExprNode* try_expr = (TryExprNode*)expr;
-    
+
     Type* expr_type = type_check_expression(checker, try_expr->expr);
     if (!expr_type) return NULL;
-    
-    // Expression must be an error union
-    if (!type_is_error_union(expr_type)) {
+
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c) for why this is a structural (not flag-based)
+    // check. Everything below keys off `is_tuple` to run the identical
+    // control flow the !T path already established.
+    int is_tuple = type_is_error_result_tuple(expr_type);
+
+    // Expression must be an error union OR a (T, error) tuple
+    if (!is_tuple && !type_is_error_union(expr_type)) {
         type_error(checker, expr->pos,
                   "try can only be used with error union types, got %s",
                   type_to_string(expr_type));
@@ -4351,15 +4358,30 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     }
 
     // `try` propagates the error out of the ENCLOSING function on the error
-    // path, so that function must itself return an error union (!T). Rejecting
-    // this here keeps the codegen propagation path (LLVMBuildRet operand) total
-    // — before this check a `try` in a non-!T function silently emitted
-    // `unreachable` (garbage IR, no diagnostic).
+    // path, so that function must itself return an error union (!T) —
+    // regardless of whether the OPERAND is a !T or a (T,error) tuple. A
+    // (T,error)-returning enclosing function is a distinct, out-of-scope
+    // shape (design doc's Out of scope list): v1 `try` only propagates OUT
+    // of !T-returning functions. Rejecting this here keeps the codegen
+    // propagation path (LLVMBuildRet operand) total — before this check a
+    // `try` in a non-!T function silently emitted `unreachable` (garbage
+    // IR, no diagnostic).
     Type* enclosing = checker->current_return_type;
     if (!enclosing || !type_is_error_union(enclosing)) {
         type_error(checker, expr->pos,
-                  "try can only be used inside a function that returns an error union (!T)");
+                  "try requires the enclosing function to return an error union (!T)");
         return NULL;
+    }
+
+    if (is_tuple) {
+        // The tuple's error field is always the boxed `error` interface
+        // (type_is_error_result_tuple guarantees field 1 satisfies
+        // type_is_error) — there is no distinct declared error ARM type to
+        // compare against the enclosing union's, unlike the !T branch below.
+        // try extracts the value type from field 0.
+        Type* value_type = expr_type->data.struct_type.fields[0].type;
+        expr->node_type = value_type;
+        return value_type;
     }
 
     // Error-union-ness of the enclosing function is NECESSARY. The VALUE types
@@ -4391,20 +4413,27 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CATCH_EXPR) return NULL;
-    
+
     CatchExprNode* catch_expr = (CatchExprNode*)expr;
-    
+
     Type* expr_type = type_check_expression(checker, catch_expr->expr);
     if (!expr_type) return NULL;
-    
-    // Expression must be an error union
-    if (!type_is_error_union(expr_type)) {
+
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c). Unlike try, catch has no enclosing-function
+    // requirement: it handles the tuple locally, so the tuple path is a
+    // pure sibling of the !T path from here on.
+    int is_tuple = type_is_error_result_tuple(expr_type);
+
+    // Expression must be an error union OR a (T, error) tuple
+    if (!is_tuple && !type_is_error_union(expr_type)) {
         type_error(checker, expr->pos,
                   "catch can only be used with error union types, got %s",
                   type_to_string(expr_type));
         return NULL;
     }
-    
+
     // Type-check the catch body as a STATEMENT (the grammar always produces a
     // block: `expression CATCH identifier block`). Calling type_check_expression
     // on an AST_BLOCK_STMT hits the default "Unknown expression type" error.
@@ -4435,8 +4464,11 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         scope_pop(checker);
     }
 
-    // The type of a catch expression is the value type of the error union.
-    Type* value_type = expr_type->data.error_union.value_type;
+    // The type of a catch expression is the value type of the error union,
+    // or field 0 for a (T,error) tuple.
+    Type* value_type = is_tuple
+        ? expr_type->data.struct_type.fields[0].type
+        : expr_type->data.error_union.value_type;
 
     // P2-1: a value-producing handler (one whose final statement is an
     // expression) recovers with that expression's value on the error path, so

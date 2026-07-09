@@ -919,6 +919,24 @@ int type_is_error(const Type* t) {
     return t && t->name && strcmp(t->name, "error") == 0;
 }
 
+// P2.6 (T2): a user-declared `(T, error)` result tuple — the structural shape
+// `func f(...) (T, error)` produces (type_from_ast's AST_STRUCT_TYPE case;
+// a >=2-field is_result_tuple struct keeps its struct ABI — see ast.h's
+// is_result_tuple doc comment). Identified STRUCTURALLY (2 fields, 2nd is
+// the `error` interface) rather than via a flag on Type itself: Type carries
+// no is_result_tuple bit (only the parser's AST StructTypeNode does), and the
+// existing n,err destructure path (type_checker.c's per_name_types build) is
+// already purely structural for the identical reason — a plain 2-field user
+// struct whose 2nd field happens to be `error`-typed is indistinguishable
+// from a function's declared multi-return, and both mechanisms accept it
+// uniformly. Central predicate so try/catch (expression_checker.c) and their
+// codegen (error_union_codegen.c) recognize the tuple identically.
+int type_is_error_result_tuple(const Type* type) {
+    return type && type->kind == TYPE_STRUCT &&
+           type->data.struct_type.field_count == 2 &&
+           type_is_error(type->data.struct_type.fields[1].type);
+}
+
 // Method name mangling: `func (T) m()` is lowered to an ordinary function
 // named "T__m". The declaration and every call site derive the same name
 // from the receiver's type, so a plain function/variable lookup resolves
