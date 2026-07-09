@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -194,7 +195,7 @@ static int generate_catch_body_value(CodeGenerator* codegen, TypeChecker* checke
 
     ASTNode* trailing = ast_block_trailing_expr(body);
     BlockStmtNode* block = (BlockStmtNode*)body;
-    size_t pre_block_vt_size = codegen->value_table_size;
+    size_t pre_block_vt_size = vscope_enter(codegen);
 
     for (ASTNode* s = block->statements; s; s = s->next) {
         // Once the block has a terminator, appending more would be invalid.
@@ -212,7 +213,7 @@ static int generate_catch_body_value(CodeGenerator* codegen, TypeChecker* checke
         if (is_trailing_value) {
             ValueInfo* vi = codegen_generate_expression(codegen, checker, trailing);
             if (!vi) {
-                codegen->value_table_size = pre_block_vt_size;
+                vscope_exit(codegen, pre_block_vt_size);
                 return 0;
             }
             // A handler that ends in a named location (field selector, indexed
@@ -234,12 +235,12 @@ static int generate_catch_body_value(CodeGenerator* codegen, TypeChecker* checke
                 : codegen_convert_value(codegen, vi->llvm_value, from, to);
             value_info_free(vi);
         } else if (!codegen_generate_statement(codegen, checker, s)) {
-            codegen->value_table_size = pre_block_vt_size;
+            vscope_exit(codegen, pre_block_vt_size);
             return 0;
         }
     }
 
-    codegen->value_table_size = pre_block_vt_size;
+    vscope_exit(codegen, pre_block_vt_size);
     return 1;
 }
 
@@ -300,7 +301,7 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
                                                      error_alloca, error_type);
                 error_vi->is_lvalue = 1;
                 error_vi->is_initialized = 1;
-                codegen_add_value(codegen, error_vi);
+                vscope_add(codegen, error_vi);
             }
         }
     }
@@ -503,7 +504,7 @@ int codegen_generate_error_union_function(CodeGenerator* codegen, TypeChecker* c
                                                       func_type_info->data.function.param_types[param_index]);
                 param_info->is_lvalue = 1;
                 param_info->is_initialized = 1;
-                codegen_add_value(codegen, param_info);
+                vscope_add(codegen, param_info);
 
                 param_index++;
             }

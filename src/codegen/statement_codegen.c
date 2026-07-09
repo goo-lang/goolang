@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "comptime.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -209,7 +210,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             ValueInfo* vi = value_info_new(nm, slot, rtypes[i]);
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
             // Mirror the var-decl path: keep the checker scope populated so
             // later codegen re-checks of `nm` resolve (ignore dup failures).
             Variable* tv = variable_new(nm, rtypes[i], t->pos);
@@ -318,7 +319,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 LLVMBuildStore(codegen->builder, val, alloca_v);
                 ValueInfo* vi = value_info_new(il->var_name, alloca_v, inner_type);
                 vi->is_lvalue = 1; vi->is_initialized = 1;
-                codegen_add_value(codegen, vi);
+                vscope_add(codegen, vi);
                 {
                     Variable* tv = variable_new(il->var_name, inner_type, stmt->pos);
                     if (tv) { tv->is_initialized = 1; scope_add_variable(checker->current_scope, tv); }
@@ -575,7 +576,7 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // Mirrors the match-arm teardown in composite_codegen.c. We reset the size
     // without freeing the truncated ValueInfo* (matching existing behavior;
     // the leak is a separate follow-up).
-    size_t pre_block_vt_size = codegen->value_table_size;
+    size_t pre_block_vt_size = vscope_enter(codegen);
 
     ASTNode* current = block->statements;
     while (current) {
@@ -591,7 +592,7 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     }
 
     // Restore on the normal-end and early-break paths.
-    codegen->value_table_size = pre_block_vt_size;
+    vscope_exit(codegen, pre_block_vt_size);
     return 1;
 #endif
 }
@@ -1063,7 +1064,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
             if (vi) {
                 vi->is_lvalue = 1;
                 vi->is_initialized = 1;
-                codegen_add_value(codegen, vi);
+                vscope_add(codegen, vi);
             }
             Variable* cv = variable_new(vname, bind_type, c->pos);
             if (cv) {
@@ -1187,14 +1188,14 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         ValueInfo* kv = value_info_new(for_stmt->key_name, key_alloca, key_type);
         kv->is_lvalue = 1;
         kv->is_initialized = 1;
-        codegen_add_value(codegen, kv);
+        vscope_add(codegen, kv);
     }
     if (for_stmt->value_name) {
         val_alloca = codegen_alloc_local(codegen, val_llvm, for_stmt->value_name);
         ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, value_type);
         vv->is_lvalue = 1;
         vv->is_initialized = 1;
-        codegen_add_value(codegen, vv);
+        vscope_add(codegen, vv);
     }
 
     // Mirror loop vars to type-checker scope (parallels the slice/array/
@@ -1366,7 +1367,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
                                           type_checker_get_builtin(checker, TYPE_INT32));
             kv->is_lvalue = 1;
             kv->is_initialized = 1;
-            codegen_add_value(codegen, kv);
+            vscope_add(codegen, kv);
         }
 
         // Allocate value var (per-iteration). Mirrored to type-check
@@ -1377,7 +1378,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, elem_type);
             vv->is_lvalue = 1;
             vv->is_initialized = 1;
-            codegen_add_value(codegen, vv);
+            vscope_add(codegen, vv);
         }
 
         // Rune-aware string range (Go semantics): each iteration decodes the
@@ -2314,7 +2315,7 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
             if (!vi) continue;
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
         }
 
         // Guard the call with the runtime active flag.
@@ -2756,7 +2757,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // in this file — the type checker already guarantees no legal
         // cross-case reference to this binding exists, so truncation alone
         // (no explicit lookup needed) is safe.
-        size_t pre_case_vt_size = codegen->value_table_size;
+        size_t pre_case_vt_size = vscope_enter(codegen);
 
         // gofmt-syntax-b Task 4 (P1.10): copy the already-received value into
         // the bound name/lvalue BEFORE the body runs. goo_select has already
@@ -2790,7 +2791,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                     ValueInfo* vi = value_info_new(select_case->bind_name, slot, elem_type);
                     vi->is_lvalue = 1;
                     vi->is_initialized = 1;
-                    codegen_add_value(codegen, vi);
+                    vscope_add(codegen, vi);
                 } else {
                     // `=` — store into the existing variable's alloca. The
                     // type checker already proved bind_name is a declared,
@@ -2851,7 +2852,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // Restore the value table: this case's `:=` bind (if any) must not
         // be visible to the next case's bind/body codegen, nor after the
         // select once we exit this loop on the last case.
-        codegen->value_table_size = pre_case_vt_size;
+        vscope_exit(codegen, pre_case_vt_size);
 
         case_node = case_node->next;
         case_index++;

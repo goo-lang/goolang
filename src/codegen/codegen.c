@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include "block_escape.h"
 #include "param_escape.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -638,7 +639,12 @@ int codegen_enter_function(CodeGenerator* codegen, FunctionInfo* func_info) {
     codegen->current_function_info = func_info;
     // Capture the current value table position — anything added past
     // this point belongs to this function and gets cleared on exit.
-    codegen->value_table_function_start = codegen->value_table_size;
+    // Codegen hardening R2a: the mark is read via vscope_enter, but kept in
+    // this field (not a local) because codegen_generate_func_lit's nested-
+    // emission save/restore needs to snapshot/restore it across a nested
+    // codegen_enter_function/codegen_exit_function pair — see
+    // include/value_scope.h.
+    codegen->value_table_function_start = vscope_enter(codegen);
 
     // gofmt-syntax-b Task 2: this function's goto-label table starts empty
     // — the previous function's labels/blocks must not leak in (blocks are
@@ -661,9 +667,7 @@ void codegen_exit_function(CodeGenerator* codegen) {
     // Per-info free isn't done here because value_info_free's call
     // pattern in this codebase is inconsistent — the entries stay
     // logically dead and will be overwritten by future adds.
-    if (codegen->value_table_size > codegen->value_table_function_start) {
-        codegen->value_table_size = codegen->value_table_function_start;
-    }
+    vscope_exit(codegen, codegen->value_table_function_start);
 
     codegen->current_function = NULL;
     codegen->current_function_info = NULL;

@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "comptime.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -509,7 +510,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
                     ValueInfo* param_info = value_info_new(param_name, param_alloca, pgoo_type);
                     param_info->is_lvalue = 1;
                     param_info->is_initialized = 1;
-                    codegen_add_value(codegen, param_info);
+                    vscope_add(codegen, param_info);
 
                     Variable* pv = variable_new(param_name, pgoo_type, param->pos);
                     if (pv) {
@@ -562,7 +563,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
             ValueInfo* cvi = value_info_new(cname, slot_ptr, cgoo_type);
             cvi->is_lvalue = 1;
             cvi->is_initialized = 1;
-            codegen_add_value(codegen, cvi);
+            vscope_add(codegen, cvi);
         }
     }
 
@@ -1142,7 +1143,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
                                                       func_type_info->data.function.param_types[param_index]);
                 param_info->is_lvalue = 1;
                 param_info->is_initialized = 1;
-                codegen_add_value(codegen, param_info);
+                vscope_add(codegen, param_info);
 
                 param_index++;
             }
@@ -1186,7 +1187,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             ValueInfo* vi = value_info_new(rname, slot, ft);
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
             // Mirror into the type-checker scope so re-checks from codegen
             // (e.g. binary-expr type resolution) can resolve the name.
             Variable* rv = variable_new(rname, ft, fd->base.pos);
@@ -1677,7 +1678,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         ValueInfo* vi0 = value_info_new(nm0, val_alloca, value_type);
         vi0->is_lvalue = 1;
         vi0->is_initialized = 1;
-        codegen_add_value(codegen, vi0);
+        vscope_add(codegen, vi0);
         Variable* tv0 = variable_new(nm0, value_type, decl->pos);
         if (tv0) {
             tv0->is_initialized = 1;
@@ -1751,7 +1752,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         ValueInfo* vi1 = value_info_new(nm1, err_alloca, err_type);
         vi1->is_lvalue = 1;
         vi1->is_initialized = 1;
-        codegen_add_value(codegen, vi1);
+        vscope_add(codegen, vi1);
         Variable* tv1 = variable_new(nm1, err_type, decl->pos);
         if (tv1) {
             tv1->is_initialized = 1;
@@ -2049,7 +2050,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             ValueInfo* vi = value_info_new(nm, field_alloca, field_type);
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
             Variable* tv = variable_new(nm, field_type, decl->pos);
             if (tv) {
                 tv->is_initialized = 1;
@@ -2247,7 +2248,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // as initialized even without an explicit `= …` initializer.
         value_info->is_initialized = (var_decl->values != NULL) || (var_decl->type != NULL);
 
-        if (!codegen_add_value(codegen, value_info)) {
+        if (!vscope_add(codegen, value_info)) {
             codegen_error(codegen, decl->pos, "Failed to add variable '%s' to symbol table", var_name);
             value_info_free(value_info);
             return 0;
@@ -2450,7 +2451,7 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 if (!vi) { codegen_error(codegen, decl->pos, "value info alloc failed"); return 0; }
                 vi->is_lvalue = 0;
                 vi->is_initialized = 1;
-                if (!codegen_add_value(codegen, vi)) {
+                if (!vscope_add(codegen, vi)) {
                     codegen_error(codegen, decl->pos,
                                   "Failed to add constant '%s' to symbol table", const_name);
                     value_info_free(vi);
@@ -2493,7 +2494,7 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 if (!vi) { codegen_error(codegen, decl->pos, "value info alloc failed"); return 0; }
                 vi->is_lvalue = 0;
                 vi->is_initialized = 1;
-                if (!codegen_add_value(codegen, vi)) {
+                if (!vscope_add(codegen, vi)) {
                     codegen_error(codegen, decl->pos,
                                   "Failed to add constant '%s' to symbol table", const_name);
                     value_info_free(vi);
@@ -2566,7 +2567,7 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 }
                 value_info->is_lvalue = 0;
                 value_info->is_initialized = 1;
-                if (!codegen_add_value(codegen, value_info)) {
+                if (!vscope_add(codegen, value_info)) {
                     codegen_error(codegen, decl->pos,
                                   "Failed to add comptime constant '%s' to symbol table",
                                   const_name);
@@ -2637,7 +2638,7 @@ fallback:;
         value_info->is_lvalue = 0;  // Constants are not lvalues
         value_info->is_initialized = 1;
         
-        if (!codegen_add_value(codegen, value_info)) {
+        if (!vscope_add(codegen, value_info)) {
             codegen_error(codegen, decl->pos, "Failed to add constant '%s' to symbol table", const_name);
             value_info_free(value_info);
             value_info_free(const_value);
