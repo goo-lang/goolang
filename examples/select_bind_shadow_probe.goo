@@ -1,0 +1,48 @@
+// select_bind_shadow_probe (gofmt-syntax-b fix 3 / select-binding scope):
+// a `case v := <-ch:` binding must be scoped to that case's body ONLY —
+// it must not leak into (a) code after the select, if it shadows an outer
+// variable, or (b) a LATER case body of the same select statement, even
+// when that later case is the one actually taken at runtime and the
+// shadowing case is not.
+//
+// Select 1: only `a` is ready, so `case v := <-a` (which shadows the outer
+// `v`) is taken. The outer `v` must read back unchanged afterward — Go's
+// `:=` inside the case always declares fresh, it never assigns outward.
+//
+// Select 2: only `b` is ready, so `case s := <-b` is taken; its body reads
+// the OUTER `v`. Source-order-earlier `case v := <-a` in this same select
+// is NOT taken, but its case-local binding is still emitted by codegen —
+// it must not be visible to case 2's reference to `v`.
+//
+// Expected output derived from `go run` (go1.26.1) on this exact program —
+// select-case value binding and scoping is standard Go, no Goo-only
+// constructs used.
+package main
+
+import "fmt"
+
+func main() {
+	a := make(chan int, 1)
+	b := make(chan int, 1)
+
+	v := 100
+
+	a <- 7
+	select {
+	case v := <-a:
+		fmt.Println(v)
+	case s := <-b:
+		fmt.Println(s)
+	}
+	fmt.Println(v)
+
+	b <- 9
+	select {
+	case v := <-a:
+		fmt.Println(v)
+	case s := <-b:
+		fmt.Println(s)
+		fmt.Println(v)
+	}
+	fmt.Println(v)
+}

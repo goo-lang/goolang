@@ -2818,6 +2818,19 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 
         LLVMPositionBuilderAtEnd(codegen->builder, case_blocks[case_index]);
 
+        // Case scope: a `:=` bind above must not outlive this case's body —
+        // neither past the select (if it shadows an outer variable) nor into
+        // a later case's body of the same select (codegen emits every case
+        // block regardless of which one runs at runtime, so an untruncated
+        // value table lets a later case's lookup see an earlier case's
+        // never-stored alloca). Snapshot the high-water mark now and
+        // truncate back after the body, same mechanism as the match-arm
+        // teardown in composite_codegen.c and the block-stmt teardown above
+        // in this file — the type checker already guarantees no legal
+        // cross-case reference to this binding exists, so truncation alone
+        // (no explicit lookup needed) is safe.
+        size_t pre_case_vt_size = codegen->value_table_size;
+
         // gofmt-syntax-b Task 4 (P1.10): copy the already-received value into
         // the bound name/lvalue BEFORE the body runs. goo_select has already
         // performed the ONE AND ONLY receive for this case (recv_spaces[case_
@@ -2841,8 +2854,10 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 if (select_case->is_declare) {
                     // `:=` — fresh alloca, scoped to this case body (mirrors
                     // the if-let / multi-assign short-decl binding pattern
-                    // elsewhere in this file; select bodies don't truncate
-                    // the value table between cases, same as switch bodies).
+                    // elsewhere in this file). The value table is truncated
+                    // back to pre_case_vt_size after the body below, so this
+                    // binding does not leak into a later case or past the
+                    // select.
                     LLVMValueRef slot = codegen_alloc_local(codegen, elem_llvm, select_case->bind_name);
                     LLVMBuildStore(codegen->builder, loaded, slot);
                     ValueInfo* vi = value_info_new(select_case->bind_name, slot, elem_type);
@@ -2905,6 +2920,11 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
             LLVMBuildBr(codegen->builder, end_block);
         }
+
+        // Restore the value table: this case's `:=` bind (if any) must not
+        // be visible to the next case's bind/body codegen, nor after the
+        // select once we exit this loop on the last case.
+        codegen->value_table_size = pre_case_vt_size;
 
         case_node = case_node->next;
         case_index++;
