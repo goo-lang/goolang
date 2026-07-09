@@ -19,7 +19,7 @@ numbers exactly; treat any delta as a stop-the-line event, not noise.
 | #109 (struct embedding) | zero delta | new productions all semicolon-terminated |
 | #111 (stdlib unblockers) | zero delta | three grammar-touching tasks (trailing commas, slice-conversion arm, spread arm), 0 new conflicts |
 | type-assertions Task 3 (type switch) | 81 → **82** S/R (+1) | **Corrected 2026-07-04** (the original row below was factually wrong — see "Corrected justification"). The new `type_switch_guard` nonterminal is reachable from switch_stmt's `SWITCH type_switch_guard LBRACE_BODY type_case_list RBRACE` arm — the LIVE arm every real type switch takes, NOT the plain-LBRACE fallback. Reaching `type_switch_guard` means `primary_expr`'s existing `struct_lit: identifier LBRACE …` alternative is now reachable from a new position (right after `SWITCH identifier`), which collides with the plain switch's OWN pre-existing fallback arm (`SWITCH expression LBRACE case_clause_list RBRACE`, already in baseline before Task 3) reducing the same bare `identifier` as a complete tag on the same LBRACE lookahead. Verified empirically NOT isolated to the plain-LBRACE type-switch fallback arm: removing EITHER type-switch arm alone (keeping the other) leaves the count at 82; only removing `type_switch_guard`'s reachability entirely (both arms) restores 81. Separately, the specific ambiguous token sequence (`identifier` directly followed by plain `LBRACE` in tag/guard position) is proven lexically unreachable for either switch form — the M10 bridge unconditionally converts the first depth-0 `{` after SWITCH to LBRACE_BODY (lexer_bridge.c:235-246), so a bare unparenthesized struct literal as a switch tag/guard operand is a parse error (verified with compiled probes), not a silent misparse; parenthesizing it works. See "Corrected justification" below. |
-| gofmt-syntax-a Task 2 (switch-with-init) | 82 → **84** S/R (+2) | `switch_stmt` gained four init arms mirroring IF's init pattern (parser.y:1552-1591): two for plain `SWITCH simple_stmt SEMICOLON expression LBRACE[_BODY] case_clause_list RBRACE`, two for type-switch `SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE[_BODY] type_case_list RBRACE` (reusing `type_switch_guard` unmodified — no new type-switch surface). Both new conflicts are the SAME already-documented families reappearing at new reachable LALR positions, not new ambiguity classes — see "Justification: gofmt-syntax-a Task 2" below. R/R count unchanged (256), confirming no new reduce/reduce ambiguity was introduced. |
+| gofmt-syntax-a Task 2 (switch-with-init) | 82 → **84** S/R (+2) | `switch_stmt` gained four init arms mirroring IF's init pattern (parser.y:1556-1623): two for plain `SWITCH simple_stmt SEMICOLON expression LBRACE[_BODY] case_clause_list RBRACE`, two for type-switch `SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE[_BODY] type_case_list RBRACE` (reusing `type_switch_guard` unmodified — no new type-switch surface). Both new conflicts are the SAME already-documented families reappearing at new reachable LALR positions, not new ambiguity classes — see "Justification: gofmt-syntax-a Task 2" below. R/R count unchanged (256), confirming no new reduce/reduce ambiguity was introduced. |
 | gofmt-syntax-b Task 1 (labels + labeled break/continue) | 84 → **88** S/R (+4) | Two independent, isolated-and-recombined +2 deltas: `BREAK identifier`/`CONTINUE identifier` (+2, states 411/412) and `identifier COLON statement` / `label_stmt` (+2, a de-merge of the pre-existing LBRACE/COMMA `identifier •` dispatch state into a label-carrying and a label-free clone — NOT the label grammar's own COLON position, and NOT the func-result shift-wins family). R/R unchanged (256). Full justification below. |
 | gofmt-syntax-b Task 2 (goto) | **zero delta** | `goto_stmt: GOTO identifier` — a single arm with no bare/label-less alternative, unlike `break_stmt`/`continue_stmt` in Task 1 immediately above (which each had a competing `BREAK`/`CONTINUE`-alone reduce that manufactured the IDENTIFIER shift/reduce conflict). No such competing reduce exists for GOTO (the operand is mandatory), so there is nothing for a new state to conflict against; confirmed by direct tripwire run, not assumed. |
 | gofmt-syntax-b Task 3 (fallthrough) | **zero delta** | `fallthrough_stmt: FALLTHROUGH` — a single-token arm, no operand ever (unlike `goto`, which at least takes a mandatory identifier; unlike `break`/`continue`, which have a competing bare-vs-labeled reduce). FALLTHROUGH was already one of `src/lexer/lexer.c`'s unconditional keyword-terminator ASI tokens (same "Part 1" group as RETURN/BREAK/CONTINUE, present before this task — see Task 1's entry above) before this arm existed, so the grammar never sees `FALLTHROUGH <anything>` back to back on one line regardless; there is no competing reduce and no new FOLLOW-set collision for a new state to conflict against. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. |
@@ -74,12 +74,12 @@ scratch below with `bison -Wcounterexamples` and compiled differential probes.
    ```
 
    The **shift** side reaches all the way through rule `SWITCH type_switch_guard LBRACE_BODY
-   type_case_list RBRACE` (parser.y:1413, the arm every compiled type switch actually takes) —
-   it is NOT the plain-LBRACE fallback arm (parser.y:1417). The conflict token itself (plain
+   type_case_list RBRACE` (parser.y:1548, the arm every compiled type switch actually takes) —
+   it is NOT the plain-LBRACE fallback arm (parser.y:1552). The conflict token itself (plain
    `LBRACE`) is the struct literal's OWN opening brace, consumed deep inside `primary_expr` via
    `struct_lit: identifier LBRACE …`, long before the guard's `DOT LPAREN TYPE RPAREN` tail (and
    therefore long before LBRACE_BODY-vs-LBRACE arm selection) is even reached. The **reduce**
-   side is `SWITCH expression LBRACE case_clause_list RBRACE` (parser.y:1382) — the ordinary
+   side is `SWITCH expression LBRACE case_clause_list RBRACE` (parser.y:1517) — the ordinary
    switch's OWN pre-existing plain-LBRACE fallback, already in baseline before this task and
    unrelated to type switch. So the real fork is: after `SWITCH identifier`, on lookahead
    LBRACE, keep building a struct literal that could become the type-switch guard's operand
@@ -91,7 +91,7 @@ scratch below with `bison -Wcounterexamples` and compiled differential probes.
    genuinely new state is added by `type_switch_guard` becoming reachable.
 2. **Classify**: same ambiguity *family* as the plain switch's existing (already-baselined)
    struct-lit-vs-bare-tag conflict — not a new class. `type_switch_guard`'s operand is an
-   ordinary `primary_expr` (parser.y:1434), which already includes `struct_lit` as one of many
+   ordinary `primary_expr` (parser.y:1903), which already includes `struct_lit` as one of many
    alternatives; giving `switch_stmt` a new arm that reaches `primary_expr` from a position
    right after `SWITCH` necessarily re-exposes this pre-existing ambiguity, regardless of
    which trailing arm (LBRACE_BODY or plain-LBRACE) eventually consumes the completed guard.
@@ -107,7 +107,7 @@ scratch below with `bison -Wcounterexamples` and compiled differential probes.
    - Ordinary type switches (bind-less and bound forms) and an ordinary value assertion used
      directly as a plain switch's tag (`switch x.(int) { case 42: … }`, exercising
      `primary_expr DOT LPAREN type RPAREN` — Task 1's selector_expr — as `expression`) all
-     compile and run correctly, confirming the TYPE-vs-`type` fork the parser.y:1396-1412
+     compile and run correctly, confirming the TYPE-vs-`type` fork the parser.y:1626-1635
      comment describes is genuinely conflict-free (no counterexample ever names the `DOT
      LPAREN TYPE RPAREN` tail; every one of the three sites above is resolved before that
      point is reached).
@@ -157,7 +157,7 @@ commit as the ledger fix.
 
 ## Justification: gofmt-syntax-a Task 2 (switch-with-init, 82 → 84 S/R)
 
-Four new `switch_stmt` arms (parser.y:1552-1591) mirror IF's init arm (parser.y:1270)
+Four new `switch_stmt` arms (parser.y:1556-1623) mirror IF's init arm (parser.y:1181)
 onto SWITCH: `SWITCH simple_stmt SEMICOLON expression LBRACE[_BODY] case_clause_list
 RBRACE` (plain switch) and `SWITCH simple_stmt SEMICOLON type_switch_guard
 LBRACE[_BODY] type_case_list RBRACE` (type switch, reusing `type_switch_guard`
@@ -639,7 +639,7 @@ out of the grammar/lexer boundary before it becomes a countable LALR conflict at
   ambiguity (bare-identifier struct embedding, `struct { Base }`, which would otherwise need
   its own S/R-conflicted production) from ever entering the grammar; deliberately scoped to
   struct bodies only (enum bodies get none). This is distinct from the broader per-statement
-  optional-`SEMICOLON` design (`parser.y:1193-1195`, `simple_stmt SEMICOLON | simple_stmt`)
+  optional-`SEMICOLON` design (`parser.y:970-972`, `simple_stmt SEMICOLON | simple_stmt`)
   that makes most of Goo's "ASI" a grammar-level choice rather than a lexer-inserted token —
   that design keeps statement-boundary ambiguity out of the conflict count by construction,
   but is not itself one of the two named workarounds.md mechanisms.

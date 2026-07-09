@@ -69,7 +69,7 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 
 # Source files (lexer + parser + AST + types + error handling + test framework)
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
-PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c
+PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c $(SRCDIR)/codegen/monomorphize.c
@@ -136,9 +136,27 @@ $(ANALYZER): $(LEXER_SRCS) $(SRCDIR)/main_minimal.c | $(BINDIR)
 $(BUILDDIR) $(BINDIR) $(LIBDIR):
 	mkdir -p $@
 
-# Bison rules
-$(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.tab.h: $(SRCDIR)/parser/parser.y
+# Bison rules. GROUPED TARGET (`&:`, GNU Make >= 4.3): one bison invocation
+# produces BOTH parser.tab.c AND parser.tab.h. Without `&:` Make treats this as
+# two independent targets sharing a recipe, and under `-j` can invoke bison
+# twice concurrently for the two targets (or race it against an old duplicate
+# rule for parser.tab.c alone — see the removed rule that used to live under
+# "Parser generation" below). `&:` tells Make the single recipe produces every
+# listed output, so it schedules bison once and blocks every consumer of
+# either output until it finishes.
+$(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.tab.h &: $(SRCDIR)/parser/parser.y
 	bison -d -o $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.y
+
+# parser_actions.c, lexer_bridge.c and parser.tab.c itself all #include the
+# generated parser.tab.h. On a clean build the per-object .d files (DEPFLAGS,
+# below) don't exist yet, so Make can't know that from the .c sources alone —
+# under `-j` it would race their compilation against bison (fails with
+# "parser.tab.h: No such file or directory" or, if bison is mid-write,
+# "YYSTYPE has no member / <TOKEN> undeclared"). An ORDER-ONLY prereq (`|`)
+# forces parser.tab.h to exist first WITHOUT forcing a rebuild when the header
+# legitimately changes — the .d files drive real header->object rebuilds once
+# they exist. This is what makes `make -j` correct from a clean tree.
+$(SRC_OBJS) $(TEST_FRAMEWORK_OBJ) $(RUNTIME_OBJS): | $(SRCDIR)/parser/parser.tab.h
 
 # Object file compilation
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
@@ -159,10 +177,6 @@ $(BUILDDIR)/framework/%.o: $(TEST_FRAMEWORK_DIR)/%.c | $(BUILDDIR)
 # non-fatal and generates them on the first build via the rules above, so the
 # first build is a normal full build and every build after it is header-aware.
 -include $(SRC_OBJS:.o=.d) $(TEST_FRAMEWORK_OBJ:.o=.d) $(RUNTIME_OBJS:.o=.d)
-
-# Parser generation
-$(SRCDIR)/parser/parser.tab.c: $(SRCDIR)/parser/parser.y
-	bison -d -o $@ $<
 
 # Main compiler executable
 goo: $(COMPILER)
