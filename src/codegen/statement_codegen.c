@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "comptime.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -17,25 +18,15 @@ void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type
 
 
 #if LLVM_AVAILABLE
-// Loop-context stack: break/continue target blocks for the innermost loop.
-// Pushed on entry to a for-loop body, popped on exit. break branches to the
-// top break block, continue to the top continue block.
-static int codegen_push_loop(CodeGenerator* cg, LLVMBasicBlockRef brk, LLVMBasicBlockRef cont) {
-    if (cg->loop_depth >= 32) return 0;       // too deep — caller emits codegen_error
-    cg->loop_break_bb[cg->loop_depth] = brk;
-    cg->loop_continue_bb[cg->loop_depth] = cont;
-    // gofmt-syntax-b Task 1: consume any label an immediately-enclosing
-    // AST_LABEL_STMT set for THIS push (see pending_label's doc comment,
-    // codegen.h) — cleared here so it can't leak onto a LATER, unrelated
-    // push (e.g. a second loop that follows the labeled one as a sibling
-    // statement).
-    cg->loop_label[cg->loop_depth] = cg->pending_label;
-    cg->loop_is_loop[cg->loop_depth] = 1;
-    cg->pending_label = NULL;
-    cg->loop_depth++;
-    return 1;
-}
-static void codegen_pop_loop(CodeGenerator* cg) { if (cg->loop_depth > 0) cg->loop_depth--; }
+// Loop-context stack (break/continue targets, labeled break/continue, goto
+// labels): pushed on entry to a for-loop/switch/select body, popped on
+// exit. Codegen hardening R1 moved this state off CodeGenerator into
+// codegen->cfctx (ControlFlowContext, codegen_cfctx.h) and the push/pop/
+// find/get-or-create logic that used to live here as file-static helpers
+// (codegen_push_loop/codegen_pop_loop/codegen_push_break_scope/codegen_
+// get_or_create_label_block) into src/codegen/cfctx.c as cfctx_push_loop/
+// cfctx_pop/cfctx_push_break_scope/cfctx_get_or_create_goto_block — see
+// that file and codegen_cfctx.h for the full API and field-by-field detail.
 
 // Arena-regions early-exit free: defined below, used by the break/continue
 // arms of codegen_generate_statement above its definition.
@@ -44,56 +35,6 @@ static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth)
 // arena-goto fix: defined below, used by the AST_GOTO_STMT arm of
 // codegen_generate_statement above its definition.
 static void codegen_emit_arena_frees_to_depth(CodeGenerator* codegen, int target_arena_depth);
-
-// Push a break-only scope for switch/select clause bodies. In Go/Goo a `break`
-// inside a switch or select terminates that construct (not the enclosing loop),
-// while `continue` is NOT bound by switch/select and must thread through to the
-// nearest enclosing loop. We model this by reusing the loop-context stack:
-// `break` targets `brk` (the construct's merge/end block) and `continue`
-// inherits the enclosing loop's continue target (NULL when there is no
-// enclosing loop, which makes `continue` here a clean "continue outside loop").
-static int codegen_push_break_scope(CodeGenerator* cg, LLVMBasicBlockRef brk) {
-    if (cg->loop_depth >= 32) return 0;       // too deep — caller emits codegen_error
-    LLVMBasicBlockRef inherited_continue =
-        cg->loop_depth > 0 ? cg->loop_continue_bb[cg->loop_depth - 1] : NULL;
-    cg->loop_break_bb[cg->loop_depth] = brk;
-    cg->loop_continue_bb[cg->loop_depth] = inherited_continue;
-    // gofmt-syntax-b Task 1: same pending-label handoff as codegen_push_loop
-    // above, but loop_is_loop is 0 — a switch/select/type-switch frame, so
-    // `continue LABEL` must skip over it (Go: continue only targets a FOR).
-    cg->loop_label[cg->loop_depth] = cg->pending_label;
-    cg->loop_is_loop[cg->loop_depth] = 0;
-    cg->pending_label = NULL;
-    cg->loop_depth++;
-    return 1;
-}
-
-// gofmt-syntax-b Task 2 (P1.6): return the LLVMBasicBlockRef for label
-// `name` within the current function, creating it on first mention (from
-// either a `goto` or the label's own AST_LABEL_STMT — whichever is
-// generated first; backward gotos hit the AST_LABEL_STMT path first,
-// forward gotos hit this path first, both converge on the same block).
-// NULL on overflow (>64 labels) or if `name`/`current_function` is
-// unavailable — callers must treat NULL as a codegen error, mirroring
-// codegen_push_loop's own "too deep" convention. Defensive only in
-// practice: the type checker's goto_label_names (types.h) shares this same
-// 64 bound and has already rejected any function with more labels before
-// codegen runs.
-static LLVMBasicBlockRef codegen_get_or_create_label_block(CodeGenerator* cg, const char* name) {
-    if (!cg || !name || !cg->current_function) return NULL;
-    for (size_t i = 0; i < cg->goto_label_count; i++) {
-        if (cg->goto_label_names[i] && strcmp(cg->goto_label_names[i], name) == 0) {
-            return cg->goto_label_blocks[i];
-        }
-    }
-    if (cg->goto_label_count >= 64) return NULL;
-    LLVMBasicBlockRef block = codegen_create_block(cg, name);
-    if (!block) return NULL;
-    cg->goto_label_names[cg->goto_label_count] = name;
-    cg->goto_label_blocks[cg->goto_label_count] = block;
-    cg->goto_label_count++;
-    return block;
-}
 
 // --- defer codegen state -------------------------------------------------
 // Per-defer LLVM state that the header's FunctionInfo cannot carry (it only
@@ -269,7 +210,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             ValueInfo* vi = value_info_new(nm, slot, rtypes[i]);
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
             // Mirror the var-decl path: keep the checker scope populated so
             // later codegen re-checks of `nm` resolve (ignore dup failures).
             Variable* tv = variable_new(nm, rtypes[i], t->pos);
@@ -378,7 +319,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 LLVMBuildStore(codegen->builder, val, alloca_v);
                 ValueInfo* vi = value_info_new(il->var_name, alloca_v, inner_type);
                 vi->is_lvalue = 1; vi->is_initialized = 1;
-                codegen_add_value(codegen, vi);
+                vscope_add(codegen, vi);
                 {
                     Variable* tv = variable_new(il->var_name, inner_type, stmt->pos);
                     if (tv) { tv->is_initialized = 1; scope_add_variable(checker->current_scope, tv); }
@@ -412,7 +353,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
         case AST_LABEL_STMT: {
             // gofmt-syntax-b Task 1: `L: stmt`. Stash the name in
             // pending_label so a wrapped for/switch/select/type-switch's OWN
-            // push (codegen_push_loop/codegen_push_break_scope) tags its
+            // push (cfctx_push_loop/cfctx_push_break_scope) tags its
             // frame with it; then generate the wrapped statement normally.
             // Any OTHER statement shape (not itself a construct that
             // pushes) just leaves pending_label unconsumed — cleared
@@ -421,14 +362,14 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             //
             // gofmt-syntax-b Task 2 (P1.6): every label also gets (or
             // reuses) a real LLVMBasicBlockRef via
-            // codegen_get_or_create_label_block, so any `goto` in the
+            // cfctx_get_or_create_goto_block, so any `goto` in the
             // function — forward or backward — has a branch target. LLVM
             // blocks have no implicit fallthrough, so if the current block
             // hasn't already terminated (this label directly follows an
             // ordinary statement, not a goto/return/break), link it in
             // with an explicit `br` before moving the insertion point.
             LabelStmtNode* label = (LabelStmtNode*)stmt;
-            LLVMBasicBlockRef label_bb = codegen_get_or_create_label_block(codegen, label->name);
+            LLVMBasicBlockRef label_bb = cfctx_get_or_create_goto_block(codegen, label->name);
             if (!label_bb) {
                 codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
                 return 0;
@@ -437,9 +378,9 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 LLVMBuildBr(codegen->builder, label_bb);
             }
             codegen_set_insert_point(codegen, label_bb);
-            codegen->pending_label = label->name;
+            codegen->cfctx.pending_label = label->name;
             int ok = label->stmt ? codegen_generate_statement(codegen, checker, label->stmt) : 1;
-            codegen->pending_label = NULL;
+            codegen->cfctx.pending_label = NULL;
             return ok;
         }
         case AST_FOR_STMT:
@@ -463,12 +404,12 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
         case AST_ARENA_BLOCK:
             return codegen_generate_arena_stmt(codegen, checker, stmt);
         case AST_BREAK_STMT:
-            if (codegen->loop_depth == 0) { codegen_error(codegen, stmt->pos, "break outside loop"); return 0; }
+            if (codegen->cfctx.loop_depth == 0) { codegen_error(codegen, stmt->pos, "break outside loop"); return 0; }
             // Free the arenas pushed INSIDE the loop we are breaking out of
             // (arena_loop_depth >= this loop's depth), before the branch — an
             // enclosing-loop arena (shallower depth) is left alive.
-            codegen_emit_arena_frees(codegen, codegen->loop_depth);
-            LLVMBuildBr(codegen->builder, codegen->loop_break_bb[codegen->loop_depth - 1]);
+            codegen_emit_arena_frees(codegen, codegen->cfctx.loop_depth);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[codegen->cfctx.loop_depth - 1]);
             // Subsequent statements in this block are unreachable; start a fresh
             // block so later codegen has a valid (dead) insertion point.
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
@@ -476,14 +417,14 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
         case AST_CONTINUE_STMT:
             // A NULL continue target means the innermost scope is a break-only
             // switch/select with no enclosing loop — `continue` is illegal there.
-            if (codegen->loop_depth == 0 ||
-                codegen->loop_continue_bb[codegen->loop_depth - 1] == NULL) {
+            if (codegen->cfctx.loop_depth == 0 ||
+                codegen->cfctx.loop_continue_bb[codegen->cfctx.loop_depth - 1] == NULL) {
                 codegen_error(codegen, stmt->pos, "continue outside loop"); return 0;
             }
             // Free the arenas pushed inside this loop iteration before jumping
             // to the loop post/condition; the next iteration re-creates them.
-            codegen_emit_arena_frees(codegen, codegen->loop_depth);
-            LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[codegen->loop_depth - 1]);
+            codegen_emit_arena_frees(codegen, codegen->cfctx.loop_depth);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_continue_bb[codegen->cfctx.loop_depth - 1]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
         case AST_BREAK_LABEL_STMT: {
@@ -492,16 +433,9 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // labeled statement" rule) for a frame tagged with L. Unlike
             // bare `break`, a labeled break may match ANY frame kind (loop
             // OR switch/select/type-switch) at ANY depth, not just the
-            // innermost.
+            // innermost — cfctx_find_label (codegen_cfctx.h) is that walk.
             BreakLabelStmtNode* bl = (BreakLabelStmtNode*)stmt;
-            int target = -1;
-            for (int i = codegen->loop_depth - 1; i >= 0; i--) {
-                if (codegen->loop_label[i] && bl->label &&
-                    strcmp(codegen->loop_label[i], bl->label) == 0) {
-                    target = i;
-                    break;
-                }
-            }
+            int target = cfctx_find_label(&codegen->cfctx, bl->label);
             if (target < 0) {
                 codegen_error(codegen, stmt->pos, "label '%s' not defined or not enclosing", bl->label);
                 return 0;
@@ -511,7 +445,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // target-plus-one for the innermost frame); generalized to
             // target+1 for an arbitrary enclosing frame.
             codegen_emit_arena_frees(codegen, target + 1);
-            LLVMBuildBr(codegen->builder, codegen->loop_break_bb[target]);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[target]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
             return 1;
         }
@@ -519,22 +453,16 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // gofmt-syntax-b Task 1: `continue L` — same stack walk as
             // `break L`, but restricted to loop_is_loop==1 frames: Go only
             // lets `continue` target an enclosing FOR, never a switch/
-            // select even if that construct happens to carry the label.
+            // select even if that construct happens to carry the label —
+            // cfctx_find_loop_label (codegen_cfctx.h) is that restricted walk.
             ContinueLabelStmtNode* cl = (ContinueLabelStmtNode*)stmt;
-            int target = -1;
-            for (int i = codegen->loop_depth - 1; i >= 0; i--) {
-                if (codegen->loop_is_loop[i] && codegen->loop_label[i] && cl->label &&
-                    strcmp(codegen->loop_label[i], cl->label) == 0) {
-                    target = i;
-                    break;
-                }
-            }
+            int target = cfctx_find_loop_label(&codegen->cfctx, cl->label);
             if (target < 0) {
                 codegen_error(codegen, stmt->pos, "label '%s' not defined or not enclosing", cl->label);
                 return 0;
             }
             codegen_emit_arena_frees(codegen, target + 1);
-            LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[target]);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_continue_bb[target]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
             return 1;
         }
@@ -553,7 +481,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // from the target label's arena-nesting depth, computed at
             // type-check time (type_check_statement's AST_GOTO_STMT case,
             // type_checker.c) and looked up here by name from the SAME
-            // checker->goto_label_names table that case walks. The checker
+            // checker->tc_fctx.goto_label_names table that case walks. The checker
             // has already proven that depth's arena-chain is a prefix of
             // this goto's own (else it rejected the program with "goto
             // into arena block is not supported" before codegen ever
@@ -563,16 +491,16 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             GotoStmtNode* got = (GotoStmtNode*)stmt;
             int target_arena_depth = 0;
             if (checker && got->label) {
-                for (size_t i = 0; i < checker->goto_label_count; i++) {
-                    if (checker->goto_label_names[i] &&
-                        strcmp(checker->goto_label_names[i], got->label) == 0) {
-                        target_arena_depth = (int)checker->goto_label_arena_depth[i];
+                for (size_t i = 0; i < checker->tc_fctx.goto_label_count; i++) {
+                    if (checker->tc_fctx.goto_label_names[i] &&
+                        strcmp(checker->tc_fctx.goto_label_names[i], got->label) == 0) {
+                        target_arena_depth = (int)checker->tc_fctx.goto_label_arena_depth[i];
                         break;
                     }
                 }
             }
             codegen_emit_arena_frees_to_depth(codegen, target_arena_depth);
-            LLVMBasicBlockRef target = codegen_get_or_create_label_block(codegen, got->label);
+            LLVMBasicBlockRef target = cfctx_get_or_create_goto_block(codegen, got->label);
             if (!target) {
                 codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
                 return 0;
@@ -602,15 +530,15 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // (type_check_switch_like_body) has already proven this is
             // legal — final statement of a non-last expression-switch
             // clause — before codegen ever runs; the guards below are
-            // defensive only (mirrors codegen_push_loop's "too deep"
-            // convention elsewhere in this file).
-            if (codegen->fallthrough_depth == 0 ||
-                codegen->fallthrough_target_bb[codegen->fallthrough_depth - 1] == NULL) {
+            // defensive only (mirrors cfctx_push_loop's "too deep"
+            // convention, codegen_cfctx.h).
+            if (codegen->cfctx.fallthrough_depth == 0 ||
+                codegen->cfctx.fallthrough_target_bb[codegen->cfctx.fallthrough_depth - 1] == NULL) {
                 codegen_error(codegen, stmt->pos, "fallthrough has no target");
                 return 0;
             }
             LLVMBuildBr(codegen->builder,
-                        codegen->fallthrough_target_bb[codegen->fallthrough_depth - 1]);
+                        codegen->cfctx.fallthrough_target_bb[codegen->cfctx.fallthrough_depth - 1]);
             // Same dead-code-continuation pattern as break/continue/goto
             // above — fallthrough is a terminator, so subsequent (illegal,
             // per the type checker) statements in this clause body still
@@ -648,7 +576,7 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // Mirrors the match-arm teardown in composite_codegen.c. We reset the size
     // without freeing the truncated ValueInfo* (matching existing behavior;
     // the leak is a separate follow-up).
-    size_t pre_block_vt_size = codegen->value_table_size;
+    size_t pre_block_vt_size = vscope_enter(codegen);
 
     ASTNode* current = block->statements;
     while (current) {
@@ -664,7 +592,7 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     }
 
     // Restore on the normal-end and early-break paths.
-    codegen->value_table_size = pre_block_vt_size;
+    vscope_exit(codegen, pre_block_vt_size);
     return 1;
 #endif
 }
@@ -843,7 +771,7 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     // `break` inside a case must terminate the SWITCH (Go semantics), not the
     // enclosing loop. Push a break-only scope targeting merge_block; `continue`
     // still threads through to the enclosing loop (or errors if none).
-    if (!codegen_push_break_scope(codegen, merge_block)) {
+    if (!cfctx_push_break_scope(&codegen->cfctx, merge_block)) {
         codegen_error(codegen, stmt->pos, "switch nested too deeply for break handling");
         free(body_blocks);
         return 0;
@@ -862,29 +790,29 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // switch's last clause. NULL is a defensive fallback only: the
         // type checker (type_check_switch_like_body) has already rejected
         // `fallthrough` in the last clause before codegen ever runs.
-        if (codegen->fallthrough_depth >= 32) {
+        if (codegen->cfctx.fallthrough_depth >= 32) {
             codegen_error(codegen, stmt->pos, "switch nested too deeply for fallthrough handling");
-            codegen_pop_loop(codegen);
+            cfctx_pop(&codegen->cfctx);
             free(body_blocks);
             return 0;
         }
-        codegen->fallthrough_target_bb[codegen->fallthrough_depth] =
+        codegen->cfctx.fallthrough_target_bb[codegen->cfctx.fallthrough_depth] =
             (i + 1 < clause_count) ? body_blocks[i + 1] : NULL;
-        codegen->fallthrough_depth++;
+        codegen->cfctx.fallthrough_depth++;
         for (ASTNode* s = clause->body; s; s = s->next) {
             if (!codegen_generate_statement(codegen, checker, s)) {
-                codegen->fallthrough_depth--;
-                codegen_pop_loop(codegen);
+                codegen->cfctx.fallthrough_depth--;
+                cfctx_pop(&codegen->cfctx);
                 free(body_blocks);
                 return 0;
             }
         }
-        codegen->fallthrough_depth--;
+        codegen->cfctx.fallthrough_depth--;
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
             LLVMBuildBr(codegen->builder, merge_block);
         }
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
 
     codegen_set_insert_point(codegen, merge_block);
     free(body_blocks);
@@ -1055,7 +983,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
 
     // `break` inside a case must terminate the SWITCH (Go semantics), matching
     // the plain switch's break-scope convention above.
-    if (!codegen_push_break_scope(codegen, merge_block)) {
+    if (!cfctx_push_break_scope(&codegen->cfctx, merge_block)) {
         codegen_error(codegen, stmt->pos, "type switch nested too deeply for break handling");
         free(body_blocks);
         free(built_vals);
@@ -1100,7 +1028,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
             if (!bind_llvm) {
                 codegen_error(codegen, c->pos, "internal: cannot lower type switch bind type");
                 scope_pop(checker);
-                codegen_pop_loop(codegen);
+                cfctx_pop(&codegen->cfctx);
                 free(body_blocks);
                 free(built_vals);
                 return 0;
@@ -1112,7 +1040,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                     codegen_error(codegen, c->pos,
                         "internal: missing built interface-target value for type switch case");
                     scope_pop(checker);
-                    codegen_pop_loop(codegen);
+                    cfctx_pop(&codegen->cfctx);
                     free(body_blocks);
                     free(built_vals);
                     return 0;
@@ -1122,7 +1050,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                 if (!bound_val) {
                     codegen_error(codegen, c->pos, "internal: cannot unbox type switch case value");
                     scope_pop(checker);
-                    codegen_pop_loop(codegen);
+                    cfctx_pop(&codegen->cfctx);
                     free(body_blocks);
                     free(built_vals);
                     return 0;
@@ -1136,7 +1064,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
             if (vi) {
                 vi->is_lvalue = 1;
                 vi->is_initialized = 1;
-                codegen_add_value(codegen, vi);
+                vscope_add(codegen, vi);
             }
             Variable* cv = variable_new(vname, bind_type, c->pos);
             if (cv) {
@@ -1148,7 +1076,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
         for (ASTNode* s = clause->body; s; s = s->next) {
             if (!codegen_generate_statement(codegen, checker, s)) {
                 scope_pop(checker);
-                codegen_pop_loop(codegen);
+                cfctx_pop(&codegen->cfctx);
                 free(body_blocks);
                 free(built_vals);
                 return 0;
@@ -1159,7 +1087,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
         }
         scope_pop(checker);
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
 
     codegen_set_insert_point(codegen, merge_block);
     free(body_blocks);
@@ -1260,14 +1188,14 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         ValueInfo* kv = value_info_new(for_stmt->key_name, key_alloca, key_type);
         kv->is_lvalue = 1;
         kv->is_initialized = 1;
-        codegen_add_value(codegen, kv);
+        vscope_add(codegen, kv);
     }
     if (for_stmt->value_name) {
         val_alloca = codegen_alloc_local(codegen, val_llvm, for_stmt->value_name);
         ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, value_type);
         vv->is_lvalue = 1;
         vv->is_initialized = 1;
-        codegen_add_value(codegen, vv);
+        vscope_add(codegen, vv);
     }
 
     // Mirror loop vars to type-checker scope (parallels the slice/array/
@@ -1317,7 +1245,7 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         LLVMBuildStore(codegen->builder, v, val_alloca);
     }
 
-    if (!codegen_push_loop(codegen, rexit, rpost)) {
+    if (!cfctx_push_loop(&codegen->cfctx, rexit, rpost)) {
         codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
         scope_pop(checker);
         return 0;
@@ -1326,7 +1254,7 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     if (for_stmt->body) {
         body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
         LLVMBuildBr(codegen->builder, rpost);
 
@@ -1439,7 +1367,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
                                           type_checker_get_builtin(checker, TYPE_INT32));
             kv->is_lvalue = 1;
             kv->is_initialized = 1;
-            codegen_add_value(codegen, kv);
+            vscope_add(codegen, kv);
         }
 
         // Allocate value var (per-iteration). Mirrored to type-check
@@ -1450,7 +1378,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, elem_type);
             vv->is_lvalue = 1;
             vv->is_initialized = 1;
-            codegen_add_value(codegen, vv);
+            vscope_add(codegen, vv);
         }
 
         // Rune-aware string range (Go semantics): each iteration decodes the
@@ -1519,7 +1447,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             LLVMBuildStore(codegen->builder, elem_val, val_alloca);
         }
         // break exits to rexit; continue jumps to rpost (the increment block).
-        if (!codegen_push_loop(codegen, rexit, rpost)) {
+        if (!cfctx_push_loop(&codegen->cfctx, rexit, rpost)) {
             codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
             scope_pop(checker);
             value_info_free(range_val);
@@ -1529,7 +1457,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (for_stmt->body) {
             body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
         }
-        codegen_pop_loop(codegen);
+        cfctx_pop(&codegen->cfctx);
         // Only branch to the post block if the body didn't already terminate
         // (e.g. a bare `return` as the loop body's last statement) — otherwise
         // we'd emit a second terminator and produce invalid IR.
@@ -1600,17 +1528,17 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
     // blocks. continue targets post_block so the increment runs before the
     // condition is re-tested.
     codegen_set_insert_point(codegen, body_block);
-    if (!codegen_push_loop(codegen, exit_block, post_block)) {
+    if (!cfctx_push_loop(&codegen->cfctx, exit_block, post_block)) {
         codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
         return 0;
     }
     if (for_stmt->body) {
         if (!codegen_generate_statement(codegen, checker, for_stmt->body)) {
-            codegen_pop_loop(codegen);
+            cfctx_pop(&codegen->cfctx);
             return 0;
         }
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
     // Skip the post-block branch if the body already terminated (e.g. a bare
     // `return` last statement) to avoid a second terminator / invalid IR.
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
@@ -2285,7 +2213,7 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 // Emit goo_arena_free for every active arena whose push-time loop_depth is
 // >= min_loop_depth, innermost first. `return` passes min_loop_depth 0 to free
 // ALL active arenas (it exits the whole function); `break`/`continue` pass the
-// current codegen->loop_depth to free only the arenas pushed INSIDE the loop
+// current codegen->cfctx.loop_depth to free only the arenas pushed INSIDE the loop
 // they exit, never an enclosing-loop arena the loop keeps using. Does NOT
 // modify arena_depth/arena_loop_depth — the arena_stmt still owns each pop, and
 // the terminated-block guard in codegen_generate_arena_stmt keeps any exit path
@@ -2387,7 +2315,7 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
             if (!vi) continue;
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
         }
 
         // Guard the call with the runtime active flag.
@@ -2464,7 +2392,7 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // miscompiling (running once, with the last iteration's snapshot), reject
     // it cleanly; once-per-iteration defers need a runtime defer stack (tracked
     // follow-up requiring runtime support).
-    if (codegen->loop_depth > 0) {
+    if (codegen->cfctx.loop_depth > 0) {
         codegen_error(codegen, stmt->pos,
                       "defer inside a loop is not yet supported "
                       "(needs a runtime defer stack)");
@@ -2803,7 +2731,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     // `break` inside a select case must terminate the SELECT (Go semantics),
     // not the enclosing loop. Push a break-only scope targeting end_block;
     // `continue` still threads through to the enclosing loop (or errors if none).
-    if (!codegen_push_break_scope(codegen, end_block)) {
+    if (!cfctx_push_break_scope(&codegen->cfctx, end_block)) {
         codegen_error(codegen, stmt->pos, "select nested too deeply for break handling");
         free(case_blocks);
         free(recv_spaces);
@@ -2829,7 +2757,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // in this file — the type checker already guarantees no legal
         // cross-case reference to this binding exists, so truncation alone
         // (no explicit lookup needed) is safe.
-        size_t pre_case_vt_size = codegen->value_table_size;
+        size_t pre_case_vt_size = vscope_enter(codegen);
 
         // gofmt-syntax-b Task 4 (P1.10): copy the already-received value into
         // the bound name/lvalue BEFORE the body runs. goo_select has already
@@ -2863,7 +2791,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                     ValueInfo* vi = value_info_new(select_case->bind_name, slot, elem_type);
                     vi->is_lvalue = 1;
                     vi->is_initialized = 1;
-                    codegen_add_value(codegen, vi);
+                    vscope_add(codegen, vi);
                 } else {
                     // `=` — store into the existing variable's alloca. The
                     // type checker already proved bind_name is a declared,
@@ -2873,7 +2801,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                         codegen_error(codegen, case_node->pos,
                                      "select case: '%s' is not an assignable variable",
                                      select_case->bind_name);
-                        codegen_pop_loop(codegen);
+                        cfctx_pop(&codegen->cfctx);
                         free(case_blocks);
                         free(recv_spaces);
                         return 0;
@@ -2892,7 +2820,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                         if (!boxed) {
                             codegen_error(codegen, case_node->pos,
                                          "failed to box select-received value into interface");
-                            codegen_pop_loop(codegen);
+                            cfctx_pop(&codegen->cfctx);
                             free(case_blocks);
                             free(recv_spaces);
                             return 0;
@@ -2909,7 +2837,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // silently dropped every statement after the first).
         for (ASTNode* s = select_case->body; s; s = s->next) {
             if (!codegen_generate_statement(codegen, checker, s)) {
-                codegen_pop_loop(codegen);
+                cfctx_pop(&codegen->cfctx);
                 free(case_blocks);
                 free(recv_spaces);
                 return 0;
@@ -2924,12 +2852,12 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // Restore the value table: this case's `:=` bind (if any) must not
         // be visible to the next case's bind/body codegen, nor after the
         // select once we exit this loop on the last case.
-        codegen->value_table_size = pre_case_vt_size;
+        vscope_exit(codegen, pre_case_vt_size);
 
         case_node = case_node->next;
         case_index++;
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
 
     // Position builder at end block
     LLVMPositionBuilderAtEnd(codegen->builder, end_block);

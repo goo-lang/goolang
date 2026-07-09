@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -774,8 +775,9 @@ ValueInfo* codegen_generate_struct_lit(CodeGenerator* codegen, TypeChecker* chec
 //   - The type-checker already ran scope_push/pop per arm during type-check.
 //     During codegen we replicate that so any re-entrant type-checking (e.g.
 //     from binary-expr lowering) can resolve arm-local names.
-//   - We also snapshot value_table_size before each arm and truncate after,
-//     so a binding from arm N is not visible during arm N+1.
+//   - We also snapshot the value-table high-water mark before each arm
+//     (vscope_enter) and truncate after (vscope_exit), so a binding from
+//     arm N is not visible during arm N+1.
 ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -844,7 +846,7 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
         PatternNode* p = (PatternNode*)mc->pattern;
 
         // Snapshot value-table depth so arm-local bindings don't escape.
-        size_t pre_arm_vt_size = codegen->value_table_size;
+        size_t pre_arm_vt_size = vscope_enter(codegen);
         scope_push(checker);
 
         LLVMBasicBlockRef arm;
@@ -903,7 +905,7 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
                     ValueInfo* vi = value_info_new(bind->name, slot, f->type);
                     vi->is_lvalue = 1;
                     vi->is_initialized = 1;
-                    codegen_add_value(codegen, vi);
+                    vscope_add(codegen, vi);
 
                     // Mirror into the type-checker scope so any re-entrant
                     // type_check_* calls inside the arm body can resolve the name.
@@ -963,7 +965,7 @@ ValueInfo* codegen_generate_match(CodeGenerator* codegen, TypeChecker* checker, 
 
         // Restore type-checker scope and codegen value table.
         scope_pop(checker);
-        codegen->value_table_size = pre_arm_vt_size;
+        vscope_exit(codegen, pre_arm_vt_size);
     }
 
     LLVMPositionBuilderAtEnd(codegen->builder, merge);
