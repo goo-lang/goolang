@@ -1,0 +1,35 @@
+// custom_error_type_reject (P2-errors-a FIX F2): a (T, error)-returning
+// function that returns a user-defined struct implementing Error() string
+// as its error value — the most ordinary Go error shape beyond
+// errors.New/error(...) — used to compile SILENTLY. The multi-value
+// `return a, b` path (type_check_return_stmt in type_checker.c) only
+// resolved the FIRST returned expression's type; the second value (the
+// error slot) reached codegen completely unchecked. At runtime field 1 of
+// the result tuple is a boxed MyErr interface value, not the goo_error_t*
+// that catch-binding / the destructure path / the try tuple-propagation
+// readback (error_union_codegen.c) all assume — so e.Error() read garbage
+// and the program SIGSEGV'd (exit 139) on every one of those three routes.
+//
+// v1's error contract is that error values come from error(...) /
+// errors.New / fmt.Errorf (all string-backed, all resolve to
+// type_checker_error_type()) or nil — never a bare user struct. This
+// fixture pins the new compile-time guard: the SECOND return value here
+// (a plain struct, not error/nil) is rejected before it can reach codegen.
+package main
+
+type MyErr struct {
+	code int
+}
+
+func (m MyErr) Error() string { return "custom-code" }
+
+func classic(bad bool) (int, error) {
+	if bad {
+		return 0, MyErr{code: 7}
+	}
+	return 3, nil
+}
+
+func main() {
+	classic(true)
+}

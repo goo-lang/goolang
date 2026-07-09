@@ -3231,7 +3231,48 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
             // single-type comparison against the struct would be a false
             // positive. Per-element multi-return checking is out of scope —
             // accept and let codegen build the aggregate.
+            //
+            // F2 fix (this is the acceptance point the finding traced to):
+            // the ONE element that must still be checked is a field typed
+            // `error` (the `(T, error)` convention's error slot) — v1's
+            // error value is created exclusively by error(...)/errors.New/
+            // fmt.Errorf (all resolve to type_checker_error_type()) or is
+            // nil/a forwarded `error`-typed value; a user struct satisfying
+            // Error() silently slipping in here was previously UNCHECKED
+            // (this bypass returned 1 before any field was inspected), so it
+            // reached codegen, got boxed as a plain interface value instead
+            // of a goo_error_t*, and SIGSEGV'd at runtime the moment
+            // anything read it back (catch's e.Error(), the destructure
+            // path's err.Error(), and the new try tuple-propagation
+            // readback in error_union_codegen.c all assume field 1 IS a
+            // goo_error_t*). Reject at compile time instead. Every OTHER
+            // field position keeps the pre-existing accept-and-let-codegen-
+            // build-the-aggregate behavior — full per-element checking
+            // stays out of scope.
             if (ret_stmt->values->next) {
+                if (expected->kind == TYPE_STRUCT) {
+                    ASTNode* v = ret_stmt->values;
+                    size_t i = 0;
+                    for (; v && i < expected->data.struct_type.field_count;
+                         v = v->next, i++) {
+                        Type* field_type = expected->data.struct_type.fields[i].type;
+                        if (!type_is_error(field_type)) continue;
+
+                        Type* vt = v->node_type;
+                        if (!vt) continue;              // unresolved — don't risk a false positive
+                        if (type_is_poison(vt)) continue;   // T4.2 cascade suppression
+                        if (vt->kind == TYPE_UNKNOWN) continue;  // bare `nil`
+                        if (type_is_error(vt)) continue;    // already the error
+                                                             // interface: nil-typed
+                                                             // forward, error(...),
+                                                             // errors.New/fmt.Errorf
+
+                        type_error(checker, v->pos,
+                                   "custom error types are not supported in "
+                                   "v1; construct errors with error(\"...\")");
+                        return 0;
+                    }
+                }
                 return 1;
             }
 

@@ -1,0 +1,1 @@
+custom error types are not supported in v1; construct errors with error("...")
