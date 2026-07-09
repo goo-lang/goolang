@@ -2985,7 +2985,80 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
 
         // comm == NULL is the default case — body only.
         if (sc->comm) {
-            if (sc->comm->type == AST_BINARY_EXPR &&
+            // gofmt-syntax-b Task 4 (P1.10): value-binding cases (`case v :=
+            // <-ch:` / `case v = <-ch:`) and the always-rejected comma-ok
+            // shape (`case v, ok := <-ch:`). Checked BEFORE the pre-existing
+            // send/receive dispatch below so those two branches stay
+            // byte-identical for every case this arc's fixtures already
+            // exercise (bind_name == NULL, is_declare == 0 for all of them).
+            if (sc->is_declare == -1) {
+                // v1 scope cut: `ok` is meaningless without close() (P3.1) —
+                // hardcoding it true would be a silent lie about a channel
+                // that can never report "closed". Reject unconditionally.
+                type_error(checker, case_node->pos,
+                           "select case 'v, ok :=' binding requires close(); "
+                           "not supported in v1");
+                ok = 0;
+            } else if (sc->bind_name) {
+                // The grammar accepts any `expression` after `:=`/`=` (kept
+                // zero-new-surface); receive-ness is validated HERE, not in
+                // the grammar, so the diagnostic can name the real problem.
+                if (!(sc->comm->type == AST_UNARY_EXPR &&
+                      ((UnaryExprNode*)sc->comm)->operator == TOKEN_ARROW)) {
+                    type_error(checker, sc->comm->pos,
+                               "select case must be a receive operation");
+                    ok = 0;
+                } else {
+                    // Routes through the general expression checker exactly
+                    // like the plain (unbound) receive branch below —
+                    // validates channel-ness via type_check_channel_receive_op
+                    // and stamps sc->comm->node_type to the element type,
+                    // which this reuses directly as elem_type.
+                    Type* elem_type = type_check_expression(checker, sc->comm);
+                    if (!elem_type) {
+                        ok = 0;
+                    } else if (sc->is_declare) {
+                        // `:=` — declare bind_name fresh, scoped to this
+                        // case's body (the scope_push above/scope_pop below).
+                        // `_` is a discard, like every other short-decl form.
+                        if (strcmp(sc->bind_name, "_") != 0) {
+                            Variable* var = variable_new(sc->bind_name, elem_type, case_node->pos);
+                            if (var) {
+                                var->is_initialized = 1;
+                                if (!scope_add_variable(checker->current_scope, var)) {
+                                    variable_free(var);
+                                }
+                            }
+                        }
+                    } else {
+                        // `=` — bind_name must already be a declared,
+                        // type-compatible variable in an enclosing scope
+                        // (scope_lookup_variable walks the parent chain).
+                        Variable* existing = scope_lookup_variable(checker->current_scope, sc->bind_name);
+                        if (!existing) {
+                            type_error(checker, case_node->pos,
+                                       "select case: undefined variable '%s'", sc->bind_name);
+                            ok = 0;
+                        } else if (existing->type && existing->type->kind == TYPE_INTERFACE) {
+                            // An interface-typed target accepts any concrete
+                            // implementer (check_interface_assign emits its
+                            // own diagnostic) — mirrors the ordinary `x = e`
+                            // assignment path (type_check_assignment_op) so
+                            // `case v = <-ch:` behaves the same as any other
+                            // assignment into an interface variable.
+                            if (!check_interface_assign(checker, elem_type, existing->type, case_node->pos)) {
+                                ok = 0;
+                            }
+                        } else if (!type_compatible(elem_type, existing->type)) {
+                            type_error(checker, case_node->pos,
+                                       "select case: cannot assign %s to %s variable '%s'",
+                                       type_to_string(elem_type), type_to_string(existing->type),
+                                       sc->bind_name);
+                            ok = 0;
+                        }
+                    }
+                }
+            } else if (sc->comm->type == AST_BINARY_EXPR &&
                 ((BinaryExprNode*)sc->comm)->operator == TOKEN_ARROW) {
                 // Send comm: ch <- value. codegen_setup_select_case (statement_
                 // codegen.c) evaluates left/right individually rather than the

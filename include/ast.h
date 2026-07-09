@@ -477,6 +477,23 @@ typedef struct {
     ASTNode base;
     struct ASTNode* comm;       // Communication operation (send/recv)
     struct ASTNode* body;       // Case body
+    // gofmt-syntax-b Task 4 (P1.10): select value-binding cases (`case v :=
+    // <-ch:` / `case v = <-ch:`). NULL/0 for every pre-existing case shape
+    // (plain comm, default) — tail-appended, so audit EVERY
+    // ast_select_case_new call site to leave these at their zero value
+    // unless it's actually building a binding case (malloc-garbage hazard
+    // per the goo-grammar skill).
+    char* bind_name;            // bound identifier's name, or NULL = no bind
+    // 1 = `:=` (declare a new variable, scoped to the case body)
+    // 0 = `=` (assign into an existing, already-declared variable)
+    // -1 = `v, ok := <-ch` (comma-ok binding) — grammar-accepted so the
+    //      diagnostic can be a specific, positioned "requires close()"
+    //      message instead of a generic parse error; ALWAYS rejected in
+    //      type_check_select_stmt (close() is unsupported in v1, P3.1) and
+    //      never reaches codegen. bind_name is NULL for this sentinel (the
+    //      first identifier is freed, unused — the case is rejected either
+    //      way, so nothing downstream needs its name).
+    int is_declare;
 } SelectCaseNode;
 
 // Switch statement (Go-style expression switch)

@@ -1650,6 +1650,50 @@ select_case:
         SelectCaseNode* case_node = ast_select_case_new($2, $4, get_current_position());
         $$ = (ASTNode*)case_node;
     }
+    // gofmt-syntax-b Task 4 (P1.10): `case v := <-ch:` — value-binding
+    // receive. The grammar accepts any `expression` after `:=` (same shape
+    // as the plain-comm arm above, kept zero-new-surface) rather than
+    // encoding `ARROW expression` here; receive-ness is validated
+    // SEMANTICALLY in type_check_select_stmt ("select case must be a
+    // receive operation"), where the diagnostic can name the actual problem
+    // instead of a generic parse error. `identifier` is freed right after
+    // its name is copied out — `ast_select_case_new` already defaults
+    // bind_name/is_declare to NULL/0, so every OTHER call site (plain comm,
+    // default, and the comma-ok arm below) is unaffected by this new field.
+    | CASE identifier SHORT_ASSIGN expression COLON statement_list {
+        IdentifierNode* bid = (IdentifierNode*)$2;
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        case_node->bind_name = strdup(bid->name);
+        case_node->is_declare = 1;
+        ast_node_free($2);
+        $$ = (ASTNode*)case_node;
+    }
+    // `case v = <-ch:` — bind into an EXISTING, already-declared variable
+    // (checked in the type checker: must exist in an enclosing scope and be
+    // assignment-compatible with the channel's element type).
+    | CASE identifier ASSIGN expression COLON statement_list {
+        IdentifierNode* bid = (IdentifierNode*)$2;
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        case_node->bind_name = strdup(bid->name);
+        case_node->is_declare = 0;
+        ast_node_free($2);
+        $$ = (ASTNode*)case_node;
+    }
+    // `case v, ok := <-ch:` — comma-ok binding. v1 scope cut: `ok` is
+    // meaningless without close() (P3.1: hardcoding it true would be a
+    // silent lie), so this shape is grammar-accepted only so the type
+    // checker can reject it with a specific, positioned "requires close()"
+    // diagnostic instead of a bare "syntax error" — see the is_declare = -1
+    // sentinel documented on SelectCaseNode in ast.h. Neither identifier's
+    // name is kept (both freed here): the case is rejected either way, so
+    // nothing downstream needs them.
+    | CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list {
+        SelectCaseNode* case_node = ast_select_case_new($6, $8, get_current_position());
+        case_node->is_declare = -1;
+        ast_node_free($2);
+        ast_node_free($4);
+        $$ = (ASTNode*)case_node;
+    }
     | DEFAULT COLON statement_list {
         SelectCaseNode* case_node = ast_select_case_new(NULL, $3, get_current_position());
         $$ = (ASTNode*)case_node;

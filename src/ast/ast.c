@@ -317,6 +317,17 @@ void ast_node_free(ASTNode* node) {
             free(got->label);
             break;
         }
+        case AST_SELECT_CASE: {
+            // gofmt-syntax-b Task 4: only the NEW bind_name string is freed
+            // here — comm/body are pre-existing fields that this switch has
+            // never recursed into (AST_SELECT_STMT/AST_SELECT_CASE both fall
+            // to `default:` below and leak their subtrees; a pre-existing
+            // gap, not introduced or fixed by this task, left alone to avoid
+            // scope creep).
+            SelectCaseNode* sel_case = (SelectCaseNode*)node;
+            free(sel_case->bind_name);
+            break;
+        }
         case AST_ASM_STMT: {
             AsmStmtNode* asm_stmt = (AsmStmtNode*)node;
             free(asm_stmt->assembly_code);

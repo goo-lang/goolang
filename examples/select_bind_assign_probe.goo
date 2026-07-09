@@ -1,0 +1,38 @@
+// select_bind_assign_probe (gofmt-syntax-b Task 4 / P1.10): select case
+// value binding with `=` — `case x = <-ch:` stores into an EXISTING,
+// already-declared variable (checked in the type checker: must exist in an
+// enclosing scope and be assignment-compatible with the channel's element
+// type), as opposed to select_bind_probe's `:=` form which declares fresh.
+//
+// Both cases of both selects target the SAME pre-declared `x`, exercising
+// the '=' form on both branches of the select. Deterministic without any
+// goroutine: `a` is fed before the first select (only `a` ready), `b` is
+// fed before the second (only `b` ready, `a` already drained).
+//
+// Expected output derived from `go run` (go1.26.1) on this exact program —
+// select-case value binding is standard Go, no Goo-only constructs used.
+package main
+
+import "fmt"
+
+func main() {
+	a := make(chan int, 1)
+	b := make(chan int, 1)
+	var x int
+
+	a <- 5
+	select {
+	case x = <-a:
+		fmt.Println(x)
+	case x = <-b:
+		fmt.Println(x)
+	}
+
+	b <- 9
+	select {
+	case x = <-a:
+		fmt.Println(x)
+	case x = <-b:
+		fmt.Println(x)
+	}
+}

@@ -310,7 +310,13 @@ SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos) 
     node->base.next = NULL;
     node->comm = comm;
     node->body = body;
-    
+    // gofmt-syntax-b Task 4: default to "no binding" — the plain-comm and
+    // default-clause call sites (and any future one) get a safe zero value
+    // for free; the binding grammar arms in parser.y overwrite both fields
+    // explicitly right after calling this constructor.
+    node->bind_name = NULL;
+    node->is_declare = 0;
+
     return node;
 }
 

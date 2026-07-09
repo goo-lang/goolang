@@ -539,9 +539,10 @@ int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 #if LLVM_AVAILABLE
 LLVMTypeRef codegen_get_select_case_type(CodeGenerator* codegen);
 LLVMValueRef codegen_get_select_function(CodeGenerator* codegen);
-int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker, 
-                              LLVMValueRef cases_array, size_t case_index, 
-                              SelectCaseNode* select_case);
+int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
+                              LLVMValueRef cases_array, size_t case_index,
+                              SelectCaseNode* select_case,
+                              LLVMValueRef* out_recv_space);
 #endif
 
 // Expression generation

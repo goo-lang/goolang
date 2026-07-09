@@ -2634,9 +2634,18 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 
     // Create basic blocks for each case and the end
     LLVMBasicBlockRef* case_blocks = malloc(sizeof(LLVMBasicBlockRef) * case_count);
+    // gofmt-syntax-b Task 4 (P1.10): the receive `recv_space` alloca
+    // codegen_setup_select_case builds for each receive case (calloc'd to
+    // all-NULL so send cases and the default's unused slot stay NULL — a
+    // binding can only exist on a receive case, enforced in the type
+    // checker). The dispatch loop below reads back through this array to
+    // copy the ALREADY-RECEIVED value into the bound name/lvalue — goo_select
+    // has already performed the one and only receive by the time any case
+    // block runs, so this is a plain load, never a second goo_chan_recv.
+    LLVMValueRef* recv_spaces = calloc(case_count, sizeof(LLVMValueRef));
     LLVMBasicBlockRef default_block = NULL;
     LLVMBasicBlockRef end_block = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, "select_end");
-    
+
     // Generate case blocks
     case_node = select_stmt->cases;
     size_t case_index = 0;
@@ -2650,6 +2659,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             if (has_default) {
                 codegen_error(codegen, case_node->pos, "Select statement can only have one default case");
                 free(case_blocks);
+                free(recv_spaces);
                 return 0;
             }
             has_default = 1;
@@ -2672,8 +2682,10 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             case_blocks[case_index] = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, case_name);
 
             // Setup select case data
-            if (!codegen_setup_select_case(codegen, checker, cases_array, case_index, select_case)) {
+            if (!codegen_setup_select_case(codegen, checker, cases_array, case_index, select_case,
+                                            &recv_spaces[case_index])) {
                 free(case_blocks);
+                free(recv_spaces);
                 return 0;
             }
         }
@@ -2732,6 +2744,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     if (!codegen_push_break_scope(codegen, end_block)) {
         codegen_error(codegen, stmt->pos, "select nested too deeply for break handling");
         free(case_blocks);
+        free(recv_spaces);
         return 0;
     }
 
@@ -2743,6 +2756,77 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 
         LLVMPositionBuilderAtEnd(codegen->builder, case_blocks[case_index]);
 
+        // gofmt-syntax-b Task 4 (P1.10): copy the already-received value into
+        // the bound name/lvalue BEFORE the body runs. goo_select has already
+        // performed the ONE AND ONLY receive for this case (recv_spaces[case_
+        // index] is the buffer codegen_setup_select_case wrote it into) — this
+        // is a plain load + store/alloca, never a second goo_chan_recv (the
+        // P0.1 miscompile class). recv_spaces[case_index] is NULL for every
+        // case this arc's pre-existing fixtures exercise (no bind_name), so
+        // this block is a no-op for them.
+        if (select_case->bind_name && recv_spaces[case_index]) {
+            // `_` is a discard, like every other short-decl form (mirrors
+            // the type checker's skip-declare-for-`_` above) — the receive
+            // already happened via goo_select; nothing further to bind.
+            if (!(select_case->is_declare && strcmp(select_case->bind_name, "_") == 0)) {
+                Type* elem_type = select_case->comm->node_type;
+                LLVMTypeRef elem_llvm = elem_type
+                    ? codegen_type_to_llvm(codegen, elem_type)
+                    // mirrors codegen_setup_select_case's own i32 fallback
+                    : LLVMInt32TypeInContext(ctx);
+                LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, elem_llvm,
+                                                     recv_spaces[case_index], "select_bind_load");
+                if (select_case->is_declare) {
+                    // `:=` — fresh alloca, scoped to this case body (mirrors
+                    // the if-let / multi-assign short-decl binding pattern
+                    // elsewhere in this file; select bodies don't truncate
+                    // the value table between cases, same as switch bodies).
+                    LLVMValueRef slot = codegen_alloc_local(codegen, elem_llvm, select_case->bind_name);
+                    LLVMBuildStore(codegen->builder, loaded, slot);
+                    ValueInfo* vi = value_info_new(select_case->bind_name, slot, elem_type);
+                    vi->is_lvalue = 1;
+                    vi->is_initialized = 1;
+                    codegen_add_value(codegen, vi);
+                } else {
+                    // `=` — store into the existing variable's alloca. The
+                    // type checker already proved bind_name is a declared,
+                    // type-compatible variable in an enclosing scope.
+                    ValueInfo* existing = codegen_lookup_value(codegen, select_case->bind_name);
+                    if (!existing || !existing->is_lvalue) {
+                        codegen_error(codegen, case_node->pos,
+                                     "select case: '%s' is not an assignable variable",
+                                     select_case->bind_name);
+                        codegen_pop_loop(codegen);
+                        free(case_blocks);
+                        free(recv_spaces);
+                        return 0;
+                    }
+                    // Box a concrete received value into an interface-typed
+                    // target (mirrors the multi-assign '=' path above and
+                    // type_check_assignment_op's ordinary `x = e` path) —
+                    // same layout store otherwise (interface->interface
+                    // needs no box).
+                    LLVMValueRef sval = loaded;
+                    if (existing->goo_type && existing->goo_type->kind == TYPE_INTERFACE &&
+                        elem_type && elem_type->kind != TYPE_INTERFACE) {
+                        LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                                   existing->goo_type,
+                                                                   elem_type, loaded);
+                        if (!boxed) {
+                            codegen_error(codegen, case_node->pos,
+                                         "failed to box select-received value into interface");
+                            codegen_pop_loop(codegen);
+                            free(case_blocks);
+                            free(recv_spaces);
+                            return 0;
+                        }
+                        sval = boxed;
+                    }
+                    LLVMBuildStore(codegen->builder, sval, existing->llvm_value);
+                }
+            }
+        }
+
         // Generate case body. The body is a ->next statement chain — loop it
         // like switch codegen does (a single codegen_generate_statement call
         // silently dropped every statement after the first).
@@ -2750,6 +2834,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             if (!codegen_generate_statement(codegen, checker, s)) {
                 codegen_pop_loop(codegen);
                 free(case_blocks);
+                free(recv_spaces);
                 return 0;
             }
         }
@@ -2766,8 +2851,9 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 
     // Position builder at end block
     LLVMPositionBuilderAtEnd(codegen->builder, end_block);
-    
+
     free(case_blocks);
+    free(recv_spaces);
     return 1;
 #endif
 }
@@ -2812,9 +2898,17 @@ LLVMValueRef codegen_get_select_function(CodeGenerator* codegen) {
 
 #if LLVM_AVAILABLE
 // Helper function to setup select case data
-int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker, 
-                              LLVMValueRef cases_array, size_t case_index, 
-                              SelectCaseNode* select_case) {
+//
+// gofmt-syntax-b Task 4 (P1.10): out_recv_space, when non-NULL, receives the
+// `recv_space` alloca built below for a RECEIVE case (untouched for a send
+// case or the default's inactive slot) — the dispatch loop in
+// codegen_generate_select_stmt reads it back to copy the already-received
+// value into a select-case value binding, without ever calling
+// goo_chan_recv a second time.
+int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
+                              LLVMValueRef cases_array, size_t case_index,
+                              SelectCaseNode* select_case,
+                              LLVMValueRef* out_recv_space) {
     // Get pointer to the case struct in the array. cases_array is a pointer to
     // the first select_case_type element (from LLVMBuildArrayAlloca), so the
     // i-th case is a single-index GEP — NOT a two-index [0, i] which would
@@ -2927,6 +3021,7 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
                 if (et) recv_ty = et;
             }
             data_ptr = LLVMBuildAlloca(codegen->builder, recv_ty, "recv_space");
+            if (out_recv_space) *out_recv_space = data_ptr;
 
             value_info_free(channel_val);
         }
