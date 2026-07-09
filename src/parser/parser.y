@@ -1347,8 +1347,7 @@ return_stmt:
 
 break_stmt:
     BREAK {
-        ASTNode* break_node = ast_node_new(AST_BREAK_STMT, get_current_position());
-        $$ = break_node;
+        $$ = ast_break_stmt_new(get_current_position());
     }
     | BREAK identifier {
         // `break L` — a distinct node from bare BREAK (see AST_BREAK_LABEL_STMT's
@@ -1363,8 +1362,7 @@ break_stmt:
 
 continue_stmt:
     CONTINUE {
-        ASTNode* continue_node = ast_node_new(AST_CONTINUE_STMT, get_current_position());
-        $$ = continue_node;
+        $$ = ast_continue_stmt_new(get_current_position());
     }
     | CONTINUE identifier {
         // `continue L` — sibling of `break L` above.
@@ -1404,7 +1402,7 @@ fallthrough_stmt:
         // expression-switch clause; illegal in a type switch, select, or
         // outside any switch) is entirely a type-check-time concern — see
         // type_check_switch_like_body's doc comment, type_checker.c.
-        $$ = ast_node_new(AST_FALLTHROUGH_STMT, get_current_position());
+        $$ = ast_fallthrough_stmt_new(get_current_position());
     }
     ;
 

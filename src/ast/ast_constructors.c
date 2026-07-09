@@ -560,6 +560,43 @@ GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos) {
     return node;
 }
 
+// #167 R3 rider (P2.9/T3): typed constructors for the three bare-marker
+// statement types — each is a plain ASTNode, no derived struct, no extra
+// fields to initialize beyond the base. These replace the last three
+// parser.y call sites that built an ASTNode directly via ast_node_new,
+// which is now private to ast.c (see this file's own str_dup precedent for
+// why every other constructor here does its own malloc rather than
+// delegating to an ast.c-only helper).
+ASTNode* ast_break_stmt_new(Position pos) {
+    ASTNode* node = (ASTNode*)malloc(sizeof(ASTNode));
+    if (!node) return NULL;
+    node->type = AST_BREAK_STMT;
+    node->pos = pos;
+    node->node_type = NULL;
+    node->next = NULL;
+    return node;
+}
+
+ASTNode* ast_continue_stmt_new(Position pos) {
+    ASTNode* node = (ASTNode*)malloc(sizeof(ASTNode));
+    if (!node) return NULL;
+    node->type = AST_CONTINUE_STMT;
+    node->pos = pos;
+    node->node_type = NULL;
+    node->next = NULL;
+    return node;
+}
+
+ASTNode* ast_fallthrough_stmt_new(Position pos) {
+    ASTNode* node = (ASTNode*)malloc(sizeof(ASTNode));
+    if (!node) return NULL;
+    node->type = AST_FALLTHROUGH_STMT;
+    node->pos = pos;
+    node->node_type = NULL;
+    node->next = NULL;
+    return node;
+}
+
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos) {
     AsmStmtNode* node = (AsmStmtNode*)malloc(sizeof(AsmStmtNode));
     if (!node) return NULL;
