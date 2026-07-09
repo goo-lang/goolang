@@ -1531,6 +1531,21 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
     if (!target || target->kind != TYPE_INTERFACE) {
         return type_compatible(src, target);
     }
+    // F3 fix: bare nil literal (TYPE_UNKNOWN, the sentinel type_check_literal
+    // gives TOKEN_NIL) is Go's SIXTH nilable kind — interface — alongside
+    // the five type_is_nilable_ref_kind covers. Must be short-circuited
+    // BEFORE the does-not-implement check below, or `var i I = nil` /
+    // `i = nil` are wrongly routed into type_interface_satisfied as if nil
+    // were a concrete type ("nil does not implement I (missing method M)").
+    // Return position already got this right via its own separate TYPE_
+    // UNKNOWN guard (type_checker.c's return-statement check, above this
+    // function); this brings var-init/assignment/struct-and-map-literal-
+    // field/index-assign/type-switch-case (every check_interface_assign
+    // caller) into agreement. Codegen already boxes a TYPE_UNKNOWN concrete
+    // to the zero {NULL,NULL} interface value (codegen_interface_box's own
+    // TYPE_UNKNOWN guard) — this is purely a type-check routing fix, no
+    // codegen change needed.
+    if (src && src->kind == TYPE_UNKNOWN) return 1;
     if (src && src->kind == TYPE_INTERFACE) return 1;  // interface→interface (v1: permissive)
 
     const char* method = NULL;
