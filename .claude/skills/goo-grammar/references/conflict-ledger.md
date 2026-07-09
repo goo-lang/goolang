@@ -1,11 +1,12 @@
 # Bison conflict ledger
 
-Baseline: **88 shift/reduce + 256 reduce/reduce** — verified 2026-07-09 on
-`feat/go-syntax-grammar-b` (gofmt-syntax sub-project B, Task 1, labels + labeled
-break/continue). Previous baseline 84/256 verified 2026-07-08 on
-`feat/go-syntax-grammar-a` (gofmt-syntax sub-project A, Task 2, switch-with-init).
-The tripwire (`scripts/grammar-tripwire.sh`) asserts these numbers exactly; treat
-any delta as a stop-the-line event, not noise.
+Baseline: **121 shift/reduce + 256 reduce/reduce** — verified 2026-07-09 on
+`feat/go-syntax-grammar-b` (gofmt-syntax sub-project B, review Fix 5a, labeled
+empty statement). Previous baseline 88/256 verified 2026-07-09 on the same
+branch (Task 1, labels + labeled break/continue). Before that, 84/256 verified
+2026-07-08 on `feat/go-syntax-grammar-a` (gofmt-syntax sub-project A, Task 2,
+switch-with-init). The tripwire (`scripts/grammar-tripwire.sh`) asserts these
+numbers exactly; treat any delta as a stop-the-line event, not noise.
 
 ## Baseline history (every change was justified in its PR, never absorbed silently)
 
@@ -23,6 +24,7 @@ any delta as a stop-the-line event, not noise.
 | gofmt-syntax-b Task 2 (goto) | **zero delta** | `goto_stmt: GOTO identifier` — a single arm with no bare/label-less alternative, unlike `break_stmt`/`continue_stmt` in Task 1 immediately above (which each had a competing `BREAK`/`CONTINUE`-alone reduce that manufactured the IDENTIFIER shift/reduce conflict). No such competing reduce exists for GOTO (the operand is mandatory), so there is nothing for a new state to conflict against; confirmed by direct tripwire run, not assumed. |
 | gofmt-syntax-b Task 3 (fallthrough) | **zero delta** | `fallthrough_stmt: FALLTHROUGH` — a single-token arm, no operand ever (unlike `goto`, which at least takes a mandatory identifier; unlike `break`/`continue`, which have a competing bare-vs-labeled reduce). FALLTHROUGH was already one of `src/lexer/lexer.c`'s unconditional keyword-terminator ASI tokens (same "Part 1" group as RETURN/BREAK/CONTINUE, present before this task — see Task 1's entry above) before this arm existed, so the grammar never sees `FALLTHROUGH <anything>` back to back on one line regardless; there is no competing reduce and no new FOLLOW-set collision for a new state to conflict against. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. |
 | gofmt-syntax-b Task 4 (select value-binding cases) | **zero delta** | `select_case` gained `CASE identifier SHORT_ASSIGN expression COLON statement_list`, `CASE identifier ASSIGN expression COLON statement_list`, and a grammar-accepted-but-always-type-rejected `CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list` (comma-ok) arm. Same "mandatory operand after a keyword/CASE token, no competing bare reduce" shape as `goto_stmt: GOTO identifier` (Task 2 immediately above): `CASE identifier` was already followed by a mandatory `SHORT_ASSIGN`/`ASSIGN`/`COLON`/`COMMA` in every existing `select_case`/`case_clause` arm, so there is no bare `CASE identifier`-alone reduce for the new arms' extra lookahead to conflict against. Receive-ness (`expression` must actually be a channel receive) is validated semantically, not encoded in the grammar, by design (spec T4) — keeping the grammar arm generic (`expression`, not `ARROW expression`) is exactly why there is nothing new for the token to fight over. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. This row was added retroactively in gofmt-syntax-b Task 5's docs truth pass — Task 4 shipped the zero-delta result correctly but, unlike Task 2 and Task 3 immediately above, did not add a history-table row at the time; recorded now for consistency with the "every ledgered task gets a row, delta or not" convention this table otherwise follows without a gap. |
+| gofmt-syntax-b review Fix 5a (labeled empty statement) | 88 → **121** S/R (+33) | `label_stmt` gained two arms, `identifier COLON SEMICOLON` (explicit `done: ;`) and `identifier COLON` (bare `done:` immediately before whatever ends the enclosing statement list — the goto-to-end-of-block idiom). Both arms' new items land in exactly ONE pre-existing, previously-unconflicted, single-item state (state 598, `label_stmt: identifier COLON • statement` — reached ONLY from label_stmt's own predecessor states, not shared/merged with any other production). The +33 is `statement`'s own FIRST set: FOLLOW(label_stmt) overlaps FIRST(statement) because a label can be followed by another real statement in the same `statement_list`, so 33 of `statement`'s FIRST tokens are now ambiguous between "shift, keep trying to parse a real trailing statement" and "reduce, the label's target is empty" — bison's default shift-wins resolves every one of them toward the pre-existing behavior (state 598's shift table is completely unchanged; the 33 shifts area is bracketed-reduce-suppressed, not shift-suppressed), so no previously-parsing program's parse tree changes. SEMICOLON is unambiguous (shifts toward the explicit-SEMICOLON arm; not in the epsilon arm's per-state reduce lookahead here). `$default` (RBRACE, CASE, DEFAULT, and everything else outside `statement`'s FIRST set and SEMICOLON) reduces the empty form — exactly the previously-rejected shapes this fix targets. R/R unchanged (256); every OTHER pre-existing conflicted state's count is byte-identical before/after (state-diffed, see "Justification" below) — this is the whole delta. Full justification below. |
 
 ## What a justified delta looks like (the #92 precedent)
 
@@ -412,6 +414,156 @@ CONTENT is, making it the correct join key for "is this state genuinely new."
 
 `EXPECTED_SR` is 88 in `scripts/grammar-tripwire.sh`, updated in the same commit as
 this ledger entry.
+
+## Justification: gofmt-syntax-b review Fix 5a (labeled empty statement, 88 → 121 S/R)
+
+**The gap.** `label_stmt: identifier COLON statement` (Task 1, above) has no
+empty-statement arm, so Go's "goto-to-end-of-block" cleanup idiom —
+`goto done; ...; done:` immediately before the enclosing block's `}` — and its
+explicit-semicolon spelling `done: ;` were both parse errors, though both are
+legal Go (`go run` accepts them; verified). `--emit-tokens` on the bare form
+confirms no ASI semicolon is inserted between the label's `COLON` and the
+following `RBRACE`: `token_ends_value()` (`src/lexer/lexer.c`) does not include
+`TOKEN_COLON`, so the token stream is literally `... IDENT COLON RBRACE`, not
+`... IDENT COLON SEMICOLON RBRACE`. This rules out an `identifier COLON
+SEMICOLON`-only fix (zero-delta, tested below) as a complete solution — it
+handles `done: ;` but not bare `done:` — and confirms the bare form needs an
+actual epsilon-shaped grammar arm, not a lexer trick.
+
+**Two new arms**, both added to `label_stmt` in the same change:
+
+```
+label_stmt:
+    identifier COLON statement   { ... }        // Task 1, unchanged
+  | identifier COLON SEMICOLON   { NULL stmt }   // explicit `done: ;`
+  | identifier COLON             { NULL stmt }   // bare `done:` (epsilon)
+  ;
+```
+
+Both produce a `LabelStmtNode` with `stmt == NULL`. Every consumer already
+treats a NULL `label->stmt` as a no-op fall-through — this was written
+defensively into Task 1's original commit (725e864) even though the grammar
+could not produce NULL until this fix: `type_check_statement`'s
+`AST_LABEL_STMT` case (`return label->stmt ? type_check_statement(...) : 1;`),
+codegen's `AST_LABEL_STMT` case (`int ok = label->stmt ? codegen_generate_statement(...) : 1;`),
+`type_check_collect_goto_labels` (recurses via `type_check_collect_goto_labels(checker, label->stmt)`,
+and the function's own `if (!checker || !stmt) return;` guard makes NULL a
+no-op), and `ast_node_free`'s `AST_LABEL_STMT` case (`ast_node_free(label->stmt)`,
+and `ast_node_free` itself is `if (!node) return;` guarded). No consumer
+needed a code change for this fix — only the grammar and its two constructor
+call sites (`ast_label_stmt_new(lid->name, NULL, ...)`).
+
+**Isolated the two arms independently first** (same methodology as Task 1's
+family 2): built with only the `identifier COLON SEMICOLON` arm (zero delta —
+88/256, unchanged), only the `identifier COLON` epsilon arm (88 → **121**,
++33), and both together (also 121 — adding the SEMICOLON arm on top of the
+epsilon arm costs nothing extra; the two renumbered-but-fingerprint-identical
+states noted below are the only textual diff between the epsilon-only and
+combined `.output`s). The epsilon arm is the entire mechanism; the SEMICOLON
+arm is necessary for correctness (see "Why both arms are needed" below) but
+free.
+
+**The +33, precisely located.** State-diffed the full `.output` (state →
+`N shift/reduce` conflict-summary lines) between the unmodified baseline
+(the committed `src/parser/parser.y` immediately before this fix, 88/256) and
+the fixed grammar (121/256): **every single one of the pre-existing 35 conflicted states has an
+identical conflict count in both builds** (two states' NUMBERS shift — 717→718,
+751→752 — from the two new grammar rules being inserted earlier in the file,
+but their item sets are byte-identical, confirmed by direct diff of both
+states' full `.output` entries — pure renumbering, not new conflicts). The
+entire delta is **one new conflicted state**: state 598, which existed in the
+baseline (unconflicted — it already carried the sole item
+`label_stmt: identifier COLON • statement`, reached only by shifting `COLON`
+from the label-carrying dispatch state (Task 1's cur state 454) — see Task 1's
+family 2 entry above, "`COLON shift, and go to state 598` ... state 598 itself
+carries zero conflicts") and gains the two new items plus 33 S/R conflicts in
+the fixed grammar:
+
+```
+State 598
+  141 label_stmt: identifier COLON • statement
+  142           | identifier COLON • SEMICOLON
+  143           | identifier COLON •
+```
+
+No other production anywhere in the grammar shares this state (verified: it
+is reached only via the COLON shift out of the label-carrying dispatch state,
+which is itself only reachable from `statement:`-start — Go labels are
+statement-position-only, per Task 1's family 2 analysis) — so unlike family 2
+in Task 1, there is no de-merge/fan-out into multiple contexts to characterize;
+the entire mechanism lives in exactly one place.
+
+**Why 33, and why it's benign.** `statement` occurs on both sides of the new
+ambiguity: `statement_list: statement_list statement` means a label can be
+immediately followed by another real statement with no separator, so
+FOLLOW(label_stmt) overlaps `FIRST(statement)`. At state 598, the 33 tokens
+that can start a `statement` (`IDENTIFIER`, `STRING_LITERAL`, `INT_LITERAL`,
+`FLOAT_LITERAL`, `BREAK`, `CONST`, `CONTINUE`, `DEFER`, `FALLTHROUGH`, `FOR`,
+`FUNC`, `GO`, `GOTO`, `IF`, `MAP`, `RETURN`, `SELECT`, `SWITCH`, `VAR`, `TRUE`,
+`FALSE`, `NIL`, `COMPTIME`, `UNSAFE`, `ASM`, `ARENA`, `PARALLEL`, `OWNED`,
+`BORROWED`, `SHARED`, `MATCH`, `LBRACE`, `LBRACE_BODY`) each now have both a
+shift action (continue parsing `statement`, rule 141's item) and a bracketed,
+suppressed reduce (rule 143, the epsilon arm) in the `.output`:
+
+```
+    IDENTIFIER      shift, and go to state 4
+    ...
+    IDENTIFIER      [reduce using rule 143 (label_stmt)]
+    ...
+    SEMICOLON       shift, and go to state 702
+    $default        reduce using rule 143 (label_stmt)
+```
+
+Bison's default shift-over-reduce resolution means the epsilon reduce **never
+fires while a real statement could follow** — every one of the 33 tokens keeps
+shifting exactly as before this change, so no previously-parsing program's
+parse tree changes (the shift table itself is untouched; only bracketed,
+suppressed reduce alternatives were added). The epsilon reduce fires only via
+`$default` — every token NOT in the 33-item shift list and not `SEMICOLON`
+(chiefly `RBRACE`, `CASE`, `DEFAULT`) — which is exactly and only the
+previously-rejected "nothing follows the label" shape this fix targets. This
+is the same shift-wins "optional trailing construct" pattern already accepted
+at baseline for `return_stmt: RETURN • | RETURN • expression | ...` (state 419
+both before and after this fix — 21 S/R, byte-identical in both `.output`s,
+confirming this fix does not touch it) and `break_stmt`/`continue_stmt`'s
+optional label (Task 1's family 1, states 411/412) — not a new ambiguity
+*class*, a new instance of one already baselined twice.
+
+**Why both arms are needed** (not redundant): with only the epsilon arm,
+`done: ;` fails — on lookahead `SEMICOLON` at state 598, the epsilon rule
+reduces (SEMICOLON is not in `FIRST(statement)`), producing a bare
+`label_stmt`; but `statement: label_stmt` has no `SEMICOLON`-following
+alternative (there is no bare-`SEMICOLON` statement production anywhere in
+this grammar), so the SEMICOLON is left dangling and `statement_list` fails to
+consume it. Adding `identifier COLON SEMICOLON` as its own arm makes the
+SEMICOLON get shifted and consumed as part of `label_stmt` itself — confirmed
+unambiguous in the `.output` (`SEMICOLON shift, and go to state 702`, no
+bracketed reduce on SEMICOLON at state 598).
+
+**Tooling note:** `bison -Wcounterexamples` times out on this grammar before
+reaching state 598 (same "~6s internal budget, exhausted on pre-existing
+`wasm_memory`/`IMPORT` conflicts long before this fix's own state" limitation
+recorded in Task 1's family 2 entry above) — used the same `bison -v -d`
+state-diff methodology instead, made simpler here because state 598's item set
+is small (3 items, one production) and not shared with any other context, so
+no fingerprint-matching across renumbered states was needed for the state
+itself (only for the two incidentally-renumbered, pre-existing states 717/718
+and 751/752 noted above).
+
+**Behavioral verification (compiled probes, `bin/goo`, real exit codes):**
+- Full golden suite (`bash scripts/run_golden.sh`): count only grows (+1,
+  `label_empty_probe` — both the bare `done:` and explicit `done: ;` forms in
+  one fixture, `go run`-derived expected output). Every pre-existing fixture's
+  expected output is untouched, differentially confirming no parse-behavior
+  change for any construct the existing corpus exercises.
+- `make test`: unchanged pass count.
+- `--emit-tokens` probes (both forms) confirm the token streams described
+  above (`... IDENT COLON RBRACE` for the bare form, `... IDENT COLON
+  SEMICOLON RBRACE` for the explicit form) — the grammar arms match the
+  ACTUAL token streams the lexer produces, not an assumed ASI behavior.
+
+`EXPECTED_SR` is 121 in `scripts/grammar-tripwire.sh`, updated in the same
+commit as this ledger entry.
 
 ## v1 parser strategy: LALR(1) + lexer feedback (decision record, 2026-07-08)
 

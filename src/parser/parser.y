@@ -1261,6 +1261,58 @@ label_stmt:
         ast_node_free($1);
         $$ = (ASTNode*)label_node;
     }
+    // Fix 5a: a label whose target is the implicit empty statement — Go's
+    // "goto-to-end-of-block" cleanup idiom (`goto done; ...; done: }`,
+    // `identifier COLON` with nothing else before the enclosing block ends
+    // — no ASI semicolon is inserted between COLON and the following RBRACE/
+    // CASE/DEFAULT: COLON is not a value-ending token, verified with
+    // --emit-tokens). The wrapped `stmt` is NULL; every consumer
+    // (type_check_statement's AST_LABEL_STMT case, codegen's AST_LABEL_STMT
+    // case, type_check_collect_goto_labels, ast_node_free) already treats
+    // a NULL label->stmt as a no-op fall-through, so the label is still a
+    // valid goto target that just falls through to whatever follows.
+    //
+    // Conflict-ledger note (see references/conflict-ledger.md): this arm
+    // (plus the explicit-SEMICOLON arm below) lands EVERY new conflict in
+    // exactly one pre-existing, non-shared state — the `identifier COLON •`
+    // dispatch reached only from label_stmt's own predecessor states (base
+    // state 598, single item, no other production shares it) — because
+    // `statement` occurs on both sides of the ambiguity (FOLLOW(label_stmt)
+    // overlaps FIRST(statement), since a label can be followed by another
+    // statement in the same list). Bison's default shift-preference resolves
+    // every one of those token classes in favor of continuing to parse a
+    // real trailing statement — IDENTICAL to today's behavior for every
+    // program that already parses — and only reduces the empty form via
+    // $default when the lookahead cannot start a statement at all (RBRACE,
+    // CASE, DEFAULT, ...). This is the same shift-wins "optional trailing
+    // construct" pattern already accepted at baseline for RETURN's optional
+    // expression (state 419, 21 S/R) and BREAK/CONTINUE's optional label
+    // (states 411/412) — additive only, verified via state-diff that every
+    // pre-existing conflicted state's count is unchanged.
+    | identifier COLON SEMICOLON {
+        // Explicit spelling: `done: ;` — the label wraps a literal empty
+        // statement (a lone `;`), not an implicit one. Same NULL-stmt AST
+        // shape as the epsilon arm below; kept as its own production
+        // (rather than folded into the epsilon arm) because the SEMICOLON
+        // must actually be consumed here, or it is left dangling for
+        // statement_list to fail on (there is no bare-SEMICOLON statement
+        // production).
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    | identifier COLON {
+        // Implicit spelling: `done:` with nothing between the colon and
+        // whatever ends the enclosing statement list (most commonly the
+        // block's closing `}`). See the conflict-ledger note above for why
+        // this is safe: reached only on lookahead tokens that cannot start
+        // a `statement`.
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
     ;
 
 simple_stmt:

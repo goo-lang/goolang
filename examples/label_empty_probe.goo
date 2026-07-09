@@ -1,0 +1,78 @@
+// label_empty_probe (gofmt-syntax-b Fix 5a): a label whose target is the
+// implicit empty statement — the classic Go "goto-to-end-of-block" cleanup
+// idiom. Two spellings, both legal Go:
+//   (1) bareLabelEnd:    `done:` immediately before the enclosing block's
+//       `}`, no trailing statement and no semicolon. No ASI semicolon is
+//       inserted here — COLON is not a value-ending token (verified with
+//       --emit-tokens: the token stream is `... IDENT COLON RBRACE`, no
+//       synthesized SEMICOLON) — so this exercises the grammar's own
+//       epsilon-labeled-statement production, not a lexer trick.
+//   (2) explicitEmptyLabel: `done2: ;` — the same idiom spelled with an
+//       explicit empty statement (a lone `;`).
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the VALUE
+// below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func bareLabelEnd() {
+//   	i := 0
+//   loop:
+//   	i++
+//   	if i < 3 {
+//   		goto loop
+//   	}
+//   	println(i)
+//   	goto done
+//   	println(999)
+//   done:
+//   }
+//   func explicitEmptyLabel() {
+//   	j := 0
+//   loop2:
+//   	j++
+//   	if j < 3 {
+//   		goto loop2
+//   	}
+//   	println(j)
+//   	goto done2
+//   	println(999)
+//   done2: ;
+//   }
+//   func main() {
+//   	bareLabelEnd()
+//   	explicitEmptyLabel()
+//   }
+// `go run` stderr: "3\n3\n"
+package main
+
+func bareLabelEnd() {
+	i := 0
+loop:
+	i++
+	if i < 3 {
+		goto loop
+	}
+	println(i)
+	goto done
+	println(999)
+done:
+}
+
+func explicitEmptyLabel() {
+	j := 0
+loop2:
+	j++
+	if j < 3 {
+		goto loop2
+	}
+	println(j)
+	goto done2
+	println(999)
+done2: ;
+}
+
+func main() {
+	bareLabelEnd()
+	explicitEmptyLabel()
+}
