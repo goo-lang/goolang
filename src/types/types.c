@@ -385,10 +385,15 @@ Type* type_nullable(Type* base_type) {
         type->size = base_type->size + sizeof(char);  // value + null flag
         type->align = base_type->align;
         
-        // Create name like "?int"
+        // Create name like "?int". Render the base via type_to_string, not
+        // bare ->name: structs keep their declared name in
+        // data.struct_type.name and have a NULL ->name, so the bare field
+        // rendered every ?Struct as the two-character string "??" in
+        // diagnostics (found by the P2.5 review on the ?Struct==?Struct
+        // reject path).
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "?%s", base_type->name ? base_type->name : "?");
+            snprintf(name, 64, "?%s", type_to_string(base_type));
             type->name = name;
         }
     }
