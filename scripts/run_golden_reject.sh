@@ -71,6 +71,19 @@ for goo in "$REJECT_DIR"/*.goo; do
         fail=$((fail+1)); failed+=("$base"); continue
     fi
 
+    # Global negative assertion (P2.8 FIX F1): TYPE_POISON's internal
+    # "<poisoned>" marker (see types.c) exists purely to let the checker
+    # recover scope state after a failed declaration — it must never reach
+    # a user-facing diagnostic. Its presence here means some diagnostic
+    # site is missing a type_is_poison guard (cascade-suppression
+    # regression). Applied to every fixture uniformly, mirroring the
+    # LLVM-noise check above.
+    if grep -qF -- '<poisoned>' "$out_stderr"; then
+        echo "FAIL  $base (internal <poisoned> marker leaked into stderr)"
+        sed 's/^/    /' "$out_stderr" | head -10
+        fail=$((fail+1)); failed+=("$base"); continue
+    fi
+
     if ! grep -qF -- "$(cat "$errfile")" "$out_stderr"; then
         echo "FAIL  $base (stderr mismatch: expected substring not found)"
         echo "  expected: $(cat "$errfile")"

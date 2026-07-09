@@ -1574,6 +1574,16 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
     if (!target || target->kind != TYPE_INTERFACE) {
         return type_compatible(src, target);
     }
+
+    // P2.8 FIX F1 (cascade-suppression completeness): a poisoned source
+    // (bound to a previously failed declaration — see register_declared_
+    // names_after_failure) must not spawn a SECOND diagnostic here. Single
+    // choke point: every check_interface_assign caller (var-decl,
+    // multi-assign, call arguments, struct/map/array-literal elements,
+    // index-assign, select-case bind) routes through this one function, so
+    // guarding this entry covers all of them uniformly — mirrors the
+    // binary-op choke point's silent-pass pattern.
+    if (src && type_is_poison(src)) return 1;
     // F3 fix: bare nil literal (TYPE_UNKNOWN, the sentinel type_check_literal
     // gives TOKEN_NIL) is Go's SIXTH nilable kind — interface — alongside
     // the five type_is_nilable_ref_kind covers. Must be short-circuited
@@ -1797,9 +1807,19 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
     if (!final_type) {
         final_type = inferred_type;
     } else if (inferred_type) {
-        // Check compatibility. An interface-typed target accepts any concrete
-        // implementer (P4-3); check_interface_assign emits its own diagnostic.
-        if (declared_type->kind == TYPE_INTERFACE) {
+        // P2.8 FIX F1 (cascade-suppression completeness): an initializer
+        // bound to a previously failed declaration (see
+        // register_declared_names_after_failure — e.g. `y := f(); var x int
+        // = y`) must not spawn a SECOND diagnostic here. There's no sound
+        // value to compare against declared_type anyway, so accept it
+        // silently: final_type stays declared_type (set above), skipping
+        // both compatibility branches below.
+        if (type_is_poison(inferred_type)) {
+            // fall through: bind as declared_type, no diagnostic.
+        } else if (declared_type->kind == TYPE_INTERFACE) {
+            // Check compatibility. An interface-typed target accepts any
+            // concrete implementer (P4-3); check_interface_assign emits its
+            // own diagnostic.
             if (!check_interface_assign(checker, inferred_type, declared_type,
                                         var_decl->base.pos)) {
                 register_declared_names_after_failure(checker, var_decl, declared_type);
@@ -2492,6 +2512,14 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
             }
             Type* tt = type_check_expression(checker, t);
             if (!tt) return 0;
+            // P2.8 FIX F1 (cascade-suppression completeness): a value bound
+            // to a previously failed declaration (see register_declared_
+            // names_after_failure) must not spawn a SECOND diagnostic here.
+            // There's no sound value to compare against tt anyway, so
+            // accept it silently and move to the next target.
+            if (type_is_poison(vt)) {
+                continue;
+            }
             // An interface-typed target accepts any concrete implementer
             // (P4-3) and any interface (permissive). check_interface_assign
             // emits its own "X does not implement Y" diagnostic; for non-
@@ -2870,9 +2898,14 @@ int type_check_if_stmt(TypeChecker* checker, ASTNode* stmt) {
     Type* cond_type = type_check_expression(checker, if_stmt->condition);
     if (!cond_type) return 0;
     
-    // Condition must be boolean
-    if (cond_type->kind != TYPE_BOOL) {
-        type_error(checker, if_stmt->condition->pos, 
+    // Condition must be boolean. P2.8 FIX F1 (cascade-suppression
+    // completeness): a poisoned condition (bound to a previously failed
+    // declaration — see register_declared_names_after_failure) must not
+    // spawn a SECOND diagnostic here; silently accept it (mirroring the
+    // binary-op choke point's silent-pass pattern) and let the then/else
+    // branches still be checked for their own, unrelated errors.
+    if (cond_type->kind != TYPE_BOOL && !type_is_poison(cond_type)) {
+        type_error(checker, if_stmt->condition->pos,
                   "If condition must be boolean, got %s", type_to_string(cond_type));
         return 0;
     }

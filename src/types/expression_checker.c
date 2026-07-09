@@ -2101,11 +2101,24 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
     
     UnaryExprNode* unary = (UnaryExprNode*)expr;
     Type* operand_type = type_check_expression(checker, unary->operand);
-    
+
     if (!operand_type) return NULL;
-    
+
+    // P2.8 FIX F1 (cascade-suppression completeness): an operand bound to a
+    // previously failed declaration (see register_declared_names_after_
+    // failure) must not spawn a SECOND diagnostic here — propagate the
+    // poison silently, before any operator-specific check below gets a
+    // chance to reject it (numeric, boolean, integer, dereference, ...).
+    // Single choke point, mirroring type_check_binary_expr's guard: every
+    // unary operator's operand check lives in the switch below, so guarding
+    // this one entry covers all of them uniformly.
+    if (type_is_poison(operand_type)) {
+        expr->node_type = operand_type;
+        return operand_type;
+    }
+
     Type* result_type = NULL;
-    
+
     switch (unary->operator) {
         case TOKEN_MINUS:
         case TOKEN_PLUS:
@@ -3586,6 +3599,21 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
 
+        // P2.8 FIX F1 (cascade-suppression completeness): an argument bound
+        // to a previously failed declaration (see
+        // register_declared_names_after_failure) must not spawn a SECOND
+        // diagnostic here. Mirrors the return-statement guard's placement
+        // (type_checker.c) and the binary-op choke point's (this file,
+        // type_check_binary_expr) — skip every check below for this
+        // argument (comptime-function-value, comptime-param capture, and
+        // the type-compatibility comparisons that stringify arg_type) and
+        // move on to the next one.
+        if (type_is_poison(arg_type)) {
+            arg_count++;
+            arg = arg->next;
+            continue;
+        }
+
         // Fix 2 (comptime-param functions are not first-class values):
         // `takesFunc(fill)` would capture fill's VALUE into takesFunc's
         // func-typed parameter — a Variable with no func_decl_node on the
@@ -4197,6 +4225,19 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
 
     Type* expr_type = type_check_expression(checker, selector->expr);
     if (!expr_type) return NULL;
+
+    // P2.8 FIX F1 (cascade-suppression completeness): a poisoned base
+    // expression (bound to a previously failed declaration — see
+    // register_declared_names_after_failure) must not spawn a SECOND
+    // diagnostic here. Single choke point, mirroring type_check_binary_
+    // expr's guard: every struct/package/interface resolution below falls
+    // through to "Selector on non-struct, non-package type" on a mismatch,
+    // so guarding this one entry (e.g. a poisoned composite-literal
+    // variable's `.field` access) covers all of them uniformly.
+    if (type_is_poison(expr_type)) {
+        expr->node_type = expr_type;
+        return expr_type;
+    }
 
     // Package member access: when the left side is an imported package
     // identifier, resolve the selector against the stdlib symbol table.

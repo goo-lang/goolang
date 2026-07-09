@@ -1,0 +1,18 @@
+// erru_poison_if_cond_reject (P2.8 FIX F1): a name bound to a failed `:=`
+// initializer (f() returns !int, unhandled) is registered as TYPE_POISON.
+// Before this fix, using the poisoned name as an IF CONDITION fell through
+// to type_check_if_stmt's boolean-kind check and leaked a second
+// diagnostic ("If condition must be boolean, got <poisoned>"). This pins
+// that only the root diagnostic is emitted; run_golden_reject.sh's global
+// negative assertion additionally guards against the "<poisoned>" marker
+// itself reappearing in stderr.
+package main
+
+func f() !int { return 3 }
+
+func main() {
+	x := f()
+	if x > 0 {
+		println(1)
+	}
+}
