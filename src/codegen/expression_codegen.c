@@ -1618,6 +1618,27 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             return value;
         }
 
+        // Reassignment of a bare nil literal to a pointer/slice/map/channel/
+        // function lvalue (P2.2 option A: e.g. `p = nil`, `s = nil`,
+        // `f = nil`). Not just a var-decl init — Go code commonly clears an
+        // existing pointer/slice/func this way. Intercept BEFORE the generic
+        // RHS path below: the untyped nil fallback (codegen_generate_expression
+        // with no expected-type context) produces a bare scalar null, which
+        // matches a pointer/map/chan store by LLVM-opaque-pointer coincidence
+        // but is the WRONG shape for slice ({ptr,len,cap}) and func
+        // ({fn,env}) — an aggregate store target fed a scalar fails LLVM
+        // verification. Mirrors the ?T intercept immediately above.
+        if (target->goo_type && type_is_nilable_ref_kind(target->goo_type) &&
+            binary->right->type == AST_LITERAL &&
+            ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL) {
+            ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, target->goo_type);
+            if (!nil_val) return NULL;
+            LLVMBuildStore(codegen->builder, nil_val->llvm_value, target->llvm_value);
+            ValueInfo* ret = value_info_new(NULL, nil_val->llvm_value, target->goo_type);
+            value_info_free(nil_val);
+            return ret;
+        }
+
         // Generate the right side value. If it is itself an lvalue (e.g.
         // `a[i] = b[j]` or `x = s.y`), dereference it to the scalar value
         // before storing — mirroring the auto-load consumers do elsewhere.
@@ -1815,6 +1836,65 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
 
             Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
             value_info_free(fv);
+            return value_info_new(NULL, result, bool_type);
+        }
+    }
+
+    // pointer/slice/map/chan == nil / nil == ... (P2.2 option A). Mirrors
+    // the funcval block above: do NOT evaluate the nil side (an untyped nil
+    // has no expected-type context here, so codegen_generate_expression
+    // would emit a generic i8* null of the wrong shape for a slice) —
+    // evaluate only the reference-kind operand and test its nil-ness
+    // directly. Pointer/map/chan lower to a bare LLVM pointer, so a
+    // straight icmp-eq-null suffices; slice lowers to {ptr,len,cap}, so
+    // extract field 0 (the backing pointer) first — Go defines `s == nil`
+    // as "the backing array pointer is nil", independent of len/cap (an
+    // empty-but-non-nil slice, e.g. `[]int{}`, is != nil).
+    if (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE) {
+        bool right_is_nil = (binary->right->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL);
+        bool left_is_nil  = (binary->left->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->left)->literal_type == TOKEN_NIL);
+
+        ASTNode* refkind_node = NULL;
+        if (right_is_nil) {
+            Type* lt = type_check_expression(checker, binary->left);
+            if (lt && (lt->kind == TYPE_POINTER || lt->kind == TYPE_SLICE ||
+                       lt->kind == TYPE_MAP || lt->kind == TYPE_CHANNEL)) {
+                refkind_node = binary->left;
+            }
+        } else if (left_is_nil) {
+            Type* rt = type_check_expression(checker, binary->right);
+            if (rt && (rt->kind == TYPE_POINTER || rt->kind == TYPE_SLICE ||
+                       rt->kind == TYPE_MAP || rt->kind == TYPE_CHANNEL)) {
+                refkind_node = binary->right;
+            }
+        }
+
+        if (refkind_node) {
+            ValueInfo* rv = codegen_generate_expression(codegen, checker, refkind_node);
+            if (!rv) return NULL;
+
+            // Auto-load if the operand is an lvalue (e.g. a plain identifier).
+            if (rv->is_lvalue && rv->goo_type) {
+                LLVMTypeRef rt2 = codegen_type_to_llvm(codegen, rv->goo_type);
+                if (rt2) {
+                    rv->llvm_value = LLVMBuildLoad2(codegen->builder, rt2, rv->llvm_value, "refkind_load");
+                    rv->is_lvalue = 0;
+                }
+            }
+
+            LLVMValueRef ptr_word = (rv->goo_type && rv->goo_type->kind == TYPE_SLICE)
+                ? LLVMBuildExtractValue(codegen->builder, rv->llvm_value, 0, "slice_ptr")
+                : rv->llvm_value;
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMValueRef null_ptr = LLVMConstPointerNull(i8ptr);
+            LLVMValueRef result = LLVMBuildICmp(codegen->builder,
+                binary->operator == TOKEN_EQ ? LLVMIntEQ : LLVMIntNE,
+                ptr_word, null_ptr, "refkind_nilcmp");
+
+            Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+            value_info_free(rv);
             return value_info_new(NULL, result, bool_type);
         }
     }

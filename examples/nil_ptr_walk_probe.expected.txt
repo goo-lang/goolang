@@ -1,0 +1,4 @@
+PASS: zero-value pointer is nil
+6
+PASS: field reassigned to nil
+1

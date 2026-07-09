@@ -808,7 +808,19 @@ int type_compatible(const Type* from, const Type* to) {
         if (from->kind == TYPE_UNKNOWN) return 1;
         return type_compatible(from, to->data.nullable.base_type);
     }
-    
+
+    // Go-compatible bare nil (P2.2 option A): nil literal (TYPE_UNKNOWN) is
+    // assignable to any of the five kinds that have a natural zero/nil LLVM
+    // representation (codegen materializes it per-kind; see
+    // codegen_generate_null_literal). This is a SEPARATE path from the ?T
+    // tag-nil arm above: that one sets an is_null flag on a {i1,T} wrapper,
+    // this one is a bare zero value with no tag at all — never conflate the
+    // two (a `?*T = nil` must keep hitting the TYPE_NULLABLE arm above, not
+    // this one).
+    if (from->kind == TYPE_UNKNOWN && type_is_nilable_ref_kind(to)) {
+        return 1;
+    }
+
     // Handle ownership qualifiers
     if (from->kind == TYPE_QUALIFIED && to->kind == TYPE_QUALIFIED) {
         return type_compatible(from->data.qualified.base_type, to->data.qualified.base_type);
@@ -866,6 +878,23 @@ int type_is_pointer_like(const Type* type) {
     return type->kind == TYPE_POINTER || type->kind == TYPE_SLICE ||
            type->kind == TYPE_MAP || type->kind == TYPE_CHANNEL ||
            type->kind == TYPE_STRING;
+}
+
+// Go-compatible bare-nil kinds (P2.2 option A): pointer, slice, map,
+// channel, function — the five kinds with a natural zero/nil LLVM
+// representation (see codegen_generate_null_literal) that nil is now
+// assignment- and EQ/NE-comparable to. Distinct from type_is_pointer_like
+// just above: that one also counts TYPE_STRING (not nilable — a string is
+// always a valid, non-nil {ptr,len} even when empty) and omits
+// TYPE_FUNCTION (which is nilable). Single source of truth for every
+// codegen intercept site that must widen its existing ?T-only nil-literal
+// handling to also cover bare-kind nil, so the kind list can't drift
+// between call sites.
+int type_is_nilable_ref_kind(const Type* type) {
+    if (!type) return 0;
+    return type->kind == TYPE_POINTER || type->kind == TYPE_SLICE ||
+           type->kind == TYPE_MAP || type->kind == TYPE_CHANNEL ||
+           type->kind == TYPE_FUNCTION;
 }
 
 int type_is_nullable(const Type* type) {

@@ -837,6 +837,7 @@ int type_is_float(const Type* type);
 int type_is_numeric(const Type* type);
 int type_is_signed(const Type* type);
 int type_is_pointer_like(const Type* type);
+int type_is_nilable_ref_kind(const Type* type);
 int type_is_nullable(const Type* type);
 int type_is_error_union(const Type* type);
 int type_is_error(const Type* type);

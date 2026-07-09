@@ -353,6 +353,40 @@ Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* righ
         return bool_type;
     }
 
+    // pointer/slice/map/chan == nil / nil == ... (P2.2 option A): the
+    // remaining four Go-compatible bare-nil kinds (func handled above).
+    // == / != only — Go forbids ordering pointer/slice/map/chan against
+    // anything, nil included. Codegen reads the pointer word directly (a
+    // slice extracts its backing-ptr field first) — no struct-to-nil LLVM
+    // comparison beyond that single icmp is emitted.
+    if ((op == TOKEN_EQ || op == TOKEN_NE) &&
+        (((left_type->kind == TYPE_POINTER || left_type->kind == TYPE_SLICE ||
+           left_type->kind == TYPE_MAP || left_type->kind == TYPE_CHANNEL) &&
+          right_type->kind == TYPE_UNKNOWN) ||
+         (left_type->kind == TYPE_UNKNOWN &&
+          (right_type->kind == TYPE_POINTER || right_type->kind == TYPE_SLICE ||
+           right_type->kind == TYPE_MAP || right_type->kind == TYPE_CHANNEL)))) {
+        return bool_type;
+    }
+
+    // Ordered comparison (< <= > >=) against nil is never valid for any of
+    // the five reference-like kinds — Go: "operator < not defined on
+    // pointer". Without this explicit gate, `nil < p` would slip through
+    // the generic type_compatible fallback below: type_compatible is an
+    // ASSIGNMENT-compatibility predicate (now accepts nil for these five
+    // kinds per P2.2 option A) that doesn't know which operator is being
+    // checked, so TYPE_UNKNOWN reads as compatible regardless of op. ==/!=
+    // are the dedicated arms above (func's and this one's) and are
+    // unaffected by this guard.
+    if (op != TOKEN_EQ && op != TOKEN_NE) {
+        if ((type_is_nilable_ref_kind(left_type) && right_type->kind == TYPE_UNKNOWN) ||
+            (left_type->kind == TYPE_UNKNOWN && type_is_nilable_ref_kind(right_type))) {
+            type_error(checker, pos, "Cannot compare incompatible types %s and %s",
+                      type_to_string(left_type), type_to_string(right_type));
+            return NULL;
+        }
+    }
+
     // Check if types are compatible for comparison
     if (!type_compatible(left_type, right_type)) {
         type_error(checker, pos, "Cannot compare incompatible types %s and %s",

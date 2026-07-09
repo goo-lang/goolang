@@ -1613,10 +1613,13 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 param_type = func_goo_type->data.function.param_types[i];
             }
 
-            if (param_type && param_type->kind == TYPE_NULLABLE &&
+            if (param_type &&
+                (param_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(param_type)) &&
                 arg->type == AST_LITERAL &&
                 ((LiteralNode*)arg)->literal_type == TOKEN_NIL) {
-                // nil literal → build the param's null-nullable directly.
+                // nil literal → build the param's null-nullable (?T) or bare
+                // zero value (P2.2 option A: pointer/slice/map/chan/func)
+                // directly, using the param's declared type as context.
                 ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, param_type);
                 if (!nil_val) {
                     free(args);

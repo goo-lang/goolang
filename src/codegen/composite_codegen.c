@@ -553,7 +553,15 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
         // P2-4: a `?T` field initialized with the nil literal builds the field's
         // null-nullable directly, mirroring the call-arg nullable path. Without
         // this the raw nil would be InsertValue'd into the {i1,T} slot.
-        if (field_type && field_type->kind == TYPE_NULLABLE &&
+        // P2.2 option A widened this to also cover a BARE (non-?T) pointer/
+        // slice/map/channel/function field (e.g. `Node{next: nil}` with
+        // `next *Node`): without the widened gate, the fallthrough
+        // codegen_generate_expression call below would evaluate nil with no
+        // expected-type context and, for a slice/function field, build a
+        // scalar null pointer where an InsertValue expects an aggregate —
+        // an LLVM verifier failure, not just a wrong value.
+        if (field_type &&
+            (field_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(field_type)) &&
             v->type == AST_LITERAL &&
             ((LiteralNode*)v)->literal_type == TOKEN_NIL) {
             ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, field_type);
@@ -1022,6 +1030,12 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
     for (ASTNode* e = first_elem; e; e = e->next) count++;
 
     int elem_is_nullable = (elem_type && elem_type->kind == TYPE_NULLABLE);
+    // P2.2 option A: a bare (non-?T) pointer/slice/map/channel/function
+    // element also needs the expected-type-aware nil intercept below (e.g.
+    // `[]*Node{a, nil, b}`) — kept as a SEPARATE flag from elem_is_nullable
+    // (used below for the ?T-specific auto-wrap of a non-nil element, which
+    // must NOT fire for these bare kinds).
+    int elem_is_nilable_bare = type_is_nilable_ref_kind(elem_type);
 
     LLVMValueRef* elem_vals = count ? calloc(count, sizeof(LLVMValueRef)) : NULL;
     // Per-element source signedness, captured at collection time (this loop is
@@ -1033,7 +1047,7 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
     int* elem_signed = count ? calloc(count, sizeof(int)) : NULL;
     size_t idx = 0;
     for (ASTNode* e = first_elem; e; e = e->next, idx++) {
-        if (elem_is_nullable && e->type == AST_LITERAL &&
+        if ((elem_is_nullable || elem_is_nilable_bare) && e->type == AST_LITERAL &&
             ((LiteralNode*)e)->literal_type == TOKEN_NIL) {
             ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, elem_type);
             if (!nil_val) { free(elem_vals); free(elem_signed); return NULL; }

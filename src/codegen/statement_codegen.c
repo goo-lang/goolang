@@ -1603,7 +1603,8 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                                     i < function_return_type->data.struct_type.field_count)
                                    ? function_return_type->data.struct_type.fields[i].type : NULL;
 
-                if (field_type && field_type->kind == TYPE_NULLABLE &&
+                if (field_type &&
+                    (field_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(field_type)) &&
                     v->type == AST_LITERAL &&
                     ((LiteralNode*)v)->literal_type == TOKEN_NIL) {
                     ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, field_type);
@@ -1661,14 +1662,19 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         }
 
 
-        // Nullable nil-return intercept: `return nil` inside a `?T` function.
-        // Without this, codegen_generate_null_literal produces a void* null
-        // pointer (no expected-type context), which mismatches the `{i1, T}`
-        // nullable return type and fails module verification. Intercept here,
-        // generate the correct {is_null=1, zero_value} struct, and return it
+        // Nil-return intercept: `return nil` inside a `?T` function, OR
+        // (P2.2 option A) a function whose return type is a bare pointer/
+        // slice/map/channel/function. Without this, codegen_generate_
+        // null_literal produces a void* null pointer (no expected-type
+        // context), which mismatches the `{i1, T}` nullable return type (or
+        // a slice/func's aggregate return type) and fails module
+        // verification. Intercept here, generate the correct
+        // {is_null=1, zero_value} struct (or bare zero value), and return it
         // directly — same pattern as var_decl's `var b ?T = nil` fix.
 #if LLVM_AVAILABLE
-        if (function_return_type && function_return_type->kind == TYPE_NULLABLE &&
+        if (function_return_type &&
+            (function_return_type->kind == TYPE_NULLABLE ||
+             type_is_nilable_ref_kind(function_return_type)) &&
             return_stmt->values->type == AST_LITERAL &&
             ((LiteralNode*)return_stmt->values)->literal_type == TOKEN_NIL) {
             ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, function_return_type);
