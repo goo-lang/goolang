@@ -1,0 +1,13 @@
+// nullable_ordered_reject (T3, P2.5): ordered comparisons (<, <=, >, >=) on
+// ?T remain rejected — only == and != get tag-aware nullable semantics.
+// Without an explicit reject here, `?int < ?int` would fall through to the
+// generic, operator-blind type_compatible fallback, get ACCEPTED (matching
+// bases), and crash codegen with "Failed to generate binary operation" (no
+// ordering lowering exists for a {i1,T} struct).
+package main
+
+func main() {
+	var a ?int = 1
+	var b ?int = 2
+	_ = a < b
+}

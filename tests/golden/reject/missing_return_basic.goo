@@ -1,0 +1,13 @@
+// P2.4 reject: a value-returning function whose body has no return
+// statement anywhere — falls off the end unconditionally. Go: "missing
+// return at end of function".
+package main
+
+func f() int {
+	x := 1
+	println(x)
+}
+
+func main() {
+	println(f())
+}

@@ -1,0 +1,19 @@
+// dup_type_name_probe (P2.3, T1 regression pin): two top-level `type Foo
+// struct` declarations with the same name must still be REJECTED with
+// today's diagnostic ("Type 'Foo' already declared"), unchanged by hoisting
+// shell registration into a pre-pass. Before the pre-pass, this collision
+// was caught when the second decl's shell registration hit the name already
+// bound by the first; after the pre-pass, the SAME collision is caught
+// earlier (while walking prog->decls to register shells) but must produce
+// the identical message.
+package main
+
+type Foo struct {
+	x int
+}
+
+type Foo struct {
+	y int
+}
+
+func main() {}

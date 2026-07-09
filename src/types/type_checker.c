@@ -583,6 +583,13 @@ void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type
 // enabling forward references between functions.
 static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func);
 
+// P2.3/T1: register an empty TYPE_STRUCT/TYPE_ENUM shell for every top-level
+// struct/enum `type` decl before pass 1 resolves any body (defined below,
+// near type_check_type_decl — it hoists that function's own per-decl shell
+// primitive). Enables forward and mutual type references the same way
+// declare_function_signature enables forward function references.
+static int declare_type_shells(TypeChecker* checker, ASTNode* decls);
+
 int type_check_program(TypeChecker* checker, ASTNode* program) {
     if (!checker || !program) return 0;
 
@@ -632,6 +639,15 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
             }
         }
     }
+
+    // P2.3/T1: pre-pass — register every top-level struct/enum's empty shell
+    // BEFORE pass 1 resolves any declaration body, so a forward reference
+    // (`type A struct { b *B }` declared before `type B`) or mutual pair
+    // (A<->B pointer fields, either order) finds its target already in scope.
+    // Must run before pass 1 (not folded into it) because pass 1 resolves
+    // bodies interleaved with registrations in source order — exactly the
+    // ordering this pre-pass exists to break.
+    if (!declare_type_shells(checker, prog->decls)) return 0;
 
     // Two-pass declaration walk (Go package-scope semantics: a function body may
     // reference any function declared anywhere in the file, not just above it).
@@ -696,6 +712,13 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
                 }
             }
         }
+    }
+
+    // P2.3/T1: mirror type_check_program's shell pre-pass so forward and
+    // mutual struct/enum references resolve inside a vendored stdlib package
+    // too — real upstream Go source relies on this pervasively.
+    if (!declare_type_shells(checker, prog->decls)) {
+        return 0;  // scope/current_package left set; caller aborts the build
     }
 
     // Two-pass declaration walk (same as type_check_program): register all
@@ -1359,6 +1382,25 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     int result = 1;
     if (func->body) {
         result = type_check_statement(checker, func->body);
+    }
+
+    // P2.4: missing-return analysis. Only a value-returning function needs
+    // its body to end in a terminating statement (Go: a void function may
+    // always fall off the end) — checked only once the body itself passed
+    // ordinary type-checking, so a genuine type error inside the body is
+    // reported instead of being masked by this diagnostic. Positioned at
+    // func->body's own pos, which get_current_position() (parser_actions.c)
+    // stamps at the `LBRACE statement_list RBRACE` reduction — i.e. at (or
+    // immediately after) the function's closing brace. This makes codegen's
+    // ret-zero fallback (function_codegen.c, "Add return if missing")
+    // unreachable for well-typed user code — that fallback itself is
+    // intentionally left in place (load-bearing for the terminator-blind
+    // LLVM plumbing), not removed by this task.
+    if (result && func->body && return_type && return_type->kind != TYPE_VOID) {
+        if (!stmt_is_terminating(func->body)) {
+            type_error(checker, func->body->pos, "missing return");
+            result = 0;
+        }
     }
 
     checker->fallthrough_ctx = saved_fallthrough_ctx;
@@ -2059,6 +2101,49 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
     return 1;
 }
 
+// P2.3/T1: the pre-pass hoisted out of this function's own former inline
+// shell-creation code (both type_check_program and type_check_package run it
+// over the full decl list before pass 1 touches any body — see their
+// declare_type_shells(checker, prog->decls) calls). Registering every
+// top-level struct/enum shell up front, before ANY body resolves, is what
+// makes forward references (`type A struct { b *B }` before `type B`) and
+// mutual pairs (A<->B pointer fields, either declaration order) resolve:
+// type_from_ast finds every sibling name already in scope no matter which
+// decl is being processed.
+//
+// Duplicate top-level struct/enum names are caught HERE, on the second
+// registration attempt — the identical diagnostic and codepath
+// type_check_type_decl used to produce on its own (now-removed) inline
+// shell-creation duplicate check, so existing reject fixtures are unaffected
+// by moving the check earlier.
+static int declare_type_shells(TypeChecker* checker, ASTNode* decls) {
+    for (ASTNode* decl = decls; decl; decl = decl->next) {
+        if (decl->type != AST_TYPE_DECL) continue;
+        TypeDeclNode* td = (TypeDeclNode*)decl;
+        if (!td->name || !td->type) continue;  // tolerate malformed, mirrors type_check_type_decl
+
+        ASTNodeType body_kind = td->type->type;
+        if (body_kind != AST_STRUCT_TYPE && body_kind != AST_ENUM_TYPE) continue;
+
+        Type* shell = type_new(body_kind == AST_ENUM_TYPE ? TYPE_ENUM : TYPE_STRUCT);
+        if (!shell) return 0;
+        // Do NOT set shell->...name here; type_check_type_decl's tail stamping
+        // runs after the tie-the-knot copy and sets the name on resolved(=shell).
+        // Setting it now would cause a double-free: *shell=*resolved overwrites
+        // the pointer with resolved's (possibly NULL) name, leaking our strdup.
+        Variable* fwd = variable_new(td->name, shell, decl->pos);
+        if (!fwd) { free(shell); return 0; }
+        fwd->is_initialized = 1;
+        fwd->is_builtin = 1;
+        if (!scope_add_variable(checker->current_scope, fwd)) {
+            type_error(checker, decl->pos, "Type '%s' already declared", td->name);
+            variable_free(fwd);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_TYPE_DECL) return 0;
 
@@ -2071,20 +2156,37 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
     ASTNodeType body_kind = td->type->type;
     Type* shell = NULL;
     if (body_kind == AST_STRUCT_TYPE || body_kind == AST_ENUM_TYPE) {
-        shell = type_new(body_kind == AST_ENUM_TYPE ? TYPE_ENUM : TYPE_STRUCT);
-        if (!shell) return 0;
-        // Do NOT set shell->...name here; the existing tail stamping (below)
-        // runs after the tie-the-knot copy and sets the name on resolved(=shell).
-        // Setting it now would cause a double-free: *shell=*resolved overwrites
-        // the pointer with resolved's (possibly NULL) name, leaking our strdup.
-        Variable* fwd = variable_new(td->name, shell, decl->pos);
-        if (!fwd) { free(shell); return 0; }
-        fwd->is_initialized = 1;
-        fwd->is_builtin = 1;
-        if (!scope_add_variable(checker->current_scope, fwd)) {
-            type_error(checker, decl->pos, "Type '%s' already declared", td->name);
-            variable_free(fwd);
-            return 0;
+        // P2.3/T1: declare_type_shells (the pre-pass every caller of this
+        // function runs first — type_check_program / type_check_package,
+        // the ONLY two callers of type_check_declaration, which is the ONLY
+        // caller of type_check_type_decl) already registered this decl's
+        // shell before pass 1 started. Reuse it — a direct walk of THIS
+        // scope's own variable list only (never scope_lookup_variable's
+        // parent-chasing walk, which could find an unrelated outer-scope
+        // same-named type and corrupt it via the tie-the-knot copy below).
+        // Every earlier decl in pass 1 must already have succeeded (pass 1
+        // aborts the whole walk on its first failure) and no later decl has
+        // run yet, so the only variable this lookup can find under this
+        // exact name is our own pre-registered shell.
+        for (Variable* v = checker->current_scope->variables; v; v = v->next) {
+            if (strcmp(v->name, td->name) == 0) { shell = v->type; break; }
+        }
+        if (!shell) {
+            // Defensive fallback (should be unreachable given the invariant
+            // above): behaves exactly like the pre-T1 self-reference-only
+            // primitive, in case some future caller reaches this function
+            // without having run the pre-pass first.
+            shell = type_new(body_kind == AST_ENUM_TYPE ? TYPE_ENUM : TYPE_STRUCT);
+            if (!shell) return 0;
+            Variable* fwd = variable_new(td->name, shell, decl->pos);
+            if (!fwd) { free(shell); return 0; }
+            fwd->is_initialized = 1;
+            fwd->is_builtin = 1;
+            if (!scope_add_variable(checker->current_scope, fwd)) {
+                type_error(checker, decl->pos, "Type '%s' already declared", td->name);
+                variable_free(fwd);
+                return 0;
+            }
         }
     }
 

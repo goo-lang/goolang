@@ -1,0 +1,19 @@
+// nullable_struct_eq_reject (T3, P2.5): ?Struct == ?Struct is rejected with
+// a positioned diagnostic. Struct payloads have no equality lowering in v1
+// (struct equality is its own future feature) — accepting this would leak
+// through to codegen and crash with "Failed to generate binary operation"
+// (no lowering exists for a struct-payload nullable comparison), so the
+// checker's nullable-equality arms explicitly gate the payload kind to
+// int/float/bool/string/pointer and reject anything else here.
+package main
+
+type Point struct {
+	x int
+	y int
+}
+
+func main() {
+	var pa ?Point = Point{x: 1, y: 2}
+	var pb ?Point = Point{x: 1, y: 2}
+	_ = pa == pb
+}

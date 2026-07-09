@@ -1,0 +1,27 @@
+// P2.4 reject (label-chain conservative overflow): nine labels stacked on
+// one `for {}` exceed the predicate's 8-slot label-collection cap; the
+// NINTH (innermost, L1) is the one that gets dropped. The overflow must
+// degrade CONSERVATIVELY (treat the statement as non-terminating ->
+// "missing return") — the pre-fix behavior silently dropped L1, so
+// `break L1` was invisible to the self-targeting-break check and the loop
+// was wrongly judged terminating (accepted, then silent fall-off-the-end).
+package main
+
+func f() int {
+L9:
+L8:
+L7:
+L6:
+L5:
+L4:
+L3:
+L2:
+L1:
+	for {
+		break L1
+	}
+}
+
+func main() {
+	println(f())
+}
