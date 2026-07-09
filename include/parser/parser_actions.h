@@ -102,4 +102,103 @@ ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
 // node_type side-channel (cleared so type_check/codegen never see it).
 ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries);
 
+// Rule-action hoists (thin-fat-actions pass) ------------------------------
+// Each function below is the former inline `{ ... }` body of one or more
+// parser.y rule arms, moved verbatim (only $n -> named parameter, $$ ->
+// return value). Where multiple arms shared byte-identical construction
+// logic and differed only in which pieces they passed in (e.g. call_expr's
+// 8 arms), one function serves all of them — a pure move, not a behavior
+// change: every arm still runs exactly the code it ran before.
+
+// func_result: the `LPAREN func_params RPAREN` arm. Builds either a bare
+// type (single anonymous result — preserves the scalar-return ABI) or a
+// StructTypeNode tagged is_result_tuple (>=2 results, or any named result).
+// See the call site in parser.y for the full ABI-collapsing rationale.
+ASTNode* func_result_from_params(ASTNode* params_list);
+
+// const_decl: builds a single ConstDeclNode. `type` is NULL for the untyped
+// arm (`const n = 64`); `is_comptime` is 1 only for `COMPTIME CONST ...`.
+ASTNode* const_decl_new(ASTNode* name_ident, ASTNode* type, ASTNode* value, int is_comptime);
+
+// call_expr: builds a CallExprNode. `args` is NULL for the no-arg arm;
+// `has_spread` is 1 only for the trailing-`...` spread arm. Shared by all 8
+// call_expr arms, which differ only in how `args`/`has_spread` are computed
+// (two arms splice a type_call_arg head onto an expression_list tail before
+// calling this, via `args->next = ...`), never in CallExprNode construction.
+ASTNode* call_expr_new(ASTNode* function, ASTNode* args, int has_spread);
+
+// index_expr: plain indexing `expr[index]`.
+ASTNode* index_expr_new(ASTNode* expr, ASTNode* index);
+
+// index_expr: slice/substring `expr[low:high]` and its open-ended forms
+// (`expr[low:]`, `expr[:high]`, `expr[:]` — pass NULL for the omitted bound).
+ASTNode* slice_index_expr_new(ASTNode* expr, ASTNode* low, ASTNode* high);
+
+// selector_expr: field/method selector `expr.ident`. Consumes (frees)
+// ident_node, matching the prior inline action.
+ASTNode* selector_expr_new(ASTNode* expr, ASTNode* ident_node);
+
+// selector_expr: type assertion `expr.(type)`.
+ASTNode* type_assert_expr_new(ASTNode* expr, ASTNode* asserted_type);
+
+// func_param: builds one VarDeclNode parameter. `name_ident` NULL means the
+// anonymous-parameter arm; `is_variadic`/`is_comptime` mirror the `...T` /
+// `comptime name T` arms. Covers all 5 func_param arms.
+ASTNode* func_param_new(ASTNode* name_ident, ASTNode* type, int is_variadic, int is_comptime);
+
+// var_decl: single-name form `var x [type] [= value]`. Exactly one of
+// `type`/`value` is NULL depending on which arm matched (pass NULL for the
+// omitted piece). Also serves the ownership-qualifier arm (the qualifier
+// itself is parsed but not yet wired to VarDeclNode.ownership — pre-existing
+// TODO, unchanged by this hoist; see the call site).
+ASTNode* var_decl_new_1(ASTNode* name_ident, ASTNode* type, ASTNode* value);
+
+// var_decl: 2-name no-initializer form `var a, b type`.
+ASTNode* var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* type);
+
+// var_decl: 3-name no-initializer form `var a, b, c type`.
+ASTNode* var_decl_new_3(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* name_ident3, ASTNode* type);
+
+// short_var_decl: single-name `x := expr`.
+ASTNode* short_var_decl_new_1(ASTNode* name_ident, ASTNode* value);
+
+// short_var_decl: 2-name destructuring `a, b := expr` (RHS must produce a
+// multi-field struct; destructured at codegen, not here).
+ASTNode* short_var_decl_new_2(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* value);
+
+// struct_field: the 4 single-name field arms (`name type`, `name : type`,
+// and their SEMICOLON-terminated variants) — all build the same VarDeclNode
+// shape, differing only in which token position carries the type. Grouped
+// (`X, Y, Z T`) and embedded (`Base`, `*Base`) fields keep using the
+// existing make_grouped_field/make_embedded_field (parser.y prologue),
+// unchanged by this hoist.
+ASTNode* struct_field_new(ASTNode* name_ident, ASTNode* type);
+
+// slice_lit: the 5 arms producing a SliceLitNode — untyped `[1,2,3]`, empty
+// `[]`, and the typed `[]T{...}` forms (incl. trailing-comma/empty variants).
+ASTNode* slice_lit_new(ASTNode* elements, ASTNode* elem_type);
+
+// slice_lit: the 3 arms producing an ArrayLitNode — `[N]T{...}` (incl.
+// trailing-comma/empty variants).
+ASTNode* array_lit_new(ASTNode* elements, ASTNode* array_type);
+
+// struct_lit: the empty-body arm `Ident{}`. No struct_lit_inits to extract
+// field names from, so it builds the StructLiteralNode directly rather than
+// through struct_literal_new above.
+ASTNode* struct_lit_empty_new(ASTNode* type_ident);
+
+// struct_lit_init: keyed form `name: expr`. Stashes the owned field-name
+// string on the value's node_type slot (struct_lit's reducer moves it into
+// field_names[] and clears the slot). The positional arm is a 2-line
+// passthrough and is not hoisted.
+ASTNode* struct_lit_init_keyed(ASTNode* key_ident, ASTNode* value);
+
+// map_entry: `key: value`. Stashes value on key->node_type; map_entry_list
+// extracts and re-chains it into a parallel values list.
+ASTNode* map_entry_new(ASTNode* key, ASTNode* value);
+
+// map_entry_list: the COMMA-chaining arm — appends one more key/value pair
+// onto the parallel keys/values chains map_entry_new started.
+ASTNode* map_entry_list_append(ASTNode* keys_head, ASTNode* new_key);
+
 #endif // GOO_PARSER_ACTIONS_H

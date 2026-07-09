@@ -590,24 +590,11 @@ func_params:
 func_param:
     identifier type {
         // Create a variable declaration node for the parameter
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = malloc(sizeof(char*));
-        param->names[0] = strdup(ident->name);
-        param->name_count = 1;
-        param->type = $2;
-        param->values = NULL; // Parameters don't have initial values
-        ast_node_free($1);
-        $$ = (ASTNode*)param;
+        $$ = func_param_new($1, $2, 0, 0);
     }
     | type {
         // Anonymous parameter - create a var decl with no name
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = NULL;
-        param->name_count = 0;
-        param->type = $1;
-        param->values = NULL;
-        $$ = (ASTNode*)param;
+        $$ = func_param_new(NULL, $1, 0, 0);
     }
     | identifier ELLIPSIS type {
         // Task 2: variadic parameter `name ...T`. `type` stores the ELEMENT
@@ -618,42 +605,18 @@ func_param:
         // that's a semantic (not grammatical) constraint, enforced at
         // signature-build time so `func f(a ...int, b int)` gets a clean
         // rejection instead of silently misparsing.
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = malloc(sizeof(char*));
-        param->names[0] = strdup(ident->name);
-        param->name_count = 1;
-        param->type = $3;
-        param->is_variadic_param = 1;
-        param->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)param;
+        $$ = func_param_new($1, $3, 1, 0);
     }
     | ELLIPSIS type {
         // Anonymous variadic parameter `...T` (Go allows an unnamed variadic
         // param, matching the unnamed `type` alternative above). Included
         // for symmetry since it added no grammar conflicts (verified via
         // the bison conflict-count gate).
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = NULL;
-        param->name_count = 0;
-        param->type = $2;
-        param->is_variadic_param = 1;
-        param->values = NULL;
-        $$ = (ASTNode*)param;
+        $$ = func_param_new(NULL, $2, 1, 0);
     }
     | COMPTIME identifier type {
         // Comptime value parameter `comptime name type`.
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = malloc(sizeof(char*));
-        param->names[0] = strdup(ident->name);
-        param->name_count = 1;
-        param->type = $3;
-        param->values = NULL;
-        param->is_comptime_param = 1;
-        ast_node_free($2);
-        $$ = (ASTNode*)param;
+        $$ = func_param_new($2, $3, 0, 1);
     }
     ;
 
@@ -680,55 +643,14 @@ func_result:
         //    a scalar return ABI — the common Go form `func f() (err error)`
         //    must be a scalar, not a 1-field struct — while still binding the
         //    name; a >=2-field tuple keeps the multi-return struct ABI.
-        ASTNode* list = $2;
-        // Grouped named results: Go's `(x, y int)` shorthand. Shared with the
-        // parameter path via reinterpret_grouped_names (see its definition).
-        reinterpret_grouped_names(list);
-        size_t count = 0; int any_named = 0;
-        for (ASTNode* p = list; p; p = p->next) {
-            count++;
-            VarDeclNode* vd = (VarDeclNode*)p;
-            if (vd->name_count > 0 && vd->names && vd->names[0]) any_named = 1;
-        }
-        if (count == 1 && !any_named) {
-            VarDeclNode* only = (VarDeclNode*)list;
-            ASTNode* t = only->type;
-            only->type = NULL;     // hand the type to $$ before freeing the wrapper
-            ast_node_free(list);   // frees the lone wrapper VarDecl, not the type
-            $$ = t;
-        } else {
-            size_t idx = 0;
-            for (ASTNode* p = list; p; p = p->next, idx++) {
-                VarDeclNode* vd = (VarDeclNode*)p;
-                if (vd->name_count == 0 || !vd->names) {
-                    char buf[16]; snprintf(buf, sizeof(buf), "_%zu", idx);
-                    vd->names = malloc(sizeof(char*));
-                    vd->names[0] = strdup(buf); vd->name_count = 1;
-                }
-            }
-            StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
-            st->base.type = AST_STRUCT_TYPE;
-            st->base.pos = get_current_position();
-            st->base.node_type = NULL;
-            st->base.next = NULL;
-            st->fields = list;
-            st->is_result_tuple = 1;   // parser-synthesized result list
-            $$ = (ASTNode*)st;
-        }
+        $$ = func_result_from_params($2);
     }
     ;
 
 // Variable declaration
 var_decl:
     VAR identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->type = $3;
-        ast_node_free($2);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_1($2, $3, NULL);
     }
     // Multi-name, no-initializer form: `var a, b int`. Explicit productions
     // (2-name and 3-name), NOT a general list nonterminal — mirrors the
@@ -742,66 +664,21 @@ var_decl:
     // with names) beyond this task's allowed file set — see decl-surface
     // breadth task-1 report for the follow-up.
     | VAR identifier COMMA identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* i1 = (IdentifierNode*)$2;
-        IdentifierNode* i2 = (IdentifierNode*)$4;
-        var->names = malloc(sizeof(char*) * 2);
-        var->names[0] = strdup(i1->name);
-        var->names[1] = strdup(i2->name);
-        var->name_count = 2;
-        var->type = $5;
-        ast_node_free($2);
-        ast_node_free($4);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_2($2, $4, $5);
     }
     | VAR identifier COMMA identifier COMMA identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* i1 = (IdentifierNode*)$2;
-        IdentifierNode* i2 = (IdentifierNode*)$4;
-        IdentifierNode* i3 = (IdentifierNode*)$6;
-        var->names = malloc(sizeof(char*) * 3);
-        var->names[0] = strdup(i1->name);
-        var->names[1] = strdup(i2->name);
-        var->names[2] = strdup(i3->name);
-        var->name_count = 3;
-        var->type = $7;
-        ast_node_free($2);
-        ast_node_free($4);
-        ast_node_free($6);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_3($2, $4, $6, $7);
     }
     | VAR identifier ASSIGN expression {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->values = $4;
-        ast_node_free($2);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_1($2, NULL, $4);
     }
     | VAR identifier type ASSIGN expression {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->type = $3;
-        var->values = $5;
-        ast_node_free($2);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_1($2, $3, $5);
     }
     // Goo extension: ownership qualifiers
     | ownership_qualifier VAR identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->type = $4;
-        // TODO: Set ownership from $1
-        ast_node_free($3);
-        $$ = (ASTNode*)var;
+        // TODO: Set ownership from $1 (not yet wired to VarDeclNode.ownership)
+        $$ = var_decl_new_1($3, $4, NULL);
     }
     // P1.2: grouped var block. Desugar into a chain of ordinary single
     // VarDeclNodes (one per spec), same splice mechanism as CONST's grouped
@@ -817,33 +694,14 @@ var_decl:
 // Short variable declaration
 short_var_decl:
     identifier SHORT_ASSIGN expression {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->values = $3;
-        var->is_short_decl = 1;
-        ast_node_free($1);
-        $$ = (ASTNode*)var;
+        $$ = short_var_decl_new_1($1, $3);
     }
     | identifier COMMA identifier SHORT_ASSIGN expression {
         // Multi-LHS short var decl `a, b := expr`. Destructuring is
         // resolved at codegen time: the RHS must produce a TYPE_STRUCT
         // with at least 2 fields, and a/b are bound to its fields 0
         // and 1 respectively.
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* i1 = (IdentifierNode*)$1;
-        IdentifierNode* i2 = (IdentifierNode*)$3;
-        var->names = malloc(sizeof(char*) * 2);
-        var->names[0] = strdup(i1->name);
-        var->names[1] = strdup(i2->name);
-        var->name_count = 2;
-        var->values = $5;
-        var->is_short_decl = 1;
-        ast_node_free($1);
-        ast_node_free($3);
-        $$ = (ASTNode*)var;
+        $$ = short_var_decl_new_2($1, $3, $5);
     }
     // F6: `a, b := v1, v2` — two independent RHS values (not a destructure).
     // The COLON-free trailing `COMMA expression` after the first value is what
@@ -856,62 +714,17 @@ short_var_decl:
 // Constant declaration
 const_decl:
     CONST identifier type ASSIGN expression {
-        ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
-        const_node->base.type = AST_CONST_DECL;
-        const_node->base.pos = get_current_position();
-        const_node->base.node_type = NULL;
-        const_node->base.next = NULL;
-        
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        const_node->names = malloc(sizeof(char*));
-        const_node->names[0] = strdup(ident->name);
-        const_node->name_count = 1;
-        const_node->type = $3;
-        const_node->values = $5;
-        const_node->is_comptime = 0;
-        
-        ast_node_free($2);
-        $$ = (ASTNode*)const_node;
+        $$ = const_decl_new($2, $3, $5, 0);
     }
     | CONST identifier ASSIGN expression {
         // Untyped single const: `const n = 64`. The type is inferred from the
         // initializer by type_check_const_decl (type == NULL), exactly as the
         // grouped-const desugaring already relies on. Real Go source (and
         // math/bits especially) uses untyped consts pervasively.
-        ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
-        const_node->base.type = AST_CONST_DECL;
-        const_node->base.pos = get_current_position();
-        const_node->base.node_type = NULL;
-        const_node->base.next = NULL;
-
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        const_node->names = malloc(sizeof(char*));
-        const_node->names[0] = strdup(ident->name);
-        const_node->name_count = 1;
-        const_node->type = NULL;   // inferred from the initializer
-        const_node->values = $4;
-        const_node->is_comptime = 0;
-
-        ast_node_free($2);
-        $$ = (ASTNode*)const_node;
+        $$ = const_decl_new($2, NULL, $4, 0);
     }
     | COMPTIME CONST identifier type ASSIGN expression {
-        ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
-        const_node->base.type = AST_CONST_DECL;
-        const_node->base.pos = get_current_position();
-        const_node->base.node_type = NULL;
-        const_node->base.next = NULL;
-        
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        const_node->names = malloc(sizeof(char*));
-        const_node->names[0] = strdup(ident->name);
-        const_node->name_count = 1;
-        const_node->type = $4;
-        const_node->values = $6;
-        const_node->is_comptime = 1;
-        
-        ast_node_free($3);
-        $$ = (ASTNode*)const_node;
+        $$ = const_decl_new($3, $4, $6, 1);
     }
     | CONST LPAREN const_spec_list RPAREN {
         // F4: grouped const block. Desugar into a chain of ordinary single
@@ -2169,34 +1982,10 @@ primary_expr:
 
 call_expr:
     primary_expr LPAREN RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = NULL;
-        call->has_spread = 0;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, NULL, 0);
     }
     | primary_expr LPAREN expression_list RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 0;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
     }
     // Task 4 (trailing comma in call args): gofmt's canonical multi-line
     // call shape (`f(\n    a,\n    b,\n)`) needs this arm — after a COMMA,
@@ -2211,19 +2000,7 @@ call_expr:
     // calls for free: `obj.Method(a, b,)` reaches here because
     // selector_expr reduces to primary_expr before LPAREN is seen.
     | primary_expr LPAREN expression_list COMMA RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 0;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
     }
     // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
     // immediately above; only has_spread differs. Spread is grammatically
@@ -2238,19 +2015,7 @@ call_expr:
     // arm must leave the conflict count at EXACTLY 81 shift/reduce + 256
     // reduce/reduce (verified empirically before commit).
     | primary_expr LPAREN expression_list ELLIPSIS RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 1;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 1);
     }
     // `make(map[K]V)` / `make([]T, n)`: a type in call-argument position.
     // NOTE: the first tokens here are NOT disjoint from expression's first
@@ -2269,19 +2034,7 @@ call_expr:
     // `make` itself stays an ordinary identifier (not a keyword); the type
     // checker rejects any other callee applied to a type argument.
     | primary_expr LPAREN type_call_arg RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 0;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
     }
     // Task 4: trailing comma after make()'s sole type argument, e.g.
     // `make(\n    map[string]int,\n)`. `make` is an ordinary call target
@@ -2289,27 +2042,9 @@ call_expr:
     // other call; real Go's own Arguments grammar allows this too
     // (verified with `go run` on `make(map[string]int,)`).
     | primary_expr LPAREN type_call_arg COMMA RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 0;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
     }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
         // The type node leads the argument list; splice the rest of
         // expression_list after it (mirrors expression_list's own
         // left-to-right chaining via ast_add_child/->next).
@@ -2318,32 +2053,14 @@ call_expr:
         // assignment does not drop a pre-existing tail — no ast_add_child
         // walk is needed.
         $3->next = $5;
-        call->args = $3;
-        call->has_spread = 0;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
     }
     // Task 4: trailing comma after make()'s two-arg form, e.g.
     // `make(\n    []int,\n    3,\n)`. Same splice as the arm above, plus
     // the trailing COMMA before RPAREN.
     | primary_expr LPAREN type_call_arg COMMA expression_list COMMA RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
         $3->next = $5;
-        call->args = $3;
-        call->has_spread = 0;
-        call->type_args = NULL;      // Function generics Task 6
-        call->type_arg_count = 0;
-        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
-        call->comptime_value_arg_count = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
     }
     ;
 
@@ -2364,79 +2081,31 @@ type_call_arg:
 
 index_expr:
     primary_expr LBRACKET expression RBRACKET {
-        IndexExprNode* index = (IndexExprNode*)malloc(sizeof(IndexExprNode));
-        index->base.type = AST_INDEX_EXPR;
-        index->base.pos = get_current_position();
-        index->base.node_type = NULL;
-        index->base.next = NULL;
-        index->expr = $1;
-        index->index = $3;
-        $$ = (ASTNode*)index;
+        $$ = index_expr_new($1, $3);
     }
     // F5: slice/substring expression `expr[low:high]`. The COLON after the
     // first bound distinguishes it from plain indexing on one lookahead token
     // (RBRACKET vs COLON). Both bounds required in v1.
     | primary_expr LBRACKET expression COLON expression RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = $3;
-        slice->high = $5;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, $3, $5);
     }
     /* Open-ended slices: `s[low:]` (high defaults to len), `s[:high]` (low
        defaults to 0), `s[:]` (whole). A NULL low/high is filled in by codegen.
        Common in Go, e.g. strings.HasSuffix's `s[len(s)-n:]`. */
     | primary_expr LBRACKET expression COLON RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = $3;
-        slice->high = NULL;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, $3, NULL);
     }
     | primary_expr LBRACKET COLON expression RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = NULL;
-        slice->high = $4;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, NULL, $4);
     }
     | primary_expr LBRACKET COLON RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = NULL;
-        slice->high = NULL;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, NULL, NULL);
     }
     ;
 
 selector_expr:
     primary_expr DOT identifier {
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        SelectorExprNode* selector = (SelectorExprNode*)malloc(sizeof(SelectorExprNode));
-        selector->base.type = AST_SELECTOR_EXPR;
-        selector->base.pos = get_current_position();
-        selector->base.node_type = NULL;
-        selector->base.next = NULL;
-        selector->expr = $1;
-        selector->selector = strdup(ident->name);
-        ast_node_free($3);
-        $$ = (ASTNode*)selector;
+        $$ = selector_expr_new($1, $3);
     }
     // Type assertions branch, Task 1: `x.(T)` type assertion. DOT identifier
     // (field/method selector, above) vs DOT LPAREN (type assertion, here) is
@@ -2445,14 +2114,7 @@ selector_expr:
     // here; that's assignment-context-driven at typecheck/codegen (Task 2),
     // exactly like the comma-ok map read.
     | primary_expr DOT LPAREN type RPAREN {
-        TypeAssertNode* ta = (TypeAssertNode*)malloc(sizeof(TypeAssertNode));
-        ta->base.type = AST_TYPE_ASSERT;
-        ta->base.pos = get_current_position();
-        ta->base.node_type = NULL;
-        ta->base.next = NULL;
-        ta->expr = $1;
-        ta->asserted_type = $4;
-        $$ = (ASTNode*)ta;
+        $$ = type_assert_expr_new($1, $4);
     }
     ;
 
@@ -2645,51 +2307,19 @@ struct_field:
         // Reuse VarDeclNode for fields — same shape as a function
         // parameter. type_from_ast for AST_STRUCT_TYPE will walk
         // this chain and build the Type's struct_type.fields[].
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $2;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $2);
     }
     | identifier COLON type {
         // Colon-separated field syntax: `name: type` (Goo extension).
         // Used in enum variant bodies: `Circle{radius: int}`.
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $3;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $3);
     }
     | identifier type SEMICOLON {
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $2;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $2);
     }
     | identifier COLON type SEMICOLON {
         // Colon-separated field with semicolon terminator.
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $3;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $3);
     }
     | identifier field_name_tail type {
         // Grouped field `X, Y, Z T` — the leading `identifier` then a
@@ -2755,17 +2385,7 @@ struct_lit:
         ast_node_free($1);
     }
     | identifier LBRACE RBRACE {
-        IdentifierNode* type_ident = (IdentifierNode*)$1;
-        StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
-        lit->base.type = AST_STRUCT_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->type_name = strdup(type_ident->name);
-        ast_node_free($1);
-        lit->is_keyed = 0;
-        lit->field_values = NULL;
-        lit->field_names = NULL;
-        lit->field_count = 0;
-        $$ = (ASTNode*)lit;
+        $$ = struct_lit_empty_new($1);
     }
     ;
 
@@ -2788,10 +2408,7 @@ struct_lit_init:
            node_type slot (same parse-time piggyback map_entry_list uses
            for its values chain); struct_lit's reducer moves it into
            field_names[] and clears the slot before type-check runs. */
-        IdentifierNode* key = (IdentifierNode*)$1;
-        $$ = $3;
-        $$->node_type = (Type*)strdup(key->name);
-        ast_node_free($1);
+        $$ = struct_lit_init_keyed($1, $3);
     }
     ;
 
@@ -2802,14 +2419,7 @@ map_entry_list:
         // (the values-chain head is stashed on the keys-list-head's
         // node_type field so we can recover both from one stack
         // value).
-        ASTNode* keys_head = $1;
-        ASTNode* values_head = (ASTNode*)keys_head->node_type;
-        ASTNode* new_key = $3;
-        ASTNode* new_val = (ASTNode*)new_key->node_type;
-        new_key->node_type = NULL;
-        ast_add_child(keys_head, new_key);
-        ast_add_child(values_head, new_val);
-        $$ = keys_head;
+        $$ = map_entry_list_append($1, $3);
     }
     ;
 
@@ -2825,9 +2435,7 @@ map_entry:
         // via composite_value's LBRACE arms) that []T{...}/[N]T{...} element
         // elision already uses; the concrete type is resolved from the map's
         // value type V at typecheck.
-        ASTNode* k = $1;
-        k->node_type = (Type*)$3;
-        $$ = k;
+        $$ = map_entry_new($1, $3);
     }
     ;
 
@@ -2838,24 +2446,10 @@ slice_lit:
         // (goolang doesn't parse `arr[i:j]` today). The expression
         // list head is stored in `elements` via the same struct
         // layout (SliceLitNode shares ASTNode base).
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $2;
-        lit->elem_type = NULL;  // native untyped form: element type inferred
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new($2, NULL);
     }
     | LBRACKET RBRACKET {
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = NULL;
-        lit->elem_type = NULL;  // native empty form: element type inferred
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new(NULL, NULL);
     }
     | slice_type LBRACE composite_elem_list RBRACE {
         // Go-standard typed slice composite literal: `[]int{1, 2, 3}`.
@@ -2863,75 +2457,33 @@ slice_lit:
         // node so the type checker validates each element against the
         // declared element type T (rather than inferring T from the first
         // element) and stamps the literal with the declared slice type. (P3-1)
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->elem_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new($3, $1);
     }
     | slice_type LBRACE composite_elem_list COMMA RBRACE {
         // Trailing comma in a typed slice literal: `[]int{1, 2, 3,}`.
         // gofmt emits a trailing comma on every multi-line slice literal,
         // so this is required to parse real vendored Go source. Mirrors the
         // array-literal trailing-comma rule below.
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->elem_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new($3, $1);
     }
     | slice_type LBRACE RBRACE {
         // Empty typed slice literal: `[]int{}`. The declared element type
         // ($1) is stored so the checker stamps the correct slice type
         // (e.g. []string{} is []string, not the int32 default). (P3-1)
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = NULL;
-        lit->elem_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new(NULL, $1);
     }
     /* Array composite literal `[N]T{e...}`. Mirrors the slice-literal rules but
        stores the full array_type ($1, an AST_ARRAY_TYPE carrying N + T). */
     | array_type LBRACE composite_elem_list RBRACE {
-        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
-        lit->base.type = AST_ARRAY_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->array_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = array_lit_new($3, $1);
     }
     /* Trailing comma: Go allows (and gofmt adds) a trailing comma in a
        composite literal, e.g. the multi-line deBruijn tables `[32]byte{0, 1,}`. */
     | array_type LBRACE composite_elem_list COMMA RBRACE {
-        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
-        lit->base.type = AST_ARRAY_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->array_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = array_lit_new($3, $1);
     }
     | array_type LBRACE RBRACE {
-        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
-        lit->base.type = AST_ARRAY_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = NULL;
-        lit->array_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = array_lit_new(NULL, $1);
     }
     ;
 
