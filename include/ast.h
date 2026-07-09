@@ -1346,7 +1346,9 @@ typedef struct {
 // =============================================================================
 ASTNode* ast_node_new(ASTNodeType type, Position pos);
 void ast_node_free(ASTNode* node);
-ASTNode* ast_node_copy(const ASTNode* node);
+// ast_node_copy was deleted (under-allocated derived structs — a latent
+// heap overflow; see clone_const_value's doc comment in parser_actions.h
+// and ast_type_clone below for the typed-constructor replacement pattern).
 // Deep-clone a type-expression AST node (see ast.c). Returns NULL for type
 // kinds the grouped-name expansion path does not duplicate.
 ASTNode* ast_type_clone(const ASTNode* node);

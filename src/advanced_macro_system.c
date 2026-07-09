@@ -492,15 +492,20 @@ char* process_template(const char* template_str, MacroContext* context) {
 
 ASTNode* substitute_template_ast(ASTNode* template_ast, MacroContext* context) {
     if (!template_ast || !context) return NULL;
-    
+
     // Deep copy AST and substitute parameters
     // This is a simplified implementation
-    ASTNode* result = ast_node_copy(template_ast);
-    
-    // Substitute parameters in the copied AST
-    // Real implementation would traverse and substitute
-    
-    return result;
+    //
+    // Was: ast_node_copy(template_ast). That helper has been deleted (it
+    // allocated only sizeof(ASTNode) then wrote derived-struct fields past
+    // the allocation — a latent heap overflow). There is no safe drop-in
+    // replacement: a real fix means a typed-constructor deep copy over the
+    // full node-kind switch (see ast_type_clone / clone_const_value for the
+    // pattern), which is unwarranted here since this whole path is dead
+    // code — expand_macro_ast (the only way to reach this function) has no
+    // callers anywhere in the compiler. Substitute parameters in the copied
+    // AST — real implementation would traverse and substitute.
+    return NULL;
 }
 
 // Error handling

@@ -108,17 +108,6 @@ static const char* ast_node_type_strings[] = {
     [AST_DOM_ACCESS] = "DOMAccess",
 };
 
-// Helper function to duplicate strings
-static char* str_dup(const char* str) {
-    if (!str) return NULL;
-    size_t len = strlen(str);
-    char* dup = malloc(len + 1);
-    if (dup) {
-        strcpy(dup, str);
-    }
-    return dup;
-}
-
 // Base AST node creation
 ASTNode* ast_node_new(ASTNodeType type, Position pos) {
     ASTNode* node = malloc(sizeof(ASTNode));
@@ -821,44 +810,11 @@ void ast_print(const ASTNode* node, int indent) {
     }
 }
 
-// Deep copy an AST node
-ASTNode* ast_node_copy(const ASTNode* node) {
-    if (!node) return NULL;
-    
-    // Create new node of same type
-    ASTNode* copy = ast_node_new(node->type, ((ASTNode*)node)->pos);
-    if (!copy) return NULL;
-    
-    // Copy common fields
-    copy->next = ast_node_copy(node->next);
-    
-    // Copy type-specific data (simplified for now)
-    switch (node->type) {
-        case AST_IDENTIFIER:
-            ((IdentifierNode*)copy)->name = str_dup(((IdentifierNode*)node)->name);
-            break;
-            
-        case AST_LITERAL:
-            ((LiteralNode*)copy)->literal_type = ((LiteralNode*)node)->literal_type;
-            ((LiteralNode*)copy)->value = str_dup(((LiteralNode*)node)->value);
-            break;
-            
-        case AST_BINARY_EXPR:
-            ((BinaryExprNode*)copy)->left = ast_node_copy(((BinaryExprNode*)node)->left);
-            ((BinaryExprNode*)copy)->operator = ((BinaryExprNode*)node)->operator;
-            ((BinaryExprNode*)copy)->right = ast_node_copy(((BinaryExprNode*)node)->right);
-            break;
-            
-        case AST_UNARY_EXPR:
-            ((UnaryExprNode*)copy)->operator = ((UnaryExprNode*)node)->operator;
-            ((UnaryExprNode*)copy)->operand = ast_node_copy(((UnaryExprNode*)node)->operand);
-            break;
-            
-        // Add more cases as needed
-        default:
-            // For complex nodes, just copy the base structure
-            break;
-    }
-    
-    return copy;
-}
+// ast_node_copy was deleted: it allocated only sizeof(ASTNode) and then wrote
+// derived-struct fields (e.g. BinaryExprNode::left/right) past that
+// allocation — a latent heap overflow for any node kind with fields beyond
+// the base. Its sole caller (src/advanced_macro_system.c, dead code — see
+// that file's substitute_template_ast) has been neutralized. Real deep-copy
+// needs to go through typed constructors instead (see ast_type_clone below
+// and clone_const_value in parser_actions.c), which allocate the correct
+// derived-struct size per node kind.
