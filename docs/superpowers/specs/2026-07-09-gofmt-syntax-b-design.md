@@ -84,3 +84,54 @@ One golden fixture `examples/gofmt_corpus_probe.goo` composing EVERY Phase 1 con
 - Unused labels are not an error (Go: error).
 - goto jump-over-declaration / jump-into-block restrictions unchecked.
 - `v, ok :=` select binding rejected until close() (P3.1).
+
+### arena-goto fix (2026-07-09): a targeted exception to the jump-into-block cut
+
+The "goto jump-into-block restrictions unchecked" line above was written on
+the (incorrect, for `arena{}`) assumption that jumping into a block is at
+worst a shadowing surprise — "allocas are function-entry, so no UB at the
+LLVM level" — which holds for plain blocks but not for `arena{}` blocks,
+which carry their own runtime lifecycle (`goo_arena_new` on entry,
+`goo_arena_free` on every exit path). A backward `goto` from outside an
+`arena{}` block to a label inside it re-enters the body without re-running
+`goo_arena_new`, then falls through the block's end a second time and frees
+the same arena twice — a use-after-free store followed by a double free,
+SIGSEGV at runtime, invisible at compile time. Two changes close this off,
+scoped narrowly to arenas so the general (non-arena) jump-into-block
+divergence above is otherwise untouched:
+
+- **goto out of one or more `arena{}` blocks** (legal in Go, and now
+  correctly accepted) frees every arena the goto exits before branching —
+  `AST_GOTO_STMT` (statement_codegen.c) now calls a new
+  `codegen_emit_arena_frees_to_depth`, mirroring how `break`/`continue`/
+  `break L`/`continue L` already free arenas above their target frame, but
+  keyed on the target label's ARENA-nesting depth (there is no loop
+  relationship for goto to key off) rather than loop depth.
+- **goto backward INTO an `arena{}` block from outside** is now a type-check
+  error ("goto into arena block is not supported"): `type_checker.c` tracks
+  each label's enclosing-arena identity chain (`TypeChecker.arena_chain`,
+  types.h) alongside the existing goto-label forward-reference table, and
+  `AST_GOTO_STMT`'s check rejects any goto whose own current arena chain
+  does not have the target label's chain as a prefix — i.e. a goto may only
+  ever *exit* arenas it is already inside, never enter one it isn't.
+
+Golden: `examples/arena_goto_probe.goo` (goto exiting one arena inside a
+loop, and a goto exiting two nested arenas in one jump — values correct,
+exit 0; also wired into `arena-valgrind-probe`'s UAF/double-free gate,
+Makefile, as a regression fence for the double-free shape specifically).
+Reject: `tests/golden/reject/goto_into_arena.goo` (the exact double-free
+shape from before this fix, now rejected pre-codegen).
+
+**Known follow-up, discovered but out of scope here:** `block_escape.c`'s
+escape-analysis walkers have no `AST_GOTO_STMT`/`AST_LABEL_STMT` case, so
+any function containing a goto or label conservatively marks every
+allocation site in it as escaping (`mark_all_escapes`'s "genuinely
+unhandled statement kind" default) — every arena allocation in such a
+function falls back to the heap `goo_alloc` path regardless of this fix.
+Confirmed empirically: `examples/arena_goto_probe.goo`'s allocation-heavy
+loop shape shows the same peak RSS whether or not it is wrapped in
+`arena{}` (~405MB either way, 200k iterations), which is why this fixture
+is a values-correctness-only golden test and is not wired into
+`arena-rss-probe.sh`'s RSS-delta gate. Closing this gap (teaching
+`block_escape.c` to walk `AST_GOTO_STMT`/`AST_LABEL_STMT`) is separate,
+unassigned follow-up work.
