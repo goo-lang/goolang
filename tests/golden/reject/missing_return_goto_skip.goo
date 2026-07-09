@@ -1,0 +1,18 @@
+// P2.4 reject (goto strict-mode fallback): an unconditional forward `goto`
+// jumps over the function's only `return`; the path through `skip:` falls
+// off the end. Under the relaxed any-statement block rule the dead
+// `return 42` would wrongly earn the block its termination credit — a
+// goto-containing function must be judged by Go's strict last-statement
+// rule instead (go vet/gc: "missing return").
+package main
+
+func f(x int) int {
+	goto skip
+	return 42
+skip:
+	x = x + 1
+}
+
+func main() {
+	println(f(5))
+}

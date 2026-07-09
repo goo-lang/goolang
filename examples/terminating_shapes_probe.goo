@@ -124,10 +124,12 @@ Done:
 	return x * 2
 }
 
-// Shape 8: `goto` is itself a terminating statement. The `if` above it has
-// no `else`, so it does NOT terminate on its own — the block only
-// terminates because the `goto` (not the trailing labeled return) is a
-// statement in its own right that always transfers control.
+// Shape 8: a goto-containing value-returning function. The `goto` forces
+// the predicate into strict Go last-statement mode (the relaxed
+// any-statement rule is unsound with goto — see terminating_stmt.c and the
+// missing_return_goto_* reject fixtures), so acceptance hinges on the LAST
+// statement: `Negative: return -x`, a label wrapping a terminating
+// statement. The no-else `if` above contributes nothing on its own.
 func gotoShape(x int) int {
 	if x >= 0 {
 		return x
