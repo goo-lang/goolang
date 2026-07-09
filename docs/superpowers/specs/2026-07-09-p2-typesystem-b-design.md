@@ -56,3 +56,22 @@ all termination edge shapes probed (labeled break targeting, fallthrough chains,
 dead-code-after-terminator through codegen), nullable NaN semantics, evaluation-once for ?T
 call operands, width-mixed payloads. T2 shipped two documented soundness-tightening deviations
 (break-tracking in switch; any-statement-terminates blocks matching Goo's dead-code grammar).
+
+## Second review pass (2026-07-09, fresh-context whole-branch)
+
+**1 confirmed major, fixed pre-merge (`41c6d1a`)** — the any-statement-terminates deviation the
+first pass recorded as sound is UNSOUND with `goto`: a forward goto "terminates" its list position
+while teleporting control past the statement that earned the block its credit (`goto skip;
+return 42; skip: ...` falls off the end), so missing-return bodies were accepted and surfaced as
+internal LLVM verifier errors ("Basic Block ... does not have terminator") instead of a positioned
+diagnostic — exactly the class T2 exists to close. Fix: stmt_is_terminating pre-scans the body;
+any goto flips the whole function to Go's literal last-statement rule (sound with goto, and Go's
+own semantics). Corpus impact: gotoShape stays green via its trailing labeled return; three new
+reject fixtures (missing_return_goto_skip/_cond, missing_return_label_depth). Rider minor, same
+commit: the label-chain 8-slot cap now degrades conservatively (non-terminating) instead of
+silently dropping the innermost label, which hid `break L` from the self-targeting-break check.
+Sonnet fixture-accounting dimension: clean (360→364 golden / 30→37→40 reject, zero pre-existing
+expected/err files modified, glob wiring verified); two INFO notes — mutual_type_ref_probe's Z/Y
+pair is an alpha-rename of A/B rather than a genuinely flipped order (criterion still met by
+symmetry; literal reversal verified out-of-tree), and all missing-return sidecars share one
+substring so the reject runner can't distinguish which analysis path fired.
