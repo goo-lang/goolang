@@ -41,3 +41,17 @@ New `src/codegen/value_scope.c`: `vscope_enter(cg)` / `vscope_exit(cg)` wrapping
 ## Review regime
 
 R1/R2a/R3/R1-TC are differential-proven → single Opus diff reviewer (evaluation-order/linkage/completeness of field migration). R2b changes behavior → one Fable dimension (miscompile hunting on scope shapes: nested blocks, if/for bodies, closures × redeclaration, arena blocks × shadowing) + Opus verifier on findings. No full panel.
+
+## R2b outcome (truth pass, 2026-07-09)
+
+**Premise stale — no work existed.** The block-scope shadowing miscompile this section targeted
+was already fixed on main 2026-06-27 (PR #26/M6, `fc7b44ab`: block-scoped value-table teardown;
+`type_check_block_stmt` scope_push/pop likewise present). Verified on this branch by blame-trace
+plus fresh probes of every risk-list shape (nested blocks, for bodies, if-let, closures ×
+redeclaration) — all Go-correct. R2a's vscope API now owns that existing teardown path. The
+branch therefore ships four mechanical commits only, all byte-identical-IR-proven; no
+behavior-changing commit exists.
+
+**Deferred rider (from R3):** bare `ast_node_new` privatization needs 3 parser.y call-site
+reroutes (break/continue/fallthrough marker nodes) — queued for the next goo-grammar-disciplined
+branch; `ast_node_copy` itself is deleted.
