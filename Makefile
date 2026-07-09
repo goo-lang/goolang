@@ -2866,11 +2866,11 @@ try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/try_nonerru_int.goo -o build/try_nonerru_int.out 2>build/try_nonerru_int.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in !int->int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (invalid IR reached verifier)"; cat build/try_nonerru_int.err; exit 1; fi; \
-	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (no clean try-context diagnostic)"; cat build/try_nonerru_int.err; exit 1; fi
+	  if ! grep -qiE "try requires the enclosing function to return an error union" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (no clean try-context diagnostic)"; cat build/try_nonerru_int.err; exit 1; fi
 	@"$(COMPILER)" build/try_nonerru_void.goo -o build/try_nonerru_void.out 2>build/try_nonerru_void.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in void func compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (void-func try reached verifier)"; cat build/try_nonerru_void.err; exit 1; fi; \
-	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for void-func try)"; cat build/try_nonerru_void.err; exit 1; fi
+	  if ! grep -qiE "try requires the enclosing function to return an error union" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for void-func try)"; cat build/try_nonerru_void.err; exit 1; fi
 	@"$(COMPILER)" build/try_crossval.goo -o build/try_crossval.out 2>build/try_crossval.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (cross-value-type try !string-in-!int rejected — error should re-wrap into the enclosing !int)"; cat build/try_crossval.err; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_crossval.err; then echo "try-nonerru-probe: FAIL (cross-value-type try reached verifier)"; cat build/try_crossval.err; exit 1; fi
