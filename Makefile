@@ -2745,6 +2745,19 @@ asi-gocompat-probe: $(COMPILER) $(RUNTIME_LIB)
 	@./build/gc_rawstr.out > build/gc_rawstr.actual.txt
 	@printf 'raw string 10\n' > build/gc_rawstr.expected.txt
 	@if ! diff -u build/gc_rawstr.expected.txt build/gc_rawstr.actual.txt; then echo "asi-gocompat-probe: FAIL (raw-string then new statement: stdout mismatch)"; exit 1; fi
+	@# Case 11: receive-after-brace (Task 6 REGRESSION fix) — `for { ... }` <nl>
+	@# `<-ch` is the standard Go "loop, then join on channel" pattern. Part 2.5's
+	@# ASI guard inserts a `;` after the loop's closing `}` (it is a value-ending
+	@# token); `statement:` must tolerate that trailing SEMICOLON on for_stmt (and
+	@# if/switch/select/block) or the join is a loud parse error. See
+	@# examples/asi_recv_after_for_probe.goo / asi_recv_after_if_probe.goo for the
+	@# single-fixture-per-shape goldens; this case pins the same hazard inline.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tch := make(chan int, 1)\n\tgo func() { ch <- 1 }()\n\tfor i := 0; i < 2; i++ {\n\t\tfmt.Println(i)\n\t}\n\t<-ch\n\tfmt.Println("joined")\n}\n' > build/gc_recvafterbrace.goo
+	@"$(COMPILER)" build/gc_recvafterbrace.goo -o build/gc_recvafterbrace.out 2>build/gc_recvafterbrace.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (receive-after-brace: compile failed rc=$$rc)"; cat build/gc_recvafterbrace.err; exit 1; fi
+	@./build/gc_recvafterbrace.out > build/gc_recvafterbrace.actual.txt
+	@printf '0\n1\njoined\n' > build/gc_recvafterbrace.expected.txt
+	@if ! diff -u build/gc_recvafterbrace.expected.txt build/gc_recvafterbrace.actual.txt; then echo "asi-gocompat-probe: FAIL (receive-after-brace: stdout mismatch)"; exit 1; fi
 	@echo "asi-gocompat-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void

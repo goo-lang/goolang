@@ -1216,8 +1216,10 @@ statement:
     simple_stmt SEMICOLON { $$ = $1; }
     | simple_stmt { $$ = $1; }  // Allow statements without semicolon
     | if_stmt { $$ = $1; }
+    | if_stmt SEMICOLON { $$ = $1; }  // Task 6b: tolerate ASI's `;` after a block's `}`
     | if_let_stmt { $$ = $1; }
     | for_stmt { $$ = $1; }
+    | for_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | return_stmt SEMICOLON { $$ = $1; }
     | return_stmt { $$ = $1; }  // Allow return without semicolon
     | break_stmt SEMICOLON { $$ = $1; }
@@ -1229,8 +1231,11 @@ statement:
     | defer_stmt SEMICOLON { $$ = $1; }
     | defer_stmt { $$ = $1; }  // Allow defer without semicolon
     | select_stmt { $$ = $1; }
+    | select_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | switch_stmt { $$ = $1; }
+    | switch_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | block { $$ = $1; }
+    | block SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | comptime_block { $$ = $1; }  // Goo extension
     | unsafe_stmt { $$ = $1; }     // Goo extension
     | arena_stmt { $$ = $1; }      // Goo extension
