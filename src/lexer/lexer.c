@@ -204,13 +204,16 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
-            // Struct/interface-body ASI (embedding; method specs): inside a
-            // struct or interface body, a newline after a value-ending token
-            // ends the member — Go's semicolon rule scoped to these bodies,
-            // so a 1-token embedded field (`Base`) or a void method spec
-            // (`Inc()`) stops at the line break instead of absorbing the next
-            // line's token (e.g. a following method name mistaken for a
-            // return type via func_result's identifier-starting FIRST set).
+            // Struct/interface-body and var-group ASI (embedding; method
+            // specs; grouped var specs): inside a struct body, interface
+            // body, or `var ( ... )` group, a newline after a value-ending
+            // token ends the member — Go's semicolon rule scoped to these
+            // bodies, so a 1-token embedded field (`Base`), a void method
+            // spec (`Inc()`), or a result-less func-typed var spec (`f
+            // func(int)`) stops at the line break instead of absorbing the
+            // next line's token (e.g. a following method/spec name mistaken
+            // for a return type via func_result's identifier-starting FIRST
+            // set).
             if (lexer->asi_depth > 0 &&
                 lexer->asi_depth <= (int)sizeof(lexer->asi_ctx) &&
                 lexer->asi_ctx[lexer->asi_depth - 1] &&
@@ -223,10 +226,21 @@ Token* lexer_next_token(Lexer* lexer) {
         // Single character tokens
         case '(':
             token = token_new(TOKEN_LPAREN, "(", 1, current_pos);
+            // Var-group-scoped ASI: a '(' immediately following `var` opens a
+            // grouped var block (`var ( ... )`), sharing the same depth stack
+            // as struct/interface '{' (see include/lexer.h asi_ctx). All
+            // other '(' (call args, parenthesized expressions, const/import
+            // groups, func param lists) push a no-emit (0) entry.
+            if (lexer->asi_depth >= 0 && lexer->asi_depth < (int)sizeof(lexer->asi_ctx)) {
+                lexer->asi_ctx[lexer->asi_depth] =
+                    (lexer->prev_token_type == TOKEN_VAR) ? 1 : 0;
+            }
+            lexer->asi_depth++;
             lexer_read_char(lexer);
             break;
         case ')':
             token = token_new(TOKEN_RPAREN, ")", 1, current_pos);
+            if (lexer->asi_depth > 0) lexer->asi_depth--;
             lexer_read_char(lexer);
             break;
         case '{':

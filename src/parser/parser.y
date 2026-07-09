@@ -228,7 +228,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
 %type <node> const_spec const_spec_list
-%type <node> var_spec var_spec_list
+%type <node> var_spec var_spec_list var_member
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
@@ -1005,13 +1005,25 @@ const_spec_list:
     }
     ;
 
-// P1.2: one spec inside a grouped var block. Mirrors const_spec_list's
-// separator mechanism EXACTLY: var_spec_list below is plain juxtaposition
-// (`var_spec_list var_spec`, no SEMICOLON token), the same newline-blind-
-// but-unambiguous shape const_spec_list and import_spec_list already use —
-// each spec ends where the next can't extend it (an `expression` can't be
-// directly followed by another `identifier`/type-start token with no
-// operator between them), so no scoped ASI or explicit separator is needed.
+// P1.2: one spec inside a grouped var block. UNLIKE const_spec_list/
+// import_spec_list's plain juxtaposition, var_spec_list is NOT newline-blind:
+// a var_spec's `type` can be a result-less func_type, and func_result's FIRST
+// set starts with an identifier — so bare juxtaposition lets a result-less
+// `f func(int)` absorb the NEXT spec's name as its own return type (the
+// newline-blind func-result hazard, workarounds.md §6; e.g. `var (\n f
+// func(int)\n g = 2\n)` misparses as one spec `f func(int) g = 2`). This is
+// the exact absorption class the interface-body fix (parser.y interface_type/
+// interface_member) neutralizes for method specs; var groups get the same
+// fix, mirrored: while lexically inside a `var ( ... )` group, the lexer
+// (lexer.c asi_ctx, keyed off '(' this time rather than '{') inserts a ';'
+// after a newline that follows a value-ending token, and var_member below
+// wraps var_spec with an optional trailing SEMICOLON so each spec terminates
+// at its own line instead of extending into the next. A list-level
+// `var_spec_list SEMICOLON var_spec` + trailing-SEMICOLON pair was not tried
+// here for the same reason it was rejected for interface_member: it would
+// need to disambiguate "more list to come" from "trailing terminator" on the
+// same lookahead, which is exactly the shape that produced a genuine
+// shift/reduce conflict there.
 //
 // UNLIKE const_spec, there is deliberately NO bare `identifier`-alone arm:
 // const's bare spec means "repeat the previous value" (iota inheritance,
@@ -1035,11 +1047,21 @@ var_spec:
     }
     ;
 
+// Wraps a var_spec with an optional trailing ';' — explicit or ASI-inserted
+// (lexer.c asi_ctx, var-group-scoped ASI mirroring interface_member/
+// interface_method). SEMICOLON attaches to the MEMBER, not a list-level
+// separator arm — see the var_spec_list comment above and interface_member's
+// for why the list-level form was rejected (a genuine shift/reduce conflict).
+var_member:
+    var_spec { $$ = $1; }
+    | var_spec SEMICOLON { $$ = $1; }
+    ;
+
 var_spec_list:
-    var_spec {
+    var_member {
         $$ = $1;
     }
-    | var_spec_list var_spec {
+    | var_spec_list var_member {
         ast_add_child($1, $2);
         $$ = $1;
     }
