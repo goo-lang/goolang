@@ -90,23 +90,23 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->uncmpeq_fn = NULL;
 
     // Loop-context stack (break/continue targets) starts empty.
-    codegen->loop_depth = 0;
+    codegen->cfctx.loop_depth = 0;
 
     // gofmt-syntax-b Task 1: no label pending a push yet. loop_label/
     // loop_is_loop need no init — every slot < loop_depth is written before
     // it is ever read (set at push time, same convention as
     // loop_break_bb/loop_continue_bb above, which also start uninitialized).
-    codegen->pending_label = NULL;
+    codegen->cfctx.pending_label = NULL;
 
     // gofmt-syntax-b Task 2: no goto labels registered yet (per-function
     // reset happens in codegen_enter_function, since — unlike loop_depth —
     // this table isn't push/pop self-balancing within a function).
-    codegen->goto_label_count = 0;
+    codegen->cfctx.goto_label_count = 0;
 
     // gofmt-syntax-b Task 3: fallthrough-target stack starts empty — push/
     // pop self-balances within codegen_generate_switch_stmt, same
     // convention as loop_depth above.
-    codegen->fallthrough_depth = 0;
+    codegen->cfctx.fallthrough_depth = 0;
 
     // Arena-regions Task 3: arena stack starts empty — codegen_emit_alloc
     // stays on the goo_alloc path until Task 6's `arena{}` lowering pushes.
@@ -643,8 +643,12 @@ int codegen_enter_function(CodeGenerator* codegen, FunctionInfo* func_info) {
     // gofmt-syntax-b Task 2: this function's goto-label table starts empty
     // — the previous function's labels/blocks must not leak in (blocks are
     // created once and never popped, unlike the loop stack, so this reset
-    // has to be explicit; see the field's doc comment, codegen.h).
-    codegen->goto_label_count = 0;
+    // has to be explicit; see ControlFlowContext's doc comment,
+    // codegen_cfctx.h). Codegen hardening R1: cfctx_reset is exactly
+    // `cfctx->goto_label_count = 0` — same effect as before, named so a
+    // future per-function-reset addition to ControlFlowContext has one
+    // call site to extend instead of a field write to remember to add here.
+    cfctx_reset(&codegen->cfctx);
 
     return 1;
 }
@@ -827,7 +831,7 @@ void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena) {
     if ((size_t)codegen->arena_depth >= cap) return;
     // Record the loop nesting at push time so a break/continue can free only
     // the arenas pushed inside the loop it exits (see arena_loop_depth's doc).
-    codegen->arena_loop_depth[codegen->arena_depth] = codegen->loop_depth;
+    codegen->arena_loop_depth[codegen->arena_depth] = codegen->cfctx.loop_depth;
     codegen->arena_stack[codegen->arena_depth++] = arena;
 }
 

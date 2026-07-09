@@ -4,6 +4,7 @@
 #include "ast.h"
 #include "types.h"
 #include "runtime.h"
+#include "codegen_cfctx.h"
 #include <stddef.h>
 
 // LLVM C API includes (only if LLVM is available)
@@ -98,12 +99,6 @@ struct CodeGenerator {
     LLVMTypeRef* struct_cache_vals;
     size_t struct_cache_size;
     size_t struct_cache_cap;
-
-    // Loop-context stack for break/continue targets (depth-bounded; nesting
-    // deeper than 32 is rejected with a codegen error).
-    LLVMBasicBlockRef loop_break_bb[32];
-    LLVMBasicBlockRef loop_continue_bb[32];
-    int loop_depth;
 
     // Error reporting
     char* current_file;
@@ -203,9 +198,10 @@ struct CodeGenerator {
     // pushes yet). codegen_arena_current returns the top
     // (arena_stack[arena_depth - 1]) or NULL when empty, which is what
     // keeps codegen_emit_alloc (codegen.c) on the plain goo_alloc path for
-    // every program today. Fixed-depth like loop_break_bb/loop_continue_bb
-    // above, for the same reason (simple, depth-bounded, no growable-array
-    // bookkeeping needed for a stack this shallow in practice).
+    // every program today. Fixed-depth like cfctx.loop_break_bb/
+    // cfctx.loop_continue_bb (ControlFlowContext, codegen_cfctx.h), for the
+    // same reason (simple, depth-bounded, no growable-array bookkeeping
+    // needed for a stack this shallow in practice).
     LLVMValueRef arena_stack[16];
     int arena_depth;
 
@@ -221,13 +217,14 @@ struct CodeGenerator {
     // dependencies, so inserting mid-struct would shift every later field.
     struct BlockEscapeResult* block_escape;
 
-    // Arena-regions early-exit free: arena_loop_depth[i] is codegen->loop_depth
-    // at the moment arena_stack[i] was pushed. A `break`/`continue` exits only
-    // the innermost loop, so it frees exactly the active arenas pushed INSIDE
-    // that loop (arena_loop_depth[i] >= the current loop_depth) — never an
-    // arena enclosing the loop, which the loop keeps using. `return` frees all
-    // active arenas regardless (min_loop_depth 0). Parallel to arena_stack;
-    // tail-appended per the no-header-deps convention above.
+    // Arena-regions early-exit free: arena_loop_depth[i] is
+    // codegen->cfctx.loop_depth at the moment arena_stack[i] was pushed. A
+    // `break`/`continue` exits only the innermost loop, so it frees exactly
+    // the active arenas pushed INSIDE that loop (arena_loop_depth[i] >= the
+    // current loop_depth) — never an arena enclosing the loop, which the
+    // loop keeps using. `return` frees all active arenas regardless
+    // (min_loop_depth 0). Parallel to arena_stack; tail-appended per the
+    // no-header-deps convention above.
     int arena_loop_depth[16];
 
     // Comptime value params Task 3: substitution environment for binding a
@@ -245,56 +242,20 @@ struct CodeGenerator {
     const int64_t* active_comptime_values;
     size_t active_comptime_value_n;
 
-    // gofmt-syntax-b Task 1 (P1.5): labeled break/continue. Parallel arrays
-    // to loop_break_bb/loop_continue_bb above, indexed in lockstep with
-    // loop_depth (same fixed-32 bound) — loop_label[i] is the label name (or
-    // NULL) attached to the i-th pushed frame, loop_is_loop[i] is 1 for a
-    // real loop frame (pushed by codegen_push_loop) and 0 for a break-only
-    // switch/select/type-switch frame (codegen_push_break_scope): `continue
-    // LABEL` must only match a loop_is_loop==1 frame (Go: continue targets a
-    // FOR, never a switch/select), while `break LABEL` matches either kind.
-    // pending_label is set by AST_LABEL_STMT (statement_codegen.c) just
-    // before dispatching its wrapped statement, and consumed (cleared) by
-    // the very next codegen_push_loop/codegen_push_break_scope call — so it
-    // only ever tags the ONE frame the label directly wraps. NULL (the
-    // default; codegen_new zeroes it explicitly since the struct is
-    // malloc'd, not calloc'd) means "no pending label", which is the state
-    // for every unlabeled for/switch/select/type-switch.
-    const char* loop_label[32];
-    int loop_is_loop[32];
-    const char* pending_label;
-
-    // gofmt-syntax-b Task 2 (P1.6): per-function label -> LLVMBasicBlockRef
-    // table for `goto`. Reset in codegen_enter_function (like
-    // value_table_function_start above), UNLIKE loop_label/loop_is_loop
-    // above which self-balance via push/pop within one function's own
-    // codegen — a label's block is created once and never popped, so an
-    // explicit reset is required or a second function would see the
-    // first's blocks. Bound 64 matches TypeChecker.label_names/
-    // goto_label_names (types.h) — the checker has already rejected >64
-    // labels before codegen ever runs, so this array cannot overflow in
-    // practice; codegen_get_or_create_label_block still bounds-checks
-    // defensively (statement_codegen.c).
-    const char* goto_label_names[64];
-    LLVMBasicBlockRef goto_label_blocks[64];
-    size_t goto_label_count;
-
-    // gofmt-syntax-b Task 3 (P1.7): fixed-depth fallthrough-target stack.
-    // Pushed by codegen_generate_switch_stmt once per case body, in SOURCE
-    // ORDER, immediately before emitting that body's statements — entry i
-    // is body_blocks[i+1] (the NEXT clause's body block in source order,
-    // default included, per the Go spec), or NULL for the switch's last
-    // clause (fallthrough there is already rejected at type-check time by
-    // type_check_switch_like_body, type_checker.c — NULL is a defensive
-    // fallback, never expected to be read). AST_FALLTHROUGH_STMT
-    // (statement_codegen.c) branches to the top entry. Same fixed-32 bound
-    // and "nesting too deep" convention as loop_break_bb/loop_continue_bb
-    // above (a switch nested inside 32 other switches is not a realistic
-    // program). Self-balancing within codegen_generate_switch_stmt's own
-    // body-emission loop (push before, pop after) — no per-function reset
-    // needed, unlike goto_label_count above.
-    LLVMBasicBlockRef fallthrough_target_bb[32];
-    int fallthrough_depth;
+    // Codegen hardening R1: consolidated control-flow scratch state for the
+    // function currently being generated — formerly loop_break_bb/loop_
+    // continue_bb/loop_label/loop_is_loop/loop_depth/pending_label (gofmt-
+    // syntax-b Task 1), goto_label_names/goto_label_blocks/goto_label_count
+    // (Task 2), and fallthrough_target_bb/fallthrough_depth (Task 3) as 20+
+    // separate parallel-array fields directly on CodeGenerator. See
+    // ControlFlowContext's own doc comment (codegen_cfctx.h) for the field-
+    // by-field detail and the cfctx_* API (push_loop/push_break_scope/pop,
+    // find_label/find_loop_label, get_or_create_goto_block, reset, save/
+    // restore) that replaces the old direct field access and codegen_push_
+    // loop/codegen_pop_loop/codegen_push_break_scope/codegen_get_or_create_
+    // label_block helpers. Tail-appended per the no-header-deps convention
+    // (ast.h's M10 comment / func_lit_counter's comment above).
+    ControlFlowContext cfctx;
 };
 
 // Function information for code generation
@@ -832,6 +793,13 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
 LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr);
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
+
+// Codegen hardening R1 (src/codegen/cfctx.c): get-or-create the
+// LLVMBasicBlockRef for goto-label `name` within codegen->current_function,
+// via codegen->cfctx's goto-label table. Declared here (not in
+// codegen_cfctx.h) because it needs the positioned module/current_function
+// that only CodeGenerator carries — see codegen_cfctx.h's own note on this.
+LLVMBasicBlockRef cfctx_get_or_create_goto_block(CodeGenerator* codegen, const char* name);
 
 // Conversion and casting
 LLVMValueRef codegen_convert_value(CodeGenerator* codegen, LLVMValueRef value, 
