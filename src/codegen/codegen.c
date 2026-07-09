@@ -98,6 +98,11 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     // loop_break_bb/loop_continue_bb above, which also start uninitialized).
     codegen->pending_label = NULL;
 
+    // gofmt-syntax-b Task 2: no goto labels registered yet (per-function
+    // reset happens in codegen_enter_function, since — unlike loop_depth —
+    // this table isn't push/pop self-balancing within a function).
+    codegen->goto_label_count = 0;
+
     // Arena-regions Task 3: arena stack starts empty — codegen_emit_alloc
     // stays on the goo_alloc path until Task 6's `arena{}` lowering pushes.
     codegen->arena_depth = 0;
@@ -629,6 +634,12 @@ int codegen_enter_function(CodeGenerator* codegen, FunctionInfo* func_info) {
     // Capture the current value table position — anything added past
     // this point belongs to this function and gets cleared on exit.
     codegen->value_table_function_start = codegen->value_table_size;
+
+    // gofmt-syntax-b Task 2: this function's goto-label table starts empty
+    // — the previous function's labels/blocks must not leak in (blocks are
+    // created once and never popped, unlike the loop stack, so this reset
+    // has to be explicit; see the field's doc comment, codegen.h).
+    codegen->goto_label_count = 0;
 
     return 1;
 }

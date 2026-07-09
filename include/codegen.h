@@ -263,6 +263,21 @@ struct CodeGenerator {
     const char* loop_label[32];
     int loop_is_loop[32];
     const char* pending_label;
+
+    // gofmt-syntax-b Task 2 (P1.6): per-function label -> LLVMBasicBlockRef
+    // table for `goto`. Reset in codegen_enter_function (like
+    // value_table_function_start above), UNLIKE loop_label/loop_is_loop
+    // above which self-balance via push/pop within one function's own
+    // codegen — a label's block is created once and never popped, so an
+    // explicit reset is required or a second function would see the
+    // first's blocks. Bound 64 matches TypeChecker.label_names/
+    // goto_label_names (types.h) — the checker has already rejected >64
+    // labels before codegen ever runs, so this array cannot overflow in
+    // practice; codegen_get_or_create_label_block still bounds-checks
+    // defensively (statement_codegen.c).
+    const char* goto_label_names[64];
+    LLVMBasicBlockRef goto_label_blocks[64];
+    size_t goto_label_count;
 };
 
 // Function information for code generation

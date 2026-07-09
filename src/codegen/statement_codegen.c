@@ -64,6 +64,33 @@ static int codegen_push_break_scope(CodeGenerator* cg, LLVMBasicBlockRef brk) {
     return 1;
 }
 
+// gofmt-syntax-b Task 2 (P1.6): return the LLVMBasicBlockRef for label
+// `name` within the current function, creating it on first mention (from
+// either a `goto` or the label's own AST_LABEL_STMT — whichever is
+// generated first; backward gotos hit the AST_LABEL_STMT path first,
+// forward gotos hit this path first, both converge on the same block).
+// NULL on overflow (>64 labels) or if `name`/`current_function` is
+// unavailable — callers must treat NULL as a codegen error, mirroring
+// codegen_push_loop's own "too deep" convention. Defensive only in
+// practice: the type checker's goto_label_names (types.h) shares this same
+// 64 bound and has already rejected any function with more labels before
+// codegen runs.
+static LLVMBasicBlockRef codegen_get_or_create_label_block(CodeGenerator* cg, const char* name) {
+    if (!cg || !name || !cg->current_function) return NULL;
+    for (size_t i = 0; i < cg->goto_label_count; i++) {
+        if (cg->goto_label_names[i] && strcmp(cg->goto_label_names[i], name) == 0) {
+            return cg->goto_label_blocks[i];
+        }
+    }
+    if (cg->goto_label_count >= 64) return NULL;
+    LLVMBasicBlockRef block = codegen_create_block(cg, name);
+    if (!block) return NULL;
+    cg->goto_label_names[cg->goto_label_count] = name;
+    cg->goto_label_blocks[cg->goto_label_count] = block;
+    cg->goto_label_count++;
+    return block;
+}
+
 // --- defer codegen state -------------------------------------------------
 // Per-defer LLVM state that the header's FunctionInfo cannot carry (it only
 // stores the call AST nodes in `deferred_calls`). This array is kept in
@@ -387,7 +414,25 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // pushes) just leaves pending_label unconsumed — cleared
             // unconditionally below so it can never leak onto some later,
             // unrelated sibling statement's push.
+            //
+            // gofmt-syntax-b Task 2 (P1.6): every label also gets (or
+            // reuses) a real LLVMBasicBlockRef via
+            // codegen_get_or_create_label_block, so any `goto` in the
+            // function — forward or backward — has a branch target. LLVM
+            // blocks have no implicit fallthrough, so if the current block
+            // hasn't already terminated (this label directly follows an
+            // ordinary statement, not a goto/return/break), link it in
+            // with an explicit `br` before moving the insertion point.
             LabelStmtNode* label = (LabelStmtNode*)stmt;
+            LLVMBasicBlockRef label_bb = codegen_get_or_create_label_block(codegen, label->name);
+            if (!label_bb) {
+                codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
+                return 0;
+            }
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+                LLVMBuildBr(codegen->builder, label_bb);
+            }
+            codegen_set_insert_point(codegen, label_bb);
             codegen->pending_label = label->name;
             int ok = label->stmt ? codegen_generate_statement(codegen, checker, label->stmt) : 1;
             codegen->pending_label = NULL;
@@ -487,6 +532,35 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             codegen_emit_arena_frees(codegen, target + 1);
             LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[target]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
+            return 1;
+        }
+        case AST_GOTO_STMT: {
+            // gofmt-syntax-b Task 2 (P1.6): `goto L`. The type checker has
+            // already proven L is declared somewhere in this function
+            // (positioned "undefined label" error otherwise, well before
+            // codegen runs) — get or (for a goto that lexically precedes
+            // its label, i.e. a backward jump) create L's block and branch
+            // to it unconditionally.
+            GotoStmtNode* got = (GotoStmtNode*)stmt;
+            LLVMBasicBlockRef target = codegen_get_or_create_label_block(codegen, got->label);
+            if (!target) {
+                codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
+                return 0;
+            }
+            LLVMBuildBr(codegen->builder, target);
+            // Fresh dead-code continuation block, SAME pattern as break/
+            // continue above — NOT the block-level terminated-block skip
+            // this task's own design note initially assumed. Probed and
+            // rejected: `codegen_generate_block_stmt`'s guard does not
+            // merely skip the dead statements after a goto, it `break`s
+            // the whole statement-list loop, so any LABEL textually
+            // following the goto in the same block (the ordinary forward-
+            // goto shape, e.g. `goto Skip; ...; Skip: ...`) would never get
+            // positioned at all — an unreachable, unterminated orphan
+            // block, an LLVM verifier failure. Giving the dead tail its own
+            // insertion point lets that later AST_LABEL_STMT run normally
+            // and correctly reuse/position the real target block.
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.goto"));
             return 1;
         }
         case AST_COMPTIME_BLOCK: {

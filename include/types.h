@@ -611,6 +611,23 @@ struct TypeChecker {
     char* label_names[64];
     Position label_positions[64];
     size_t label_count;
+
+    // gofmt-syntax-b Task 2 (P1.6): per-function set of every label
+    // declared ANYWHERE in the body, populated by a structural pre-pass
+    // (type_check_collect_goto_labels, type_checker.c) run BEFORE the
+    // normal statement walk so a `goto` can validate against a label that
+    // appears LATER in the source (forward references are legal in Go).
+    // Deliberately a SEPARATE array from label_names above rather than
+    // reused: label_names is populated incrementally, in declaration
+    // order, by the main walk's AST_LABEL_STMT case (T1's duplicate-label
+    // diagnostic depends on that exact ordering) — pre-populating it here
+    // instead would make every label look like an immediate duplicate of
+    // itself. This array tolerates duplicate names (recorded once; T1's
+    // pass still reports the duplicate-label error at its own place).
+    // Reset (save/restore) at function entry and around each func-literal
+    // body, same convention and bound as label_names.
+    char* goto_label_names[64];
+    size_t goto_label_count;
 };
 
 // Type creation functions
@@ -812,6 +829,11 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);
+// gofmt-syntax-b Task 2 (P1.6): goto forward-reference label pre-pass (see
+// its doc comment in type_checker.c). Exposed here (not static) because
+// expression_checker.c's func-literal check needs it too, mirroring
+// type_check_statement's own function-decl/func-literal dual call sites.
+void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt);
 
 // Declaration type checking functions
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl);

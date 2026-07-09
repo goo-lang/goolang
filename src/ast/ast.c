@@ -35,6 +35,7 @@ static const char* ast_node_type_strings[] = {
     [AST_LABEL_STMT] = "LabelStmt",
     [AST_BREAK_LABEL_STMT] = "BreakLabelStmt",
     [AST_CONTINUE_LABEL_STMT] = "ContinueLabelStmt",
+    [AST_GOTO_STMT] = "GotoStmt",
 
     [AST_IDENTIFIER] = "Identifier",
     [AST_LITERAL] = "Literal",
@@ -308,6 +309,11 @@ void ast_node_free(ASTNode* node) {
         case AST_CONTINUE_LABEL_STMT: {
             ContinueLabelStmtNode* cont = (ContinueLabelStmtNode*)node;
             free(cont->label);
+            break;
+        }
+        case AST_GOTO_STMT: {
+            GotoStmtNode* got = (GotoStmtNode*)node;
+            free(got->label);
             break;
         }
         case AST_ASM_STMT: {

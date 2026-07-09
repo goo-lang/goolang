@@ -1,0 +1,10 @@
+// P1.6 reject: `goto Nowhere` where `Nowhere` is not a label declared
+// anywhere in this function (not even later in the source — the goto
+// forward-reference pre-pass, type_check_collect_goto_labels, has already
+// walked the whole body before this check runs). Must be a clean,
+// positioned type error, never a codegen crash.
+package main
+
+func main() {
+	goto Nowhere
+}

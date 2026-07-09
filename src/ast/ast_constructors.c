@@ -542,6 +542,18 @@ ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position p
     return node;
 }
 
+// gofmt-syntax-b Task 2 (P1.6): goto statement.
+GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos) {
+    GotoStmtNode* node = (GotoStmtNode*)malloc(sizeof(GotoStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_GOTO_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->label = str_dup(label);
+    return node;
+}
+
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos) {
     AsmStmtNode* node = (AsmStmtNode*)malloc(sizeof(AsmStmtNode));
     if (!node) return NULL;

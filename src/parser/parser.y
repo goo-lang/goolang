@@ -232,7 +232,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
-%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt label_stmt
+%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt label_stmt goto_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> switch_stmt case_clause_list case_clause
 %type <node> type_case_list type_case_clause type_list
@@ -1226,6 +1226,8 @@ statement:
     | break_stmt { $$ = $1; }  // Allow break without semicolon
     | continue_stmt SEMICOLON { $$ = $1; }
     | continue_stmt { $$ = $1; }  // Allow continue without semicolon
+    | goto_stmt SEMICOLON { $$ = $1; }
+    | goto_stmt { $$ = $1; }  // Allow goto without semicolon
     | go_stmt SEMICOLON { $$ = $1; }
     | go_stmt { $$ = $1; }  // Allow go without semicolon
     | defer_stmt SEMICOLON { $$ = $1; }
@@ -1558,6 +1560,20 @@ continue_stmt:
         // `continue L` — sibling of `break L` above.
         IdentifierNode* lid = (IdentifierNode*)$2;
         ContinueLabelStmtNode* node = ast_continue_label_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
+    }
+    ;
+
+goto_stmt:
+    GOTO identifier {
+        // gofmt-syntax-b Task 2 (P1.6): `goto L`. Unlike break_stmt/
+        // continue_stmt above, GOTO has no bare (label-less) alternative —
+        // the operand is mandatory — so this single arm carries no
+        // competing reduce and is expected to add zero grammar-conflict
+        // delta (verified by the tripwire, not assumed).
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        GotoStmtNode* node = ast_goto_stmt_new(lid->name, get_current_position());
         ast_node_free($2);
         $$ = (ASTNode*)node;
     }

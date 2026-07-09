@@ -53,6 +53,9 @@ TypeChecker* type_checker_new(void) {
     // happens in type_check_function_decl / type_check_func_lit).
     checker->label_count = 0;
 
+    // gofmt-syntax-b Task 2: ditto for the goto forward-reference set.
+    checker->goto_label_count = 0;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -1059,6 +1062,113 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     return 1;
 }
 
+// gofmt-syntax-b Task 2 (P1.6): structural-only pre-pass that records the
+// name of every AST_LABEL_STMT reachable from `stmt` via statement-position
+// children ONLY — it never follows an expression field, so it naturally
+// never descends into a func-literal body (a closure can only be reached
+// from a statement via an expression, e.g. a var-decl initializer or an
+// expr-stmt), giving each function/literal its own independent label
+// namespace for free, with no explicit boundary check needed. Populates
+// checker->goto_label_names (capped at 64, silently — T1's own label_count
+// pass already reports "too many labels" for real overflows) so `goto`,
+// checked later in the SAME normal walk this pre-pass runs ahead of, can
+// see labels that are declared textually AFTER the goto (forward
+// references, legal in Go). Deliberately does not report duplicate-label
+// errors or do any type checking — that is unchanged, existing work done
+// by the main walk's own AST_LABEL_STMT case (T1) at declaration order.
+void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt) return;
+    switch (stmt->type) {
+        case AST_BLOCK_STMT: {
+            BlockStmtNode* block = (BlockStmtNode*)stmt;
+            for (ASTNode* s = block->statements; s; s = s->next) {
+                type_check_collect_goto_labels(checker, s);
+            }
+            return;
+        }
+        case AST_IF_STMT: {
+            IfStmtNode* iff = (IfStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, iff->then_stmt);
+            type_check_collect_goto_labels(checker, iff->else_stmt);
+            return;
+        }
+        case AST_IF_LET_STMT: {
+            IfLetStmtNode* il = (IfLetStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, il->then_stmt);
+            type_check_collect_goto_labels(checker, il->else_stmt);
+            return;
+        }
+        case AST_FOR_STMT: {
+            ForStmtNode* f = (ForStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, f->body);
+            return;
+        }
+        case AST_SWITCH_STMT: {
+            SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
+            for (ASTNode* c = sw->cases; c; c = c->next) {
+                CaseClauseNode* clause = (CaseClauseNode*)c;
+                for (ASTNode* s = clause->body; s; s = s->next) {
+                    type_check_collect_goto_labels(checker, s);
+                }
+            }
+            return;
+        }
+        case AST_TYPE_SWITCH: {
+            TypeSwitchNode* ts = (TypeSwitchNode*)stmt;
+            for (ASTNode* c = ts->cases; c; c = c->next) {
+                TypeCaseNode* clause = (TypeCaseNode*)c;
+                for (ASTNode* s = clause->body; s; s = s->next) {
+                    type_check_collect_goto_labels(checker, s);
+                }
+            }
+            return;
+        }
+        case AST_SELECT_STMT: {
+            SelectStmtNode* sel = (SelectStmtNode*)stmt;
+            for (ASTNode* c = sel->cases; c; c = c->next) {
+                SelectCaseNode* clause = (SelectCaseNode*)c;
+                for (ASTNode* s = clause->body; s; s = s->next) {
+                    type_check_collect_goto_labels(checker, s);
+                }
+            }
+            return;
+        }
+        case AST_UNSAFE_STMT: {
+            UnsafeStmtNode* u = (UnsafeStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, u->body);
+            return;
+        }
+        case AST_ARENA_BLOCK: {
+            ArenaBlockNode* a = (ArenaBlockNode*)stmt;
+            type_check_collect_goto_labels(checker, a->body);
+            return;
+        }
+        case AST_COMPTIME_BLOCK: {
+            ComptimeBlockNode* c = (ComptimeBlockNode*)stmt;
+            type_check_collect_goto_labels(checker, c->body);
+            return;
+        }
+        case AST_LABEL_STMT: {
+            LabelStmtNode* label = (LabelStmtNode*)stmt;
+            int already = 0;
+            for (size_t i = 0; i < checker->goto_label_count; i++) {
+                if (checker->goto_label_names[i] && label->name &&
+                    strcmp(checker->goto_label_names[i], label->name) == 0) {
+                    already = 1;
+                    break;
+                }
+            }
+            if (!already && checker->goto_label_count < 64) {
+                checker->goto_label_names[checker->goto_label_count++] = label->name;
+            }
+            type_check_collect_goto_labels(checker, label->stmt);
+            return;
+        }
+        default:
+            return;  // no statement-position children to walk
+    }
+}
+
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
 
@@ -1203,12 +1313,23 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     size_t saved_label_count = checker->label_count;
     checker->label_count = 0;
 
+    // gofmt-syntax-b Task 2: same save/restore, for the goto forward-
+    // reference set — collected in a pre-pass over the WHOLE body before
+    // the normal walk below, so a `goto` reaches labels declared later in
+    // the source (see type_check_collect_goto_labels' doc comment above).
+    size_t saved_goto_label_count = checker->goto_label_count;
+    checker->goto_label_count = 0;
+    if (func->body) {
+        type_check_collect_goto_labels(checker, func->body);
+    }
+
     // Type check function body
     int result = 1;
     if (func->body) {
         result = type_check_statement(checker, func->body);
     }
 
+    checker->goto_label_count = saved_goto_label_count;
     checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;
     scope_pop(checker);
@@ -2223,6 +2344,30 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
                 return 0;
             }
             return label->stmt ? type_check_statement(checker, label->stmt) : 1;
+        }
+        case AST_GOTO_STMT: {
+            // gofmt-syntax-b Task 2: `goto L` — L must be one of this
+            // function's labels (collected function-wide, forward refs
+            // legal, by type_check_collect_goto_labels above). Unlike
+            // labeled break/continue (T1, deferred to codegen), this is a
+            // type-check-time check per the spec: goto's target is a pure
+            // name lookup with no "does it enclose me" question — no
+            // codegen control-flow state (loop/break-scope stack) is
+            // needed to answer it, so there is no reason to defer it.
+            GotoStmtNode* got = (GotoStmtNode*)stmt;
+            int found = 0;
+            for (size_t i = 0; i < checker->goto_label_count; i++) {
+                if (checker->goto_label_names[i] && got->label &&
+                    strcmp(checker->goto_label_names[i], got->label) == 0) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                type_error(checker, stmt->pos, "undefined label '%s'", got->label);
+                return 0;
+            }
+            return 1;
         }
         case AST_GO_STMT:
             return type_check_go_stmt(checker, stmt);

@@ -190,6 +190,10 @@ typedef enum {
     AST_BREAK_LABEL_STMT,    // `break L`
     AST_CONTINUE_LABEL_STMT, // `continue L`
 
+    // gofmt-syntax-b Task 2 (P1.6): `goto label`. Tail-appended per the M10
+    // convention above (Makefile has no header deps).
+    AST_GOTO_STMT,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -1299,6 +1303,16 @@ typedef struct {
     char* label;
 } ContinueLabelStmtNode;
 
+// gofmt-syntax-b Task 2 (P1.6): `goto label`. A separate node type from the
+// break/continue-label siblings above (not a reused shape) purely because it
+// has no bare/unlabeled counterpart to be confused with — `goto` always
+// takes an operand — but kept structurally identical (base + label) so it
+// reads as the fourth member of the same family.
+typedef struct {
+    ASTNode base;
+    char* label;
+} GotoStmtNode;
+
 // =============================================================================
 // Function declarations for AST manipulation
 // =============================================================================
@@ -1362,6 +1376,9 @@ ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos);
 LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos);
 BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos);
 ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position pos);
+// gofmt-syntax-b Task 2 (P1.6): goto statement constructor. `label` is
+// copied (str_dup'd internally); caller keeps ownership of its own copy.
+GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);
