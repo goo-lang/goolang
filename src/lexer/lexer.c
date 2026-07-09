@@ -407,6 +407,13 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer_read_char(lexer);
                 lexer_read_char(lexer);
                 token = token_new(TOKEN_EQ, "==", 2, current_pos);
+            } else if (lexer_peek_char(lexer) == '>') {
+                // `=>` (fat arrow): the value-yielding catch fallback form,
+                // `f() catch => -1` (P2.9). Lexed as one token so `catch =`
+                // followed by `>` can never split into ASSIGN then GT.
+                lexer_read_char(lexer);
+                lexer_read_char(lexer);
+                token = token_new(TOKEN_FAT_ARROW, "=>", 2, current_pos);
             } else {
                 token = token_new(TOKEN_ASSIGN, "=", 1, current_pos);
                 lexer_read_char(lexer);

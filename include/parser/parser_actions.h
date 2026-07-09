@@ -201,4 +201,13 @@ ASTNode* map_entry_new(ASTNode* key, ASTNode* value);
 // onto the parallel keys/values chains map_entry_new started.
 ASTNode* map_entry_list_append(ASTNode* keys_head, ASTNode* new_key);
 
+// catch_expr: the P2.9 value-yielding arrow arm, `expression CATCH FAT_ARROW
+// expression`. Wraps `fallback` in a synthetic one-statement block (an
+// ExprStmt) and builds the ordinary CatchExprNode with no bound error
+// variable, so it flows through the exact same value-producing catch path
+// (type_check_catch_expr / generate_catch_body_value) as the block form
+// `operand catch e { fallback }` — see the call site in parser.y for why no
+// new type-check/codegen logic is needed.
+CatchExprNode* catch_expr_arrow_new(ASTNode* operand, ASTNode* fallback);
+
 #endif // GOO_PARSER_ACTIONS_H
