@@ -1208,8 +1208,26 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
             LLVMSetLinkage(backing, LLVMPrivateLinkage);
             LLVMSetGlobalConstant(backing, 1);
         } else {
-            // Empty slice literal: null data pointer, len/cap 0.
-            backing = LLVMConstNull(LLVMPointerType(llvm_elem, 0));
+            // Empty slice literal: Go's `[]T{}` is empty-but-non-nil (len 0,
+            // but the backing pointer must NOT compare == nil — see the
+            // slice==nil lowering in expression_codegen.c). This global/
+            // const-scope path builds an LLVM constant directly and never
+            // calls goo_alloc, so it can't pick up goo_alloc(0)'s zero-size
+            // sentinel the way the local-scope path below does. Instead
+            // reference that SAME sentinel directly as an external symbol
+            // (defined once, in runtime.c) so every zero-size allocation —
+            // literal or runtime — shares one non-nil, never-written,
+            // never-freed byte. Under LLVM's opaque pointers the declared
+            // pointee type (i8) is irrelevant — every pointer value has the
+            // single generic `ptr` type, so this needs no cast to line up
+            // with the slice struct's ptr field.
+            LLVMTypeRef i8ty = LLVMInt8TypeInContext(codegen->context);
+            LLVMValueRef zerobase = LLVMGetNamedGlobal(codegen->module, "goo_zerobase");
+            if (!zerobase) {
+                zerobase = LLVMAddGlobal(codegen->module, i8ty, "goo_zerobase");
+                LLVMSetLinkage(zerobase, LLVMExternalLinkage);
+            }
+            backing = zerobase;
         }
         free(elem_vals);
         free(elem_signed);

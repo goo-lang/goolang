@@ -600,4 +600,19 @@ void goo_waitgroup_wait(goo_waitgroup_t* wg);
 
 goo_runtime_stats_t goo_get_runtime_stats(void);
 
+// Zero-size allocation sentinel (Go's "zerobase" pattern): a single shared,
+// process-lifetime byte whose ADDRESS stands in for the backing pointer of
+// any zero-size heap allocation. goo_alloc/goo_arena_alloc return &goo_zerobase
+// instead of NULL when size==0, so a zero-size allocation (most visibly the
+// backing pointer of an empty-but-non-nil slice literal, `[]T{}`) is never
+// mistaken for Go nil. It is never written through (nothing has anywhere to
+// write — every consumer's length/cap is 0 too) and never handed to a real
+// free()/realloc(): goo_free treats it as a no-op and goo_realloc treats it
+// as NULL before calling the real allocator, so it is safe to share across
+// every zero-size allocation site without a real per-site allocation. Also
+// referenced directly (as an external symbol) by codegen's global-scope
+// empty-slice-literal constant path (composite_codegen.c), which builds an
+// LLVM constant with no runtime call to route through goo_alloc.
+extern unsigned char goo_zerobase;
+
 #endif // RUNTIME_H

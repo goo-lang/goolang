@@ -1,0 +1,8 @@
+PASS: local empty slice literal != nil
+0
+PASS: post-append slice != nil
+1
+1
+PASS: global empty slice literal != nil
+0
+PASS: zero-value slice == nil

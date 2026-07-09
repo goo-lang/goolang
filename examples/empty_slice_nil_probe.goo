@@ -1,0 +1,46 @@
+// empty_slice_nil_probe (P2.2 follow-up, F1): an empty slice LITERAL
+// ([]int{} at local or package/global scope) is Go's empty-but-non-nil
+// slice — len 0, but the backing pointer is non-nil, so `== nil` is false.
+// This is distinct from the ZERO VALUE of a slice (`var z []int`), which
+// stays true nil. Contrasts all three: local literal, global literal, and
+// zero-value, plus a post-append literal (still non-nil, matching the
+// already-correct nil-slice-then-append behavior in nil_slice_probe).
+// go-run-verified byte-for-byte against an equivalent .go program using the
+// same shape.
+package main
+
+import "fmt"
+
+var g = []int{}
+
+func main() {
+	s := []int{}
+	if s == nil {
+		fmt.Println("BUG: local empty slice literal == nil")
+	} else {
+		fmt.Println("PASS: local empty slice literal != nil")
+	}
+	fmt.Println(len(s))
+	s = append(s, 1)
+	if s == nil {
+		fmt.Println("BUG: post-append slice == nil")
+	} else {
+		fmt.Println("PASS: post-append slice != nil")
+	}
+	fmt.Println(len(s))
+	fmt.Println(s[0])
+
+	if g == nil {
+		fmt.Println("BUG: global empty slice literal == nil")
+	} else {
+		fmt.Println("PASS: global empty slice literal != nil")
+	}
+	fmt.Println(len(g))
+
+	var z []int
+	if z == nil {
+		fmt.Println("PASS: zero-value slice == nil")
+	} else {
+		fmt.Println("BUG: zero-value slice != nil")
+	}
+}
