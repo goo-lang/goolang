@@ -127,6 +127,59 @@ interface Iterator<T> {
 }
 ```
 
+### Nullable Types
+
+> The syntax below reflects the v1 shipped compiler (Phase 2 sub-project C,
+> 2026-07-09); the rest of this section (interfaces above, generics,
+> `Iterator<T>`) is aspirational/pre-implementation vision syntax that has
+> not been built (see the note at the top of [Error Handling](#error-handling)).
+
+`?T` marks a value that may be absent (`nil`) — a tagged optional over any
+base type, including value types like `?int` (`{ present bool; value T }`
+under the hood, not Go's untyped nil). It composes with struct fields and
+function parameters/returns:
+
+```goo
+var a ?int = 42
+var b ?int = nil
+
+type Holder struct {
+    val ?int
+    tag int
+}
+
+func useNullable(p ?int) int {
+    if let v = p {
+        return v
+    }
+    return -1
+}
+```
+
+The only way to read a `?T`'s payload is `if let`, which binds the
+unwrapped value in the `then` branch and takes `else` on `nil`:
+
+```goo
+if let v = a {
+    fmt.Println(v)
+} else {
+    fmt.Println("absent")
+}
+
+if a == nil {
+    fmt.Println("a is absent")
+}
+```
+
+`?T == ?T` is defined: true iff both operands are `nil`, or both are
+present with equal payloads; `T == ?T` / `?T == T` (either operand order)
+is true iff the `?T` operand is present and its payload equals `T`. `!=` is
+the negation.
+
+**Not implemented in v1** (tracked as v2+ candidates): a force-unwrap
+operator (`x!`), a presence-test (`x?`), and a coalesce operator
+(`x ?? default`). `if let` is the only unwrap path.
+
 ## Variables and Constants
 
 ### Variables
@@ -305,57 +358,95 @@ match result {
 
 ## Error Handling
 
+> This section was rewritten 2026-07-09 (Phase 2 sub-project C, roadmap
+> P2.6-P2.9/P2.11) to match the actual shipped v1 compiler — the previous
+> revision showed a Rust-flavored `let`/`match`/`else err` syntax that was
+> never implemented. Goo's real error handling is Go-compatible-first:
+> ordinary `(T, error)` returns work exactly as in Go, and `!T`/`try`/`catch`
+> are Goo's additive sugar over that same shape. The rest of this document
+> (composite types, generics, actors, etc.) remains the pre-implementation
+> vision and is NOT updated here — see individual roadmap docs under
+> `docs/superpowers/specs/` for what has actually shipped.
+
 ### Error Type
 
 ```goo
-// Built-in error trait
-interface Error {
-    message() string
-    source() ?Error
+// Go-compatible: an ordinary (T, error) return works unchanged.
+func classic(bad bool) (int, error) {
+    if bad {
+        return 0, errors.New("boom")
+    }
+    return 41, nil
 }
 
-// Error unions
-func parse_int(s: string) !int {
-    // Returns either int or error
+// Goo's error union !T: the function returns either a T or an error, with
+// no separate error return value.
+func parseInt(bad bool) !int {
+    if bad {
+        return error("boom")
+    }
+    return 41
 }
 ```
 
 ### Try Operator
 
+`try` unwraps a call's success value inline; on error it propagates out of
+the *enclosing* function, converting into that function's own `!T` error
+arm. `try` accepts both an `!T`-returning callee and a user-declared
+`(T, error)`-returning callee (mirroring Go's own `(T, error)` idiom) — in
+either case, the enclosing function must itself return an error union
+(`!T`); a `(T, error)`-returning enclosing function gets a compile error
+naming the requirement (v1 does not support try-propagation into a plain
+`(T, error)` return).
+
 ```goo
-func process_file(path: string) !Result {
-    let content = try read_file(path)
-    let data = try parse_json(content)
-    let result = try process_data(data)
-    return result
+func outer(bad bool) !int {
+    v := try mightFail(bad)   // !int callee: unwraps 20, or propagates the error
+    return v + 1
+}
+
+func outer2(bad bool) !int {
+    v := try classic(bad)     // (T, error) callee: same unwrap/propagate contract
+    return v + 1
 }
 ```
 
-### Error Handling
+### Catch
+
+`catch` recovers from a failing `!T` or `(T, error)` call. The bound
+variable is the real `error` interface (`e.Error()` dispatches). A block
+`catch` may end in a trailing expression, which supplies the recovered
+value on the error path; the success path skips the block and passes the
+unwrapped value through unchanged:
 
 ```goo
-// Handle specific errors
-let value = try risky_operation() else err {
-    match err {
-        IoError.NotFound => return default_value(),
-        IoError.PermissionDenied => panic("No permission"),
-        _ => return err // Propagate other errors
-    }
+result := mightFail(true) catch e {
+    fmt.Println("failed:", e.Error())
+    -1   // trailing expression: the recovered value
 }
-
-// Catch-all
-let value = risky_operation() catch default_value()
 ```
+
+`catch => expr` is sugar for a fallback with no bound error variable:
+
+```goo
+result := mightFail(true) catch => -1
+```
+
+Binding a raw error union with no `try`/`catch`/destructure (`x := f()`
+where `f()` returns `!T`) is a compile error naming the three ways to
+handle it — an error union must always be handled at the binding.
 
 ### Defer and Cleanup
 
 ```goo
-func process() !void {
-    let file = try open_file("data.txt")
-    defer file.close() // Runs at scope exit
-    
-    let data = try file.read_all()
-    return process_data(data)
+func process() error {
+    file, err := openFile("data.txt")
+    if err != nil {
+        return err
+    }
+    defer file.Close() // runs at scope exit, Go-compatible
+    return file.ReadAll()
 }
 ```
 

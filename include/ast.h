@@ -180,9 +180,10 @@ typedef enum {
     // `continue label`. Three DISTINCT node types — AST_BREAK_LABEL_STMT and
     // AST_CONTINUE_LABEL_STMT are NOT the existing bare AST_BREAK_STMT/
     // AST_CONTINUE_STMT with a label field bolted on: every bare-break/
-    // continue alloc site builds a plain ASTNode (ast_node_new), so casting
-    // one of those to a derived struct with a trailing `char* label` would
-    // be an out-of-bounds read on every existing call site (the same
+    // continue alloc site builds a plain ASTNode (ast_break_stmt_new /
+    // ast_continue_stmt_new — #167 R3 rider, P2.9/T3), so casting one of
+    // those to a derived struct with a trailing `char* label` would be an
+    // out-of-bounds read on every existing call site (the same
     // ast_node_copy failure class documented in the skill's memory notes).
     // Tail-appended per the M10 convention above (Makefile has no header
     // deps).
@@ -196,7 +197,7 @@ typedef enum {
 
     // gofmt-syntax-b Task 3 (P1.7): `fallthrough`. A bare marker node, no
     // extra fields — same shape as AST_BREAK_STMT/AST_CONTINUE_STMT (built
-    // via ast_node_new, no dedicated struct or constructor, no
+    // via ast_fallthrough_stmt_new — #167 R3 rider, P2.9/T3 — no
     // ast_node_free case needed since there is nothing to free beyond the
     // base node). Placement legality (final statement of a non-last
     // expression-switch clause; illegal in a type switch, select, or
@@ -1344,7 +1345,10 @@ typedef struct {
 // =============================================================================
 // Function declarations for AST manipulation
 // =============================================================================
-ASTNode* ast_node_new(ASTNodeType type, Position pos);
+// ast_node_new is now static to src/ast/ast.c (#167 R3 rider, P2.9/T3): every
+// caller outside ast.c has a typed constructor instead (ast_break_stmt_new /
+// ast_continue_stmt_new / ast_fallthrough_stmt_new below cover the last three
+// bare-ASTNode call sites, in parser.y). No public declaration remains.
 void ast_node_free(ASTNode* node);
 // ast_node_copy was deleted (under-allocated derived structs — a latent
 // heap overflow; see clone_const_value's doc comment in parser_actions.h
@@ -1409,6 +1413,15 @@ ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position p
 // gofmt-syntax-b Task 2 (P1.6): goto statement constructor. `label` is
 // copied (str_dup'd internally); caller keeps ownership of its own copy.
 GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos);
+// #167 R3 rider (P2.9/T3): typed constructors for the three bare-marker
+// node types (no derived struct, no extra fields beyond the base ASTNode —
+// see AST_FALLTHROUGH_STMT's doc comment above) that were still built via
+// the now-private ast_node_new directly in parser.y. One constructor per
+// type so each parser.y call site names the node it builds, matching every
+// other statement constructor in this header.
+ASTNode* ast_break_stmt_new(Position pos);
+ASTNode* ast_continue_stmt_new(Position pos);
+ASTNode* ast_fallthrough_stmt_new(Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);

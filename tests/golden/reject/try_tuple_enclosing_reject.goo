@@ -1,0 +1,25 @@
+// try_tuple_enclosing_reject (P2.6/T2, out-of-scope case): `try` still
+// requires the ENCLOSING function to return an error union (!T), even when
+// the try OPERAND is a user-declared (T, error) tuple. A (T,error)-
+// returning enclosing function is a distinct, out-of-scope shape (design
+// doc's Out of scope list) — v1 `try` only propagates OUT of !T-returning
+// functions.
+package main
+
+import "errors"
+
+func classic(bad bool) (int, error) {
+	if bad {
+		return 0, errors.New("boom")
+	}
+	return 1, nil
+}
+
+func wrapper(bad bool) (int, error) {
+	v := try classic(bad)
+	return v, nil
+}
+
+func main() {
+	wrapper(false)
+}

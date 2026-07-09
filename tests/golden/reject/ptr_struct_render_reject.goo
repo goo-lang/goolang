@@ -1,0 +1,18 @@
+// ptr_struct_render_reject (P2.8 T4.1): type_pointer's display name is
+// built from the pointee's bare `->name` field. A struct's declared name
+// lives in data.struct_type.name instead (->name is NULL for a struct — see
+// type_to_string's own struct special-case) so *Point rendered as the
+// two-character "*?" in diagnostics before this fix. Render via
+// type_to_string, not the bare field, so the message names the actual
+// mismatch.
+package main
+
+type Point struct {
+	x int
+}
+
+func main() {
+	var p *Point
+	var n int = p
+	_ = n
+}

@@ -1,0 +1,25 @@
+// cascade_binop_reject (P2.8 T4.2): the `:=`-chain residual cascade_reject.goo
+// documented as NOT covered by Task 3's fix — cascade-reject-probe's comment
+// says so explicitly ("a failed `:=` RHS has no type to fall back on, so
+// `c := <bad-rhs>` still cascades"). Before this fix, a `:=` decl whose RHS
+// fails registered NOTHING in scope (register_declared_names_after_failure
+// no-opped on a NULL declared_type), so every later reference to `x` re-
+// reported "Undefined variable 'x'", and `y`'s own failed decl repeated the
+// same pattern for its downstream use — one real error (the undefined
+// function) fanned out into four spurious ones. Fix: register a TYPE_POISON
+// marker instead of nothing, make type_check_binary_expr propagate that
+// marker silently instead of re-validating a poisoned operand, and skip the
+// generic "Invalid initializer expression" wrapper whenever the specific
+// cause already reported (see type_checker.c's
+// register_declared_names_after_failure and type_check_var_decl, and
+// expression_checker.c's type_check_binary_expr). go run has no equivalent
+// (undefinedFn doesn't exist, so this is a hand-derived compile-reject
+// expectation, not a runtime one) — exactly ONE diagnostic survives: the
+// root cause. cascade-binop-reject-probe asserts that count precisely.
+package main
+
+func main() {
+	x := undefinedFn()
+	y := x + 1
+	println(y)
+}

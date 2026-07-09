@@ -1822,6 +1822,19 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
 
     if (!left_type || !right_type) return NULL;
 
+    // P2.8 T4.2 (cascade suppression): an operand bound to a previously
+    // failed declaration (see register_declared_names_after_failure) must
+    // not spawn a SECOND diagnostic here — propagate the poison silently,
+    // before any operator-specific check below gets a chance to reject it
+    // (e.g. "Arithmetic operation requires numeric operands"). Single choke
+    // point: type_check_arithmetic_op has exactly one caller, right here, so
+    // guarding this entry covers every binary operator uniformly.
+    if (type_is_poison(left_type) || type_is_poison(right_type)) {
+        Type* poison = type_is_poison(left_type) ? left_type : right_type;
+        expr->node_type = poison;
+        return poison;
+    }
+
     // Narrow integer-literal adaptation for binary ops: if exactly one operand
     // is an untyped integer literal and the other is a differently-sized integer,
     // retype the literal to the other operand's type. LLVM binary ops (and
@@ -2088,11 +2101,24 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
     
     UnaryExprNode* unary = (UnaryExprNode*)expr;
     Type* operand_type = type_check_expression(checker, unary->operand);
-    
+
     if (!operand_type) return NULL;
-    
+
+    // P2.8 FIX F1 (cascade-suppression completeness): an operand bound to a
+    // previously failed declaration (see register_declared_names_after_
+    // failure) must not spawn a SECOND diagnostic here — propagate the
+    // poison silently, before any operator-specific check below gets a
+    // chance to reject it (numeric, boolean, integer, dereference, ...).
+    // Single choke point, mirroring type_check_binary_expr's guard: every
+    // unary operator's operand check lives in the switch below, so guarding
+    // this one entry covers all of them uniformly.
+    if (type_is_poison(operand_type)) {
+        expr->node_type = operand_type;
+        return operand_type;
+    }
+
     Type* result_type = NULL;
-    
+
     switch (unary->operator) {
         case TOKEN_MINUS:
         case TOKEN_PLUS:
@@ -3573,6 +3599,21 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
 
+        // P2.8 FIX F1 (cascade-suppression completeness): an argument bound
+        // to a previously failed declaration (see
+        // register_declared_names_after_failure) must not spawn a SECOND
+        // diagnostic here. Mirrors the return-statement guard's placement
+        // (type_checker.c) and the binary-op choke point's (this file,
+        // type_check_binary_expr) — skip every check below for this
+        // argument (comptime-function-value, comptime-param capture, and
+        // the type-compatibility comparisons that stringify arg_type) and
+        // move on to the next one.
+        if (type_is_poison(arg_type)) {
+            arg_count++;
+            arg = arg->next;
+            continue;
+        }
+
         // Fix 2 (comptime-param functions are not first-class values):
         // `takesFunc(fill)` would capture fill's VALUE into takesFunc's
         // func-typed parameter — a Variable with no func_decl_node on the
@@ -4185,6 +4226,19 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     Type* expr_type = type_check_expression(checker, selector->expr);
     if (!expr_type) return NULL;
 
+    // P2.8 FIX F1 (cascade-suppression completeness): a poisoned base
+    // expression (bound to a previously failed declaration — see
+    // register_declared_names_after_failure) must not spawn a SECOND
+    // diagnostic here. Single choke point, mirroring type_check_binary_
+    // expr's guard: every struct/package/interface resolution below falls
+    // through to "Selector on non-struct, non-package type" on a mismatch,
+    // so guarding this one entry (e.g. a poisoned composite-literal
+    // variable's `.field` access) covers all of them uniformly.
+    if (type_is_poison(expr_type)) {
+        expr->node_type = expr_type;
+        return expr_type;
+    }
+
     // Package member access: when the left side is an imported package
     // identifier, resolve the selector against the stdlib symbol table.
     if (expr_type->kind == TYPE_PACKAGE && selector->expr->type == AST_IDENTIFIER) {
@@ -4336,14 +4390,21 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_TRY_EXPR) return NULL;
-    
+
     TryExprNode* try_expr = (TryExprNode*)expr;
-    
+
     Type* expr_type = type_check_expression(checker, try_expr->expr);
     if (!expr_type) return NULL;
-    
-    // Expression must be an error union
-    if (!type_is_error_union(expr_type)) {
+
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c) for why this is a structural (not flag-based)
+    // check. Everything below keys off `is_tuple` to run the identical
+    // control flow the !T path already established.
+    int is_tuple = type_is_error_result_tuple(expr_type);
+
+    // Expression must be an error union OR a (T, error) tuple
+    if (!is_tuple && !type_is_error_union(expr_type)) {
         type_error(checker, expr->pos,
                   "try can only be used with error union types, got %s",
                   type_to_string(expr_type));
@@ -4351,15 +4412,30 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     }
 
     // `try` propagates the error out of the ENCLOSING function on the error
-    // path, so that function must itself return an error union (!T). Rejecting
-    // this here keeps the codegen propagation path (LLVMBuildRet operand) total
-    // — before this check a `try` in a non-!T function silently emitted
-    // `unreachable` (garbage IR, no diagnostic).
+    // path, so that function must itself return an error union (!T) —
+    // regardless of whether the OPERAND is a !T or a (T,error) tuple. A
+    // (T,error)-returning enclosing function is a distinct, out-of-scope
+    // shape (design doc's Out of scope list): v1 `try` only propagates OUT
+    // of !T-returning functions. Rejecting this here keeps the codegen
+    // propagation path (LLVMBuildRet operand) total — before this check a
+    // `try` in a non-!T function silently emitted `unreachable` (garbage
+    // IR, no diagnostic).
     Type* enclosing = checker->current_return_type;
     if (!enclosing || !type_is_error_union(enclosing)) {
         type_error(checker, expr->pos,
-                  "try can only be used inside a function that returns an error union (!T)");
+                  "try requires the enclosing function to return an error union (!T)");
         return NULL;
+    }
+
+    if (is_tuple) {
+        // The tuple's error field is always the boxed `error` interface
+        // (type_is_error_result_tuple guarantees field 1 satisfies
+        // type_is_error) — there is no distinct declared error ARM type to
+        // compare against the enclosing union's, unlike the !T branch below.
+        // try extracts the value type from field 0.
+        Type* value_type = expr_type->data.struct_type.fields[0].type;
+        expr->node_type = value_type;
+        return value_type;
     }
 
     // Error-union-ness of the enclosing function is NECESSARY. The VALUE types
@@ -4391,20 +4467,27 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CATCH_EXPR) return NULL;
-    
+
     CatchExprNode* catch_expr = (CatchExprNode*)expr;
-    
+
     Type* expr_type = type_check_expression(checker, catch_expr->expr);
     if (!expr_type) return NULL;
-    
-    // Expression must be an error union
-    if (!type_is_error_union(expr_type)) {
+
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c). Unlike try, catch has no enclosing-function
+    // requirement: it handles the tuple locally, so the tuple path is a
+    // pure sibling of the !T path from here on.
+    int is_tuple = type_is_error_result_tuple(expr_type);
+
+    // Expression must be an error union OR a (T, error) tuple
+    if (!is_tuple && !type_is_error_union(expr_type)) {
         type_error(checker, expr->pos,
                   "catch can only be used with error union types, got %s",
                   type_to_string(expr_type));
         return NULL;
     }
-    
+
     // Type-check the catch body as a STATEMENT (the grammar always produces a
     // block: `expression CATCH identifier block`). Calling type_check_expression
     // on an AST_BLOCK_STMT hits the default "Unknown expression type" error.
@@ -4412,11 +4495,17 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         scope_push(checker);
 
         // Add error variable to scope so the catch body can reference it.
+        //
+        // P2-7: bind the same `error` interface type the n,err destructure
+        // path binds (type_checker.c:1969's type_checker_error_type call),
+        // not the union's raw error arm (which defaults to plain
+        // TYPE_STRING and has no method set — e.Error() failed with
+        // "Selector on non-struct, non-package type"). This is unconditional
+        // regardless of the union's declared error arm, mirroring the
+        // destructure path exactly; codegen degrades a non-string arm
+        // identically (function_codegen.c:1705-1734 / error_union_codegen.c).
         if (catch_expr->error_var) {
-            Type* error_type = expr_type->data.error_union.error_type;
-            if (!error_type) {
-                error_type = type_checker_get_builtin(checker, TYPE_STRING);
-            }
+            Type* error_type = type_checker_error_type(checker);
 
             Variable* error_var = variable_new(catch_expr->error_var, error_type, expr->pos);
             if (error_var) {
@@ -4429,8 +4518,11 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         scope_pop(checker);
     }
 
-    // The type of a catch expression is the value type of the error union.
-    Type* value_type = expr_type->data.error_union.value_type;
+    // The type of a catch expression is the value type of the error union,
+    // or field 0 for a (T,error) tuple.
+    Type* value_type = is_tuple
+        ? expr_type->data.struct_type.fields[0].type
+        : expr_type->data.error_union.value_type;
 
     // P2-1: a value-producing handler (one whose final statement is an
     // expression) recovers with that expression's value on the error path, so

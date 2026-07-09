@@ -1,0 +1,16 @@
+// map_struct_render_reject (P2.8 T4.1): type_map's display name used the
+// value type's bare `->name` field, which is NULL for a struct (its
+// declared name lives in data.struct_type.name instead) — so
+// map[string]Point rendered as "map[string]?" in diagnostics before this
+// fix. Render via type_to_string, not the bare field.
+package main
+
+type Point struct {
+	x int
+}
+
+func main() {
+	var m map[string]Point
+	var n int = m
+	_ = n
+}

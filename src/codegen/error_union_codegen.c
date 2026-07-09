@@ -123,13 +123,33 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
     ValueInfo* operand_info = codegen_generate_expression(codegen, checker, try_expr->expr);
     if (!operand_info) return NULL;
 
-    if (!type_is_error_union(operand_info->goo_type)) {
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c). The operand was evaluated exactly ONCE above;
+    // everything below branches on `is_tuple` to run the identical
+    // propagate/continue control flow the !T path already established,
+    // keying the error test on field 1's nullable is_null flag (nil ⟺ no
+    // error) instead of the union's dedicated is_error bit.
+    int is_tuple = type_is_error_result_tuple(operand_info->goo_type);
+
+    if (!is_tuple && !type_is_error_union(operand_info->goo_type)) {
         codegen_error(codegen, expr->pos, "Try operator can only be applied to error union types");
         value_info_free(operand_info);
         return NULL;
     }
 
-    LLVMValueRef is_error = codegen_error_union_is_error(codegen, operand_info->llvm_value);
+    // tuple_error_val: field 1 of the tuple, already the boxed `error`
+    // interface ({i1 is_null, i8* handle}) — read once here and reused both
+    // for the is-error test and (on the propagate path) the message readback.
+    LLVMValueRef tuple_error_val = NULL;
+    LLVMValueRef is_error;
+    if (is_tuple) {
+        tuple_error_val = LLVMBuildExtractValue(codegen->builder, operand_info->llvm_value, 1, "tuple.err");
+        LLVMValueRef is_null = codegen_check_nullable_null(codegen, tuple_error_val);
+        is_error = LLVMBuildNot(codegen->builder, is_null, "tuple.is_error");
+    } else {
+        is_error = codegen_error_union_is_error(codegen, operand_info->llvm_value);
+    }
 
     LLVMBasicBlockRef propagate_block = codegen_create_block(codegen, "try.propagate");
     LLVMBasicBlockRef continue_block = codegen_create_block(codegen, "try.continue");
@@ -151,8 +171,31 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
     codegen_set_insert_point(codegen, propagate_block);
     FunctionInfo* cur = codegen->current_function_info;
     if (cur && cur->goo_type && type_is_error_union(cur->goo_type)) {
-        LLVMValueRef err_val =
-            codegen_error_union_get_error(codegen, operand_info->llvm_value);
+        LLVMValueRef err_val;
+        if (is_tuple) {
+            // The tuple's error field is the BOXED `error` interface
+            // ({i1 is_null, i8* handle}) — a different LLVM shape than the
+            // enclosing union's raw error arm (goo_string_t {i8*,i64} by
+            // default; Phase 1's only constructible arm — see
+            // function_codegen.c's identical default_arm caveat). Read the
+            // message back out via goo_error_message (the same runtime call
+            // .Error() dispatch uses, call_codegen.c) to produce a
+            // goo_string_t the enclosing union's default arm can hold
+            // directly. No nil-guard needed: this block only runs when
+            // is_error is true, i.e. tuple_error_val is already non-null.
+            LLVMValueRef handle = LLVMBuildExtractValue(codegen->builder, tuple_error_val, 1, "tuple.err.handle");
+            LLVMValueRef msgfn = LLVMGetNamedFunction(codegen->module, "goo_error_message");
+            if (!msgfn) {
+                codegen_error(codegen, expr->pos, "goo_error_message not found in module");
+                value_info_free(operand_info);
+                return NULL;
+            }
+            LLVMValueRef margs[] = { handle };
+            err_val = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(msgfn),
+                                     msgfn, margs, 1, "tuple.err.msg");
+        } else {
+            err_val = codegen_error_union_get_error(codegen, operand_info->llvm_value);
+        }
         LLVMTypeRef enclosing_union = codegen_type_to_llvm(codegen, cur->goo_type);
         LLVMValueRef rewrapped =
             codegen_create_error_union_error(codegen, enclosing_union, err_val);
@@ -169,9 +212,13 @@ ValueInfo* codegen_generate_try_expr_impl(CodeGenerator* codegen, TypeChecker* c
     // Continue block: flow falls through here with the unwrapped
     // value. Subsequent codegen extends this block.
     codegen_set_insert_point(codegen, continue_block);
-    LLVMValueRef success_value = codegen_error_union_get_value(codegen, operand_info->llvm_value);
+    LLVMValueRef success_value = is_tuple
+        ? LLVMBuildExtractValue(codegen->builder, operand_info->llvm_value, 0, "tuple.value")
+        : codegen_error_union_get_value(codegen, operand_info->llvm_value);
 
-    Type* value_type = operand_info->goo_type->data.error_union.value_type;
+    Type* value_type = is_tuple
+        ? operand_info->goo_type->data.struct_type.fields[0].type
+        : operand_info->goo_type->data.error_union.value_type;
     value_info_free(operand_info);
     return value_info_new(NULL, success_value, value_type);
 }
@@ -253,16 +300,34 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     ValueInfo* operand_info = codegen_generate_expression(codegen, checker, catch_expr->expr);
     if (!operand_info) return NULL;
     
-    // Check that the operand is actually an error union type
-    if (!type_is_error_union(operand_info->goo_type)) {
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c). `is_tuple` drives every branch below to run the
+    // identical error/success/merge control flow the !T path established.
+    int is_tuple = type_is_error_result_tuple(operand_info->goo_type);
+
+    // Check that the operand is actually an error union type OR a tuple
+    if (!is_tuple && !type_is_error_union(operand_info->goo_type)) {
         codegen_error(codegen, expr->pos, "Catch operator can only be applied to error union types");
         value_info_free(operand_info);
         return NULL;
     }
-    
-    // Check if the operand contains an error
-    LLVMValueRef is_error = codegen_error_union_is_error(codegen, operand_info->llvm_value);
-    
+
+    // tuple_error_val: field 1 of the tuple, already the boxed `error`
+    // interface ({i1 is_null, i8* handle}) — read once here and reused both
+    // for the is-error test and (in the error block below) the direct
+    // error-variable binding (no re-boxing needed).
+    LLVMValueRef tuple_error_val = NULL;
+    LLVMValueRef is_error;
+    if (is_tuple) {
+        tuple_error_val = LLVMBuildExtractValue(codegen->builder, operand_info->llvm_value, 1, "tuple.err");
+        LLVMValueRef is_null = codegen_check_nullable_null(codegen, tuple_error_val);
+        is_error = LLVMBuildNot(codegen->builder, is_null, "tuple.is_error");
+    } else {
+        // Check if the operand contains an error
+        is_error = codegen_error_union_is_error(codegen, operand_info->llvm_value);
+    }
+
     // Create basic blocks for error and success cases
     LLVMBasicBlockRef error_block = codegen_create_block(codegen, "catch.error");
     LLVMBasicBlockRef success_block = codegen_create_block(codegen, "catch.success");
@@ -276,32 +341,111 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     // Generate it as a statement so block-level constructs (e.g. `return`) work.
     codegen_set_insert_point(codegen, error_block);
 
+    // Mirror the type-checker scope that type_check_catch_expr pushes around
+    // the error variable + catch body (expression_checker.c). Without this,
+    // a re-entrant type_check_expression call from inside body codegen (e.g.
+    // call_codegen.c's `e.Error()` method-call special case, which re-derives
+    // the receiver's type) can't resolve `e` and reports "Undefined variable"
+    // — same requirement composite_codegen.c's match-arm binding documents.
+    scope_push(checker);
+
     // Bind the error variable in the codegen value table so that uses of it
-    // inside the catch body (e.g. `fmt.Println(e)`) resolve correctly.
-    if (catch_expr->error_var) {
-        // Extract the error value from the error union's data slot.
-        // After the type_mapping.c change, the default error type (NULL) maps
-        // to goo_string_t {i8*, i64}, so error_raw IS already the full string
-        // struct — no InsertValue wrapping needed. An explicitly typed error_type
-        // that is also TYPE_STRING follows the same direct path.
-        LLVMValueRef error_raw = codegen_error_union_get_error(codegen, operand_info->llvm_value);
-        Type* error_type = operand_info->goo_type->data.error_union.error_type;
-        if (!error_type) {
-            error_type = type_checker_get_builtin(checker, TYPE_STRING);
+    // inside the catch body (e.g. `fmt.Println(e)`, `e.Error()`) resolve
+    // correctly.
+    //
+    // P2-7: the type checker now binds catch_expr->error_var as the real
+    // `error` interface (type_checker_error_type — the nullable {i1 is_null,
+    // i8* handle} pointer, see expression_checker.c's type_check_catch_expr),
+    // matching the n,err destructure path. Codegen must box the union's raw
+    // error arm into that same shape via goo_error_from_string, mirroring
+    // function_codegen.c:1690-1761 exactly (including its documented
+    // non-string-arm degradation), so extraction later matches the working
+    // call_codegen.c:1119-1159 .Error()/fmt.Println read.
+    if (catch_expr->error_var && is_tuple) {
+        // T2: the tuple's field 1 IS ALREADY the boxed `error` interface
+        // (type_is_error_result_tuple guarantees it) — no goo_error_from_string
+        // re-boxing needed, unlike the !T path below. Store tuple_error_val
+        // (read once, above) directly.
+        Type* error_type = type_checker_error_type(checker);
+        LLVMTypeRef error_llvm = codegen_type_to_llvm(codegen, error_type);
+        if (error_llvm) {
+            LLVMValueRef error_alloca = codegen_alloc_local(
+                codegen, error_llvm, catch_expr->error_var);
+            LLVMBuildStore(codegen->builder, tuple_error_val, error_alloca);
+            ValueInfo* error_vi = value_info_new(catch_expr->error_var,
+                                                 error_alloca, error_type);
+            error_vi->is_lvalue = 1;
+            error_vi->is_initialized = 1;
+            vscope_add(codegen, error_vi);
+
+            // Mirror into the type-checker scope so any re-entrant
+            // type_check_* calls inside the catch body can resolve `e`.
+            Variable* error_tv = variable_new(catch_expr->error_var, error_type, expr->pos);
+            if (error_tv) {
+                error_tv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, error_tv);
+            }
         }
-        if (error_raw && error_type) {
-            LLVMTypeRef error_llvm = codegen_type_to_llvm(codegen, error_type);
-            if (error_llvm) {
-                // error_raw is already of type error_llvm (goo_string_t when
-                // error_type is TYPE_STRING or the default NULL). Use it directly.
-                LLVMValueRef error_alloca = codegen_alloc_local(
-                    codegen, error_llvm, catch_expr->error_var);
-                LLVMBuildStore(codegen->builder, error_raw, error_alloca);
-                ValueInfo* error_vi = value_info_new(catch_expr->error_var,
-                                                     error_alloca, error_type);
-                error_vi->is_lvalue = 1;
-                error_vi->is_initialized = 1;
-                vscope_add(codegen, error_vi);
+    } else if (catch_expr->error_var) {
+        LLVMValueRef error_raw = codegen_error_union_get_error(codegen, operand_info->llvm_value);
+        Type* err_arm_type = operand_info->goo_type->data.error_union.error_type;
+
+        Type* error_type = type_checker_error_type(checker);
+        LLVMTypeRef error_llvm = codegen_type_to_llvm(codegen, error_type);
+        LLVMTypeRef i8pt = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+
+        if (error_raw && error_llvm) {
+            // Only a string-shaped arm (the default NULL arm, or an explicit
+            // TYPE_STRING arm — both are goo_string_t, see function_codegen.c:
+            // 1705-1720) is something goo_error_from_string can box. A
+            // genuinely non-string explicit error arm isn't a goo_string;
+            // boxing it would build invalid IR, so it degrades to a non-null
+            // marker instead — `e != nil` still holds, e.Error() yields ""
+            // (no message), same tradeoff the destructure path documents.
+            int default_arm = (err_arm_type == NULL) || (err_arm_type->kind == TYPE_STRING);
+
+            LLVMValueRef handle;
+            if (default_arm) {
+                LLVMValueRef from_str = LLVMGetNamedFunction(codegen->module, "goo_error_from_string");
+                if (!from_str) {
+                    codegen_error(codegen, expr->pos, "goo_error_from_string not found in module");
+                    value_info_free(operand_info);
+                    scope_pop(checker);
+                    return NULL;
+                }
+                LLVMValueRef fargs[] = { error_raw };
+                handle = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(from_str),
+                                        from_str, fargs, 1, "catch.err.boxed");
+            } else {
+                handle = LLVMBuildIntToPtr(codegen->builder,
+                    LLVMConstInt(LLVMInt64TypeInContext(codegen->context), 1, 0),
+                    i8pt, "catch.err.marker");
+            }
+
+            // The catch error block only runs when is_error was true, so the
+            // bound variable's nullable is_null is unconditionally false here
+            // (unlike the destructure path, which PHIs across both branches
+            // because it binds unconditionally at the call site).
+            LLVMValueRef is_null = LLVMConstInt(LLVMInt1TypeInContext(codegen->context), 0, 0);
+            LLVMValueRef error_val = LLVMGetUndef(error_llvm);
+            error_val = LLVMBuildInsertValue(codegen->builder, error_val, is_null, 0, "catch.err.is_null");
+            error_val = LLVMBuildInsertValue(codegen->builder, error_val, handle, 1, "catch.err.ptr");
+
+            LLVMValueRef error_alloca = codegen_alloc_local(
+                codegen, error_llvm, catch_expr->error_var);
+            LLVMBuildStore(codegen->builder, error_val, error_alloca);
+            ValueInfo* error_vi = value_info_new(catch_expr->error_var,
+                                                 error_alloca, error_type);
+            error_vi->is_lvalue = 1;
+            error_vi->is_initialized = 1;
+            vscope_add(codegen, error_vi);
+
+            // Mirror into the type-checker scope so any re-entrant
+            // type_check_* calls inside the catch body can resolve `e`.
+            Variable* error_tv = variable_new(catch_expr->error_var, error_type, expr->pos);
+            if (error_tv) {
+                error_tv->is_initialized = 1;
+                scope_add_variable(checker->current_scope, error_tv);
             }
         }
     }
@@ -314,15 +458,21 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     LLVMValueRef catch_value = NULL;
     LLVMValueRef body_value = NULL;
     LLVMBasicBlockRef error_exit_block = NULL;
-    Type* vtype = operand_info->goo_type->data.error_union.value_type;
+    Type* vtype = is_tuple
+        ? operand_info->goo_type->data.struct_type.fields[0].type
+        : operand_info->goo_type->data.error_union.value_type;
 
     if (catch_expr->catch_body) {
         if (!generate_catch_body_value(codegen, checker, catch_expr->catch_body,
                                        vtype, &body_value)) {
             value_info_free(operand_info);
+            scope_pop(checker);
             return NULL;
         }
     }
+
+    // Restore the type-checker scope pushed above the error variable binding.
+    scope_pop(checker);
 
     // Recovery merge: if the error block fell through (the body did not end in
     // a terminator such as `return`, or there was no body), the catch recovers
@@ -338,15 +488,17 @@ ValueInfo* codegen_generate_catch_expr_impl(CodeGenerator* codegen, TypeChecker*
     
     // Success block: extract and use the success value
     codegen_set_insert_point(codegen, success_block);
-    LLVMValueRef success_value = codegen_error_union_get_value(codegen, operand_info->llvm_value);
+    LLVMValueRef success_value = is_tuple
+        ? LLVMBuildExtractValue(codegen->builder, operand_info->llvm_value, 0, "tuple.value")
+        : codegen_error_union_get_value(codegen, operand_info->llvm_value);
     LLVMBuildBr(codegen->builder, merge_block);
     LLVMBasicBlockRef success_exit_block = LLVMGetInsertBlock(codegen->builder);
-    
+
     // --- Merge block ---
     codegen_set_insert_point(codegen, merge_block);
 
-    // Get the value type (unwrapped from error union).
-    Type* value_type = operand_info->goo_type->data.error_union.value_type;
+    // Get the value type (unwrapped from error union, or field 0 for a tuple).
+    Type* value_type = vtype;
     LLVMTypeRef value_llvm_type = codegen_type_to_llvm(codegen, value_type);
 
     // PHI to select the result.  Only add the error-side incoming when the

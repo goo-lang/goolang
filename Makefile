@@ -823,6 +823,32 @@ cascade-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 	if [ $$errcount -gt 2 ]; then echo "cascade-reject-probe: FAIL (cascade regressed — $$errcount error lines, expected <=2)"; cat build/cascade_reject.err; exit 1; fi; \
 	echo "cascade-reject-probe: PASS (rejected rc=$$rc, $$errcount error line(s) <= 2)"
 
+# P2.8 T4.2: the `:=`-chain residual cascade-reject-probe's own comment
+# flagged as uncovered ("a failed `:=` RHS has no type to fall back on, so
+# `c := <bad-rhs>` still cascades"). `x := undefinedFn(); y := x + 1;
+# println(y)` produced FIVE errors before this fix (the real undefined-
+# function error, plus "Undefined variable 'x'", "Invalid initializer
+# expression" x2, and "Undefined variable 'y'") — see
+# examples/cascade_binop_reject.goo for the full before/after account. Fix:
+# register a TYPE_POISON marker in scope instead of nothing on a `:=`
+# initializer failure, propagate it silently through
+# type_check_binary_expr, and skip the generic wrapper diagnostic once the
+# specific cause already reported. Unlike cascade-reject-probe's <=2
+# headroom, this asserts the count EXACTLY — the recon's acceptance bar for
+# this probe shape is precisely one diagnostic, not "fewer than before".
+cascade-binop-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== cascade-binop-reject-probe: a failed := decl must not cascade through later uses ==="
+	@rm -f build/cascade_binop_reject
+	@$(COMPILER) -o build/cascade_binop_reject examples/cascade_binop_reject.goo > build/cascade_binop_reject.out 2> build/cascade_binop_reject.err; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "cascade-binop-reject-probe: FAIL (compiled rc=0 — undefined function silently accepted)"; exit 1; fi; \
+	if [ -x build/cascade_binop_reject ]; then echo "cascade-binop-reject-probe: FAIL (emitted a binary despite the error)"; exit 1; fi; \
+	if grep -qiE "Module verification failed|LLVM ERROR|Segmentation|SIGSEGV" build/cascade_binop_reject.err; then echo "cascade-binop-reject-probe: FAIL (invalid IR/crash reached instead of a clean rejection)"; cat build/cascade_binop_reject.err; exit 1; fi; \
+	if ! grep -q "Undefined variable 'undefinedFn'" build/cascade_binop_reject.err; then echo "cascade-binop-reject-probe: FAIL (wrong/missing diagnostic for the real error)"; cat build/cascade_binop_reject.err; exit 1; fi; \
+	errcount=$$(grep -c 'error' build/cascade_binop_reject.err); \
+	if [ $$errcount -ne 1 ]; then echo "cascade-binop-reject-probe: FAIL (cascade regressed — $$errcount error lines, expected exactly 1)"; cat build/cascade_binop_reject.err; exit 1; fi; \
+	echo "cascade-binop-reject-probe: PASS (rejected rc=$$rc, exactly 1 error line)"
+
 # decl-surface breadth task 1: `var a, b int = 1` — an arity-mismatched
 # initializer (2 names, 1 value) on the multi-name var-decl form. The
 # no-initializer form (`var a, b int`) shipped this task; the initializer
@@ -2370,6 +2396,7 @@ VERIFY_ALL_DEPS := \
     constnul-reject-probe \
     floatmod-reject-probe \
     cascade-reject-probe \
+    cascade-binop-reject-probe \
     multivar-reject-probe \
     variadic-reject-probe \
     variadic-range-reject-probe \
@@ -2839,11 +2866,11 @@ try-nonerru-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/try_nonerru_int.goo -o build/try_nonerru_int.out 2>build/try_nonerru_int.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in !int->int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (invalid IR reached verifier)"; cat build/try_nonerru_int.err; exit 1; fi; \
-	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (no clean try-context diagnostic)"; cat build/try_nonerru_int.err; exit 1; fi
+	  if ! grep -qiE "try requires the enclosing function to return an error union" build/try_nonerru_int.err; then echo "try-nonerru-probe: FAIL (no clean try-context diagnostic)"; cat build/try_nonerru_int.err; exit 1; fi
 	@"$(COMPILER)" build/try_nonerru_void.goo -o build/try_nonerru_void.out 2>build/try_nonerru_void.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "try-nonerru-probe: FAIL (try in void func compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (void-func try reached verifier)"; cat build/try_nonerru_void.err; exit 1; fi; \
-	  if ! grep -qiE "try can only be used inside a function that returns an error union" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for void-func try)"; cat build/try_nonerru_void.err; exit 1; fi
+	  if ! grep -qiE "try requires the enclosing function to return an error union" build/try_nonerru_void.err; then echo "try-nonerru-probe: FAIL (no clean diagnostic for void-func try)"; cat build/try_nonerru_void.err; exit 1; fi
 	@"$(COMPILER)" build/try_crossval.goo -o build/try_crossval.out 2>build/try_crossval.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "try-nonerru-probe: FAIL (cross-value-type try !string-in-!int rejected — error should re-wrap into the enclosing !int)"; cat build/try_crossval.err; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/try_crossval.err; then echo "try-nonerru-probe: FAIL (cross-value-type try reached verifier)"; cat build/try_crossval.err; exit 1; fi
@@ -3346,11 +3373,21 @@ forward-ref-probe: $(COMPILER) $(RUNTIME_LIB)
 # regression gate so a future change can't silently start lowering an aggregate
 # ?T/!T into a print and emit invalid IR. Covers both kinds; asserts non-zero
 # exit, the clean diagnostic, and the ABSENCE of "Module verification failed".
+#
+# P2.8 T4.3: the !int case used to go through an intermediate `x := f()`
+# binding, which this task now rejects EARLIER, at the binding itself
+# ("error union must be handled: use try, catch, or v, err := destructuring")
+# — a strictly better diagnostic (source of the mistake, not just its first
+# symptom), but no longer this probe's target print-time message. Call
+# fmt.Println(f()) directly (no intermediate binding) so this probe keeps
+# exercising the print-time "unsupported argument type" path it was written
+# for; the var-decl path has its own dedicated golden
+# (erru_unhandled_bind_reject).
 print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== print-aggregate-probe: printing ?T/!T aggregates fails cleanly ==="
 	@printf 'package main\nimport "fmt"\nfunc main() { var x ?int = 5; fmt.Println(x) }\n' > build/print_agg_null.goo
-	@printf 'package main\nimport "fmt"\nfunc f() !int { return 5 }\nfunc main() { x := f(); fmt.Println(x) }\n' > build/print_agg_erru.goo
+	@printf 'package main\nimport "fmt"\nfunc f() !int { return 5 }\nfunc main() { fmt.Println(f()) }\n' > build/print_agg_erru.goo
 	@"$(COMPILER)" build/print_agg_null.goo -o build/print_agg_null.out 2>build/print_agg_null.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "print-aggregate-probe: FAIL (printing ?int compiled — expected a clean error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/print_agg_null.err; then echo "print-aggregate-probe: FAIL (invalid IR reached verifier for ?int print)"; cat build/print_agg_null.err; exit 1; fi; \

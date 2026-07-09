@@ -1,0 +1,20 @@
+// func_struct_render_reject (P2.8 T4.1 audit): type_function's display
+// name used each param/return type's bare `->name` field, which is NULL for
+// a struct (its declared name lives in data.struct_type.name instead) — so
+// a struct-returning func rendered as "func() ?" in diagnostics before this
+// fix. Render via type_to_string, not the bare field, for both params and
+// the return type.
+package main
+
+type Point struct {
+	x int
+}
+
+func makePoint() Point {
+	return Point{x: 1}
+}
+
+func main() {
+	var f func(int) int = makePoint
+	_ = f
+}

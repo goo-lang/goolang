@@ -1,0 +1,17 @@
+// erru_poison_unary_reject (P2.8 FIX F1): a name bound to a failed `:=`
+// initializer (f() returns !int, unhandled) is registered as TYPE_POISON.
+// Before this fix, using the poisoned name as a UNARY operand fell through
+// to type_check_unary_expr's numeric-kind check and leaked a second
+// diagnostic ("Unary - requires numeric type, got <poisoned>"). This pins
+// that only the root diagnostic is emitted; run_golden_reject.sh's global
+// negative assertion additionally guards against the "<poisoned>" marker
+// itself reappearing in stderr.
+package main
+
+func f() !int { return 3 }
+
+func main() {
+	x := f()
+	y := -x
+	_ = y
+}

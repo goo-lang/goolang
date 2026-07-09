@@ -279,7 +279,21 @@ Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* righ
 
     // Both operands must be numeric
     if (!type_is_numeric(left_type) || !type_is_numeric(right_type)) {
-        type_error(checker, pos, "Arithmetic operation requires numeric operands");
+        // try-precedence hint (P2.8 T4.4, diagnostic only — precedence is
+        // unchanged, see the design doc's out-of-scope list): TRY is %right
+        // and binds looser than arithmetic (parser.y), so `try f() + 1`
+        // parses as `try (f() + 1)` and the arithmetic check sees the raw
+        // !T operand and dies here with no clue why. When either operand is
+        // an error union, append a hint toward the fix instead of leaving
+        // the user to rediscover TRY's precedence from first principles.
+        if (type_is_error_union(left_type) || type_is_error_union(right_type)) {
+            type_error(checker, pos,
+                       "Arithmetic operation requires numeric operands — "
+                       "error unions must be unwrapped before arithmetic — "
+                       "did you mean (try f()) + 1?");
+        } else {
+            type_error(checker, pos, "Arithmetic operation requires numeric operands");
+        }
         return NULL;
     }
 

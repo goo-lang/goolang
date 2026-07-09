@@ -1,0 +1,19 @@
+// erru_assign_concrete_hint_reject (P2.8 T4.3): `var n int = f()` where f()
+// returns !int hits the generic "Cannot assign %s to %s" incompatibility
+// path (declared_type is a concrete int, so final_type never becomes the
+// error union the way the bare `x := f()` case does) — this fixture pins
+// that the SAME remedy hint is appended to this message too, not just to
+// the unhandled-binding diagnostic in erru_unhandled_bind_reject.goo.
+package main
+
+func f(bad bool) !int {
+	if bad {
+		return error("boom")
+	}
+	return 1
+}
+
+func main() {
+	var n int = f(false)
+	_ = n
+}

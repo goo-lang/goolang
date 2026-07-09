@@ -647,6 +647,31 @@ ASTNode* map_entry_list_append(ASTNode* keys_head, ASTNode* new_key) {
     return keys_head;
 }
 
+// catch_expr: the P2.9 value-yielding arrow arm, `expression CATCH FAT_ARROW
+// expression`. `f() catch => -1` has no bound error variable — the fallback
+// expression itself is the handler's recovery value. Reuses the existing
+// value-producing catch machinery (type_check_catch_expr's trailing-expr
+// check; generate_catch_body_value's PHI merge) by wrapping `fallback` in a
+// synthetic one-statement block (an ExprStmt), the exact AST shape those two
+// functions already expect from `operand catch e { fallback }` — this is
+// sugar over proven machinery, not a new code path.
+CatchExprNode* catch_expr_arrow_new(ASTNode* operand, ASTNode* fallback) {
+    ExprStmtNode* es = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
+    es->base.type = AST_EXPR_STMT;
+    es->base.pos = get_current_position();
+    es->base.node_type = NULL;
+    es->base.next = NULL;
+    es->expr = fallback;
+
+    BlockStmtNode* block = ast_block_stmt_new(get_current_position());
+    block->statements = (ASTNode*)es;
+
+    // No bound error variable (NULL) — ast_catch_expr_new's str_dup(NULL)
+    // safely yields NULL, matching every `catch_expr->error_var` guard in
+    // the type checker and codegen (both already skip the binding when NULL).
+    return ast_catch_expr_new(operand, NULL, (ASTNode*)block, get_current_position());
+}
+
 // Helper function to get current position
 Position get_current_position(void) {
     Position pos = {1, 1, 0, "<unknown>"};

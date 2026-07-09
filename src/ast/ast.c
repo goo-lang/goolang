@@ -108,8 +108,20 @@ static const char* ast_node_type_strings[] = {
     [AST_DOM_ACCESS] = "DOMAccess",
 };
 
-// Base AST node creation
-ASTNode* ast_node_new(ASTNodeType type, Position pos) {
+// Base AST node creation. Static (#167 R3 rider, P2.9/T3): every caller
+// outside this file used to build a plain ASTNode for one of three bare-
+// marker statement types (AST_BREAK_STMT/AST_CONTINUE_STMT/
+// AST_FALLTHROUGH_STMT in parser.y) and now goes through the typed
+// ast_break_stmt_new/ast_continue_stmt_new/ast_fallthrough_stmt_new
+// constructors (ast_constructors.c) instead — see include/ast.h's function-
+// declarations comment for why there is no public declaration left to call
+// this from another translation unit. That leaves this file with no
+// internal caller either (ast.c never called its own generic constructor),
+// so the compiler flags it "defined but not used" — expected, not a bug:
+// the rider's brief was privatize-in-place, not delete, and the codebase
+// tolerates pre-existing unused-parameter/-variable warnings elsewhere
+// (no -Werror gate).
+static ASTNode* ast_node_new(ASTNodeType type, Position pos) {
     ASTNode* node = malloc(sizeof(ASTNode));
     if (!node) return NULL;
     

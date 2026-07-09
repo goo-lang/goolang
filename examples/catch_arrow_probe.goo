@@ -1,0 +1,59 @@
+// catch_arrow_probe (P2.9/T3): `catch => expr` — the value-yielding fallback
+// form. It desugars to the SAME CatchExprNode the existing block-catch form
+// builds (erru_catch_value_probe), with no bound error variable and the
+// fallback expression as the handler's recovery value: no new type-check or
+// codegen path, just a grammar sugar over already-proven machinery.
+//
+// Probes, in order:
+//   - error path: the fallback recovers the result (-1).
+//   - success path: the fallback is skipped; the unwrapped value passes
+//     through the merge unchanged (100).
+//   - the fallback nested directly inside a call's argument list
+//     (`fmt.Println(f(true) catch => -2)`), proving catch_expr composes as
+//     an ordinary `expression` in call-argument position.
+//   - a call expression as the fallback (`catch => fallback()`), proving
+//     the RHS is not restricted to literals.
+//   - `catch => x + 1`: the fallback binds the WHOLE binary expression via
+//     normal `expression` precedence (not just `x`), per the design doc's
+//     documented probe. `%prec CATCH` keeps the arrow arm at CATCH's
+//     existing low, right-associative precedence, so `+` binds tighter and
+//     extends the trailing operand rather than splitting it off.
+//
+// f is Goo-only (!int); expected output hand-derived per the design doc's
+// semantics (same recovery/passthrough rules as erru_catch_value_probe).
+package main
+
+import "fmt"
+
+func f(bad bool) !int {
+	if bad {
+		return error("nope")
+	}
+	return 100
+}
+
+func fallback() int {
+	return -7
+}
+
+func main() {
+	// error path, literal fallback: recovers with -1.
+	a := f(true) catch => -1
+	fmt.Println(a)
+
+	// success path: unwrapped 100 flows through; fallback skipped.
+	b := f(false) catch => -1
+	fmt.Println(b)
+
+	// fallback nested inside a call's argument list.
+	fmt.Println(f(true) catch => -2)
+
+	// call-expression fallback (not a literal).
+	c := f(true) catch => fallback()
+	fmt.Println(c)
+
+	// `catch => x + 1`: the fallback binds the whole `x + 1`, not just `x`.
+	x := 5
+	d := f(true) catch => x + 1
+	fmt.Println(d)
+}

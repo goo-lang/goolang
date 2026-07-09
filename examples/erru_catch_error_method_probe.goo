@@ -1,0 +1,27 @@
+// erru_catch_error_method_probe (P2-7): the catch-bound error variable must
+// carry the real `error` interface, not the union's raw error arm — so
+// `e.Error()` dispatches (call_codegen.c's nil-guarded boxed-message read)
+// instead of failing type-check with "Selector on non-struct, non-package
+// type" (the raw arm, a plain string, has no method set).
+//
+// Goo-only (!int / error()) — expected output hand-derived: f(true) returns
+// error("boom"), so e.Error() must yield "boom", matching the message an
+// equivalent (v, err := f(); err.Error()) destructure would print.
+package main
+
+import "fmt"
+
+func f(bad bool) !int {
+	if bad {
+		return error("boom")
+	}
+	return 1
+}
+
+func main() {
+	x := f(true) catch e {
+		fmt.Println(e.Error())
+		-1
+	}
+	fmt.Println(x)
+}

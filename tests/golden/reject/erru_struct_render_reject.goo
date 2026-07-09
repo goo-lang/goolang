@@ -1,0 +1,21 @@
+// erru_struct_render_reject (P2.8 T4.1): type_error_union's display name
+// used the value type's bare `->name` field, which is NULL for a struct
+// (its declared name lives in data.struct_type.name instead) — so !Point
+// rendered as "!?" in diagnostics before this fix. Render via
+// type_to_string, not the bare field. (This shape also exercises T4.3's
+// unhandled-!T remedy hint, appended to the same message — this fixture
+// only pins the structural rendering half.)
+package main
+
+type Point struct {
+	x int
+}
+
+func f() !Point {
+	return Point{x: 1}
+}
+
+func main() {
+	var n int = f()
+	_ = n
+}

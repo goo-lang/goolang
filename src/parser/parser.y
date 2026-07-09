@@ -137,6 +137,7 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 
 // Goo Extension Operators
 %token BANG QUESTION TRY_OP CATCH_OP DEREF
+%token FAT_ARROW  // =>  (value-yielding catch fallback: `f() catch => -1`, P2.9)
 
 // Delimiters
 %token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
@@ -1346,8 +1347,7 @@ return_stmt:
 
 break_stmt:
     BREAK {
-        ASTNode* break_node = ast_node_new(AST_BREAK_STMT, get_current_position());
-        $$ = break_node;
+        $$ = ast_break_stmt_new(get_current_position());
     }
     | BREAK identifier {
         // `break L` — a distinct node from bare BREAK (see AST_BREAK_LABEL_STMT's
@@ -1362,8 +1362,7 @@ break_stmt:
 
 continue_stmt:
     CONTINUE {
-        ASTNode* continue_node = ast_node_new(AST_CONTINUE_STMT, get_current_position());
-        $$ = continue_node;
+        $$ = ast_continue_stmt_new(get_current_position());
     }
     | CONTINUE identifier {
         // `continue L` — sibling of `break L` above.
@@ -1403,7 +1402,7 @@ fallthrough_stmt:
         // expression-switch clause; illegal in a type switch, select, or
         // outside any switch) is entirely a type-check-time concern — see
         // type_check_switch_like_body's doc comment, type_checker.c.
-        $$ = ast_node_new(AST_FALLTHROUGH_STMT, get_current_position());
+        $$ = ast_fallthrough_stmt_new(get_current_position());
     }
     ;
 
@@ -2685,6 +2684,27 @@ catch_expr:
         IdentifierNode* ident = (IdentifierNode*)$3;
         CatchExprNode* catch_node = ast_catch_expr_new($1, ident->name, $4, get_current_position());
         ast_node_free($3);
+        $$ = (ASTNode*)catch_node;
+    }
+    // P2.9 (T3): `f() catch => -1` — the value-yielding fallback form. No
+    // bound error variable; the fallback `expression` on the right is the
+    // handler's recovery value. Desugars to the SAME CatchExprNode the block
+    // form above builds (error_var NULL, catch_body a synthetic one-
+    // statement block wrapping the fallback expression), so the existing
+    // value-producing catch machinery (type_check_catch_expr's trailing-expr
+    // check, generate_catch_body_value's PHI merge) runs unchanged — see
+    // catch_expr_arrow_new's doc comment (parser_actions.c).
+    | expression CATCH FAT_ARROW expression %prec CATCH {
+        // %prec CATCH: without this, bison assigns the rule the precedence
+        // of its LAST terminal (FAT_ARROW, which has none declared) instead
+        // of inheriting CATCH's %right low precedence the sibling arm above
+        // gets implicitly (CATCH is its only terminal). Losing that
+        // precedence reopened dozens of shift/reduce ambiguities over how
+        // far the trailing `expression` extends (verified: omitting this
+        // pushed the tripwire from 121 to 142 S/R) — restoring it returns
+        // the arm to the exact same low-precedence right-associative
+        // resolution as `expression CATCH identifier block`.
+        CatchExprNode* catch_node = catch_expr_arrow_new($1, $4);
         $$ = (ASTNode*)catch_node;
     }
     ;

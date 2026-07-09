@@ -1,0 +1,28 @@
+// erru_poison_composite_selector_reject (P2.8 FIX F1): a struct literal
+// field assigned an unhandled error union (S{v: f()}, f() returns !int64
+// into an int64 field) fails at the field-type-mismatch check, so the
+// enclosing `:=` name (s) is registered as TYPE_POISON. Before this fix, a
+// later SELECTOR access on the poisoned struct variable (s.v) fell through
+// type_check_selector_expr's struct/package/interface resolution and
+// leaked a second, cascaded diagnostic ("Selector on non-struct,
+// non-package type"). This message doesn't stringify the poisoned type
+// (no literal "<poisoned>" text), so the negative "<poisoned>" assertion
+// in run_golden_reject.sh does NOT catch a regression here — the guard's
+// correctness rests on type_check_selector_expr's early poison return
+// (verified by manual single-diagnostic testing; see fix commit) rather
+// than a mechanical stderr assertion. This fixture still pins that the
+// ROOT diagnostic is the one that reaches the user.
+package main
+
+import "fmt"
+
+type S struct {
+	v int64
+}
+
+func f() !int64 { return 3 }
+
+func main() {
+	s := S{v: f()}
+	fmt.Println(s.v)
+}
