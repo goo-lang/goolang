@@ -233,6 +233,14 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     // independent-namespace rule directly above.
     size_t saved_goto_label_count = checker->goto_label_count;
     checker->goto_label_count = 0;
+
+    // arena-goto fix: same independent-namespace save/restore as
+    // goto_label_count directly above — a closure's own arena-nesting
+    // path must be measured from ITS OWN body, not offset by however many
+    // `arena{}` blocks happen to lexically enclose the literal in the
+    // outer function (see types.h's arena_chain doc comment).
+    size_t saved_arena_chain_depth = checker->arena_chain_depth;
+    checker->arena_chain_depth = 0;
     if (lit->body) {
         type_check_collect_goto_labels(checker, lit->body);
     }
@@ -275,6 +283,7 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     }
 
     checker->fallthrough_ctx = saved_fallthrough_ctx;
+    checker->arena_chain_depth = saved_arena_chain_depth;
     checker->goto_label_count = saved_goto_label_count;
     checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;

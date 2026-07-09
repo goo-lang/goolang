@@ -56,6 +56,11 @@ TypeChecker* type_checker_new(void) {
     // gofmt-syntax-b Task 2: ditto for the goto forward-reference set.
     checker->goto_label_count = 0;
 
+    // arena-goto fix: no enclosing arena block yet (see types.h's
+    // arena_chain doc comment); goto_label_arena_depth entries are only
+    // ever read up to goto_label_count, so they need no upfront init.
+    checker->arena_chain_depth = 0;
+
     // gofmt-syntax-b Task 3: not inside any switch/select clause body yet.
     checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
 
@@ -1142,8 +1147,18 @@ void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt) {
             return;
         }
         case AST_ARENA_BLOCK: {
+            // arena-goto fix: push this block onto the shared arena_chain
+            // scratch stack (types.h doc comment) for the duration of the
+            // body walk, so any AST_LABEL_STMT reached inside records this
+            // block (and its ancestors) as part of its arena-nesting path.
             ArenaBlockNode* a = (ArenaBlockNode*)stmt;
+            int pushed = checker->arena_chain_depth < 16;
+            if (pushed) {
+                checker->arena_chain[checker->arena_chain_depth] = a;
+                checker->arena_chain_depth++;
+            }
             type_check_collect_goto_labels(checker, a->body);
+            if (pushed) checker->arena_chain_depth--;
             return;
         }
         case AST_COMPTIME_BLOCK: {
@@ -1162,6 +1177,19 @@ void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt) {
                 }
             }
             if (!already && checker->goto_label_count < 64) {
+                // arena-goto fix: snapshot the CURRENT arena_chain (this
+                // label's arena-nesting path) alongside its name — see
+                // types.h's goto_label_arena_chain doc comment. Same index
+                // as the name just below, so goto_label_arena_depth[i]/
+                // goto_label_arena_chain[i] always correspond to
+                // goto_label_names[i].
+                size_t idx = checker->goto_label_count;
+                size_t depth = checker->arena_chain_depth;
+                if (depth > 16) depth = 16;  // defensive; cannot happen (push caps at 16)
+                for (size_t k = 0; k < depth; k++) {
+                    checker->goto_label_arena_chain[idx][k] = checker->arena_chain[k];
+                }
+                checker->goto_label_arena_depth[idx] = depth;
                 checker->goto_label_names[checker->goto_label_count++] = label->name;
             }
             type_check_collect_goto_labels(checker, label->stmt);
@@ -2433,15 +2461,44 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             // needed to answer it, so there is no reason to defer it.
             GotoStmtNode* got = (GotoStmtNode*)stmt;
             int found = 0;
+            size_t found_idx = 0;
             for (size_t i = 0; i < checker->goto_label_count; i++) {
                 if (checker->goto_label_names[i] && got->label &&
                     strcmp(checker->goto_label_names[i], got->label) == 0) {
                     found = 1;
+                    found_idx = i;
                     break;
                 }
             }
             if (!found) {
                 type_error(checker, stmt->pos, "undefined label '%s'", got->label);
+                return 0;
+            }
+            // arena-goto fix: reject a goto that would jump INTO an arena
+            // block it is not already inside. Legal iff the label's
+            // recorded arena-nesting path (snapshotted by the pre-pass,
+            // types.h's goto_label_arena_chain) is a prefix of — or equal
+            // to — this goto's OWN current arena_chain: that is exactly
+            // the "goto only ever EXITS zero or more of its enclosing
+            // arenas" shape codegen can free its way out of (mirrors
+            // break/continue, which by construction can only ever target
+            // an ENCLOSING frame). Anything else — the label nested in
+            // MORE arenas than the goto, or in a different (sibling)
+            // arena chain entirely — would require silently entering an
+            // arena whose goo_arena_new never ran, which is exactly the
+            // double-free/UAF SIGSEGV this check exists to close off.
+            size_t label_depth = checker->goto_label_arena_depth[found_idx];
+            int arena_ok = label_depth <= checker->arena_chain_depth;
+            if (arena_ok) {
+                for (size_t k = 0; k < label_depth; k++) {
+                    if (checker->goto_label_arena_chain[found_idx][k] != checker->arena_chain[k]) {
+                        arena_ok = 0;
+                        break;
+                    }
+                }
+            }
+            if (!arena_ok) {
+                type_error(checker, stmt->pos, "goto into arena block is not supported");
                 return 0;
             }
             return 1;
@@ -2487,9 +2544,20 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_statement(checker, cb->body);
         }
         case AST_ARENA_BLOCK: {
+            // arena-goto fix: push/pop the same arena_chain scratch stack
+            // the goto_label_names pre-pass uses (types.h doc comment) so
+            // a `goto` checked while inside this block's body sees it as
+            // part of its own current arena-nesting path.
             ArenaBlockNode* ab = (ArenaBlockNode*)stmt;
             if (!ab->body) return 1;
-            return type_check_statement(checker, ab->body);
+            int pushed = checker->arena_chain_depth < 16;
+            if (pushed) {
+                checker->arena_chain[checker->arena_chain_depth] = ab;
+                checker->arena_chain_depth++;
+            }
+            int ok = type_check_statement(checker, ab->body);
+            if (pushed) checker->arena_chain_depth--;
+            return ok;
         }
         default:
             type_error(checker, stmt->pos, "Unknown statement type");

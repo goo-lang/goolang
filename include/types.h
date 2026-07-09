@@ -646,6 +646,40 @@ struct TypeChecker {
     char* goto_label_names[64];
     size_t goto_label_count;
 
+    // arena-goto fix (2026-07-09, findings "goto out of an arena{} block
+    // skips goo_arena_free" + "goto backward into an arena{} block
+    // double-frees"): current enclosing-arena-block IDENTITY chain
+    // (outermost first), maintained as scratch state by BOTH structural
+    // walks that visit AST_ARENA_BLOCK — the goto_label_names pre-pass
+    // (type_check_collect_goto_labels) and the main statement walk
+    // (type_check_statement's own AST_ARENA_BLOCK case). Safe to share one
+    // array across the two passes: each pass fully unwinds its own pushes
+    // (pop mirrors push) before returning, so by the time pass N+1 begins,
+    // arena_chain_depth is back to whatever pass N started it at. Entries
+    // are borrowed ArenaBlockNode* AST pointers (stable for the whole
+    // compilation, never freed here) used only for pointer-identity
+    // comparison — never dereferenced. Bound matches codegen's own
+    // arena_stack cap (codegen.h) since that is what ultimately emits the
+    // frees this chain drives; nesting past it silently stops being
+    // recorded (same "silently drop past the fixed depth" convention as
+    // codegen_arena_push, codegen.c), not a hard error.
+    void* arena_chain[16];
+    size_t arena_chain_depth;
+
+    // Per-goto-label-table-entry (parallel to goto_label_names/
+    // goto_label_count above — index i here matches goto_label_names[i])
+    // snapshot of arena_chain at the moment the pre-pass first recorded
+    // that label. type_check_statement's AST_GOTO_STMT case uses this to
+    // reject a `goto` whose OWN current arena_chain does not have this
+    // snapshot as a prefix — i.e. a goto that would need to silently
+    // *enter* an arena block it is not already inside (the double-free
+    // SIGSEGV shape). A goto that only *exits* one or more arenas (the
+    // snapshot IS a prefix of, or equal to, the goto's own chain) is
+    // legal; codegen frees exactly those extra arenas, mirroring how
+    // break/continue already free arenas above the target loop frame.
+    void* goto_label_arena_chain[64][16];
+    size_t goto_label_arena_depth[64];
+
     // gofmt-syntax-b Task 3 (P1.7): current fallthrough legality context —
     // see FallthroughContext's doc comment above. Explicitly set to NONE in
     // type_checker_new (the struct is malloc'd, not calloc'd, same
