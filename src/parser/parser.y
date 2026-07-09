@@ -32,6 +32,14 @@ static void substitute_iota(ASTNode** slot, long idx);
 static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value);
 static ASTNode* desugar_const_group(ASTNode* spec_chain);
 
+// P1.2 grouped-var desugaring: mirrors the F4 const-group mechanism above
+// (var_spec_list uses the identical newline-blind-but-unambiguous
+// juxtaposition as const_spec_list/import_spec_list — no SEMICOLON token),
+// but carries NONE of const's iota/value-inheritance semantics — see
+// var_spec_new/desugar_var_group definitions after the second %%.
+static ASTNode* var_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value);
+static ASTNode* desugar_var_group(ASTNode* spec_chain);
+
 // F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` / `a,b = v1,v2`).
 static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
                                    ASTNode* v1, ASTNode* v2, int is_short_decl);
@@ -220,6 +228,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
 %type <node> const_spec const_spec_list
+%type <node> var_spec var_spec_list var_member
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
@@ -237,7 +246,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field field_name_tail
 %type <node> enum_type enum_variant_list enum_variant
-%type <node> interface_type interface_method_list interface_method
+%type <node> interface_type interface_method_list interface_member interface_method
 %type <node> slice_lit
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
@@ -852,6 +861,15 @@ var_decl:
         ast_node_free($3);
         $$ = (ASTNode*)var;
     }
+    // P1.2: grouped var block. Desugar into a chain of ordinary single
+    // VarDeclNodes (one per spec), same splice mechanism as CONST's grouped
+    // block above. Package-scope groups reuse the same `declaration` path a
+    // single top-level `var` already goes through, so they inherit that
+    // path's existing constant-initializer-only constraint unchanged
+    // (non-constant package-scope globals are P3.7, out of scope here).
+    | VAR LPAREN var_spec_list RPAREN {
+        $$ = desugar_var_group($3);
+    }
     ;
 
 // Short variable declaration
@@ -982,6 +1000,68 @@ const_spec_list:
         $$ = $1;
     }
     | const_spec_list const_spec {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+// P1.2: one spec inside a grouped var block. UNLIKE const_spec_list/
+// import_spec_list's plain juxtaposition, var_spec_list is NOT newline-blind:
+// a var_spec's `type` can be a result-less func_type, and func_result's FIRST
+// set starts with an identifier — so bare juxtaposition lets a result-less
+// `f func(int)` absorb the NEXT spec's name as its own return type (the
+// newline-blind func-result hazard, workarounds.md §6; e.g. `var (\n f
+// func(int)\n g = 2\n)` misparses as one spec `f func(int) g = 2`). This is
+// the exact absorption class the interface-body fix (parser.y interface_type/
+// interface_member) neutralizes for method specs; var groups get the same
+// fix, mirrored: while lexically inside a `var ( ... )` group, the lexer
+// (lexer.c asi_ctx, keyed off '(' this time rather than '{') inserts a ';'
+// after a newline that follows a value-ending token, and var_member below
+// wraps var_spec with an optional trailing SEMICOLON so each spec terminates
+// at its own line instead of extending into the next. A list-level
+// `var_spec_list SEMICOLON var_spec` + trailing-SEMICOLON pair was not tried
+// here for the same reason it was rejected for interface_member: it would
+// need to disambiguate "more list to come" from "trailing terminator" on the
+// same lookahead, which is exactly the shape that produced a genuine
+// shift/reduce conflict there.
+//
+// UNLIKE const_spec, there is deliberately NO bare `identifier`-alone arm:
+// const's bare spec means "repeat the previous value" (iota inheritance,
+// see desugar_const_group); var has no such semantics; a Go var spec must
+// carry a type and/or an initializer. Omitting that arm means `var (x)`
+// (bare name, no type, no value) is already a grammar-level syntax error —
+// nothing extra to reject downstream.
+var_spec:
+    identifier type {
+        // `NAME TYPE`, no initializer: values stays NULL, exactly the same
+        // representation single `var z int` already uses (ast_var_decl_new
+        // zero-inits `values`) — the existing zero-value codegen/typecheck
+        // path for a typed-no-initializer var handles this unchanged.
+        $$ = var_spec_new($1, $2, NULL);
+    }
+    | identifier ASSIGN expression {
+        $$ = var_spec_new($1, NULL, $3);
+    }
+    | identifier type ASSIGN expression {
+        $$ = var_spec_new($1, $2, $4);
+    }
+    ;
+
+// Wraps a var_spec with an optional trailing ';' — explicit or ASI-inserted
+// (lexer.c asi_ctx, var-group-scoped ASI mirroring interface_member/
+// interface_method). SEMICOLON attaches to the MEMBER, not a list-level
+// separator arm — see the var_spec_list comment above and interface_member's
+// for why the list-level form was rejected (a genuine shift/reduce conflict).
+var_member:
+    var_spec { $$ = $1; }
+    | var_spec SEMICOLON { $$ = $1; }
+    ;
+
+var_spec_list:
+    var_member {
+        $$ = $1;
+    }
+    | var_spec_list var_member {
         ast_add_child($1, $2);
         $$ = $1;
     }
@@ -1136,8 +1216,10 @@ statement:
     simple_stmt SEMICOLON { $$ = $1; }
     | simple_stmt { $$ = $1; }  // Allow statements without semicolon
     | if_stmt { $$ = $1; }
+    | if_stmt SEMICOLON { $$ = $1; }  // Task 6b: tolerate ASI's `;` after a block's `}`
     | if_let_stmt { $$ = $1; }
     | for_stmt { $$ = $1; }
+    | for_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | return_stmt SEMICOLON { $$ = $1; }
     | return_stmt { $$ = $1; }  // Allow return without semicolon
     | break_stmt SEMICOLON { $$ = $1; }
@@ -1149,8 +1231,11 @@ statement:
     | defer_stmt SEMICOLON { $$ = $1; }
     | defer_stmt { $$ = $1; }  // Allow defer without semicolon
     | select_stmt { $$ = $1; }
+    | select_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | switch_stmt { $$ = $1; }
+    | switch_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | block { $$ = $1; }
+    | block SEMICOLON { $$ = $1; }  // Task 6b: ditto
     | comptime_block { $$ = $1; }  // Goo extension
     | unsafe_stmt { $$ = $1; }     // Goo extension
     | arena_stmt { $$ = $1; }      // Goo extension
@@ -1549,6 +1634,74 @@ switch_stmt:
         TypeSwitchNode* tsw = ast_type_switch_new($2.bind_name, $2.expr, $4, get_current_position());
         $$ = (ASTNode*)tsw;
     }
+    // `switch init; tag { }` — the idiomatic Go guard form (e.g.
+    // `switch x := 2; x { case 2: ... }`). Desugared to a wrapping block
+    // `{ init; switch tag {...} }`, mirroring IF's init arm (parser.y:1270)
+    // and FOR's C-style init clause: the init var's scope is naturally
+    // bounded to the wrapper block (out of scope after the switch, matching
+    // Go), with zero AST/codegen changes to SwitchStmtNode.
+    | SWITCH simple_stmt SEMICOLON expression LBRACE_BODY case_clause_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new($4, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON expression LBRACE case_clause_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new($4, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    // `switch init; { }` — the tagless (switch-true) form combined with an
+    // init statement (e.g. `switch x := 5; { case x < 10: ... }`). Fix C:
+    // Task 2 added init arms for the tagged and type-switch forms only,
+    // leaving this one out; mirrors the tagged-init arms above exactly the
+    // same way the bare tagless arm (parser.y:1604) mirrors the bare tagged
+    // arm (parser.y:1595) — synthesize a `true` tag, then reuse the same
+    // init-wrapper desugar (scope bounded to the wrapper block). No new
+    // conflict surface: `expression` cannot start with LBRACE/LBRACE_BODY
+    // (see composite_value's comment at parser.y:2809), so the token
+    // immediately after SEMICOLON already decides between this arm and the
+    // expression-tag arms above with one token of lookahead — the same
+    // disjointness the bare tagged/tagless pair already relies on.
+    | SWITCH simple_stmt SEMICOLON LBRACE_BODY case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new(t, $5, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON LBRACE case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new(t, $5, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    // `switch init; [v :=] x.(type) { }` — same init-guard shape for the
+    // type-switch form. Reuses type_switch_guard unmodified (no new
+    // type-switch surface — spec open point 3): the bind form
+    // `identifier SHORT_ASSIGN primary_expr DOT LPAREN TYPE RPAREN` already
+    // parses at base without init (Task 3, type-assertions branch), so this
+    // mirrors the same init-wrapper desugar onto it.
+    | SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE_BODY type_case_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_type_switch_new($4.bind_name, $4.expr, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE type_case_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_type_switch_new($4.bind_name, $4.expr, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
     ;
 
 // Type assertions branch, Task 3: the type-switch guard. The bind-less form
@@ -1939,6 +2092,33 @@ call_expr:
         call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
+    // Task 4 (trailing comma in call args): gofmt's canonical multi-line
+    // call shape (`f(\n    a,\n    b,\n)`) needs this arm — after a COMMA,
+    // RPAREN can immediately follow. LR(1)-clean by the same argument as
+    // the composite-literal COMMA-before-RBRACE arms (workarounds.md §5):
+    // after `expression_list COMMA`, lookahead RPAREN reduces here, any
+    // expression-starting token instead shifts into one more element via
+    // expression_list's own COMMA-chaining production. Deliberately NOT
+    // folded into expression_list itself — that nonterminal is shared with
+    // non-call contexts (return, tuple assignment) where a trailing comma
+    // must stay illegal (spec open point 2). This arm also covers method
+    // calls for free: `obj.Method(a, b,)` reaches here because
+    // selector_expr reduces to primary_expr before LPAREN is seen.
+    | primary_expr LPAREN expression_list COMMA RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        call->args = $3;
+        call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
+        $$ = (ASTNode*)call;
+    }
     // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
     // immediately above; only has_spread differs. Spread is grammatically
     // FINAL-ONLY — ELLIPSIS sits directly before RPAREN, so it can only ever
@@ -1997,6 +2177,26 @@ call_expr:
         call->comptime_value_arg_count = 0;
         $$ = (ASTNode*)call;
     }
+    // Task 4: trailing comma after make()'s sole type argument, e.g.
+    // `make(\n    map[string]int,\n)`. `make` is an ordinary call target
+    // (not a keyword) so it gets the same gofmt-shape tolerance as any
+    // other call; real Go's own Arguments grammar allows this too
+    // (verified with `go run` on `make(map[string]int,)`).
+    | primary_expr LPAREN type_call_arg COMMA RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
+        call->args = $3;
+        call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
+        $$ = (ASTNode*)call;
+    }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
         CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
         call->base.type = AST_CALL_EXPR;
@@ -2011,6 +2211,25 @@ call_expr:
         // a freshly malloc'd node whose ->next is NULL, so this direct
         // assignment does not drop a pre-existing tail — no ast_add_child
         // walk is needed.
+        $3->next = $5;
+        call->args = $3;
+        call->has_spread = 0;
+        call->type_args = NULL;      // Function generics Task 6
+        call->type_arg_count = 0;
+        call->comptime_value_args = NULL;   // Comptime value params (fix round 3)
+        call->comptime_value_arg_count = 0;
+        $$ = (ASTNode*)call;
+    }
+    // Task 4: trailing comma after make()'s two-arg form, e.g.
+    // `make(\n    []int,\n    3,\n)`. Same splice as the arm above, plus
+    // the trailing COMMA before RPAREN.
+    | primary_expr LPAREN type_call_arg COMMA expression_list COMMA RPAREN {
+        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+        call->base.type = AST_CALL_EXPR;
+        call->base.pos = get_current_position();
+        call->base.node_type = NULL;
+        call->base.next = NULL;
+        call->function = $1;
         $3->next = $5;
         call->args = $3;
         call->has_spread = 0;
@@ -2227,11 +2446,34 @@ interface_type:
     ;
 
 interface_method_list:
-    interface_method { $$ = $1; }
-    | interface_method_list interface_method {
+    interface_member { $$ = $1; }
+    | interface_method_list interface_member {
         ast_add_child($1, $2);
         $$ = $1;
     }
+    ;
+
+// Wraps an interface_method with an optional trailing ';' — explicit or
+// ASI-inserted (lexer.c asi_ctx, interface-body-scoped ASI mirroring the
+// struct-body pilot). Needed because bare juxtaposition alone is ambiguous
+// after a void method: `Inc()` followed by an identifier is grammatically
+// valid as BOTH `Inc`'s own func_result (a named return type) AND the next
+// method's name, and bison's shift-wins default silently picks the former
+// (workarounds.md §6), absorbing the next method's name into this one's
+// signature. A ';' sits outside func_result's FIRST set, so it disambiguates
+// for free (clean reduce, zero new conflicts). This mirrors struct_field's
+// own per-field trailing-SEMICOLON arms (parser.y struct_field, ~2295) —
+// SEMICOLON attached to the MEMBER, not a list-level separator arm. A
+// list-level `interface_method_list SEMICOLON interface_method` +
+// `interface_method_list SEMICOLON` (trailing) pair was tried first and
+// empirically produces a genuine LALR shift/reduce conflict (+1, verified
+// via bison -Wcounterexamples: "interface_method_list SEMICOLON •" on
+// IDENTIFIER lookahead can't distinguish "more list to come" from "trailing
+// terminator" without merging lookahead sets across the two rules) — not
+// adopted.
+interface_member:
+    interface_method { $$ = $1; }
+    | interface_method SEMICOLON { $$ = $1; }
     ;
 
 // A method signature: `Name`, `Name() ret`, `Name(params)`, `Name(params) ret`.
@@ -3540,6 +3782,37 @@ static ASTNode* desugar_const_group(ASTNode* spec_chain) {
     }
 
     if (template) ast_node_free(template);
+    return spec_chain;
+}
+
+// P1.2: build one VarDeclNode for a grouped-var spec. Exactly one of `type`
+// / `value` may be NULL (never both — var_spec's grammar has no bare
+// `identifier`-alone arm) depending on which of the three spec forms
+// matched. Mirrors const_spec_new's shape; unlike it, nothing is deferred
+// for a later desugar pass to fill in.
+static ASTNode* var_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
+    VarDeclNode* var = ast_var_decl_new(get_current_position());
+
+    IdentifierNode* ident = (IdentifierNode*)name_ident;
+    var->names = malloc(sizeof(char*));
+    var->names[0] = strdup(ident->name);
+    var->name_count = 1;
+    var->type = type;
+    var->values = value;
+
+    ast_node_free(name_ident);
+    return (ASTNode*)var;
+}
+
+// P1.2: turn a chain of grouped-var specs into a chain of ordinary single
+// var decls. Unlike desugar_const_group, there is no iota ordinal and no
+// value-inheritance pass to run here: every var_spec already built a
+// complete, self-contained VarDeclNode (var_spec_new, above). Kept as its
+// own function — mirroring desugar_const_group's shape/call site in the
+// VAR LPAREN var_spec_list RPAREN arm — as the natural extension point if
+// grouped var ever needs a group-wide pass (e.g. shared type inference
+// across specs); today it is deliberately a pass-through.
+static ASTNode* desugar_var_group(ASTNode* spec_chain) {
     return spec_chain;
 }
 

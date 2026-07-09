@@ -186,10 +186,34 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
-            // Struct-body ASI (embedding): inside a struct body, a newline
-            // after a field-ending token ends the field — Go's semicolon rule
-            // scoped to struct bodies, so a 1-token embedded field (`Base`)
-            // stops at the line break instead of absorbing the next line.
+            // Part 2.5 — line-starting channel-receive guard. A value-ending
+            // token followed across a newline by `<-` would otherwise flow
+            // straight into a send expression (`x := 2` <nl> `<-ch` ->
+            // `2 <- ch`, rejected as "send to non-channel type"). Go treats
+            // the newline as a statement terminator here; `<-ch` alone on
+            // its own line is a receive (wait) statement, not a
+            // continuation of the previous line. `<` by itself is
+            // deliberately NOT in char_starts_continuation_op — plain
+            // comparisons (`x := 1` <nl> `< y`) and `<=`/`<<` at a line
+            // start are not this hazard and must keep joining as today, so
+            // this guard needs its own two-character, non-consuming
+            // lookahead (`<` then `-`) rather than widening Part 2's
+            // single-character peek.
+            if (token_ends_value(lexer->prev_token_type) &&
+                lexer->ch == '<' && lexer_peek_char(lexer) == '-') {
+                lexer->prev_token_type = TOKEN_SEMICOLON;
+                return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
+            }
+            // Struct/interface-body and var-group ASI (embedding; method
+            // specs; grouped var specs): inside a struct body, interface
+            // body, or `var ( ... )` group, a newline after a value-ending
+            // token ends the member — Go's semicolon rule scoped to these
+            // bodies, so a 1-token embedded field (`Base`), a void method
+            // spec (`Inc()`), or a result-less func-typed var spec (`f
+            // func(int)`) stops at the line break instead of absorbing the
+            // next line's token (e.g. a following method/spec name mistaken
+            // for a return type via func_result's identifier-starting FIRST
+            // set).
             if (lexer->asi_depth > 0 &&
                 lexer->asi_depth <= (int)sizeof(lexer->asi_ctx) &&
                 lexer->asi_ctx[lexer->asi_depth - 1] &&
@@ -202,17 +226,29 @@ Token* lexer_next_token(Lexer* lexer) {
         // Single character tokens
         case '(':
             token = token_new(TOKEN_LPAREN, "(", 1, current_pos);
+            // Var-group-scoped ASI: a '(' immediately following `var` opens a
+            // grouped var block (`var ( ... )`), sharing the same depth stack
+            // as struct/interface '{' (see include/lexer.h asi_ctx). All
+            // other '(' (call args, parenthesized expressions, const/import
+            // groups, func param lists) push a no-emit (0) entry.
+            if (lexer->asi_depth >= 0 && lexer->asi_depth < (int)sizeof(lexer->asi_ctx)) {
+                lexer->asi_ctx[lexer->asi_depth] =
+                    (lexer->prev_token_type == TOKEN_VAR) ? 1 : 0;
+            }
+            lexer->asi_depth++;
             lexer_read_char(lexer);
             break;
         case ')':
             token = token_new(TOKEN_RPAREN, ")", 1, current_pos);
+            if (lexer->asi_depth > 0) lexer->asi_depth--;
             lexer_read_char(lexer);
             break;
         case '{':
             token = token_new(TOKEN_LBRACE, "{", 1, current_pos);
             if (lexer->asi_depth >= 0 && lexer->asi_depth < (int)sizeof(lexer->asi_ctx)) {
                 lexer->asi_ctx[lexer->asi_depth] =
-                    (lexer->prev_token_type == TOKEN_STRUCT) ? 1 : 0;
+                    (lexer->prev_token_type == TOKEN_STRUCT ||
+                     lexer->prev_token_type == TOKEN_INTERFACE) ? 1 : 0;
             }
             lexer->asi_depth++;
             lexer_read_char(lexer);
@@ -512,6 +548,28 @@ Token* lexer_next_token(Lexer* lexer) {
             }
             break;
             
+        case '`':
+            {
+                // Go spec raw string literal: content between backticks is
+                // taken literally — backslashes are ordinary data, never an
+                // escape introducer (`\n` here is backslash+n, two bytes,
+                // not a newline). May span multiple lines; those interior
+                // newlines are content and never reach the '\n' case above
+                // (the whole literal is consumed in this one call), so they
+                // cannot trigger ASI — this token still ends as TOKEN_STRING,
+                // matching a regular string, so prev_token_type is
+                // value-ending afterward exactly like `"..."` is.
+                size_t length;
+                char* raw_literal = lexer_read_raw_string(lexer, &length);
+                if (raw_literal) {
+                    token = token_new(TOKEN_STRING, raw_literal, length, current_pos);
+                    free(raw_literal);
+                } else {
+                    token = token_new(TOKEN_ERROR, "unterminated raw string", 24, current_pos);
+                }
+            }
+            break;
+
         case '\'':
             {
                 size_t length;
@@ -763,6 +821,45 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
     if (length) *length = out_len;
 
     lexer_read_char(lexer); // consume closing quote
+    return out;
+}
+
+// Raw string literal (backtick-delimited), per the Go spec: content is taken
+// literally between the backticks — no escape processing at all, so a
+// backslash is just a data byte (unlike lexer_read_string above, which
+// interprets `\n`, `\xNN`, etc.). May span multiple source lines; interior
+// newlines are copied through as content. The one transformation the spec
+// still requires is dropping carriage-return bytes (0x0D) so that raw
+// strings read from CRLF source files are line-ending-independent, matching
+// gc's cmd/compile behavior. Returns NULL on EOF before the closing
+// backtick (unterminated), mirroring lexer_read_string's contract so the
+// caller's TOKEN_ERROR path is identical.
+char* lexer_read_raw_string(Lexer* lexer, size_t* length) {
+    lexer_read_char(lexer); // consume opening backtick
+    size_t start_pos = lexer->position;
+
+    while (lexer->ch != '`' && lexer->ch != 0) {
+        lexer_read_char(lexer);
+    }
+
+    if (lexer->ch != '`') {
+        return NULL; // Unterminated raw string
+    }
+
+    size_t raw_len = lexer->position - start_pos;
+    char* out = malloc(raw_len + 1); // CR-stripping only ever shrinks
+    if (!out) return NULL;
+
+    size_t out_len = 0;
+    for (size_t i = 0; i < raw_len; i++) {
+        char c = lexer->input[start_pos + i];
+        if (c == '\r') continue; // Go spec: CR bytes are dropped, not content
+        out[out_len++] = c;
+    }
+    out[out_len] = '\0';
+    if (length) *length = out_len;
+
+    lexer_read_char(lexer); // consume closing backtick
     return out;
 }
 

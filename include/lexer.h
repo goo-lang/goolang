@@ -16,14 +16,24 @@ typedef struct {
     const char* filename;   // Name of the file being lexed
     TokenType prev_token_type; // Last significant token, for newline -> ';'
                                // insertion (targeted ASI; see lexer.c).
-    // Struct-body-scoped ASI (struct embedding): one entry per currently-open
-    // brace. asi_ctx[d] == 1 iff the '{' at depth d opened a struct body (it
-    // immediately followed the `struct` keyword), in which case a newline
-    // after a field-ending token inserts ';' so 1-token embedded fields
-    // (`Base`) terminate at the line break. All other braces (enum, interface,
-    // composite literals, blocks) are no-emit. Depths beyond the array are
-    // treated as no-emit (depth still tracked for correct pops). Appended at
-    // the struct tail per the no-header-deps convention.
+    // Struct/interface-body- and var-group-scoped ASI (struct embedding;
+    // interface method specs; grouped `var ( ... )` specs): one entry per
+    // currently-open bracket, '{'/'}' AND '('/')' sharing the same depth
+    // stack (they always nest properly with respect to each other, so a
+    // single LIFO counter tracks whichever bracket is innermost). asi_ctx[d]
+    // == 1 iff the bracket opened at depth d started a scoped body — a '{'
+    // immediately following `struct`/`interface`, or a '(' immediately
+    // following `var` — in which case a newline after a value-ending token
+    // inserts ';' so a 1-token embedded struct field (`Base`), a void
+    // interface method spec (`Inc()`), or a result-less func-typed var spec
+    // (`f func(int)`) terminates at the line break instead of absorbing the
+    // next line's token (e.g. a following member/spec name mistaken for a
+    // return type via func_result's identifier-starting FIRST set). All
+    // other brackets (enum/composite-literal braces, ordinary parenthesized
+    // expressions and call argument lists, const/import groups) are no-emit.
+    // Depths beyond the array are treated as no-emit (depth still tracked for
+    // correct pops). Appended at the struct tail per the no-header-deps
+    // convention.
     unsigned char asi_ctx[256];
     int asi_depth;
 } Lexer;
@@ -44,6 +54,7 @@ void lexer_skip_whitespace(Lexer* lexer);
 char* lexer_read_identifier(Lexer* lexer, size_t* length);
 char* lexer_read_number(Lexer* lexer, size_t* length, int* is_float);
 char* lexer_read_string(Lexer* lexer, size_t* length);
+char* lexer_read_raw_string(Lexer* lexer, size_t* length);
 char* lexer_read_char_literal(Lexer* lexer, size_t* length);
 int lexer_decode_char_value(const char* body, size_t len, long* out);
 

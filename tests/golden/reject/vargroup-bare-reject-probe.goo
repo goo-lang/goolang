@@ -1,0 +1,16 @@
+// vargroup_bare_reject (P1.2): a grouped var spec with neither a type nor
+// an initializer must be REJECTED — Go requires `IdentifierList ( Type [ "="
+// ExpressionList ] | "=" ExpressionList )` for every var spec, so a bare
+// name alone is invalid. var_spec's grammar (parser.y) deliberately has no
+// bare-`identifier`-alone arm (unlike const_spec, whose bare spec means
+// "repeat the previous value" via iota inheritance — var has no such
+// semantics), so this is already a syntax error at the parser, with no
+// extra checker work needed.
+package main
+
+func main() {
+	var (
+		x
+	)
+	_ = x
+}

@@ -968,6 +968,28 @@ conststr-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 1; \
 	fi
 
+# Task 5 (raw string literals): CR (0x0D) bytes must be STRIPPED from a raw
+# string's content per the Go spec (`a\r\nb` -> "a\nb"), so a raw string read
+# from a CRLF source file is line-ending-independent. A literal CR byte inside
+# a committed .goo golden fixture is risky — git autocrlf, an editor's line-
+# ending normalization, or a future `gofmt`-alike could silently rewrite CRLF
+# to LF before the compiler ever sees it, quietly defeating the coverage. This
+# probe sidesteps that by generating the source with `printf` at test time
+# (same technique as hexesc-reject-probe above), which writes the exact byte
+# every run instead of depending on a text file surviving untouched.
+rawstring-cr-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\ts := `a\r\nb`\n\tfmt.Println(len(s))\n\tfmt.Println(int(s[0]))\n\tfmt.Println(int(s[1]))\n\tfmt.Println(int(s[2]))\n}\n' > build/rawstring_cr_probe.goo
+	$(COMPILER) -o build/rawstring_cr_probe build/rawstring_cr_probe.goo
+	@./build/rawstring_cr_probe > build/rawstring_cr_probe.actual.txt
+	@printf '3\n97\n10\n98\n' > build/rawstring_cr_probe.expected.txt
+	@if diff -u build/rawstring_cr_probe.expected.txt build/rawstring_cr_probe.actual.txt; then \
+	  echo "rawstring-cr-probe: PASS (CR stripped: len 3, bytes 97/10/98 = 'a','\\n','b')"; \
+	else \
+	  echo "rawstring-cr-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
 # F3 negative gate: a MALFORMED char literal must be rejected cleanly, NOT
 # silently dropped. The lexer emits TOKEN_ERROR for ''/'\z'/unterminated 'a),
 # which the Bison bridge maps to an unknown token and skips — so before the fix
@@ -2254,6 +2276,7 @@ VERIFY_ALL_DEPS := \
     bits-div-abort-probe \
     conststr-nul-probe \
     conststr-probe \
+    rawstring-cr-probe \
     map-probe \
     int64-probe \
     commaok-probe \
@@ -2364,6 +2387,7 @@ VERIFY_ALL_DEPS := \
     generics-reject-probe \
     generics-bound-reject-probe \
     asi-hardening-probe \
+    asi-gocompat-probe \
     param-escape-test \
     block-escape-test \
     arena-routing-test \
@@ -2635,6 +2659,106 @@ asi-hardening-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/asi_sel.err; then echo "asi-hardening-probe: FAIL (selector case reached verifier)"; cat build/asi_sel.err; exit 1; fi; \
 	  if [ $$rc -eq 0 ] && [ "$$(./build/asi_sel.out 2>/dev/null)" = "7" ]; then echo "asi-hardening-probe: FAIL (selector case silently joined -> printed 7)"; exit 1; fi
 	@echo "asi-hardening-probe: PASS"
+
+# Positive Go-compat ASI matrix: the flip side of asi-hardening-probe. That
+# probe pins hazards (ASI must NOT silently join across a newline);
+# this one pins the matrix of ordinary, ASI-dependent Go forms that MUST
+# keep parsing AND running correctly — one case per gofmt-syntax task's
+# positive behavior, each compiled, run, and diffed against asserted
+# stdout. Every case here was individually verified against today's
+# compiler before being added (see task-7 report for the verification
+# log); nothing in this matrix is aspirational.
+.PHONY: asi-gocompat-probe
+asi-gocompat-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== asi-gocompat-probe: positive Go-compat ASI matrix ==="
+	@# Case 1: no-semicolon statements, multi-statement body, newline-separated.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\ta := 1\n\tb := 2\n\tc := a + b\n\tfmt.Println(c)\n}\n' > build/gc_nosemi.goo
+	@"$(COMPILER)" build/gc_nosemi.goo -o build/gc_nosemi.out 2>build/gc_nosemi.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (no-semicolon statements: compile failed rc=$$rc)"; cat build/gc_nosemi.err; exit 1; fi
+	@./build/gc_nosemi.out > build/gc_nosemi.actual.txt
+	@printf '3\n' > build/gc_nosemi.expected.txt
+	@if ! diff -u build/gc_nosemi.expected.txt build/gc_nosemi.actual.txt; then echo "asi-gocompat-probe: FAIL (no-semicolon statements: stdout mismatch)"; exit 1; fi
+	@# Case 2: bare `return` (void func, mid-function); bare `break`/`continue` in a loop.
+	@printf 'package main\nimport "fmt"\nfunc early(n int) {\n\tif n < 0 {\n\t\tfmt.Println("neg")\n\t\treturn\n\t}\n\tfmt.Println("nonneg")\n}\nfunc main() {\n\tearly(-1)\n\tearly(1)\n\tsum := 0\n\tfor i := 0; i < 10; i++ {\n\t\tif i == 5 {\n\t\t\tbreak\n\t\t}\n\t\tif i%%2 == 0 {\n\t\t\tcontinue\n\t\t}\n\t\tsum = sum + i\n\t}\n\tfmt.Println(sum)\n}\n' > build/gc_barejump.goo
+	@"$(COMPILER)" build/gc_barejump.goo -o build/gc_barejump.out 2>build/gc_barejump.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (bare return/break/continue: compile failed rc=$$rc)"; cat build/gc_barejump.err; exit 1; fi
+	@./build/gc_barejump.out > build/gc_barejump.actual.txt
+	@printf 'neg\nnonneg\n4\n' > build/gc_barejump.expected.txt
+	@if ! diff -u build/gc_barejump.expected.txt build/gc_barejump.actual.txt; then echo "asi-gocompat-probe: FAIL (bare return/break/continue: stdout mismatch)"; exit 1; fi
+	@# Case 3: `p := &x` <nl> `*p = v` — the continuation-op hazard's positive side.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tx := 1\n\tp := &x\n\t*p = 42\n\tfmt.Println(x)\n}\n' > build/gc_ptrderef.goo
+	@"$(COMPILER)" build/gc_ptrderef.goo -o build/gc_ptrderef.out 2>build/gc_ptrderef.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (p := &x / *p = v: compile failed rc=$$rc)"; cat build/gc_ptrderef.err; exit 1; fi
+	@./build/gc_ptrderef.out > build/gc_ptrderef.actual.txt
+	@printf '42\n' > build/gc_ptrderef.expected.txt
+	@if ! diff -u build/gc_ptrderef.expected.txt build/gc_ptrderef.actual.txt; then echo "asi-gocompat-probe: FAIL (p := &x / *p = v: stdout mismatch)"; exit 1; fi
+	@# Case 4: trailing-op continuation — `a := 1 +` <nl> `2` must NOT be ASI-split.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\ta := 1 +\n\t\t2\n\tfmt.Println(a)\n}\n' > build/gc_trailop.goo
+	@"$(COMPILER)" build/gc_trailop.goo -o build/gc_trailop.out 2>build/gc_trailop.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (trailing-op continuation: compile failed rc=$$rc)"; cat build/gc_trailop.err; exit 1; fi
+	@./build/gc_trailop.out > build/gc_trailop.actual.txt
+	@printf '3\n' > build/gc_trailop.expected.txt
+	@if ! diff -u build/gc_trailop.expected.txt build/gc_trailop.actual.txt; then echo "asi-gocompat-probe: FAIL (trailing-op continuation: stdout mismatch)"; exit 1; fi
+	@# Case 5: dot continuation — `fmt.` <nl> `Println(...)` must NOT be ASI-split.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tfmt.\n\t\tPrintln("dotcontinue")\n}\n' > build/gc_dotcont.goo
+	@"$(COMPILER)" build/gc_dotcont.goo -o build/gc_dotcont.out 2>build/gc_dotcont.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (dot continuation: compile failed rc=$$rc)"; cat build/gc_dotcont.err; exit 1; fi
+	@./build/gc_dotcont.out > build/gc_dotcont.actual.txt
+	@printf 'dotcontinue\n' > build/gc_dotcont.expected.txt
+	@if ! diff -u build/gc_dotcont.expected.txt build/gc_dotcont.actual.txt; then echo "asi-gocompat-probe: FAIL (dot continuation: stdout mismatch)"; exit 1; fi
+	@# Case 6: struct embedding on its own line (struct-body ASI, gofmt-syntax A §4).
+	@printf 'package main\nimport "fmt"\ntype Base struct {\n\tid int\n}\ntype Derived struct {\n\tBase\n\tname string\n}\nfunc main() {\n\td := Derived{Base: Base{id: 7}, name: "d"}\n\tfmt.Println(d.id, d.name)\n}\n' > build/gc_embed.goo
+	@"$(COMPILER)" build/gc_embed.goo -o build/gc_embed.out 2>build/gc_embed.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (struct embedding own-line: compile failed rc=$$rc)"; cat build/gc_embed.err; exit 1; fi
+	@./build/gc_embed.out > build/gc_embed.actual.txt
+	@printf '7 d\n' > build/gc_embed.expected.txt
+	@if ! diff -u build/gc_embed.expected.txt build/gc_embed.actual.txt; then echo "asi-gocompat-probe: FAIL (struct embedding own-line: stdout mismatch)"; exit 1; fi
+	@# Case 7: interface method specs on their own lines — multi-method interface,
+	@# void method first (Task 1's behavior).
+	@printf 'package main\nimport "fmt"\ntype Doer interface {\n\tDo()\n\tValue() int\n}\ntype Impl struct {\n\tn int\n}\nfunc (i Impl) Do() {\n\tfmt.Println("doing")\n}\nfunc (i Impl) Value() int {\n\treturn i.n\n}\nfunc main() {\n\tvar d Doer = Impl{n: 9}\n\td.Do()\n\tfmt.Println(d.Value())\n}\n' > build/gc_ifacespec.goo
+	@"$(COMPILER)" build/gc_ifacespec.goo -o build/gc_ifacespec.out 2>build/gc_ifacespec.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (interface method specs own-line: compile failed rc=$$rc)"; cat build/gc_ifacespec.err; exit 1; fi
+	@./build/gc_ifacespec.out > build/gc_ifacespec.actual.txt
+	@printf 'doing\n9\n' > build/gc_ifacespec.expected.txt
+	@if ! diff -u build/gc_ifacespec.expected.txt build/gc_ifacespec.actual.txt; then echo "asi-gocompat-probe: FAIL (interface method specs own-line: stdout mismatch)"; exit 1; fi
+	@# Case 8: receive-at-line-start (Task 6's behavior) — `x := 2` <nl> `<-ch` is
+	@# a standalone receive statement, not a continuation into a send expression.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tch := make(chan int, 1)\n\tgo func() { ch <- 1 }()\n\tx := 2\n\t<-ch\n\tfmt.Println(x)\n}\n' > build/gc_recv.goo
+	@"$(COMPILER)" build/gc_recv.goo -o build/gc_recv.out 2>build/gc_recv.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (receive-at-line-start: compile failed rc=$$rc)"; cat build/gc_recv.err; exit 1; fi
+	@./build/gc_recv.out > build/gc_recv.actual.txt
+	@printf '2\n' > build/gc_recv.expected.txt
+	@if ! diff -u build/gc_recv.expected.txt build/gc_recv.actual.txt; then echo "asi-gocompat-probe: FAIL (receive-at-line-start: stdout mismatch)"; exit 1; fi
+	@# Case 9: comment+ASI interplay — `x = 10 // c` <nl> `*p = 7`; the trailing
+	@# line comment must not suppress ASI before the next statement.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tx := 1\n\tp := &x\n\tx = 10 // c\n\t*p = 7\n\tfmt.Println(x)\n}\n' > build/gc_commentasi.goo
+	@"$(COMPILER)" build/gc_commentasi.goo -o build/gc_commentasi.out 2>build/gc_commentasi.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (comment+ASI interplay: compile failed rc=$$rc)"; cat build/gc_commentasi.err; exit 1; fi
+	@./build/gc_commentasi.out > build/gc_commentasi.actual.txt
+	@printf '7\n' > build/gc_commentasi.expected.txt
+	@if ! diff -u build/gc_commentasi.expected.txt build/gc_commentasi.actual.txt; then echo "asi-gocompat-probe: FAIL (comment+ASI interplay: stdout mismatch)"; exit 1; fi
+	@# Case 10: raw-string line followed by a new statement (Task 5 interaction).
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\ts := `raw string`\n\tn := len(s)\n\tfmt.Println(s, n)\n}\n' > build/gc_rawstr.goo
+	@"$(COMPILER)" build/gc_rawstr.goo -o build/gc_rawstr.out 2>build/gc_rawstr.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (raw-string then new statement: compile failed rc=$$rc)"; cat build/gc_rawstr.err; exit 1; fi
+	@./build/gc_rawstr.out > build/gc_rawstr.actual.txt
+	@printf 'raw string 10\n' > build/gc_rawstr.expected.txt
+	@if ! diff -u build/gc_rawstr.expected.txt build/gc_rawstr.actual.txt; then echo "asi-gocompat-probe: FAIL (raw-string then new statement: stdout mismatch)"; exit 1; fi
+	@# Case 11: receive-after-brace (Task 6 REGRESSION fix) — `for { ... }` <nl>
+	@# `<-ch` is the standard Go "loop, then join on channel" pattern. Part 2.5's
+	@# ASI guard inserts a `;` after the loop's closing `}` (it is a value-ending
+	@# token); `statement:` must tolerate that trailing SEMICOLON on for_stmt (and
+	@# if/switch/select/block) or the join is a loud parse error. See
+	@# examples/asi_recv_after_for_probe.goo / asi_recv_after_if_probe.goo for the
+	@# single-fixture-per-shape goldens; this case pins the same hazard inline.
+	@printf 'package main\nimport "fmt"\nfunc main() {\n\tch := make(chan int, 1)\n\tgo func() { ch <- 1 }()\n\tfor i := 0; i < 2; i++ {\n\t\tfmt.Println(i)\n\t}\n\t<-ch\n\tfmt.Println("joined")\n}\n' > build/gc_recvafterbrace.goo
+	@"$(COMPILER)" build/gc_recvafterbrace.goo -o build/gc_recvafterbrace.out 2>build/gc_recvafterbrace.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "asi-gocompat-probe: FAIL (receive-after-brace: compile failed rc=$$rc)"; cat build/gc_recvafterbrace.err; exit 1; fi
+	@./build/gc_recvafterbrace.out > build/gc_recvafterbrace.actual.txt
+	@printf '0\n1\njoined\n' > build/gc_recvafterbrace.expected.txt
+	@if ! diff -u build/gc_recvafterbrace.expected.txt build/gc_recvafterbrace.actual.txt; then echo "asi-gocompat-probe: FAIL (receive-after-brace: stdout mismatch)"; exit 1; fi
+	@echo "asi-gocompat-probe: PASS"
 
 # P2-1: a value-producing catch handler (final statement is a non-void
 # expression) recovers with that expression's value, so its type must be

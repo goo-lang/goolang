@@ -1,0 +1,10 @@
+hello raw
+9
+line1
+line2
+line3
+17
+\n\t\\
+6
+id#42-ok
+8
