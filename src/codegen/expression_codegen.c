@@ -2241,6 +2241,20 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
                                                  /*want_equal=*/1, expr);
                 if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
+            } else if (left_val->goo_type &&
+                       (left_val->goo_type->kind == TYPE_POINTER ||
+                        left_val->goo_type->kind == TYPE_CHANNEL)) {
+                // Reference identity (F2 follow-up to P2.2): two non-nil
+                // pointers or two non-nil channels compare by address. Reached
+                // only when neither operand is a nil literal (the dedicated
+                // <ref-kind> == nil block above already returned for that
+                // case). Under LLVM's opaque-pointer model every pointer/chan
+                // VALUE is already a bare `ptr` regardless of pointee/element
+                // type (see codegen_get_pointer_type / codegen_get_channel_type),
+                // so a direct icmp on the already-loaded operands suffices —
+                // no field extraction needed (unlike slice, which is a
+                // {ptr,len,cap} struct and stays nil-only comparable).
+                result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "refeq");
             }
             break;
 
@@ -2257,9 +2271,16 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
                                                  /*want_equal=*/0, expr);
                 if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
+            } else if (left_val->goo_type &&
+                       (left_val->goo_type->kind == TYPE_POINTER ||
+                        left_val->goo_type->kind == TYPE_CHANNEL)) {
+                // Reference identity, inequality direction — see the TOKEN_EQ
+                // case above for the full rationale; same lowering, opposite
+                // predicate.
+                result = LLVMBuildICmp(codegen->builder, LLVMIntNE, left_llvm, right_llvm, "refne");
             }
             break;
-            
+
         case TOKEN_LT:
             if (type_is_integer(left_val->goo_type)) {
                 if (type_is_signed(left_val->goo_type)) {

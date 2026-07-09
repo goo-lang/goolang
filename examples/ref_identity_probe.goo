@@ -1,0 +1,33 @@
+// ref_identity_probe (F2 follow-up, P2.2 option A): equality/inequality
+// between two NON-nil reference values of the same kind — Go allows pointer
+// identity (p == q compares addresses) and channel identity (c == c
+// compares the same runtime channel), independent of the nil-literal
+// comparisons P2.2 already shipped. go-run-verified byte-for-byte against
+// an equivalent .go program using the same shape.
+package main
+
+import "fmt"
+
+type T struct{ v int }
+
+func main() {
+	// pointer identity: distinct addresses compare unequal; reassigning one
+	// to alias the other flips the comparison.
+	a := T{v: 1}
+	b := T{v: 2}
+	p := &a
+	q := &b
+	fmt.Println(p == q) // false: distinct addresses
+	q = p
+	fmt.Println(p == q) // true: same address
+	fmt.Println(p != q) // false
+
+	// channel identity: distinct channels compare unequal; aliasing the
+	// same channel value compares equal.
+	c1 := make(chan int, 1)
+	c2 := make(chan int, 1)
+	fmt.Println(c1 == c2) // false: distinct channels
+	c3 := c1
+	fmt.Println(c1 == c3) // true: same channel
+	fmt.Println(c1 != c2) // true
+}

@@ -369,6 +369,54 @@ Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* righ
         return bool_type;
     }
 
+    // slice == slice / map == map / func == func, NEITHER operand nil (F2
+    // follow-up to P2.2): Go allows these three kinds to compare ONLY to
+    // nil, never to another value of their own kind (unlike pointer/chan,
+    // which support full identity comparison — see the arm just below).
+    // The nil-literal arms above already handle <kind> vs nil, so by the
+    // time we reach here neither operand is TYPE_UNKNOWN; any same-kind
+    // pair is genuinely two non-nil values. Without this explicit reject,
+    // the generic type_compatible fallback further down would silently
+    // ACCEPT identically-typed slice/map/func operands (type_equals treats
+    // matching element/signature types as compatible) and hand codegen an
+    // expression it cannot lower — a checker-accepts/codegen-dies split
+    // (the accidental "Failed to generate binary operation" every one of
+    // these produced before this arm existed). Message shape mirrors Go's
+    // own: "invalid operation: ... (slice can only be compared to nil)".
+    if ((op == TOKEN_EQ || op == TOKEN_NE) &&
+        left_type->kind == right_type->kind &&
+        (left_type->kind == TYPE_SLICE || left_type->kind == TYPE_MAP ||
+         left_type->kind == TYPE_FUNCTION)) {
+        const char* kind_name = left_type->kind == TYPE_SLICE ? "slice"
+                               : left_type->kind == TYPE_MAP ? "map" : "func";
+        type_error(checker, pos,
+                  "invalid operation: %s %s %s (%s can only be compared to nil)",
+                  type_to_string(left_type), op == TOKEN_EQ ? "==" : "!=",
+                  type_to_string(right_type), kind_name);
+        return NULL;
+    }
+
+    // pointer == pointer / chan == chan, NEITHER operand nil (F2 follow-up
+    // to P2.2): Go allows two pointers to compare by address (identity) and
+    // two channels to compare by identity — DISTINCT from the slice/map/
+    // func reject just above, which Go restricts to nil-only. The generic
+    // type_compatible fallback further down would already accept this
+    // (same pointee/element type via type_equals), so this arm exists to
+    // DOCUMENT that ptr/chan identity comparison is intentional, not an
+    // accidental byproduct — codegen has an explicit lowering for exactly
+    // this case (icmp eq on the pointer word; see
+    // codegen_generate_binary_expr's TOKEN_EQ/TOKEN_NE cases). A
+    // mismatched pointee/element type (e.g. *int vs *string) does not
+    // match this arm (left_type->kind == right_type->kind still holds, but
+    // type_compatible fails) and falls through to the generic
+    // "incompatible types" rejection below, same as before.
+    if ((op == TOKEN_EQ || op == TOKEN_NE) &&
+        left_type->kind == right_type->kind &&
+        (left_type->kind == TYPE_POINTER || left_type->kind == TYPE_CHANNEL) &&
+        type_compatible(left_type, right_type)) {
+        return bool_type;
+    }
+
     // Ordered comparison (< <= > >=) against nil is never valid for any of
     // the five reference-like kinds — Go: "operator < not defined on
     // pointer". Without this explicit gate, `nil < p` would slip through
