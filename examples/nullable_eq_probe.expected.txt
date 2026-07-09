@@ -1,0 +1,14 @@
+PASS: nil == nil
+PASS: value == nil
+PASS: nil == value
+PASS: value == value (equal)
+PASS: value == value (unequal)
+PASS: T == ?T (equal)
+PASS: T == ?T (unequal)
+PASS: ?T == T (equal)
+PASS: ?T(nil) == T
+PASS: != on unequal ?T
+PASS: != on equal ?T
+PASS: != mixed order
+PASS: widened-literal ?int32 == T
+PASS: widened-literal T == ?int32

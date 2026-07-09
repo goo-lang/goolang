@@ -318,6 +318,39 @@ Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* righ
     }
 }
 
+// T3 (P2.5): payload kinds with an existing equality lowering — int/float/
+// bool/string/pointer — the exact restriction the design settles on
+// ("restrict v1 to payload types that already have == "). Anything else
+// (struct being the concrete acceptance case) is rejected by the NULLABLE
+// comparison arms below with a positioned diagnostic instead of being
+// silently accepted by type_equals' kind-only struct fallback (a known,
+// out-of-scope gap documented at type_switch_case_type_same in
+// type_checker.c) and left to crash codegen with "Failed to generate
+// binary operation".
+static int type_nullable_payload_supports_equality(const Type* t) {
+    if (!t) return 0;
+    return type_is_integer(t) || type_is_float(t) ||
+           t->kind == TYPE_BOOL || t->kind == TYPE_STRING || t->kind == TYPE_POINTER;
+}
+
+// T3: are two nullable payload types the kind of "compatible" that permits
+// comparing them? Deliberately NOT type_compatible — that predicate was
+// written for ASSIGNMENT direction (its TYPE_NULLABLE arm only recurses
+// into the base type when NULLABLE is the `to` argument), which is exactly
+// what produced the direction-sensitive bug this task fixes (`T == ?T`
+// accepted, `?T == T` rejected). A same-CATEGORY pair (both integer, or
+// both float) is comparable at any width — codegen widens the narrower
+// payload to match, mirroring codegen_create_nullable_with_value's
+// sign/zero-extend precedent for wrapping a narrow literal into a wide
+// nullable slot. Anything else (bool/string/pointer, or a genuine kind
+// mismatch) falls back to exact type_equals — no int<->float promotion,
+// which codegen has no mixed-kind lowering for.
+static int type_nullable_bases_comparable(const Type* a, const Type* b) {
+    if (type_is_integer(a) && type_is_integer(b)) return 1;
+    if (type_is_float(a) && type_is_float(b)) return 1;
+    return type_equals(a, b);
+}
+
 Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos) {
     if (!checker || !left_type || !right_type) return NULL;
 
@@ -433,6 +466,67 @@ Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* righ
                       type_to_string(left_type), type_to_string(right_type));
             return NULL;
         }
+    }
+
+    // ?a == ?b / T == ?b / ?a == T (T3, P2.5): tag-aware nullable equality,
+    // symmetric in both mixed-operand orders. REPLACES the accidental
+    // asymmetric acceptance the generic type_compatible fallback below
+    // produced for `T == ?T` while rejecting the flipped `?T == T` (see
+    // type_nullable_bases_comparable's comment) — this arm must run before
+    // that fallback so neither shape ever reaches it. Reached only when
+    // neither operand is the bare nil literal (that shape returned via the
+    // ?T==nil arm at the top of this function).
+    if (type_is_nullable(left_type) || type_is_nullable(right_type)) {
+        // Ordered comparisons on any nullable operand are never valid —
+        // without this guard `?int < ?int` would fall through to the
+        // direction/operator-blind type_compatible fallback below, get
+        // ACCEPTED (matching bases), and crash codegen with "Failed to
+        // generate binary operation" (no ordering lowering exists for a
+        // {i1,T} struct).
+        if (op != TOKEN_EQ && op != TOKEN_NE) {
+            const char* op_str = op == TOKEN_LT ? "<" : op == TOKEN_LE ? "<="
+                                : op == TOKEN_GT ? ">" : ">=";
+            Type* nullable_operand = type_is_nullable(left_type) ? left_type : right_type;
+            type_error(checker, pos, "operator %s not defined on nullable type %s",
+                      op_str, type_to_string(nullable_operand));
+            return NULL;
+        }
+
+        Type* payload_type;
+        if (type_is_nullable(left_type) && type_is_nullable(right_type)) {
+            // ?a == ?b: both nullable.
+            Type* lb = left_type->data.nullable.base_type;
+            Type* rb = right_type->data.nullable.base_type;
+            if (!type_nullable_bases_comparable(lb, rb)) {
+                type_error(checker, pos, "Cannot compare incompatible types %s and %s",
+                          type_to_string(left_type), type_to_string(right_type));
+                return NULL;
+            }
+            payload_type = lb;
+        } else {
+            // T == ?b / ?a == T: exactly one operand nullable.
+            Type* nullable_side = type_is_nullable(left_type) ? left_type : right_type;
+            Type* plain_side = type_is_nullable(left_type) ? right_type : left_type;
+            payload_type = nullable_side->data.nullable.base_type;
+            if (!type_nullable_bases_comparable(plain_side, payload_type)) {
+                type_error(checker, pos, "Cannot compare incompatible types %s and %s",
+                          type_to_string(left_type), type_to_string(right_type));
+                return NULL;
+            }
+        }
+
+        // ?Struct == ?Struct (and any other unsupported payload kind) is
+        // rejected here — a positioned diagnostic instead of an opaque
+        // codegen crash. Struct equality is its own future feature.
+        if (!type_nullable_payload_supports_equality(payload_type)) {
+            type_error(checker, pos,
+                      "invalid operation: %s %s %s (nullable payload type %s does not support equality)",
+                      type_to_string(left_type), op == TOKEN_EQ ? "==" : "!=",
+                      type_to_string(right_type), type_to_string(payload_type));
+            return NULL;
+        }
+
+        return bool_type;
     }
 
     // Check if types are compatible for comparison

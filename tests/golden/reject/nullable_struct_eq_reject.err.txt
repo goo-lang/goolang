@@ -1,0 +1,1 @@
+nullable payload type Point does not support equality
