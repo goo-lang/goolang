@@ -15,7 +15,10 @@ behavior change, not a build break.
 1. **Before editing**: confirm a clean baseline.
 
    ```bash
-   ./scripts/grammar-tripwire.sh    # expect: PASS (81 S/R + 256 R/R — baseline exact)
+   ./scripts/grammar-tripwire.sh    # expect: PASS (the exact counts recorded in
+                                     # scripts/grammar-tripwire.sh's EXPECTED_SR/
+                                     # EXPECTED_RR — see the ledger for the current
+                                     # baseline number)
    ```
 
    If it fails BEFORE your edit, stop — the tree is already off-baseline;

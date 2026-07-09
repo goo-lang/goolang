@@ -123,9 +123,10 @@ This project uses a Makefile for building:
 
 - Any change to `src/parser/parser.y`, `src/parser/lexer_bridge.c`, or lexer token
   emission: use the **goo-grammar** skill (`.claude/skills/goo-grammar/`). Minimum bar
-  even without the skill: `./scripts/grammar-tripwire.sh` must PASS (81 S/R + 256 R/R
-  exact) before AND after the change; any delta is stop-the-line (see the skill's
-  conflict-ledger for the justified-delta procedure).
+  even without the skill: `./scripts/grammar-tripwire.sh` must PASS (the exact counts
+  recorded in `scripts/grammar-tripwire.sh`'s `EXPECTED_SR`/`EXPECTED_RR`) before AND
+  after the change; any delta is stop-the-line (see the skill's conflict-ledger for
+  the justified-delta procedure and the current baseline number).
 
 ## Language Standard
 

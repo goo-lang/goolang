@@ -1,0 +1,27 @@
+// arena-goto fix (2026-07-09) reject: a backward `goto` whose target label
+// sits INSIDE an arena{} block, jumped to from OUTSIDE that block, must be
+// rejected at type-check time. Accepting it (Goo's general, documented v1
+// divergence: goto jump-into-block restrictions are otherwise unchecked —
+// see docs/superpowers/specs/2026-07-09-gofmt-syntax-b-design.md) would
+// silently re-enter the arena body without re-running goo_arena_new, then
+// fall through the block's end a SECOND time and call goo_arena_free on the
+// already-freed arena — a use-after-free store followed by a double free,
+// crashing with SIGSEGV inside goo_arena_free at runtime (finding: "goto
+// backward into an arena{} block double-frees"). This targeted arena-only
+// tightening closes that crash while leaving the general (non-arena)
+// jump-into-block divergence exactly as documented.
+package main
+
+func main() {
+	n := 0
+	arena {
+		p := new(int)
+	L:
+		*p = n
+		n++
+	}
+	if n < 3 {
+		goto L
+	}
+	println(n)
+}

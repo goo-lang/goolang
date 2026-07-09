@@ -1,0 +1,73 @@
+// fallthrough_probe (P1.7): `fallthrough` as a plain statement inside an
+// expression switch. Two shapes: (1) a chain across THREE cases
+// (case 1 -> case 2 -> case 3, each via an explicit `fallthrough`, then
+// stopping — case 4 must NOT run), proving codegen's fallthrough-target
+// stack threads through consecutive pushes correctly; (2) fallthrough INTO
+// a `default` clause that is NOT the switch's last clause (default sits
+// between `case 10` and `case 20` in source), then fallthrough OUT of that
+// default into `case 20` — proving the target is body_blocks[i+1] in
+// SOURCE ORDER (the default clause participates in source order per the Go
+// spec, not a special "falls back to last" position).
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the
+// VALUE below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func main() {
+//   	x := 1
+//   	switch x {
+//   	case 1:
+//   		println(1)
+//   		fallthrough
+//   	case 2:
+//   		println(2)
+//   		fallthrough
+//   	case 3:
+//   		println(3)
+//   	case 4:
+//   		println(4)
+//   	}
+//
+//   	y := 10
+//   	switch y {
+//   	case 10:
+//   		println(10)
+//   		fallthrough
+//   	default:
+//   		println(99)
+//   		fallthrough
+//   	case 20:
+//   		println(20)
+//   	}
+//   }
+// `go run` stderr: "1\n2\n3\n10\n99\n20\n"
+package main
+
+func main() {
+	x := 1
+	switch x {
+	case 1:
+		println(1)
+		fallthrough
+	case 2:
+		println(2)
+		fallthrough
+	case 3:
+		println(3)
+	case 4:
+		println(4)
+	}
+
+	y := 10
+	switch y {
+	case 10:
+		println(10)
+		fallthrough
+	default:
+		println(99)
+		fallthrough
+	case 20:
+		println(20)
+	}
+}

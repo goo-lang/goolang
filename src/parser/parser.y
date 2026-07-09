@@ -232,7 +232,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
 %type <node> statement_list statement block simple_stmt
-%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
+%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt label_stmt goto_stmt fallthrough_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> switch_stmt case_clause_list case_clause
 %type <node> type_case_list type_case_clause type_list
@@ -1226,6 +1226,10 @@ statement:
     | break_stmt { $$ = $1; }  // Allow break without semicolon
     | continue_stmt SEMICOLON { $$ = $1; }
     | continue_stmt { $$ = $1; }  // Allow continue without semicolon
+    | goto_stmt SEMICOLON { $$ = $1; }
+    | goto_stmt { $$ = $1; }  // Allow goto without semicolon
+    | fallthrough_stmt SEMICOLON { $$ = $1; }
+    | fallthrough_stmt { $$ = $1; }  // Allow fallthrough without semicolon
     | go_stmt SEMICOLON { $$ = $1; }
     | go_stmt { $$ = $1; }  // Allow go without semicolon
     | defer_stmt SEMICOLON { $$ = $1; }
@@ -1242,6 +1246,73 @@ statement:
     | asm_stmt SEMICOLON { $$ = $1; } // Goo extension
     | asm_stmt { $$ = $1; }        // Goo extension
     | parallel_for_stmt { $$ = $1; } // Goo extension
+    | label_stmt { $$ = $1; }      // gofmt-syntax-b Task 1 (P1.5): `L: stmt`
+    ;
+
+label_stmt:
+    identifier COLON statement {
+        // `L: stmt` — labels are function-scoped in Go (not block-scoped),
+        // so duplicate detection lives in the type checker, not here; the
+        // grammar accepts any statement as the labeled target (goto's
+        // arrival in Task 2 is what makes labeling a non-loop statement
+        // useful — legal to parse today, a no-op target until then).
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    // Fix 5a: a label whose target is the implicit empty statement — Go's
+    // "goto-to-end-of-block" cleanup idiom (`goto done; ...; done: }`,
+    // `identifier COLON` with nothing else before the enclosing block ends
+    // — no ASI semicolon is inserted between COLON and the following RBRACE/
+    // CASE/DEFAULT: COLON is not a value-ending token, verified with
+    // --emit-tokens). The wrapped `stmt` is NULL; every consumer
+    // (type_check_statement's AST_LABEL_STMT case, codegen's AST_LABEL_STMT
+    // case, type_check_collect_goto_labels, ast_node_free) already treats
+    // a NULL label->stmt as a no-op fall-through, so the label is still a
+    // valid goto target that just falls through to whatever follows.
+    //
+    // Conflict-ledger note (see references/conflict-ledger.md): this arm
+    // (plus the explicit-SEMICOLON arm below) lands EVERY new conflict in
+    // exactly one pre-existing, non-shared state — the `identifier COLON •`
+    // dispatch reached only from label_stmt's own predecessor states (base
+    // state 598, single item, no other production shares it) — because
+    // `statement` occurs on both sides of the ambiguity (FOLLOW(label_stmt)
+    // overlaps FIRST(statement), since a label can be followed by another
+    // statement in the same list). Bison's default shift-preference resolves
+    // every one of those token classes in favor of continuing to parse a
+    // real trailing statement — IDENTICAL to today's behavior for every
+    // program that already parses — and only reduces the empty form via
+    // $default when the lookahead cannot start a statement at all (RBRACE,
+    // CASE, DEFAULT, ...). This is the same shift-wins "optional trailing
+    // construct" pattern already accepted at baseline for RETURN's optional
+    // expression (state 419, 21 S/R) and BREAK/CONTINUE's optional label
+    // (states 411/412) — additive only, verified via state-diff that every
+    // pre-existing conflicted state's count is unchanged.
+    | identifier COLON SEMICOLON {
+        // Explicit spelling: `done: ;` — the label wraps a literal empty
+        // statement (a lone `;`), not an implicit one. Same NULL-stmt AST
+        // shape as the epsilon arm below; kept as its own production
+        // (rather than folded into the epsilon arm) because the SEMICOLON
+        // must actually be consumed here, or it is left dangling for
+        // statement_list to fail on (there is no bare-SEMICOLON statement
+        // production).
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    | identifier COLON {
+        // Implicit spelling: `done:` with nothing between the colon and
+        // whatever ends the enclosing statement list (most commonly the
+        // block's closing `}`). See the conflict-ledger note above for why
+        // this is safe: reached only on lookahead tokens that cannot start
+        // a `statement`.
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
     ;
 
 simple_stmt:
@@ -1523,12 +1594,61 @@ break_stmt:
         ASTNode* break_node = ast_node_new(AST_BREAK_STMT, get_current_position());
         $$ = break_node;
     }
+    | BREAK identifier {
+        // `break L` — a distinct node from bare BREAK (see AST_BREAK_LABEL_STMT's
+        // enum-site comment); codegen resolves L by walking the break-scope
+        // stack, not the innermost frame.
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        BreakLabelStmtNode* node = ast_break_label_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
+    }
     ;
 
 continue_stmt:
     CONTINUE {
         ASTNode* continue_node = ast_node_new(AST_CONTINUE_STMT, get_current_position());
         $$ = continue_node;
+    }
+    | CONTINUE identifier {
+        // `continue L` — sibling of `break L` above.
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        ContinueLabelStmtNode* node = ast_continue_label_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
+    }
+    ;
+
+goto_stmt:
+    GOTO identifier {
+        // gofmt-syntax-b Task 2 (P1.6): `goto L`. Unlike break_stmt/
+        // continue_stmt above, GOTO has no bare (label-less) alternative —
+        // the operand is mandatory — so this single arm carries no
+        // competing reduce and is expected to add zero grammar-conflict
+        // delta (verified by the tripwire, not assumed).
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        GotoStmtNode* node = ast_goto_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
+    }
+    ;
+
+fallthrough_stmt:
+    FALLTHROUGH {
+        // gofmt-syntax-b Task 3 (P1.7): `fallthrough` — a bare marker
+        // statement (AST_FALLTHROUGH_STMT), no operand ever, unlike every
+        // other member of this keyword-statement family except bare
+        // BREAK/CONTINUE. FALLTHROUGH is already one of lexer.c's
+        // unconditional keyword-terminator ASI tokens (same "Part 1"
+        // group as RETURN/BREAK/CONTINUE — see the ledger's gofmt-syntax-b
+        // Task 1 entry), so this single-token arm is expected to add zero
+        // grammar-conflict delta: there is no competing reduce for the
+        // tripwire to newly conflict against (verified, not assumed).
+        // Placement legality (final statement of a non-last
+        // expression-switch clause; illegal in a type switch, select, or
+        // outside any switch) is entirely a type-check-time concern — see
+        // type_check_switch_like_body's doc comment, type_checker.c.
+        $$ = ast_node_new(AST_FALLTHROUGH_STMT, get_current_position());
     }
     ;
 
@@ -1580,6 +1700,50 @@ select_case_list:
 select_case:
     CASE expression COLON statement_list {
         SelectCaseNode* case_node = ast_select_case_new($2, $4, get_current_position());
+        $$ = (ASTNode*)case_node;
+    }
+    // gofmt-syntax-b Task 4 (P1.10): `case v := <-ch:` — value-binding
+    // receive. The grammar accepts any `expression` after `:=` (same shape
+    // as the plain-comm arm above, kept zero-new-surface) rather than
+    // encoding `ARROW expression` here; receive-ness is validated
+    // SEMANTICALLY in type_check_select_stmt ("select case must be a
+    // receive operation"), where the diagnostic can name the actual problem
+    // instead of a generic parse error. `identifier` is freed right after
+    // its name is copied out — `ast_select_case_new` already defaults
+    // bind_name/is_declare to NULL/0, so every OTHER call site (plain comm,
+    // default, and the comma-ok arm below) is unaffected by this new field.
+    | CASE identifier SHORT_ASSIGN expression COLON statement_list {
+        IdentifierNode* bid = (IdentifierNode*)$2;
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        case_node->bind_name = strdup(bid->name);
+        case_node->is_declare = 1;
+        ast_node_free($2);
+        $$ = (ASTNode*)case_node;
+    }
+    // `case v = <-ch:` — bind into an EXISTING, already-declared variable
+    // (checked in the type checker: must exist in an enclosing scope and be
+    // assignment-compatible with the channel's element type).
+    | CASE identifier ASSIGN expression COLON statement_list {
+        IdentifierNode* bid = (IdentifierNode*)$2;
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        case_node->bind_name = strdup(bid->name);
+        case_node->is_declare = 0;
+        ast_node_free($2);
+        $$ = (ASTNode*)case_node;
+    }
+    // `case v, ok := <-ch:` — comma-ok binding. v1 scope cut: `ok` is
+    // meaningless without close() (P3.1: hardcoding it true would be a
+    // silent lie), so this shape is grammar-accepted only so the type
+    // checker can reject it with a specific, positioned "requires close()"
+    // diagnostic instead of a bare "syntax error" — see the is_declare = -1
+    // sentinel documented on SelectCaseNode in ast.h. Neither identifier's
+    // name is kept (both freed here): the case is rejected either way, so
+    // nothing downstream needs them.
+    | CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list {
+        SelectCaseNode* case_node = ast_select_case_new($6, $8, get_current_position());
+        case_node->is_declare = -1;
+        ast_node_free($2);
+        ast_node_free($4);
         $$ = (ASTNode*)case_node;
     }
     | DEFAULT COLON statement_list {

@@ -1,0 +1,45 @@
+// label_composite_probe (P1.5 behavioral probe): a label immediately
+// followed by a `for` whose FIRST body statement is a composite literal
+// (`identifier LBRACE ... RBRACE`) — the exact token shape
+// (`identifier COLON` then, moments later, another `identifier LBRACE`)
+// that risks confusing a stateful bridge if the label's COLON handling
+// ever leaked frame state. (An unwrapped `L: p := Point{...}` cannot be
+// used here: Go rejects an unused label at compile time, and this fixture's
+// expected output must come from `go run` on a compiling Go program — see
+// the fixture-provenance rule — so the label is referenced via `break L`,
+// which also independently exercises labeled break on a loop whose body
+// starts with a composite literal.)
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1). Equivalent Go:
+//   package main
+//   import "fmt"
+//   type Point struct { X int; Y int }
+//   func main() {
+//   L:
+//   	for {
+//   		p := Point{X: 1, Y: 2}
+//   		fmt.Println(p.X + p.Y)
+//   		break L
+//   	}
+//   	fmt.Println("done")
+//   }
+// `go run` stdout: "3\ndone\n"
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+	Y int
+}
+
+func main() {
+L:
+	for {
+		p := Point{X: 1, Y: 2}
+		fmt.Println(p.X + p.Y)
+		break L
+	}
+	fmt.Println("done")
+}

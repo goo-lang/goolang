@@ -32,7 +32,12 @@ static const char* ast_node_type_strings[] = {
     [AST_UNSAFE_STMT] = "UnsafeStmt",
     [AST_ASM_STMT] = "AsmStmt",
     [AST_ARENA_BLOCK] = "ArenaBlock",
-    
+    [AST_LABEL_STMT] = "LabelStmt",
+    [AST_BREAK_LABEL_STMT] = "BreakLabelStmt",
+    [AST_CONTINUE_LABEL_STMT] = "ContinueLabelStmt",
+    [AST_GOTO_STMT] = "GotoStmt",
+    [AST_FALLTHROUGH_STMT] = "FallthroughStmt",
+
     [AST_IDENTIFIER] = "Identifier",
     [AST_LITERAL] = "Literal",
     [AST_BINARY_EXPR] = "BinaryExpr",
@@ -289,6 +294,38 @@ void ast_node_free(ASTNode* node) {
         case AST_ARENA_BLOCK: {
             ArenaBlockNode* arena_blk = (ArenaBlockNode*)node;
             ast_node_free(arena_blk->body);
+            break;
+        }
+        case AST_LABEL_STMT: {
+            LabelStmtNode* label = (LabelStmtNode*)node;
+            free(label->name);
+            ast_node_free(label->stmt);
+            break;
+        }
+        case AST_BREAK_LABEL_STMT: {
+            BreakLabelStmtNode* brk = (BreakLabelStmtNode*)node;
+            free(brk->label);
+            break;
+        }
+        case AST_CONTINUE_LABEL_STMT: {
+            ContinueLabelStmtNode* cont = (ContinueLabelStmtNode*)node;
+            free(cont->label);
+            break;
+        }
+        case AST_GOTO_STMT: {
+            GotoStmtNode* got = (GotoStmtNode*)node;
+            free(got->label);
+            break;
+        }
+        case AST_SELECT_CASE: {
+            // gofmt-syntax-b Task 4: only the NEW bind_name string is freed
+            // here — comm/body are pre-existing fields that this switch has
+            // never recursed into (AST_SELECT_STMT/AST_SELECT_CASE both fall
+            // to `default:` below and leak their subtrees; a pre-existing
+            // gap, not introduced or fixed by this task, left alone to avoid
+            // scope creep).
+            SelectCaseNode* sel_case = (SelectCaseNode*)node;
+            free(sel_case->bind_name);
             break;
         }
         case AST_ASM_STMT: {

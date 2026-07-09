@@ -49,6 +49,21 @@ TypeChecker* type_checker_new(void) {
     // Comptime value params Task 3: no recorded comptime-call instantiations yet.
     checker->comptime_instantiations = NULL;
 
+    // gofmt-syntax-b Task 1: no labels registered yet (per-function reset
+    // happens in type_check_function_decl / type_check_func_lit).
+    checker->label_count = 0;
+
+    // gofmt-syntax-b Task 2: ditto for the goto forward-reference set.
+    checker->goto_label_count = 0;
+
+    // arena-goto fix: no enclosing arena block yet (see types.h's
+    // arena_chain doc comment); goto_label_arena_depth entries are only
+    // ever read up to goto_label_count, so they need no upfront init.
+    checker->arena_chain_depth = 0;
+
+    // gofmt-syntax-b Task 3: not inside any switch/select clause body yet.
+    checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
+
     // M11-types-const-integrate (part A): set up a comptime context so
     // that is_comptime const-decl RHS expressions can be routed through
     // comptime_eval_expression. The wrapper owns the type-level scaffold
@@ -1055,6 +1070,136 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
     return 1;
 }
 
+// gofmt-syntax-b Task 2 (P1.6): structural-only pre-pass that records the
+// name of every AST_LABEL_STMT reachable from `stmt` via statement-position
+// children ONLY — it never follows an expression field, so it naturally
+// never descends into a func-literal body (a closure can only be reached
+// from a statement via an expression, e.g. a var-decl initializer or an
+// expr-stmt), giving each function/literal its own independent label
+// namespace for free, with no explicit boundary check needed. Populates
+// checker->goto_label_names (capped at 64, silently — T1's own label_count
+// pass already reports "too many labels" for real overflows) so `goto`,
+// checked later in the SAME normal walk this pre-pass runs ahead of, can
+// see labels that are declared textually AFTER the goto (forward
+// references, legal in Go). Deliberately does not report duplicate-label
+// errors or do any type checking — that is unchanged, existing work done
+// by the main walk's own AST_LABEL_STMT case (T1) at declaration order.
+void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt) return;
+    switch (stmt->type) {
+        case AST_BLOCK_STMT: {
+            BlockStmtNode* block = (BlockStmtNode*)stmt;
+            for (ASTNode* s = block->statements; s; s = s->next) {
+                type_check_collect_goto_labels(checker, s);
+            }
+            return;
+        }
+        case AST_IF_STMT: {
+            IfStmtNode* iff = (IfStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, iff->then_stmt);
+            type_check_collect_goto_labels(checker, iff->else_stmt);
+            return;
+        }
+        case AST_IF_LET_STMT: {
+            IfLetStmtNode* il = (IfLetStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, il->then_stmt);
+            type_check_collect_goto_labels(checker, il->else_stmt);
+            return;
+        }
+        case AST_FOR_STMT: {
+            ForStmtNode* f = (ForStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, f->body);
+            return;
+        }
+        case AST_SWITCH_STMT: {
+            SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
+            for (ASTNode* c = sw->cases; c; c = c->next) {
+                CaseClauseNode* clause = (CaseClauseNode*)c;
+                for (ASTNode* s = clause->body; s; s = s->next) {
+                    type_check_collect_goto_labels(checker, s);
+                }
+            }
+            return;
+        }
+        case AST_TYPE_SWITCH: {
+            TypeSwitchNode* ts = (TypeSwitchNode*)stmt;
+            for (ASTNode* c = ts->cases; c; c = c->next) {
+                TypeCaseNode* clause = (TypeCaseNode*)c;
+                for (ASTNode* s = clause->body; s; s = s->next) {
+                    type_check_collect_goto_labels(checker, s);
+                }
+            }
+            return;
+        }
+        case AST_SELECT_STMT: {
+            SelectStmtNode* sel = (SelectStmtNode*)stmt;
+            for (ASTNode* c = sel->cases; c; c = c->next) {
+                SelectCaseNode* clause = (SelectCaseNode*)c;
+                for (ASTNode* s = clause->body; s; s = s->next) {
+                    type_check_collect_goto_labels(checker, s);
+                }
+            }
+            return;
+        }
+        case AST_UNSAFE_STMT: {
+            UnsafeStmtNode* u = (UnsafeStmtNode*)stmt;
+            type_check_collect_goto_labels(checker, u->body);
+            return;
+        }
+        case AST_ARENA_BLOCK: {
+            // arena-goto fix: push this block onto the shared arena_chain
+            // scratch stack (types.h doc comment) for the duration of the
+            // body walk, so any AST_LABEL_STMT reached inside records this
+            // block (and its ancestors) as part of its arena-nesting path.
+            ArenaBlockNode* a = (ArenaBlockNode*)stmt;
+            int pushed = checker->arena_chain_depth < 16;
+            if (pushed) {
+                checker->arena_chain[checker->arena_chain_depth] = a;
+                checker->arena_chain_depth++;
+            }
+            type_check_collect_goto_labels(checker, a->body);
+            if (pushed) checker->arena_chain_depth--;
+            return;
+        }
+        case AST_COMPTIME_BLOCK: {
+            ComptimeBlockNode* c = (ComptimeBlockNode*)stmt;
+            type_check_collect_goto_labels(checker, c->body);
+            return;
+        }
+        case AST_LABEL_STMT: {
+            LabelStmtNode* label = (LabelStmtNode*)stmt;
+            int already = 0;
+            for (size_t i = 0; i < checker->goto_label_count; i++) {
+                if (checker->goto_label_names[i] && label->name &&
+                    strcmp(checker->goto_label_names[i], label->name) == 0) {
+                    already = 1;
+                    break;
+                }
+            }
+            if (!already && checker->goto_label_count < 64) {
+                // arena-goto fix: snapshot the CURRENT arena_chain (this
+                // label's arena-nesting path) alongside its name — see
+                // types.h's goto_label_arena_chain doc comment. Same index
+                // as the name just below, so goto_label_arena_depth[i]/
+                // goto_label_arena_chain[i] always correspond to
+                // goto_label_names[i].
+                size_t idx = checker->goto_label_count;
+                size_t depth = checker->arena_chain_depth;
+                if (depth > 16) depth = 16;  // defensive; cannot happen (push caps at 16)
+                for (size_t k = 0; k < depth; k++) {
+                    checker->goto_label_arena_chain[idx][k] = checker->arena_chain[k];
+                }
+                checker->goto_label_arena_depth[idx] = depth;
+                checker->goto_label_names[checker->goto_label_count++] = label->name;
+            }
+            type_check_collect_goto_labels(checker, label->stmt);
+            return;
+        }
+        default:
+            return;  // no statement-position children to walk
+    }
+}
+
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
     if (!checker || !decl || decl->type != AST_FUNC_DECL) return 0;
 
@@ -1190,12 +1335,41 @@ int type_check_function_decl(TypeChecker* checker, ASTNode* decl) {
         }
     }
 
+    // gofmt-syntax-b Task 1: labels are function-scoped — start this
+    // function's body with an empty registry (save/restore, not a bare
+    // reset, so a func-literal body-check nested INSIDE another function's
+    // body-check — reachable only via mutual recursion through the AST, not
+    // in practice today, but symmetric with current_return_type's own
+    // save/restore just above) can never leak into or out of this function.
+    size_t saved_label_count = checker->label_count;
+    checker->label_count = 0;
+
+    // gofmt-syntax-b Task 2: same save/restore, for the goto forward-
+    // reference set — collected in a pre-pass over the WHOLE body before
+    // the normal walk below, so a `goto` reaches labels declared later in
+    // the source (see type_check_collect_goto_labels' doc comment above).
+    size_t saved_goto_label_count = checker->goto_label_count;
+    checker->goto_label_count = 0;
+    if (func->body) {
+        type_check_collect_goto_labels(checker, func->body);
+    }
+
+    // gofmt-syntax-b Task 3: a function body starts OUTSIDE any switch/
+    // select clause, regardless of what construct (if any) lexically
+    // encloses this function declaration — save/restore mirrors
+    // label_count's own independent-namespace convention directly above.
+    FallthroughContext saved_fallthrough_ctx = checker->fallthrough_ctx;
+    checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
+
     // Type check function body
     int result = 1;
     if (func->body) {
         result = type_check_statement(checker, func->body);
     }
 
+    checker->fallthrough_ctx = saved_fallthrough_ctx;
+    checker->goto_label_count = saved_goto_label_count;
+    checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;
     scope_pop(checker);
     type_checker_pop_type_params(checker, saved_tp);
@@ -2137,6 +2311,129 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
     return 1;
 }
 
+// gofmt-syntax-b Task 1, extracted for review Fix 5b: register one label in
+// the function-wide label table (duplicate-checked against every label seen
+// so far, capped at 64 — labels are function-scoped in Go, so the SAME name
+// used twice anywhere in one function is a duplicate even across unrelated
+// sibling blocks, not merely shadowing, which Go doesn't apply to labels at
+// all). Returns 1 on success, 0 (with a type_error already emitted) on
+// failure. Shared by type_check_statement's AST_LABEL_STMT case (the normal
+// path) and type_check_switch_like_body's clause-final labeled-fallthrough
+// unwrap below (Fix 5b) so both register labels identically — duplicating
+// this bookkeeping inline in both places would be exactly the kind of
+// two-copies-that-drift risk that caused Task 1's own label_stmt de-merge
+// analysis to need forensic reconstruction (see conflict-ledger.md).
+static int type_check_register_label(TypeChecker* checker, char* name, Position pos) {
+    for (size_t i = 0; i < checker->label_count; i++) {
+        if (checker->label_names[i] && name &&
+            strcmp(checker->label_names[i], name) == 0) {
+            type_error(checker, pos, "duplicate label '%s'", name);
+            return 0;
+        }
+    }
+    if (checker->label_count >= 64) {
+        type_error(checker, pos, "too many labels in one function (max 64)");
+        return 0;
+    }
+    checker->label_names[checker->label_count] = name;
+    checker->label_positions[checker->label_count] = pos;
+    checker->label_count++;
+    return 1;
+}
+
+// gofmt-syntax-b Task 3 (P1.7): shared clause-body walker for the three
+// switch-like constructs that host case-clause bodies (expression switch,
+// type switch, select). `fallthrough` is legal ONLY when `kind` is
+// FALLTHROUGH_CTX_EXPR_SWITCH, only as the LITERAL final statement of the
+// body being walked here — not merely "somewhere in this clause": a
+// fallthrough followed by more statements in the same body is caught
+// below (`s->next != NULL`); one buried inside a nested block/if that is
+// itself a direct statement of this body is caught by the
+// AST_FALLTHROUGH_STMT case in type_check_statement instead, via the
+// fallthrough_ctx this function sets for the duration of the walk (see
+// that case's comment) — and only when `is_last_clause` is false (Go: the
+// switch's final clause has nothing to fall through TO).
+static int type_check_switch_like_body(TypeChecker* checker, ASTNode* body,
+                                        FallthroughContext kind, int is_last_clause) {
+    FallthroughContext saved = checker->fallthrough_ctx;
+    checker->fallthrough_ctx = kind;
+    int ok = 1;
+    for (ASTNode* s = body; s; s = s->next) {
+        if (s->type == AST_FALLTHROUGH_STMT) {
+            if (kind != FALLTHROUGH_CTX_EXPR_SWITCH) {
+                type_error(checker, s->pos,
+                    kind == FALLTHROUGH_CTX_TYPE_SWITCH
+                        ? "fallthrough statement is not permitted in a type switch"
+                        : "fallthrough statement is not permitted in a select statement");
+                ok = 0;
+            } else if (s->next != NULL) {
+                type_error(checker, s->pos,
+                    "fallthrough statement must be the final statement in a case clause");
+                ok = 0;
+            } else if (is_last_clause) {
+                type_error(checker, s->pos, "cannot fallthrough final case in switch");
+                ok = 0;
+            }
+            continue;
+        }
+        // review Fix 5b: `L: fallthrough` (or multiply-nested
+        // `L1: L2: fallthrough`) as a clause's LITERAL final statement is
+        // valid Go — the label exists only so an earlier `goto L` inside
+        // the SAME clause body can target it (unused labels are otherwise
+        // rejected). A non-mutating peek first: chase the AST_LABEL_STMT
+        // chain to see whether it bottoms out in AST_FALLTHROUGH_STMT
+        // WITHOUT touching checker->label_* yet, so a chain that turns out
+        // NOT to be fallthrough-terminated falls through unchanged to the
+        // ordinary `type_check_statement(checker, s)` call below (which
+        // registers it itself) with no risk of double-registering the same
+        // label and raising a bogus "duplicate label" error.
+        if (s->type == AST_LABEL_STMT) {
+            ASTNode* inner = s;
+            while (inner->type == AST_LABEL_STMT) {
+                inner = ((LabelStmtNode*)inner)->stmt;
+                if (!inner) break;
+            }
+            if (inner && inner->type == AST_FALLTHROUGH_STMT) {
+                // Confirmed fallthrough-terminated: now it's safe to
+                // register every label in the chain (the ordinary
+                // type_check_statement path below is skipped for this
+                // node via `continue`, so there is no double-registration
+                // risk) and apply THIS walker's own final-statement rules
+                // to the fallthrough directly. Routing the chain through
+                // type_check_statement instead would recurse into ITS
+                // AST_FALLTHROUGH_STMT case, which has no way to know the
+                // label wrapping it is this walker's own direct, final
+                // child — it would unconditionally reject with "must be
+                // the final statement" (see that case's comment), which is
+                // exactly the bug this unwrap fixes.
+                for (ASTNode* lbl = s; lbl != inner; ) {
+                    LabelStmtNode* label = (LabelStmtNode*)lbl;
+                    if (!type_check_register_label(checker, label->name, lbl->pos)) ok = 0;
+                    lbl = label->stmt;
+                }
+                if (kind != FALLTHROUGH_CTX_EXPR_SWITCH) {
+                    type_error(checker, inner->pos,
+                        kind == FALLTHROUGH_CTX_TYPE_SWITCH
+                            ? "fallthrough statement is not permitted in a type switch"
+                            : "fallthrough statement is not permitted in a select statement");
+                    ok = 0;
+                } else if (s->next != NULL) {
+                    type_error(checker, inner->pos,
+                        "fallthrough statement must be the final statement in a case clause");
+                    ok = 0;
+                } else if (is_last_clause) {
+                    type_error(checker, inner->pos, "cannot fallthrough final case in switch");
+                    ok = 0;
+                }
+                continue;
+            }
+        }
+        if (!type_check_statement(checker, s)) ok = 0;
+    }
+    checker->fallthrough_ctx = saved;
+    return ok;
+}
+
 int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt) return 0;
     switch (stmt->type) {
@@ -2179,7 +2476,101 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_return_stmt(checker, stmt);
         case AST_BREAK_STMT:
         case AST_CONTINUE_STMT:
-            return 1;  // Always valid
+            return 1;  // Always valid; loop-nesting is a codegen-time check
+        case AST_BREAK_LABEL_STMT:
+        case AST_CONTINUE_LABEL_STMT:
+            // Whether the label exists AND encloses this break/continue is a
+            // codegen-time check (stack walk over the pushed loop/break-scope
+            // frames) — mirrors the bare-break/continue precedent directly
+            // above, which likewise defers "outside loop" to codegen.
+            return 1;
+        case AST_FALLTHROUGH_STMT:
+            // gofmt-syntax-b Task 3 (P1.7): reached only when `fallthrough`
+            // is NOT the direct, final statement of a switch/type-switch/
+            // select clause body — that position is special-cased in
+            // type_check_switch_like_body above, which never recurses into
+            // type_check_statement for such a node. Two remaining shapes
+            // land here: truly outside any switch/select construct
+            // (fallthrough_ctx == NONE), or nested one level deeper —
+            // inside an if/for/block that is itself a direct statement of
+            // a clause body (fallthrough_ctx still set, inherited through
+            // the nested recursive dispatch). Go gives the nested shape
+            // its own distinct wording ("fallthrough statement out of
+            // place"); this folds it into the same "not final statement"
+            // diagnostic family instead — nested is a species of "not
+            // literally final" — matching the design's 5-way split (last
+            // clause / not-last-statement / type switch / select /
+            // outside switch), which type_check_switch_like_body's own
+            // three error sites cover the rest of.
+            if (checker->fallthrough_ctx == FALLTHROUGH_CTX_NONE) {
+                type_error(checker, stmt->pos, "fallthrough statement outside switch");
+            } else {
+                type_error(checker, stmt->pos,
+                    "fallthrough statement must be the final statement in a case clause");
+            }
+            return 0;
+        case AST_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: registration extracted to
+            // type_check_register_label (see its doc comment) — shared with
+            // type_check_switch_like_body's clause-final labeled-fallthrough
+            // unwrap (Fix 5b).
+            LabelStmtNode* label = (LabelStmtNode*)stmt;
+            if (!type_check_register_label(checker, label->name, stmt->pos)) return 0;
+            return label->stmt ? type_check_statement(checker, label->stmt) : 1;
+        }
+        case AST_GOTO_STMT: {
+            // gofmt-syntax-b Task 2: `goto L` — L must be one of this
+            // function's labels (collected function-wide, forward refs
+            // legal, by type_check_collect_goto_labels above). Unlike
+            // labeled break/continue (T1, deferred to codegen), this is a
+            // type-check-time check per the spec: goto's target is a pure
+            // name lookup with no "does it enclose me" question — no
+            // codegen control-flow state (loop/break-scope stack) is
+            // needed to answer it, so there is no reason to defer it.
+            GotoStmtNode* got = (GotoStmtNode*)stmt;
+            int found = 0;
+            size_t found_idx = 0;
+            for (size_t i = 0; i < checker->goto_label_count; i++) {
+                if (checker->goto_label_names[i] && got->label &&
+                    strcmp(checker->goto_label_names[i], got->label) == 0) {
+                    found = 1;
+                    found_idx = i;
+                    break;
+                }
+            }
+            if (!found) {
+                type_error(checker, stmt->pos, "undefined label '%s'", got->label);
+                return 0;
+            }
+            // arena-goto fix: reject a goto that would jump INTO an arena
+            // block it is not already inside. Legal iff the label's
+            // recorded arena-nesting path (snapshotted by the pre-pass,
+            // types.h's goto_label_arena_chain) is a prefix of — or equal
+            // to — this goto's OWN current arena_chain: that is exactly
+            // the "goto only ever EXITS zero or more of its enclosing
+            // arenas" shape codegen can free its way out of (mirrors
+            // break/continue, which by construction can only ever target
+            // an ENCLOSING frame). Anything else — the label nested in
+            // MORE arenas than the goto, or in a different (sibling)
+            // arena chain entirely — would require silently entering an
+            // arena whose goo_arena_new never ran, which is exactly the
+            // double-free/UAF SIGSEGV this check exists to close off.
+            size_t label_depth = checker->goto_label_arena_depth[found_idx];
+            int arena_ok = label_depth <= checker->arena_chain_depth;
+            if (arena_ok) {
+                for (size_t k = 0; k < label_depth; k++) {
+                    if (checker->goto_label_arena_chain[found_idx][k] != checker->arena_chain[k]) {
+                        arena_ok = 0;
+                        break;
+                    }
+                }
+            }
+            if (!arena_ok) {
+                type_error(checker, stmt->pos, "goto into arena block is not supported");
+                return 0;
+            }
+            return 1;
+        }
         case AST_GO_STMT:
             return type_check_go_stmt(checker, stmt);
         case AST_DEFER_STMT:
@@ -2201,9 +2592,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
                     if (!type_check_expression(checker, e)) ok = 0;
                 }
                 scope_push(checker);
-                for (ASTNode* s = clause->body; s; s = s->next) {
-                    if (!type_check_statement(checker, s)) ok = 0;
-                }
+                if (!type_check_switch_like_body(checker, clause->body,
+                        FALLTHROUGH_CTX_EXPR_SWITCH, c->next == NULL)) ok = 0;
                 scope_pop(checker);
             }
             return ok;
@@ -2222,9 +2612,20 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_statement(checker, cb->body);
         }
         case AST_ARENA_BLOCK: {
+            // arena-goto fix: push/pop the same arena_chain scratch stack
+            // the goto_label_names pre-pass uses (types.h doc comment) so
+            // a `goto` checked while inside this block's body sees it as
+            // part of its own current arena-nesting path.
             ArenaBlockNode* ab = (ArenaBlockNode*)stmt;
             if (!ab->body) return 1;
-            return type_check_statement(checker, ab->body);
+            int pushed = checker->arena_chain_depth < 16;
+            if (pushed) {
+                checker->arena_chain[checker->arena_chain_depth] = ab;
+                checker->arena_chain_depth++;
+            }
+            int ok = type_check_statement(checker, ab->body);
+            if (pushed) checker->arena_chain_depth--;
+            return ok;
         }
         default:
             type_error(checker, stmt->pos, "Unknown statement type");
@@ -2720,7 +3121,80 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
 
         // comm == NULL is the default case — body only.
         if (sc->comm) {
-            if (sc->comm->type == AST_BINARY_EXPR &&
+            // gofmt-syntax-b Task 4 (P1.10): value-binding cases (`case v :=
+            // <-ch:` / `case v = <-ch:`) and the always-rejected comma-ok
+            // shape (`case v, ok := <-ch:`). Checked BEFORE the pre-existing
+            // send/receive dispatch below so those two branches stay
+            // byte-identical for every case this arc's fixtures already
+            // exercise (bind_name == NULL, is_declare == 0 for all of them).
+            if (sc->is_declare == -1) {
+                // v1 scope cut: `ok` is meaningless without close() (P3.1) —
+                // hardcoding it true would be a silent lie about a channel
+                // that can never report "closed". Reject unconditionally.
+                type_error(checker, case_node->pos,
+                           "select case 'v, ok :=' binding requires close(); "
+                           "not supported in v1");
+                ok = 0;
+            } else if (sc->bind_name) {
+                // The grammar accepts any `expression` after `:=`/`=` (kept
+                // zero-new-surface); receive-ness is validated HERE, not in
+                // the grammar, so the diagnostic can name the real problem.
+                if (!(sc->comm->type == AST_UNARY_EXPR &&
+                      ((UnaryExprNode*)sc->comm)->operator == TOKEN_ARROW)) {
+                    type_error(checker, sc->comm->pos,
+                               "select case must be a receive operation");
+                    ok = 0;
+                } else {
+                    // Routes through the general expression checker exactly
+                    // like the plain (unbound) receive branch below —
+                    // validates channel-ness via type_check_channel_receive_op
+                    // and stamps sc->comm->node_type to the element type,
+                    // which this reuses directly as elem_type.
+                    Type* elem_type = type_check_expression(checker, sc->comm);
+                    if (!elem_type) {
+                        ok = 0;
+                    } else if (sc->is_declare) {
+                        // `:=` — declare bind_name fresh, scoped to this
+                        // case's body (the scope_push above/scope_pop below).
+                        // `_` is a discard, like every other short-decl form.
+                        if (strcmp(sc->bind_name, "_") != 0) {
+                            Variable* var = variable_new(sc->bind_name, elem_type, case_node->pos);
+                            if (var) {
+                                var->is_initialized = 1;
+                                if (!scope_add_variable(checker->current_scope, var)) {
+                                    variable_free(var);
+                                }
+                            }
+                        }
+                    } else {
+                        // `=` — bind_name must already be a declared,
+                        // type-compatible variable in an enclosing scope
+                        // (scope_lookup_variable walks the parent chain).
+                        Variable* existing = scope_lookup_variable(checker->current_scope, sc->bind_name);
+                        if (!existing) {
+                            type_error(checker, case_node->pos,
+                                       "select case: undefined variable '%s'", sc->bind_name);
+                            ok = 0;
+                        } else if (existing->type && existing->type->kind == TYPE_INTERFACE) {
+                            // An interface-typed target accepts any concrete
+                            // implementer (check_interface_assign emits its
+                            // own diagnostic) — mirrors the ordinary `x = e`
+                            // assignment path (type_check_assignment_op) so
+                            // `case v = <-ch:` behaves the same as any other
+                            // assignment into an interface variable.
+                            if (!check_interface_assign(checker, elem_type, existing->type, case_node->pos)) {
+                                ok = 0;
+                            }
+                        } else if (!type_compatible(elem_type, existing->type)) {
+                            type_error(checker, case_node->pos,
+                                       "select case: cannot assign %s to %s variable '%s'",
+                                       type_to_string(elem_type), type_to_string(existing->type),
+                                       sc->bind_name);
+                            ok = 0;
+                        }
+                    }
+                }
+            } else if (sc->comm->type == AST_BINARY_EXPR &&
                 ((BinaryExprNode*)sc->comm)->operator == TOKEN_ARROW) {
                 // Send comm: ch <- value. codegen_setup_select_case (statement_
                 // codegen.c) evaluates left/right individually rather than the
@@ -2776,10 +3250,12 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
 
         // Body: walk the statement chain like the AST_SWITCH_STMT clause loop
         // does (not a single type_check_statement dispatch — select-case bodies
-        // are never wrapped in an AST_BLOCK_STMT).
-        for (ASTNode* s = sc->body; s; s = s->next) {
-            if (!type_check_statement(checker, s)) ok = 0;
-        }
+        // are never wrapped in an AST_BLOCK_STMT). `fallthrough` is never
+        // legal in a select case regardless of clause position, so
+        // is_last_clause's value here is immaterial (kind !=
+        // FALLTHROUGH_CTX_EXPR_SWITCH always wins first).
+        if (!type_check_switch_like_body(checker, sc->body,
+                FALLTHROUGH_CTX_SELECT, 0)) ok = 0;
 
         scope_pop(checker);
     }
@@ -2951,9 +3427,8 @@ int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                 scope_add_variable(checker->current_scope, v);
             }
         }
-        for (ASTNode* s = clause->body; s; s = s->next) {
-            if (!type_check_statement(checker, s)) ok = 0;
-        }
+        if (!type_check_switch_like_body(checker, clause->body,
+                FALLTHROUGH_CTX_TYPE_SWITCH, c->next == NULL)) ok = 0;
         scope_pop(checker);
     }
 

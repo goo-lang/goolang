@@ -1,0 +1,40 @@
+// P1.7 reject: `fallthrough` inside a TYPE switch clause. Go permits
+// fallthrough only in an EXPRESSION switch; a type switch's clauses test
+// distinct dynamic types, so "falling through" to the next clause's type
+// test has no sensible meaning and is rejected.
+package main
+
+type Shape interface {
+	Area() int
+}
+
+type Sq struct {
+	S int
+}
+
+func (s Sq) Area() int {
+	return s.S * s.S
+}
+
+type Rect struct {
+	W int
+	H int
+}
+
+func (r Rect) Area() int {
+	return r.W * r.H
+}
+
+func describe(s Shape) {
+	switch s.(type) {
+	case Sq:
+		println(1)
+		fallthrough
+	case Rect:
+		println(2)
+	}
+}
+
+func main() {
+	describe(Sq{S: 3})
+}

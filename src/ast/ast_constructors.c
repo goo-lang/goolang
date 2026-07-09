@@ -310,7 +310,13 @@ SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos) 
     node->base.next = NULL;
     node->comm = comm;
     node->body = body;
-    
+    // gofmt-syntax-b Task 4: default to "no binding" — the plain-comm and
+    // default-clause call sites (and any future one) get a safe zero value
+    // for free; the binding grammar arms in parser.y overwrite both fields
+    // explicitly right after calling this constructor.
+    node->bind_name = NULL;
+    node->is_declare = 0;
+
     return node;
 }
 
@@ -504,6 +510,53 @@ ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos) {
     node->base.node_type = NULL;
     node->base.next = NULL;
     node->body = body;
+    return node;
+}
+
+// gofmt-syntax-b Task 1 (P1.5): label statement + labeled break/continue.
+LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos) {
+    LabelStmtNode* node = (LabelStmtNode*)malloc(sizeof(LabelStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_LABEL_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->name = str_dup(name);
+    node->stmt = stmt;
+    return node;
+}
+
+BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos) {
+    BreakLabelStmtNode* node = (BreakLabelStmtNode*)malloc(sizeof(BreakLabelStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_BREAK_LABEL_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->label = str_dup(label);
+    return node;
+}
+
+ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position pos) {
+    ContinueLabelStmtNode* node = (ContinueLabelStmtNode*)malloc(sizeof(ContinueLabelStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_CONTINUE_LABEL_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->label = str_dup(label);
+    return node;
+}
+
+// gofmt-syntax-b Task 2 (P1.6): goto statement.
+GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos) {
+    GotoStmtNode* node = (GotoStmtNode*)malloc(sizeof(GotoStmtNode));
+    if (!node) return NULL;
+    node->base.type = AST_GOTO_STMT;
+    node->base.pos = pos;
+    node->base.node_type = NULL;
+    node->base.next = NULL;
+    node->label = str_dup(label);
     return node;
 }
 

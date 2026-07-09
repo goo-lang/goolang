@@ -1,0 +1,15 @@
+// P1.10 reject: `case v, ok := <-ch:` — comma-ok select binding. v1 scope
+// cut: `ok` is meaningless without close() (P3.1) — hardcoding it true
+// would be a silent lie about a channel that can never report "closed".
+// Grammar-accepted (so the diagnostic can be specific and positioned)
+// but ALWAYS rejected in the type checker.
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	ch <- 1
+	select {
+	case v, ok := <-ch:
+		println(v, ok)
+	}
+}

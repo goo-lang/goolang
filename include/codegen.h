@@ -244,6 +244,57 @@ struct CodeGenerator {
     // ordinary (non-comptime) function's codegen.
     const int64_t* active_comptime_values;
     size_t active_comptime_value_n;
+
+    // gofmt-syntax-b Task 1 (P1.5): labeled break/continue. Parallel arrays
+    // to loop_break_bb/loop_continue_bb above, indexed in lockstep with
+    // loop_depth (same fixed-32 bound) — loop_label[i] is the label name (or
+    // NULL) attached to the i-th pushed frame, loop_is_loop[i] is 1 for a
+    // real loop frame (pushed by codegen_push_loop) and 0 for a break-only
+    // switch/select/type-switch frame (codegen_push_break_scope): `continue
+    // LABEL` must only match a loop_is_loop==1 frame (Go: continue targets a
+    // FOR, never a switch/select), while `break LABEL` matches either kind.
+    // pending_label is set by AST_LABEL_STMT (statement_codegen.c) just
+    // before dispatching its wrapped statement, and consumed (cleared) by
+    // the very next codegen_push_loop/codegen_push_break_scope call — so it
+    // only ever tags the ONE frame the label directly wraps. NULL (the
+    // default; codegen_new zeroes it explicitly since the struct is
+    // malloc'd, not calloc'd) means "no pending label", which is the state
+    // for every unlabeled for/switch/select/type-switch.
+    const char* loop_label[32];
+    int loop_is_loop[32];
+    const char* pending_label;
+
+    // gofmt-syntax-b Task 2 (P1.6): per-function label -> LLVMBasicBlockRef
+    // table for `goto`. Reset in codegen_enter_function (like
+    // value_table_function_start above), UNLIKE loop_label/loop_is_loop
+    // above which self-balance via push/pop within one function's own
+    // codegen — a label's block is created once and never popped, so an
+    // explicit reset is required or a second function would see the
+    // first's blocks. Bound 64 matches TypeChecker.label_names/
+    // goto_label_names (types.h) — the checker has already rejected >64
+    // labels before codegen ever runs, so this array cannot overflow in
+    // practice; codegen_get_or_create_label_block still bounds-checks
+    // defensively (statement_codegen.c).
+    const char* goto_label_names[64];
+    LLVMBasicBlockRef goto_label_blocks[64];
+    size_t goto_label_count;
+
+    // gofmt-syntax-b Task 3 (P1.7): fixed-depth fallthrough-target stack.
+    // Pushed by codegen_generate_switch_stmt once per case body, in SOURCE
+    // ORDER, immediately before emitting that body's statements — entry i
+    // is body_blocks[i+1] (the NEXT clause's body block in source order,
+    // default included, per the Go spec), or NULL for the switch's last
+    // clause (fallthrough there is already rejected at type-check time by
+    // type_check_switch_like_body, type_checker.c — NULL is a defensive
+    // fallback, never expected to be read). AST_FALLTHROUGH_STMT
+    // (statement_codegen.c) branches to the top entry. Same fixed-32 bound
+    // and "nesting too deep" convention as loop_break_bb/loop_continue_bb
+    // above (a switch nested inside 32 other switches is not a realistic
+    // program). Self-balancing within codegen_generate_switch_stmt's own
+    // body-emission loop (push before, pop after) — no per-function reset
+    // needed, unlike goto_label_count above.
+    LLVMBasicBlockRef fallthrough_target_bb[32];
+    int fallthrough_depth;
 };
 
 // Function information for code generation
@@ -488,9 +539,10 @@ int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 #if LLVM_AVAILABLE
 LLVMTypeRef codegen_get_select_case_type(CodeGenerator* codegen);
 LLVMValueRef codegen_get_select_function(CodeGenerator* codegen);
-int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker, 
-                              LLVMValueRef cases_array, size_t case_index, 
-                              SelectCaseNode* select_case);
+int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
+                              LLVMValueRef cases_array, size_t case_index,
+                              SelectCaseNode* select_case,
+                              LLVMValueRef* out_recv_space);
 #endif
 
 // Expression generation

@@ -1,0 +1,7 @@
+// P1.7 reject: `fallthrough` with no enclosing switch at all. Must be a
+// clean, positioned type error, never a codegen crash.
+package main
+
+func main() {
+	fallthrough
+}

@@ -1,0 +1,15 @@
+// P1.7 reject: `fallthrough` as the final statement of the switch's LAST
+// case clause. There is no next clause to fall through to — Go rejects
+// this with "cannot fallthrough final case in switch".
+package main
+
+func main() {
+	x := 1
+	switch x {
+	case 1:
+		println(1)
+	case 2:
+		println(2)
+		fallthrough
+	}
+}

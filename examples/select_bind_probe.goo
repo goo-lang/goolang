@@ -1,0 +1,37 @@
+// select_bind_probe (gofmt-syntax-b Task 4 / P1.10): select case value
+// binding with `:=` — `case v := <-ch:` declares v fresh, scoped to that
+// case's body, bound to the value goo_select already received (never a
+// second goo_chan_recv — the P0.1 miscompile class this task's spec calls
+// out by name).
+//
+// Two channels of DIFFERENT element types (int, string) are each drained by
+// a separate select, one buffered send apiece — deterministic without any
+// goroutine: exactly one channel is ready at each select, so which case
+// binds is fixed by which channel was fed, not by scheduling.
+//
+// Expected output derived from `go run` (go1.26.1) on this exact program —
+// select-case value binding is standard Go, no Goo-only constructs used.
+package main
+
+import "fmt"
+
+func main() {
+	a := make(chan int, 1)
+	b := make(chan string, 1)
+
+	a <- 7
+	select {
+	case v := <-a:
+		fmt.Println(v)
+	case s := <-b:
+		fmt.Println(s)
+	}
+
+	b <- "hi"
+	select {
+	case v := <-a:
+		fmt.Println(v)
+	case s := <-b:
+		fmt.Println(s)
+	}
+}

@@ -1,0 +1,79 @@
+// func_lit_goto_probe (P1.5/P1.6 codegen fix): a func literal (closure)
+// emitted MID-FUNCTION must not clobber the ENCLOSING function's
+// goto-label table or loop/label-break stack. Covers, in one program:
+//   - a label `L` declared and goto'd BEFORE the closure is created;
+//   - the closure's OWN label, also named `L` (the type checker gives
+//     closures an independent label namespace, so this is legal — and the
+//     SAME name is deliberate: it is what exposes a codegen-side table
+//     clobber that a distinctly-named label would hide) — the closure's
+//     internal `goto L` must resolve to a block inside the CLOSURE's own
+//     LLVM function, not the outer one;
+//   - a `goto L` back to the OUTER `L` AFTER the closure has been fully
+//     emitted — this is the one that fails if codegen_generate_func_lit
+//     does not save/restore goto_label_count/goto_label_names/
+//     goto_label_blocks around the nested emission (the outer table is
+//     either wiped or left holding the closure's cross-function blocks);
+//   - a trailing forward `goto Skip` past dead code, same shape as
+//     goto_probe.goo, run once more here to confirm the outer table still
+//     behaves normally after the closure boundary.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the
+// VALUE below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func main() {
+//   	i := 0
+//   L:
+//   	println(i)
+//   	i++
+//
+//   	f := func() {
+//   		j := 0
+//   	L:
+//   		if j < 2 {
+//   			println(100 + j)
+//   			j++
+//   			goto L
+//   		}
+//   	}
+//   	f()
+//
+//   	if i < 3 {
+//   		goto L
+//   	}
+//
+//   	goto Skip
+//   	println(999)
+//   Skip:
+//   	println(42)
+//   }
+// `go run` stderr: "0\n100\n101\n1\n100\n101\n2\n100\n101\n42\n"
+package main
+
+func main() {
+	i := 0
+L:
+	println(i)
+	i++
+
+	f := func() {
+		j := 0
+	L:
+		if j < 2 {
+			println(100 + j)
+			j++
+			goto L
+		}
+	}
+	f()
+
+	if i < 3 {
+		goto L
+	}
+
+	goto Skip
+	println(999)
+Skip:
+	println(42)
+}

@@ -512,6 +512,23 @@ typedef struct ComptimeInstantiation {
     struct ComptimeInstantiation* next;
 } ComptimeInstantiation;
 
+// gofmt-syntax-b Task 3 (P1.7): fallthrough legality context. Persisted
+// TypeChecker state (not a call-stack parameter) so a `fallthrough` buried
+// in a NESTED block — an if/for/block inside a case clause's own body, not
+// the clause's direct statement list — still resolves to a meaningful
+// diagnostic instead of a misleading "outside any switch" one. See
+// type_check_switch_like_body's doc comment (type_checker.c) for the full
+// design; save/restored around each of the three clause-body-walking call
+// sites (expression switch, type switch, select) and reset to NONE for the
+// duration of a nested func-literal body (expression_checker.c), mirroring
+// label_count's own independent-namespace save/restore.
+typedef enum {
+    FALLTHROUGH_CTX_NONE = 0,     // not inside any switch/select clause body
+    FALLTHROUGH_CTX_EXPR_SWITCH,  // inside an expression-switch clause body
+    FALLTHROUGH_CTX_TYPE_SWITCH,  // inside a type-switch clause body
+    FALLTHROUGH_CTX_SELECT,       // inside a select-case body
+} FallthroughContext;
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -595,6 +612,79 @@ struct TypeChecker {
     // know which concrete value-specializations of each comptime-param
     // function to emit; torn down in type_checker_free.
     ComptimeInstantiation* comptime_instantiations;
+
+    // gofmt-syntax-b Task 1 (P1.5): per-function flat label registry. Labels
+    // are FUNCTION-scoped in Go (not block/lexical-scoped — the same name
+    // used in two disjoint sibling blocks of one function is still a
+    // duplicate), so a flat array reset at function entry (and around each
+    // func-literal body, which gets its own independent label namespace) is
+    // the right shape, not a stack. Fixed-size like active_type_params above
+    // (source-bounded, not runtime data). type_check_statement's
+    // AST_LABEL_STMT case appends here (positioned duplicate-label error on
+    // a name already present); labeled break/continue's "does this label
+    // exist and enclose me" check is a CODEGEN-time concern (mirrors the
+    // existing unlabeled break/continue, which is likewise unchecked at
+    // typecheck time — see type_check_statement's AST_BREAK_STMT case).
+    char* label_names[64];
+    Position label_positions[64];
+    size_t label_count;
+
+    // gofmt-syntax-b Task 2 (P1.6): per-function set of every label
+    // declared ANYWHERE in the body, populated by a structural pre-pass
+    // (type_check_collect_goto_labels, type_checker.c) run BEFORE the
+    // normal statement walk so a `goto` can validate against a label that
+    // appears LATER in the source (forward references are legal in Go).
+    // Deliberately a SEPARATE array from label_names above rather than
+    // reused: label_names is populated incrementally, in declaration
+    // order, by the main walk's AST_LABEL_STMT case (T1's duplicate-label
+    // diagnostic depends on that exact ordering) — pre-populating it here
+    // instead would make every label look like an immediate duplicate of
+    // itself. This array tolerates duplicate names (recorded once; T1's
+    // pass still reports the duplicate-label error at its own place).
+    // Reset (save/restore) at function entry and around each func-literal
+    // body, same convention and bound as label_names.
+    char* goto_label_names[64];
+    size_t goto_label_count;
+
+    // arena-goto fix (2026-07-09, findings "goto out of an arena{} block
+    // skips goo_arena_free" + "goto backward into an arena{} block
+    // double-frees"): current enclosing-arena-block IDENTITY chain
+    // (outermost first), maintained as scratch state by BOTH structural
+    // walks that visit AST_ARENA_BLOCK — the goto_label_names pre-pass
+    // (type_check_collect_goto_labels) and the main statement walk
+    // (type_check_statement's own AST_ARENA_BLOCK case). Safe to share one
+    // array across the two passes: each pass fully unwinds its own pushes
+    // (pop mirrors push) before returning, so by the time pass N+1 begins,
+    // arena_chain_depth is back to whatever pass N started it at. Entries
+    // are borrowed ArenaBlockNode* AST pointers (stable for the whole
+    // compilation, never freed here) used only for pointer-identity
+    // comparison — never dereferenced. Bound matches codegen's own
+    // arena_stack cap (codegen.h) since that is what ultimately emits the
+    // frees this chain drives; nesting past it silently stops being
+    // recorded (same "silently drop past the fixed depth" convention as
+    // codegen_arena_push, codegen.c), not a hard error.
+    void* arena_chain[16];
+    size_t arena_chain_depth;
+
+    // Per-goto-label-table-entry (parallel to goto_label_names/
+    // goto_label_count above — index i here matches goto_label_names[i])
+    // snapshot of arena_chain at the moment the pre-pass first recorded
+    // that label. type_check_statement's AST_GOTO_STMT case uses this to
+    // reject a `goto` whose OWN current arena_chain does not have this
+    // snapshot as a prefix — i.e. a goto that would need to silently
+    // *enter* an arena block it is not already inside (the double-free
+    // SIGSEGV shape). A goto that only *exits* one or more arenas (the
+    // snapshot IS a prefix of, or equal to, the goto's own chain) is
+    // legal; codegen frees exactly those extra arenas, mirroring how
+    // break/continue already free arenas above the target loop frame.
+    void* goto_label_arena_chain[64][16];
+    size_t goto_label_arena_depth[64];
+
+    // gofmt-syntax-b Task 3 (P1.7): current fallthrough legality context —
+    // see FallthroughContext's doc comment above. Explicitly set to NONE in
+    // type_checker_new (the struct is malloc'd, not calloc'd, same
+    // convention as label_count/goto_label_count just above).
+    FallthroughContext fallthrough_ctx;
 };
 
 // Type creation functions
@@ -796,6 +886,11 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);
+// gofmt-syntax-b Task 2 (P1.6): goto forward-reference label pre-pass (see
+// its doc comment in type_checker.c). Exposed here (not static) because
+// expression_checker.c's func-literal check needs it too, mirroring
+// type_check_statement's own function-decl/func-literal dual call sites.
+void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt);
 
 // Declaration type checking functions
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl);

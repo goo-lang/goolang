@@ -176,6 +176,35 @@ typedef enum {
     // deps). Mirrors AST_UNSAFE_STMT's shape (a wrapped body block).
     AST_ARENA_BLOCK,
 
+    // gofmt-syntax-b Task 1 (P1.5): labeled statements + `break label` /
+    // `continue label`. Three DISTINCT node types — AST_BREAK_LABEL_STMT and
+    // AST_CONTINUE_LABEL_STMT are NOT the existing bare AST_BREAK_STMT/
+    // AST_CONTINUE_STMT with a label field bolted on: every bare-break/
+    // continue alloc site builds a plain ASTNode (ast_node_new), so casting
+    // one of those to a derived struct with a trailing `char* label` would
+    // be an out-of-bounds read on every existing call site (the same
+    // ast_node_copy failure class documented in the skill's memory notes).
+    // Tail-appended per the M10 convention above (Makefile has no header
+    // deps).
+    AST_LABEL_STMT,          // `L: stmt`
+    AST_BREAK_LABEL_STMT,    // `break L`
+    AST_CONTINUE_LABEL_STMT, // `continue L`
+
+    // gofmt-syntax-b Task 2 (P1.6): `goto label`. Tail-appended per the M10
+    // convention above (Makefile has no header deps).
+    AST_GOTO_STMT,
+
+    // gofmt-syntax-b Task 3 (P1.7): `fallthrough`. A bare marker node, no
+    // extra fields — same shape as AST_BREAK_STMT/AST_CONTINUE_STMT (built
+    // via ast_node_new, no dedicated struct or constructor, no
+    // ast_node_free case needed since there is nothing to free beyond the
+    // base node). Placement legality (final statement of a non-last
+    // expression-switch clause; illegal in a type switch, select, or
+    // outside any switch) is entirely semantic — see
+    // type_check_switch_like_body's doc comment, type_checker.c. Tail-
+    // appended per the M10 convention above (Makefile has no header deps).
+    AST_FALLTHROUGH_STMT,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -448,6 +477,23 @@ typedef struct {
     ASTNode base;
     struct ASTNode* comm;       // Communication operation (send/recv)
     struct ASTNode* body;       // Case body
+    // gofmt-syntax-b Task 4 (P1.10): select value-binding cases (`case v :=
+    // <-ch:` / `case v = <-ch:`). NULL/0 for every pre-existing case shape
+    // (plain comm, default) — tail-appended, so audit EVERY
+    // ast_select_case_new call site to leave these at their zero value
+    // unless it's actually building a binding case (malloc-garbage hazard
+    // per the goo-grammar skill).
+    char* bind_name;            // bound identifier's name, or NULL = no bind
+    // 1 = `:=` (declare a new variable, scoped to the case body)
+    // 0 = `=` (assign into an existing, already-declared variable)
+    // -1 = `v, ok := <-ch` (comma-ok binding) — grammar-accepted so the
+    //      diagnostic can be a specific, positioned "requires close()"
+    //      message instead of a generic parse error; ALWAYS rejected in
+    //      type_check_select_stmt (close() is unsupported in v1, P3.1) and
+    //      never reaches codegen. bind_name is NULL for this sentinel (the
+    //      first identifier is freed, unused — the case is rejected either
+    //      way, so nothing downstream needs its name).
+    int is_declare;
 } SelectCaseNode;
 
 // Switch statement (Go-style expression switch)
@@ -1260,6 +1306,41 @@ typedef struct {
     struct ASTNode* body;    // Statement list for this clause
 } TypeCaseNode;
 
+// gofmt-syntax-b Task 1 (P1.5): `name: stmt`. `stmt` may be any statement;
+// when it is a for/switch/select/type-switch, codegen tags that construct's
+// pushed break-scope frame with `name` (via CodeGenerator.pending_label) so
+// a labeled break/continue elsewhere in the function can target it
+// specifically. A label on any OTHER statement is legal Go (a goto target,
+// not wired until Task 2) — codegen just emits `stmt` normally.
+typedef struct {
+    ASTNode base;
+    char* name;
+    struct ASTNode* stmt;
+} LabelStmtNode;
+
+// `break label` — see AST_BREAK_LABEL_STMT's enum-site comment for why this
+// is a separate node type from the bare AST_BREAK_STMT, not a shared struct.
+typedef struct {
+    ASTNode base;
+    char* label;
+} BreakLabelStmtNode;
+
+// `continue label` — sibling of BreakLabelStmtNode above.
+typedef struct {
+    ASTNode base;
+    char* label;
+} ContinueLabelStmtNode;
+
+// gofmt-syntax-b Task 2 (P1.6): `goto label`. A separate node type from the
+// break/continue-label siblings above (not a reused shape) purely because it
+// has no bare/unlabeled counterpart to be confused with — `goto` always
+// takes an operand — but kept structurally identical (base + label) so it
+// reads as the fourth member of the same family.
+typedef struct {
+    ASTNode base;
+    char* label;
+} GotoStmtNode;
+
 // =============================================================================
 // Function declarations for AST manipulation
 // =============================================================================
@@ -1317,6 +1398,15 @@ DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos);
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
 ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos);
+// gofmt-syntax-b Task 1 (P1.5): label statement + labeled break/continue
+// constructors. `name`/`label` are copied (str_dup'd internally); callers
+// keep ownership of their own copy.
+LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos);
+BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos);
+ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position pos);
+// gofmt-syntax-b Task 2 (P1.6): goto statement constructor. `label` is
+// copied (str_dup'd internally); caller keeps ownership of its own copy.
+GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);

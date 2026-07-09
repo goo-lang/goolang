@@ -332,7 +332,7 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 // that codegen_generate_function_decl normally owns for the FULL DURATION
 // of a function's emission must therefore be saved before entering the
 // literal and restored after, mirroring codegen_generate_global_init_
-// function's save/restore discipline (this file) with two ADDITIONS that
+// function's save/restore discipline (this file) with four ADDITIONS that
 // only matter for a nested (not sequential) emission:
 //   - value_table_function_start: codegen_enter_function OVERWRITES this
 //     with the literal's own start offset; without saving/restoring it, the
@@ -344,6 +344,38 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 //     whatever body it is given (it is not accumulative), so leaving it as
 //     the literal's set would misroute goroutine-escape promotion for any
 //     code emitted AFTER the literal in the enclosing function.
+//   - goto_label_count/goto_label_names/goto_label_blocks (gofmt-syntax-b
+//     Task 2): codegen_enter_function zeroes goto_label_count for the
+//     literal (per-function reset, see its doc comment codegen.h) but
+//     nothing restores it afterward — without saving the count AND both
+//     64-entry arrays here, the OUTER function's goto-label table is either
+//     wiped (a label-free literal leaves count at 0) or left holding the
+//     LITERAL's own labels (blocks that live in a DIFFERENT LLVM function),
+//     so any outer `goto L` textually after the literal either mis-resolves
+//     or branches cross-function — an LLVM verifier failure with no source
+//     position. Saving the count alone is NOT sufficient: the literal's own
+//     labels overwrite array slots 0..n regardless, so the arrays must be
+//     memcpy'd back too, mirroring value_table_function_start's save/
+//     restore above.
+//   - loop_depth/loop_break_bb/loop_continue_bb/loop_label/loop_is_loop
+//     (gofmt-syntax-b Task 1): this stack self-balances via push/pop WITHIN
+//     one function's own codegen (codegen.h's doc comment), so
+//     codegen_enter_function does not reset it — a literal nested inside an
+//     outer loop/switch/select would otherwise inherit the OUTER's frames
+//     on the SAME stack, and any push the literal's own body makes lands
+//     on top of them at the literal's own (non-zero) depth. Two distinct
+//     failure modes follow: a labeled `break`/`continue` inside the literal
+//     can walk past the literal's own frames and match an OUTER label (a
+//     cross-function branch, again only caught by the verifier with no
+//     source position — this is what makes the checker's positioned "label
+//     not defined or not enclosing" error, statement_codegen.c, otherwise
+//     unreachable for this shape); and a bare `break`/`continue` with no
+//     enclosing construct of its own inside the literal would silently
+//     target the OUTER loop's blocks instead of erroring. Reset loop_depth
+//     to 0 for the literal's own emission (like goto_label_count above) and
+//     restore the saved depth AND both bb arrays plus loop_label/
+//     loop_is_loop afterward — the literal's own pushes must not clobber
+//     the outer frames sitting below index 0 once restored.
 // The type-checker scope mirror below CHAINS onto the enclosing scope (T1
 // rooted it at package/global instead — no captures) and marks the pushed
 // scope is_function_boundary=1, mirroring type_check_func_lit's real (non-
@@ -423,6 +455,31 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     int saved_escape_has_go = g_escape_has_go;
     Type* saved_return_type = checker->current_return_type;
     Scope* enclosing_scope = checker->current_scope;
+
+    // gofmt-syntax-b Task 2: save the outer function's goto-label table
+    // BEFORE codegen_enter_function zeroes goto_label_count below — see
+    // this function's top doc comment.
+    size_t saved_goto_label_count = codegen->goto_label_count;
+    const char* saved_goto_label_names[64];
+    memcpy(saved_goto_label_names, codegen->goto_label_names, sizeof(saved_goto_label_names));
+    LLVMBasicBlockRef saved_goto_label_blocks[64];
+    memcpy(saved_goto_label_blocks, codegen->goto_label_blocks, sizeof(saved_goto_label_blocks));
+
+    // gofmt-syntax-b Task 1: save the outer function's loop/label-break
+    // stack and reset it to empty for the literal's own emission — see this
+    // function's top doc comment. Unlike goto_label_count, nothing else
+    // resets loop_depth per-function (it self-balances via push/pop within
+    // one function), so it must be reset here explicitly.
+    int saved_loop_depth = codegen->loop_depth;
+    LLVMBasicBlockRef saved_loop_break_bb[32];
+    memcpy(saved_loop_break_bb, codegen->loop_break_bb, sizeof(saved_loop_break_bb));
+    LLVMBasicBlockRef saved_loop_continue_bb[32];
+    memcpy(saved_loop_continue_bb, codegen->loop_continue_bb, sizeof(saved_loop_continue_bb));
+    const char* saved_loop_label[32];
+    memcpy(saved_loop_label, codegen->loop_label, sizeof(saved_loop_label));
+    int saved_loop_is_loop[32];
+    memcpy(saved_loop_is_loop, codegen->loop_is_loop, sizeof(saved_loop_is_loop));
+    codegen->loop_depth = 0;
 
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
@@ -561,6 +618,20 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     memcpy(g_escape_names, saved_escape_names, sizeof(g_escape_names));
     g_escape_count = saved_escape_count;
     g_escape_has_go = saved_escape_has_go;
+
+    // gofmt-syntax-b Task 2: restore the outer function's goto-label table
+    // — see this function's top doc comment.
+    codegen->goto_label_count = saved_goto_label_count;
+    memcpy(codegen->goto_label_names, saved_goto_label_names, sizeof(saved_goto_label_names));
+    memcpy(codegen->goto_label_blocks, saved_goto_label_blocks, sizeof(saved_goto_label_blocks));
+
+    // gofmt-syntax-b Task 1: restore the outer function's loop/label-break
+    // stack — see this function's top doc comment.
+    codegen->loop_depth = saved_loop_depth;
+    memcpy(codegen->loop_break_bb, saved_loop_break_bb, sizeof(saved_loop_break_bb));
+    memcpy(codegen->loop_continue_bb, saved_loop_continue_bb, sizeof(saved_loop_continue_bb));
+    memcpy(codegen->loop_label, saved_loop_label, sizeof(saved_loop_label));
+    memcpy(codegen->loop_is_loop, saved_loop_is_loop, sizeof(saved_loop_is_loop));
 
     function_info_free(func_info);
 

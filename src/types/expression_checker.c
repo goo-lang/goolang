@@ -219,6 +219,39 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     Type* saved_return_type = checker->current_return_type;
     checker->current_return_type = return_type;
 
+    // gofmt-syntax-b Task 1: a func literal gets its own label namespace,
+    // same rationale as type_check_function_decl's save/restore (types.h's
+    // TypeChecker.label_count doc comment) — a label inside the closure must
+    // not collide with (or be visible to) the enclosing function's labels.
+    size_t saved_label_count = checker->label_count;
+    checker->label_count = 0;
+
+    // gofmt-syntax-b Task 2: same save/restore + pre-pass as
+    // type_check_function_decl (type_checker.c) for the goto forward-
+    // reference set — a closure's `goto` must not see the enclosing
+    // function's labels (or vice versa), matching label_count's own
+    // independent-namespace rule directly above.
+    size_t saved_goto_label_count = checker->goto_label_count;
+    checker->goto_label_count = 0;
+
+    // arena-goto fix: same independent-namespace save/restore as
+    // goto_label_count directly above — a closure's own arena-nesting
+    // path must be measured from ITS OWN body, not offset by however many
+    // `arena{}` blocks happen to lexically enclose the literal in the
+    // outer function (see types.h's arena_chain doc comment).
+    size_t saved_arena_chain_depth = checker->arena_chain_depth;
+    checker->arena_chain_depth = 0;
+    if (lit->body) {
+        type_check_collect_goto_labels(checker, lit->body);
+    }
+
+    // gofmt-syntax-b Task 3: same independent-namespace save/restore as
+    // label_count/goto_label_count just above — `fallthrough` cannot cross
+    // a func-literal boundary even when the literal is lexically written
+    // inside a switch case's body (Go: the literal is its own function).
+    FallthroughContext saved_fallthrough_ctx = checker->fallthrough_ctx;
+    checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
+
     if (lit->params) {
         for (ASTNode* p = lit->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
@@ -249,6 +282,10 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
         ok = type_check_statement(checker, lit->body);
     }
 
+    checker->fallthrough_ctx = saved_fallthrough_ctx;
+    checker->arena_chain_depth = saved_arena_chain_depth;
+    checker->goto_label_count = saved_goto_label_count;
+    checker->label_count = saved_label_count;
     checker->current_return_type = saved_return_type;
     checker->literal_stack_len = lit_stack_slot;
     scope_pop(checker);
