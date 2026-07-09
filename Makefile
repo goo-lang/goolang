@@ -3784,13 +3784,27 @@ arena-routing-test: arena_routing_test
 # examples/*.expected.txt, so `make test-golden` also covers them — this
 # target exists as the named, scoped-to-Task-6 entry point the design doc
 # asks for.
-ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe
+#
+# arena-goto fix (2026-07-09): arena_goto_probe added to this list purely
+# for arena-valgrind-probe's UAF/double-free gate below — a regression
+# fence for "goto backward into an arena{} block double-frees" (a fixed
+# arena depth off-by-one in codegen_emit_arena_frees_to_depth,
+# statement_codegen.c, would show up here as an invalid free/UAF even
+# though the probe's own output would still happen to look right). NOT a
+# meaningful addition to arena-rss-probe's PROBES list (scripts/
+# arena_rss_probe.sh) — see the probe file's own header comment: any
+# function containing a goto currently defeats block_escape.c's arena-
+# eligibility classification (no AST_GOTO_STMT/AST_LABEL_STMT case there),
+# so an RSS-delta assertion on a goto-containing arena probe would measure
+# that unrelated, pre-existing gap instead of this fix.
+ARENA_FREE_PROBE_NAMES = arena_reclaim_probe arena_escape_return_probe arena_escape_store_probe arena_embedded_escape_probe arena_loop_reclaim_probe arena_defer_escape_probe arena_chan_send_probe arena_return_probe arena_loopexit_probe arena_fmt_println_probe arena_goto_probe
 
 arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== arena-free-probe: Task 6 golden matrix (compile+run+diff) ==="
-	@fail=0; \
+	@fail=0; total=0; \
 	for name in $(ARENA_FREE_PROBE_NAMES); do \
+	  total=$$((total+1)); \
 	  if ! $(COMPILER) -o build/$$name examples/$$name.goo > build/$$name.cerr 2>&1; then \
 	    echo "$$name: FAIL (compile/link)"; cat build/$$name.cerr; fail=1; continue; \
 	  fi; \
@@ -3802,7 +3816,7 @@ arena-free-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "arena-free-probe: FAIL"; exit 1; fi; \
-	echo "arena-free-probe: PASS (10/10)"
+	echo "arena-free-probe: PASS ($$total/$$total)"
 
 # Same 5 binaries, run under the UAF/double-free gate:
 #   valgrind --leak-check=no --error-exitcode=99 ./probe
@@ -3820,8 +3834,9 @@ arena-valgrind-probe: $(COMPILER) $(RUNTIME_LIB)
 	  exit 0; \
 	fi
 	@echo "=== arena-valgrind-probe: Task 6 UAF/double-free gate (valgrind) ==="
-	@fail=0; \
+	@fail=0; total=0; \
 	for name in $(ARENA_FREE_PROBE_NAMES); do \
+	  total=$$((total+1)); \
 	  if ! $(COMPILER) -o build/$$name examples/$$name.goo > build/$$name.cerr 2>&1; then \
 	    echo "$$name: FAIL (compile/link)"; cat build/$$name.cerr; fail=1; continue; \
 	  fi; \
@@ -3837,7 +3852,7 @@ arena-valgrind-probe: $(COMPILER) $(RUNTIME_LIB)
 	  fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "arena-valgrind-probe: FAIL"; exit 1; fi; \
-	echo "arena-valgrind-probe: PASS (10/10 clean)"
+	echo "arena-valgrind-probe: PASS ($$total/$$total clean)"
 
 # Arena RSS capstone (Task 9): the concrete reclamation proof. Compiles the
 # 100k-iteration temporary-building loop with `arena { }` (freed each iteration)

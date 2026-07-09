@@ -41,6 +41,10 @@ static void codegen_pop_loop(CodeGenerator* cg) { if (cg->loop_depth > 0) cg->lo
 // arms of codegen_generate_statement above its definition.
 static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth);
 
+// arena-goto fix: defined below, used by the AST_GOTO_STMT arm of
+// codegen_generate_statement above its definition.
+static void codegen_emit_arena_frees_to_depth(CodeGenerator* codegen, int target_arena_depth);
+
 // Push a break-only scope for switch/select clause bodies. In Go/Goo a `break`
 // inside a switch or select terminates that construct (not the enclosing loop),
 // while `continue` is NOT bound by switch/select and must thread through to the
@@ -541,7 +545,33 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             // codegen runs) — get or (for a goto that lexically precedes
             // its label, i.e. a backward jump) create L's block and branch
             // to it unconditionally.
+            //
+            // arena-goto fix: free every arena this goto EXITS before the
+            // branch, exactly like break/continue above. Unlike those,
+            // goto has no loop-depth relationship to its target at all —
+            // only arena LEXICAL nesting matters — so the free count comes
+            // from the target label's arena-nesting depth, computed at
+            // type-check time (type_check_statement's AST_GOTO_STMT case,
+            // type_checker.c) and looked up here by name from the SAME
+            // checker->goto_label_names table that case walks. The checker
+            // has already proven that depth's arena-chain is a prefix of
+            // this goto's own (else it rejected the program with "goto
+            // into arena block is not supported" before codegen ever
+            // ran), so every arena from that depth up to the goto's
+            // current codegen->arena_depth is safe to free and none of
+            // them are shared with the label's continuation.
             GotoStmtNode* got = (GotoStmtNode*)stmt;
+            int target_arena_depth = 0;
+            if (checker && got->label) {
+                for (size_t i = 0; i < checker->goto_label_count; i++) {
+                    if (checker->goto_label_names[i] &&
+                        strcmp(checker->goto_label_names[i], got->label) == 0) {
+                        target_arena_depth = (int)checker->goto_label_arena_depth[i];
+                        break;
+                    }
+                }
+            }
+            codegen_emit_arena_frees_to_depth(codegen, target_arena_depth);
             LLVMBasicBlockRef target = codegen_get_or_create_label_block(codegen, got->label);
             if (!target) {
                 codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
@@ -2275,6 +2305,38 @@ static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth)
     }
 #else
     (void)codegen; (void)min_loop_depth;
+#endif
+}
+
+// arena-goto fix ("goto out of an arena{} block skips goo_arena_free"):
+// emit goo_arena_free for every arena at codegen->arena_stack index
+// target_arena_depth..arena_depth-1 (innermost first) — i.e. every arena
+// pushed AFTER the goto's target label's own arena-nesting depth. Unlike
+// codegen_emit_arena_frees above (loop-depth-keyed, for break/continue's
+// "which loop am I exiting" question), a `goto` has no loop relationship
+// to its target — only arena LEXICAL nesting (codegen->arena_stack's
+// actual push order, which for this single-pass recursive-descent codegen
+// exactly mirrors AST containment) matters, so this compares directly
+// against arena_stack position. Callers must pass a target_arena_depth
+// the type checker has already proven is <= arena_depth and whose arena
+// chain is a genuine prefix of the current one (AST_GOTO_STMT's
+// type-check case, type_checker.c's "goto into arena block is not
+// supported" diagnostic) — this function trusts that and does not
+// re-validate arena identity, only the depth bound.
+static void codegen_emit_arena_frees_to_depth(CodeGenerator* codegen, int target_arena_depth) {
+#if LLVM_AVAILABLE
+    if (!codegen || target_arena_depth < 0 || codegen->arena_depth <= target_arena_depth) return;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef free_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_free");
+    if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_arena_free", free_fn_ty);
+    for (int i = codegen->arena_depth - 1; i >= target_arena_depth; i--) {
+        LLVMValueRef arena = codegen->arena_stack[i];
+        if (arena) LLVMBuildCall2(codegen->builder, free_fn_ty, free_fn, &arena, 1, "");
+    }
+#else
+    (void)codegen; (void)target_arena_depth;
 #endif
 }
 
