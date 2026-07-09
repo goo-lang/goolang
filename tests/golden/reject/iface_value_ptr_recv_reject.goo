@@ -1,0 +1,24 @@
+// iface_value_ptr_recv_reject: Go method-set rule — a pointer-receiver method
+// is in the method set of *T only, not value T. This is the fixture
+// interface_ptr_recv_probe.goo used to pin (wrongly) before receiver-kind
+// soundness landed; it now must be rejected with a diagnostic naming the
+// method and the receiver kind, not silently accepted (or worse, reach the
+// LLVM verifier on a boxed-but-disconnected value copy).
+package main
+
+import "fmt"
+
+type Stringerish interface {
+	Label() int
+}
+
+type Node struct {
+	id int
+}
+
+func (n *Node) Label() int { return n.id + 100 }
+
+func main() {
+	var s Stringerish = Node{id: 7}
+	fmt.Println(s.Label())
+}

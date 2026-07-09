@@ -26,6 +26,10 @@ typedef struct {
                          // against type_receiver_name(owner).
     char ambig_a[128];   // AMBIGUOUS only: two dotted paths for diagnostics,
     char ambig_b[128];   // e.g. "Base.X" / "Other.X".
+    int via_pointer;     // 1 if any hop from the outer struct to the member's
+                         // owner traversed a pointer field (*T) — receiver-kind
+                         // soundness: a value outer still holds a pointer-recv
+                         // promoted method iff the path went through a pointer.
 } EmbedResult;
 
 // BFS the embedding graph of `struct_type` for member `name` (field OR
