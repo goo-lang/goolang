@@ -4359,6 +4359,34 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
                     expr->node_type = m->type;
                     return m->type;
                 }
+                // P4.7 (sync shim): reached only when !is_call_callee (the
+                // is_call_callee branch above always returns). sync.Mutex /
+                // sync.WaitGroup methods lower directly to goo_sync_*
+                // runtime wrappers keyed off the CALL SITE's receiver
+                // expression (call_codegen.c) — there is no goo_pkg__sync__
+                // symbol for a bound thunk to close over (sync has no Goo
+                // source body; see is_stdlib_shim_import). Reject method
+                // VALUES here, mirroring the interface method-value scope
+                // cut above, rather than let this reach codegen and either
+                // crash or bind the wrong thing. Rejection (not a thunk
+                // that also calls the wrapper) is the v1 choice — sync
+                // method values are rare in practice and the thunk path
+                // would need its own lazy-init-aware codegen with no reuse
+                // from the direct-call path built for B3.
+                {
+                    Package* owner = type_receiver_owner_package(struct_type);
+                    // import_path, not ->name: ->name is the call-site
+                    // identifier (`import s "sync"` sets it to "s"), which
+                    // would silently miss this check under an alias.
+                    // import_path is the canonical path, alias-independent.
+                    if (owner && owner->import_path && strcmp(owner->import_path, "sync") == 0) {
+                        type_error(checker, expr->pos,
+                                   "method values on sync.%s are not supported in v1 "
+                                   "(call %s directly)",
+                                   tn, selector->selector);
+                        return NULL;
+                    }
+                }
                 // P3.6: value position (`f := c.get`, a callback argument, a
                 // struct field initializer, ...) — yield the receiver-
                 // STRIPPED signature (params[1..]) so `f` type-checks and

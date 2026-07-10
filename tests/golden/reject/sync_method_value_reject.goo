@@ -1,0 +1,15 @@
+package main
+
+// P4.7/B3: sync.Mutex / sync.WaitGroup methods lower directly to
+// goo_sync_* runtime wrappers keyed off the call site's receiver
+// expression — there is no goo_pkg__sync__ symbol for a bound thunk
+// (P3.6) to close over, since sync has no Goo source body. Method VALUES
+// (as opposed to calls) are a clean v1 rejection rather than a codegen
+// crash or a silently-wrong bind.
+
+import "sync"
+
+func main() {
+	var mu sync.Mutex
+	_ = mu.Lock
+}

@@ -458,11 +458,108 @@ static bool is_stdlib_shim_import(const char* path) {
     // keeps every raw-import-path comparison funneled through the same single
     // choke point (see normalize_import_path's doc comment).
     path = normalize_import_path(path);
-    static const char* const shim[] = {"fmt", "os", "math", "errors"};
+    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }
     return false;
+}
+
+// P4.7 (packages-B, B3): mint a synthesized TYPE_STRUCT for sync.Mutex /
+// sync.WaitGroup — a single opaque-pointer field (zero-value NULL), so
+// `var mu sync.Mutex` allocas 8 zeroed bytes and is usable immediately
+// (Go's zero-value contract; see src/runtime/sync_shim.c for the lazy-init
+// runtime side). owner_package is stamped directly here (this Type is
+// never reached via type_check_type_decl, the ordinary stamping site — see
+// that function's own owner_package comment) so B2's cross-package method
+// resolution (type_checker_lookup_method / type_receiver_owner_package)
+// treats it exactly like a real source-package exported struct: zero new
+// checker logic needed beyond this seeding.
+static Type* sync_make_opaque_struct(TypeChecker* checker, Package* pkg, const char* name) {
+    Type* opaque_ptr = type_pointer(type_checker_get_builtin(checker, TYPE_INT8));
+    if (!opaque_ptr) return NULL;
+
+    Type* result = type_new(TYPE_STRUCT);
+    if (!result) return NULL;
+    result->data.struct_type.fields = calloc(1, sizeof(StructField));
+    if (!result->data.struct_type.fields) { free(result); return NULL; }
+    result->data.struct_type.field_count = 1;
+    result->data.struct_type.fields[0].name = str_dup("_state");
+    result->data.struct_type.fields[0].type = opaque_ptr;
+    result->data.struct_type.fields[0].offset = 0;
+    result->data.struct_type.name = str_dup(name);
+    result->size = sizeof(void*);
+    result->align = sizeof(void*);
+    result->owner_package = pkg;
+    return result;
+}
+
+// Register `name` -> `type` as an exported TYPE in pkg->exports. is_builtin=1
+// mirrors type_check_type_decl's own discriminator (type_checker.c), which
+// B1's type_from_ast AST_BASIC_TYPE arm requires before resolving an export
+// as a type name (guards against a same-named VALUE export shadowing it —
+// see that arm's doc comment).
+static void sync_export_type(Package* pkg, const char* name, Type* type) {
+    Variable* v = variable_new(name, type, (Position){0, 0, 0, "sync"});
+    if (!v) return;
+    v->is_builtin = 1;
+    v->is_initialized = 1;
+    if (!scope_add_variable(pkg->exports, v)) variable_free(v);
+}
+
+// Register a method Variable "T__method" directly in pkg->exports, under
+// B2's cross-package mangled-name convention (type_checker_lookup_method
+// falls back to owner->exports keyed on exactly this name once a lookup in
+// the current scope chain misses — true for every sync method call, since
+// main's scope chain never held these Variables in the first place).
+// is_builtin=0: the call-signature-check gate in type_check_call_expr
+// demands `!m->is_builtin`, mirroring an ordinary user-defined method's
+// Variable (type_check_function_decl never sets is_builtin either).
+// Receiver is always a pointer (*Mutex / *WaitGroup) — every sync method
+// mutates shared state, matching Go's sync package.
+static void sync_export_method(Package* pkg, Type* recv_struct, const char* method_name,
+                                Type** param_types, size_t param_count, Type* return_type) {
+    char* mangled = type_method_mangled_name(recv_struct->data.struct_type.name, method_name);
+    if (!mangled) return;
+
+    Type* recv_ptr = type_pointer(recv_struct);
+    size_t total = param_count + 1;
+    Type** all_params = malloc(sizeof(Type*) * total);
+    if (!all_params) { free(mangled); return; }
+    all_params[0] = recv_ptr;
+    for (size_t i = 0; i < param_count; i++) all_params[i + 1] = param_types[i];
+    Type* func_type = type_function(all_params, total, return_type);
+    free(all_params);
+
+    Variable* v = variable_new(mangled, func_type, (Position){0, 0, 0, "sync"});
+    free(mangled);
+    if (!v) return;
+    v->is_initialized = 1;
+    if (!scope_add_variable(pkg->exports, v)) variable_free(v);
+}
+
+// Populate the sync package's exports: types Mutex/WaitGroup plus their
+// method set (Mutex.Lock/Unlock, WaitGroup.Add/Done/Wait — the roadmap's
+// P4.7 acceptance surface). Called once, right after sync's Package is
+// created in seed_imported_stdlib_markers below.
+static void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
+    Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
+    Type* int_t = type_checker_get_builtin(checker, TYPE_INT64);  // Go "int"
+
+    Type* mutex_t = sync_make_opaque_struct(checker, pkg, "Mutex");
+    Type* wg_t = sync_make_opaque_struct(checker, pkg, "WaitGroup");
+    if (!mutex_t || !wg_t) return;
+
+    sync_export_type(pkg, "Mutex", mutex_t);
+    sync_export_type(pkg, "WaitGroup", wg_t);
+
+    sync_export_method(pkg, mutex_t, "Lock", NULL, 0, void_t);
+    sync_export_method(pkg, mutex_t, "Unlock", NULL, 0, void_t);
+
+    Type* add_params[] = { int_t };
+    sync_export_method(pkg, wg_t, "Add", add_params, 1, void_t);
+    sync_export_method(pkg, wg_t, "Done", NULL, 0, void_t);
+    sync_export_method(pkg, wg_t, "Wait", NULL, 0, void_t);
 }
 
 // stdlib Phase 0 (Task 4): seed a TYPE_PACKAGE marker for each stdlib-shim
@@ -472,7 +569,12 @@ static bool is_stdlib_shim_import(const char* path) {
 // unifying stdlib and user-package marker handling. Must run BEFORE main is
 // type-checked so `fmt.Println` etc. resolve. Selector resolution for shim
 // packages still flows through stdlib_package_lookup (by name), so the empty
-// exports scope on the seeded Package is harmless. Returns false on OOM.
+// exports scope on the seeded Package is harmless for fmt/os/math/errors.
+// P4.7: sync is the one shim package whose exports scope is NOT left empty
+// — see seed_sync_package_exports above — because sync exports TYPES with
+// METHODS, which stdlib_package_lookup's per-symbol table cannot model (it
+// only ever returns a bare Type for a (package, name) pair, never a
+// method set). Returns false on OOM.
 static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports) {
     for (ASTNode* imp = imports; imp; imp = imp->next) {
         if (imp->type != AST_IMPORT_SPEC) continue;
@@ -483,6 +585,9 @@ static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports)
         const char* short_name = spec->alias ? spec->alias : spec->path;
         Package* p = type_checker_add_package(checker, spec->path, short_name);
         if (!p) return false;
+        if (strcmp(normalize_import_path(spec->path), "sync") == 0) {
+            seed_sync_package_exports(checker, p);
+        }
         type_checker_seed_package_marker(checker, short_name, p);
     }
     return true;
