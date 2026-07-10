@@ -1,6 +1,5 @@
 #include "types.h"
 #include "comptime.h"
-#include "taint_analysis.h"
 #include "embedding.h"
 #include <stdlib.h>
 #include <string.h>

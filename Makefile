@@ -92,6 +92,20 @@ SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
 OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
 
+# ---------------------------------------------------------------------------
+# P5.6: bin/goo links ONLY the reachable set below. The full TYPES_SRCS /
+# COMPTIME_SRCS / IDE_SRCS lists above still feed OBJS for the standalone
+# test targets that exercise the unlinked frameworks (constraint inference,
+# concept generics, HKT, flow analysis, reference manager, ...) — dropping a
+# module HERE quarantines it from the shipped compiler without deleting its
+# tests. The membership test is symbols, not headers: a module joins this
+# list only if the link otherwise fails with an undefined reference.
+# ---------------------------------------------------------------------------
+GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c
+GOO_COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
+GOO_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(GOO_TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(PACKAGE_SRCS) $(GOO_COMPTIME_SRCS)
+GOO_OBJS = $(GOO_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
+
 # Runtime library
 RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # Runtime library must include every translation unit referenced by
@@ -184,8 +198,8 @@ goo: $(COMPILER)
 # for test runners. The test framework's header (test/test_framework.h) is
 # missing from include/, so building TEST_FRAMEWORK_OBJ fails; that breakage
 # belongs to task #33 and shouldn't gate compiler builds.
-$(COMPILER): $(SRC_OBJS) $(COMPILER_SRCS) | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(SRC_OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+$(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS) | $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(GOO_OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Runtime library
 runtime-lib: $(RUNTIME_LIB)
