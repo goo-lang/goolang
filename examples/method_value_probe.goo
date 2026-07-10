@@ -1,0 +1,95 @@
+// Method value probe (P3.6): `f := c.get` (a method selector in NON-call
+// position) must produce a callable func value — a receiver-carrying thunk,
+// not the arity-checked method-call path. Coverage:
+//   1. value-receiver bind + call: f() returns c.n at bind time.
+//   2. value-receiver snapshot semantics: mutating c AFTER the bind must be
+//      INVISIBLE through f — f() still returns the OLD value (Go copy
+//      semantics: the receiver was snapshotted, not aliased).
+//   3. pointer-receiver bind + mutation VISIBLE through the bound value
+//      (the env carries the pointer itself, not a copy).
+//   4. a method value with an argument (add(n int) int), passed the
+//      argument at call time — arity of the bound value is receiver-free.
+//   5. a method value passed as a callback parameter to another function
+//      and invoked there (the func value survives a call boundary).
+//   6. NAMED NON-STRUCT receiver (`type MyInt int` — named_int_method_probe
+//      territory): value-receiver bind snapshots, pointer-receiver bind
+//      mutates in place. Pins that the checker/codegen method-value arms
+//      cover the named-type method path, not just TYPE_STRUCT — the
+//      named-type lookup resolves through a DIFFERENT checker branch than
+//      struct methods and regressed independently once.
+package main
+
+import "fmt"
+
+type Counter struct {
+	n int
+}
+
+type MyInt int
+
+func (m MyInt) double() int {
+	return int(m) * 2
+}
+
+func (m *MyInt) bump() {
+	*m = *m + 1
+}
+
+func (c Counter) get() int {
+	return c.n
+}
+
+func (c Counter) add(k int) int {
+	return c.n + k
+}
+
+func (c *Counter) inc() {
+	c.n = c.n + 1
+}
+
+func callIt(f func() int) int {
+	return f()
+}
+
+func main() {
+	c := Counter{n: 5}
+
+	// 1: value-receiver bind + call.
+	f := c.get
+	fmt.Println(f()) // 5
+
+	// 2: mutate the SOURCE after binding — f must still see the snapshot.
+	c.n = 99
+	fmt.Println(f())   // 5 (unchanged: bound copy)
+	fmt.Println(c.get()) // 99 (direct call sees the live value)
+
+	// 3: pointer receiver — mutation through the bound value's pointer
+	// is visible via a second bound value on the SAME receiver.
+	pc := &Counter{n: 1}
+	incFn := pc.inc
+	incFn()
+	incFn()
+	fmt.Println(pc.n) // 3
+
+	// 4: method value with an argument.
+	c2 := Counter{n: 10}
+	addFn := c2.add
+	fmt.Println(addFn(7)) // 17
+
+	// 5: method value passed as a callback parameter.
+	c3 := Counter{n: 42}
+	getFn := c3.get
+	fmt.Println(callIt(getFn)) // 42
+
+	// 6: named non-struct receiver. Value receiver snapshots at bind;
+	// pointer receiver (auto-& on the addressable local) mutates in place.
+	var n MyInt = 21
+	dblFn := n.double
+	fmt.Println(dblFn()) // 42
+	n = 100
+	fmt.Println(dblFn()) // 42 (snapshot: bound before the reassignment)
+	bumpFn := n.bump
+	bumpFn()
+	bumpFn()
+	fmt.Println(int(n)) // 102
+}

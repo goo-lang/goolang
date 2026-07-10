@@ -703,6 +703,15 @@ LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const
 LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker,
                                     Type* fn_type, LLVMValueRef named_fn,
                                     const char* name);
+// P3.6 (method values): get-or-create the BOUND thunk for method `mangled_name`
+// (`<mangled_name>.__bound_thunk(env, args...) = <mangled_name>(<recv from
+// env>, args...)`) — `stripped_type` is the method value's own (receiver-
+// less) func type, `method_type` is the method's full signature (receiver
+// spliced as params[0]). See its definition (function_codegen.c) for the
+// env-cell contract the bind site (composite_codegen.c) must uphold.
+LLVMValueRef codegen_get_method_bound_thunk(CodeGenerator* codegen, Type* stripped_type,
+                                            Type* method_type, LLVMValueRef named_method_fn,
+                                            const char* mangled_name);
 
 // Map values ride an 8-byte runtime slot (i64). Convert a value of the
 // declared map value-type V to the slot (ptrtoint / zext-or-trunc) and back

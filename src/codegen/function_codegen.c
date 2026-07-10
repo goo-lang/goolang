@@ -316,6 +316,95 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 #endif
 }
 
+// P3.6 (method values): get-or-create the BOUND thunk for method `T__m`
+// (Goo type `method_type`, receiver spliced as params[0]; `stripped_type` is
+// the same signature minus that receiver — the method VALUE's own type,
+// already computed by the checker's value-position selector arm,
+// expression_checker.c): `<mangled>.__bound_thunk(env, args...) =
+// <mangled>(<recv loaded from env>, args...)`.
+//
+// Unlike codegen_get_func_thunk's env-IGNORING body (a named function
+// captures nothing), THIS thunk's whole purpose is to read the bound
+// receiver out of env — a goo_alloc'd heap cell built at bind time
+// (codegen_generate_selector_expr's method arm, composite_codegen.c) typed
+// EXACTLY as the receiver parameter itself (`T` for a value receiver, `*T`
+// for a pointer receiver — LLVM's opaque pointers make both a same-shaped
+// `ptr` load, so one code path here covers both; which one was stored is
+// entirely the bind site's concern, not this thunk's).
+//
+// Cached via LLVMGetNamedFunction on "<mangled>.__bound_thunk", idempotent —
+// mirrors codegen_get_func_thunk's "once per (function, module)" discipline,
+// scoped here to "once per (type, method)" since `mangled_name` already
+// encodes the receiver type (type_method_mangled_name).
+LLVMValueRef codegen_get_method_bound_thunk(CodeGenerator* codegen, Type* stripped_type,
+                                            Type* method_type, LLVMValueRef named_method_fn,
+                                            const char* mangled_name) {
+#if !LLVM_AVAILABLE
+    (void)stripped_type;
+    (void)method_type;
+    (void)named_method_fn;
+    (void)mangled_name;
+    return NULL;
+#else
+    if (!codegen || !stripped_type || !method_type || !named_method_fn || !mangled_name) return NULL;
+    if (method_type->kind != TYPE_FUNCTION || stripped_type->kind != TYPE_FUNCTION) return NULL;
+    if (method_type->data.function.param_count == 0) return NULL;  // no receiver: not a method
+
+    char thunk_name[300];
+    snprintf(thunk_name, sizeof(thunk_name), "%s.__bound_thunk", mangled_name);
+    LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, thunk_name);
+    if (existing) return existing;
+
+    LLVMTypeRef thunk_ty = codegen_get_funcval_call_type(codegen, stripped_type);
+    LLVMTypeRef method_llvm_ty = codegen_get_function_type(codegen, method_type);
+    if (!thunk_ty || !method_llvm_ty) return NULL;
+
+    LLVMValueRef thunk = LLVMAddFunction(codegen->module, thunk_name, thunk_ty);
+    LLVMSetLinkage(thunk, LLVMInternalLinkage);
+
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(codegen->context, thunk, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+
+    // Thunk param 0 is env; load the bound receiver back out of it, typed
+    // exactly as the method's own receiver parameter (see doc comment).
+    Type* recv_type = method_type->data.function.param_types[0];
+    LLVMTypeRef recv_llvm = codegen_type_to_llvm(codegen, recv_type);
+    if (!recv_llvm) {
+        if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        return NULL;
+    }
+    LLVMValueRef env_param = LLVMGetParam(thunk, 0);
+    LLVMValueRef recv_arg = LLVMBuildLoad2(codegen->builder, recv_llvm, env_param, "bound_recv");
+
+    // The wrapped method's real params start at thunk param index 1 — same
+    // shift as codegen_get_func_thunk, plus the receiver prepended.
+    size_t np = stripped_type->data.function.param_count;
+    LLVMValueRef* call_args = malloc(sizeof(LLVMValueRef) * (np + 1));
+    if (!call_args) {
+        if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        return NULL;
+    }
+    call_args[0] = recv_arg;
+    for (size_t i = 0; i < np; i++) call_args[i + 1] = LLVMGetParam(thunk, (unsigned)(i + 1));
+
+    LLVMTypeRef ret_llvm = LLVMGetReturnType(thunk_ty);
+    int is_void = LLVMGetTypeKind(ret_llvm) == LLVMVoidTypeKind;
+    LLVMValueRef call = LLVMBuildCall2(codegen->builder, method_llvm_ty, named_method_fn,
+                                       call_args, (unsigned)(np + 1), is_void ? "" : "bound_call");
+    free(call_args);
+
+    if (is_void) {
+        LLVMBuildRetVoid(codegen->builder);
+    } else {
+        LLVMBuildRet(codegen->builder, call);
+    }
+
+    if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    return thunk;
+#endif
+}
+
 // Closures Branch B, Task 1: emit a func literal `func(params) result {body}`
 // as its own LLVM function `__goo_lit_<n>` (module-unique via
 // codegen->func_lit_counter — see its doc comment in codegen.h) with the

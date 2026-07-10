@@ -1,0 +1,20 @@
+// method_value_arity_reject (P3.6): a method value binds the receiver at
+// `f := c.get` — the receiver is no longer a callable argument. `f(1)` must
+// be rejected as a wrong-arg-count call against the RECEIVER-STRIPPED
+// signature (0 declared params), not silently accepted or checked against
+// the method's raw (receiver-inclusive) signature.
+package main
+
+type Counter struct {
+	n int
+}
+
+func (c Counter) get() int {
+	return c.n
+}
+
+func main() {
+	c := Counter{n: 5}
+	f := c.get
+	_ = f(1)
+}
