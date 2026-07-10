@@ -38,7 +38,9 @@ is deferred).
 All probe-gated, verified locally (binary diff + `opt --passes=verify`), wired
 into `make verify` and `.github/workflows/tests.yml`.
 
-- **8a — scheduler lifecycle (`go-probe`).** `goo_scheduler_wait()`
+- **8a — scheduler lifecycle (`go-probe`).** [SUPERSEDED by P3.3, 2026-07-10:
+  the barrier is no longer emitted — see the banner on "Main-exit semantics"
+  below.] `goo_scheduler_wait()`
   run-to-completion barrier (`src/runtime/concurrency.c`) emitted before
   generated `main` returns (`src/codegen/function_codegen.c`), so goroutine side
   effects are observable before exit. The scheduler is lazily created by the

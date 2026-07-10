@@ -1,0 +1,17 @@
+// select_send_closed_abort_probe (P3.1 rider coverage): a select SEND case
+// on a closed channel panics "send on closed channel", exactly as in Go —
+// select's poll reaches goo_chan_try_send, whose closed check panics
+// rather than reporting not-ready (a not-ready report would make select
+// spin forever on a case Go defines as a panic).
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 1)
+	close(ch)
+	select {
+	case ch <- 1:
+		fmt.Println("sent") // never reached: the send case panics
+	}
+}

@@ -471,9 +471,22 @@ supervised go handle_connection(conn)
 `main` returns, the process exits immediately — running goroutines are
 abandoned, exactly as in Go. A program that needs goroutine side effects to
 complete must synchronize before returning (channel handshake, or
-`sync.WaitGroup` once available). Blocking in `main` with no goroutine able to
-make progress aborts with Go's `fatal error: all goroutines are asleep -
-deadlock!` (exit code 2).
+`sync.WaitGroup` once available).
+
+**Deadlock detection** (partial in v1): when `main` blocks and no goroutine
+exists that could ever wake it, the runtime aborts with Go's `fatal error:
+all goroutines are asleep - deadlock!` (exit code 2), locked by
+`examples/deadlock_probe.goo`. **Known v1 divergence from Go**: if `main`
+blocks while spawned goroutines are themselves all permanently blocked, the
+deadlock is NOT detected and the program hangs — Go aborts here because its
+`main` is a goroutine, while Goo's `main` is an OS thread (structural
+limitation, documented at the detector in `src/runtime/concurrency.c`).
+
+**Nil channels** (Go parity, locked by `examples/nil_chan_deadlock_probe.goo`):
+send and receive on a nil channel block forever (never a silent zero-value
+success); in a select, a nil-channel case is never ready. `close(nil)` panics
+`close of nil channel`. A main-only program blocking on a nil channel gets
+the deadlock abort above.
 
 ### Channels
 

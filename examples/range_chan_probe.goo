@@ -3,9 +3,10 @@
 // drained — no deadlock, no explicit break needed. A goroutine producer
 // sends three values on a buffered channel then close()s it; main ranges
 // over it and prints each value, then a sentinel line proving the loop
-// actually terminated (rather than main exiting first via the Go-parity
-// main-exit semantics landing in P3.3 — that risk doesn't exist yet on
-// this branch, but the sentinel pins the loop's own exit regardless).
+// actually terminated on close — under Go-parity main-exit semantics
+// (P3.3, same branch) the range loop in main is itself the required
+// synchronization; the sentinel pins that the loop exited via the
+// closed-channel status, not by the process ending.
 //
 // The second loop exercises the bare `for range ch` form (no iteration
 // variables) over a SEPARATE channel that is closed immediately with

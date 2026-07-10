@@ -1,8 +1,10 @@
 // P1.10 reject: `case v, ok := <-ch:` — comma-ok select binding. v1 scope
-// cut: `ok` is meaningless without close() (P3.1) — hardcoding it true
-// would be a silent lie about a channel that can never report "closed".
-// Grammar-accepted (so the diagnostic can be specific and positioned)
-// but ALWAYS rejected in the type checker.
+// cut (reworded after close() shipped in P3.1): the remaining gap is
+// plumbing per-case ok status through goo_select_case_t and the select
+// lowering — rider R1 in the P3 sub-A design doc. Grammar-accepted (so
+// the diagnostic can be specific and positioned) but rejected in the
+// type checker, which points at the workaround: a comma-ok receive
+// outside select.
 package main
 
 func main() {

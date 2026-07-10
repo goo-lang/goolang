@@ -164,10 +164,30 @@ void goo_chan_free(goo_channel_t* ch) {
     goo_free(ch);
 }
 
+// Go parity: send/receive on a NIL channel blocks forever (Go spec,
+// "Channel types" / range clause) — it must never look like a closed
+// channel (which reports ready with a zero value). Blocking here routes
+// through goo_sched_block_begin, so the main-only shape (`var ch chan
+// int; <-ch` with no goroutines) gets Go's "all goroutines are asleep -
+// deadlock!" abort from the detector's instant check; with live
+// goroutines it parks forever, which is the detector's documented
+// structural gap (concurrency.c), same as any other blocked-main case.
+// select is unaffected: goo_chan_try_send/try_recv keep their own nil
+// guard reporting "not ready", matching Go's nil-case-never-fires rule.
+static void goo_chan_nil_block(void) {
+    goo_sched_block_begin();
+    for (;;) {
+        goo_platform_sleep_ns(1000000000);  // 1s; nothing can ever wake this.
+    }
+}
+
 // Channel send operation
 int goo_chan_send(goo_channel_t* ch, void* data) {
-    if (!ch || !data) {
-        return 0;  // Failed
+    if (!data) {
+        return 0;  // Internal misuse guard; unreachable from generated code.
+    }
+    if (!ch) {
+        goo_chan_nil_block();
     }
     
     goo_mutex_lock(ch->mutex);
@@ -362,10 +382,13 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
 
 // Channel receive operation
 int goo_chan_recv(goo_channel_t* ch, void* data) {
-    if (!ch || !data) {
-        return 0;  // Failed
+    if (!data) {
+        return 0;  // Internal misuse guard; unreachable from generated code.
     }
-    
+    if (!ch) {
+        goo_chan_nil_block();
+    }
+
     goo_mutex_lock(ch->mutex);
     
     // Handle different channel patterns
