@@ -1,0 +1,47 @@
+package main
+
+// P4.2/B1: qualified type names in type position (var/param/return/struct
+// field/slice-element), against the goostd/shapes source package.
+// Construction goes through shapes.NewPoint (a package constructor
+// function) — qualified composite literals (`shapes.Point{...}`) are out
+// of B1's scope (see the P4 sub-project B design doc, rider B4).
+
+import (
+	"fmt"
+	"shapes"
+)
+
+type Line struct {
+	start shapes.Point
+	end   shapes.Point
+}
+
+func makeLine(a shapes.Point, b shapes.Point) Line {
+	var l Line
+	l.start = a
+	l.end = b
+	return l
+}
+
+func midX(pts []shapes.Point) int {
+	sum := 0
+	for _, p := range pts {
+		sum = sum + p.X
+	}
+	return sum
+}
+
+func main() {
+	var p shapes.Point
+	p = shapes.NewPoint(3, 4)
+	fmt.Println(p.X)
+	fmt.Println(p.Y)
+
+	q := shapes.NewPoint(10, 20)
+	l := makeLine(p, q)
+	fmt.Println(l.start.X)
+	fmt.Println(l.end.Y)
+
+	pts := []shapes.Point{p, q}
+	fmt.Println(midX(pts))
+}

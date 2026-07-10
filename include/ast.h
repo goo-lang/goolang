@@ -660,6 +660,12 @@ typedef struct {
 typedef struct {
     ASTNode base;
     char* name;
+    // P4.2/B1: package qualifier for `pkg.Type` (NULL for an unqualified
+    // type name). Tail-appended per the no-header-deps convention (see
+    // .claude/skills/goo-grammar/references/workarounds.md #8). Every mint
+    // site (parser.y's type_name arms, the embedded-field helper,
+    // ast_type_clone) must initialize/clone this explicitly.
+    char* package;
 } BasicTypeNode;
 
 // Array type

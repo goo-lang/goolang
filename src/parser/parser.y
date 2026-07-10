@@ -34,6 +34,7 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     basic->base.node_type = NULL;
     basic->base.next = NULL;
     basic->name = strdup(ident->name);
+    basic->package = NULL;  // embedding is always a bare name (B1 scope: no qualified embeds)
     ASTNode* ty = (ASTNode*)basic;
     if (is_pointer) {
         PointerTypeNode* ptr = (PointerTypeNode*)malloc(sizeof(PointerTypeNode));
@@ -2011,8 +2012,10 @@ call_expr:
     // interprets this flag; codegen's variadic pack builder (call_codegen.c)
     // reads it to bypass the per-element pack and pass the operand's slice
     // value straight through (Go aliasing semantics). Bison tripwire: this
-    // arm must leave the conflict count at EXACTLY 81 shift/reduce + 256
-    // reduce/reduce (verified empirically before commit).
+    // arm must leave the conflict count unchanged — the exact expected count
+    // is tracked in scripts/grammar-tripwire.sh (EXPECTED_SR/EXPECTED_RR),
+    // the single source of truth; see .claude/skills/goo-grammar/ for the
+    // procedure and references/conflict-ledger.md for the baseline history.
     | primary_expr LPAREN expression_list ELLIPSIS RPAREN {
         $$ = call_expr_new($1, $3, 1);
     }
@@ -2531,10 +2534,31 @@ type_name:
         basic->base.pos = get_current_position();
         basic->base.node_type = NULL;
         basic->base.next = NULL;
-        
+
         IdentifierNode* ident = (IdentifierNode*)$1;
         basic->name = strdup(ident->name);
+        basic->package = NULL;
         ast_node_free($1);
+        $$ = (ASTNode*)basic;
+    }
+    // P4.2/B1: qualified type name `pkg.Type` (var/param/return/field/elem
+    // positions only — NOT composite literals, see the LBRACE_BODY scope
+    // cut in the goo-grammar skill / P4 sub-B design doc rider B4).
+    // Grammar-only: the checker (type_from_ast's AST_BASIC_TYPE arm)
+    // resolves `package` against the imported package's exports scope.
+    | identifier DOT identifier {
+        BasicTypeNode* basic = (BasicTypeNode*)malloc(sizeof(BasicTypeNode));
+        basic->base.type = AST_BASIC_TYPE;
+        basic->base.pos = get_current_position();
+        basic->base.node_type = NULL;
+        basic->base.next = NULL;
+
+        IdentifierNode* pkg_ident = (IdentifierNode*)$1;
+        IdentifierNode* name_ident = (IdentifierNode*)$3;
+        basic->package = strdup(pkg_ident->name);
+        basic->name = strdup(name_ident->name);
+        ast_node_free($1);
+        ast_node_free($3);
         $$ = (ASTNode*)basic;
     }
     ;
