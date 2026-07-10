@@ -55,7 +55,7 @@ typedef struct CompilerOptions {
 } CompilerOptions;
 
 // Forward declarations
-static void print_usage(const char* program_name);
+static void print_usage(FILE* out, const char* program_name);
 static void print_version(void);
 static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode);
 static bool compile_file(const char* filename, CompilerOptions* options);
@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
     GooMode mode = GOO_MODE_LEGACY;
     if (argc >= 2) {
         if (strcmp(argv[1], "help") == 0) {
-            print_usage(argv[0]);
+            print_usage(stdout, argv[0]);
             return 0;
         }
         if (strcmp(argv[1], "version") == 0) {
@@ -131,27 +131,29 @@ int main(int argc, char* argv[]) {
     return exit_code;
 }
 
-static void print_usage(const char* program_name) {
-    printf("Usage: %s [options] <input-file>\n", program_name);
-    printf("       %s build [options] <input-file>\n", program_name);
-    printf("       %s run [options] <input-file> [-- <program args...>]\n", program_name);
-    printf("       %s help | version\n", program_name);
-    printf("Subcommands:\n");
-    printf("  build                    Compile; executable named <stem> in the current directory\n");
-    printf("  run                      Compile to a temporary binary, run it (forwarding args\n");
-    printf("                           after --), exit with the program's exit code\n");
-    printf("Options:\n");
-    printf("  -o, --output <file>      Output file name (default: <input>.out, or <input>.ll with --emit-llvm)\n");
-    printf("  -O, --optimize <level>   Optimization level (0-3, default: 0)\n");
-    printf("  -g, --debug              Generate debug information\n");
-    printf("  -v, --verbose            Verbose output\n");
-    printf("  -r, --run                Run the program after compilation (exit code = program's)\n");
-    printf("  -l, --link <lib>         Link with library\n");
-    printf("  --emit-llvm              Emit LLVM IR instead of executable\n");
-    printf("  --emit-ast               Emit AST (for debugging)\n");
-    printf("  --emit-tokens            Emit tokens (for debugging)\n");
-    printf("  -h, --help               Show this help message\n");
-    printf("  --version                Show version information\n");
+// P5.4: usage goes to stdout when explicitly requested (help subcommand,
+// -h) and to stderr on error paths — stdout carries only requested output.
+static void print_usage(FILE* out, const char* program_name) {
+    fprintf(out, "Usage: %s [options] <input-file>\n", program_name);
+    fprintf(out, "       %s build [options] <input-file>\n", program_name);
+    fprintf(out, "       %s run [options] <input-file> [-- <program args...>]\n", program_name);
+    fprintf(out, "       %s help | version\n", program_name);
+    fprintf(out, "Subcommands:\n");
+    fprintf(out, "  build                    Compile; executable named <stem> in the current directory\n");
+    fprintf(out, "  run                      Compile to a temporary binary, run it (forwarding args\n");
+    fprintf(out, "                           after --), exit with the program's exit code\n");
+    fprintf(out, "Options:\n");
+    fprintf(out, "  -o, --output <file>      Output file name (default: <input>.out, or <input>.ll with --emit-llvm)\n");
+    fprintf(out, "  -O, --optimize <level>   Optimization level (0-3, default: 0)\n");
+    fprintf(out, "  -g, --debug              Generate debug information\n");
+    fprintf(out, "  -v, --verbose            Verbose output\n");
+    fprintf(out, "  -r, --run                Run the program after compilation (exit code = program's)\n");
+    fprintf(out, "  -l, --link <lib>         Link with library\n");
+    fprintf(out, "  --emit-llvm              Emit LLVM IR instead of executable\n");
+    fprintf(out, "  --emit-ast               Emit AST (for debugging)\n");
+    fprintf(out, "  --emit-tokens            Emit tokens (for debugging)\n");
+    fprintf(out, "  -h, --help               Show this help message\n");
+    fprintf(out, "  --version                Show version information\n");
 }
 
 static void print_version(void) {
@@ -271,12 +273,12 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
                 break;
                 
             case 'h':
-                print_usage(argv[0]);
+                print_usage(stdout, argv[0]);
                 free(options);
                 exit(0);
-                
+
             default:
-                print_usage(argv[0]);
+                print_usage(stderr, argv[0]);
                 free(options);
                 return NULL;
         }
@@ -285,7 +287,7 @@ static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     // Check for input file
     if (optind >= argc) {
         fprintf(stderr, "Error: No input file specified\n");
-        print_usage(argv[0]);
+        print_usage(stderr, argv[0]);
         free(options);
         return NULL;
     }

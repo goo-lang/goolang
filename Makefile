@@ -3774,8 +3774,15 @@ TEST_REFERENCE_MANAGER = $(BINDIR)/test_reference_manager
 TEST_HARDWARE_AWARE = $(BINDIR)/test_hardware_aware
 
 # Tests
-test: $(TEST_RUNNER)
+test: $(TEST_RUNNER) test-cli
 	./$(TEST_RUNNER)
+
+# P5.4: table-driven CLI exit-code and stderr discipline audit. Success=0,
+# parse/type error=1, link failure nonzero, run-failure propagation, all
+# error text on stderr (usage included), stdout only for requested output.
+.PHONY: test-cli
+test-cli: $(COMPILER) $(RUNTIME_LIB)
+	@bash tests/cli/cli_test.sh "$(COMPILER)"
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
