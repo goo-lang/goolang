@@ -8,7 +8,9 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <libgen.h>
+#include <errno.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include "lexer.h"
 #include "parser.h"
@@ -46,7 +48,9 @@ static CompilerOptions* parse_arguments(int argc, char* argv[]);
 static bool compile_file(const char* filename, CompilerOptions* options);
 static char* read_file(const char* filename);
 static bool write_file(const char* filename, const char* content);
-static char* get_output_filename(const char* input_file, const char* output_file);
+static char* get_output_filename(const char* input_file, const char* output_file,
+                                 const char* ext);
+static int run_program(const char* path, bool verbose);
 
 int main(int argc, char* argv[]) {
     // Parse command line arguments
@@ -60,7 +64,14 @@ int main(int argc, char* argv[]) {
     
     // Compile the input file
     bool success = compile_file(options->input_file, options);
-    
+
+    // P5.1: -r runs the compiled program and goo's exit code becomes the
+    // program's (compile errors keep exiting 1, before any run is attempted).
+    int exit_code = success ? 0 : 1;
+    if (success && options->run_after_compile && !options->emit_llvm_ir) {
+        exit_code = run_program(options->output_file, options->verbose);
+    }
+
     // Cleanup
     free(options->output_file);
     if (options->link_libs) {
@@ -70,20 +81,20 @@ int main(int argc, char* argv[]) {
         free(options->link_libs);
     }
     free(options);
-    
+
     // error_cleanup(); // TODO: Update to use new error API
-    
-    return success ? 0 : 1;
+
+    return exit_code;
 }
 
 static void print_usage(const char* program_name) {
     printf("Usage: %s [options] <input-file>\n", program_name);
     printf("Options:\n");
-    printf("  -o, --output <file>      Output file name (default: <input>.out)\n");
+    printf("  -o, --output <file>      Output file name (default: <input>.out, or <input>.ll with --emit-llvm)\n");
     printf("  -O, --optimize <level>   Optimization level (0-3, default: 0)\n");
     printf("  -g, --debug              Generate debug information\n");
     printf("  -v, --verbose            Verbose output\n");
-    printf("  -r, --run                Run the program after compilation\n");
+    printf("  -r, --run                Run the program after compilation (exit code = program's)\n");
     printf("  -l, --link <lib>         Link with library\n");
     printf("  --emit-llvm              Emit LLVM IR instead of executable\n");
     printf("  --emit-ast               Emit AST (for debugging)\n");
@@ -204,9 +215,11 @@ static CompilerOptions* parse_arguments(int argc, char* argv[]) {
     
     options->input_file = argv[optind];
     
-    // Generate default output filename if not specified
+    // Generate default output filename if not specified. --emit-llvm writes
+    // IR only (P5.2), so its default is <stem>.ll, not the executable name.
     if (!options->output_file) {
-        options->output_file = get_output_filename(options->input_file, NULL);
+        options->output_file = get_output_filename(options->input_file, NULL,
+                                                   options->emit_llvm_ir ? ".ll" : ".out");
     }
     
     return options;
@@ -252,25 +265,25 @@ static bool write_file(const char* filename, const char* content) {
     return true;
 }
 
-static char* get_output_filename(const char* input_file, const char* output_file) {
+static char* get_output_filename(const char* input_file, const char* output_file,
+                                 const char* ext) {
     if (output_file) {
         return strdup(output_file);
     }
-    
+
     // Generate default output name
     char* base = strdup(input_file);
     char* dot = strrchr(base, '.');
     // Accept both Goo's own `.goo` and real Go's `.go` so the compiler can be
     // pointed at actual Go source files (Go-compatibility). Strip either so
-    // `foo.go`/`foo.goo` default to the `foo.out` executable name.
+    // `foo.go`/`foo.goo` default to `foo<ext>` (".out" executable, ".ll" IR).
     if (dot && (strcmp(dot, ".goo") == 0 || strcmp(dot, ".go") == 0)) {
         *dot = '\0';
     }
-    
-    // Append .out for executable
-    char* result = malloc(strlen(base) + 5);
-    sprintf(result, "%s.out", base);
-    
+
+    char* result = malloc(strlen(base) + strlen(ext) + 1);
+    sprintf(result, "%s%s", base, ext);
+
     free(base);
     return result;
 }
@@ -1136,19 +1149,22 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         return false;
     }
 
-    // Emit LLVM IR if requested
+    // P5.2: --emit-llvm writes the textual IR to the output path itself and
+    // produces NO executable (pre-fix, an always-true conditional wrote the
+    // ELF to the -o path and the IR to <path>.ll).
     if (options->emit_llvm_ir) {
-        char* ir_filename = malloc(strlen(options->output_file) + 4);
-        sprintf(ir_filename, "%s.ll", options->output_file);
-        codegen_emit_llvm_ir(codegen, ir_filename);
-        if (options->verbose) {
-            printf("LLVM IR written to: %s\n", ir_filename);
+        if (!codegen_emit_llvm_ir(codegen, options->output_file)) {
+            codegen_free(codegen);
+            type_checker_free(type_checker);
+            ast_node_free(ast);
+            lexer_free(lexer);
+            free(source);
+            return false;
         }
-        free(ir_filename);
-    }
-    
-    // Generate executable
-    if (!options->emit_llvm_ir || options->emit_llvm_ir) {
+        if (options->verbose) {
+            printf("LLVM IR written to: %s\n", options->output_file);
+        }
+    } else {
         if (!codegen_emit_executable(codegen, options->output_file)) {
             codegen_free(codegen);
             type_checker_free(type_checker);
@@ -1157,15 +1173,15 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
             free(source);
             return false;
         }
-        
+
         // Make executable
         chmod(options->output_file, 0755);
-        
+
         if (options->verbose) {
             printf("Executable written to: %s\n", options->output_file);
         }
     }
-    
+
     codegen_free(codegen);
 #else
     // Fallback: interpreter mode
@@ -1183,23 +1199,52 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     ast_node_free(ast);
     lexer_free(lexer);
     free(source);
-    
-    // Run program if requested
-    if (options->run_after_compile && !options->emit_llvm_ir) {
-        if (options->verbose) {
-            printf("\nRunning %s...\n", options->output_file);
-            printf("================\n");
-        }
-        
-        char command[1024];
-        snprintf(command, sizeof(command), "./%s", options->output_file);
-        int result = system(command);
-        
-        if (options->verbose) {
-            printf("================\n");
-            printf("Exit code: %d\n", WEXITSTATUS(result));
-        }
-    }
-    
+
     return true;
+}
+
+// P5.1: run the compiled program via fork/execv — no shell, so paths with
+// spaces/metacharacters are safe, and execv resolves the path against the
+// cwd directly (absolute and relative both work, no "./" prefix needed).
+// Returns the child's exit code; 128+signal if it was killed (the shell
+// convention, so `goo -r` composes with scripts); 127 if it could not be
+// executed at all (reported on stderr — never a silent success).
+static int run_program(const char* path, bool verbose) {
+    if (verbose) {
+        printf("\nRunning %s...\n", path);
+        printf("================\n");
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "Error: cannot fork to run %s: %s\n", path, strerror(errno));
+        return 127;
+    }
+    if (pid == 0) {
+        char* child_argv[] = { (char*)path, NULL };
+        execv(path, child_argv);
+        fprintf(stderr, "Error: cannot execute %s: %s\n", path, strerror(errno));
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "Error: waitpid failed for %s: %s\n", path, strerror(errno));
+        return 127;
+    }
+
+    int exit_code;
+    if (WIFEXITED(status)) {
+        exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        exit_code = 128 + WTERMSIG(status);
+    } else {
+        exit_code = 127;
+    }
+
+    if (verbose) {
+        printf("================\n");
+        printf("Exit code: %d\n", exit_code);
+    }
+    return exit_code;
 }
