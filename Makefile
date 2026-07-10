@@ -2495,6 +2495,7 @@ VERIFY_ALL_DEPS := \
     arena-valgrind-probe \
     arena-rss-probe \
     test-golden \
+    test-golden-o2 \
     test-golden-reject \
     spmd-bench-probe
 
@@ -3461,10 +3462,20 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden test-golden-reject
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden test-golden-o2 test-golden-reject
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
+
+# Phase 3 exit gate (P3.10): the ENTIRE golden suite must also be green
+# with real optimization passes on — a fixture that passes at -O0 but
+# fails here is a miscompile-under-optimization (this exact gate caught
+# the shift-width poison bug and the pre-datalayout pass-ordering bug
+# when -O was first wired). GOOFLAGS is run_golden.sh's compile-flags
+# passthrough.
+test-golden-o2: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== test-golden-o2: golden suite at -O2 (miscompile-under-optimization gate) ==="
+	@COMPILER="$(COMPILER)" GOOFLAGS="-O2" bash scripts/run_golden.sh
 
 # P0.9: data-driven compile-REJECT golden suite — the negative-space sibling
 # of test-golden. Every tests/golden/reject/<name>.goo must fail to compile;
