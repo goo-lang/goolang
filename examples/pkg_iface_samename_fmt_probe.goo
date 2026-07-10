@@ -1,0 +1,67 @@
+// pkg-iface-samename-fmt-probe (P4-C rider C6): 8ed66c9 package-qualified
+// the goo.vtable/goo.thunk cache keys but left the SIBLING emitters in the
+// same file — codegen_get_or_emit_type_fmt (goo.fmt.<T>) and
+// codegen_get_or_emit_type_desc (goo.typedesc.<T>) — bare-name keyed. Two
+// distinct types sharing a bare name across packages, both boxed into `any`
+// and %v-formatted, silently shared one cached formatter: first-boxer-wins.
+//
+// Rect/Rect (struct pair): a REGRESSION GUARD, not a bug reproduction. Goo's
+// %v for a non-scalar interface-boxed value is a KNOWN v1 limitation — it
+// prints the bare type name ("Rect"), not Go's `{fields}` — unrelated to
+// this rider and unchanged by the fix. Both same-named Rects print "Rect"
+// identically whether or not the aliasing bug is fixed, because the v1
+// struct fallback never reads the boxed data. This pair exists to pin that
+// the fix does NOT start leaking the owning package into the visible text
+// (real Go's %v never prints a package-qualified name either) even though
+// the underlying SYMBOL keys become package-qualified.
+//
+// Code/Stamp (scalar pairs): the ACTUAL bug reproduction. Scalar %v
+// formatters DO read the boxed value, so a shared, wrongly-typed loader
+// produces a deterministically WRONG number — not just an identity mixup.
+// Code is kinds' int32 (boxed first) vs main's int64 (boxed second); Stamp
+// is main's int32 (boxed first) vs kinds' int64 (boxed second) — covering
+// BOTH boxing orders, since first-boxer-wins bugs are order-sensitive.
+// Before the fix: Code's second line prints 42 (int64 4294967338's low 32
+// bits, reused from kinds' cached int32 loader) instead of 4294967338;
+// Stamp's second line prints 110 (int64 4294967406's low 32 bits, reused
+// from main's cached int32 loader) instead of 4294967406.
+package main
+
+import "fmt"
+import "kinds"
+
+type Rect struct {
+	W int
+	H int
+}
+
+func (r Rect) Area() int {
+	return r.W + r.H
+}
+
+type Code int64
+type Stamp int32
+
+func main() {
+	var s any
+	s = kinds.NewRect(3, 5)
+	fmt.Println(s) // kinds' Rect, boxed first
+
+	s = Rect{W: 30, H: 50}
+	fmt.Println(s) // main's Rect, boxed second
+
+	var a any
+	a = kinds.NewCode()
+	fmt.Println(a) // kinds' Code (int32=7), boxed first
+
+	var c Code = 4294967338
+	a = c
+	fmt.Println(a) // main's Code (int64), boxed second
+
+	var st Stamp = 11
+	a = st
+	fmt.Println(a) // main's Stamp (int32=11), boxed first
+
+	a = kinds.NewStamp()
+	fmt.Println(a) // kinds' Stamp (int64), boxed second
+}

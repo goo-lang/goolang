@@ -276,9 +276,23 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
 
     const char* cname = type_receiver_name(concrete);
     if (!cname) cname = type_to_string(concrete);
+
+    // P4-C rider (C6): same struct-name-interning hazard class as 8ed66c9's
+    // vtable/thunk fix — qualify the cache-key SYMBOL with the owning
+    // package so a same-named type from another package (or main) can't
+    // silently reuse this formatter (first-boxer-wins). Purely a cache-key
+    // choice: the fallback branch's user-visible type-name TEXT below stays
+    // the bare `cname` — Go's %v never prints a package-qualified name.
+    Package* fmt_owner = type_receiver_owner_package(concrete);
+    char qcname[192];
+    if (fmt_owner && fmt_owner->name) {
+        snprintf(qcname, sizeof(qcname), "%s__%s", fmt_owner->name, cname);
+    } else {
+        snprintf(qcname, sizeof(qcname), "%s", cname);
+    }
     char fname[256];
-    if (pointer_form) snprintf(fname, sizeof(fname), "goo.fmt.$ptr$%s", cname);
-    else              snprintf(fname, sizeof(fname), "goo.fmt.%s", cname);
+    if (pointer_form) snprintf(fname, sizeof(fname), "goo.fmt.$ptr$%s", qcname);
+    else              snprintf(fname, sizeof(fname), "goo.fmt.%s", qcname);
     LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, fname);
     if (existing) return existing;
 
@@ -380,8 +394,23 @@ LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* 
     char gname[256];
     const char* cname = type_receiver_name(concrete);
     if (!cname) cname = type_to_string(concrete);
-    if (pointer_form) snprintf(gname, sizeof(gname), "goo.typedesc.$ptr$%s", cname);
-    else              snprintf(gname, sizeof(gname), "goo.typedesc.%s", cname);
+
+    // P4-C rider (C6): same cache-key qualification as
+    // codegen_get_or_emit_type_fmt above and 8ed66c9's vtable/thunk fix —
+    // the global's SYMBOL is qualified with the owning package; the
+    // type_name FIELD baked below (tname) stays the bare `cname` for Go
+    // parity (%v/%T never print a package-qualified name for the value
+    // itself — only reflection APIs like reflect.Type.String() do, which
+    // Goo doesn't implement).
+    Package* desc_owner = type_receiver_owner_package(concrete);
+    char qcname[192];
+    if (desc_owner && desc_owner->name) {
+        snprintf(qcname, sizeof(qcname), "%s__%s", desc_owner->name, cname);
+    } else {
+        snprintf(qcname, sizeof(qcname), "%s", cname);
+    }
+    if (pointer_form) snprintf(gname, sizeof(gname), "goo.typedesc.$ptr$%s", qcname);
+    else              snprintf(gname, sizeof(gname), "goo.typedesc.%s", qcname);
     LLVMValueRef existing = LLVMGetNamedGlobal(codegen->module, gname);
     if (existing) return existing;
 
