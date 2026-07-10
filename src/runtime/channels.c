@@ -542,10 +542,24 @@ int goo_chan_try_recv(goo_channel_t* ch, void* data) {
         return 1;  // Success
     }
 
-    // This return-0 covers both "nothing buffered yet" and "closed and
-    // drained" — try_recv has no separate signal for the two, so the
-    // zero-value contract (see goo_chan_recv above) is applied
-    // unconditionally here rather than only on the closed case.
+    // Go select semantics: a receive on a CLOSED channel is immediately
+    // READY and yields the element zero value — checked only after the
+    // buffered-data branch above, so pending values drain before the
+    // closed state reports ready (Go's order). Without this, goo_select's
+    // poll loop treated closed+drained as not-ready and busy-spun forever
+    // (unreachable before close() shipped in P3.1, a user-visible hang
+    // after). The comma-ok distinction is not lost: select's `v, ok :=`
+    // form is rejected at typecheck in v1, and every other consumer goes
+    // through goo_chan_recv, which signals closed via its status return.
+    if (ch->closed) {
+        memset(data, 0, ch->elem_size);
+        goo_mutex_unlock(ch->mutex);
+        return 1;  // Ready: zero value from a closed channel.
+    }
+
+    // Nothing buffered and not closed — a plain would-block. The
+    // zero-value memset keeps the out-buffer deterministic for callers
+    // that load it regardless of status (see goo_chan_recv above).
     memset(data, 0, ch->elem_size);
     goo_mutex_unlock(ch->mutex);
     return 0;  // Would block

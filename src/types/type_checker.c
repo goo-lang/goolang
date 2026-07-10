@@ -3464,12 +3464,15 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
             // byte-identical for every case this arc's fixtures already
             // exercise (bind_name == NULL, is_declare == 0 for all of them).
             if (sc->is_declare == -1) {
-                // v1 scope cut: `ok` is meaningless without close() (P3.1) —
-                // hardcoding it true would be a silent lie about a channel
-                // that can never report "closed". Reject unconditionally.
+                // v1 scope cut (reworded after close() shipped in P3.1):
+                // plumbing per-case ok status through goo_select_case_t and
+                // the select lowering is deferred — rider R1 in the P3
+                // sub-A design doc. The single-value form is Go-correct on
+                // a closed channel (fires with the zero value), so the
+                // workaround is a comma-ok receive outside select.
                 type_error(checker, case_node->pos,
-                           "select case 'v, ok :=' binding requires close(); "
-                           "not supported in v1");
+                           "select case 'v, ok :=' binding is not supported in v1; "
+                           "use a comma-ok receive outside select to detect closure");
                 ok = 0;
             } else if (sc->bind_name) {
                 // The grammar accepts any `expression` after `:=`/`=` (kept

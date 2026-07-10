@@ -1,1 +1,1 @@
-select case 'v, ok :=' binding requires close(); not supported in v1
+select case 'v, ok :=' binding is not supported in v1; use a comma-ok receive outside select to detect closure
