@@ -751,7 +751,13 @@ GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq) {
 }
 
 void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v) {
-    if (!m) return;
+    // Go parity (P3.9, user-decided): writing to a nil map panics — unlike
+    // every read-shaped op below (get/get_ok/len/delete/iter), which stay
+    // NULL-tolerant and zero-value/no-op on purpose. Compound assign
+    // (m[k]+=1) routes get-then-set, so this single guard covers both direct
+    // and compound writes without touching codegen. Message is Go's exact
+    // wording (see nil_map_write_abort_probe).
+    if (!m) goo_panic("assignment to entry in nil map");
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         if (goo_map_key_eq(m, e->key, k)) { e->value = v; return; }

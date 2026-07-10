@@ -1,0 +1,22 @@
+// nil_map_delete_range_probe (P3.9): rounds out nil_map_read_probe's read-
+// side coverage (index read/comma-ok/len/nil-compare, P2.2 T2) with the two
+// remaining Go-parity read-shaped ops on a nil map: delete is a no-op
+// (doesn't crash), and `for range` runs zero iterations. Only WRITE
+// (nil_map_write_abort_probe) panics — these guards in goo_map_delete_sv /
+// goo_map_iter_init_sv (runtime.c) are deliberately left untouched by C1.
+package main
+
+import "fmt"
+
+func main() {
+	var m map[string]int
+
+	delete(m, "x") // no-op, must not crash
+	fmt.Println(len(m))
+
+	count := 0
+	for range m {
+		count++
+	}
+	fmt.Println(count)
+}
