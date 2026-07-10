@@ -54,6 +54,13 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
 static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, TypeChecker* checker,
                                                      ASTNode* expr, CallExprNode* call,
                                                      SelectorExprNode* msel, Type* recv_type);
+
+// P4.6 (packages-C, C1): lower a time.Time method call (UnixNano is the only
+// one) directly to a field extract — see its definition (below
+// codegen_generate_sync_method_call) for the full rationale.
+static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type);
 #endif
 
 #if LLVM_AVAILABLE
@@ -380,6 +387,36 @@ static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, Type
 
     LLVMBuildCall2(codegen->builder, fn_type, fn, args, param_count, "");
     return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+}
+
+// P4.6 (packages-C, C1): time.Time's only method. UnixNano is a VALUE
+// receiver (Go: `func (t Time) UnixNano() int64`) — unlike every sync
+// method (always a pointer receiver mutating shared state), Time is an
+// immutable value type, so this is a plain field EXTRACT: no runtime call,
+// no addressability requirement (a call-result rvalue like
+// `time.Now().UnixNano()` works with no address to take).
+static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type) {
+    (void)call;
+    const char* tn = type_receiver_name(recv_type);
+    if (!tn || strcmp(tn, "Time") != 0 || strcmp(msel->selector, "UnixNano") != 0) {
+        codegen_error(codegen, expr->pos, "internal: unknown time method '%s' on %s",
+                      msel->selector, tn ? tn : "?");
+        return NULL;
+    }
+
+    ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
+    if (!rv) return NULL;
+    LLVMValueRef recv_val = rv->llvm_value;
+    if (rv->is_lvalue && rv->goo_type) {
+        LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
+        if (rt) recv_val = LLVMBuildLoad2(codegen->builder, rt, recv_val, "time.recv");
+    }
+    value_info_free(rv);
+
+    LLVMValueRef nanos = LLVMBuildExtractValue(codegen->builder, recv_val, 0, "time.unixnano");
+    return value_info_new(NULL, nanos, type_checker_get_builtin(checker, TYPE_INT64));
 }
 #endif
 
@@ -1260,9 +1297,66 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "join");
                 return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
             }
+            // P4.6 (packages-C, C1): time.Sleep(Duration) / time.Now() Time —
+            // plain package-level function calls (no receiver), so they
+            // belong in this if-chain alongside fmt/os/math/strings, NOT the
+            // method-call intercept further below (that's for t.UnixNano()
+            // only). Declare-on-first-use, same lazy pattern as every other
+            // runtime call this function emits.
+            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Sleep") == 0) {
+                // Duration IS int64 nanoseconds (Go parity), so the argument
+                // needs only the usual lvalue-load, no conversion.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_sleep_ns");
+                if (!fn) {
+                    LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context) };
+                    LLVMTypeRef fn_type = LLVMFunctionType(
+                        LLVMVoidTypeInContext(codegen->context), params, 1, 0);
+                    fn = LLVMAddFunction(codegen->module, "goo_time_sleep_ns", fn_type);
+                }
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "time.Sleep: expected a Duration argument");
+                    return NULL;
+                }
+                ValueInfo* dv = codegen_generate_expression(codegen, checker, call->args);
+                if (!dv) return NULL;
+                LLVMValueRef d = dv->llvm_value;
+                if (dv->is_lvalue && dv->goo_type) {
+                    LLVMTypeRef dt = codegen_type_to_llvm(codegen, dv->goo_type);
+                    if (dt) d = LLVMBuildLoad2(codegen->builder, dt, d, "sleep.d_load");
+                }
+                value_info_free(dv);
+                LLVMValueRef sleep_args[] = { d };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, sleep_args, 1, "");
+                return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+            }
+            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
+                // goo_time_unix_ns() int64 -> wrap into the single-field
+                // Time struct {i64 _nanos}. expr->node_type is already the
+                // checker-resolved Time struct type (the package-export
+                // lookup stamped it) — reuse it rather than re-deriving,
+                // mirroring os.Args's use of expr->node_type above.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_unix_ns");
+                if (!fn) {
+                    LLVMTypeRef fn_type = LLVMFunctionType(
+                        LLVMInt64TypeInContext(codegen->context), NULL, 0, 0);
+                    fn = LLVMAddFunction(codegen->module, "goo_time_unix_ns", fn_type);
+                }
+                LLVMValueRef nanos = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                                    fn, NULL, 0, "time.now_ns");
+                Type* time_type = expr->node_type;
+                if (!time_type) {
+                    codegen_error(codegen, expr->pos, "internal: time.Now missing resolved Time type");
+                    return NULL;
+                }
+                LLVMTypeRef time_llvm = codegen_type_to_llvm(codegen, time_type);
+                if (!time_llvm) return NULL;
+                LLVMValueRef time_val = LLVMGetUndef(time_llvm);
+                time_val = LLVMBuildInsertValue(codegen->builder, time_val, nanos, 0, "time.now_val");
+                return value_info_new(NULL, time_val, time_type);
+            }
         }
     }
-    
+
     // Method call: `recv.method(args)` where recv is a (pointer-to-)struct
     // value. Lowered to a direct call to the mangled function "T__method"
     // with the receiver prepended as the first argument. Non-method
@@ -1370,6 +1464,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // expression_checker.c's method-value rejection).
             if (sync_owner && sync_owner->import_path && strcmp(sync_owner->import_path, "sync") == 0) {
                 return codegen_generate_sync_method_call(codegen, checker, expr, call, msel, recv_type);
+            }
+        }
+
+        // P4.6 (packages-C, C1): time.Time methods (UnixNano) have no
+        // goo_pkg__time__ symbol either, for the same reason sync's don't —
+        // "time" is a bespoke shim package (is_stdlib_shim_import), never
+        // source-compiled. Intercept before the generic owner-routed path
+        // for the same reason as the sync block just above.
+        {
+            Package* time_owner = type_receiver_owner_package(recv_type);
+            if (time_owner && time_owner->import_path && strcmp(time_owner->import_path, "time") == 0) {
+                return codegen_generate_time_method_call(codegen, checker, expr, call, msel, recv_type);
             }
         }
 

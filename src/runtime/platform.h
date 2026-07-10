@@ -62,4 +62,12 @@ void goo_thread_detach(goo_thread_t* thread);
 uint64_t goo_platform_time_ns(void);
 void goo_platform_sleep_ns(uint64_t ns);
 
+// P4.6 (packages-C, C1): wall-clock nanoseconds since the Unix epoch
+// (CLOCK_REALTIME), distinct from goo_platform_time_ns above (CLOCK_MONOTONIC
+// — correct for measuring elapsed intervals, but a silent lie for anything
+// claiming to be "UnixNano": a monotonic clock's epoch is arbitrary, usually
+// boot time, not 1970-01-01). time.Now().UnixNano() needs the real epoch, so
+// it gets its own primitive rather than reusing the monotonic one.
+uint64_t goo_platform_wall_time_ns(void);
+
 #endif // PLATFORM_H

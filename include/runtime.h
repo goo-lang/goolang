@@ -655,6 +655,16 @@ void goo_sync_wg_add(void** slot, int64_t delta);
 void goo_sync_wg_done(void** slot);
 void goo_sync_wg_wait(void** slot);
 
+// P4.6 (packages-C, C1): time.Sleep / time.Now runtime shim
+// (src/runtime/time_shim.c), wrapping the platform primitives (platform.h).
+// goo_time_sleep_ns clamps a negative Duration to a no-op sleep (Go: a
+// negative or zero Sleep duration returns immediately). goo_time_unix_ns
+// reads the WALL clock (CLOCK_REALTIME via goo_platform_wall_time_ns), not
+// the monotonic one goo_platform_time_ns exposes internally — see that
+// function's doc comment for why UnixNano needs the distinction.
+void goo_time_sleep_ns(int64_t ns);
+int64_t goo_time_unix_ns(void);
+
 goo_runtime_stats_t goo_get_runtime_stats(void);
 
 // Zero-size allocation sentinel (Go's "zerobase" pattern): a single shared,

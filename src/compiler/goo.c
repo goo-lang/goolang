@@ -458,7 +458,10 @@ static bool is_stdlib_shim_import(const char* path) {
     // keeps every raw-import-path comparison funneled through the same single
     // choke point (see normalize_import_path's doc comment).
     path = normalize_import_path(path);
-    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync"};
+    // P4.6: "time" joins sync as a method-aware bespoke shim (Duration/Time
+    // synthesized below, no GOOROOT source dir) — same reasoning as sync's
+    // own entry.
+    static const char* const shim[] = {"fmt", "os", "math", "errors", "sync", "time"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
     }
@@ -562,6 +565,161 @@ static void seed_sync_package_exports(TypeChecker* checker, Package* pkg) {
     sync_export_method(pkg, wg_t, "Wait", NULL, 0, void_t);
 }
 
+// P4.6 (packages-C, C1): mint the Time struct — a single int64 field holding
+// wall-clock nanoseconds since the Unix epoch. Unlike sync's opaque-pointer
+// field (lazy runtime init required — a zero-filled pthread_mutex_t is not
+// portably valid), a plain int64 IS its own valid zero value: `var t
+// time.Time` zero-values to nanos=0 and is immediately meaningful (the Unix
+// epoch), so no lazy-init machinery is needed on the runtime side at all —
+// see src/runtime/time_shim.c, which is a stateless wrap of the platform
+// clock primitives. owner_package is stamped directly here for the same
+// reason sync_make_opaque_struct stamps it: this Type never passes through
+// type_check_type_decl, the ordinary stamping site.
+static Type* time_make_time_struct(TypeChecker* checker, Package* pkg) {
+    Type* nanos_t = type_checker_get_builtin(checker, TYPE_INT64);
+    if (!nanos_t) return NULL;
+
+    Type* result = type_new(TYPE_STRUCT);
+    if (!result) return NULL;
+    result->data.struct_type.fields = calloc(1, sizeof(StructField));
+    if (!result->data.struct_type.fields) { free(result); return NULL; }
+    result->data.struct_type.field_count = 1;
+    result->data.struct_type.fields[0].name = str_dup("_nanos");
+    result->data.struct_type.fields[0].type = nanos_t;
+    result->data.struct_type.fields[0].offset = 0;
+    result->data.struct_type.name = str_dup("Time");
+    result->size = sizeof(int64_t);
+    result->align = sizeof(int64_t);
+    result->owner_package = pkg;
+    return result;
+}
+
+// P4.6 (packages-C, C1): mint the Duration type — Go's `type Duration
+// int64` — via the same named-type clone type_check_type_decl uses for an
+// ordinary user `type MyInt int` (type_checker.c: clone the shared int64
+// builtin singleton rather than mutate it in place, since every other int64
+// value in the program shares that singleton pointer). This gives
+// time.Duration a genuinely distinct Type (so diagnostics print "Duration",
+// and `time.Duration` resolves as a real type name via the same
+// is_builtin=1 export mechanism sync.Mutex uses) while staying int64-KIND
+// compatible for every arithmetic/argument check downstream — those compare
+// operand KIND and WIDTH only (type_check_arithmetic_op,
+// expression_checker.c's numeric argument-compatibility gate), never name
+// identity, which is exactly the effect Go's untyped-constant rule gives
+// `50 * time.Millisecond`.
+static Type* time_make_duration_type(TypeChecker* checker, Package* pkg) {
+    Type* builtin = type_checker_get_builtin(checker, TYPE_INT64);
+    if (!builtin) return NULL;
+    Type* result = type_copy(builtin);
+    if (!result) return NULL;
+    free(result->name);
+    result->name = str_dup("Duration");
+    result->owner_package = pkg;
+    return result;
+}
+
+// Register `name` -> `type` as an exported TYPE in pkg->exports — same
+// contract as sync_export_type (is_builtin=1 is what lets B1's
+// type_from_ast AST_BASIC_TYPE arm resolve `time.Duration`/`time.Time` as
+// type names, not a same-named value export).
+static void time_export_type(Package* pkg, const char* name, Type* type) {
+    Variable* v = variable_new(name, type, (Position){0, 0, 0, "time"});
+    if (!v) return;
+    v->is_builtin = 1;
+    v->is_initialized = 1;
+    if (!scope_add_variable(pkg->exports, v)) variable_free(v);
+}
+
+// Register a package-level VALUE member (Nanosecond/Microsecond/Millisecond/
+// Second) — is_builtin stays 0, unlike time_export_type above: these names
+// resolve as ordinary VALUES (mirrors math.Pi/os.Args), never as type names,
+// so they must not satisfy the type_from_ast is_builtin=1 gate that
+// time_export_type's Duration/Time exports rely on.
+static void time_export_value(Package* pkg, const char* name, Type* type) {
+    Variable* v = variable_new(name, type, (Position){0, 0, 0, "time"});
+    if (!v) return;
+    v->is_initialized = 1;
+    if (!scope_add_variable(pkg->exports, v)) variable_free(v);
+}
+
+// Register a plain package-level function Variable (Sleep, Now — no
+// receiver splicing, unlike a method). expression_checker.c's package-
+// function-call arm resolves these straight out of pkg->exports by
+// identity, same mechanism as a real source-compiled package's exports.
+static void time_export_func(Package* pkg, const char* name, Type** param_types,
+                              size_t param_count, Type* return_type) {
+    Type* func_type = type_function(param_types, param_count, return_type);
+    if (!func_type) return;
+    Variable* v = variable_new(name, func_type, (Position){0, 0, 0, "time"});
+    if (!v) return;
+    v->is_initialized = 1;
+    if (!scope_add_variable(pkg->exports, v)) variable_free(v);
+}
+
+// Register a method Variable "T__method" under B2's cross-package mangled-
+// name convention, exactly like sync_export_method, EXCEPT the receiver is
+// a VALUE (`recv_struct` itself), not `type_pointer(recv_struct)` — Go: all
+// of time.Time's methods (UnixNano included) are value receivers, since
+// Time is an immutable value type, unlike every sync primitive (which
+// mutates shared state through a pointer receiver).
+static void time_export_method(Package* pkg, Type* recv_struct, const char* method_name,
+                                Type** param_types, size_t param_count, Type* return_type) {
+    char* mangled = type_method_mangled_name(recv_struct->data.struct_type.name, method_name);
+    if (!mangled) return;
+
+    size_t total = param_count + 1;
+    Type** all_params = malloc(sizeof(Type*) * total);
+    if (!all_params) { free(mangled); return; }
+    all_params[0] = recv_struct;
+    for (size_t i = 0; i < param_count; i++) all_params[i + 1] = param_types[i];
+    Type* func_type = type_function(all_params, total, return_type);
+    free(all_params);
+
+    Variable* v = variable_new(mangled, func_type, (Position){0, 0, 0, "time"});
+    free(mangled);
+    if (!v) return;
+    v->is_initialized = 1;
+    if (!scope_add_variable(pkg->exports, v)) variable_free(v);
+}
+
+// Populate the time package's exports: types Duration/Time, functions
+// Sleep(Duration)/Now() Time, method Time.UnixNano() int64, and the four
+// Duration constants. Mirrors seed_sync_package_exports's structure but
+// every export here is a plain package-level symbol (no receiver splicing)
+// except UnixNano, and UnixNano's receiver is a VALUE (Go: `func (t Time)
+// UnixNano() int64`) rather than sync's uniform pointer receiver — see
+// time_export_method's doc comment. Called once, right after time's Package
+// is created in seed_imported_stdlib_markers below.
+static void seed_time_package_exports(TypeChecker* checker, Package* pkg) {
+    Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
+    Type* int64_t_ty = type_checker_get_builtin(checker, TYPE_INT64);
+
+    Type* duration_t = time_make_duration_type(checker, pkg);
+    Type* time_t_ty = time_make_time_struct(checker, pkg);
+    if (!duration_t || !time_t_ty) return;
+
+    time_export_type(pkg, "Duration", duration_t);
+    time_export_type(pkg, "Time", time_t_ty);
+
+    Type* sleep_params[] = { duration_t };
+    time_export_func(pkg, "Sleep", sleep_params, 1, void_t);
+    time_export_func(pkg, "Now", NULL, 0, time_t_ty);
+
+    time_export_method(pkg, time_t_ty, "UnixNano", NULL, 0, int64_t_ty);
+
+    // Duration constants (Go: Nanosecond=1, Microsecond=1e3, Millisecond=1e6,
+    // Second=1e9). Only the TYPE is seeded here — expression_checker.c's
+    // generic package-export lookup resolves `time.Millisecond` to this
+    // Duration Type with no further checker changes needed (same path Sleep/
+    // Now use). The actual constant VALUE is emitted by a codegen intercept
+    // (composite_codegen.c, math.Pi's pattern) since there is no general
+    // codegen path for an arbitrary package-level exported value member.
+    time_export_value(pkg, "Nanosecond", duration_t);
+    time_export_value(pkg, "Microsecond", duration_t);
+    time_export_value(pkg, "Millisecond", duration_t);
+    time_export_value(pkg, "Second", duration_t);
+}
+
 // stdlib Phase 0 (Task 4): seed a TYPE_PACKAGE marker for each stdlib-shim
 // package that main ACTUALLY imports. This replaces the former always-on
 // seeding in type_checker.c — markers are now CONDITIONAL on a real `import`
@@ -587,6 +745,8 @@ static bool seed_imported_stdlib_markers(TypeChecker* checker, ASTNode* imports)
         if (!p) return false;
         if (strcmp(normalize_import_path(spec->path), "sync") == 0) {
             seed_sync_package_exports(checker, p);
+        } else if (strcmp(normalize_import_path(spec->path), "time") == 0) {
+            seed_time_package_exports(checker, p);
         }
         type_checker_seed_package_marker(checker, short_name, p);
     }

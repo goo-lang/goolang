@@ -562,6 +562,37 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
             LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, out, "os_args_slice");
             return value_info_new(NULL, slice_val, args_type);
         }
+        // P4.6 (packages-C, C1): time.{Nanosecond,Microsecond,Millisecond,
+        // Second} — Duration-typed constants, same math.Pi-style intercept
+        // (there is no general codegen path for an arbitrary package-level
+        // exported VALUE member; see that comment above). Unlike math.Pi,
+        // reuse expr->node_type instead of re-deriving a builtin type: the
+        // checker's generic package-export lookup (expression_checker.c)
+        // already stamped the real Duration Type here (goo.c's
+        // seed_time_package_exports); re-deriving a fresh builtin int64
+        // instead would work too (same kind/width) but discards that Type's
+        // name and owner_package for no benefit.
+        if (strcmp(pkg->name, "time") == 0) {
+            int64_t nanos = 0;
+            int matched = 1;
+            if (strcmp(selector->selector, "Nanosecond") == 0) nanos = 1LL;
+            else if (strcmp(selector->selector, "Microsecond") == 0) nanos = 1000LL;
+            else if (strcmp(selector->selector, "Millisecond") == 0) nanos = 1000000LL;
+            else if (strcmp(selector->selector, "Second") == 0) nanos = 1000000000LL;
+            else matched = 0;
+            if (matched) {
+                Type* duration_type = expr->node_type;
+                if (!duration_type) {
+                    codegen_error(codegen, expr->pos,
+                                  "internal: time.%s missing resolved Duration type",
+                                  selector->selector);
+                    return NULL;
+                }
+                LLVMValueRef v = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
+                                              (unsigned long long)nanos, 1);
+                return value_info_new(NULL, v, duration_type);
+            }
+        }
     }
 
     // P3.6 (method values): decide field-vs-method BEFORE generating any
