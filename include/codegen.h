@@ -370,6 +370,13 @@ int codegen_initialize_target(CodeGenerator* codegen);
 // the plain-function and error-union codegen paths. Caller frees the result.
 char* codegen_package_symbol_name(TypeChecker* checker, const char* base);
 
+// P4.3 (packages-B): same `goo_pkg__<pkg>__<base>` scheme, taking the
+// package name directly (for a cross-package method call/value site, where
+// the OWNING package of the receiver type is not checker->current_package —
+// see type_receiver_owner_package, types.h). Malloc'd; caller frees. NULL if
+// either argument is NULL/empty.
+char* codegen_pkg_mangled_symbol(const char* pkg_name, const char* base);
+
 // Task 7: monomorphization name mangling (src/codegen/monomorphize.c). Used
 // by Tasks 9-10 to name each concrete instantiation of a generic function.
 // Both return a malloc'd string; caller frees.

@@ -3585,8 +3585,12 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 const char* tn = type_receiver_name(st);
                 if (tn) {
                     char* mangled = type_method_mangled_name(tn, sel->selector);
+                    // P4.3: st may be a package-owned receiver type whose
+                    // method Variable only lives in that package's exports
+                    // scope (see type_checker_lookup_method's doc comment).
                     Variable* m = mangled
-                        ? type_checker_lookup_variable(checker, mangled) : NULL;
+                        ? type_checker_lookup_method(checker, st, sel->selector, mangled)
+                        : NULL;
                     free(mangled);
                     if (m && m->type == func_type && !m->is_builtin) {
                         check_signature = 1;
@@ -4337,7 +4341,14 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
         const char* tn = type_receiver_name(struct_type);
         if (tn) {
             char* mangled = type_method_mangled_name(tn, selector->selector);
-            Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+            // P4.3: struct_type may be a package-owned receiver type (e.g.
+            // shapes.Point) — its method Variable only lives in that
+            // package's exports scope, never in main's own scope chain (the
+            // package's body scope is torn down right after codegen; see
+            // type_checker_lookup_method's doc comment).
+            Variable* m = mangled
+                ? type_checker_lookup_method(checker, struct_type, selector->selector, mangled)
+                : NULL;
             free(mangled);
             if (m && m->type && m->type->kind == TYPE_FUNCTION) {
                 if (is_call_callee) {
@@ -4438,7 +4449,10 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     // here, so the method-VALUE surface exactly tracks the callable surface.
     if (expr_type->name) {
         char* mangled = type_method_mangled_name(expr_type->name, selector->selector);
-        Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        // P4.3: same package-owned-receiver fallback as the struct arm above.
+        Variable* m = mangled
+            ? type_checker_lookup_method(checker, expr_type, selector->selector, mangled)
+            : NULL;
         free(mangled);
         if (m && m->type && m->type->kind == TYPE_FUNCTION) {
             if (is_call_callee) {

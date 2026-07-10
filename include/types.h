@@ -252,6 +252,28 @@ struct Type {
             size_t arg_count;        // Number of arguments
         } application;
     } data;
+
+    // P4.3 (cross-package method resolution): the Package that declared this
+    // named type, stamped by type_check_type_decl whenever
+    // checker->current_package was set (i.e. this type was minted while
+    // type-checking a source package's own body, not main). NULL for every
+    // type declared in main and for anonymous/builtin types. A method call
+    // or method-value bind on a package-owned receiver uses this to find the
+    // mangled method Variable in the DECLARING package's exports scope
+    // (type_checker_lookup_method, type_checker.c) — the package's own body
+    // scope is torn down right after it is checked+codegen'd (see
+    // compile_resolved_packages in goo.c), so main's scope chain never sees
+    // it directly — and codegen mangles the emitted call/thunk symbol as
+    // goo_pkg__<pkg>__T__m to match the DEFINITION side, which already
+    // prefixes every package method this way (function_codegen.c). NOT
+    // owned: points into TypeChecker.packages, which is freed only after
+    // codegen completes (every type_checker_free call site follows codegen;
+    // see goo.c) — so the pointer stays valid for the Type's entire
+    // lifetime. Tail-appended per the no-header-deps convention (ast.h's M10
+    // note); type_new() calloc/memsets the whole Type, so this defaults to
+    // NULL on every other construction path, and type_copy's shallow `*copy
+    // = *type` carries it along unchanged (correct for a non-owned pointer).
+    struct Package* owner_package;
 };
 
 // Struct field
@@ -814,6 +836,12 @@ size_t type_align(const Type* type);
 char* type_method_mangled_name(const char* type_name, const char* method_name);
 const char* type_receiver_name(const Type* type);
 
+// P4.3 (packages-B, cross-package methods): the Package that owns the
+// receiver type type_receiver_name resolves to (same *T-unwrap rule) — i.e.
+// type->owner_package after unwrapping a pointer receiver. NULL when the
+// type was declared in main or is anonymous/builtin.
+struct Package* type_receiver_owner_package(const Type* type);
+
 // P4-3: does `concrete`'s method set satisfy interface `iface`? Returns 1 if so
 // (or for the empty interface). On failure returns 0 and writes the offending
 // method name and reason ("missing" / "signature mismatch" / "comptime" — a
@@ -901,6 +929,24 @@ void variable_free(Variable* var);
 int scope_add_variable(Scope* scope, Variable* var);
 Variable* scope_lookup_variable(Scope* scope, const char* name);
 Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
+
+// P4.3 (packages-B, cross-package methods): resolve a method Variable for
+// `recv_type`, falling back to the declaring package's exports scope when
+// `mangled_name` ("T__m") isn't visible in the current scope chain — true
+// whenever recv_type is package-owned, since the package's own body scope
+// (where the method Variable was registered) is torn down right after that
+// package is checked+codegen'd (compile_resolved_packages, goo.c); main's
+// scope chain never sees it directly. The exports-scope fallback demands
+// `method_name` itself start with an uppercase letter (Go's per-identifier
+// export rule): the combined mangled name can start uppercase purely from
+// an exported RECEIVER type even when the method name is lowercase
+// (unexported) — e.g. "Point__secret" — so gating on the type's own leading
+// letter (package_export_filter's check) is not sufficient here. `mangled_
+// name` is always the BARE "T__m" string, never package-symbol-prefixed —
+// callers needing the prefixed LLVM symbol derive it separately (see
+// codegen_pkg_mangled_symbol, codegen.h) with type_receiver_owner_package.
+Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
+                                      const char* method_name, const char* mangled_name);
 
 // Function generics Task 3: active-type-param stack (see TypeChecker's
 // active_type_params field above). Push/pop bracket a function's signature

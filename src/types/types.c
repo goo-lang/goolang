@@ -1000,6 +1000,19 @@ const char* type_receiver_name(const Type* type) {
     return type->name;
 }
 
+// P4.3 (packages-B): same *T-unwrap rule as type_receiver_name, but returns
+// the owning Package* (see Type.owner_package's doc comment, types.h) so
+// codegen and the checker can decide whether a method call/value on this
+// receiver needs the cross-package (goo_pkg__<pkg>__) symbol/export-scope
+// treatment.
+struct Package* type_receiver_owner_package(const Type* type) {
+    if (!type) return NULL;
+    if (type->kind == TYPE_POINTER && type->data.pointer.pointee_type) {
+        type = type->data.pointer.pointee_type;
+    }
+    return type->owner_package;
+}
+
 // Variable management
 
 Variable* variable_new(const char* name, Type* type, Position pos) {

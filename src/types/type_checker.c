@@ -492,6 +492,22 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
     return scope_lookup_variable(checker->current_scope, name);
 }
 
+// P4.3 (packages-B): see the doc comment on the declaration (types.h) for the
+// full rationale. Current-scope lookup first (today's intra-package/main
+// behavior, unchanged); only on a miss does a package-owned receiver fall
+// back to its declaring package's exports scope, gated on the METHOD name
+// (not the combined mangled name) being exported.
+Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
+                                      const char* method_name, const char* mangled_name) {
+    if (!mangled_name) return NULL;
+    Variable* m = type_checker_lookup_variable(checker, mangled_name);
+    if (m) return m;
+    struct Package* owner = type_receiver_owner_package(recv_type);
+    if (!owner) return NULL;
+    if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') return NULL;
+    return scope_lookup_variable(owner->exports, mangled_name);
+}
+
 // Function generics Task 3: active-type-param stack. Pushed by
 // declare_function_signature and type_check_function_decl before resolving a
 // generic function's param/return/body types, popped on every return path of
@@ -2402,6 +2418,15 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
             resolved = named_clone;
         }
     }
+
+    // P4.3 (packages-B): stamp the owning package onto the final Type object
+    // (whichever path produced it above — the tied-knot shell, an in-place
+    // compound stamp, or the cloned scalar singleton) so cross-package method
+    // resolution can find it later (type_receiver_owner_package). NULL
+    // (checker->current_package unset) for every type declared while
+    // checking main — byte-identical to today's behavior for the no-import
+    // path and for main's own types.
+    resolved->owner_package = checker->current_package;
 
     // Register the named type alias only when we did NOT forward-declare a
     // shell (shell == NULL). When a shell was pre-registered above, td->name

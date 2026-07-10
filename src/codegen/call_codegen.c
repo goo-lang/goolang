@@ -636,14 +636,26 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             return value_info_new(NULL, len64, type_checker_get_builtin(checker, TYPE_INT64));
         }
         if (strcmp(func_name->name, "close") == 0 && call->args) {
-            // close(ch) -> goo_chan_close(ptr) (P3.1). The channel operand's
-            // own expression codegen already yields the runtime pointer
-            // value (codegen_generate_identifier auto-loads an lvalue), the
-            // same assumption codegen_generate_channel_recv/send make for
-            // their channel argument (lowlevel_codegen.c) — no extra load
-            // here.
+            // close(ch) -> goo_chan_close(ptr) (P3.1). An IDENTIFIER channel
+            // operand's own expression codegen already yields the runtime
+            // pointer value (codegen_generate_identifier auto-loads an
+            // lvalue) — but a struct-field or index channel operand
+            // (`close(b.ch)`) returns the field's storage ADDRESS instead
+            // (is_lvalue=1), same as any other field. Task #9: load through
+            // it here, mirroring the identical guard
+            // codegen_generate_channel_recv/send apply to their own channel
+            // argument (lowlevel_codegen.c) — this call site was the one
+            // spot that still assumed "no extra load needed".
             ValueInfo* chan_arg = codegen_generate_expression(codegen, checker, call->args);
             if (!chan_arg) return NULL;
+            if (chan_arg->is_lvalue && chan_arg->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, chan_arg->goo_type);
+                if (ct) {
+                    chan_arg->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                          chan_arg->llvm_value, "chan_close_load");
+                    chan_arg->is_lvalue = 0;
+                }
+            }
             LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
             LLVMTypeRef close_param_types[] = { void_ptr_type };
             LLVMTypeRef close_func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
@@ -1225,6 +1237,30 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
         LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
 
+        // P4.3 (packages-B): recv_type may be a package-owned receiver type
+        // (e.g. shapes.Point) — the DEFINITION side always emits such a
+        // method under the goo_pkg__<pkg>__ prefixed symbol
+        // (function_codegen.c), so a miss under the bare mangled name
+        // retries there before falling to the embedding-promotion search
+        // below (which would otherwise misdiagnose an ordinary package
+        // method as "no such method" and go hunting through embedded
+        // fields for it). `mangled` itself stays the BARE "T__m" string
+        // throughout — it doubles as the checker-Variable lookup key
+        // further down (never prefixed; see type_checker_lookup_method).
+        // `method_owner_type` tracks which type's owner_package applies to
+        // that lookup — recv_type here, or the embedded owner below.
+        Type* method_owner_type = recv_type;
+        if (!fn && mangled) {
+            Package* owner_pkg = type_receiver_owner_package(recv_type);
+            if (owner_pkg) {
+                char* pkg_sym = codegen_pkg_mangled_symbol(owner_pkg->name, mangled);
+                if (pkg_sym) {
+                    fn = LLVMGetNamedFunction(codegen->module, pkg_sym);
+                    free(pkg_sym);
+                }
+            }
+        }
+
         // Function generics Tier B: a bound method PROMOTED through an
         // embedded field (e.g. `Wrap` embeds `Base`, which declares
         // `Label`) has no direct `Wrap__Label` symbol — methods are only
@@ -1252,11 +1288,26 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 const char* otn = type_receiver_name(er.owner);
                 char* omangled = otn ? type_method_mangled_name(otn, msel->selector) : NULL;
                 LLVMValueRef ofn = omangled ? LLVMGetNamedFunction(codegen->module, omangled) : NULL;
+                // P4.3: same package-prefix retry as the direct (non-
+                // embedded) lookup above, for a method promoted from a
+                // package-owned embedded field (e.g. `Wrap` embeds
+                // shapes.Point).
+                if (!ofn && omangled) {
+                    Package* oowner_pkg = type_receiver_owner_package(er.owner);
+                    if (oowner_pkg) {
+                        char* opkg_sym = codegen_pkg_mangled_symbol(oowner_pkg->name, omangled);
+                        if (opkg_sym) {
+                            ofn = LLVMGetNamedFunction(codegen->module, opkg_sym);
+                            free(opkg_sym);
+                        }
+                    }
+                }
                 if (ofn) {
                     free(mangled);
                     mangled = omangled;
                     fn = ofn;
                     promo = er;
+                    method_owner_type = er.owner;
                 } else {
                     free(omangled);
                 }
@@ -1271,7 +1322,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // address, not a loaded struct value (which would mismatch the
             // signature and fail LLVM verification). When the receiver
             // expression is already a pointer, pass it through unchanged.
-            Variable* mvar = type_checker_lookup_variable(checker, mangled);
+            // P4.3: mangled is bare; fall back to method_owner_type's
+            // package exports if it isn't visible in main's own scope.
+            Variable* mvar = type_checker_lookup_method(checker, method_owner_type,
+                                                         msel->selector, mangled);
             Type* recv_param = (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION
                                 && mvar->type->data.function.param_count > 0)
                 ? mvar->type->data.function.param_types[0] : NULL;
