@@ -463,9 +463,16 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         ch->head = (ch->head + 1) % ch->capacity;
         ch->length--;
         
-        // Signal senders
+        // Wake senders. BROADCAST, not signal: not_full is waited on by two
+        // distinct predicate classes (a sender waiting for the rendezvous/
+        // buffer slot to free, and a rendezvous sender waiting for its
+        // parked value to be consumed). A single signal can wake the wrong
+        // class and strand the other forever — the 2-sender unbuffered
+        // fan-in lost-wakeup found by the 2026-07-10 review (fanin-stress
+        // pins it). Buffered channels have one class today, but broadcast
+        // keeps every not_full wakeup uniformly safe.
 #ifdef GOO_PLATFORM_UNIX
-        pthread_cond_signal(&ch->not_full->cond);
+        pthread_cond_broadcast(&ch->not_full->cond);
 #endif
         
         goo_mutex_unlock(ch->mutex);
@@ -489,9 +496,13 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         memcpy(data, ch->rv_slot, ch->elem_size);
         ch->rv_full = 0;
 
-        // Release the sender (its "wait until consumed" loop) and any sender
-        // waiting for the slot to free up.
-        pthread_cond_signal(&ch->not_full->cond);
+        // Release the sender (its "wait until consumed" loop) AND any sender
+        // waiting for the slot to free up — two different wait predicates
+        // on the same condvar, so this MUST be a broadcast: a single signal
+        // could wake the already-satisfied delivery-waiter and strand the
+        // slot-waiter forever (the 2-sender unbuffered fan-in lost-wakeup;
+        // fanin-stress pins it).
+        pthread_cond_broadcast(&ch->not_full->cond);
 
         goo_mutex_unlock(ch->mutex);
         return 1;
@@ -558,7 +569,9 @@ int goo_chan_try_recv(goo_channel_t* ch, void* data) {
         ch->length--;
 
 #ifdef GOO_PLATFORM_UNIX
-        pthread_cond_signal(&ch->not_full->cond);
+        // Broadcast for the same two-predicate-class reason as the blocking
+        // recv above (see that comment; fanin-stress).
+        pthread_cond_broadcast(&ch->not_full->cond);
 #endif
 
         goo_mutex_unlock(ch->mutex);
