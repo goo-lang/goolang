@@ -206,3 +206,34 @@ NOT fixed on this branch — candidates for a focused hardening PR):
 Also documented: Goo string range yields BYTES not decoded runes (Go parity divergence,
 shaped C3's TrimLeft/Right); switch-on-rune with char-literal cases miscompiles at the
 verifier (i32 tag vs i64 case constant — C4 worked around with tagless switch).
+
+## Post-review addendum (2026-07-10)
+
+Review wave: Opus codegen/runtime = BLOCK on 1 CRITICAL; Sonnet parity/vendoring/truth =
+SHIP, no CRITICAL/MAJOR ("every deviation claim checked against upstream held exactly").
+
+Fixed in the review round (both REPRODUCED before fixing, pinned by
+os_readfile_hardening_probe):
+- CRITICAL: goo_os_read_file's !path early-return never wrote *out — the ok=0 contract
+  says codegen's error branch loads it unconditionally, so os.ReadFile(zeroValueString)
+  wrapped an UNINITIALIZED stack slot into the error union (stale-garbage e.Error(),
+  segfault with a dirty slot). Now writes an EINVAL error first.
+- MAJOR: the read loop used fstat st_size as a BOUND; /proc//sys/devices/growing files
+  under-report (usually 0) → silent empty SUCCESS. Now st_size is only the initial
+  capacity; the loop reads to genuine EOF, growing (Go behavior).
+
+Documented, not fixed (review MINORs → follow-ups):
+- os.ReadFile error text diverges from Go's PathError format ("os.ReadFile <path>:
+  No such file..." vs Go's "open <path>: no such file..."); comment at the io.c error
+  builder; aligning needs a fixed errno→text table (strerror is also locale-dependent).
+- Alias imports of SHIM packages (import t "time"/a "fmt"/...) don't resolve —
+  pre-existing for all shim packages, inherited not introduced; tracked follow-up.
+- check_stdlib_coverage.sh counts comment mentions and any-receiver .Method( matches as
+  covered — a soft honesty gate by design ("covered" != "exercised"); noted in-script.
+- A local dir named `time` is shadowed by the shim (consistent with fmt/os/math/sync).
+
+Reviewer-verified holds: time codegen across rvalue/lvalue/field/boxed/global shapes and
+Sleep(0)/Sleep(-n); error-union marshaling at -O2, loops, discard position; empty-file
+vs missing-file; ReadLine CRLF/EOF; C6 keys minted+looked-up through one qcname path,
+other goo.* mints counter-unique; FormatInt(MinInt64, 2) byte-identical to Go (beyond
+the 10/16 gate); drift catch live-tested by BOTH the implementer and a reviewer.

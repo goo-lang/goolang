@@ -80,8 +80,14 @@ int goo_sys_file_size(const char* path) {
 // Build a "<op>: <strerror>" (path == NULL) or "<op> <path>: <strerror>"
 // message, heap-allocated so the error union's error slot owns a real
 // buffer like every other goo_string_t producer in this runtime. Shared by
-// goo_os_read_file (always has a path) and goo_os_read_line's read-error
-// branch (never has one — EOF is reported separately, see below).
+// goo_os_read_file and goo_os_read_line's read-error branch (never has a
+// path — EOF is reported separately, see below).
+// KNOWN DIVERGENCE from Go (documented, review-flagged): Go's os.ReadFile
+// error is a PathError reading "open <path>: no such file or directory"
+// (syscall op name, lowercase); ours reads "os.ReadFile <path>: No such
+// file or directory" (goo op name, strerror capitalization — which is also
+// locale-dependent). Callers string-matching Go error text will differ;
+// aligning would need a fixed errno->text table, tracked as a follow-up.
 static goo_string_t goo_os_io_error(const char* op, const char* path, int err) {
     const char* msg = strerror(err);
     size_t need = path
@@ -110,7 +116,15 @@ static goo_string_t goo_os_io_error(const char* op, const char* path, int err) {
 // Returns 1 on success (*out holds the content), 0 on failure (*out holds
 // "os.ReadFile <path>: <strerror>").
 int goo_os_read_file(const char* path, goo_string_t* out) {
-    if (!path || !out) return 0;
+    if (!out) return 0;
+    if (!path) {
+        // A zero-value Goo string has data == NULL. The ok=0 contract
+        // REQUIRES *out to hold the error message — codegen's error branch
+        // loads it unconditionally, so returning without writing *out hands
+        // the error union an uninitialized stack slot (was a segfault).
+        *out = goo_os_io_error("os.ReadFile", NULL, EINVAL);
+        return 0;
+    }
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         *out = goo_os_io_error("os.ReadFile", path, errno);
@@ -126,11 +140,16 @@ int goo_os_read_file(const char* path, goo_string_t* out) {
     }
     size_t size = (st.st_size > 0) ? (size_t)st.st_size : 0;
 
-    // size+1 so a 0-byte file still gets a valid, distinct, NUL-terminated
-    // buffer (defensive only — out->length is the honest byte count callers
-    // must use; the NUL terminator is not what makes embedded-NUL content
-    // correct, the explicit length is).
-    char* buf = malloc(size + 1);
+    // st_size is a HINT, not the truth: /proc and /sys pseudo-files, devices,
+    // and concurrently-growing files under-report it (usually as 0), and Go's
+    // os.ReadFile likewise treats it only as the initial capacity. So: size
+    // the first allocation from the hint (with a floor for the size==0 case),
+    // but read until a genuine EOF, growing as needed. The +1/-1 dance keeps
+    // one spare byte for the defensive NUL terminator (out->length stays the
+    // honest byte count; embedded NULs survive — the explicit length is what
+    // makes that correct, not the terminator).
+    size_t cap = (size > 0) ? size + 1 : 4096;
+    char* buf = malloc(cap);
     if (!buf) {
         close(fd);
         *out = goo_os_io_error("os.ReadFile", path, ENOMEM);
@@ -138,8 +157,20 @@ int goo_os_read_file(const char* path, goo_string_t* out) {
     }
 
     size_t off = 0;
-    while (off < size) {
-        ssize_t n = read(fd, buf + off, size - off);
+    for (;;) {
+        if (off == cap - 1) {
+            size_t grown_cap = cap * 2;
+            char* grown = realloc(buf, grown_cap);
+            if (!grown) {
+                free(buf);
+                close(fd);
+                *out = goo_os_io_error("os.ReadFile", path, ENOMEM);
+                return 0;
+            }
+            buf = grown;
+            cap = grown_cap;
+        }
+        ssize_t n = read(fd, buf + off, cap - 1 - off);
         if (n < 0) {
             if (errno == EINTR) continue;
             int e = errno;
@@ -148,7 +179,7 @@ int goo_os_read_file(const char* path, goo_string_t* out) {
             *out = goo_os_io_error("os.ReadFile", path, e);
             return 0;
         }
-        if (n == 0) break; // file shrank concurrently under us; stop honestly
+        if (n == 0) break; // genuine EOF
         off += (size_t)n;
     }
     close(fd);
