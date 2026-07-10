@@ -2541,17 +2541,52 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             result = LLVMBuildXor(codegen->builder, left_llvm, right_llvm, "xor");
             break;
             
-        case TOKEN_LSHIFT:
-            result = LLVMBuildShl(codegen->builder, left_llvm, right_llvm, "shl");
+        // Go defines shift by count >= the operand's width as "shifted 1 bit
+        // at a time, n times" — which saturates to 0 (both directions,
+        // unsigned right shift) or to the sign (0 / -1, signed right shift).
+        // LLVM's shl/lshr/ashr are POISON for such a count, not 0 — a
+        // divergence that's invisible at -O0 (x86 shift instructions mask
+        // the count mod the operand width in hardware, so the poison value
+        // often happens to look right) but exploitable once real
+        // optimization passes run and assume in-range shifts (found via the
+        // P3.10 -O0/-O2 differential golden gate: math/bits Div64's s==0
+        // fast path does lo >> (64-s) == lo >> 64, corrupted only at -O2).
+        // Guard explicitly with select rather than relying on hardware
+        // wraparound. right_llvm is already coerced to left_llvm's width
+        // above, so a single same-width comparison suffices.
+        case TOKEN_LSHIFT: {
+            LLVMTypeRef shty = LLVMTypeOf(left_llvm);
+            unsigned width = LLVMGetIntTypeWidth(shty);
+            LLVMValueRef width_c = LLVMConstInt(shty, width, 0);
+            LLVMValueRef in_range = LLVMBuildICmp(codegen->builder, LLVMIntULT,
+                                                  right_llvm, width_c, "shl.inrange");
+            LLVMValueRef raw = LLVMBuildShl(codegen->builder, left_llvm, right_llvm, "shl");
+            result = LLVMBuildSelect(codegen->builder, in_range, raw,
+                                     LLVMConstInt(shty, 0, 0), "shl.guarded");
             break;
-            
-        case TOKEN_RSHIFT:
+        }
+
+        case TOKEN_RSHIFT: {
+            LLVMTypeRef shty = LLVMTypeOf(left_llvm);
+            unsigned width = LLVMGetIntTypeWidth(shty);
+            LLVMValueRef width_c = LLVMConstInt(shty, width, 0);
+            LLVMValueRef in_range = LLVMBuildICmp(codegen->builder, LLVMIntULT,
+                                                  right_llvm, width_c, "shr.inrange");
             if (type_is_signed(left_val->goo_type)) {
-                result = LLVMBuildAShr(codegen->builder, left_llvm, right_llvm, "ashr");
+                LLVMValueRef raw = LLVMBuildAShr(codegen->builder, left_llvm, right_llvm, "ashr");
+                // Out-of-range saturates to the sign fill (0 or -1), exactly
+                // what ashr by width-1 produces — and width-1 is always a
+                // valid, non-poison shift amount.
+                LLVMValueRef sat = LLVMBuildAShr(codegen->builder, left_llvm,
+                                                 LLVMConstInt(shty, width - 1, 0), "ashr.sat");
+                result = LLVMBuildSelect(codegen->builder, in_range, raw, sat, "ashr.guarded");
             } else {
-                result = LLVMBuildLShr(codegen->builder, left_llvm, right_llvm, "lshr");
+                LLVMValueRef raw = LLVMBuildLShr(codegen->builder, left_llvm, right_llvm, "lshr");
+                result = LLVMBuildSelect(codegen->builder, in_range, raw,
+                                         LLVMConstInt(shty, 0, 0), "lshr.guarded");
             }
             break;
+        }
             
         default:
             codegen_error(codegen, expr->pos, "Unsupported binary operator");

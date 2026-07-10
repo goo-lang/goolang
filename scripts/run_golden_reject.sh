@@ -25,6 +25,11 @@
 set -u
 COMPILER="${COMPILER:-bin/goo}"
 REJECT_DIR="${REJECT_DIR:-tests/golden/reject}"
+# P3.10: same GOOFLAGS passthrough as run_golden.sh, for symmetry; default
+# empty = today's behavior, unchanged. This suite doesn't gate on it (reject
+# fixtures don't depend on optimization level) but keeping it callable the
+# same way avoids surprises if a caller scripts both runners identically.
+GOOFLAGS="${GOOFLAGS:-}"
 pass=0; fail=0; failed=()
 for goo in "$REJECT_DIR"/*.goo; do
     [ -f "$goo" ] || continue
@@ -47,7 +52,8 @@ for goo in "$REJECT_DIR"/*.goo; do
         fail=$((fail+1)); failed+=("$base"); continue
     fi
 
-    "$COMPILER" "$goo" -o "$out_bin" >"$out_stdout" 2>"$out_stderr"
+    # $GOOFLAGS intentionally unquoted; see run_golden.sh for rationale.
+    "$COMPILER" "$goo" -o "$out_bin" $GOOFLAGS >"$out_stdout" 2>"$out_stderr"
     rc=$?
 
     if [ "$rc" -eq 0 ]; then

@@ -731,6 +731,17 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         return false;
     }
 
+    // P3.10: opt_level travels on the codegen object itself (needed by both
+    // codegen_optimize below and the target-machine mapping inside
+    // codegen_emit_executable) rather than being threaded through call sites.
+    codegen->opt_level = options->opt_level;
+
+    // P3.11: link_libs/link_lib_count travel on the codegen object so
+    // codegen_emit_executable's fork/execvp argv construction can append
+    // them without changing that function's signature.
+    codegen->link_libs = (const char**)options->link_libs;
+    codegen->link_lib_count = (size_t)options->link_lib_count;
+
     // stdlib Phase 0 (Task 4): if main imports non-shim packages, resolve+parse
     // them (topological, leaves-first) and compile each INTO THIS module before
     // main, so their exported functions exist under their mangled symbols. With
@@ -786,7 +797,20 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
         free(source);
         return false;
     }
-    
+
+    // P3.10: run the new-PM optimization pipeline (no-op at opt_level 0 —
+    // byte-identical contract) BEFORE either emit path, so --emit-llvm shows
+    // the optimized IR too — that's how the differential (-O0 vs -O2 IR)
+    // gate observes optimization actually happening.
+    if (!codegen_optimize(codegen, options->opt_level)) {
+        codegen_free(codegen);
+        type_checker_free(type_checker);
+        ast_node_free(ast);
+        lexer_free(lexer);
+        free(source);
+        return false;
+    }
+
     // Emit LLVM IR if requested
     if (options->emit_llvm_ir) {
         char* ir_filename = malloc(strlen(options->output_file) + 4);

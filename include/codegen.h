@@ -16,6 +16,7 @@
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 #define LLVM_AVAILABLE 1
 #else
 #define LLVM_AVAILABLE 0
@@ -256,6 +257,22 @@ struct CodeGenerator {
     // label_block helpers. Tail-appended per the no-header-deps convention
     // (ast.h's M10 comment / func_lit_counter's comment above).
     ControlFlowContext cfctx;
+
+    // P3.10: optimization level requested via -O (driver-set, right after
+    // codegen_new, before codegen_generate_program runs). 0 (default) keeps
+    // codegen_optimize a no-op and the target machine at
+    // LLVMCodeGenLevelDefault — the exact pre-P3.10 path, byte-identical for
+    // every existing fixture. >0 selects a new-PM optimization pipeline in
+    // codegen_optimize and (only at 3) raises the target machine's own
+    // codegen aggressiveness too.
+    int opt_level;
+
+    // P3.11: extra libraries to link (driver-set from -l/--link flags, e.g.
+    // "m"), appended to the link argv after the runtime archive. Borrowed
+    // from CompilerOptions (src/compiler/goo.c) — codegen does not own or
+    // free these strings, only the driver does.
+    const char** link_libs;
+    size_t link_lib_count;
 };
 
 // Function information for code generation

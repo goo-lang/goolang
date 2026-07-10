@@ -1390,6 +1390,60 @@ link-cleanup-probe: $(COMPILER) $(RUNTIME_LIB)
 	@GOO_RUNTIME=/nonexistent/libgoo_runtime.a "$(COMPILER)" build/cleanup_probe.goo -o build/cleanup_probe.out 2>/dev/null; true
 	@if [ -e build/cleanup_probe.out.o ]; then echo "link-cleanup-probe: FAIL (.o left behind)"; exit 1; else echo "link-cleanup-probe: PASS"; fi
 
+# P3.10: -O2 must actually run optimization passes (IR differs from -O0)
+# and must not change program behavior (O0 and O2 binaries produce
+# identical output) — the differential correctness gate for `make
+# verify-core`'s optimizer coverage.
+.PHONY: opt-differs-probe
+opt-differs-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build build/opt_o0 build/opt_o2
+	@echo "=== opt-differs-probe: -O2 IR differs from -O0, same runtime output (P3.10) ==="
+	@printf 'package main\n\nimport "fmt"\n\nfunc sum(n int) int {\n\ttotal := 0\n\tfor i := 0; i < n; i++ {\n\t\ttotal = total + i*2 - 1\n\t}\n\treturn total\n}\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\ta := 0\n\tb := 1\n\tfor i := 2; i <= n; i++ {\n\t\tc := a + b\n\t\ta = b\n\t\tb = c\n\t}\n\treturn b\n}\n\nfunc main() {\n\tx := sum(100)\n\ty := fib(20)\n\ttotal := 0\n\tfor i := 0; i < 50; i++ {\n\t\ttotal = total + x*i - y\n\t}\n\tfmt.Println(x, y, total)\n}\n' > build/opt_probe.goo
+	@"$(COMPILER)" --emit-llvm -O0 build/opt_probe.goo -o build/opt_o0/opt_probe >build/opt_probe_o0.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O0 compile failed)"; cat build/opt_probe_o0.log; exit 1; fi
+	@"$(COMPILER)" --emit-llvm -O2 build/opt_probe.goo -o build/opt_o2/opt_probe >build/opt_probe_o2.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O2 compile failed)"; cat build/opt_probe_o2.log; exit 1; fi
+	@if cmp -s build/opt_o0/opt_probe.ll build/opt_o2/opt_probe.ll; then \
+	  echo "opt-differs-probe: FAIL (O2 IR identical to O0 — optimizer not running)"; exit 1; \
+	fi
+	@./build/opt_o0/opt_probe > build/opt_probe_o0.out; \
+	  ./build/opt_o2/opt_probe > build/opt_probe_o2.out; \
+	  if ! diff -u build/opt_probe_o0.out build/opt_probe_o2.out >/dev/null; then \
+	    echo "opt-differs-probe: FAIL (O0/O2 output mismatch — miscompile under optimization)"; \
+	    diff -u build/opt_probe_o0.out build/opt_probe_o2.out; exit 1; \
+	  fi
+	@echo "opt-differs-probe: PASS"
+
+# P3.11: an output path containing a space must link and run correctly.
+# Pre-fork/execvp, system(link_command) shelled the whole command through
+# /bin/sh, which word-splits unquoted paths — this probe FAILS against that
+# code (confirm failing-first before implementing the fork/execvp rewrite).
+.PHONY: link-spaces-probe
+link-spaces-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p 'build/dir with space'
+	@echo "=== link-spaces-probe: output path containing a space links and runs (P3.11) ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("hello") }\n' > build/link_spaces_probe.goo
+	@"$(COMPILER)" build/link_spaces_probe.goo -o 'build/dir with space/hello_probe' >build/link_spaces_probe.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "link-spaces-probe: FAIL (compile/link failed)"; cat build/link_spaces_probe.log; exit 1; fi
+	@out="$$('build/dir with space/hello_probe')"; \
+	  if [ "$$out" != "hello" ]; then echo "link-spaces-probe: FAIL (got '$$out', want 'hello')"; exit 1; fi; \
+	  echo "link-spaces-probe: PASS"
+
+# P3.11: the -l/--link CLI flag (goo.c's `-l` getopt case, options->link_libs)
+# must reach the link line without breaking it — proves the fork/execvp argv
+# construction correctly appends user libs after the runtime archive and
+# before -lm/-lpthread.
+.PHONY: link-libs-probe
+link-libs-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== link-libs-probe: -l flag reaches the link line without breaking it (P3.11) ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("linked") }\n' > build/link_libs_probe.goo
+	@"$(COMPILER)" build/link_libs_probe.goo -l m -o build/link_libs_probe.out >build/link_libs_probe.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "link-libs-probe: FAIL (compile/link failed with -l m)"; cat build/link_libs_probe.log; exit 1; fi
+	@out="$$(./build/link_libs_probe.out)"; \
+	  if [ "$$out" != "linked" ]; then echo "link-libs-probe: FAIL (got '$$out', want 'linked')"; exit 1; fi; \
+	  echo "link-libs-probe: PASS"
+
 # P0-3: a run of blank lines must NOT overflow the stack. The newline ASI
 # handler now iterates instead of tail-recursing, so 1,000,000 consecutive
 # blank lines lex without a SIGSEGV. The fixture is generated at test time
@@ -2372,6 +2426,9 @@ VERIFY_ALL_DEPS := \
     print-aggregate-probe \
     ptr-recv-nonaddr-probe \
     link-cleanup-probe \
+    opt-differs-probe \
+    link-spaces-probe \
+    link-libs-probe \
     blank-lines-probe \
     comment-lines-probe \
     slice-write-bounds-probe \
