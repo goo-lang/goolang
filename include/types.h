@@ -758,6 +758,15 @@ struct TypeChecker {
     // section R1-TC). Tail-appended per the no-header-deps convention
     // (ast.h's M10 comment).
     TcFunctionContext tc_fctx;
+
+    // P3.6 (method values): set by type_check_call_expr immediately before
+    // it type-checks a selector-expression callee (call->function), so
+    // type_check_selector_expr knows whether ITS result feeds a call
+    // directly (receiver stays spliced as params[0] — the existing wire
+    // format the call path's recv_offset logic depends on) or lands in a
+    // plain value position (`f := c.get` — receiver stripped, a callable
+    // func value). Tail-appended per the M10 convention (ast.h).
+    int selector_call_position;
 };
 
 // Type creation functions

@@ -166,6 +166,234 @@ static int escape_is_promoted(const char* name) {
     return 0;
 }
 
+// ---- P3.4: defer-loop-nesting pre-pass (file-static; mirrors the M8b
+// escape pre-pass immediately above — function codegen is non-reentrant) ---
+//
+// Decides the per-function static/stack fork (design doc: "B1 (P3.4) —
+// runtime defer stack, per-function fork"): a function containing at least
+// one `defer` lexically nested under a for/range loop routes ALL of its
+// defers through the runtime stack; everything else keeps the untouched
+// static path. Only real iteration counts as "loop-nested" — switch/select/
+// if/match/try/catch/unsafe/arena/label do not repeat their body, so a
+// defer under one of THOSE alone is exactly as expressible as a defer under
+// a plain `if` (one conditional execution, no per-iteration multiplication)
+// and stays on the static path. `for_depth` therefore only increments
+// across AST_FOR_STMT (ForStmtNode covers both C-style and range `for` —
+// range_expr non-NULL selects the range-desugared form — so one case
+// handles both).
+//
+// COVERAGE / MAINTENANCE CONTRACT: this walker must reach EVERY statement
+// list a function body can transitively contain — including statement
+// bodies nested inside EXPRESSIONS (`catch { ... }` bodies, match-case
+// bodies), which is why the expression node kinds are walked too, not just
+// statement containers. A container missed here makes a loop-nested defer
+// under it silently take the static single-slot path — historically a
+// silent run-once-with-last-snapshot miscompile (review finding 2026-07-10:
+// AST_ARENA_BLOCK, AST_LABEL_STMT, and CatchExprNode.catch_body were all
+// missing). Two defenses now exist: (1) any NEW node type that carries a
+// statement list, a wrapped statement, or expression children MUST be added
+// to this switch, and (2) the static path in codegen_generate_defer_stmt
+// fail-closes — a loop-nested defer that reaches it anyway (cfctx
+// real-loop check there) is a hard "internal" error, never a silent
+// miscompile — so a future gap here surfaces at compile time.
+// AST_FUNC_LIT is the one deliberate non-recursion: a literal is codegen'd
+// as its own function with its OWN pre-pass call (codegen_generate_func_lit),
+// so its defers are that function's concern, not the enclosing one's.
+static int g_defer_needs_stack;
+
+static void defer_prepass_walk(ASTNode* n, int for_depth) {
+    for (; n; n = n->next) {
+        switch (n->type) {
+            case AST_DEFER_STMT:
+                if (for_depth > 0) g_defer_needs_stack = 1;
+                // The deferred call's arguments can themselves contain a
+                // statement-bearing expression (a catch body) — keep walking.
+                defer_prepass_walk(((DeferStmtNode*)n)->call, for_depth);
+                break;
+            case AST_FOR_STMT: {
+                ForStmtNode* s = (ForStmtNode*)n;
+                // init and range_expr evaluate once, at the loop's own
+                // depth; condition/post re-evaluate per iteration and the
+                // body runs per iteration — those three at depth + 1.
+                defer_prepass_walk(s->init, for_depth);
+                defer_prepass_walk(s->range_expr, for_depth);
+                defer_prepass_walk(s->condition, for_depth + 1);
+                defer_prepass_walk(s->post, for_depth + 1);
+                defer_prepass_walk(s->body, for_depth + 1);
+                break;
+            }
+
+            // --- statement containers ---
+            case AST_BLOCK_STMT: defer_prepass_walk(((BlockStmtNode*)n)->statements, for_depth); break;
+            case AST_EXPR_STMT:  defer_prepass_walk(((ExprStmtNode*)n)->expr, for_depth); break;
+            case AST_IF_STMT: {
+                IfStmtNode* s = (IfStmtNode*)n;
+                defer_prepass_walk(s->condition, for_depth);
+                defer_prepass_walk(s->then_stmt, for_depth);
+                defer_prepass_walk(s->else_stmt, for_depth);
+                break;
+            }
+            case AST_IF_LET_STMT: {
+                IfLetStmtNode* s = (IfLetStmtNode*)n;
+                defer_prepass_walk(s->nullable_expr, for_depth);
+                defer_prepass_walk(s->then_stmt, for_depth);
+                defer_prepass_walk(s->else_stmt, for_depth);
+                break;
+            }
+            case AST_SWITCH_STMT: {
+                SwitchStmtNode* s = (SwitchStmtNode*)n;
+                defer_prepass_walk(s->tag, for_depth);
+                defer_prepass_walk(s->cases, for_depth);
+                break;
+            }
+            case AST_CASE_CLAUSE: {
+                CaseClauseNode* c = (CaseClauseNode*)n;
+                defer_prepass_walk(c->exprs, for_depth);
+                defer_prepass_walk(c->body, for_depth);
+                break;
+            }
+            case AST_TYPE_SWITCH: {
+                TypeSwitchNode* s = (TypeSwitchNode*)n;
+                defer_prepass_walk(s->expr, for_depth);
+                defer_prepass_walk(s->cases, for_depth);
+                break;
+            }
+            case AST_TYPE_CASE:   defer_prepass_walk(((TypeCaseNode*)n)->body, for_depth); break;
+            case AST_SELECT_STMT: defer_prepass_walk(((SelectStmtNode*)n)->cases, for_depth); break;
+            case AST_SELECT_CASE: {
+                SelectCaseNode* c = (SelectCaseNode*)n;
+                defer_prepass_walk(c->comm, for_depth);
+                defer_prepass_walk(c->body, for_depth);
+                break;
+            }
+            case AST_UNSAFE_STMT:    defer_prepass_walk(((UnsafeStmtNode*)n)->body, for_depth); break;
+            case AST_ARENA_BLOCK:    defer_prepass_walk(((ArenaBlockNode*)n)->body, for_depth); break;
+            case AST_COMPTIME_BLOCK: defer_prepass_walk(((ComptimeBlockNode*)n)->body, for_depth); break;
+            case AST_CONTRACT_BLOCK: defer_prepass_walk(((ContractBlockNode*)n)->clauses, for_depth); break;
+            case AST_LABEL_STMT:     defer_prepass_walk(((LabelStmtNode*)n)->stmt, for_depth); break;
+            case AST_GO_STMT:        defer_prepass_walk(((GoStmtNode*)n)->call, for_depth); break;
+            case AST_RETURN_STMT:    defer_prepass_walk(((ReturnStmtNode*)n)->values, for_depth); break;
+            case AST_VAR_DECL:       defer_prepass_walk(((VarDeclNode*)n)->values, for_depth); break;
+            case AST_CONST_DECL:     defer_prepass_walk(((ConstDeclNode*)n)->values, for_depth); break;
+            case AST_MULTI_ASSIGN: {
+                MultiAssignNode* m = (MultiAssignNode*)n;
+                defer_prepass_walk(m->targets, for_depth);
+                defer_prepass_walk(m->values, for_depth);
+                break;
+            }
+
+            // --- expressions: can carry a statement body directly (catch/
+            // match) or reach one through their children ---
+            case AST_BINARY_EXPR: {
+                BinaryExprNode* b = (BinaryExprNode*)n;
+                defer_prepass_walk(b->left, for_depth);
+                defer_prepass_walk(b->right, for_depth);
+                break;
+            }
+            case AST_UNARY_EXPR:   defer_prepass_walk(((UnaryExprNode*)n)->operand, for_depth); break;
+            case AST_POSTFIX_EXPR: defer_prepass_walk(((PostfixExprNode*)n)->operand, for_depth); break;
+            case AST_CALL_EXPR: {
+                CallExprNode* c = (CallExprNode*)n;
+                defer_prepass_walk(c->function, for_depth);
+                defer_prepass_walk(c->args, for_depth);
+                break;
+            }
+            case AST_INDEX_EXPR: {
+                IndexExprNode* ix = (IndexExprNode*)n;
+                defer_prepass_walk(ix->expr, for_depth);
+                defer_prepass_walk(ix->index, for_depth);
+                break;
+            }
+            case AST_SELECTOR_EXPR: defer_prepass_walk(((SelectorExprNode*)n)->expr, for_depth); break;
+            case AST_SLICE_EXPR:    defer_prepass_walk(((SliceLitNode*)n)->elements, for_depth); break;
+            case AST_SLICE_INDEX_EXPR: {
+                SliceIndexExprNode* s = (SliceIndexExprNode*)n;
+                defer_prepass_walk(s->expr, for_depth);
+                defer_prepass_walk(s->low, for_depth);
+                defer_prepass_walk(s->high, for_depth);
+                break;
+            }
+            case AST_ARRAY_LITERAL: defer_prepass_walk(((ArrayLitNode*)n)->elements, for_depth); break;
+            case AST_KEYED_ELEMENT: {
+                KeyedElementNode* k = (KeyedElementNode*)n;
+                defer_prepass_walk(k->key, for_depth);
+                defer_prepass_walk(k->value, for_depth);
+                break;
+            }
+            // AST_PAREN_EXPR is a repurposed map-literal slot (MapLitNode).
+            case AST_PAREN_EXPR: {
+                MapLitNode* m = (MapLitNode*)n;
+                defer_prepass_walk(m->keys, for_depth);
+                defer_prepass_walk(m->values, for_depth);
+                break;
+            }
+            case AST_STRUCT_LITERAL: defer_prepass_walk(((StructLiteralNode*)n)->field_values, for_depth); break;
+            case AST_TRY_EXPR:       defer_prepass_walk(((TryExprNode*)n)->expr, for_depth); break;
+            case AST_CATCH_EXPR: {
+                // catch_body is a full statement list nested inside an
+                // EXPRESSION — the reason this walker recurses into
+                // expressions at all (verified miscompile shape before this
+                // coverage: `x := f() catch e { for { defer ... } ... }`).
+                CatchExprNode* ce = (CatchExprNode*)n;
+                defer_prepass_walk(ce->expr, for_depth);
+                defer_prepass_walk(ce->catch_body, for_depth);
+                break;
+            }
+            case AST_MATCH_EXPR: {
+                MatchExprNode* m = (MatchExprNode*)n;
+                defer_prepass_walk(m->expr, for_depth);
+                defer_prepass_walk(m->cases, for_depth);
+                break;
+            }
+            case AST_MATCH_CASE: {
+                MatchCaseNode* mc = (MatchCaseNode*)n;
+                defer_prepass_walk(mc->guard, for_depth);
+                defer_prepass_walk(mc->body, for_depth);
+                break;
+            }
+            case AST_TYPE_ASSERT: defer_prepass_walk(((TypeAssertNode*)n)->expr, for_depth); break;
+            case AST_ADDR_OF:     defer_prepass_walk(((AddrOfNode*)n)->operand, for_depth); break;
+
+            default: break;  // leaves (identifier, literal, type nodes) and
+                             // AST_FUNC_LIT (deliberate — see contract above)
+        }
+    }
+}
+
+static int defer_prepass_needs_stack(ASTNode* body) {
+    g_defer_needs_stack = 0;
+    defer_prepass_walk(body, 0);
+    return g_defer_needs_stack;
+}
+
+// Build the LLVM type for goo_defer_frame_t (include/runtime.h): {entries:
+// ptr, len: size_t, cap: size_t}. Literal (unnamed) struct types are
+// structurally interned per-LLVMContext, so every call site building this
+// exact field list gets back the SAME LLVMTypeRef — no cache needed, unlike
+// the named-struct hazard documented elsewhere in this codebase.
+static LLVMTypeRef codegen_get_defer_frame_type(CodeGenerator* codegen) {
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_ty = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef fields[] = { ptr_ty, size_ty, size_ty };
+    return LLVMStructTypeInContext(ctx, fields, 3, 0);
+}
+
+// Allocate and zero-initialize func_info->defer_frame in the CURRENT insert
+// block (must be the entry block — every caller invokes this immediately
+// after codegen_set_insert_point(entry), before any other body code, so the
+// zero-store is guaranteed to precede every later use, including an early-
+// return exit site generated later in the same linear entry-block prologue).
+// No-op unless the pre-pass decided this function needs stack mode.
+static void codegen_setup_defer_stack_mode(CodeGenerator* codegen, FunctionInfo* func_info,
+                                           ASTNode* body) {
+    func_info->defer_stack_mode = defer_prepass_needs_stack(body);
+    if (!func_info->defer_stack_mode) return;
+    LLVMTypeRef frame_ty = codegen_get_defer_frame_type(codegen);
+    func_info->defer_frame = LLVMBuildAlloca(codegen->builder, frame_ty, "defer_frame");
+    LLVMBuildStore(codegen->builder, LLVMConstNull(frame_ty), func_info->defer_frame);
+}
+
 // Allocate storage for a named local: heap (goo_alloc, leaked) if the local
 // is EITHER goroutine-escape-promoted (M8b, name-based, `force_promote=0`
 // callers) OR forced by the caller (Closures Task 2: a var-decl/param whose
@@ -303,6 +531,95 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
     int is_void = LLVMGetTypeKind(ret_llvm) == LLVMVoidTypeKind;
     LLVMValueRef call = LLVMBuildCall2(codegen->builder, named_fn_ty, named_fn,
                                        call_args, (unsigned)np, is_void ? "" : "thunk_call");
+    free(call_args);
+
+    if (is_void) {
+        LLVMBuildRetVoid(codegen->builder);
+    } else {
+        LLVMBuildRet(codegen->builder, call);
+    }
+
+    if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    return thunk;
+#endif
+}
+
+// P3.6 (method values): get-or-create the BOUND thunk for method `T__m`
+// (Goo type `method_type`, receiver spliced as params[0]; `stripped_type` is
+// the same signature minus that receiver — the method VALUE's own type,
+// already computed by the checker's value-position selector arm,
+// expression_checker.c): `<mangled>.__bound_thunk(env, args...) =
+// <mangled>(<recv loaded from env>, args...)`.
+//
+// Unlike codegen_get_func_thunk's env-IGNORING body (a named function
+// captures nothing), THIS thunk's whole purpose is to read the bound
+// receiver out of env — a goo_alloc'd heap cell built at bind time
+// (codegen_generate_selector_expr's method arm, composite_codegen.c) typed
+// EXACTLY as the receiver parameter itself (`T` for a value receiver, `*T`
+// for a pointer receiver — LLVM's opaque pointers make both a same-shaped
+// `ptr` load, so one code path here covers both; which one was stored is
+// entirely the bind site's concern, not this thunk's).
+//
+// Cached via LLVMGetNamedFunction on "<mangled>.__bound_thunk", idempotent —
+// mirrors codegen_get_func_thunk's "once per (function, module)" discipline,
+// scoped here to "once per (type, method)" since `mangled_name` already
+// encodes the receiver type (type_method_mangled_name).
+LLVMValueRef codegen_get_method_bound_thunk(CodeGenerator* codegen, Type* stripped_type,
+                                            Type* method_type, LLVMValueRef named_method_fn,
+                                            const char* mangled_name) {
+#if !LLVM_AVAILABLE
+    (void)stripped_type;
+    (void)method_type;
+    (void)named_method_fn;
+    (void)mangled_name;
+    return NULL;
+#else
+    if (!codegen || !stripped_type || !method_type || !named_method_fn || !mangled_name) return NULL;
+    if (method_type->kind != TYPE_FUNCTION || stripped_type->kind != TYPE_FUNCTION) return NULL;
+    if (method_type->data.function.param_count == 0) return NULL;  // no receiver: not a method
+
+    char thunk_name[300];
+    snprintf(thunk_name, sizeof(thunk_name), "%s.__bound_thunk", mangled_name);
+    LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, thunk_name);
+    if (existing) return existing;
+
+    LLVMTypeRef thunk_ty = codegen_get_funcval_call_type(codegen, stripped_type);
+    LLVMTypeRef method_llvm_ty = codegen_get_function_type(codegen, method_type);
+    if (!thunk_ty || !method_llvm_ty) return NULL;
+
+    LLVMValueRef thunk = LLVMAddFunction(codegen->module, thunk_name, thunk_ty);
+    LLVMSetLinkage(thunk, LLVMInternalLinkage);
+
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(codegen->context, thunk, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+
+    // Thunk param 0 is env; load the bound receiver back out of it, typed
+    // exactly as the method's own receiver parameter (see doc comment).
+    Type* recv_type = method_type->data.function.param_types[0];
+    LLVMTypeRef recv_llvm = codegen_type_to_llvm(codegen, recv_type);
+    if (!recv_llvm) {
+        if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        return NULL;
+    }
+    LLVMValueRef env_param = LLVMGetParam(thunk, 0);
+    LLVMValueRef recv_arg = LLVMBuildLoad2(codegen->builder, recv_llvm, env_param, "bound_recv");
+
+    // The wrapped method's real params start at thunk param index 1 — same
+    // shift as codegen_get_func_thunk, plus the receiver prepended.
+    size_t np = stripped_type->data.function.param_count;
+    LLVMValueRef* call_args = malloc(sizeof(LLVMValueRef) * (np + 1));
+    if (!call_args) {
+        if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        return NULL;
+    }
+    call_args[0] = recv_arg;
+    for (size_t i = 0; i < np; i++) call_args[i + 1] = LLVMGetParam(thunk, (unsigned)(i + 1));
+
+    LLVMTypeRef ret_llvm = LLVMGetReturnType(thunk_ty);
+    int is_void = LLVMGetTypeKind(ret_llvm) == LLVMVoidTypeKind;
+    LLVMValueRef call = LLVMBuildCall2(codegen->builder, method_llvm_ty, named_method_fn,
+                                       call_args, (unsigned)(np + 1), is_void ? "" : "bound_call");
     free(call_args);
 
     if (is_void) {
@@ -465,6 +782,15 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
 
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
+
+    // P3.4: decide (and, if needed, set up) THIS LITERAL's own static/stack
+    // defer fork, scoped to its own body — a defer inside a loop in the
+    // ENCLOSING function is that function's concern, not this nested
+    // literal's, and vice versa. Must run before any body statement is
+    // generated (a defer statement checks func_info->defer_stack_mode) and
+    // while the entry block is still the insert point (the frame's zero-
+    // store must precede every possible exit site).
+    codegen_setup_defer_stack_mode(codegen, func_info, lit->body);
 
     // M8b: compute which of the LITERAL's OWN locals escape into a
     // goroutine spawned from ITS OWN body — scoped fresh per the doc
@@ -1027,6 +1353,14 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             LLVMBuildCall2(codegen->builder, void_ty, global_init_fn, NULL, 0, "");
         }
     }
+
+    // P3.4: decide (and, if needed, set up) this function's static/stack
+    // defer fork before any body statement is generated (a defer statement
+    // checks func_info->defer_stack_mode) and while the entry block is
+    // still the insert point (the frame's zero-store must precede every
+    // possible exit site, including the global-init call and os.Args
+    // prologue above — harmless either way since those never call defer).
+    codegen_setup_defer_stack_mode(codegen, func_info, func_decl->body);
 
     // M8b: compute which locals escape into a goroutine and must be heap-promoted.
     escape_prepass_compute(func_decl->body);
@@ -2152,8 +2486,9 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                     // reprocessing stale entries alongside) another
                     // package's goo.global_init.
                     codegen_error(codegen, decl->pos,
-                        "Package-level variable '%s' requires a constant initializer "
-                        "(non-constant package-scope globals are not yet supported)",
+                        "Package-level variable '%s' in an imported package requires a "
+                        "constant initializer (non-constant globals are supported in the "
+                        "main package only; per-package init is not yet implemented)",
                         var_name);
                     return 0;
                 }

@@ -65,6 +65,10 @@ TypeChecker* type_checker_new(void) {
     ComptimeContext* raw = comptime_context_new(NULL);
     checker->comptime_type_ctx = raw ? comptime_type_context_new(raw) : NULL;
 
+    // P3.6 (method values): no selector is being checked as a call callee
+    // at construction time — see the field's doc comment (types.h).
+    checker->selector_call_position = 0;
+
     type_checker_init_builtins(checker);
 
     return checker;

@@ -450,7 +450,15 @@ func process() error {
 }
 ```
 
-## Concurrency
+Deferred calls run at function exit in LIFO order; arguments (and the callee
+function value, for indirect calls) are evaluated when the `defer` statement
+executes, per Go. Defers inside loops push once per iteration (P3.4).
+
+**Known v1 divergence from Go** (pre-existing, found 2026-07-10): a deferred
+function that mutates a NAMED RESULT does not affect the returned value —
+`func f() (r int) { defer func(){ r = r + 1 }(); return 5 }` returns 6 in Go
+but 5 in Goo, because `return` snapshots the value before defers run. Applies
+to both defer mechanisms (static and loop/runtime-stack).
 
 ### Goroutines
 

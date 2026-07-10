@@ -3417,8 +3417,24 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         }
     }
 
-    // Check function expression
+    // Check function expression.
+    //
+    // P3.6 (method values): if the callee is a selector expression, tell
+    // type_check_selector_expr that ITS result feeds this call directly —
+    // it must keep splicing the receiver into params[0] (the existing wire
+    // format the recv_offset arity/arg-type logic below this point depends
+    // on, unchanged). Every OTHER selector — a value position like
+    // `f := c.get`, a function argument, a struct field initializer — never
+    // sets this flag and gets the receiver-STRIPPED type instead (see
+    // type_check_selector_expr's method-lookup arm). Cleared right after so
+    // it doesn't leak into unrelated selector checks later in this
+    // function's own argument loop (each argument is independently
+    // call-position-neutral: an argument that is itself a method selector
+    // in non-call position, e.g. `f(c.get)`, must also be stripped).
+    int selector_callee = call->function && call->function->type == AST_SELECTOR_EXPR;
+    if (selector_callee) checker->selector_call_position = 1;
     Type* func_type = type_check_expression(checker, call->function);
+    if (selector_callee) checker->selector_call_position = 0;
     if (!func_type) return NULL;
 
     // error.Error() -> string (Phase 6 Task 3). `e.Error` resolves (via the
@@ -3441,6 +3457,11 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     }
 
     if (func_type->kind != TYPE_FUNCTION) {
+        // P2.8 cascade suppression: a poisoned callee (bound by a failed
+        // declaration, e.g. the rejected `f := i.m` interface method value)
+        // already carries its diagnostic — propagate silently instead of
+        // stringifying "<poisoned>" into a second one.
+        if (type_is_poison(func_type)) return func_type;
         type_error(checker, expr->pos,
                   "Cannot call non-function type %s", type_to_string(func_type));
         return NULL;
@@ -4252,10 +4273,41 @@ static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position po
     return base;
 }
 
+// P3.6 (method values): build the func type a method selector yields in
+// VALUE position — the same signature `method_type` carries, minus the
+// spliced receiver at params[0] (`type_check_function_decl` puts it there
+// for every method; see the call comment above). type_function COPIES the
+// param_types it's given (types.c), so handing it a pointer into the middle
+// of method_type's OWN array is safe — the result owns an independent copy,
+// and is_variadic is copied across explicitly since type_function always
+// zero-initializes it fresh.
+static Type* type_strip_receiver(Type* method_type) {
+    size_t recv_count = method_type->data.function.param_count;
+    if (recv_count == 0) return NULL;  // invariant violation: every method has a receiver
+    size_t stripped_count = recv_count - 1;
+    Type** stripped_params = stripped_count > 0
+        ? &method_type->data.function.param_types[1] : NULL;
+    Type* stripped = type_function(stripped_params, stripped_count,
+                                   method_type->data.function.return_type);
+    if (stripped) stripped->data.function.is_variadic = method_type->data.function.is_variadic;
+    return stripped;
+}
+
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
 
     SelectorExprNode* selector = (SelectorExprNode*)expr;
+
+    // P3.6 (method values): capture-and-clear the call-position flag the
+    // caller (type_check_call_expr) set for us, immediately. Cleared before
+    // the recursive base-expression check just below (selector->expr —
+    // e.g. `c` in `c.get` — is never itself a call callee) so that check
+    // can't inherit it; restored around the embedding re-invocation further
+    // down (this function calling itself after embed_wrap_base rewrites the
+    // AST), which resolves this SAME logical selector post-rewrite and must
+    // see the original call-position verdict again.
+    int is_call_callee = checker->selector_call_position;
+    checker->selector_call_position = 0;
 
     Type* expr_type = type_check_expression(checker, selector->expr);
     if (!expr_type) return NULL;
@@ -4332,15 +4384,36 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
             Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
             free(mangled);
             if (m && m->type && m->type->kind == TYPE_FUNCTION) {
-                expr->node_type = m->type;
-                return m->type;
+                if (is_call_callee) {
+                    // Existing method-CALL path, byte-for-byte unchanged:
+                    // the receiver stays spliced as params[0] — see
+                    // type_check_call_expr's recv_offset logic just above
+                    // this function in the file.
+                    expr->node_type = m->type;
+                    return m->type;
+                }
+                // P3.6: value position (`f := c.get`, a callback argument, a
+                // struct field initializer, ...) — yield the receiver-
+                // STRIPPED signature (params[1..]) so `f` type-checks and
+                // calls as a plain 0-or-more-arg func value. The receiver
+                // itself is bound into the func value's env cell at codegen
+                // time (composite_codegen.c's method arm); nothing here
+                // allocates or copies — this is a pure type-level view.
+                Type* stripped = type_strip_receiver(m->type);
+                if (!stripped) return NULL;
+                expr->node_type = stripped;
+                return stripped;
             }
         }
         EmbedResult er = embedding_resolve(checker, struct_type, selector->selector);
         if (er.kind == EMBED_FIELD || er.kind == EMBED_METHOD) {
             selector->expr = embed_wrap_base(selector->expr, &er, expr->pos);
             // Re-resolve: each inserted hop is a real (embedded) field, and
-            // the leaf is now a direct member of its owner.
+            // the leaf is now a direct member of its owner. Restore the
+            // call-position verdict captured at entry — this recursive call
+            // resolves the SAME logical selector (post-rewrite), so it must
+            // see it again, not the cleared default.
+            checker->selector_call_position = is_call_callee;
             return type_check_selector_expr(checker, expr);
         }
         if (er.kind == EMBED_AMBIGUOUS) {
@@ -4360,6 +4433,19 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (expr_type->kind == TYPE_INTERFACE) {
         for (InterfaceMethod* im = expr_type->data.interface.methods; im; im = im->next) {
             if (im->name && strcmp(im->name, selector->selector) == 0) {
+                // P3.6 follow-up (sub-B review): interface METHOD VALUES
+                // (`f := i.m`) are a v1 scope cut — binding needs vtable
+                // dispatch through the bound thunk, which doesn't exist.
+                // Reject HERE with an accurate positioned message; without
+                // this the value passes typecheck and dies at codegen with
+                // a misleading "Selector can only be applied to struct
+                // types" attributed to the wrong line.
+                if (!is_call_callee) {
+                    type_error(checker, expr->pos,
+                               "method values on interface types are not supported in v1 "
+                               "(call the method directly, or bind from the concrete type)");
+                    return NULL;
+                }
                 expr->node_type = im->type;
                 return im->type;
             }
@@ -4385,13 +4471,28 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
 
     // Named non-struct type (e.g. `type IntSlice []int`) method call: resolve
     // `Name__selector` exactly like the struct method path above (1199-1208).
+    // P3.6: same call-vs-value fork as that path too — a named-int method in
+    // value position (`f := n.double`) yields the receiver-stripped
+    // signature, while a call callee keeps the spliced receiver for
+    // type_check_call_expr's recv_offset logic. Only a BARE named type
+    // reaches this arm: a pointer-to-named base (`p.double`, p *MyInt)
+    // carries name "*MyInt" (type_pointer), mangles to a symbol that never
+    // exists, and falls through to the rejection below — a pre-existing
+    // limitation of the method-CALL path (verified 2026-07-10), unchanged
+    // here, so the method-VALUE surface exactly tracks the callable surface.
     if (expr_type->name) {
         char* mangled = type_method_mangled_name(expr_type->name, selector->selector);
         Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
         free(mangled);
         if (m && m->type && m->type->kind == TYPE_FUNCTION) {
-            expr->node_type = m->type;
-            return m->type;
+            if (is_call_callee) {
+                expr->node_type = m->type;
+                return m->type;
+            }
+            Type* stripped = type_strip_receiver(m->type);
+            if (!stripped) return NULL;
+            expr->node_type = stripped;
+            return stripped;
         }
     }
 

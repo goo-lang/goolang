@@ -1,11 +1,14 @@
-// global_init_probe (Task 2 / var-init cluster): package-level `var`
-// initializers containing an identifier, call, or other non-constant-
-// foldable expression are evaluated by a synthesized goo.global_init()
-// function, called before user main — fixing a prior SIGSEGV (rc=139) for
-// ANY initializer with an identifier operand (`var y = x`), for composite
-// literals with a non-constant element (`var t = []int{x, 7}`,
-// `var pt = Pt{a: x}` — Task 2b), and a clean rejection for calls
-// (`var w = double(x)`).
+// global_init_probe (Task 2 / var-init cluster; P3.7 acceptance): package-
+// level `var` initializers containing an identifier, call, or other
+// non-constant-foldable expression are evaluated by a synthesized
+// goo.global_init() function, called in main's prologue after
+// goo_os_args_init and before the user body — fixing a prior SIGSEGV
+// (rc=139) for ANY initializer with an identifier operand (`var y = x`),
+// for composite literals with a non-constant element (`var t = []int{x, 7}`,
+// `var pt = Pt{a: x}` — Task 2b), and for call initializers
+// (`var w = double(x)` — this line is the P3.7 roadmap acceptance).
+// Non-main SOURCE packages still reject non-constant globals (one
+// program-wide init exists; per-package init ordering is P4 scope).
 //
 // DEVIATION FROM GO: initializers run in DECLARATION order, not Go's
 // dependency-resolved order. In practice the difference surfaces as

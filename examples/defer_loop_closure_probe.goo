@@ -1,0 +1,42 @@
+// defer_loop_closure_probe (P3.4 review R2): function-VALUED callees in
+// stack-mode defers. Go's rule ("each time a defer statement executes, the
+// function value and parameters are evaluated as usual and saved anew")
+// means the CALLEE is itself a defer-time value: the stack path snapshots
+// its {fn_ptr, env_ptr} funcval pair into the defer env alongside the args
+// and the thunk calls it indirectly. Before this fix each of these shapes
+// was an LLVM verifier ICE ("Referring to an instruction in another
+// function") because the thunk re-emitted the call against the OUTER
+// function's allocas.
+//
+// Shapes pinned, all in ONE function (the per-function fork routes them ALL
+// through the stack because of the loop defers — the regression risk that
+// motivated snapshot-over-reject was precisely a previously-working
+// top-level capturing defer being dragged onto the stack path by an
+// unrelated loop defer in the same function):
+//   1. top-level CAPTURING func-literal defer ("final r" — registered
+//      first, runs last, observes all three increments: r == 3);
+//   2. capturing func-literal defer inside the loop (increments r once per
+//      iteration — three pushed registrations, three increments);
+//   3. local func VALUE `h` deferred inside the loop with a per-iteration
+//      argument (defer-time arg snapshot through an indirect callee).
+//
+// Unwind (LIFO; per iteration i the increment is pushed before h(i)):
+//   h 2, inc(r=1), h 1, inc(r=2), h 0, inc(r=3), final r 3.
+package main
+
+import "fmt"
+
+func helper() {
+    r := 0
+    defer func() { fmt.Println("final r", r) }()
+    h := func(v int) { fmt.Println("h", v) }
+    for i := 0; i < 3; i++ {
+        defer func() { r = r + 1 }()
+        defer h(i)
+    }
+}
+
+func main() {
+    helper()
+    fmt.Println("done")
+}

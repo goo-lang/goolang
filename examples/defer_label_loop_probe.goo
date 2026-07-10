@@ -1,0 +1,45 @@
+// defer_label_loop_probe (P3.4 review R1): a LABELED for-loop still counts
+// as loop-nesting for the defer-stack fork. AST_LABEL_STMT wraps its
+// statement (`L: for ...`) and was missing from the defer pre-pass walker,
+// so a defer inside a labeled loop silently took the static single-slot
+// path (printed only "lbl 2") — same miscompile class as the arena-block
+// gap (defer_arena_loop_probe). The `break L` arm also exercises a labeled
+// early loop exit ahead of the deferred unwind.
+//
+// Also pins the catch-body shape from the same review pass: catch bodies
+// are statement lists nested inside EXPRESSIONS, so the pre-pass must walk
+// expression trees too — a for+defer inside `catch e { ... }` used to take
+// the static path the same way.
+package main
+
+import "fmt"
+
+func mayFail() !int {
+    return error("boom")
+}
+
+func catchLoop() int {
+    v := mayFail() catch e {
+        for i := 0; i < 2; i++ {
+            defer fmt.Println("catch-loop", i)
+        }
+        0
+    }
+    return v
+}
+
+func main() {
+L:
+    for i := 0; i < 3; i++ {
+        defer fmt.Println("lbl", i)
+        if i > 10 {
+            break L
+        }
+    }
+    // Hoisted out of the Println argument list: the fmt.Println shim prints
+    // each argument as it is evaluated, so a call argument whose defers
+    // print would interleave mid-line (pre-existing shim behavior,
+    // unrelated to defer).
+    got := catchLoop()
+    fmt.Println("catch returned", got)
+}

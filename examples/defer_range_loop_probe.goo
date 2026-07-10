@@ -1,0 +1,15 @@
+// defer_range_loop_probe (P3.4): a `for range` loop counts as loop-nesting
+// for the defer-stack fork exactly like a C-style `for` — ForStmtNode covers
+// both under one AST shape (range_expr non-NULL selects the range-desugared
+// form), and the fork's pre-pass increments the same for-depth counter
+// across both.
+package main
+
+import "fmt"
+
+func main() {
+    nums := []int{10, 20, 30}
+    for _, v := range nums {
+        defer fmt.Println(v)
+    }
+}

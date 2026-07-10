@@ -55,6 +55,43 @@ void* goo_arena_alloc(GooArena* a, size_t size);
 void goo_arena_reset(GooArena* a);
 void goo_arena_free(GooArena* a);
 
+// Runtime defer stack (P3.4): backs a "stack-mode" function's defer
+// registrations — a function with at least one loop-nested `defer` routes
+// ALL of its defers through this instead of the static per-lexical-defer
+// active-flag machinery (statement_codegen.c), because a single loop
+// iteration can register more than one dynamic defer and only a growable
+// runtime stack can hold an unbounded, per-iteration count of them.
+//
+// A function's frame is a single goo_defer_frame_t, entry-block-allocated
+// and zero-initialized by codegen (function_codegen.c). Each `defer`
+// statement reached at runtime evaluates its args/receiver on the spot
+// (Go's defer-time evaluation), heap-allocates an env cell holding that
+// snapshot, and pushes {thunk, env} — so "executing the statement IS the
+// registration" and per-iteration snapshots fall out for free. Every
+// function-exit path calls goo_defer_run exactly once (LIFO unwind);
+// goo_defer_run is safe on a never-pushed (zeroed) frame.
+typedef struct goo_defer_entry {
+    void (*fn)(void* env);  // thunk: unpacks env and makes the deferred call
+    void* env;              // goo_alloc'd snapshot cell, or NULL for a no-arg defer
+} goo_defer_entry_t;
+
+typedef struct goo_defer_frame {
+    goo_defer_entry_t* entries;  // goo_realloc'd growable array
+    size_t len;
+    size_t cap;
+} goo_defer_frame_t;
+
+// Push one deferred call onto `f` (grows `entries` via goo_realloc; panics
+// via goo_realloc's own out-of-memory handling — never returns NULL to a
+// caller that then dereferences it).
+void goo_defer_push(goo_defer_frame_t* f, void (*fn)(void* env), void* env);
+
+// Run every entry in `f` in LIFO (last-pushed-first) order, freeing each
+// env right after its call and freeing the entries array afterward. Leaves
+// `f` zeroed (len=0, cap=0, entries=NULL) — safe to call again (a no-op) or
+// on a frame that was never pushed to at all.
+void goo_defer_run(goo_defer_frame_t* f);
+
 // Error handling
 void goo_panic(const char* message) __attribute__((noreturn));
 goo_error_t* goo_new_error(const char* message);

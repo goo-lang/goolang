@@ -386,13 +386,146 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
 #endif
 }
 
+// P3.6 (method values): `f := c.get` in non-call position. The checker has
+// already stamped `expr->node_type` with the receiver-STRIPPED signature
+// (type_check_selector_expr's value-position arm, expression_checker.c) —
+// this builds the runtime VALUE for it: `{ bound_thunk, env }`, the same
+// universal fat-pointer shape every func value uses (type_mapping.c's
+// codegen_get_funcval_pair_type). `env` is a fresh goo_alloc'd heap cell
+// holding the bound receiver, typed EXACTLY as the method's own receiver
+// parameter — a struct COPY for a value receiver (later mutation of the
+// source invisible through the bound value, Go copy semantics) or the
+// pointer itself for a pointer receiver (mutation visible, aliased state).
+//
+// The four receiver-binding cases below mirror call_codegen.c's method-CALL
+// receiver branch (~codegen_generate_call_expr's method fast path) exactly,
+// so a bound method value observes the identical auto-&/auto-deref rules a
+// direct call would; embedding-promoted methods are covered for free since
+// the checker already rewrites a promoted selector's AST to name the owning
+// type directly (embed_wrap_base) before codegen ever sees it — no
+// promotion-hop walking is needed here (unlike call_codegen.c's `promo`,
+// which exists only for the function-generics Tier B bounded-T fallback,
+// irrelevant to this ordinary struct-method path).
+static ValueInfo* codegen_generate_method_value(CodeGenerator* codegen, TypeChecker* checker,
+                                                 ASTNode* expr, SelectorExprNode* selector,
+                                                 Type* recv_static_type, Variable* method_var,
+                                                 const char* mangled_name) {
+    LLVMValueRef named_fn = LLVMGetNamedFunction(codegen->module, mangled_name);
+    if (!named_fn) {
+        codegen_error(codegen, expr->pos,
+                      "internal: method '%s' not found in module", selector->selector);
+        return NULL;
+    }
+
+    Type* method_fn_type = method_var->type;   // receiver spliced as params[0]
+    Type* stripped_fn_type = expr->node_type;  // the checker already stripped it (P3.6)
+    if (!stripped_fn_type || stripped_fn_type->kind != TYPE_FUNCTION ||
+        method_fn_type->kind != TYPE_FUNCTION || method_fn_type->data.function.param_count == 0) {
+        codegen_error(codegen, expr->pos,
+                      "internal: method value missing resolved signature for '%s'",
+                      selector->selector);
+        return NULL;
+    }
+
+    Type* recv_param_type = method_fn_type->data.function.param_types[0];
+    int ptr_recv = recv_param_type->kind == TYPE_POINTER;
+    int recv_is_ptr_value = recv_static_type && recv_static_type->kind == TYPE_POINTER;
+
+    LLVMValueRef thunk = codegen_get_method_bound_thunk(codegen, stripped_fn_type, method_fn_type,
+                                                         named_fn, mangled_name);
+    if (!thunk) {
+        codegen_error(codegen, expr->pos,
+                      "internal: failed to build bound thunk for method '%s'", selector->selector);
+        return NULL;
+    }
+
+    LLVMTypeRef recv_llvm = codegen_type_to_llvm(codegen, recv_param_type);
+    if (!recv_llvm) {
+        codegen_error(codegen, expr->pos,
+                      "cannot lower receiver type for method '%s'", selector->selector);
+        return NULL;
+    }
+
+    // recv_val: a value of LLVM type recv_llvm — the exact bytes snapshotted
+    // into the env cell below. Which of the four cases applies is decided by
+    // (declared receiver kind) x (this call site's static receiver type),
+    // same 2x2 the method-CALL path decides on (call_codegen.c).
+    LLVMValueRef recv_val;
+    if (ptr_recv && !recv_is_ptr_value) {
+        // Auto-address-of: `c.ptrMethod`, c an addressable value. Binding a
+        // pointer-receiver method demands the same addressability a direct
+        // call would (P2.1 method-set rules) — reject cleanly otherwise,
+        // matching call_codegen.c's "non-addressable value" diagnostic.
+        ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, selector->expr);
+        if (!addr || !addr->is_lvalue) {
+            codegen_error(codegen, expr->pos,
+                "cannot bind pointer-receiver method '%s' on non-addressable value",
+                selector->selector);
+            return NULL;
+        }
+        recv_val = addr->llvm_value;
+    } else if (!ptr_recv && recv_is_ptr_value) {
+        // Auto-deref: `p.valMethod`, p is *T — snapshot *p AT BIND TIME (a
+        // later mutation of *p must not be visible through the bound value).
+        ValueInfo* pv = codegen_generate_expression(codegen, checker, selector->expr);
+        if (!pv) return NULL;
+        LLVMValueRef ptr = pv->llvm_value;
+        if (pv->is_lvalue && pv->goo_type) {
+            LLVMTypeRef pt = codegen_type_to_llvm(codegen, pv->goo_type);
+            if (pt) ptr = LLVMBuildLoad2(codegen->builder, pt, ptr, "mval_ptr_load");
+        }
+        value_info_free(pv);
+        recv_val = LLVMBuildLoad2(codegen->builder, recv_llvm, ptr, "mval_recv_deref");
+    } else {
+        // Pointer receiver on an already-pointer value (bind the pointer
+        // itself), or value receiver on a value (snapshot it). Either way:
+        // generate the receiver expression and load through any lvalue
+        // ADDRESS a chained selector/index receiver returns (an identifier
+        // receiver is already auto-loaded to a value by
+        // codegen_generate_identifier and needs no extra load) — mirrors
+        // call_codegen.c's matching branch and its is_lvalue-load comment.
+        ValueInfo* rv = codegen_generate_expression(codegen, checker, selector->expr);
+        if (!rv) return NULL;
+        recv_val = rv->llvm_value;
+        if (rv->is_lvalue && rv->goo_type) {
+            LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
+            if (rt) recv_val = LLVMBuildLoad2(codegen->builder, rt, recv_val, "mval_recv_load");
+        }
+        value_info_free(rv);
+    }
+
+    // Snapshot into a fresh heap cell (goo_alloc — same allocator closures'
+    // env construction uses, function_codegen.c's codegen_generate_func_lit)
+    // sized to the receiver's own LLVM type: sizeof(T) for a value receiver
+    // (the whole struct is copied in), sizeof(ptr) for a pointer receiver
+    // (just the pointer). ALLOC_KIND_DEFAULT + a NULL alloc_site is the same
+    // unconditional-heap choice every other env/box allocation in this
+    // codebase makes; arena-eligibility for closure/method-value envs is out
+    // of this task's scope.
+    LLVMValueRef cell_size = LLVMSizeOf(recv_llvm);
+    LLVMValueRef env_cell = codegen_emit_alloc(codegen, cell_size, ALLOC_KIND_DEFAULT, NULL);
+    if (!env_cell) {
+        codegen_error(codegen, expr->pos,
+                      "internal: failed to allocate receiver cell for method '%s'",
+                      selector->selector);
+        return NULL;
+    }
+    LLVMBuildStore(codegen->builder, recv_val, env_cell);
+
+    LLVMTypeRef pair_ty = codegen_get_funcval_pair_type(codegen);
+    LLVMValueRef pair = LLVMConstNull(pair_ty);
+    pair = LLVMBuildInsertValue(codegen->builder, pair, thunk, 0, "mval_thunk");
+    pair = LLVMBuildInsertValue(codegen->builder, pair, env_cell, 1, "mval_env");
+    return value_info_new(NULL, pair, stripped_fn_type);
+}
+
 ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
-    
+
     SelectorExprNode* selector = (SelectorExprNode*)expr;
 
     // Package value-members (math.Pi, later os.Args): the base is a bare
@@ -431,13 +564,83 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
         }
     }
 
+    // P3.6 (method values): decide field-vs-method BEFORE generating any
+    // code for the base expression — a method receiver's codegen shape
+    // depends on the method's declared receiver kind (see
+    // codegen_generate_method_value's four-way branch above), which is a
+    // DIFFERENT shape than the base_val generated below for field access.
+    // Deciding first (and diverting to the method path without ever
+    // touching base_val) keeps the base expression evaluated EXACTLY ONCE
+    // either way — generating it here first and re-deriving a receiver
+    // address/value again inside the method arm would double-evaluate any
+    // receiver expression with a side effect (e.g. a call in the chain).
+    // type_check_expression on an already-checked node is a pure type-cache
+    // read, not a re-emission — the same pattern the method-CALL fast path
+    // uses to get the receiver's type (call_codegen.c's
+    // codegen_generate_call_expr, ~"Type* recv_type =
+    // type_check_expression(checker, msel->expr);").
+    Type* recv_static_type = type_check_expression(checker, selector->expr);
+    if (!recv_static_type) {
+        codegen_error(codegen, expr->pos, "Failed to resolve selector base type");
+        return NULL;
+    }
+    Type* lookup_type = recv_static_type;
+    if (lookup_type->kind == TYPE_POINTER && lookup_type->data.pointer.pointee_type &&
+        lookup_type->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+        lookup_type = lookup_type->data.pointer.pointee_type;
+    }
+    int try_method = 0;
+    if (lookup_type->kind == TYPE_STRUCT) {
+        int is_field = 0;
+        for (size_t i = 0; i < lookup_type->data.struct_type.field_count; i++) {
+            if (strcmp(lookup_type->data.struct_type.fields[i].name, selector->selector) == 0) {
+                is_field = 1;
+                break;
+            }
+        }
+        try_method = !is_field;
+    } else if (lookup_type->name && lookup_type->kind != TYPE_PACKAGE &&
+               lookup_type->kind != TYPE_INTERFACE && !type_is_error(lookup_type)) {
+        // Named non-struct receiver (`type MyInt int` — named_int_method_
+        // probe territory): no fields exist to shadow the name, so any
+        // selector the checker accepted on it IS a method — mirror the
+        // checker's named non-struct arm (type_check_selector_expr). The
+        // three excludes are shapes whose ->name would false-positive a
+        // mangled lookup while their selectors resolve through entirely
+        // different mechanisms: package members via the math.Pi/os.Args
+        // intercepts above and call_codegen.c's package arms, interface
+        // methods via vtable dispatch (no bound-thunk mechanism in v1), and
+        // the error handle's `.Error` via its checker special-case (typed
+        // string, never a method value).
+        try_method = 1;
+    }
+    if (try_method) {
+        const char* tn = type_receiver_name(lookup_type);
+        char* mangled = tn ? type_method_mangled_name(tn, selector->selector) : NULL;
+        Variable* mvar = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        if (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION) {
+            ValueInfo* mv = codegen_generate_method_value(codegen, checker, expr, selector,
+                                                           recv_static_type, mvar, mangled);
+            free(mangled);
+            return mv;
+        }
+        free(mangled);
+        // Not a resolvable method: fall through to the existing code below,
+        // which re-derives the base type via base_val and reports its own
+        // "Field not found"/"Selector can only be applied to struct types"
+        // diagnostics unchanged (an embedded/promoted name was already
+        // rewritten into a direct member access by the checker's
+        // embed_wrap_base before codegen ever saw this AST, so it never
+        // reaches here).
+    }
+
     // Generate code for the base expression
     ValueInfo* base_val = codegen_generate_expression(codegen, checker, selector->expr);
     if (!base_val) {
         codegen_error(codegen, expr->pos, "Failed to generate base expression for selector");
         return NULL;
     }
-    
+
     // Get the type of the base expression
     Type* base_type = base_val->goo_type;
     
