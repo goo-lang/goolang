@@ -1,0 +1,9 @@
+// P4.1: shim signature checking — strings.Contains(string, string) rejects
+// int args.
+package main
+
+import "strings"
+
+func main() {
+	strings.Contains(1, 2)
+}

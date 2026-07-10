@@ -71,7 +71,7 @@ TEST_DEMOS_DIR = $(TESTDIR)/demos
 LEXER_SRCS = $(SRCDIR)/lexer/lexer.c $(SRCDIR)/lexer/token.c
 PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SRCDIR)/parser/parser_errors.c $(SRCDIR)/parser/parser_actions.c
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
-TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/terminating_stmt.c
+TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c $(SRCDIR)/codegen/monomorphize.c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
@@ -2523,7 +2523,9 @@ VERIFY_ALL_DEPS := \
     test-golden \
     test-golden-o2 \
     test-golden-reject \
-    spmd-bench-probe
+    spmd-bench-probe \
+    goostd-resolver-probe \
+    reldir-import-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -3432,6 +3434,40 @@ pkg-argcheck-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -ne 0 ]; then echo "pkg-argcheck-probe: FAIL (literal-adapt Half(84) rejected — expected int64 adaptation)"; cat build/pac_lit.err; exit 1; fi; \
 	  out=$$(./build/pac_lit.out); if [ "$$out" != "42" ]; then echo "pkg-argcheck-probe: FAIL (Half(84) literal-adapt printed '$$out', want 42)"; exit 1; fi
 	@echo "pkg-argcheck-probe: PASS"
+
+# P4.5: source-dir-relative imports. Three throwaway package trees under
+# build/reldir_probe/, each proving one resolution rule from the design doc
+# (docs/superpowers/specs/2026-07-10-p4-packages-a-design.md):
+#   - rel: "./mathx" resolves against the MAIN FILE'S OWN DIRECTORY, with no
+#     matching entry anywhere under GOOROOT (proves the source-dir tier is
+#     real, not an accidental GOOROOT hit).
+#   - local: a bare "onlylocal" import — absent from GOOROOT — falls back to
+#     the main file's directory as the LAST tier.
+#   - shadow: a bare "mypkg" import exists in BOTH goostd/mypkg (Double(n) =
+#     n+n) and a same-named local directory (Double(n) = n*3, deliberately
+#     different). GOOROOT must win — asserted by behavior (21 -> 42, not 63)
+#     since the resolver returns no other signal distinguishing the tiers.
+#     This is the deliberate roadmap deviation: source-dir is a FALLBACK,
+#     never a shadow, to avoid a local dir silently hijacking a stdlib name.
+reldir-import-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build/reldir_probe/mathx build/reldir_probe/onlylocal build/reldir_probe/mypkg
+	@echo "=== reldir-import-probe: source-dir-relative + bare-fallback + shadow-prevention imports ==="
+	@printf 'package mathx\nfunc Double(x int) int { return x*2 }\n' > build/reldir_probe/mathx/mathx.go
+	@printf 'package main\nimport ("fmt"\n"./mathx")\nfunc main() { fmt.Println(mathx.Double(21)) }\n' > build/reldir_probe/rel_main.goo
+	@printf 'package onlylocal\nfunc Value() int { return 77 }\n' > build/reldir_probe/onlylocal/onlylocal.go
+	@printf 'package main\nimport ("fmt"\n"onlylocal")\nfunc main() { fmt.Println(onlylocal.Value()) }\n' > build/reldir_probe/local_main.goo
+	@printf 'package mypkg\nfunc Double(n int) int { return n*3 }\n' > build/reldir_probe/mypkg/mypkg.go
+	@printf 'package main\nimport ("fmt"\n"mypkg")\nfunc main() { fmt.Println(mypkg.Double(21)) }\n' > build/reldir_probe/shadow_main.goo
+	@"$(COMPILER)" build/reldir_probe/rel_main.goo -o build/reldir_probe/rel_main.out 2>build/reldir_probe/rel_main.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "reldir-import-probe: FAIL (./mathx did not compile)"; cat build/reldir_probe/rel_main.err; exit 1; fi; \
+	  out=$$(./build/reldir_probe/rel_main.out); if [ "$$out" != "42" ]; then echo "reldir-import-probe: FAIL (./mathx: printed '$$out', want 42)"; exit 1; fi
+	@"$(COMPILER)" build/reldir_probe/local_main.goo -o build/reldir_probe/local_main.out 2>build/reldir_probe/local_main.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "reldir-import-probe: FAIL (bare onlylocal fallback did not compile)"; cat build/reldir_probe/local_main.err; exit 1; fi; \
+	  out=$$(./build/reldir_probe/local_main.out); if [ "$$out" != "77" ]; then echo "reldir-import-probe: FAIL (bare onlylocal: printed '$$out', want 77)"; exit 1; fi
+	@"$(COMPILER)" build/reldir_probe/shadow_main.goo -o build/reldir_probe/shadow_main.out 2>build/reldir_probe/shadow_main.err; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "reldir-import-probe: FAIL (bare mypkg shadow case did not compile)"; cat build/reldir_probe/shadow_main.err; exit 1; fi; \
+	  out=$$(./build/reldir_probe/shadow_main.out); if [ "$$out" != "42" ]; then echo "reldir-import-probe: FAIL (bare mypkg printed '$$out', want 42 (GOOROOT) — got the local shadow instead)"; exit 1; fi
+	@echo "reldir-import-probe: PASS"
 
 # Forward references (Go package-scope semantics): a function body may call a
 # function declared LATER in the same file/package. Requires the type checker's

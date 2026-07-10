@@ -325,6 +325,13 @@ typedef struct {
     char** sources;         // every source buffer, freed at teardown
     size_t source_count;
     size_t source_cap;
+
+    // P4.5: the main .goo file's directory, threaded down to every
+    // resolve_import() call in this walk (walk_import, below) so "./name"
+    // and bare-name-fallback imports can resolve relative to it. NOT owned
+    // by PkgGraph — points into a buffer that outlives the walk (a stack
+    // buffer in compile_file); NULL when no source-dir context applies.
+    const char* source_dir;
 } PkgGraph;
 
 static PkgEntry* pkg_graph_find(PkgGraph* g, const char* import_path) {
@@ -444,6 +451,13 @@ static bool is_stdlib_shim_import(const char* path) {
     // so those resolve via its exports; the codegen/type-check shim path stays a
     // per-symbol FALLBACK for the functions still implemented as shims
     // (Contains/ToUpper/Split/Join) — resolution is exports-first, then shim.
+    //
+    // P4.4: normalize first so a nested spelling of a (currently hypothetical)
+    // shim alias can never slip past this comparison — a no-op today since
+    // neither table entry (unicode/utf8, math/bits) names a shim package, but
+    // keeps every raw-import-path comparison funneled through the same single
+    // choke point (see normalize_import_path's doc comment).
+    path = normalize_import_path(path);
     static const char* const shim[] = {"fmt", "os", "math", "errors"};
     for (size_t i = 0; i < sizeof(shim) / sizeof(shim[0]); i++) {
         if (strcmp(path, shim[i]) == 0) return true;
@@ -504,8 +518,29 @@ static int walk_import(PkgGraph* g, const char* import_path) {
     if (!e) { fprintf(stderr, "Error: out of memory resolving imports\n"); return -1; }
     e->state = PKG_IN_PROGRESS;
 
+    // P4.5 review fix: a ".." segment is an explicit rejection, not a
+    // resolve — pre-fix, "../pkg" fell through the bare-name tiers and
+    // opendir'd <gooroot>/../pkg and <source_dir>/../pkg, escaping both
+    // roots (verified by the review). Go rejects ".." in import paths
+    // outright; so do we. Checked segment-wise so a package legitimately
+    // named "a..b" (weird but not traversal) is unaffected.
+    {
+        const char* seg = import_path;
+        while (seg && *seg) {
+            const char* slash = strchr(seg, '/');
+            size_t len = slash ? (size_t)(slash - seg) : strlen(seg);
+            if (len == 2 && seg[0] == '.' && seg[1] == '.') {
+                fprintf(stderr,
+                        "Error: invalid import path \"%s\" (\"..\" segments are not allowed)\n",
+                        import_path);
+                return -1;
+            }
+            seg = slash ? slash + 1 : NULL;
+        }
+    }
+
     PackageSource ps;
-    if (resolve_import(import_path, &ps) != 0) {
+    if (resolve_import(import_path, g->source_dir, &ps) != 0) {
         fprintf(stderr, "Error: cannot resolve import \"%s\"\n", import_path);
         return -1;
     }
@@ -546,10 +581,13 @@ static int walk_import(PkgGraph* g, const char* import_path) {
 
 // Drive the import-graph walk from main's import list and, for --dump-packages,
 // print the resolved packages in topological order (leaves first) followed by
-// "main". Returns true on success.
-static bool dump_package_graph(ProgramNode* main_prog) {
+// "main". Returns true on success. `source_dir` (P4.5) is the main .goo
+// file's directory, threaded down so "./name" and bare-name-fallback imports
+// resolve the same way here as they do in the real compile path below.
+static bool dump_package_graph(ProgramNode* main_prog, const char* source_dir) {
     PkgGraph g;
     memset(&g, 0, sizeof(g));
+    g.source_dir = source_dir;
 
     bool ok = (walk_program_imports(&g, main_prog->imports) == 0);
     if (ok) {
@@ -607,11 +645,32 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
     return true;
 }
 
+// P4.5: extract the directory component of the main .goo file's path, into a
+// caller-owned fixed buffer (no heap allocation, so compile_file's many
+// early-return paths need no matching free()). "foo.goo" (no slash) yields
+// "." (the compiler's invocation directory); "dir/sub/foo.goo" yields
+// "dir/sub"; a path starting with '/' preserves a leading "/" root.
+static void compute_source_dir(const char* filename, char* out_buf, size_t out_size) {
+    if (!filename || out_size == 0) return;
+    const char* slash = strrchr(filename, '/');
+    if (!slash) { snprintf(out_buf, out_size, "."); return; }
+    size_t len = (size_t)(slash - filename);
+    if (len == 0) { snprintf(out_buf, out_size, "/"); return; }
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out_buf, filename, len);
+    out_buf[len] = '\0';
+}
+
 static bool compile_file(const char* filename, CompilerOptions* options) {
     if (options->verbose) {
         printf("Compiling %s...\n", filename);
     }
-    
+
+    // P4.5: computed once, used by both the --dump-packages walk and the
+    // real package-compilation walk below.
+    char source_dir[4096];
+    compute_source_dir(filename, source_dir, sizeof(source_dir));
+
     // Read source file
     char* source = read_file(filename);
     if (!source) {
@@ -685,7 +744,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     // fed into later phases (Tasks 4/5). `ast` (main) was snapshotted above,
     // so the walk clobbering global ast_root is harmless.
     if (options->dump_packages) {
-        bool ok = dump_package_graph((ProgramNode*)ast);
+        bool ok = dump_package_graph((ProgramNode*)ast, source_dir);
         ast_node_free(ast);
         lexer_free(lexer);
         free(source);
@@ -752,6 +811,7 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
     {
         PkgGraph pkg_graph;
         memset(&pkg_graph, 0, sizeof(pkg_graph));
+        pkg_graph.source_dir = source_dir;
         bool pkgs_ok =
             (walk_program_imports(&pkg_graph, ((ProgramNode*)ast)->imports) == 0)
             && compile_resolved_packages(&pkg_graph, type_checker, codegen);

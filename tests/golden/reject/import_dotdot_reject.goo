@@ -1,0 +1,11 @@
+// P4.5 review fix: a ".." segment in an import path is an explicit
+// rejection (Go rejects these outright) — pre-fix it silently fell
+// through the bare-name tiers and could opendir directories OUTSIDE both
+// GOOROOT and the source dir (parent traversal). The message names the
+// rule; "cannot resolve" would have implied a missing package instead.
+package main
+
+import "../escape"
+
+func main() {
+}

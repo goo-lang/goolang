@@ -1,0 +1,8 @@
+// P4.1: shim signature checking — math.Sqrt(float64) rejects a string arg.
+package main
+
+import "math"
+
+func main() {
+	math.Sqrt("x")
+}

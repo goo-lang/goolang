@@ -72,3 +72,17 @@ Per-commit: make lexer + golden (393/0 baseline) + reject (64/0 baseline) + unit
 121/256 exact (no grammar changes — hard requirement) + verify-core. New fixtures raise counts.
 Pre-PR: review wave scaled to risk (checker/resolver — moderate; no codegen IR changes expected
 beyond none). Sub-A exit: the three roadmap acceptance rows demonstrably green.
+
+## Post-review addendum (2026-07-10)
+
+Review wave (Opus checker/resolver + Sonnet parity/truth): both APPROVE, no CRITICAL/MAJOR.
+Fixes applied: ".." import segments now explicitly rejected (were silently resolving through
+the bare-name tiers — the exact confusing fallthrough this doc flagged); defensive guard +
+coupling comment on the variadic arity subtraction (zero-fixed-param variadic shim rows rely
+on skip_variadic_builtin never reaching the check — a future row breaking that coupling now
+degrades safely instead of size_t-underflowing). Known latent (benign, recorded): importing
+both "unicode/utf8" and "utf8" creates two package-graph keys for one directory — hazard only
+if a package is ever compiled per-key twice. Intended behavior change recorded on the P4.1
+roadmap row: typed narrow-int/int→float shim args now reject (Go parity; previously codegen
+coerced silently). Pre-existing, out of scope: argument-diagnostic columns offset by +2
+(reproduces on plain user calls on main).

@@ -83,17 +83,50 @@ static void free_str_array(char** arr, size_t count) {
     free(arr);
 }
 
-int resolve_import(const char* import_path, PackageSource* out) {
-    if (!out) return 1;
-    out->files = NULL;
-    out->file_count = 0;
-    out->name = NULL;
-    out->import_path = NULL;
-    if (!import_path) return 1;
+// P4.4 (import path aliases): a small table mapping a Go-style nested import
+// spelling (as Go's real stdlib names it, e.g. "unicode/utf8") to the flat
+// directory name goostd actually vendors it under (e.g. "utf8" —
+// goostd/utf8/utf8.go). This is a SPELLING equivalence only, not Go's
+// `import alias "path"` syntax: the flat spelling keeps working unchanged
+// (existing probes), and both spellings resolve to the identical package
+// (same short name, same exports, same mangled symbols) since
+// PackageSource.name is independently derived from the last path segment
+// (see below) and never depends on which spelling was used.
+//
+// Single choke point: this is the ONLY table of aliases in the codebase.
+// Every site that compares or resolves a raw import-path string against a
+// known set of names funnels through normalize_import_path() first (here,
+// and defensively in goo.c's is_stdlib_shim_import) so a future alias entry
+// never needs a second copy of this list.
+typedef struct {
+    const char* nested;      // Go-style nested spelling, as written in source
+    const char* flat;        // goostd's actual flat directory/package name
+} ImportPathAlias;
 
-    char pkg_dir[4096];
-    snprintf(pkg_dir, sizeof(pkg_dir), "%s/%s", goo_gooroot_dir(), import_path);
+static const ImportPathAlias import_path_aliases[] = {
+    {"unicode/utf8", "utf8"},
+    {"math/bits", "bits"},
+};
 
+const char* normalize_import_path(const char* import_path) {
+    if (!import_path) return import_path;
+    for (size_t i = 0; i < sizeof(import_path_aliases) / sizeof(import_path_aliases[0]); i++) {
+        if (strcmp(import_path, import_path_aliases[i].nested) == 0) {
+            return import_path_aliases[i].flat;
+        }
+    }
+    return import_path; // flat/unaliased spellings pass through unchanged
+}
+
+// Scan an already-resolved directory `pkg_dir` for non-_test.go *.go files
+// and populate `out` on success. `import_path` is kept purely to derive
+// out->name (last path segment) and out->import_path (recorded verbatim) —
+// it plays no part in the filesystem lookup itself, which is entirely
+// driven by `pkg_dir`. Returns 0 on success, 1 if the directory doesn't
+// exist or holds no buildable *.go files (leaving `out` untouched, since
+// every failure return below is before `out` is written — callers rely on
+// this to retry a second tier with the same `out`).
+static int resolve_package_dir(const char* pkg_dir, const char* import_path, PackageSource* out) {
     DIR* dir = opendir(pkg_dir);
     if (!dir) return 1; // package directory doesn't exist
 
@@ -128,7 +161,7 @@ int resolve_import(const char* import_path, PackageSource* out) {
 
     qsort(names, count, sizeof(char*), cmp_str_ptr);
 
-    // Pass 2: turn each filename into a full (gooroot-relative) path.
+    // Pass 2: turn each filename into a full (pkg_dir-relative) path.
     char** files = malloc(count * sizeof(char*));
     if (!files) { free_str_array(names, count); return 1; }
     for (size_t i = 0; i < count; i++) {
@@ -151,6 +184,52 @@ int resolve_import(const char* import_path, PackageSource* out) {
         return 1;
     }
     return 0;
+}
+
+int resolve_import(const char* import_path, const char* source_dir, PackageSource* out) {
+    if (!out) return 1;
+    out->files = NULL;
+    out->file_count = 0;
+    out->name = NULL;
+    out->import_path = NULL;
+    if (!import_path) return 1;
+
+    // P4.5 (source-dir-relative imports): "./name" is the EXPLICIT local
+    // spelling — resolved against source_dir ONLY, never GOOROOT. No
+    // fallback: a typo'd "./name" should fail cleanly, not silently
+    // resolve to an unrelated stdlib package of the same short name.
+    if (import_path[0] == '.' && import_path[1] == '/') {
+        if (!source_dir) return 1; // no source-dir context available (e.g. a resolver_probe-style direct caller) — unresolvable
+        const char* rel = import_path + 2;
+        if (rel[0] == '\0') return 1; // "./" with nothing after it
+        char pkg_dir[4096];
+        snprintf(pkg_dir, sizeof(pkg_dir), "%s/%s", source_dir, rel);
+        return resolve_package_dir(pkg_dir, import_path, out);
+    }
+
+    // Bare name: GOOROOT tiers first (unchanged precedence — see the design
+    // doc's deliberate deviation note: source-dir-first would let a local
+    // directory silently shadow a same-named stdlib package). Normalize
+    // BEFORE the GOOROOT join only — out->import_path/out->name (derived
+    // inside resolve_package_dir) keep the caller's original spelling;
+    // out->name already equals the flat short name for every alias table
+    // entry via its own last-path-segment derivation (e.g.
+    // strrchr("unicode/utf8", '/') -> "utf8"), so no separate normalization
+    // is needed there.
+    const char* resolved_path = normalize_import_path(import_path);
+    char gooroot_pkg_dir[4096];
+    snprintf(gooroot_pkg_dir, sizeof(gooroot_pkg_dir), "%s/%s", goo_gooroot_dir(), resolved_path);
+    if (resolve_package_dir(gooroot_pkg_dir, import_path, out) == 0) return 0;
+
+    // LAST tier: the main .goo file's own directory, bare-name fallback.
+    // Deliberately tried only after GOOROOT has already failed.
+    if (source_dir) {
+        char local_pkg_dir[4096];
+        snprintf(local_pkg_dir, sizeof(local_pkg_dir), "%s/%s", source_dir, import_path);
+        if (resolve_package_dir(local_pkg_dir, import_path, out) == 0) return 0;
+    }
+
+    return 1; // unresolvable in any tier
 }
 
 void package_source_free(PackageSource* p) {

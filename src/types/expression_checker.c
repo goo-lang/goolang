@@ -1,5 +1,6 @@
 #include "types.h"
 #include "embedding.h"
+#include "shim_signatures.h"  // P4.1: declarative stdlib-shim call signatures
 #include "comptime.h"  // comptime_context_lookup_func: order-independent func registry
 #include <stdlib.h>
 #include <string.h>
@@ -3635,6 +3636,21 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         checked_callee = exp;
                     }
                 }
+                // P4.1: no source export matched (true for every shim symbol —
+                // the seeded shim Package carries an empty exports scope, per
+                // the comment above) — fall back to the declarative shim
+                // table. shim_signature_lookup already built func_type's real
+                // param list (see stdlib_package_lookup), so this only needs
+                // to confirm (package, name) names a known shim CALLABLE
+                // before flipping check_signature on; no re-lookup of the
+                // Type itself, and no Variable to record as checked_callee
+                // (shim functions never have comptime params to walk).
+                if (!check_signature &&
+                    shim_signature_is_known_call(pkg_ident->name, sel->selector)) {
+                    check_signature = 1;
+                    recv_offset = 0;
+                    callee_name = sel->selector;
+                }
             }
         }
     }
@@ -3827,6 +3843,23 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 is_untyped_int_rooted(arg, 0)) { // for_float_context=0: integer param, shifts and /,% stay valid
                 if (!adapt_untyped_int_operand(checker, arg, param_type, 0, 1)) return NULL;
                 arg_type = param_type;
+            } else if (arg && param_type && type_is_float(param_type) &&
+                       is_untyped_int_rooted(arg, 1)) {
+                // P4.1 finding (latent gap, not a shim-table error): this call-arg
+                // path never adapted an untyped INT literal to a FLOAT parameter —
+                // only the int-target branch above existed. It was never exercised
+                // before shim signatures existed because check_signature never fired
+                // for a package call (math.Sqrt/Pow/...), so `math.Pow(2, 10)`'s
+                // literals stayed int64 and only codegen's separate SIToFP coercion
+                // (codegen_generate_stdlib_call) made it work. Once math.Pow's real
+                // float64 params are checked here, the SAME literals would otherwise
+                // hit the numeric-width mismatch below ("cannot use int64 as
+                // float64") for code that already compiled correctly. Mirrors the
+                // for_float_context=1 adaptation struct fields/binary exprs already
+                // do (see is_untyped_int_rooted's doc comment, which documents this
+                // call-arg site as float-adapting even though, until now, it wasn't).
+                if (!adapt_untyped_int_operand(checker, arg, param_type, 0, 1)) return NULL;
+                arg_type = param_type;
             }
 
             // type_compatible() no longer permits ANY numeric->numeric pair —
@@ -3930,9 +3963,15 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             // The variadic param itself (declared's last slot) has no fixed
             // arity — zero or more trailing args pack into it (`sum()` is
             // valid: an empty slice). Only the FIXED prefix before it is
-            // required; declared >= 1 always holds here because a variadic
-            // signature always carries at least the slice param itself.
-            size_t min_args = declared - 1;
+            // required. declared >= 1 normally holds (a variadic signature
+            // carries at least the slice param), but the shim table's
+            // zero-fixed-param variadic rows (fmt.Println family) encode
+            // param_types=NULL/param_count=0 and rely on the
+            // skip_variadic_builtin path never reaching here — an implicit
+            // coupling (P4.1 review). Guard the subtraction so a future
+            // table row that breaks that coupling degrades to min_args=0
+            // instead of a size_t underflow that requires SIZE_MAX args.
+            size_t min_args = declared > 0 ? declared - 1 : 0;
             if (arg_count < min_args) {
                 type_error(checker, expr->pos,
                            "call to %s: not enough arguments (have %zu, want at least %zu)",
@@ -4138,63 +4177,20 @@ Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
     }
 }
 
-// stdlib_package_lookup returns a function Type for a (package, name) pair
-// drawn from the four hardcoded stdlib packages. Returns NULL if the pair
-// isn't known. This is a deliberate shortcut for M7-stdlib-expansion: the
-// type checker doesn't yet load stdlib/*.goo files, so we hand it the
-// minimum surface needed to type-check fmt.Println etc.
+// stdlib_package_lookup returns a Type for a (package, name) pair drawn from
+// the stdlib shim surface. Returns NULL if the pair isn't known. Package
+// VALUE members (not calls) are handled inline here, exactly as before —
+// they carry no type_function wrapper and are outside shim_signatures.c's
+// table (see that file's doc comment). Every CALLABLE member is now built
+// from the declarative table (P4.1) via shim_signature_lookup, which
+// supplies REAL parameter lists instead of the old param-less
+// `type_function(NULL, 0, ret)` stubs — see shim_signatures.h for the full
+// design and shim_signature_is_known_call for the call-checker hook this
+// enables.
 static Type* stdlib_package_lookup(TypeChecker* checker,
                                    const char* package,
                                    const char* name) {
     if (!checker || !package || !name) return NULL;
-    Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
-
-    // fmt.Println(string) -> void  (one-arg-only stub; full variadic comes later)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Println") == 0) {
-        return type_function(NULL, 0, void_t);
-    }
-
-    // fmt.Print(args...) -> void  (like Println but no trailing newline, and a
-    // space is inserted between two operands only when neither is a string)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Print") == 0) {
-        return type_function(NULL, 0, void_t);
-    }
-
-    // fmt.Printf(format string, args...) -> void  (compile-time format walker)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Printf") == 0) {
-        return type_function(NULL, 0, void_t);
-    }
-
-    // fmt.Sprintf(format string, args...) -> string  (compile-time format builder)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Sprintf") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // fmt.Sprint(args...) -> string  (like Sprintf without a format string;
-    // space between two operands only when neither is a string) and
-    // fmt.Sprintln(args...) -> string  (always space-separated + trailing \n)
-    if (strcmp(package, "fmt") == 0 &&
-        (strcmp(name, "Sprint") == 0 || strcmp(name, "Sprintln") == 0)) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // fmt.Errorf(format string, args...) -> error  (Sprintf + box)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Errorf") == 0) {
-        return type_function(NULL, 0, type_checker_error_type(checker));
-    }
-
-    // os.Exit(int) -> void
-    if (strcmp(package, "os") == 0 && strcmp(name, "Exit") == 0) {
-        return type_function(NULL, 0, void_t);
-    }
-
-    // os.Getenv(string) -> string
-    if (strcmp(package, "os") == 0 && strcmp(name, "Getenv") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
 
     // os.Args -> []string. A package VALUE member, not a call — mirrors
     // math.Pi below (no type_function wrapper). Real argv is captured
@@ -4206,90 +4202,13 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_slice(string_t);
     }
 
-    // File I/O (M1): scalar signatures, all returning int (bytes written /
-    // byte value / size, or a negative value on error).
-    //   os.WriteFile(path string, data string) -> int
-    //   os.ReadByte(path string, offset int)   -> int
-    //   os.FileSize(path string)               -> int
-    if (strcmp(package, "os") == 0 &&
-        (strcmp(name, "WriteFile") == 0 || strcmp(name, "ReadByte") == 0 ||
-         strcmp(name, "FileSize") == 0)) {
-        Type* int_t = type_checker_get_builtin(checker, TYPE_INT32);
-        return type_function(NULL, 0, int_t);
-    }
-
     // math.Pi -> float64. A package VALUE member, not a call — the
     // returned type is the value's type, no type_function wrapper.
     if (strcmp(package, "math") == 0 && strcmp(name, "Pi") == 0) {
         return type_checker_get_builtin(checker, TYPE_FLOAT64);
     }
 
-    // math.Sqrt/Pow/Abs/Min/Max(float64...) -> float64
-    if (strcmp(package, "math") == 0 &&
-        (strcmp(name, "Sqrt") == 0 || strcmp(name, "Pow") == 0 ||
-         strcmp(name, "Abs") == 0 || strcmp(name, "Min") == 0 ||
-         strcmp(name, "Max") == 0)) {
-        Type* float_t = type_checker_get_builtin(checker, TYPE_FLOAT64);
-        return type_function(NULL, 0, float_t);
-    }
-
-    // strings.Contains(string, string) -> bool
-    if (strcmp(package, "strings") == 0 && strcmp(name, "Contains") == 0) {
-        Type* bool_t = type_checker_get_builtin(checker, TYPE_BOOL);
-        return type_function(NULL, 0, bool_t);
-    }
-
-    // strings.ToUpper/ToLower/TrimSpace(string) -> string
-    if (strcmp(package, "strings") == 0 &&
-        (strcmp(name, "ToUpper") == 0 || strcmp(name, "ToLower") == 0 ||
-         strcmp(name, "TrimSpace") == 0)) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // strings.Split(string, string) -> []string
-    if (strcmp(package, "strings") == 0 && strcmp(name, "Split") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, type_slice(string_t));
-    }
-
-    // strings.Join([]string, string) -> string
-    if (strcmp(package, "strings") == 0 && strcmp(name, "Join") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // strconv.Itoa(int) -> string
-    if (strcmp(package, "strconv") == 0 && strcmp(name, "Itoa") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // strconv.Atoi(string) -> !int  (error union: success=int, error=string).
-    // The value arm is the language's `int`, which is now int64 (Go: int is
-    // 64-bit here). The bridge binds `n` from this value type, and `n` then
-    // round-trips through an `int`-typed slot (e.g. `func parse(s) (int, error)`);
-    // both are int64, so the tuple slot matches.
-    if (strcmp(package, "strconv") == 0 && strcmp(name, "Atoi") == 0) {
-        Type* int_t = type_checker_get_builtin(checker, TYPE_INT64);
-        Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, type_error_union(int_t, err_t));
-    }
-
-    // errors.New(string) -> error  (?*int8 — the nullable error type)
-    // For v1, the returned error is a non-nil marker; message storage is
-    // deferred to Phase 6 (.Error() method / runtime error struct).
-    if (strcmp(package, "errors") == 0 && strcmp(name, "New") == 0) {
-        Type* err_t = type_checker_error_type(checker);
-        return type_function(NULL, 0, err_t);
-    }
-
-    // errors.Unwrap(error) -> error  (returns the wrapped cause, or nil)
-    if (strcmp(package, "errors") == 0 && strcmp(name, "Unwrap") == 0) {
-        return type_function(NULL, 0, type_checker_error_type(checker));
-    }
-
-    return NULL;
+    return shim_signature_lookup(checker, package, name);
 }
 
 // Struct embedding desugar: rewrite `o.X` into `(o.Hop1.Hop2).X` in place, so
