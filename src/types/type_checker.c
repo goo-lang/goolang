@@ -360,6 +360,19 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, close_var);
     }
 
+    // recover (P3.5, user decision 2026-07-10: minimum v1 scope). Registered
+    // ONLY so `recover()` resolves and reaches the clean v1-unsupported
+    // rejection in type_check_call_expr — without this it dies earlier with
+    // the misleading "Undefined variable 'recover'". Full panic unwinding
+    // is post-v1; every call is rejected there.
+    Type* recover_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* recover_var = variable_new("recover", recover_type, (Position){0, 0, 0, "builtin"});
+    if (recover_var) {
+        recover_var->is_builtin = 1;
+        recover_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, recover_var);
+    }
+
     // make(map[K]V[, hint]) / make([]T, n[, cap]) -> map/slice value.
     // Registered like delete/panic (void-returning stub signature is
     // irrelevant — the call is always special-cased below) so the bare

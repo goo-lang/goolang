@@ -3338,6 +3338,17 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = checker->builtin_types[TYPE_VOID];
             return checker->builtin_types[TYPE_VOID];
         }
+        // recover() — rejected in v1 (P3.5, user decision 2026-07-10:
+        // minimum scope). The builtin is registered in scope purely so the
+        // call reaches THIS message instead of "Undefined variable
+        // 'recover'". Returning NULL routes `r := recover()` through the
+        // failed-declaration path, which poisons r (P2.8) — no cascade.
+        if (strcmp(func_ident->name, "recover") == 0) {
+            type_error(checker, expr->pos,
+                       "recover() is not supported in v1; panics terminate the program "
+                       "(use !T error unions for recoverable errors)");
+            return NULL;
+        }
         // delete(m, k) -> void. Removes key k from map m (no-op if absent).
         // Exactly two args: the first must be a map, the second assignable
         // to its key type (any admitted key kind — see the AST_MAP_TYPE
