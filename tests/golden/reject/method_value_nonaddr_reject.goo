@@ -1,0 +1,27 @@
+// P3.6 (sub-B review coverage): binding a POINTER-receiver method value on
+// a non-addressable operand must be rejected, matching Go ("cannot call
+// pointer method on ..."). The value-receiver equivalent on an rvalue IS
+// legal (Go spec, verified against go run) and is covered by the run
+// suite; this pins the rejection side. The diagnostic is a codegen error —
+// the reject harness only requires nonzero exit + no binary + the message
+// substring, all of which codegen errors satisfy.
+package main
+
+type Point struct {
+	x int
+	y int
+}
+
+func (p *Point) scale(f int) {
+	p.x = p.x * f
+	p.y = p.y * f
+}
+
+func makePoint() Point {
+	return Point{x: 1, y: 2}
+}
+
+func main() {
+	f := makePoint().scale
+	f(2)
+}

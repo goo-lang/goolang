@@ -63,8 +63,9 @@ func main() {
 	fmt.Println(f())   // 5 (unchanged: bound copy)
 	fmt.Println(c.get()) // 99 (direct call sees the live value)
 
-	// 3: pointer receiver — mutation through the bound value's pointer
-	// is visible via a second bound value on the SAME receiver.
+	// 3: pointer receiver — the bound value carries the POINTER, so
+	// mutations through it are visible on the receiver itself (checked
+	// directly via pc.n below), the aliasing dual of case 2's snapshot.
 	pc := &Counter{n: 1}
 	incFn := pc.inc
 	incFn()

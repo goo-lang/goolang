@@ -3457,6 +3457,11 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     }
 
     if (func_type->kind != TYPE_FUNCTION) {
+        // P2.8 cascade suppression: a poisoned callee (bound by a failed
+        // declaration, e.g. the rejected `f := i.m` interface method value)
+        // already carries its diagnostic — propagate silently instead of
+        // stringifying "<poisoned>" into a second one.
+        if (type_is_poison(func_type)) return func_type;
         type_error(checker, expr->pos,
                   "Cannot call non-function type %s", type_to_string(func_type));
         return NULL;
@@ -4428,6 +4433,19 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (expr_type->kind == TYPE_INTERFACE) {
         for (InterfaceMethod* im = expr_type->data.interface.methods; im; im = im->next) {
             if (im->name && strcmp(im->name, selector->selector) == 0) {
+                // P3.6 follow-up (sub-B review): interface METHOD VALUES
+                // (`f := i.m`) are a v1 scope cut — binding needs vtable
+                // dispatch through the bound thunk, which doesn't exist.
+                // Reject HERE with an accurate positioned message; without
+                // this the value passes typecheck and dies at codegen with
+                // a misleading "Selector can only be applied to struct
+                // types" attributed to the wrong line.
+                if (!is_call_callee) {
+                    type_error(checker, expr->pos,
+                               "method values on interface types are not supported in v1 "
+                               "(call the method directly, or bind from the concrete type)");
+                    return NULL;
+                }
                 expr->node_type = im->type;
                 return im->type;
             }
