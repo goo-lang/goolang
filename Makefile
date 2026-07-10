@@ -1361,6 +1361,17 @@ chan-mt-stress: $(RUNTIME_LIB)
 	@timeout 60 ./build/chan_mt_stress; rc=$$?; \
 	if [ $$rc -eq 0 ]; then echo "chan-mt-stress: PASS"; else echo "chan-mt-stress: FAIL (exit $$rc)"; exit 1; fi
 
+# Unbuffered fan-in lost-wakeup regression (2026-07-10 review finding): the
+# not_full condvar serves two sender wait-predicates; a single signal could
+# strand a slot-waiter forever. Fixed by broadcasting not_full; this stress
+# reproduces the pre-fix failure within the first batches.
+fanin-stress: $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== fanin-stress: multi-sender unbuffered fan-in has no lost wakeups ==="
+	$(CC) -std=c23 -D_GNU_SOURCE -Iinclude -I. tests/concurrency/fanin_stress.c $(RUNTIME_LIB) -lpthread -lm -o build/fanin_stress
+	@timeout 120 ./build/fanin_stress; rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "fanin-stress: PASS"; else echo "fanin-stress: FAIL (exit $$rc)"; exit 1; fi
+
 # M9: a fully-deadlocked program aborts with Go's message + exit 2 (not a hang).
 deadlock-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
@@ -2412,6 +2423,7 @@ VERIFY_ALL_DEPS := \
     mt-scheduler-stress \
     yield-stress \
     chan-mt-stress \
+    fanin-stress \
     deadlock-probe \
     deadlock-goroutine-probe \
     default-thread-count-test \
