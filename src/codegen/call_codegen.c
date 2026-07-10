@@ -635,6 +635,28 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(arg);
             return value_info_new(NULL, len64, type_checker_get_builtin(checker, TYPE_INT64));
         }
+        if (strcmp(func_name->name, "close") == 0 && call->args) {
+            // close(ch) -> goo_chan_close(ptr) (P3.1). The channel operand's
+            // own expression codegen already yields the runtime pointer
+            // value (codegen_generate_identifier auto-loads an lvalue), the
+            // same assumption codegen_generate_channel_recv/send make for
+            // their channel argument (lowlevel_codegen.c) — no extra load
+            // here.
+            ValueInfo* chan_arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!chan_arg) return NULL;
+            LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMTypeRef close_param_types[] = { void_ptr_type };
+            LLVMTypeRef close_func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
+                                                            close_param_types, 1, 0);
+            LLVMValueRef close_fn = LLVMGetNamedFunction(codegen->module, "goo_chan_close");
+            if (!close_fn) {
+                close_fn = LLVMAddFunction(codegen->module, "goo_chan_close", close_func_type);
+            }
+            LLVMValueRef close_arg = chan_arg->llvm_value;
+            LLVMBuildCall2(codegen->builder, close_func_type, close_fn, &close_arg, 1, "");
+            value_info_free(chan_arg);
+            return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+        }
         if (strcmp(func_name->name, "delete") == 0 && call->args && call->args->next) {
             // delete(m, k) — unlink the entry for k from m via
             // goo_map_delete_sv. Map handling mirrors the len() arm above

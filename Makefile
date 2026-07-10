@@ -1373,12 +1373,13 @@ deadlock-probe: $(COMPILER) $(RUNTIME_LIB)
 
 deadlock-goroutine-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== deadlock-goroutine-probe: blocked goroutine + idle main aborts (exit 2) ==="
+	@echo "=== deadlock-goroutine-probe: blocked goroutine abandoned at main exit (exit 0, Go parity — P3.3) ==="
 	$(COMPILER) -o build/deadlock_goroutine_probe examples/deadlock_goroutine_probe.goo
-	@timeout 10 ./build/deadlock_goroutine_probe 2>build/deadlock_goroutine_probe.err; rc=$$?; \
-	if [ $$rc -eq 124 ]; then echo "deadlock-goroutine-probe: FAIL (hang — no detection)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
-	if [ $$rc -ne 2 ]; then echo "deadlock-goroutine-probe: FAIL (exit $$rc, expected 2)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
-	if grep -q "all goroutines are asleep - deadlock!" build/deadlock_goroutine_probe.err; then echo "deadlock-goroutine-probe: PASS"; else echo "deadlock-goroutine-probe: FAIL (missing message)"; cat build/deadlock_goroutine_probe.err; exit 1; fi
+	@timeout 10 ./build/deadlock_goroutine_probe >build/deadlock_goroutine_probe.out 2>build/deadlock_goroutine_probe.err; rc=$$?; \
+	if [ $$rc -eq 124 ]; then echo "deadlock-goroutine-probe: FAIL (hang — main-exit abandonment broken)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
+	if [ $$rc -ne 0 ]; then echo "deadlock-goroutine-probe: FAIL (exit $$rc, expected 0)"; cat build/deadlock_goroutine_probe.err; exit 1; fi; \
+	if [ -s build/deadlock_goroutine_probe.out ]; then echo "deadlock-goroutine-probe: FAIL (abandoned goroutine produced output)"; cat build/deadlock_goroutine_probe.out; exit 1; fi; \
+	echo "deadlock-goroutine-probe: PASS"
 
 # P0-4: a failed link must not leave a stray object file behind.
 link-cleanup-probe: $(COMPILER) $(RUNTIME_LIB)

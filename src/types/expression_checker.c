@@ -3315,6 +3315,40 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: cap -> int (64-bit)
             return checker->builtin_types[TYPE_INT64];
         }
+        // close(ch) -> void (P3.1). Statement-only builtin (no result value,
+        // like delete/panic below); codegen lowers it to goo_chan_close.
+        // Exactly one argument, which must be a channel — anything else
+        // would hand codegen a non-pointer value to pass to goo_chan_close,
+        // which unconditionally dereferences it.
+        if (strcmp(func_ident->name, "close") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "close expects exactly one argument (channel)");
+                return NULL;
+            }
+            Type* chan_t = type_check_expression(checker, call->args);
+            if (!chan_t) return NULL;
+            // P2.8 cascade suppression: a poisoned argument already carries
+            // its diagnostic; don't stringify it into a second one here.
+            if (type_is_poison(chan_t)) return chan_t;
+            if (chan_t->kind != TYPE_CHANNEL) {
+                type_error(checker, expr->pos,
+                           "close: argument must be a channel, got %s", type_to_string(chan_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_VOID];
+            return checker->builtin_types[TYPE_VOID];
+        }
+        // recover() — rejected in v1 (P3.5, user decision 2026-07-10:
+        // minimum scope). The builtin is registered in scope purely so the
+        // call reaches THIS message instead of "Undefined variable
+        // 'recover'". Returning NULL routes `r := recover()` through the
+        // failed-declaration path, which poisons r (P2.8) — no cascade.
+        if (strcmp(func_ident->name, "recover") == 0) {
+            type_error(checker, expr->pos,
+                       "recover() is not supported in v1; panics terminate the program "
+                       "(use !T error unions for recoverable errors)");
+            return NULL;
+        }
         // delete(m, k) -> void. Removes key k from map m (no-op if absent).
         // Exactly two args: the first must be a map, the second assignable
         // to its key type (any admitted key kind — see the AST_MAP_TYPE

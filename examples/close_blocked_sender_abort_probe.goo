@@ -1,0 +1,17 @@
+// close_blocked_sender_abort_probe (P3.1 rider coverage): close()ing a
+// channel while a sender is blocked on it panics that sender with
+// "send on closed channel", as in Go. Main is the sender so the panic
+// deterministically reaches the process exit under Go-parity main-exit
+// semantics; the goroutine's close may land before OR after main parks
+// in the send — both interleavings hit the same panic (immediate-closed
+// check vs woken-by-close check in goo_chan_send), so the outcome is
+// deterministic even though the path is racy.
+package main
+
+func main() {
+	ch := make_chan(int) // unbuffered
+	go func() {
+		close(ch)
+	}()
+	ch <- 1
+}

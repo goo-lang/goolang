@@ -1,0 +1,9 @@
+// close_nonchan_reject (P3.1): close() requires a channel operand — a
+// non-channel argument (here, an int literal) must be rejected at compile
+// time with a positioned error naming the actual type, not accepted and
+// left to crash the runtime dereferencing a bogus pointer.
+package main
+
+func main() {
+	close(42)
+}

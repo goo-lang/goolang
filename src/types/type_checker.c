@@ -348,6 +348,31 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, delete_var);
     }
 
+    // close(ch) -> void (P3.1). Registered like delete (void-returning,
+    // predeclared) so the bare identifier resolves before the call is
+    // special-cased in type_check_call_expr; codegen lowers it to
+    // goo_chan_close.
+    Type* close_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* close_var = variable_new("close", close_type, (Position){0, 0, 0, "builtin"});
+    if (close_var) {
+        close_var->is_builtin = 1;
+        close_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, close_var);
+    }
+
+    // recover (P3.5, user decision 2026-07-10: minimum v1 scope). Registered
+    // ONLY so `recover()` resolves and reaches the clean v1-unsupported
+    // rejection in type_check_call_expr — without this it dies earlier with
+    // the misleading "Undefined variable 'recover'". Full panic unwinding
+    // is post-v1; every call is rejected there.
+    Type* recover_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* recover_var = variable_new("recover", recover_type, (Position){0, 0, 0, "builtin"});
+    if (recover_var) {
+        recover_var->is_builtin = 1;
+        recover_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, recover_var);
+    }
+
     // make(map[K]V[, hint]) / make([]T, n[, cap]) -> map/slice value.
     // Registered like delete/panic (void-returning stub signature is
     // irrelevant — the call is always special-cased below) so the bare
@@ -2936,7 +2961,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 
     // For-range: register the key as int and the value (if present)
     // as the element type of the range expression, both in scope for
-    // the body. Slice/array/string/map range are supported; other
+    // the body. Slice/array/string/map/channel range are supported; other
     // ranged types are rejected below.
     if (for_stmt->range_expr) {
         Type* range_type = type_check_expression(checker, for_stmt->range_expr);
@@ -2973,9 +2998,35 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
                 scope_pop(checker);
                 return 0;
             }
+        } else if (range_type->kind == TYPE_CHANNEL) {
+            // Range over channel: Go permits at most one iteration variable
+            // (the received element) — there is no index to offer. The
+            // grammar's single-var form (`for v := range ch`) parses `v`
+            // into key_name, mirroring the slice/array/string index slot
+            // (the grammar predates channel range and has no dedicated
+            // production for it); that slot is reinterpreted here as the
+            // received element by aliasing key_type to elem_type below, so
+            // the generic key_name-binding code just past this if/else
+            // chain does the right thing unmodified. The two-var form
+            // (`for i, v := range ch`) always sets value_name — reject it
+            // outright, matching Go's "permits only one iteration variable".
+            if (for_stmt->value_name) {
+                type_error(checker, for_stmt->range_expr->pos,
+                          "range over channel permits at most one iteration variable");
+                scope_pop(checker);
+                return 0;
+            }
+            elem_type = range_type->data.channel.element_type;
+            if (!elem_type) {
+                type_error(checker, for_stmt->range_expr->pos,
+                          "range over channel: missing element type");
+                scope_pop(checker);
+                return 0;
+            }
+            key_type = elem_type;
         } else {
             type_error(checker, for_stmt->range_expr->pos,
-                      "for-range supported only on slice/array/string/map types");
+                      "for-range supported only on slice/array/string/map/channel types");
             scope_pop(checker);
             return 0;
         }
@@ -3413,12 +3464,15 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
             // byte-identical for every case this arc's fixtures already
             // exercise (bind_name == NULL, is_declare == 0 for all of them).
             if (sc->is_declare == -1) {
-                // v1 scope cut: `ok` is meaningless without close() (P3.1) —
-                // hardcoding it true would be a silent lie about a channel
-                // that can never report "closed". Reject unconditionally.
+                // v1 scope cut (reworded after close() shipped in P3.1):
+                // plumbing per-case ok status through goo_select_case_t and
+                // the select lowering is deferred — rider R1 in the P3
+                // sub-A design doc. The single-value form is Go-correct on
+                // a closed channel (fires with the zero value), so the
+                // workaround is a comma-ok receive outside select.
                 type_error(checker, case_node->pos,
-                           "select case 'v, ok :=' binding requires close(); "
-                           "not supported in v1");
+                           "select case 'v, ok :=' binding is not supported in v1; "
+                           "use a comma-ok receive outside select to detect closure");
                 ok = 0;
             } else if (sc->bind_name) {
                 // The grammar accepts any `expression` after `:=`/`=` (kept

@@ -1,0 +1,9 @@
+// close_arity_two_reject (P3.1): close() takes exactly one argument — a
+// second argument must be rejected with a positioned arity error, mirroring
+// close_arity_zero_reject's zero-argument case.
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	close(ch, 1)
+}

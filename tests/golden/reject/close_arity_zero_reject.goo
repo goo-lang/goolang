@@ -1,0 +1,8 @@
+// close_arity_zero_reject (P3.1): close() takes exactly one argument —
+// zero arguments must be rejected with a positioned arity error, not
+// crash on a NULL args list downstream in the checker.
+package main
+
+func main() {
+	close()
+}

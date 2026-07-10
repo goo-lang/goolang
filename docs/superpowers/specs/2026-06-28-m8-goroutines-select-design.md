@@ -38,7 +38,9 @@ is deferred).
 All probe-gated, verified locally (binary diff + `opt --passes=verify`), wired
 into `make verify` and `.github/workflows/tests.yml`.
 
-- **8a — scheduler lifecycle (`go-probe`).** `goo_scheduler_wait()`
+- **8a — scheduler lifecycle (`go-probe`).** [SUPERSEDED by P3.3, 2026-07-10:
+  the barrier is no longer emitted — see the banner on "Main-exit semantics"
+  below.] `goo_scheduler_wait()`
   run-to-completion barrier (`src/runtime/concurrency.c`) emitted before
   generated `main` returns (`src/codegen/function_codegen.c`), so goroutine side
   effects are observable before exit. The scheduler is lazily created by the
@@ -62,7 +64,15 @@ into `make verify` and `.github/workflows/tests.yml`.
   scratch sized from the channel element type, and NULL-channel default slots so
   the runtime index aligns with the case blocks.
 
-### Main-exit semantics (intentional Goo superset of Go)
+### Main-exit semantics (SUPERSEDED 2026-07-10 — P3.3)
+> **This section no longer describes Goo's behavior.** The implicit wait-all
+> join was replaced with Go-parity main exit (process exits when `main`
+> returns, goroutines abandoned) by user decision on 2026-07-10 — see
+> docs/superpowers/specs/2026-07-10-p3-concurrency-a-design.md and
+> docs/02-LANGUAGE-SPECIFICATION.md. Deciding factors: the join was only
+> emitted on the fall-off-the-end path (explicit `return` bypassed it), and a
+> busy-loop goroutine hung the program forever. Kept below as the historical
+> rationale.
 Goo is a **superset of Go**, and `main` exit is one place it deliberately adds
 behavior. In Go, `main` returning terminates the process and abandons any still-
 running goroutines (the classic "fire-and-forget may never run" gotcha). Goo

@@ -1,0 +1,12 @@
+// close_twice_abort_probe (P3.1): closing an already-closed channel must
+// panic with Go's exact message, not silently succeed a second time —
+// mirrors bounds_abort_probe/divzero_abort_probe's .exit + .stderr.txt
+// convention (expected exit code: 2 — Go-conformant panic exit; see
+// close_twice_abort_probe.exit and .stderr.txt).
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	close(ch)
+	close(ch)
+}

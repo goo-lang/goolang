@@ -1,0 +1,1 @@
+range over channel permits at most one iteration variable

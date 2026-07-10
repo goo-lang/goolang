@@ -1,0 +1,1 @@
+close expects exactly one argument (channel)
