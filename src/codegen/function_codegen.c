@@ -2152,8 +2152,9 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                     // reprocessing stale entries alongside) another
                     // package's goo.global_init.
                     codegen_error(codegen, decl->pos,
-                        "Package-level variable '%s' requires a constant initializer "
-                        "(non-constant package-scope globals are not yet supported)",
+                        "Package-level variable '%s' in an imported package requires a "
+                        "constant initializer (non-constant globals are supported in the "
+                        "main package only; per-package init is not yet implemented)",
                         var_name);
                     return 0;
                 }
