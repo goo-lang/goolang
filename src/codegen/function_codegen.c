@@ -166,6 +166,100 @@ static int escape_is_promoted(const char* name) {
     return 0;
 }
 
+// ---- P3.4: defer-loop-nesting pre-pass (file-static; mirrors the M8b
+// escape pre-pass immediately above — function codegen is non-reentrant) ---
+//
+// Decides the per-function static/stack fork (design doc: "B1 (P3.4) —
+// runtime defer stack, per-function fork"): a function containing at least
+// one `defer` lexically nested under a for/range loop routes ALL of its
+// defers through the runtime stack; everything else keeps the untouched
+// static path. Only real iteration counts as "loop-nested" — switch/select/
+// if/match/try/catch/unsafe do not repeat their body, so a defer under one
+// of THOSE alone is exactly as expressible as a defer under a plain `if`
+// (one conditional execution, no per-iteration multiplication), and stays
+// on the static path. `for_depth` therefore only increments across
+// AST_FOR_STMT's body (ForStmtNode covers both C-style and range `for` —
+// range_expr non-NULL selects the range-desugared form — so one case
+// handles both, matching the escape pre-pass's own ForStmtNode walk above).
+//
+// Unlike escape_walk, this walker does NOT need to visit expression nodes
+// (BINARY_EXPR, CALL_EXPR, ...): `defer` is a statement, never nested inside
+// an expression, so nothing reachable only through an expression can ever
+// contain an AST_DEFER_STMT. It also does not descend into a nested
+// AST_FUNC_LIT body (same gap escape_walk has) — a literal is codegen'd as
+// its own function with its OWN pre-pass call (see
+// codegen_generate_func_lit), so its defers are that function's concern,
+// not the enclosing one's.
+static int g_defer_needs_stack;
+
+static void defer_prepass_walk(ASTNode* n, int for_depth) {
+    for (; n; n = n->next) {
+        switch (n->type) {
+            case AST_DEFER_STMT:
+                if (for_depth > 0) g_defer_needs_stack = 1;
+                break;
+            case AST_FOR_STMT: {
+                ForStmtNode* s = (ForStmtNode*)n;
+                defer_prepass_walk(s->body, for_depth + 1);
+                break;
+            }
+            case AST_BLOCK_STMT: defer_prepass_walk(((BlockStmtNode*)n)->statements, for_depth); break;
+            case AST_IF_STMT: {
+                IfStmtNode* s = (IfStmtNode*)n;
+                defer_prepass_walk(s->then_stmt, for_depth);
+                defer_prepass_walk(s->else_stmt, for_depth);
+                break;
+            }
+            case AST_IF_LET_STMT: {
+                IfLetStmtNode* s = (IfLetStmtNode*)n;
+                defer_prepass_walk(s->then_stmt, for_depth);
+                defer_prepass_walk(s->else_stmt, for_depth);
+                break;
+            }
+            case AST_SWITCH_STMT: defer_prepass_walk(((SwitchStmtNode*)n)->cases, for_depth); break;
+            case AST_CASE_CLAUSE: defer_prepass_walk(((CaseClauseNode*)n)->body, for_depth); break;
+            case AST_SELECT_STMT: defer_prepass_walk(((SelectStmtNode*)n)->cases, for_depth); break;
+            case AST_SELECT_CASE: defer_prepass_walk(((SelectCaseNode*)n)->body, for_depth); break;
+            case AST_UNSAFE_STMT: defer_prepass_walk(((UnsafeStmtNode*)n)->body, for_depth); break;
+            default: break;  // expressions, decls, return/go/break/continue: no defer reachable
+        }
+    }
+}
+
+static int defer_prepass_needs_stack(ASTNode* body) {
+    g_defer_needs_stack = 0;
+    defer_prepass_walk(body, 0);
+    return g_defer_needs_stack;
+}
+
+// Build the LLVM type for goo_defer_frame_t (include/runtime.h): {entries:
+// ptr, len: size_t, cap: size_t}. Literal (unnamed) struct types are
+// structurally interned per-LLVMContext, so every call site building this
+// exact field list gets back the SAME LLVMTypeRef — no cache needed, unlike
+// the named-struct hazard documented elsewhere in this codebase.
+static LLVMTypeRef codegen_get_defer_frame_type(CodeGenerator* codegen) {
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_ty = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef fields[] = { ptr_ty, size_ty, size_ty };
+    return LLVMStructTypeInContext(ctx, fields, 3, 0);
+}
+
+// Allocate and zero-initialize func_info->defer_frame in the CURRENT insert
+// block (must be the entry block — every caller invokes this immediately
+// after codegen_set_insert_point(entry), before any other body code, so the
+// zero-store is guaranteed to precede every later use, including an early-
+// return exit site generated later in the same linear entry-block prologue).
+// No-op unless the pre-pass decided this function needs stack mode.
+static void codegen_setup_defer_stack_mode(CodeGenerator* codegen, FunctionInfo* func_info,
+                                           ASTNode* body) {
+    func_info->defer_stack_mode = defer_prepass_needs_stack(body);
+    if (!func_info->defer_stack_mode) return;
+    LLVMTypeRef frame_ty = codegen_get_defer_frame_type(codegen);
+    func_info->defer_frame = LLVMBuildAlloca(codegen->builder, frame_ty, "defer_frame");
+    LLVMBuildStore(codegen->builder, LLVMConstNull(frame_ty), func_info->defer_frame);
+}
+
 // Allocate storage for a named local: heap (goo_alloc, leaked) if the local
 // is EITHER goroutine-escape-promoted (M8b, name-based, `force_promote=0`
 // callers) OR forced by the caller (Closures Task 2: a var-decl/param whose
@@ -554,6 +648,15 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
 
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
+
+    // P3.4: decide (and, if needed, set up) THIS LITERAL's own static/stack
+    // defer fork, scoped to its own body — a defer inside a loop in the
+    // ENCLOSING function is that function's concern, not this nested
+    // literal's, and vice versa. Must run before any body statement is
+    // generated (a defer statement checks func_info->defer_stack_mode) and
+    // while the entry block is still the insert point (the frame's zero-
+    // store must precede every possible exit site).
+    codegen_setup_defer_stack_mode(codegen, func_info, lit->body);
 
     // M8b: compute which of the LITERAL's OWN locals escape into a
     // goroutine spawned from ITS OWN body — scoped fresh per the doc
@@ -1116,6 +1219,14 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             LLVMBuildCall2(codegen->builder, void_ty, global_init_fn, NULL, 0, "");
         }
     }
+
+    // P3.4: decide (and, if needed, set up) this function's static/stack
+    // defer fork before any body statement is generated (a defer statement
+    // checks func_info->defer_stack_mode) and while the entry block is
+    // still the insert point (the frame's zero-store must precede every
+    // possible exit site, including the global-init call and os.Args
+    // prologue above — harmless either way since those never call defer).
+    codegen_setup_defer_stack_mode(codegen, func_info, func_decl->body);
 
     // M8b: compute which locals escape into a goroutine and must be heap-promoted.
     escape_prepass_compute(func_decl->body);

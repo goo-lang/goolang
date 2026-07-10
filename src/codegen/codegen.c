@@ -602,6 +602,9 @@ FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* g
     info->deferred_count = 0;
     info->deferred_capacity = 0;
 
+    info->defer_stack_mode = 0;
+    info->defer_frame = NULL;
+
     return info;
 }
 

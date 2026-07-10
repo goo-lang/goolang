@@ -1,0 +1,22 @@
+// defer_loop_probe (P3.4): defer inside a loop routes through the runtime
+// defer stack (per-function fork) instead of the static one-slot-per-
+// lexical-defer machinery — Go's per-iteration defer semantics: each loop
+// iteration pushes its OWN registration, and the whole function's defers
+// (top-level AND loop-nested) unwind in strict global LIFO order at exit.
+//
+// Registration order: "first" (top-level, before the loop), then 0, 1, 2
+// (one push per iteration), then "last" (top-level, after the loop). LIFO
+// unwind is therefore: last, 2, 1, 0, first — this is the roadmap's P3.4
+// acceptance shape (`for i:=0;i<3;i++ { defer fmt.Println(i) }` prints
+// 2,1,0) extended with mixed top-level-then-loop-then-top-level ordering.
+package main
+
+import "fmt"
+
+func main() {
+    defer fmt.Println("first")
+    for i := 0; i < 3; i++ {
+        defer fmt.Println(i)
+    }
+    defer fmt.Println("last")
+}

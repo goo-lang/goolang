@@ -290,6 +290,22 @@ struct FunctionInfo {
     ASTNode** deferred_calls;
     size_t deferred_count;
     size_t deferred_capacity;
+
+    // P3.4 runtime defer stack (per-function fork): non-zero when the
+    // defer-loop pre-pass (function_codegen.c's defer_prepass_needs_stack,
+    // run before body codegen) found a `defer` lexically nested under a
+    // for/range loop. When set, EVERY defer in this function routes through
+    // defer_frame (a goo_defer_frame_t alloca, entry-block-allocated and
+    // zeroed before any body statement runs) via goo_defer_push/
+    // goo_defer_run — never the static deferred_calls[] machinery above.
+    // Per-function, not per-statement: LIFO across a mixed top-level +
+    // loop-nested defer sequence can't be honored if half the entries are
+    // static inline emissions and half live on a runtime stack (see
+    // docs/superpowers/specs/2026-07-10-p3-runtime-b-design.md, B1). A
+    // loop-free function leaves both fields 0/NULL, so its defers take the
+    // untouched static path — byte-identical IR (differential-gated).
+    int defer_stack_mode;
+    LLVMValueRef defer_frame;
 };
 
 // Value information for variables and expressions
