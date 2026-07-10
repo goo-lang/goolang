@@ -11,6 +11,26 @@
 #include <sys/wait.h>
 #include <errno.h>
 
+// P4.3 (packages-B): the single source of truth for the `goo_pkg__<pkg>__
+// <base>` mangling scheme, taking the package NAME directly rather than
+// reading it off checker->current_package. codegen_package_symbol_name
+// (below) covers the DEFINITION side, where the current package being
+// codegen'd IS the owner. Cross-package method CALL/VALUE sites need the
+// opposite direction: codegen'ing main (current_package == NULL) but
+// calling a method whose RECEIVER type is owned by some OTHER, already-
+// compiled package (type_receiver_owner_package, types.h) — this variant
+// lets those call sites build the exact same symbol from that package's own
+// name. Returns NULL if either argument is NULL/empty; malloc'd, caller frees.
+char* codegen_pkg_mangled_symbol(const char* pkg_name, const char* base) {
+    if (!pkg_name || !pkg_name[0] || !base) return NULL;
+    size_t need = strlen("goo_pkg__") + strlen(pkg_name) + strlen("__")
+                + strlen(base) + 1;
+    char* out = malloc(need);
+    if (!out) return NULL;
+    snprintf(out, need, "goo_pkg__%s__%s", pkg_name, base);
+    return out;
+}
+
 // stdlib Phase 0 (Task 4): compute the LLVM symbol name for a top-level symbol
 // emitted while codegenning a non-main package. For the main package
 // (checker->current_package == NULL) this returns NULL and callers keep the
@@ -26,13 +46,7 @@ char* codegen_package_symbol_name(TypeChecker* checker, const char* base) {
                  || !checker->current_package->name || !base) {
         return NULL;
     }
-    const char* pkg = checker->current_package->name;
-    size_t need = strlen("goo_pkg__") + strlen(pkg) + strlen("__")
-                + strlen(base) + 1;
-    char* out = malloc(need);
-    if (!out) return NULL;
-    snprintf(out, need, "goo_pkg__%s__%s", pkg, base);
-    return out;
+    return codegen_pkg_mangled_symbol(checker->current_package->name, base);
 }
 
 // Code generator initialization and cleanup

@@ -60,7 +60,14 @@ static int embed_direct_member(TypeChecker* checker, Type* t, const char* name,
     const char* tn = embed_type_name(t);
     if (tn) {
         char* mangled = type_method_mangled_name(tn, name);
-        Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        // P4.3 review-fix (MAJOR): owner-routed lookup so a package-owned
+        // embedded member's methods (declared in ITS package, visible only
+        // through its exports scope) resolve during promotion and
+        // interface-satisfaction-via-embedding — same routing as every
+        // other method-existence site (see type_checker_lookup_method).
+        Variable* m = mangled
+            ? type_checker_lookup_method(checker, t, name, mangled)
+            : NULL;
         free(mangled);
         if (m && m->type && m->type->kind == TYPE_FUNCTION) {
             *member_type = m->type;

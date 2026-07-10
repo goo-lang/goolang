@@ -1,0 +1,12 @@
+package main
+
+// P4.2/B1: a qualified type name against a hardcoded stdlib-shim package
+// (fmt/os/math/errors — no source, empty exports scope) must reject cleanly
+// with the same "no exported type" message, not crash on a NULL Package* or
+// a NULL exports scope.
+
+import "fmt"
+
+func main() {
+	var x fmt.Something
+}

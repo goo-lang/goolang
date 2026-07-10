@@ -2317,6 +2317,20 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 return 0;
             }
 
+            // Task #9: auto-load an lvalue channel operand — a struct-field
+            // or index selector (`v, ok := <-b.ch`) returns the channel's
+            // storage ADDRESS, not the pointer value goo_chan_recv expects.
+            // Same guard as codegen_generate_channel_recv/send
+            // (lowlevel_codegen.c) and the close() builtin (call_codegen.c).
+            if (channel_val->is_lvalue && channel_val->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+                if (ct) {
+                    channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                             channel_val->llvm_value, "commaok_chan_load");
+                    channel_val->is_lvalue = 0;
+                }
+            }
+
             Type* chan_goo = channel_val->goo_type;
             Type* elem_goo = (chan_goo && chan_goo->kind == TYPE_CHANNEL)
                              ? chan_goo->data.channel.element_type : NULL;

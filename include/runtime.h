@@ -635,6 +635,26 @@ void goo_waitgroup_add(goo_waitgroup_t* wg, int delta);
 void goo_waitgroup_done(goo_waitgroup_t* wg);
 void goo_waitgroup_wait(goo_waitgroup_t* wg);
 
+// P4.7 (packages-B, B3): sync.Mutex / sync.WaitGroup shim wrappers
+// (src/runtime/sync_shim.c). `slot` is the ADDRESS of the single
+// opaque-pointer field of the Goo-visible sync.Mutex / sync.WaitGroup
+// struct — codegen passes &receiver (bitcast to void**), NOT a
+// goo_mutex_t*/goo_waitgroup_t* itself. Each wrapper lazily allocates the
+// real runtime primitive on first use, satisfying Go's zero-value contract
+// (`var mu sync.Mutex` is usable immediately, no make/new anywhere) despite
+// goo_mutex_t/goo_waitgroup_t requiring real pthread init — see the design
+// doc (2026-07-10-p4-packages-b-design.md, section B3) for the full
+// rationale and the race-safety argument for the lazy-init scheme.
+void goo_sync_mutex_lock(void** slot);
+// Go parity: panics "sync: unlock of unlocked mutex" (matching Go's own
+// message) when called on a Mutex that isn't currently locked, INCLUDING a
+// never-locked zero-value Mutex — see sync_shim.c's doc comment for why the
+// check lives here rather than in goo_mutex_unlock itself.
+void goo_sync_mutex_unlock(void** slot);
+void goo_sync_wg_add(void** slot, int64_t delta);
+void goo_sync_wg_done(void** slot);
+void goo_sync_wg_wait(void** slot);
+
 goo_runtime_stats_t goo_get_runtime_stats(void);
 
 // Zero-size allocation sentinel (Go's "zerobase" pattern): a single shared,

@@ -1,0 +1,43 @@
+// struct_chan_probe (task #9): a channel stored in a struct FIELD must work
+// through every consuming operation the same way a plain channel variable
+// does — send, single-value receive, comma-ok receive, close, and
+// range-over-channel. Before the fix, the selector `b.ch` (an lvalue — the
+// field's storage ADDRESS) was passed unloaded into goo_chan_send/recv/
+// close, corrupting/hanging on the very first operation (observed as a
+// hang inside goo_mutex_lock on a garbage stack address, not a clean
+// crash). Expected output derived from the equivalent real-Go program
+// (struct_chan_probe_ref.go, `go run`-verified).
+package main
+
+import "fmt"
+
+type Box struct {
+	ch chan int
+}
+
+func main() {
+	b := Box{ch: make(chan int, 2)}
+
+	// buffered send + receive through a struct field
+	b.ch <- 1
+	b.ch <- 2
+	fmt.Println(<-b.ch)
+
+	// comma-ok receive through a struct field
+	v, ok := <-b.ch
+	fmt.Println(v, ok)
+
+	// close + drain via range through a struct field
+	b.ch <- 10
+	b.ch <- 20
+	close(b.ch)
+	sum := 0
+	for x := range b.ch {
+		sum += x
+	}
+	fmt.Println(sum)
+
+	// comma-ok receive on a closed, drained struct-field channel
+	v2, ok2 := <-b.ch
+	fmt.Println(v2, ok2)
+}

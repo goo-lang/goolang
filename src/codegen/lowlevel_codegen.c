@@ -16,7 +16,26 @@ ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* ch
     // Generate channel and value expressions
     ValueInfo* channel_val = codegen_generate_expression(codegen, checker, binary->left);
     if (!channel_val) return NULL;
-    
+
+    // Auto-load an lvalue channel operand (task #9): a struct-field or
+    // index selector (`b.ch <- v`, `chans[i] <- v`) returns the channel's
+    // storage ADDRESS, not the channel pointer VALUE — the same shape a
+    // struct field ordinarily returns for any type. An identifier channel
+    // (`ch <- v`) is already auto-loaded to a value by
+    // codegen_generate_identifier (is_lvalue=0) and is unaffected. Without
+    // this load, goo_chan_send received the field's address where it
+    // expects the goo_channel_t* stored there, so it locked/read through
+    // whatever garbage happened to follow that address on the stack —
+    // observed as a hang inside goo_mutex_lock, not a clean crash.
+    if (channel_val->is_lvalue && channel_val->goo_type) {
+        LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+        if (ct) {
+            channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                      channel_val->llvm_value, "chan_send_load");
+            channel_val->is_lvalue = 0;
+        }
+    }
+
     ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
     if (!value_val) return NULL;
 
@@ -122,7 +141,18 @@ ValueInfo* codegen_generate_channel_recv(CodeGenerator* codegen, TypeChecker* ch
     // Generate channel expression
     ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
     if (!channel_val) return NULL;
-    
+
+    // Auto-load an lvalue channel operand — see the identical guard (and
+    // its full rationale) in codegen_generate_channel_send above (task #9).
+    if (channel_val->is_lvalue && channel_val->goo_type) {
+        LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+        if (ct) {
+            channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                      channel_val->llvm_value, "chan_recv_load");
+            channel_val->is_lvalue = 0;
+        }
+    }
+
     LLVMContextRef ctx = codegen->context;
     // Derive the receive element type from the channel's goo_type (Task 2).
     // Falls back to i32 if the channel value has no type annotation.

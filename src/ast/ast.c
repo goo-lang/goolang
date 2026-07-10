@@ -619,6 +619,15 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(clause->body);
             break;
         }
+        // P4.2/B1: previously missing entirely (a pre-existing leak of
+        // ->name); added alongside the new ->package field so both strdup'd
+        // strings are freed together.
+        case AST_BASIC_TYPE: {
+            BasicTypeNode* basic = (BasicTypeNode*)node;
+            free(basic->name);
+            free(basic->package);
+            break;
+        }
         // Add more cases as needed
         default:
             break;
@@ -651,6 +660,11 @@ ASTNode* ast_type_clone(const ASTNode* node) {
             BasicTypeNode* c = (BasicTypeNode*)calloc(1, sizeof(BasicTypeNode));
             c->base.type = AST_BASIC_TYPE; c->base.pos = node->pos;
             c->name = s->name ? strdup(s->name) : NULL;
+            // P4.2/B1: clone the package qualifier too, so a cloned qualified
+            // type name (e.g. a grouped named result `(x, y shapes.Point)`,
+            // via reinterpret_grouped_names) keeps its `pkg.Type` identity
+            // instead of silently degrading to an unqualified lookup.
+            c->package = s->package ? strdup(s->package) : NULL;
             return (ASTNode*)c;
         }
         case AST_SLICE_TYPE: {

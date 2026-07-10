@@ -617,10 +617,43 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     if (try_method) {
         const char* tn = type_receiver_name(lookup_type);
         char* mangled = tn ? type_method_mangled_name(tn, selector->selector) : NULL;
-        Variable* mvar = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        // P4.3: lookup_type may be a package-owned receiver type — its
+        // method Variable only lives in that package's exports scope (see
+        // type_checker_lookup_method's doc comment).
+        Variable* mvar = mangled
+            ? type_checker_lookup_method(checker, lookup_type, selector->selector, mangled)
+            : NULL;
         if (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION) {
+            // P4.3: package-owned receiver methods are DEFINED under a
+            // goo_pkg__<pkg>__ prefixed symbol (function_codegen.c). Pass
+            // that prefixed name — not the bare one — into
+            // codegen_generate_method_value: it both looks up the
+            // DEFINITION under this name (LLVMGetNamedFunction) and derives
+            // the bound thunk's own cache key from it
+            // (codegen_get_method_bound_thunk's "<mangled_name>.
+            // __bound_thunk"). Using the bare name here would let a
+            // same-named main-package method's thunk collide with this
+            // one under an identical bare cache key.
+            char* emit_name = mangled;
+            char* pkg_emit_name = NULL;
+            Package* owner_pkg = type_receiver_owner_package(lookup_type);
+            if (owner_pkg) {
+                pkg_emit_name = codegen_pkg_mangled_symbol(owner_pkg->name, mangled);
+                if (!pkg_emit_name) {
+                    // Review-fix (CRITICAL hardening): never degrade a
+                    // package-owned bind to the bare name — a same-named
+                    // main method would hijack it. Fail cleanly instead.
+                    codegen_error(codegen, expr->pos,
+                                  "internal: cannot mangle package method symbol for '%s'",
+                                  selector->selector);
+                    free(mangled);
+                    return NULL;
+                }
+                emit_name = pkg_emit_name;
+            }
             ValueInfo* mv = codegen_generate_method_value(codegen, checker, expr, selector,
-                                                           recv_static_type, mvar, mangled);
+                                                           recv_static_type, mvar, emit_name);
+            free(pkg_emit_name);
             free(mangled);
             return mv;
         }

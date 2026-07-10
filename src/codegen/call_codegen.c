@@ -47,6 +47,16 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
 ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 #if LLVM_AVAILABLE
+// P4.7 (packages-B, B3): lower a sync.Mutex / sync.WaitGroup method call
+// directly to the goo_sync_* runtime wrappers (src/runtime/sync_shim.c) —
+// see its definition (below codegen_generate_call_expr) for the full
+// rationale.
+static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type);
+#endif
+
+#if LLVM_AVAILABLE
 // Materialize a call argument as a C string pointer (char*): evaluate it,
 // load through any lvalue, then extract the data pointer (field 0) of a
 // goo_string value. Used by the strings.* lowerings whose runtime symbols
@@ -258,6 +268,118 @@ static void codegen_emit_funcnil_check(CodeGenerator* codegen, LLVMValueRef fn_p
     LLVMBuildUnreachable(codegen->builder);
 
     codegen_set_insert_point(codegen, cont_bb);
+}
+#endif
+
+#if LLVM_AVAILABLE
+// P4.7 (packages-B, B3): compute the "slot" argument (void**, bitcast) a
+// goo_sync_* wrapper expects — the ADDRESS of the receiver's single opaque-
+// pointer field, which for a one-field struct at offset 0 is simply the
+// struct's own address. Every sync method has a pointer receiver (Go
+// convention: all sync primitives mutate shared state), so this always
+// either auto-addresses a value receiver or passes a pointer value through,
+// mirroring the general ptr_recv logic a few hundred lines below but
+// specialized (no embedding/promotion possible — Mutex/WaitGroup have no
+// fields a user program can see, let alone embed).
+static LLVMValueRef codegen_sync_receiver_slot(CodeGenerator* codegen, TypeChecker* checker,
+                                                ASTNode* recv_expr, Type* recv_type, Position pos) {
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+    int recv_is_ptr_value = recv_type && recv_type->kind == TYPE_POINTER;
+
+    if (!recv_is_ptr_value) {
+        // Auto-address-of: `mu.Lock()` on an addressable `sync.Mutex` value
+        // is `(&mu).Lock()`, same as any other pointer-receiver call.
+        ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, recv_expr);
+        if (!addr || !addr->is_lvalue) {
+            codegen_error(codegen, pos,
+                          "cannot call sync method on non-addressable value");
+            return NULL;
+        }
+        return LLVMBuildBitCast(codegen->builder, addr->llvm_value, void_ptr_type, "sync.slot");
+    }
+
+    // Receiver expression is already *Mutex/*WaitGroup-typed: an identifier
+    // auto-loads to the pointer value; a selector/index lvalue yields the
+    // field's storage ADDRESS and needs one load to reach the pointer
+    // itself (same rule codegen_generate_channel_send applies to a
+    // struct-field channel operand — see lowlevel_codegen.c).
+    ValueInfo* pv = codegen_generate_expression(codegen, checker, recv_expr);
+    if (!pv) return NULL;
+    LLVMValueRef ptr = pv->llvm_value;
+    if (pv->is_lvalue && pv->goo_type) {
+        LLVMTypeRef pt = codegen_type_to_llvm(codegen, pv->goo_type);
+        if (pt) ptr = LLVMBuildLoad2(codegen->builder, pt, ptr, "sync.recv_load");
+    }
+    value_info_free(pv);
+    return LLVMBuildBitCast(codegen->builder, ptr, void_ptr_type, "sync.slot");
+}
+
+static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type) {
+    const char* tn = type_receiver_name(recv_type);
+    if (!tn) {
+        codegen_error(codegen, expr->pos, "internal: cannot resolve sync receiver type name");
+        return NULL;
+    }
+
+    const char* runtime_fn = NULL;
+    int has_delta = 0;
+    if (strcmp(tn, "Mutex") == 0) {
+        if (strcmp(msel->selector, "Lock") == 0) runtime_fn = "goo_sync_mutex_lock";
+        else if (strcmp(msel->selector, "Unlock") == 0) runtime_fn = "goo_sync_mutex_unlock";
+    } else if (strcmp(tn, "WaitGroup") == 0) {
+        if (strcmp(msel->selector, "Add") == 0) { runtime_fn = "goo_sync_wg_add"; has_delta = 1; }
+        else if (strcmp(msel->selector, "Done") == 0) runtime_fn = "goo_sync_wg_done";
+        else if (strcmp(msel->selector, "Wait") == 0) runtime_fn = "goo_sync_wg_wait";
+    }
+    if (!runtime_fn) {
+        codegen_error(codegen, expr->pos, "internal: unknown sync method '%s' on %s",
+                      msel->selector, tn);
+        return NULL;
+    }
+
+    LLVMValueRef slot = codegen_sync_receiver_slot(codegen, checker, msel->expr, recv_type, expr->pos);
+    if (!slot) return NULL;
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef void_type = LLVMVoidTypeInContext(ctx);
+
+    LLVMTypeRef param_types[2];
+    unsigned param_count = 1;
+    param_types[0] = void_ptr_type;  // void** slot, passed as an opaque i8*
+    if (has_delta) {
+        param_types[1] = LLVMInt64TypeInContext(ctx);
+        param_count = 2;
+    }
+    LLVMTypeRef fn_type = LLVMFunctionType(void_type, param_types, param_count, 0);
+
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, runtime_fn);
+    if (!fn) fn = LLVMAddFunction(codegen->module, runtime_fn, fn_type);
+
+    LLVMValueRef args[2];
+    args[0] = slot;
+    if (has_delta) {
+        if (!call->args) {
+            codegen_error(codegen, expr->pos, "internal: WaitGroup.Add missing delta argument");
+            return NULL;
+        }
+        ValueInfo* dv = codegen_generate_expression(codegen, checker, call->args);
+        if (!dv) return NULL;
+        LLVMValueRef delta = dv->llvm_value;
+        if (dv->is_lvalue && dv->goo_type) {
+            LLVMTypeRef dt = codegen_type_to_llvm(codegen, dv->goo_type);
+            if (dt) delta = LLVMBuildLoad2(codegen->builder, dt, delta, "wg.delta_load");
+        }
+        int src_signed = dv->goo_type ? type_is_signed(dv->goo_type) : 1;
+        delta = codegen_coerce_to_type(codegen, delta, src_signed, LLVMInt64TypeInContext(ctx));
+        args[1] = delta;
+        value_info_free(dv);
+    }
+
+    LLVMBuildCall2(codegen->builder, fn_type, fn, args, param_count, "");
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
 }
 #endif
 
@@ -636,14 +758,26 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             return value_info_new(NULL, len64, type_checker_get_builtin(checker, TYPE_INT64));
         }
         if (strcmp(func_name->name, "close") == 0 && call->args) {
-            // close(ch) -> goo_chan_close(ptr) (P3.1). The channel operand's
-            // own expression codegen already yields the runtime pointer
-            // value (codegen_generate_identifier auto-loads an lvalue), the
-            // same assumption codegen_generate_channel_recv/send make for
-            // their channel argument (lowlevel_codegen.c) — no extra load
-            // here.
+            // close(ch) -> goo_chan_close(ptr) (P3.1). An IDENTIFIER channel
+            // operand's own expression codegen already yields the runtime
+            // pointer value (codegen_generate_identifier auto-loads an
+            // lvalue) — but a struct-field or index channel operand
+            // (`close(b.ch)`) returns the field's storage ADDRESS instead
+            // (is_lvalue=1), same as any other field. Task #9: load through
+            // it here, mirroring the identical guard
+            // codegen_generate_channel_recv/send apply to their own channel
+            // argument (lowlevel_codegen.c) — this call site was the one
+            // spot that still assumed "no extra load needed".
             ValueInfo* chan_arg = codegen_generate_expression(codegen, checker, call->args);
             if (!chan_arg) return NULL;
+            if (chan_arg->is_lvalue && chan_arg->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, chan_arg->goo_type);
+                if (ct) {
+                    chan_arg->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                          chan_arg->llvm_value, "chan_close_load");
+                    chan_arg->is_lvalue = 0;
+                }
+            }
             LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
             LLVMTypeRef close_param_types[] = { void_ptr_type };
             LLVMTypeRef close_func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
@@ -1221,9 +1355,59 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         // `T__M`). Identity on the non-generic path (active_subst is NULL).
         recv_type = (Type*)codegen_resolve_type(codegen, recv_type);
 
+        // P4.7 (packages-B, B3): sync.Mutex / sync.WaitGroup methods have no
+        // goo_pkg__sync__ symbol to resolve — sync has no Goo source body
+        // (is_stdlib_shim_import), so the generic mangled-symbol lookup and
+        // its P4.3 package-prefix retry below would both miss and this call
+        // would misdiagnose through the embedding-promotion fallback as "no
+        // such method". Intercept before any of that.
+        {
+            Package* sync_owner = type_receiver_owner_package(recv_type);
+            // import_path, not ->name: ->name is the call-site identifier
+            // (`import s "sync"` sets it to "s"), which would silently miss
+            // this check under an alias. import_path is the canonical
+            // path, alias-independent (mirrors the checker-side guard in
+            // expression_checker.c's method-value rejection).
+            if (sync_owner && sync_owner->import_path && strcmp(sync_owner->import_path, "sync") == 0) {
+                return codegen_generate_sync_method_call(codegen, checker, expr, call, msel, recv_type);
+            }
+        }
+
         const char* tn = type_receiver_name(recv_type);
         char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
-        LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
+
+        // P4.3 (packages-B, review-fix CRITICAL): the emitted symbol is
+        // decided by the receiver type's OWNER, never by whichever module
+        // symbol happens to exist under the bare name. A package-owned
+        // receiver (e.g. shapes.Point) resolves the goo_pkg__<pkg>__
+        // prefixed symbol ONLY — the DEFINITION side always emits package
+        // methods under that prefix (function_codegen.c), for intra- and
+        // cross-package callers alike — while a main-owned receiver
+        // (owner NULL) resolves the bare symbol ONLY. The pre-fix
+        // bare-first-with-prefix-retry order let a same-named MAIN method
+        // (`func (p *Point) Scale` on main's own Point) silently hijack
+        // cross-package dispatch: pointer receivers ran the wrong body,
+        // value receivers died in the LLVM verifier — see
+        // pkg_method_hijack_probe. `mangled` itself stays the BARE "T__m"
+        // string throughout — it doubles as the checker-Variable lookup
+        // key further down (never prefixed; type_checker_lookup_method
+        // applies the same owner-routing there). `method_owner_type`
+        // tracks which type's owner applies to that lookup — recv_type
+        // here, or the embedded owner below.
+        Type* method_owner_type = recv_type;
+        LLVMValueRef fn = NULL;
+        if (mangled) {
+            Package* owner_pkg = type_receiver_owner_package(recv_type);
+            if (owner_pkg) {
+                char* pkg_sym = codegen_pkg_mangled_symbol(owner_pkg->name, mangled);
+                if (pkg_sym) {
+                    fn = LLVMGetNamedFunction(codegen->module, pkg_sym);
+                    free(pkg_sym);
+                }
+            } else {
+                fn = LLVMGetNamedFunction(codegen->module, mangled);
+            }
+        }
 
         // Function generics Tier B: a bound method PROMOTED through an
         // embedded field (e.g. `Wrap` embeds `Base`, which declares
@@ -1251,12 +1435,30 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (er.kind == EMBED_METHOD) {
                 const char* otn = type_receiver_name(er.owner);
                 char* omangled = otn ? type_method_mangled_name(otn, msel->selector) : NULL;
-                LLVMValueRef ofn = omangled ? LLVMGetNamedFunction(codegen->module, omangled) : NULL;
+                // P4.3 (review-fix CRITICAL): same owner-routed symbol
+                // choice as the direct (non-embedded) lookup above — a
+                // method promoted from a package-owned embedded field
+                // (e.g. `Wrap` embeds shapes.Point) resolves the prefixed
+                // symbol ONLY, a main-owned one the bare symbol ONLY.
+                LLVMValueRef ofn = NULL;
+                if (omangled) {
+                    Package* oowner_pkg = type_receiver_owner_package(er.owner);
+                    if (oowner_pkg) {
+                        char* opkg_sym = codegen_pkg_mangled_symbol(oowner_pkg->name, omangled);
+                        if (opkg_sym) {
+                            ofn = LLVMGetNamedFunction(codegen->module, opkg_sym);
+                            free(opkg_sym);
+                        }
+                    } else {
+                        ofn = LLVMGetNamedFunction(codegen->module, omangled);
+                    }
+                }
                 if (ofn) {
                     free(mangled);
                     mangled = omangled;
                     fn = ofn;
                     promo = er;
+                    method_owner_type = er.owner;
                 } else {
                     free(omangled);
                 }
@@ -1271,7 +1473,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // address, not a loaded struct value (which would mismatch the
             // signature and fail LLVM verification). When the receiver
             // expression is already a pointer, pass it through unchanged.
-            Variable* mvar = type_checker_lookup_variable(checker, mangled);
+            // P4.3: mangled is bare; fall back to method_owner_type's
+            // package exports if it isn't visible in main's own scope.
+            Variable* mvar = type_checker_lookup_method(checker, method_owner_type,
+                                                         msel->selector, mangled);
             Type* recv_param = (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION
                                 && mvar->type->data.function.param_count > 0)
                 ? mvar->type->data.function.param_types[0] : NULL;

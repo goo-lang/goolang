@@ -19,10 +19,13 @@ extern Lexer* current_lexer;
 // declarations, which this file includes above.
 
 // Struct embedding: build the VarDeclNode for an anonymous field `Name` /
-// `*Name`. The field is stored under the type's own name (Go's rule), with
-// is_embedded set; the type node matches what type_name / pointer_type
-// reductions would have built.
-static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
+// `*Name` / `pkg.Name` / `*pkg.Name` (review parity: qualified embeds). The
+// field is stored under the type's UNQUALIFIED name (Go's rule — `sync.
+// Mutex` embeds as field `Mutex`), with is_embedded set; the type node
+// matches what type_name / pointer_type reductions would have built,
+// including the B1 package qualifier when `pkg_node` is non-NULL.
+static ASTNode* make_embedded_field(ASTNode* pkg_node, ASTNode* ident_node,
+                                    int is_pointer) {
     IdentifierNode* ident = (IdentifierNode*)ident_node;
     VarDeclNode* field = ast_var_decl_new(get_current_position());
     field->names = malloc(sizeof(char*));
@@ -34,6 +37,9 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     basic->base.node_type = NULL;
     basic->base.next = NULL;
     basic->name = strdup(ident->name);
+    basic->package = pkg_node
+        ? strdup(((IdentifierNode*)pkg_node)->name)
+        : NULL;
     ASTNode* ty = (ASTNode*)basic;
     if (is_pointer) {
         PointerTypeNode* ptr = (PointerTypeNode*)malloc(sizeof(PointerTypeNode));
@@ -47,6 +53,7 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     field->type = ty;
     field->values = NULL;
     field->is_embedded = 1;
+    if (pkg_node) ast_node_free(pkg_node);
     ast_node_free(ident_node);
     return (ASTNode*)field;
 }
@@ -2011,8 +2018,10 @@ call_expr:
     // interprets this flag; codegen's variadic pack builder (call_codegen.c)
     // reads it to bypass the per-element pack and pass the operand's slice
     // value straight through (Go aliasing semantics). Bison tripwire: this
-    // arm must leave the conflict count at EXACTLY 81 shift/reduce + 256
-    // reduce/reduce (verified empirically before commit).
+    // arm must leave the conflict count unchanged — the exact expected count
+    // is tracked in scripts/grammar-tripwire.sh (EXPECTED_SR/EXPECTED_RR),
+    // the single source of truth; see .claude/skills/goo-grammar/ for the
+    // procedure and references/conflict-ledger.md for the baseline history.
     | primary_expr LPAREN expression_list ELLIPSIS RPAREN {
         $$ = call_expr_new($1, $3, 1);
     }
@@ -2336,11 +2345,23 @@ struct_field:
     | identifier SEMICOLON {
         // Embedded (anonymous) field `Base;` — the ';' is explicit in
         // one-liners and ASI-inserted at newlines inside struct bodies.
-        $$ = make_embedded_field($1, 0);
+        $$ = make_embedded_field(NULL, $1, 0);
     }
     | MULTIPLY identifier SEMICOLON {
         // Embedded pointer field `*Base;`.
-        $$ = make_embedded_field($2, 1);
+        $$ = make_embedded_field(NULL, $2, 1);
+    }
+    | identifier DOT identifier SEMICOLON {
+        // Qualified embedded field `pkg.Type;` (review parity, packages-B).
+        // Disambiguation from `name pkg.Type` (a NAMED field with a
+        // qualified type, via the `identifier type` arm above) is one-token:
+        // DOT directly after the FIRST identifier can only start this arm —
+        // no type may begin with DOT. Mirrors B1's type_name qualified arm.
+        $$ = make_embedded_field($1, $3, 0);
+    }
+    | MULTIPLY identifier DOT identifier SEMICOLON {
+        // Qualified embedded pointer field `*pkg.Type;`.
+        $$ = make_embedded_field($2, $4, 1);
     }
     ;
 
@@ -2531,10 +2552,31 @@ type_name:
         basic->base.pos = get_current_position();
         basic->base.node_type = NULL;
         basic->base.next = NULL;
-        
+
         IdentifierNode* ident = (IdentifierNode*)$1;
         basic->name = strdup(ident->name);
+        basic->package = NULL;
         ast_node_free($1);
+        $$ = (ASTNode*)basic;
+    }
+    // P4.2/B1: qualified type name `pkg.Type` (var/param/return/field/elem
+    // positions only — NOT composite literals, see the LBRACE_BODY scope
+    // cut in the goo-grammar skill / P4 sub-B design doc rider B4).
+    // Grammar-only: the checker (type_from_ast's AST_BASIC_TYPE arm)
+    // resolves `package` against the imported package's exports scope.
+    | identifier DOT identifier {
+        BasicTypeNode* basic = (BasicTypeNode*)malloc(sizeof(BasicTypeNode));
+        basic->base.type = AST_BASIC_TYPE;
+        basic->base.pos = get_current_position();
+        basic->base.node_type = NULL;
+        basic->base.next = NULL;
+
+        IdentifierNode* pkg_ident = (IdentifierNode*)$1;
+        IdentifierNode* name_ident = (IdentifierNode*)$3;
+        basic->package = strdup(pkg_ident->name);
+        basic->name = strdup(name_ident->name);
+        ast_node_free($1);
+        ast_node_free($3);
         $$ = (ASTNode*)basic;
     }
     ;

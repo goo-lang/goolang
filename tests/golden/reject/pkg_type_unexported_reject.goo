@@ -1,0 +1,13 @@
+package main
+
+// P4.2/B1: a lowercase (unexported) member of an imported package used in
+// type position must be rejected with the same "no exported type" message
+// as a genuinely missing name — package_export_filter only ever publishes
+// capitalised top-level symbols, so an unexported name is indistinguishable
+// from an unknown one at the exports-scope lookup.
+
+import "shapes"
+
+func main() {
+	var p shapes.point
+}

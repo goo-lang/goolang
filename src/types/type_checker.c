@@ -492,6 +492,40 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
     return scope_lookup_variable(checker->current_scope, name);
 }
 
+// P4.3 (packages-B): see the doc comment on the declaration (types.h) for the
+// full rationale. Dispatch is decided by the receiver type's OWNER, never by
+// which scope happens to resolve the bare mangled name first (review-fix,
+// CRITICAL): a main-package method with the same receiver-type name AND
+// method name ("Point__Scale") used to hijack cross-package dispatch because
+// the bare current-scope lookup ran first.
+//
+//   - owner set, owner != current_package (a cross-package receiver): the
+//     owning package's exports are the ONLY legitimate source — Go's rule
+//     is that methods on a package's type can only be defined in that
+//     package, so NO fallback to the current scope exists (a bare hit there
+//     is by construction a different, same-named type's method, or an
+//     out-of-package method declaration Go itself would reject). Gated on
+//     the METHOD name being exported (see the declaration comment for why
+//     the mangled name's own leading case is not sufficient).
+//   - owner == current_package (a package's own body checking/codegen'ing
+//     calls on its own types): the method Variable lives in the still-pushed
+//     package scope under the bare name — exports aren't even populated
+//     until the whole body has been checked (package_export_filter runs
+//     last) — so the current-scope lookup is the correct source, and
+//     unexported methods are correctly callable intra-package.
+//   - owner NULL (a main-declared or anonymous/builtin receiver): current
+//     scope, today's behavior.
+Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
+                                      const char* method_name, const char* mangled_name) {
+    if (!checker || !mangled_name) return NULL;
+    struct Package* owner = type_receiver_owner_package(recv_type);
+    if (owner && owner != checker->current_package) {
+        if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') return NULL;
+        return scope_lookup_variable(owner->exports, mangled_name);
+    }
+    return type_checker_lookup_variable(checker, mangled_name);
+}
+
 // Function generics Task 3: active-type-param stack. Pushed by
 // declare_function_signature and type_check_function_decl before resolving a
 // generic function's param/return/body types, popped on every return path of
@@ -1458,7 +1492,16 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         if (!tn) { *method_out = im->name; *reason_out = "missing"; return 0; }
 
         char* mangled = type_method_mangled_name(tn, im->name);
-        Variable* mv = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        // P4.3 review-fix (MAJOR): a package-owned concrete's methods live in
+        // its declaring package's exports, not the current scope — without
+        // the owner-routed lookup, `kinds.Rect` could never satisfy
+        // `kinds.Shaper` from main ("missing method Area"). Touches ONLY
+        // where method existence is resolved; the receiver-kind method-set
+        // rules below (P2.1) and the RTTI implementer collector are
+        // deliberately untouched (see recv-kind collector coupling note).
+        Variable* mv = mangled
+            ? type_checker_lookup_method(checker, concrete, im->name, mangled)
+            : NULL;
         free(mangled);
         Type* impl = NULL;
         int via_embed = 0;
@@ -2402,6 +2445,15 @@ int type_check_type_decl(TypeChecker* checker, ASTNode* decl) {
             resolved = named_clone;
         }
     }
+
+    // P4.3 (packages-B): stamp the owning package onto the final Type object
+    // (whichever path produced it above — the tied-knot shell, an in-place
+    // compound stamp, or the cloned scalar singleton) so cross-package method
+    // resolution can find it later (type_receiver_owner_package). NULL
+    // (checker->current_package unset) for every type declared while
+    // checking main — byte-identical to today's behavior for the no-import
+    // path and for main's own types.
+    resolved->owner_package = checker->current_package;
 
     // Register the named type alias only when we did NOT forward-declare a
     // shell (shell == NULL). When a shell was pre-registered above, td->name
@@ -3820,7 +3872,16 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
         case AST_IDENTIFIER: {
             // Handle type identifiers (for make_chan, etc.)
             IdentifierNode* ident = (IdentifierNode*)type_node;
-            
+
+            // P4.2/B1 audit: a qualified `pkg.Type` name can never arrive
+            // here. IdentifierNode wraps exactly ONE `identifier` token;
+            // every producer of an AST_IDENTIFIER type-position node builds
+            // it from a single bare `identifier`, never `identifier DOT
+            // identifier` — that two-token shape is reachable only through
+            // parser.y's type_name rule, which mints a BasicTypeNode (the
+            // AST_BASIC_TYPE arm below), not an IdentifierNode. No
+            // basic->package-style handling is needed or possible here.
+
             // Map basic type names to TypeKind
             if (strcmp(ident->name, "void") == 0) return type_checker_get_builtin(checker, TYPE_VOID);
             if (strcmp(ident->name, "bool") == 0) return type_checker_get_builtin(checker, TYPE_BOOL);
@@ -3881,7 +3942,71 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
         }
         case AST_BASIC_TYPE: {
             BasicTypeNode* basic = (BasicTypeNode*)type_node;
-            
+
+            // P4.2/B1: qualified type name `pkg.Type` (basic->package set by
+            // parser.y's type_name: identifier DOT identifier arm). Resolve
+            // the package marker, then look up `name` in ITS exports scope
+            // — mirrors the value-selector resolution in
+            // type_check_selector_expr (expression_checker.c), but for a
+            // TYPE position instead of an expression position.
+            if (basic->package) {
+                Variable* pkg_marker = type_checker_lookup_variable(checker, basic->package);
+                if (!pkg_marker || !pkg_marker->type || pkg_marker->type->kind != TYPE_PACKAGE) {
+                    type_error(checker, type_node->pos, "Unknown package '%s'", basic->package);
+                    return NULL;
+                }
+                // A hardcoded stdlib-shim package (fmt, os, math, errors) is
+                // seeded with a real Package* but an EMPTY exports scope (no
+                // source was ever type-checked into it — see
+                // seed_imported_stdlib_markers/is_stdlib_shim_import in
+                // goo.c) — so the lookup below cleanly misses for every shim
+                // symbol and falls through to the same "no exported type"
+                // diagnostic, rather than crashing. A source package's
+                // exports scope only ever holds CAPITALISED top-level names
+                // (package_export_filter), so a lowercase `basic->name`
+                // (`shapes.point`) also misses here and gets the identical
+                // diagnostic — no separate "unexported" message is needed.
+                Variable* exp = pkg_marker->package
+                    ? scope_lookup_variable(pkg_marker->package->exports, basic->name)
+                    : NULL;
+                // Guard against a VALUE export (an exported package-level
+                // var/const, or a function) silently resolving as a type —
+                // e.g. `var x shapes.Version` where Version is `var Version
+                // int`. type_check_type_decl is the ONLY registration path
+                // that marks its Variable is_builtin=1 while giving it a
+                // named struct/enum/interface/alias Type (see its "not a
+                // real variable for use-tracking purposes" comment);
+                // ordinary var/const/func declarations (bind_var_decl_name,
+                // declare_function_signature) never set is_builtin. This is
+                // the same TYPE_PACKAGE/TYPE_FUNCTION exclusion the
+                // unqualified lookup below already applies, PLUS is_builtin
+                // — required here because an exported plain-typed value
+                // (e.g. a float64/int/string var) would otherwise pass the
+                // kind-only check and silently typecheck as that scalar
+                // type. Known residual imprecision (not exercised by this
+                // task's scope): an exported enum VARIANT CONSTRUCTOR is
+                // also is_builtin=1 with kind==TYPE_ENUM (the enum's own
+                // Type, not a function type — see type_check_type_decl), so
+                // it is indistinguishable from the enum type's own name by
+                // this check alone; no discriminator field exists on
+                // Variable for this narrower case.
+                if (!exp || !exp->type || !exp->is_builtin ||
+                    exp->type->kind == TYPE_PACKAGE || exp->type->kind == TYPE_FUNCTION) {
+                    type_error(checker, type_node->pos,
+                               "Package '%s' has no exported type '%s'",
+                               basic->package, basic->name);
+                    return NULL;
+                }
+                // Return the SHARED Type* as-is — NEVER clone. Codegen's
+                // struct-cache is keyed on Type* pointer identity
+                // (type_mapping.c); sharing this exact pointer across every
+                // `shapes.Point` use (and with shapes' OWN internal uses) is
+                // what makes cross-package struct layouts agree on one LLVM
+                // struct type instead of silently diverging (P4 sub-B design
+                // doc recon).
+                return exp->type;
+            }
+
             // Map basic type names to TypeKind
             if (strcmp(basic->name, "void") == 0) return type_checker_get_builtin(checker, TYPE_VOID);
             if (strcmp(basic->name, "bool") == 0) return type_checker_get_builtin(checker, TYPE_BOOL);

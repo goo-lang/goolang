@@ -1,0 +1,12 @@
+package main
+
+// P4.2/B1: a qualified type name referencing a package that was never
+// imported/declared must be rejected cleanly (no crash, no LLVM verifier
+// noise) — not silently mis-resolved.
+
+func f(p unknownpkg.Point) int {
+	return 0
+}
+
+func main() {
+}

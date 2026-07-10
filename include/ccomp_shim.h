@@ -27,6 +27,21 @@
 
 // Strip the _Atomic keyword. Variables become plain storage.
 #define _Atomic
+
+// __atomic_* builtins (sync_shim.c's double-checked lazy init, P4.7):
+// CompCert doesn't recognize them and would emit calls to UNSIZED
+// __atomic_load_n/__atomic_store_n symbols that no library provides
+// (libatomic only exports the sized variants). Map them to plain
+// aligned pointer load/store: formally a relaxed data race in the C
+// abstract machine, pragmatically sound under CompCert on x86-64
+// (aligned pointer accesses are ISA-atomic; the surrounding
+// pthread_mutex calls are opaque and act as compiler barriers) — and
+// this code path is never EXECUTED by bin/goo-ccomp anyway: the
+// runtime sources are linked into the compiler binary only because
+// CCOMP_ESSENTIAL_SRCS includes RUNTIME_SRCS; Goo programs link the
+// gcc-built lib/libgoo_runtime.a with real atomics.
+#define __atomic_load_n(ptr, order)        (*(ptr))
+#define __atomic_store_n(ptr, val, order)  ((void)(*(ptr) = (val)))
 #define _Thread_local
 
 // GCC/clang thread-local extension. Same trade-off as _Atomic — the

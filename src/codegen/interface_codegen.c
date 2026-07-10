@@ -63,9 +63,20 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
         return NULL;
     }
 
+    // P4.3 review-fix: the thunk cache key must not alias a same-named MAIN
+    // type's thunk (struct-name-interning hazard class) — qualify with the
+    // owning package when the concrete is package-owned. Purely a module-
+    // internal cache-key choice; the real_fn resolution below is routed
+    // independently.
+    Package* tk_owner = type_receiver_owner_package(concrete);
     char thunk_name[256];
-    snprintf(thunk_name, sizeof(thunk_name), "goo.thunk.%s.%s.%s",
-             concrete_name, iface_name, im->name);
+    if (tk_owner && tk_owner->name) {
+        snprintf(thunk_name, sizeof(thunk_name), "goo.thunk.%s__%s.%s.%s",
+                 tk_owner->name, concrete_name, iface_name, im->name);
+    } else {
+        snprintf(thunk_name, sizeof(thunk_name), "goo.thunk.%s.%s.%s",
+                 concrete_name, iface_name, im->name);
+    }
     LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, thunk_name);
     if (existing) return existing;
 
@@ -79,9 +90,29 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
     // embedding path and re-mangle against the owning embedded type.
     EmbedResult epath;
     memset(&epath, 0, sizeof(epath));
+    // P4.3 review-fix (MAJOR + CRITICAL routing): both the LLVM symbol and
+    // the checker Variable are owner-routed — a package-owned concrete's
+    // method is DEFINED under goo_pkg__<pkg>__T__m (function_codegen.c) and
+    // its Variable lives in that package's exports, so the bare lookups
+    // could either miss (breaking `kinds.Rect` boxed into `kinds.Shaper`)
+    // or, worse, bind a same-named MAIN method into the vtable (the same
+    // hijack shape pkg_method_hijack_probe pins for direct calls).
     char* mangled = type_method_mangled_name(concrete_name, im->name);
-    LLVMValueRef real_fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
-    Variable* mvar = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+    LLVMValueRef real_fn = NULL;
+    Variable* mvar = NULL;
+    if (mangled) {
+        Package* owner_pkg = type_receiver_owner_package(concrete);
+        if (owner_pkg) {
+            char* pkg_sym = codegen_pkg_mangled_symbol(owner_pkg->name, mangled);
+            if (pkg_sym) {
+                real_fn = LLVMGetNamedFunction(codegen->module, pkg_sym);
+                free(pkg_sym);
+            }
+        } else {
+            real_fn = LLVMGetNamedFunction(codegen->module, mangled);
+        }
+        mvar = type_checker_lookup_method(checker, concrete, im->name, mangled);
+    }
     free(mangled);
     if (!real_fn && concrete->kind == TYPE_STRUCT) {
         EmbedResult er = embedding_resolve(checker, concrete, im->name);
@@ -89,8 +120,22 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
             epath = er;
             const char* otn = type_receiver_name(er.owner);
             char* om = otn ? type_method_mangled_name(otn, im->name) : NULL;
-            real_fn = om ? LLVMGetNamedFunction(codegen->module, om) : NULL;
-            mvar = om ? type_checker_lookup_variable(checker, om) : NULL;
+            // Same owner-routing for the promoted-method owner.
+            real_fn = NULL;
+            mvar = NULL;
+            if (om) {
+                Package* oowner_pkg = type_receiver_owner_package(er.owner);
+                if (oowner_pkg) {
+                    char* opkg_sym = codegen_pkg_mangled_symbol(oowner_pkg->name, om);
+                    if (opkg_sym) {
+                        real_fn = LLVMGetNamedFunction(codegen->module, opkg_sym);
+                        free(opkg_sym);
+                    }
+                } else {
+                    real_fn = LLVMGetNamedFunction(codegen->module, om);
+                }
+                mvar = type_checker_lookup_method(checker, er.owner, im->name, om);
+            }
             free(om);
         }
     }
@@ -384,11 +429,23 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
         return NULL;
     }
 
+    // P4.3 review-fix: vtable-pointer IDENTITY drives type asserts
+    // (codegen_interface_assert_match compares against this exact global),
+    // so a same-named MAIN type must never alias a package type's vtable —
+    // qualify the global's name with the owning package (struct-name-
+    // interning hazard class; mirrors build_thunk's cache-key rule).
+    Package* vt_owner = type_receiver_owner_package(concrete);
+    char qcname[192];
+    if (vt_owner && vt_owner->name) {
+        snprintf(qcname, sizeof(qcname), "%s__%s", vt_owner->name, cname);
+    } else {
+        snprintf(qcname, sizeof(qcname), "%s", cname);
+    }
     char gname[256];
     if (pointer_form) {
-        snprintf(gname, sizeof(gname), "goo.vtable.$ptr$%s.%s", cname, iname);
+        snprintf(gname, sizeof(gname), "goo.vtable.$ptr$%s.%s", qcname, iname);
     } else {
-        snprintf(gname, sizeof(gname), "goo.vtable.%s.%s", cname, iname);
+        snprintf(gname, sizeof(gname), "goo.vtable.%s.%s", qcname, iname);
     }
     LLVMValueRef existing = LLVMGetNamedGlobal(codegen->module, gname);
     if (existing) return existing;

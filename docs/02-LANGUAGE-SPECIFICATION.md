@@ -511,6 +511,18 @@ success); in a select, a nil-channel case is never ready. `close(nil)` panics
 `close of nil channel`. A main-only program blocking on a nil channel gets
 the deadlock abort above.
 
+**sync package** (P4.7, locked by `examples/sync_probe.goo`):
+`sync.Mutex` (Lock/Unlock) and `sync.WaitGroup` (Add/Done/Wait) are usable as
+zero values (`var mu sync.Mutex` — no construction), matching Go. Unlocking
+an unlocked mutex panics `sync: unlock of unlocked mutex` (exit 2). **Known
+v1 divergence from Go**: copying a Mutex or WaitGroup copies an internal
+handle, so copies ALIAS the same primitive after first use — Go instead
+gives copies independent (broken) state and forbids the copy via `go vet`.
+Don't copy them after use in either language. Method values on sync types
+(`f := mu.Lock`) are rejected in v1. Embedding works (`type Counter struct
+{ sync.Mutex; n int }` with promoted `c.Lock()` — locked by
+`examples/embed_pkg_probe.goo`).
+
 ### Channels
 
 ```goo

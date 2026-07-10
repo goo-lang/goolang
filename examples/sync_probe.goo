@@ -1,0 +1,49 @@
+// sync-probe (P4.7 roadmap acceptance): 4 goroutines each incrementing a
+// shared counter 1000x under mu.Lock()/Unlock(), joined via
+// wg.Add(4)/Done()/Wait(). Channel-free — WaitGroup IS the sync. Also
+// exercises: a zero-value WaitGroup used with no make/new anywhere,
+// Wait() with no prior Add() (must return immediately, not hang), and two
+// independent zero-value Mutexes (would self-deadlock below if they
+// silently aliased the same underlying primitive).
+package main
+
+import "fmt"
+import "sync"
+
+var counter int
+var mu sync.Mutex
+var wg sync.WaitGroup
+
+func worker() {
+	for i := 0; i < 1000; i++ {
+		mu.Lock()
+		counter = counter + 1
+		mu.Unlock()
+	}
+	wg.Done()
+}
+
+func main() {
+	// Wait-before-any-Add: lazy-inits, counter is 0, returns immediately.
+	var wg0 sync.WaitGroup
+	wg0.Wait()
+
+	// Two independent zero-value Mutexes: locking both without an
+	// intervening unlock would self-deadlock (hang out to the golden
+	// runner's timeout) if they aliased the same slot.
+	var muA sync.Mutex
+	var muB sync.Mutex
+	muA.Lock()
+	muB.Lock()
+	muA.Unlock()
+	muB.Unlock()
+
+	wg.Add(4)
+	go worker()
+	go worker()
+	go worker()
+	go worker()
+	wg.Wait()
+
+	fmt.Println("counter:", counter)
+}

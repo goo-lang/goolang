@@ -3485,8 +3485,22 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
             // Generate channel and value
             ValueInfo* channel_val = codegen_generate_expression(codegen, checker, binary->left);
             if (!channel_val) return 0;
+
+            // Task #9: auto-load an lvalue channel operand — a struct-field
+            // or index selector (`case b.ch <- v:`) returns the channel's
+            // storage ADDRESS, not the pointer value goo_select expects.
+            // Same guard as the plain-send path (codegen_generate_channel_
+            // send, lowlevel_codegen.c).
+            if (channel_val->is_lvalue && channel_val->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+                if (ct) {
+                    channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                             channel_val->llvm_value, "select_send_chan_load");
+                    channel_val->is_lvalue = 0;
+                }
+            }
             channel = channel_val->llvm_value;
-            
+
             ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
             if (!value_val) return 0;
 
@@ -3558,6 +3572,19 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
             // Generate channel
             ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
             if (!channel_val) return 0;
+
+            // Task #9: same auto-load guard as the send arm above (and
+            // codegen_generate_channel_recv, lowlevel_codegen.c) — a
+            // struct-field or index channel operand (`case v := <-b.ch:`)
+            // is an lvalue (the field's address), not the channel pointer.
+            if (channel_val->is_lvalue && channel_val->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+                if (ct) {
+                    channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                             channel_val->llvm_value, "select_recv_chan_load");
+                    channel_val->is_lvalue = 0;
+                }
+            }
             channel = channel_val->llvm_value;
 
             // Allocate space for the received value sized to the channel's
