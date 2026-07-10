@@ -2526,7 +2526,8 @@ VERIFY_ALL_DEPS := \
     spmd-bench-probe \
     goostd-resolver-probe \
     reldir-import-probe \
-    readline-probe
+    readline-probe \
+    stdlib-smoke-coverage
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -3495,6 +3496,21 @@ readline-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "readline-probe: FAIL (see diff above)"; \
 	  exit 1; \
 	fi
+
+# P4.11: stdlib e2e smoke suite + shim-table drift catch. Runs
+# scripts/check_stdlib_coverage.sh, which mechanically extracts every
+# SHIM_TABLE row (shim_signatures.c), seeded sync/time export, package value
+# member (os.Args, math.Pi, time.* Duration constants), and goostd exported
+# func (strings/strconv/utf8/bits) and requires each to appear in at least
+# one golden-wired examples/*.goo fixture. A stdlib symbol added without
+# smoke coverage fails THIS target — the drift catch
+# docs/2026-07-08-v1-roadmap.md:159 asks for. Pure source/text scan, no
+# compiler build needed (unlike most probes above). Supersedes the narrower
+# `smoke-stdlib` (4 symbols, M7-era) as the authoritative stdlib coverage
+# gate; `smoke-stdlib` itself is left running as-is since a coord milestone
+# still references it by name.
+stdlib-smoke-coverage:
+	@bash scripts/check_stdlib_coverage.sh
 
 # Forward references (Go package-scope semantics): a function body may call a
 # function declared LATER in the same file/package. Requires the type checker's

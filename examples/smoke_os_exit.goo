@@ -1,0 +1,17 @@
+// smoke_os_exit: P4.11 dedicated fixture for os.Exit's NONZERO exit-code
+// path. os.Exit is already textually covered by shim_signatures_probe.goo
+// and stdlib_smoke.goo, but both call os.Exit(0) — neither actually proves
+// the exit CODE is honored (a no-op stub that just fell through to a
+// normal `return 0` would pass them too). This fixture prints a marker,
+// then exits with a distinct nonzero code, asserted via the golden
+// runner's .exit sidecar (scripts/run_golden.sh) — the only golden fixture
+// that pins os.Exit's exit-code argument end to end.
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+	fmt.Println("before exit")
+	os.Exit(7)
+}
