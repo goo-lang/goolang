@@ -467,6 +467,14 @@ go func() {
 supervised go handle_connection(conn)
 ```
 
+**Program exit** (Go parity, locked by `examples/main_exit_probe.goo`): when
+`main` returns, the process exits immediately — running goroutines are
+abandoned, exactly as in Go. A program that needs goroutine side effects to
+complete must synchronize before returning (channel handshake, or
+`sync.WaitGroup` once available). Blocking in `main` with no goroutine able to
+make progress aborts with Go's `fatal error: all goroutines are asleep -
+deadlock!` (exit code 2).
+
 ### Channels
 
 ```goo

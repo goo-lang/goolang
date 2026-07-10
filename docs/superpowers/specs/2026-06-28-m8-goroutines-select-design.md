@@ -62,7 +62,15 @@ into `make verify` and `.github/workflows/tests.yml`.
   scratch sized from the channel element type, and NULL-channel default slots so
   the runtime index aligns with the case blocks.
 
-### Main-exit semantics (intentional Goo superset of Go)
+### Main-exit semantics (SUPERSEDED 2026-07-10 — P3.3)
+> **This section no longer describes Goo's behavior.** The implicit wait-all
+> join was replaced with Go-parity main exit (process exits when `main`
+> returns, goroutines abandoned) by user decision on 2026-07-10 — see
+> docs/superpowers/specs/2026-07-10-p3-concurrency-a-design.md and
+> docs/02-LANGUAGE-SPECIFICATION.md. Deciding factors: the join was only
+> emitted on the fall-off-the-end path (explicit `return` bypassed it), and a
+> busy-loop goroutine hung the program forever. Kept below as the historical
+> rationale.
 Goo is a **superset of Go**, and `main` exit is one place it deliberately adds
 behavior. In Go, `main` returning terminates the process and abandons any still-
 running goroutines (the classic "fire-and-forget may never run" gotcha). Goo

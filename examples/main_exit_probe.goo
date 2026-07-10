@@ -1,0 +1,22 @@
+// main_exit_probe (P3.3): Go-parity main-exit semantics — the process
+// exits when main returns, abandoning running goroutines, exactly like
+// Go. The goroutine below busy-loops forever without yielding; under the
+// former M8 wait-all join (goo_scheduler_wait emitted at main's exit)
+// this program hung until the harness timeout. The channel handshake
+// pins that the goroutine really is RUNNING when main returns — ruling
+// out the trivial pass where main exits before the goroutine ever
+// starts.
+package main
+
+import "fmt"
+
+func main() {
+	started := make(chan int, 1)
+	go func() {
+		started <- 1
+		for {
+		}
+	}()
+	<-started
+	fmt.Println("main done")
+}
