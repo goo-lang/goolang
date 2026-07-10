@@ -1,17 +1,24 @@
-// deadlock-goroutine-probe: a spawned goroutine receives on an empty channel;
-// main spawns it and ends (falls through to goo_scheduler_wait) without sending.
-// Exercises the goroutine path + the scheduler-wait poll-loop check.
+// deadlock-goroutine-probe (repurposed by P3.3 Go-parity main exit): a
+// spawned goroutine blocks receiving on an empty channel; main spawns it
+// and returns without sending. Under Go semantics main's return ends the
+// process — the blocked goroutine is abandoned and this exits 0 with no
+// output, exactly as the same program does in Go. (Formerly this pinned
+// the M9 wait-all-era abort, exit 2 via goo_scheduler_wait's poll-loop
+// check — that barrier is no longer emitted. Go's both-blocked abort,
+// main AND goroutines asleep, is a pre-existing detector limitation
+// documented at src/runtime/concurrency.c; main-only blocking is pinned
+// by deadlock-probe.)
 package main
 
 import "fmt"
 
 func consume(c chan int) {
     v := <-c
-    fmt.Println(v)    // never reached
+    fmt.Println(v)    // never reached: abandoned at main exit
 }
 
 func main() {
     c := make_chan(int, 1)
     go consume(c)
-    // main never sends; the goroutine is stuck forever
+    // main never sends; its return abandons the blocked goroutine
 }
