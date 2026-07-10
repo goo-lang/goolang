@@ -24,6 +24,16 @@
 // Compiler version
 #define GOO_VERSION "0.1.0"
 
+// P5.3: invocation surface. LEGACY is the original `goo [options] <file>`
+// flag form and must stay byte-compatible; BUILD/RUN are the Go-parity
+// subcommands (`goo build`, `goo run`) dispatched on argv[1] before getopt
+// ever sees the arguments.
+typedef enum {
+    GOO_MODE_LEGACY,
+    GOO_MODE_BUILD,
+    GOO_MODE_RUN,
+} GooMode;
+
 // Compiler options
 typedef struct CompilerOptions {
     char* input_file;
@@ -39,22 +49,48 @@ typedef struct CompilerOptions {
     bool dump_packages;   // hidden debug flag: print import-graph in topo order
     char** link_libs;
     int link_lib_count;
+    char** run_args;      // P5.3: program args after `--` (borrowed from main's argv)
+    int run_arg_count;
+    bool delete_output_after_run;  // P5.3: `goo run` temp binary cleanup
 } CompilerOptions;
 
 // Forward declarations
 static void print_usage(const char* program_name);
 static void print_version(void);
-static CompilerOptions* parse_arguments(int argc, char* argv[]);
+static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode);
 static bool compile_file(const char* filename, CompilerOptions* options);
 static char* read_file(const char* filename);
 static bool write_file(const char* filename, const char* content);
 static char* get_output_filename(const char* input_file, const char* output_file,
                                  const char* ext);
-static int run_program(const char* path, bool verbose);
+static int run_program(const char* path, char** args, int arg_count, bool verbose);
 
 int main(int argc, char* argv[]) {
+    // P5.3: subcommand dispatch BEFORE getopt — GNU getopt permutes argv, so
+    // a bare-word argv[1] must be claimed here or `goo run prog.goo -v`
+    // would steal -v from the program. Legacy flag-form invocations
+    // (argv[1] starts with '-' or is a filename) fall through untouched.
+    GooMode mode = GOO_MODE_LEGACY;
+    if (argc >= 2) {
+        if (strcmp(argv[1], "help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        if (strcmp(argv[1], "version") == 0) {
+            print_version();
+            return 0;
+        }
+        if (strcmp(argv[1], "build") == 0 || strcmp(argv[1], "run") == 0) {
+            mode = (argv[1][0] == 'b') ? GOO_MODE_BUILD : GOO_MODE_RUN;
+            // Shift the subcommand out so getopt sees a conventional argv.
+            argv[1] = argv[0];
+            argv++;
+            argc--;
+        }
+    }
+
     // Parse command line arguments
-    CompilerOptions* options = parse_arguments(argc, argv);
+    CompilerOptions* options = parse_arguments(argc, argv, mode);
     if (!options) {
         return 1;
     }
@@ -65,11 +101,19 @@ int main(int argc, char* argv[]) {
     // Compile the input file
     bool success = compile_file(options->input_file, options);
 
-    // P5.1: -r runs the compiled program and goo's exit code becomes the
-    // program's (compile errors keep exiting 1, before any run is attempted).
+    // P5.1: -r (and `goo run`) runs the compiled program and goo's exit code
+    // becomes the program's (compile errors keep exiting 1, before any run
+    // is attempted).
     int exit_code = success ? 0 : 1;
     if (success && options->run_after_compile && !options->emit_llvm_ir) {
-        exit_code = run_program(options->output_file, options->verbose);
+        exit_code = run_program(options->output_file, options->run_args,
+                                options->run_arg_count, options->verbose);
+    }
+
+    // P5.3: `goo run` compiles to a mkstemp temp binary; remove it even on
+    // compile failure (mkstemp already created the empty file).
+    if (options->delete_output_after_run) {
+        unlink(options->output_file);
     }
 
     // Cleanup
@@ -89,6 +133,13 @@ int main(int argc, char* argv[]) {
 
 static void print_usage(const char* program_name) {
     printf("Usage: %s [options] <input-file>\n", program_name);
+    printf("       %s build [options] <input-file>\n", program_name);
+    printf("       %s run [options] <input-file> [-- <program args...>]\n", program_name);
+    printf("       %s help | version\n", program_name);
+    printf("Subcommands:\n");
+    printf("  build                    Compile; executable named <stem> in the current directory\n");
+    printf("  run                      Compile to a temporary binary, run it (forwarding args\n");
+    printf("                           after --), exit with the program's exit code\n");
     printf("Options:\n");
     printf("  -o, --output <file>      Output file name (default: <input>.out, or <input>.ll with --emit-llvm)\n");
     printf("  -O, --optimize <level>   Optimization level (0-3, default: 0)\n");
@@ -113,7 +164,33 @@ static void print_version(void) {
 #endif
 }
 
-static CompilerOptions* parse_arguments(int argc, char* argv[]) {
+// P5.3: `goo run` compiles to a unique temp binary (deleted after the run).
+// mkstemp creates the file 0600; the linker truncates it in place and
+// compile_file chmods it 0755 before it is executed.
+static char* make_temp_output_path(void) {
+    const char* tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir) {
+        tmpdir = "/tmp";
+    }
+    const char template_tail[] = "/goo-run-XXXXXX";
+    char* path = malloc(strlen(tmpdir) + sizeof(template_tail));
+    if (!path) {
+        fprintf(stderr, "Error: Out of memory\n");
+        return NULL;
+    }
+    sprintf(path, "%s%s", tmpdir, template_tail);
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        fprintf(stderr, "Error: cannot create temporary file %s: %s\n",
+                path, strerror(errno));
+        free(path);
+        return NULL;
+    }
+    close(fd);
+    return path;
+}
+
+static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
     CompilerOptions* options = calloc(1, sizeof(CompilerOptions));
     if (!options) {
         fprintf(stderr, "Error: Out of memory\n");
@@ -212,16 +289,65 @@ static CompilerOptions* parse_arguments(int argc, char* argv[]) {
         free(options);
         return NULL;
     }
-    
+
     options->input_file = argv[optind];
-    
+
+    // P5.3: mode-specific argument handling.
+    switch (mode) {
+        case GOO_MODE_RUN:
+            if (options->emit_llvm_ir) {
+                fprintf(stderr, "Error: --emit-llvm cannot be combined with 'goo run'\n");
+                free(options->output_file);
+                free(options);
+                return NULL;
+            }
+            // Everything after the input file is the program's argv (the
+            // `--` that getopt consumed guards program flags). Borrowed
+            // pointers into main's argv — no copies to free.
+            options->run_args = &argv[optind + 1];
+            options->run_arg_count = argc - optind - 1;
+            options->run_after_compile = true;
+            break;
+        case GOO_MODE_BUILD:
+            if (optind + 1 < argc) {
+                fprintf(stderr, "Error: unexpected argument '%s' after input file\n",
+                        argv[optind + 1]);
+                free(options->output_file);
+                free(options);
+                return NULL;
+            }
+            break;
+        case GOO_MODE_LEGACY:
+            break;
+    }
+
     // Generate default output filename if not specified. --emit-llvm writes
     // IR only (P5.2), so its default is <stem>.ll, not the executable name.
+    // `goo build` is Go parity: bare <stem>, in the cwd (P5.3); `goo run`
+    // compiles to a temp binary that main() deletes after the run.
     if (!options->output_file) {
-        options->output_file = get_output_filename(options->input_file, NULL,
-                                                   options->emit_llvm_ir ? ".ll" : ".out");
+        switch (mode) {
+            case GOO_MODE_BUILD: {
+                const char* slash = strrchr(options->input_file, '/');
+                const char* base_input = slash ? slash + 1 : options->input_file;
+                options->output_file = get_output_filename(base_input, NULL, "");
+                break;
+            }
+            case GOO_MODE_RUN:
+                options->output_file = make_temp_output_path();
+                if (!options->output_file) {
+                    free(options);
+                    return NULL;
+                }
+                options->delete_output_after_run = true;
+                break;
+            case GOO_MODE_LEGACY:
+                options->output_file = get_output_filename(options->input_file, NULL,
+                                                           options->emit_llvm_ir ? ".ll" : ".out");
+                break;
+        }
     }
-    
+
     return options;
 }
 
@@ -1209,23 +1335,37 @@ static bool compile_file(const char* filename, CompilerOptions* options) {
 // Returns the child's exit code; 128+signal if it was killed (the shell
 // convention, so `goo -r` composes with scripts); 127 if it could not be
 // executed at all (reported on stderr — never a silent success).
-static int run_program(const char* path, bool verbose) {
+static int run_program(const char* path, char** args, int arg_count, bool verbose) {
     if (verbose) {
         printf("\nRunning %s...\n", path);
         printf("================\n");
     }
 
+    // argv[0] is the binary path (Go's `go run` does the same with its temp
+    // binary); the forwarded args follow.
+    char** child_argv = malloc(((size_t)arg_count + 2) * sizeof(char*));
+    if (!child_argv) {
+        fprintf(stderr, "Error: Out of memory\n");
+        return 127;
+    }
+    child_argv[0] = (char*)path;
+    for (int i = 0; i < arg_count; i++) {
+        child_argv[i + 1] = args[i];
+    }
+    child_argv[arg_count + 1] = NULL;
+
     pid_t pid = fork();
     if (pid < 0) {
         fprintf(stderr, "Error: cannot fork to run %s: %s\n", path, strerror(errno));
+        free(child_argv);
         return 127;
     }
     if (pid == 0) {
-        char* child_argv[] = { (char*)path, NULL };
         execv(path, child_argv);
         fprintf(stderr, "Error: cannot execute %s: %s\n", path, strerror(errno));
         _exit(127);
     }
+    free(child_argv);
 
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) {

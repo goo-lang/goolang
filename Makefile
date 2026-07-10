@@ -1527,6 +1527,53 @@ emit-llvm-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "emit-llvm-probe: FAIL (--emit-llvm still produced executable-path artifacts)"; exit 1; fi
 	@echo "emit-llvm-probe: PASS (IR only, exact -o naming, <stem>.ll default)"
 
+# P5.3: `goo build` / `goo run` / `goo help` subcommands. build = Go parity
+# (executable named <stem> in the cwd); run = compile to a temp binary, exec
+# it forwarding args after `--`, propagate its exit code, clean up the temp;
+# legacy flag-form invocations stay byte-compatible. Replaces the deleted
+# tools/goo facade (its builtin_build returned 0 without compiling anything).
+# This probe FAILS against the pre-subcommand driver — failing-first.
+.PHONY: subcommand-probe
+subcommand-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build/subcmd
+	@echo "=== subcommand-probe: goo build/run/help subcommands (P5.3) ==="
+	@# help: exits 0 and prints usage
+	@"$(COMPILER)" help >build/subcmd/help.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || ! grep -q "Usage:" build/subcmd/help.log; then \
+	    echo "subcommand-probe: FAIL (goo help: rc=$$rc or no Usage text)"; cat build/subcmd/help.log; exit 1; fi
+	@# build: Go parity — executable named <stem> in the cwd
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("built") }\n' > build/subcmd/sub_build.goo
+	@rm -f build/subcmd/sub_build build/subcmd/sub_build.out
+	@cd build/subcmd && "$(CURDIR)/$(COMPILER)" build sub_build.goo >build.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "subcommand-probe: FAIL (goo build failed)"; cat build/subcmd/build.log; exit 1; fi
+	@if [ ! -x build/subcmd/sub_build ]; then echo "subcommand-probe: FAIL (goo build did not produce ./sub_build)"; exit 1; fi
+	@if [ -e build/subcmd/sub_build.out ]; then echo "subcommand-probe: FAIL (goo build produced legacy .out name too)"; exit 1; fi
+	@out="$$(./build/subcmd/sub_build)"; \
+	  if [ "$$out" != "built" ]; then echo "subcommand-probe: FAIL (built binary printed '$$out')"; exit 1; fi
+	@# run: forwards args after -- and prints via os.Args
+	@printf 'package main\nimport "fmt"\nimport "os"\nfunc main() {\n\tfmt.Println(len(os.Args) >= 1)\n\tif len(os.Args) > 1 {\n\t\tfmt.Println(len(os.Args))\n\t\tfmt.Println(os.Args[1])\n\t}\n}\n' > build/subcmd/sub_args.goo
+	@out="$$("$(COMPILER)" run build/subcmd/sub_args.goo -- alpha beta 2>build/subcmd/run_args.err)"; rc=$$?; \
+	  if [ $$rc -ne 0 ] || [ "$$out" != "$$(printf 'true\n3\nalpha')" ]; then \
+	    echo "subcommand-probe: FAIL (goo run arg forwarding: rc=$$rc, out='$$out')"; cat build/subcmd/run_args.err; exit 1; fi
+	@# run: exit-code propagation
+	@printf 'package main\nimport "os"\nfunc main() { os.Exit(5) }\n' > build/subcmd/sub_exit.goo
+	@"$(COMPILER)" run build/subcmd/sub_exit.goo >build/subcmd/run_exit.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 5 ]; then echo "subcommand-probe: FAIL (goo run exited $$rc, want 5)"; cat build/subcmd/run_exit.log; exit 1; fi
+	@# run: no binary left behind in cwd or next to the source
+	@if ls build/subcmd/sub_exit 2>/dev/null || ls build/subcmd/sub_exit.out 2>/dev/null; then \
+	  echo "subcommand-probe: FAIL (goo run left a binary behind)"; exit 1; fi
+	@# run: compile error still exits exactly 1
+	@printf 'package main\nfunc main() { not goo at all }\n' > build/subcmd/sub_bad.goo
+	@"$(COMPILER)" run build/subcmd/sub_bad.goo >build/subcmd/run_bad.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 1 ]; then echo "subcommand-probe: FAIL (run compile error exited $$rc, want 1)"; exit 1; fi
+	@# legacy flag form stays byte-compatible
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("legacy") }\n' > build/subcmd/sub_legacy.goo
+	@"$(COMPILER)" build/subcmd/sub_legacy.goo -o build/subcmd/sub_legacy_probe >build/subcmd/legacy.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "subcommand-probe: FAIL (legacy flag form broke)"; cat build/subcmd/legacy.log; exit 1; fi; \
+	  out="$$(./build/subcmd/sub_legacy_probe)"; \
+	  if [ "$$out" != "legacy" ]; then echo "subcommand-probe: FAIL (legacy binary printed '$$out')"; exit 1; fi; \
+	  echo "subcommand-probe: PASS (help, build Go-parity naming, run args+exit+cleanup, legacy intact)"
+
 # P0-3: a run of blank lines must NOT overflow the stack. The newline ASI
 # handler now iterates instead of tail-recursing, so 1,000,000 consecutive
 # blank lines lex without a SIGSEGV. The fixture is generated at test time
@@ -2515,6 +2562,7 @@ VERIFY_ALL_DEPS := \
     link-libs-probe \
     run-exit-probe \
     emit-llvm-probe \
+    subcommand-probe \
     blank-lines-probe \
     comment-lines-probe \
     slice-write-bounds-probe \
