@@ -168,3 +168,41 @@ error-union marshaling, C6 interface_codegen) + Go-parity/vendoring-fidelity dim
 vendored bodies vs upstream, error semantics, smoke-coverage honesty). Sub-C exit: all five
 roadmap acceptance rows demonstrably green + Phase 4 exit-gate program (multi-package +
 strings/strconv/os.ReadFile/time.Sleep/sync.WaitGroup) compiles and runs.
+
+## Execution addendum (2026-07-10, pre-review)
+
+All of C1-C6 implemented and integrated; golden 414/0 at BOTH opt levels (405 baseline +
+time_sleep, os_readfile, strings_vendored, strconv_vendored, pkg_iface_samename_fmt, 3 smoke,
+phase4_capstone), reject 76/0, unit 76/1, tripwire exact, verify-core green incl. the new
+readline-probe and stdlib-smoke-coverage targets. phase4_capstone_probe = the Phase 4 exit-gate
+program (local ./p4pkg + pkg.Type methods both receiver kinds + vendored/shim strings +
+strconv.ParseInt !T path + FormatInt base 16 + os round trip + time.Sleep under WaitGroup/Mutex).
+
+Execution deltas vs the DRAFT decisions (all recorded on the roadmap rows too):
+- C1: UnixNano wraps a NEW CLOCK_REALTIME primitive (the doc's lean confirmed). Time.UnixNano
+  lowers to a field load, VALUE receiver — first non-pointer seeded method.
+- C2: single shared SHIM_RET_STRING_RESULT (not two ret-kinds); Atoi untouched. The design
+  doc's "generic !T builder" alternative correctly NOT taken (two same-shape rows only).
+- C3: vendored from Go 1.9 (upstream's own last pre-bytealg portable source) rather than
+  modern-source-with-fallback-loops — strictly closer to "upstream's own pure shape".
+- C6: the doc's suggested struct-pair %v probe CANNOT observe the bug (v1 %v fallback prints
+  only the bare type name for boxed structs); the shipped probe uses same-named cross-package
+  NAMED SCALAR types where the stale cached formatter's baked-in load width truncated int64→32
+  (confirmed both boxing orders, before the fix).
+
+PRE-EXISTING compiler gaps surfaced by vendoring (routed around with in-code repro comments;
+NOT fixed on this branch — candidates for a focused hardening PR):
+1. Cross-package CONST/value selectors into goostd source packages don't resolve
+   (utf8.RuneSelf → 'Undefined identifier'; function calls fine). Blocks future vendoring
+   that imports constants. (Hit independently by C3 and C4.)
+2. Nested-index expression as array index (asciiSpace[s[i]]) emits invalid IR — a GEP pointer
+   reaches the ZExt widening path unloaded. Loud (verifier), not silent.
+3. Struct-field selector passed directly as a call argument for aggregate-ABI types
+   (string/[]string) emits invalid IR (field address where loaded value expected). Loud.
+4. Wrong-boolean anomaly in one large single-function probe body, silent, occasional —
+   plausibly the KNOWN latent mixed-width fmt.Println corruption (see auto-memory
+   goolang-mixed-width-print-bug); no minimal repro preserved. Review wave should assess
+   whether to reproduce+file properly before v1.
+Also documented: Goo string range yields BYTES not decoded runes (Go parity divergence,
+shaped C3's TrimLeft/Right); switch-on-rune with char-literal cases miscompiles at the
+verifier (i32 tag vs i64 case constant — C4 worked around with tagless switch).
