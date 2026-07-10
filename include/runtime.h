@@ -159,6 +159,18 @@ void goo_strings_split(goo_slice_t* out, const char* s, const char* sep);
 goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep);
 goo_string_t goo_os_getenv(const char* name);
 
+// os.ReadFile(path) -> !string / os.ReadLine() -> !string (P4.8). Same
+// ok-flag + out-param shape as goo_string_to_int above (mirrored deliberately
+// — see call_codegen.c's codegen_generate_string_result_call): return 1 with
+// the success value written to *out, or 0 with a human-readable error message
+// written to *out. goo_string_t is 16 bytes (ptr+len), safely by-value per
+// goo_os_getenv above; only the file content itself needs the out-param, to
+// stay byte-length honest (embedded NULs survive) the same way Split/Args use
+// an out-param for their own >16-byte aggregate, not because goo_string_t
+// itself needs one.
+int goo_os_read_file(const char* path, goo_string_t* out);
+int goo_os_read_line(goo_string_t* out);
+
 // os.Args ([]string): argc/argv captured ONCE from the generated
 // executable's entry point (see the is_entry_main prologue in
 // src/codegen/function_codegen.c, the only caller of goo_os_args_init).

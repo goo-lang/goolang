@@ -1,0 +1,46 @@
+// os_readfile_probe: os.ReadFile(string) -> !string whole-file read shim
+// (P4.8). Round-trips a multi-line, multi-byte-UTF-8 payload through
+// os.WriteFile -> os.ReadFile and checks byte-for-byte equality, then
+// confirms the missing-file error path is caught with a non-empty,
+// OS-independent message.
+//
+// Embedded NULs are deliberately NOT exercised here: os.WriteFile takes a
+// NUL-terminated C string (codegen extracts only the string's pointer
+// field; the runtime backing then calls strlen on it) — a pre-existing
+// WriteFile limitation, out of scope for P4.8's ReadFile/ReadLine work —
+// and the golden runner's own comparison (`$(cat ...)` in run_golden.sh)
+// can't hold an embedded NUL either, since bash command substitution
+// truncates at the first NUL. goo_os_read_file itself IS byte-length
+// honest (fstat's st_size + a read loop, never strlen) for whatever a file
+// actually contains, but nothing in this fixture's toolchain can WRITE or
+// COMPARE an embedded NUL to prove that end-to-end.
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+	path := "/tmp/goo_os_readfile_probe.txt"
+	payload := "line one\nline two\nunicode: café 中文\n"
+	os.WriteFile(path, payload)
+
+	content := os.ReadFile(path) catch e {
+		fmt.Println("FAIL: readfile errored on a file that should exist")
+		return
+	}
+	if content == payload {
+		fmt.Println("PASS: readfile round-trip")
+	} else {
+		fmt.Println("FAIL: readfile content mismatch")
+	}
+
+	os.ReadFile("definitely_missing_file_xyz.txt") catch e {
+		if len(e.Error()) > 0 {
+			fmt.Println("missing: error caught")
+			return
+		}
+		fmt.Println("FAIL: missing-file error had empty message")
+		return
+	}
+	fmt.Println("FAIL: missing file should have errored")
+}

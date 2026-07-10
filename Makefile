@@ -2525,7 +2525,8 @@ VERIFY_ALL_DEPS := \
     test-golden-reject \
     spmd-bench-probe \
     goostd-resolver-probe \
-    reldir-import-probe
+    reldir-import-probe \
+    readline-probe
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -3468,6 +3469,32 @@ reldir-import-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -ne 0 ]; then echo "reldir-import-probe: FAIL (bare mypkg shadow case did not compile)"; cat build/reldir_probe/shadow_main.err; exit 1; fi; \
 	  out=$$(./build/reldir_probe/shadow_main.out); if [ "$$out" != "42" ]; then echo "reldir-import-probe: FAIL (bare mypkg printed '$$out', want 42 (GOOROOT) — got the local shadow instead)"; exit 1; fi
 	@echo "reldir-import-probe: PASS"
+
+# P4.8 os.ReadLine stdin gate: run_golden.sh has no mechanism to pipe stdin
+# into a fixture (see its doc comment — env sidecars only), so ReadLine gets
+# a dedicated probe target instead of an examples/*.expected.txt golden
+# fixture (examples/os_readline_probe.goo deliberately has no sibling
+# .expected.txt, so run_golden.sh's glob skips it entirely).
+#
+# Stdin is fed via `<` file redirection, NOT a `|` pipe: a pipe's `rc=$?`
+# would capture only the LAST stage's exit status (the CLAUDE.md piped-
+# exit-codes gotcha — `cmd | othercmd` masks `cmd`'s own failure), which
+# here would hide a ReadLine/exit-code regression in os_readline_probe
+# itself. Redirection has no such stage to mask: `rc=$?` is the probe
+# binary's own exit code, captured directly off the invocation.
+readline-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== readline-probe: os.ReadLine reads stdin lines until EOF ==="
+	@"$(COMPILER)" examples/os_readline_probe.goo -o build/os_readline_probe.out
+	@printf 'alpha\nbeta\ngamma\n' > build/readline_probe.stdin
+	@./build/os_readline_probe.out < build/readline_probe.stdin > build/readline_probe.actual.txt; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "readline-probe: FAIL (exit $$rc)"; exit 1; fi
+	@if diff -u examples/os_readline_probe.probe_expected.txt build/readline_probe.actual.txt; then \
+	  echo "readline-probe: PASS"; \
+	else \
+	  echo "readline-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
 
 # Forward references (Go package-scope semantics): a function body may call a
 # function declared LATER in the same file/package. Requires the type checker's

@@ -52,6 +52,10 @@ static const ShimSignature SHIM_TABLE[] = {
     { "os", "WriteFile", SHIM_RET_INT32, PARAMS_STRING_STRING, NPARAMS(PARAMS_STRING_STRING), 0 },
     { "os", "ReadByte",  SHIM_RET_INT32, PARAMS_STRING_INT64, NPARAMS(PARAMS_STRING_INT64), 0 },
     { "os", "FileSize",  SHIM_RET_INT32, PARAMS_STRING,       NPARAMS(PARAMS_STRING), 0 },
+    // P4.8: os.ReadFile(string) !string, os.ReadLine() !string — see
+    // SHIM_RET_STRING_RESULT's doc comment in shim_signatures.h.
+    { "os", "ReadFile",  SHIM_RET_STRING_RESULT, PARAMS_STRING, NPARAMS(PARAMS_STRING), 0 },
+    { "os", "ReadLine",  SHIM_RET_STRING_RESULT, NULL,          0, 0 },
 
     // math. Pi is a value member (skip, per doc comment above).
     { "math", "Sqrt", SHIM_RET_FLOAT64, PARAMS_FLOAT64,         NPARAMS(PARAMS_FLOAT64), 0 },
@@ -139,6 +143,14 @@ static Type* shim_ret_type(TypeChecker* checker, ShimRetKind kind) {
             Type* int_t = type_checker_get_builtin(checker, TYPE_INT64);
             Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
             return type_error_union(int_t, err_t);
+        }
+        case SHIM_RET_STRING_RESULT: {
+            // os.ReadFile / os.ReadLine (P4.8) -> !string: success=string,
+            // error=string. Shared by both rows — see the tag's doc comment
+            // in shim_signatures.h for why this is one case, not two.
+            Type* str_t = type_checker_get_builtin(checker, TYPE_STRING);
+            Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
+            return type_error_union(str_t, err_t);
         }
     }
     return NULL;
