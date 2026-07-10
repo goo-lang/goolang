@@ -1410,10 +1410,15 @@ opt-differs-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build build/opt_o0 build/opt_o2
 	@echo "=== opt-differs-probe: -O2 IR differs from -O0, same runtime output (P3.10) ==="
 	@printf 'package main\n\nimport "fmt"\n\nfunc sum(n int) int {\n\ttotal := 0\n\tfor i := 0; i < n; i++ {\n\t\ttotal = total + i*2 - 1\n\t}\n\treturn total\n}\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\ta := 0\n\tb := 1\n\tfor i := 2; i <= n; i++ {\n\t\tc := a + b\n\t\ta = b\n\t\tb = c\n\t}\n\treturn b\n}\n\nfunc main() {\n\tx := sum(100)\n\ty := fib(20)\n\ttotal := 0\n\tfor i := 0; i < 50; i++ {\n\t\ttotal = total + x*i - y\n\t}\n\tfmt.Println(x, y, total)\n}\n' > build/opt_probe.goo
-	@"$(COMPILER)" --emit-llvm -O0 build/opt_probe.goo -o build/opt_o0/opt_probe >build/opt_probe_o0.log 2>&1; rc=$$?; \
-	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O0 compile failed)"; cat build/opt_probe_o0.log; exit 1; fi
-	@"$(COMPILER)" --emit-llvm -O2 build/opt_probe.goo -o build/opt_o2/opt_probe >build/opt_probe_o2.log 2>&1; rc=$$?; \
-	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O2 compile failed)"; cat build/opt_probe_o2.log; exit 1; fi
+	@# P5.2 made --emit-llvm IR-only, so IR and binary are separate compiles.
+	@"$(COMPILER)" --emit-llvm -O0 build/opt_probe.goo -o build/opt_o0/opt_probe.ll >build/opt_probe_o0.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O0 IR compile failed)"; cat build/opt_probe_o0.log; exit 1; fi
+	@"$(COMPILER)" --emit-llvm -O2 build/opt_probe.goo -o build/opt_o2/opt_probe.ll >build/opt_probe_o2.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O2 IR compile failed)"; cat build/opt_probe_o2.log; exit 1; fi
+	@"$(COMPILER)" -O0 build/opt_probe.goo -o build/opt_o0/opt_probe >>build/opt_probe_o0.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O0 binary compile failed)"; cat build/opt_probe_o0.log; exit 1; fi
+	@"$(COMPILER)" -O2 build/opt_probe.goo -o build/opt_o2/opt_probe >>build/opt_probe_o2.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O2 binary compile failed)"; cat build/opt_probe_o2.log; exit 1; fi
 	@if cmp -s build/opt_o0/opt_probe.ll build/opt_o2/opt_probe.ll; then \
 	  echo "opt-differs-probe: FAIL (O2 IR identical to O0 — optimizer not running)"; exit 1; \
 	fi
@@ -1468,6 +1473,106 @@ link-libs-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -q -- "-ltotallybogus_xyz" build/link_libs_bogus.err; then echo "link-libs-probe: FAIL (echoed link command missing -ltotallybogus_xyz)"; cat build/link_libs_bogus.err; exit 1; fi; \
 	  if [ -e build/link_libs_bogus.out.o ]; then echo "link-libs-probe: FAIL (failed link left stray .o behind)"; exit 1; fi; \
 	  echo "link-libs-probe: PASS (positive + negative)"
+
+# P5.1: `goo -r` must propagate the child program's exit code as goo's own
+# exit code. Pre-fix, compile_file ran the program via system(), discarded
+# the status, and returned success — `goo -r` exited 0 no matter what the
+# program did (and the unconditional "./" prefix + shell parsing made -o
+# paths fragile). This probe FAILS against that driver — failing-first.
+.PHONY: run-exit-probe
+run-exit-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build/run_exit_subdir
+	@echo "=== run-exit-probe: goo -r propagates the program's exit code (P5.1) ==="
+	@printf 'package main\nimport "os"\nfunc main() { os.Exit(7) }\n' > build/run_exit_probe.goo
+	@"$(COMPILER)" -r build/run_exit_probe.goo -o build/run_exit_subdir/run_exit_probe >build/run_exit_probe.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 7 ]; then echo "run-exit-probe: FAIL (goo -r exited $$rc, want 7 — child exit code not propagated)"; cat build/run_exit_probe.log; exit 1; fi
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("ran ok") }\n' > build/run_exit_zero.goo
+	@"$(COMPILER)" -r build/run_exit_zero.goo -o build/run_exit_zero_probe >build/run_exit_zero.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "run-exit-probe: FAIL (successful run exited $$rc, want 0)"; cat build/run_exit_zero.log; exit 1; fi
+	@# absolute -o path must compile AND run (no unconditional "./" prefix)
+	@printf 'package main\nimport "os"\nfunc main() { os.Exit(3) }\n' > build/run_exit_abs.goo
+	@"$(COMPILER)" -r build/run_exit_abs.goo -o "$(CURDIR)/build/run_exit_abs_probe" >build/run_exit_abs.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 3 ]; then echo "run-exit-probe: FAIL (absolute -o: goo -r exited $$rc, want 3)"; cat build/run_exit_abs.log; exit 1; fi
+	@# a compile error under -r must still exit exactly 1 (never a run code)
+	@printf 'package main\nfunc main() { this is not goo }\n' > build/run_exit_bad.goo
+	@"$(COMPILER)" -r build/run_exit_bad.goo -o build/run_exit_bad_probe >build/run_exit_bad.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 1 ]; then echo "run-exit-probe: FAIL (compile error under -r exited $$rc, want 1)"; exit 1; fi; \
+	  echo "run-exit-probe: PASS (nonzero + zero propagation, absolute -o, compile-error=1)"
+
+# P5.2: --emit-llvm must emit IR ONLY, at exactly the -o path. Pre-fix, the
+# always-true `if (!emit_llvm_ir || emit_llvm_ir)` in compile_file wrote the
+# ELF executable to the -o path and the IR to <path>.ll — so `-o out.ll`
+# produced an ELF named out.ll plus an out.ll.ll. Without -o the default
+# is <input-stem>.ll (executable default <input-stem>.out is unchanged).
+# This probe FAILS against the pre-fix driver — failing-first.
+.PHONY: emit-llvm-probe
+emit-llvm-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== emit-llvm-probe: --emit-llvm emits IR only, correct naming (P5.2) ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("ir") }\n' > build/emit_llvm_probe.goo
+	@rm -f build/emit_llvm_probe.ll build/emit_llvm_probe.ll.ll
+	@"$(COMPILER)" --emit-llvm build/emit_llvm_probe.goo -o build/emit_llvm_probe.ll >build/emit_llvm_probe.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "emit-llvm-probe: FAIL (compile failed)"; cat build/emit_llvm_probe.log; exit 1; fi
+	@if ! head -1 build/emit_llvm_probe.ll | grep -q '^; ModuleID'; then \
+	  echo "emit-llvm-probe: FAIL (-o path is not textual IR — got: $$(head -c 32 build/emit_llvm_probe.ll | LC_ALL=C tr -c '[:print:]' '.'))"; exit 1; fi
+	@if [ -e build/emit_llvm_probe.ll.ll ]; then echo "emit-llvm-probe: FAIL (stray .ll.ll written next to -o path)"; exit 1; fi
+	@# default naming without -o: IR at <stem>.ll, and no <stem>.out ELF
+	@cp build/emit_llvm_probe.goo build/emit_llvm_default.goo
+	@rm -f build/emit_llvm_default.ll build/emit_llvm_default.out build/emit_llvm_default.out.ll
+	@"$(COMPILER)" --emit-llvm build/emit_llvm_default.goo >build/emit_llvm_default.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "emit-llvm-probe: FAIL (default-name compile failed)"; cat build/emit_llvm_default.log; exit 1; fi
+	@if ! head -1 build/emit_llvm_default.ll 2>/dev/null | grep -q '^; ModuleID'; then \
+	  echo "emit-llvm-probe: FAIL (default <stem>.ll missing or not IR)"; exit 1; fi
+	@if [ -e build/emit_llvm_default.out ] || [ -e build/emit_llvm_default.out.ll ]; then \
+	  echo "emit-llvm-probe: FAIL (--emit-llvm still produced executable-path artifacts)"; exit 1; fi
+	@echo "emit-llvm-probe: PASS (IR only, exact -o naming, <stem>.ll default)"
+
+# P5.3: `goo build` / `goo run` / `goo help` subcommands. build = Go parity
+# (executable named <stem> in the cwd); run = compile to a temp binary, exec
+# it forwarding args after `--`, propagate its exit code, clean up the temp;
+# legacy flag-form invocations stay byte-compatible. Replaces the deleted
+# tools/goo facade (its builtin_build returned 0 without compiling anything).
+# This probe FAILS against the pre-subcommand driver — failing-first.
+.PHONY: subcommand-probe
+subcommand-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build/subcmd
+	@echo "=== subcommand-probe: goo build/run/help subcommands (P5.3) ==="
+	@# help: exits 0 and prints usage
+	@"$(COMPILER)" help >build/subcmd/help.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || ! grep -q "Usage:" build/subcmd/help.log; then \
+	    echo "subcommand-probe: FAIL (goo help: rc=$$rc or no Usage text)"; cat build/subcmd/help.log; exit 1; fi
+	@# build: Go parity — executable named <stem> in the cwd
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("built") }\n' > build/subcmd/sub_build.goo
+	@rm -f build/subcmd/sub_build build/subcmd/sub_build.out
+	@cd build/subcmd && "$(CURDIR)/$(COMPILER)" build sub_build.goo >build.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "subcommand-probe: FAIL (goo build failed)"; cat build/subcmd/build.log; exit 1; fi
+	@if [ ! -x build/subcmd/sub_build ]; then echo "subcommand-probe: FAIL (goo build did not produce ./sub_build)"; exit 1; fi
+	@if [ -e build/subcmd/sub_build.out ]; then echo "subcommand-probe: FAIL (goo build produced legacy .out name too)"; exit 1; fi
+	@out="$$(./build/subcmd/sub_build)"; \
+	  if [ "$$out" != "built" ]; then echo "subcommand-probe: FAIL (built binary printed '$$out')"; exit 1; fi
+	@# run: forwards args after -- and prints via os.Args
+	@printf 'package main\nimport "fmt"\nimport "os"\nfunc main() {\n\tfmt.Println(len(os.Args) >= 1)\n\tif len(os.Args) > 1 {\n\t\tfmt.Println(len(os.Args))\n\t\tfmt.Println(os.Args[1])\n\t}\n}\n' > build/subcmd/sub_args.goo
+	@out="$$("$(COMPILER)" run build/subcmd/sub_args.goo -- alpha beta 2>build/subcmd/run_args.err)"; rc=$$?; \
+	  if [ $$rc -ne 0 ] || [ "$$out" != "$$(printf 'true\n3\nalpha')" ]; then \
+	    echo "subcommand-probe: FAIL (goo run arg forwarding: rc=$$rc, out='$$out')"; cat build/subcmd/run_args.err; exit 1; fi
+	@# run: exit-code propagation
+	@printf 'package main\nimport "os"\nfunc main() { os.Exit(5) }\n' > build/subcmd/sub_exit.goo
+	@"$(COMPILER)" run build/subcmd/sub_exit.goo >build/subcmd/run_exit.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 5 ]; then echo "subcommand-probe: FAIL (goo run exited $$rc, want 5)"; cat build/subcmd/run_exit.log; exit 1; fi
+	@# run: no binary left behind in cwd or next to the source
+	@if ls build/subcmd/sub_exit 2>/dev/null || ls build/subcmd/sub_exit.out 2>/dev/null; then \
+	  echo "subcommand-probe: FAIL (goo run left a binary behind)"; exit 1; fi
+	@# run: compile error still exits exactly 1
+	@printf 'package main\nfunc main() { not goo at all }\n' > build/subcmd/sub_bad.goo
+	@"$(COMPILER)" run build/subcmd/sub_bad.goo >build/subcmd/run_bad.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 1 ]; then echo "subcommand-probe: FAIL (run compile error exited $$rc, want 1)"; exit 1; fi
+	@# legacy flag form stays byte-compatible
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("legacy") }\n' > build/subcmd/sub_legacy.goo
+	@"$(COMPILER)" build/subcmd/sub_legacy.goo -o build/subcmd/sub_legacy_probe >build/subcmd/legacy.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "subcommand-probe: FAIL (legacy flag form broke)"; cat build/subcmd/legacy.log; exit 1; fi; \
+	  out="$$(./build/subcmd/sub_legacy_probe)"; \
+	  if [ "$$out" != "legacy" ]; then echo "subcommand-probe: FAIL (legacy binary printed '$$out')"; exit 1; fi; \
+	  echo "subcommand-probe: PASS (help, build Go-parity naming, run args+exit+cleanup, legacy intact)"
 
 # P0-3: a run of blank lines must NOT overflow the stack. The newline ASI
 # handler now iterates instead of tail-recursing, so 1,000,000 consecutive
@@ -1734,7 +1839,7 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
 	@echo "=== comptime-generic-compose-ir-pin: composed instances are real and deduped ==="
-	@"$(COMPILER)" --emit-llvm examples/comptime_generic_compose_probe.goo -o build/cgc_ir >build/cgc_ir.err 2>&1; rc=$$?; \
+	@"$(COMPILER)" --emit-llvm examples/comptime_generic_compose_probe.goo -o build/cgc_ir.ll >build/cgc_ir.err 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "comptime-generic-compose-ir-pin: FAIL (compile failed)"; cat build/cgc_ir.err; exit 1; fi
 	@for sym in kernel__int64__n4 kernel__int64__n2 kernel__float64__n4; do \
 	  n=$$(grep -cE "^define[^{]*@\"?$${sym}\"?\(" build/cgc_ir.ll); \
@@ -2455,6 +2560,9 @@ VERIFY_ALL_DEPS := \
     opt-differs-probe \
     link-spaces-probe \
     link-libs-probe \
+    run-exit-probe \
+    emit-llvm-probe \
+    subcommand-probe \
     blank-lines-probe \
     comment-lines-probe \
     slice-write-bounds-probe \
@@ -3666,8 +3774,15 @@ TEST_REFERENCE_MANAGER = $(BINDIR)/test_reference_manager
 TEST_HARDWARE_AWARE = $(BINDIR)/test_hardware_aware
 
 # Tests
-test: $(TEST_RUNNER)
+test: $(TEST_RUNNER) test-cli
 	./$(TEST_RUNNER)
+
+# P5.4: table-driven CLI exit-code and stderr discipline audit. Success=0,
+# parse/type error=1, link failure nonzero, run-failure propagation, all
+# error text on stderr (usage included), stdout only for requested output.
+.PHONY: test-cli
+test-cli: $(COMPILER) $(RUNTIME_LIB)
+	@bash tests/cli/cli_test.sh "$(COMPILER)"
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
