@@ -348,6 +348,18 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, delete_var);
     }
 
+    // close(ch) -> void (P3.1). Registered like delete (void-returning,
+    // predeclared) so the bare identifier resolves before the call is
+    // special-cased in type_check_call_expr; codegen lowers it to
+    // goo_chan_close.
+    Type* close_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* close_var = variable_new("close", close_type, (Position){0, 0, 0, "builtin"});
+    if (close_var) {
+        close_var->is_builtin = 1;
+        close_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, close_var);
+    }
+
     // make(map[K]V[, hint]) / make([]T, n[, cap]) -> map/slice value.
     // Registered like delete/panic (void-returning stub signature is
     // irrelevant — the call is always special-cased below) so the bare

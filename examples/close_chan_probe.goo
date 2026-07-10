@@ -1,0 +1,22 @@
+// close_chan_probe (P3.1): close(ch) on a buffered channel. Comma-ok recv
+// must report the value with ok=true while data remains, then the zero
+// value with ok=false once the channel is closed AND drained — this pins
+// goo_chan_recv's closed-drained zero-value contract (the out-buffer is
+// memset, not left holding garbage from the first receive's stack slot).
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 1)
+	ch <- 7
+	close(ch)
+
+	v, ok := <-ch
+	fmt.Println(v)
+	fmt.Println(ok)
+
+	v2, ok2 := <-ch
+	fmt.Println(v2)
+	fmt.Println(ok2)
+}

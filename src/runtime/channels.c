@@ -77,24 +77,41 @@ goo_channel_t* goo_make_pattern_chan(goo_channel_pattern_t pattern, size_t elem_
 }
 
 void goo_chan_close(goo_channel_t* ch) {
-    if (!ch) return;
-    
+    // Go parity: close(nil) and a second close() both panic rather than
+    // silently no-op — a v1 program that hits either had a real logic bug
+    // (double-close race, or closing before the make(chan...) succeeded).
+    if (!ch) {
+        goo_panic("close of nil channel");
+    }
+
     goo_mutex_lock(ch->mutex);
+
+    if (ch->closed) {
+        goo_mutex_unlock(ch->mutex);
+        goo_panic("close of closed channel");
+    }
     ch->closed = 1;
-    
+
     // Wake up all waiting goroutines
 #ifdef GOO_PLATFORM_UNIX
     pthread_cond_broadcast(&ch->not_empty->cond);
     pthread_cond_broadcast(&ch->not_full->cond);
 #endif
-    
+
     goo_mutex_unlock(ch->mutex);
 }
 
 void goo_chan_free(goo_channel_t* ch) {
     if (!ch) return;
-    
-    goo_chan_close(ch);
+
+    // Close only if not already closed: goo_chan_close now panics on a
+    // double-close (Go parity, P3.1), but this call is an internal
+    // implementation detail (wake any waiters before the channel's memory
+    // goes away), not a user-visible close() — a program that already
+    // called close(ch) itself must not crash when its channel is freed.
+    if (!ch->closed) {
+        goo_chan_close(ch);
+    }
     
     if (ch->buffer) {
         goo_free(ch->buffer);
@@ -154,11 +171,15 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
     }
     
     goo_mutex_lock(ch->mutex);
-    
-    // Check if channel is closed
+
+    // Check if channel is closed. Go parity: sending on an already-closed
+    // channel panics rather than failing silently (P3.1) — every closed
+    // check in this function converts to the same panic, not just this one,
+    // so a send can't "fail quietly" depending on whether it raced a
+    // concurrent close() or found the channel already closed.
     if (ch->closed) {
         goo_mutex_unlock(ch->mutex);
-        return 0;  // Failed - channel closed
+        goo_panic("send on closed channel");
     }
     
     // Handle different channel patterns
@@ -265,8 +286,11 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
         }
 
         if (ch->closed) {
+            // Closed by another goroutine while this send was blocked
+            // waiting for buffer space — Go parity, same panic as the
+            // immediate-closed check above.
             goo_mutex_unlock(ch->mutex);
-            return 0;
+            goo_panic("send on closed channel");
         }
 
         // Copy data to buffer
@@ -295,8 +319,11 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
             goo_sched_block_end();
         }
         if (ch->closed) {
+            // Closed by another goroutine while this send was blocked
+            // waiting for the rendezvous slot to free up — same panic as
+            // the buffered-path equivalent above.
             goo_mutex_unlock(ch->mutex);
-            return 0;
+            goo_panic("send on closed channel");
         }
 
         if (!ch->rv_slot) {
@@ -315,10 +342,17 @@ int goo_chan_send(goo_channel_t* ch, void* data) {
             goo_sched_block_end();
         }
 
-        // If the channel was closed before the value was taken, the send failed.
-        int delivered = !ch->rv_full;
+        // If the channel was closed before a receiver took the parked value,
+        // the send never completed — Go parity, same panic as the other
+        // closed-during-send cases above (a delivery that DID complete
+        // still returns success below even if the channel was closed
+        // immediately after, since the handoff itself already succeeded).
+        if (ch->rv_full) {
+            goo_mutex_unlock(ch->mutex);
+            goo_panic("send on closed channel");
+        }
         goo_mutex_unlock(ch->mutex);
-        return delivered ? 1 : 0;
+        return 1;
 #else
         goo_mutex_unlock(ch->mutex);
         return 0;
@@ -389,10 +423,16 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
         }
         
         if (ch->length == 0 && ch->closed) {
+            // Go's comma-ok zero-value contract: `v, ok := <-ch` on a
+            // closed+drained channel must deliver ch's element zero value,
+            // not whatever garbage happened to be on the caller's stack —
+            // the caller (codegen's comma-ok path) always loads this buffer
+            // regardless of the returned status.
+            memset(data, 0, ch->elem_size);
             goo_mutex_unlock(ch->mutex);
             return 0;  // No more data and channel closed
         }
-        
+
         // Copy data from buffer
         void* src = (char*)ch->buffer + (ch->head * ch->elem_size);
         memcpy(data, src, ch->elem_size);
@@ -417,6 +457,8 @@ int goo_chan_recv(goo_channel_t* ch, void* data) {
             goo_sched_block_end();
         }
         if (!ch->rv_full && ch->closed) {
+            // Same zero-value contract as the buffered path above.
+            memset(data, 0, ch->elem_size);
             goo_mutex_unlock(ch->mutex);
             return 0;  // Closed with no value parked.
         }
@@ -446,20 +488,23 @@ int goo_chan_try_send(goo_channel_t* ch, void* data) {
     if (!goo_mutex_try_lock(ch->mutex)) {
         return 0;  // Could not acquire lock
     }
-    
+
+    // Go parity: try-send on a closed channel panics, same as blocking
+    // send's closed check (goo_chan_send above) — a non-blocking send is
+    // still a send.
     if (ch->closed) {
         goo_mutex_unlock(ch->mutex);
-        return 0;
+        goo_panic("send on closed channel");
     }
-    
+
     if (ch->capacity > 0 && ch->length < ch->capacity) {
         // Space available in buffer
         void* dest = (char*)ch->buffer + (ch->tail * ch->elem_size);
         memcpy(dest, data, ch->elem_size);
-        
+
         ch->tail = (ch->tail + 1) % ch->capacity;
         ch->length++;
-        
+
 #ifdef GOO_PLATFORM_UNIX
         pthread_cond_signal(&ch->not_empty->cond);
 #endif
@@ -485,18 +530,23 @@ int goo_chan_try_recv(goo_channel_t* ch, void* data) {
         // Data available in buffer
         void* src = (char*)ch->buffer + (ch->head * ch->elem_size);
         memcpy(data, src, ch->elem_size);
-        
+
         ch->head = (ch->head + 1) % ch->capacity;
         ch->length--;
-        
+
 #ifdef GOO_PLATFORM_UNIX
         pthread_cond_signal(&ch->not_full->cond);
 #endif
-        
+
         goo_mutex_unlock(ch->mutex);
         return 1;  // Success
     }
-    
+
+    // This return-0 covers both "nothing buffered yet" and "closed and
+    // drained" — try_recv has no separate signal for the two, so the
+    // zero-value contract (see goo_chan_recv above) is applied
+    // unconditionally here rather than only on the closed case.
+    memset(data, 0, ch->elem_size);
     goo_mutex_unlock(ch->mutex);
     return 0;  // Would block
 }
