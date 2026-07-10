@@ -339,6 +339,19 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_os_getenv", string_type, params, 1);
     }
 
+    // os.ReadFile(string) !string / os.ReadLine() !string (P4.8): same
+    // ok-flag + out-param shape as goo_string_to_int above.
+    // int goo_os_read_file(const char* path, goo_string_t* out)
+    {
+        LLVMTypeRef params[] = { ptr_type, LLVMPointerType(string_type, 0) };
+        add_runtime_function(codegen, "goo_os_read_file", i32_type, params, 2);
+    }
+    // int goo_os_read_line(goo_string_t* out)
+    {
+        LLVMTypeRef params[] = { LLVMPointerType(string_type, 0) };
+        add_runtime_function(codegen, "goo_os_read_line", i32_type, params, 1);
+    }
+
     // void goo_os_args_init(int argc, char** argv) — called once from the
     // generated executable's entry (is_entry_main prologue, function_codegen.c).
     {

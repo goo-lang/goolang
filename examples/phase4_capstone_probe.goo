@@ -1,0 +1,64 @@
+// phase4_capstone_probe: the Phase 4 exit gate (docs/2026-07-08-v1-roadmap.md:145).
+// One realistic program composing every Phase 4 pillar: a local ./p4pkg import,
+// a pkg.Type declaration, method calls on the package-exported type (pointer
+// AND value receivers, owner-routed), vendored strings/strconv (incl. the !T
+// ParseInt error-union path), the os.WriteFile -> os.ReadFile round trip, and
+// time.Sleep under a sync.WaitGroup/Mutex goroutine join. Runs in the golden
+// suite, so it gates at -O0 and -O2 like phase3_capstone_probe.
+package main
+
+import "fmt"
+import "strings"
+import "strconv"
+import "os"
+import "time"
+import "sync"
+import "./p4pkg"
+
+var counter int
+var mu sync.Mutex
+var wg sync.WaitGroup
+
+func worker() {
+	time.Sleep(1 * time.Millisecond)
+	mu.Lock()
+	counter = counter + 1
+	mu.Unlock()
+	wg.Done()
+}
+
+func main() {
+	// Local package type: pointer-receiver mutation + value-receiver read.
+	var acc p4pkg.Accumulator
+	acc.Add(21)
+	acc.Add(21)
+	fmt.Println(acc.Total())
+
+	// Vendored + shim strings surfaces, and strconv both directions
+	// (ParseInt exercises the error-union success path; FormatInt base 16).
+	name := strings.ToUpper(strings.TrimSpace("  goo  "))
+	n := strconv.ParseInt("1200") catch e {
+		fmt.Println("unexpected:", e.Error())
+		return
+	}
+	fmt.Println(name, strconv.FormatInt(n/100, 16))
+
+	// os round trip through the filesystem.
+	path := "/tmp/goo_phase4_capstone.txt"
+	os.WriteFile(path, "phase4\n")
+	content := os.ReadFile(path) catch e {
+		fmt.Println("readfile failed")
+		return
+	}
+	fmt.Println(strings.TrimSuffix(content, "\n"))
+
+	// Concurrency: 4 goroutines sleep then increment under the Mutex;
+	// WaitGroup is the join.
+	wg.Add(4)
+	go worker()
+	go worker()
+	go worker()
+	go worker()
+	wg.Wait()
+	fmt.Println("counter:", counter)
+}

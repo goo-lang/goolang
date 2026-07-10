@@ -1,0 +1,27 @@
+12345
+3039
+-12345
+-3039
+0
+0
+-9223372036854775808
+-8000000000000000
+9223372036854775807
+7fffffffffffffff
+42
+42
+-42
+0
+9223372036854775807
+-9223372036854775808
+strconv.ParseInt: parsing "9223372036854775808": value out of range
+strconv.ParseInt: parsing "-9223372036854775809": value out of range
+strconv.ParseInt: parsing "": invalid syntax
+strconv.ParseInt: parsing "12a3": invalid syntax
+strconv.ParseInt: parsing "+": invalid syntax
+strconv.ParseInt: parsing "-": invalid syntax
+"hello"
+"he said \"hi\" \\ bye"
+"line1\nline2\ttab"
+"\u4e2d"
+"\x01"

@@ -18,6 +18,9 @@ static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeC
 static ValueInfo* codegen_generate_fmt_sprintln_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_string_result_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                       ASTNode* expr, const char* runtime_symbol,
+                                                       ASTNode* path_arg);
 
 #if LLVM_AVAILABLE
 // Given a loaded `error` value {i1 is_null, i8* handle}, produce the goo_string
@@ -52,6 +55,13 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
 // see its definition (below codegen_generate_call_expr) for the full
 // rationale.
 static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type);
+
+// P4.6 (packages-C, C1): lower a time.Time method call (UnixNano is the only
+// one) directly to a field extract — see its definition (below
+// codegen_generate_sync_method_call) for the full rationale.
+static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, TypeChecker* checker,
                                                      ASTNode* expr, CallExprNode* call,
                                                      SelectorExprNode* msel, Type* recv_type);
 #endif
@@ -380,6 +390,36 @@ static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, Type
 
     LLVMBuildCall2(codegen->builder, fn_type, fn, args, param_count, "");
     return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+}
+
+// P4.6 (packages-C, C1): time.Time's only method. UnixNano is a VALUE
+// receiver (Go: `func (t Time) UnixNano() int64`) — unlike every sync
+// method (always a pointer receiver mutating shared state), Time is an
+// immutable value type, so this is a plain field EXTRACT: no runtime call,
+// no addressability requirement (a call-result rvalue like
+// `time.Now().UnixNano()` works with no address to take).
+static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type) {
+    (void)call;
+    const char* tn = type_receiver_name(recv_type);
+    if (!tn || strcmp(tn, "Time") != 0 || strcmp(msel->selector, "UnixNano") != 0) {
+        codegen_error(codegen, expr->pos, "internal: unknown time method '%s' on %s",
+                      msel->selector, tn ? tn : "?");
+        return NULL;
+    }
+
+    ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
+    if (!rv) return NULL;
+    LLVMValueRef recv_val = rv->llvm_value;
+    if (rv->is_lvalue && rv->goo_type) {
+        LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
+        if (rt) recv_val = LLVMBuildLoad2(codegen->builder, rt, recv_val, "time.recv");
+    }
+    value_info_free(rv);
+
+    LLVMValueRef nanos = LLVMBuildExtractValue(codegen->builder, recv_val, 0, "time.unixnano");
+    return value_info_new(NULL, nanos, type_checker_get_builtin(checker, TYPE_INT64));
 }
 #endif
 
@@ -1099,6 +1139,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_file_size", TYPE_INT32, 0);
             }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadFile") == 0) {
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "os.ReadFile: expected one string argument");
+                    return NULL;
+                }
+                return codegen_generate_string_result_call(codegen, checker, expr,
+                                                            "goo_os_read_file", call->args);
+            }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadLine") == 0) {
+                return codegen_generate_string_result_call(codegen, checker, expr,
+                                                            "goo_os_read_line", NULL);
+            }
             if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_sqrt", TYPE_FLOAT64, 0);
@@ -1260,9 +1312,66 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "join");
                 return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
             }
+            // P4.6 (packages-C, C1): time.Sleep(Duration) / time.Now() Time —
+            // plain package-level function calls (no receiver), so they
+            // belong in this if-chain alongside fmt/os/math/strings, NOT the
+            // method-call intercept further below (that's for t.UnixNano()
+            // only). Declare-on-first-use, same lazy pattern as every other
+            // runtime call this function emits.
+            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Sleep") == 0) {
+                // Duration IS int64 nanoseconds (Go parity), so the argument
+                // needs only the usual lvalue-load, no conversion.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_sleep_ns");
+                if (!fn) {
+                    LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context) };
+                    LLVMTypeRef fn_type = LLVMFunctionType(
+                        LLVMVoidTypeInContext(codegen->context), params, 1, 0);
+                    fn = LLVMAddFunction(codegen->module, "goo_time_sleep_ns", fn_type);
+                }
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "time.Sleep: expected a Duration argument");
+                    return NULL;
+                }
+                ValueInfo* dv = codegen_generate_expression(codegen, checker, call->args);
+                if (!dv) return NULL;
+                LLVMValueRef d = dv->llvm_value;
+                if (dv->is_lvalue && dv->goo_type) {
+                    LLVMTypeRef dt = codegen_type_to_llvm(codegen, dv->goo_type);
+                    if (dt) d = LLVMBuildLoad2(codegen->builder, dt, d, "sleep.d_load");
+                }
+                value_info_free(dv);
+                LLVMValueRef sleep_args[] = { d };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, sleep_args, 1, "");
+                return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+            }
+            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
+                // goo_time_unix_ns() int64 -> wrap into the single-field
+                // Time struct {i64 _nanos}. expr->node_type is already the
+                // checker-resolved Time struct type (the package-export
+                // lookup stamped it) — reuse it rather than re-deriving,
+                // mirroring os.Args's use of expr->node_type above.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_unix_ns");
+                if (!fn) {
+                    LLVMTypeRef fn_type = LLVMFunctionType(
+                        LLVMInt64TypeInContext(codegen->context), NULL, 0, 0);
+                    fn = LLVMAddFunction(codegen->module, "goo_time_unix_ns", fn_type);
+                }
+                LLVMValueRef nanos = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                                    fn, NULL, 0, "time.now_ns");
+                Type* time_type = expr->node_type;
+                if (!time_type) {
+                    codegen_error(codegen, expr->pos, "internal: time.Now missing resolved Time type");
+                    return NULL;
+                }
+                LLVMTypeRef time_llvm = codegen_type_to_llvm(codegen, time_type);
+                if (!time_llvm) return NULL;
+                LLVMValueRef time_val = LLVMGetUndef(time_llvm);
+                time_val = LLVMBuildInsertValue(codegen->builder, time_val, nanos, 0, "time.now_val");
+                return value_info_new(NULL, time_val, time_type);
+            }
         }
     }
-    
+
     // Method call: `recv.method(args)` where recv is a (pointer-to-)struct
     // value. Lowered to a direct call to the mangled function "T__method"
     // with the receiver prepended as the first argument. Non-method
@@ -1370,6 +1479,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // expression_checker.c's method-value rejection).
             if (sync_owner && sync_owner->import_path && strcmp(sync_owner->import_path, "sync") == 0) {
                 return codegen_generate_sync_method_call(codegen, checker, expr, call, msel, recv_type);
+            }
+        }
+
+        // P4.6 (packages-C, C1): time.Time methods (UnixNano) have no
+        // goo_pkg__time__ symbol either, for the same reason sync's don't —
+        // "time" is a bespoke shim package (is_stdlib_shim_import), never
+        // source-compiled. Intercept before the generic owner-routed path
+        // for the same reason as the sync block just above.
+        {
+            Package* time_owner = type_receiver_owner_package(recv_type);
+            if (time_owner && time_owner->import_path && strcmp(time_owner->import_path, "time") == 0) {
+                return codegen_generate_time_method_call(codegen, checker, expr, call, msel, recv_type);
             }
         }
 
@@ -2327,6 +2448,96 @@ static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker
     // Merge block: PHI the two !int union values.
     codegen_set_insert_point(codegen, merge_block);
     LLVMValueRef phi = LLVMBuildPhi(codegen->builder, union_llvm, "atoi_result");
+    LLVMAddIncoming(phi, &succ, &success_exit, 1);
+    LLVMAddIncoming(phi, &errv, &error_exit, 1);
+
+    return value_info_new(NULL, phi, result_type);
+#endif
+}
+
+// os.ReadFile(string) -> !string / os.ReadLine() -> !string (P4.8).
+// Both runtime functions (goo_os_read_file, goo_os_read_line) share the
+// SAME ok-flag + goo_string_t* out-param shape as goo_string_to_int above
+// (see codegen_generate_atoi_call) — an i32 ok return plus one out-param
+// that the callee fills with EITHER the success value OR the error message,
+// so both branches below load the same out_ptr rather than needing two
+// separate value sources (Atoi's error branch instead builds a compile-time
+// literal, since strconv's error text never depends on runtime state; P4.8's
+// errors do — "os.ReadFile <path>: <strerror>" — so the message has to come
+// from the runtime call itself). Shared between the two P4.8 call sites
+// (rather than one bespoke function per site, Atoi-style) because they are
+// otherwise IDENTICAL beyond the runtime symbol name and the presence of a
+// path argument; path_arg is NULL for ReadLine (no arguments), non-NULL for
+// ReadFile's single string argument.
+static ValueInfo* codegen_generate_string_result_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                       ASTNode* expr, const char* runtime_symbol,
+                                                       ASTNode* path_arg) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available for %s", runtime_symbol);
+    return NULL;
+#else
+    if (!codegen || !checker || !expr) return NULL;
+
+    // The !string result type is in expr->node_type (set by shim_signature_lookup
+    // via SHIM_RET_STRING_RESULT).
+    Type* result_type = expr->node_type;
+    if (!result_type || !type_is_error_union(result_type)) {
+        codegen_error(codegen, expr->pos, "%s: no !string type context", runtime_symbol);
+        return NULL;
+    }
+    LLVMTypeRef union_llvm = codegen_type_to_llvm(codegen, result_type);
+    if (!union_llvm) return NULL;
+
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, runtime_symbol);
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "%s not found in module", runtime_symbol);
+        return NULL;
+    }
+
+    // alloca goo_string_t out — receives EITHER the success value or the
+    // error message, decided by the ok flag below.
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+    LLVMValueRef out_ptr = codegen_create_entry_alloca(codegen, string_llvm, "str_result_out");
+
+    LLVMValueRef ok;
+    if (path_arg) {
+        LLVMValueRef path_ptr = codegen_arg_as_cstr(codegen, checker, path_arg);
+        if (!path_ptr) return NULL;
+        LLVMValueRef call_args[] = { path_ptr, out_ptr };
+        ok = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, call_args, 2, "str_result_ok");
+    } else {
+        LLVMValueRef call_args[] = { out_ptr };
+        ok = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, call_args, 1, "str_result_ok");
+    }
+
+    // Branch on ok != 0.
+    LLVMValueRef zero_i32 = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    LLVMValueRef cond = LLVMBuildICmp(codegen->builder, LLVMIntNE, ok, zero_i32, "str_result_cond");
+
+    LLVMBasicBlockRef success_block = codegen_create_block(codegen, "str_result.success");
+    LLVMBasicBlockRef error_block   = codegen_create_block(codegen, "str_result.error");
+    LLVMBasicBlockRef merge_block   = codegen_create_block(codegen, "str_result.merge");
+    LLVMBuildCondBr(codegen->builder, cond, success_block, error_block);
+
+    // Success block: load *out (the success content), wrap in !string success union.
+    codegen_set_insert_point(codegen, success_block);
+    LLVMValueRef success_str = LLVMBuildLoad2(codegen->builder, string_llvm, out_ptr, "str_result_val");
+    Type* value_type = result_type->data.error_union.value_type;
+    LLVMValueRef succ = codegen_create_error_union_success(codegen, union_llvm, success_str, value_type);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef success_exit = LLVMGetInsertBlock(codegen->builder);
+
+    // Error block: load *out (the error message the SAME runtime call wrote
+    // on the ok=0 path), wrap in !string error union.
+    codegen_set_insert_point(codegen, error_block);
+    LLVMValueRef error_str = LLVMBuildLoad2(codegen->builder, string_llvm, out_ptr, "str_result_err");
+    LLVMValueRef errv = codegen_create_error_union_error(codegen, union_llvm, error_str);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef error_exit = LLVMGetInsertBlock(codegen->builder);
+
+    // Merge block: PHI the two !string union values.
+    codegen_set_insert_point(codegen, merge_block);
+    LLVMValueRef phi = LLVMBuildPhi(codegen->builder, union_llvm, "str_result");
     LLVMAddIncoming(phi, &succ, &success_exit, 1);
     LLVMAddIncoming(phi, &errv, &error_exit, 1);
 

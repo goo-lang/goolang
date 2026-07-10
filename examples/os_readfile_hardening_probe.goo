@@ -1,0 +1,32 @@
+// os_readfile_hardening_probe: pins the two review-wave fixes to
+// goo_os_read_file (P4-C review round).
+//   1. A zero-value string path (data == NULL) must yield a CAUGHT error
+//      with a real message — the ok=0 contract requires *out to be written
+//      on every failure path; the unwritten early-return handed the error
+//      union an uninitialized stack slot (stale-garbage message or segfault).
+//      The first ReadFile call deliberately dirties that stack slot with a
+//      long real error message so a regression reads garbage, not zeros.
+//   2. st_size is a hint, not a bound: /proc pseudo-files report size 0 but
+//      have content; the read loop must continue to genuine EOF (Go parity).
+//      Linux-only surface is fine here — the import resolver already
+//      depends on /proc/self/exe.
+// Output is stable text only (no OS strerror strings, no /proc contents).
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+	os.ReadFile("/no/such/goo_hardening_probe_path") catch e1 {
+		var zero string
+		os.ReadFile(zero) catch e2 {
+			fmt.Println("null path caught:", len(e2.Error()) > 0)
+		}
+	}
+
+	status := os.ReadFile("/proc/self/status") catch e {
+		fmt.Println("proc read failed")
+		return
+	}
+	fmt.Println("proc nonempty:", len(status) > 0)
+}

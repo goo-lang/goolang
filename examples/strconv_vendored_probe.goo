@@ -1,0 +1,107 @@
+package main
+
+// strconv_vendored_probe (P4.10): table-driven e2e coverage for the three
+// functions vendored onto goostd/strconv/strconv.go in this task —
+// FormatInt (base 10/16), ParseInt (decimal -> !int64), Quote. FormatBool
+// (pre-existing) and the Itoa/Atoi shim fallbacks are untouched and already
+// covered by strconv_probe.goo / atoi_catch_probe.goo.
+//
+// Every line here is a STRING print (FormatInt/Quote/e.Error() results, or
+// ParseInt's success value re-rendered through FormatInt) — deliberately,
+// to sidestep the known mixed-width-int fmt.Println corruption bug (see
+// goostd-mixed-width-print-bug memory note): consistent single-type args
+// avoid the failure mode entirely rather than relying on marker-boolean
+// lines.
+//
+// Expected outputs were independently verified against `go run` on an
+// equivalent Go program using real strconv.FormatInt / strconv.ParseInt(s,
+// 10, 64) / strconv.Quote, with ONE documented exception: Quote's non-ASCII
+// case. Real Go's Quote keeps a printable non-ASCII rune ('中') literal
+// (unicode.IsPrint); this vendoring has no unicode.IsPrint table (not
+// available in goostd) and conservatively escapes every non-ASCII rune as
+// \uNNNN/\UNNNNNNNN instead — see strconv.go's Quote doc comment. That one
+// line's expected output is `"中"`, not `"中"`.
+import (
+	"fmt"
+	"strconv"
+)
+
+func main() {
+	// --- FormatInt: positive/negative/zero/MinInt64/MaxInt64 x base 10/16 ---
+	fmt.Println(strconv.FormatInt(12345, 10))                   // 12345
+	fmt.Println(strconv.FormatInt(12345, 16))                   // 3039
+	fmt.Println(strconv.FormatInt(-12345, 10))                  // -12345
+	fmt.Println(strconv.FormatInt(-12345, 16))                  // -3039
+	fmt.Println(strconv.FormatInt(0, 10))                       // 0
+	fmt.Println(strconv.FormatInt(0, 16))                       // 0
+	var minInt64 int64 = -9223372036854775808
+	var maxInt64 int64 = 9223372036854775807
+	fmt.Println(strconv.FormatInt(minInt64, 10)) // -9223372036854775808 (classic negation trap)
+	fmt.Println(strconv.FormatInt(minInt64, 16)) // -8000000000000000
+	fmt.Println(strconv.FormatInt(maxInt64, 10)) // 9223372036854775807
+	fmt.Println(strconv.FormatInt(maxInt64, 16)) // 7fffffffffffffff
+
+	// --- ParseInt: success cases re-rendered via FormatInt (string-only prints) ---
+	v1 := strconv.ParseInt("42") catch e {
+		fmt.Println("FAIL:42")
+		return
+	}
+	fmt.Println(strconv.FormatInt(v1, 10)) // 42
+
+	v2 := strconv.ParseInt("+42") catch e {
+		fmt.Println("FAIL:+42")
+		return
+	}
+	fmt.Println(strconv.FormatInt(v2, 10)) // 42
+
+	v3 := strconv.ParseInt("-42") catch e {
+		fmt.Println("FAIL:-42")
+		return
+	}
+	fmt.Println(strconv.FormatInt(v3, 10)) // -42
+
+	v4 := strconv.ParseInt("0") catch e {
+		fmt.Println("FAIL:0")
+		return
+	}
+	fmt.Println(strconv.FormatInt(v4, 10)) // 0
+
+	v5 := strconv.ParseInt("9223372036854775807") catch e {
+		fmt.Println("FAIL:max")
+		return
+	}
+	fmt.Println(strconv.FormatInt(v5, 10)) // 9223372036854775807
+
+	v6 := strconv.ParseInt("-9223372036854775808") catch e {
+		fmt.Println("FAIL:min")
+		return
+	}
+	fmt.Println(strconv.FormatInt(v6, 10)) // -9223372036854775808
+
+	// --- ParseInt: error paths via catch ---
+	strconv.ParseInt("9223372036854775808") catch e { // MaxInt64+1: overflow
+		fmt.Println(e.Error()) // strconv.ParseInt: parsing "9223372036854775808": value out of range
+	}
+	strconv.ParseInt("-9223372036854775809") catch e { // MinInt64-1: overflow
+		fmt.Println(e.Error()) // strconv.ParseInt: parsing "-9223372036854775809": value out of range
+	}
+	strconv.ParseInt("") catch e { // empty string
+		fmt.Println(e.Error()) // strconv.ParseInt: parsing "": invalid syntax
+	}
+	strconv.ParseInt("12a3") catch e { // garbage
+		fmt.Println(e.Error()) // strconv.ParseInt: parsing "12a3": invalid syntax
+	}
+	strconv.ParseInt("+") catch e { // sign alone
+		fmt.Println(e.Error()) // strconv.ParseInt: parsing "+": invalid syntax
+	}
+	strconv.ParseInt("-") catch e { // sign alone
+		fmt.Println(e.Error()) // strconv.ParseInt: parsing "-": invalid syntax
+	}
+
+	// --- Quote ---
+	fmt.Println(strconv.Quote("hello"))                  // "hello"
+	fmt.Println(strconv.Quote("he said \"hi\" \\ bye")) // embedded quote+backslash
+	fmt.Println(strconv.Quote("line1\nline2\ttab"))      // \n \t
+	fmt.Println(strconv.Quote("中"))                      // 中 (documented deviation)
+	fmt.Println(strconv.Quote("\x01"))                   // \x01 (control byte)
+}

@@ -1,0 +1,257 @@
+// strings_vendored_probe: table-driven coverage for the P4.9 vendored
+// strings functions (Index, Repeat, ReplaceAll, Fields, Count, TrimLeft,
+// TrimRight, EqualFold). Each case's `want` was cross-checked against real
+// Go (go run against an equivalent table — see the P4.9 commit message).
+//
+// KNOWN DEVIATIONS (full detail in goostd/strings/strings.go doc comments):
+//   - EqualFold: ASCII case folding (either direction) matches real Go
+//     exactly. Full Unicode case folding does NOT: the Kelvin sign U+212A
+//     folds equal to 'k'/'K' in real Go (via unicode.SimpleFold) but
+//     compares UNEQUAL here (no `unicode` package in Goo). The EqualFold
+//     case below asserts the Goo behavior for that pair (false) —
+//     intentionally the opposite of real Go's answer for that one input.
+//   - Fields: whitespace recognition covers the ASCII set plus NEL U+0085
+//     and NBSP U+00A0 (exactly unicode.IsSpace's Latin-1 subset), not the
+//     remaining Unicode White_Space code points (U+2000-U+200A, U+2028,
+//     U+2029, U+202F, U+205F, U+3000, U+1680).
+//
+// STRUCTURE NOTE: one small function per stdlib function under test
+// (table-driven loop inside), called from main(), rather than one large
+// main() with everything inlined. While developing this probe, a large
+// single main() with many sequential statements was observed to
+// occasionally make strings.EqualFold return the wrong boolean with no
+// compile error — a latent codegen issue unconnected to EqualFold's own
+// logic (independently confirmed correct in isolation) and out of this
+// task's scope (goostd-only, no src/ changes; see the P4.9 commit message
+// for the isolated repro). Small per-function bodies sidestep it.
+//
+// COMPILER GAP WORKAROUND: every loop body below copies each struct field
+// (`c.s`, `c.want`, ...) to a plain local variable before passing it to a
+// function call. Passing a struct field selector DIRECTLY as a call
+// argument for an aggregate-ABI type (string, []string — both {ptr,len})
+// emits invalid LLVM IR ("Call parameter type does not match function
+// signature" — the field's address is passed where the loaded value is
+// expected). Probed in isolation: `strings.Index(c.s, c.sub)` inside a
+// `for _, c := range cases` loop fails to verify; `s := c.s; sub := c.sub;
+// strings.Index(s, sub)` does not. Binding to a local first forces the
+// load. Out of scope to fix here (src/codegen); flagged for follow-up.
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+type indexCase struct {
+	s, substr string
+	want      int
+}
+
+type repeatCase struct {
+	s     string
+	count int
+	want  string
+}
+
+type replaceAllCase struct {
+	s, old, new, want string
+}
+
+type fieldsCase struct {
+	in   string
+	want []string
+}
+
+type countCase struct {
+	s, substr string
+	want      int
+}
+
+type trimCase struct {
+	s, cutset, want string
+}
+
+type equalFoldCase struct {
+	s, t string
+	want bool
+}
+
+func sliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func testIndex() {
+	cases := []indexCase{
+		{"chicken", "ken", 4},    // found
+		{"chicken", "dmr", -1},   // not found
+		{"hello", "", 0},         // empty substr
+		{"café noir", "noir", 6}, // multi-byte: é is 2 bytes, so "noir" starts at byte 6
+	}
+	for i, c := range cases {
+		s := c.s
+		substr := c.substr
+		want := c.want
+		got := strings.Index(s, substr)
+		if got == want {
+			fmt.Println("PASS Index", i)
+		} else {
+			fmt.Println("FAIL Index", i, got)
+		}
+	}
+}
+
+func testRepeat() {
+	cases := []repeatCase{
+		{"ab", 0, ""},     // zero count
+		{"ab", 3, "ababab"}, // n copies
+		{"", 5, ""},       // empty input string
+	}
+	for i, c := range cases {
+		s := c.s
+		count := c.count
+		want := c.want
+		got := strings.Repeat(s, count)
+		if got == want {
+			fmt.Println("PASS Repeat", i)
+		} else {
+			fmt.Println("FAIL Repeat", i, got)
+		}
+	}
+}
+
+func testReplaceAll() {
+	cases := []replaceAllCase{
+		{"oink oink oink", "oink", "moo", "moo moo moo"}, // multiple hits
+		{"hello", "z", "Z", "hello"},                      // no hit
+		{"abc", "", "-", "-a-b-c-"},                       // empty old
+	}
+	for i, c := range cases {
+		s := c.s
+		old := c.old
+		new := c.new
+		want := c.want
+		got := strings.ReplaceAll(s, old, new)
+		if got == want {
+			fmt.Println("PASS ReplaceAll", i)
+		} else {
+			fmt.Println("FAIL ReplaceAll", i, got)
+		}
+	}
+}
+
+func testFields() {
+	cases := []fieldsCase{
+		{"  foo bar  baz   ", []string{"foo", "bar", "baz"}}, // leading/trailing/multiple spaces
+		{"\t foo\nbar \n", []string{"foo", "bar"}},           // tabs/newlines
+		{"", []string{}},                                     // empty
+		{"foo bar", []string{"foo", "bar"}},                // non-ASCII input: NBSP U+00A0 separator
+	}
+	for i, c := range cases {
+		in := c.in
+		want := c.want
+		got := strings.Fields(in)
+		if sliceEq(got, want) {
+			fmt.Println("PASS Fields", i)
+		} else {
+			fmt.Println("FAIL Fields", i, len(got))
+		}
+	}
+}
+
+func testCount() {
+	cases := []countCase{
+		{"cheese", "e", 3},  // 3 non-overlapping 'e's
+		{"aaaa", "aa", 2},   // overlap semantics: matches at 0 and 2 (non-overlapping), not 3
+		{"abc", "", 4},      // empty substr = rune count + 1
+	}
+	for i, c := range cases {
+		s := c.s
+		substr := c.substr
+		want := c.want
+		got := strings.Count(s, substr)
+		if got == want {
+			fmt.Println("PASS Count", i)
+		} else {
+			fmt.Println("FAIL Count", i, got)
+		}
+	}
+}
+
+func testTrimLeft() {
+	cases := []trimCase{
+		{"aabbccdd", "ab", "ccdd"},   // cutset (set membership), NOT literal-prefix removal
+		{"hello", "xyz", "hello"},    // no leading rune in cutset: unchanged
+		{"¡¡¡Hello, Gophers!!!", "¡", "Hello, Gophers!!!"}, // multi-byte cutset rune
+	}
+	for i, c := range cases {
+		s := c.s
+		cutset := c.cutset
+		want := c.want
+		got := strings.TrimLeft(s, cutset)
+		if got == want {
+			fmt.Println("PASS TrimLeft", i)
+		} else {
+			fmt.Println("FAIL TrimLeft", i, got)
+		}
+	}
+}
+
+func testTrimRight() {
+	cases := []trimCase{
+		{"ddccbbaa", "ab", "ddcc"}, // cutset (set membership), NOT literal-suffix removal
+		{"hello", "xyz", "hello"},  // no trailing rune in cutset: unchanged
+		{"¡¡¡Hello, Gophers!!!", "!", "¡¡¡Hello, Gophers"}, // ASCII cutset, multi-byte s
+	}
+	for i, c := range cases {
+		s := c.s
+		cutset := c.cutset
+		want := c.want
+		got := strings.TrimRight(s, cutset)
+		if got == want {
+			fmt.Println("PASS TrimRight", i)
+		} else {
+			fmt.Println("FAIL TrimRight", i, got)
+		}
+	}
+}
+
+func testEqualFold() {
+	cases := []equalFoldCase{
+		{"Go", "go", true},   // ASCII fold: upper vs lower
+		{"go", "Go", true},   // ASCII fold: other direction
+		{"Go", "C++", false}, // not equal
+		{"K", "k", false}, // DEVIATION: first rune is the KELVIN SIGN U+212A, not ASCII 'K' --
+		                       // real Go folds this true (unicode.SimpleFold); Goo's documented
+		                       // gap treats it as unequal (see file header)
+	}
+	for i, c := range cases {
+		s := c.s
+		t := c.t
+		want := c.want
+		got := strings.EqualFold(s, t)
+		if got == want {
+			fmt.Println("PASS EqualFold", i)
+		} else {
+			fmt.Println("FAIL EqualFold", i, got)
+		}
+	}
+}
+
+func main() {
+	testIndex()
+	testRepeat()
+	testReplaceAll()
+	testFields()
+	testCount()
+	testTrimLeft()
+	testTrimRight()
+	testEqualFold()
+}

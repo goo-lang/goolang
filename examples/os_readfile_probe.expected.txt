@@ -1,0 +1,2 @@
+PASS: readfile round-trip
+missing: error caught

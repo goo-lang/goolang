@@ -73,7 +73,7 @@ PARSER_SRCS = $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/lexer_bridge.c $(SR
 AST_SRCS = $(SRCDIR)/ast/ast.c $(SRCDIR)/ast/ast_constructors.c
 TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/ownership_checker.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/constraint_inference.c $(SRCDIR)/types/advanced_constraint_inference.c $(SRCDIR)/types/concept_generics.c $(SRCDIR)/types/higher_kinded_types.c $(SRCDIR)/types/type_level_programming.c $(SRCDIR)/types/type_level_dependent.c $(SRCDIR)/types/type_level_eval.c $(SRCDIR)/types/interface_integration.c $(SRCDIR)/types/flow_sensitive_analysis.c $(SRCDIR)/types/flow_analysis_core.c $(SRCDIR)/types/reference_manager.c $(SRCDIR)/types/hkt_auto_impl.c $(SRCDIR)/types/protocol_oriented_programming.c $(SRCDIR)/types/escape_analysis.c $(SRCDIR)/types/resource_manager.c $(SRCDIR)/types/memory_safety_integration.c $(SRCDIR)/types/bounds_verifier.c $(SRCDIR)/types/symbolic_expression.c $(SRCDIR)/types/dependent_types.c $(SRCDIR)/types/contracts.c $(SRCDIR)/types/proof_generation.c $(SRCDIR)/types/proof_smt.c $(SRCDIR)/types/proof_obligations.c $(SRCDIR)/types/proof_reporting.c $(SRCDIR)/types/runtime_optimization.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c
 CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/codegen/value_scope.c $(SRCDIR)/codegen/type_mapping.c $(SRCDIR)/codegen/function_codegen.c $(SRCDIR)/codegen/statement_codegen.c $(SRCDIR)/codegen/expression_codegen.c $(SRCDIR)/codegen/call_codegen.c $(SRCDIR)/codegen/composite_codegen.c $(SRCDIR)/codegen/lowlevel_codegen.c $(SRCDIR)/codegen/error_union_codegen.c $(SRCDIR)/codegen/nullable_codegen.c $(SRCDIR)/codegen/interface_codegen.c $(SRCDIR)/codegen/runtime_integration.c $(SRCDIR)/codegen/wasm_codegen.c $(SRCDIR)/codegen/monomorphize.c
-RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
+RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
 # The package/ subsystem (IPFS package manager — task #42) has pre-existing
@@ -99,7 +99,7 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o
 
 # Main targets
 COMPILER = $(BINDIR)/goo
@@ -2525,7 +2525,9 @@ VERIFY_ALL_DEPS := \
     test-golden-reject \
     spmd-bench-probe \
     goostd-resolver-probe \
-    reldir-import-probe
+    reldir-import-probe \
+    readline-probe \
+    stdlib-smoke-coverage
 
 # verify-core = VERIFY_ALL_DEPS minus the ccomp-gated set. This is the
 # authoritative ccomp-free gate: green on any machine, no CompCert / opam
@@ -3468,6 +3470,47 @@ reldir-import-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -ne 0 ]; then echo "reldir-import-probe: FAIL (bare mypkg shadow case did not compile)"; cat build/reldir_probe/shadow_main.err; exit 1; fi; \
 	  out=$$(./build/reldir_probe/shadow_main.out); if [ "$$out" != "42" ]; then echo "reldir-import-probe: FAIL (bare mypkg printed '$$out', want 42 (GOOROOT) — got the local shadow instead)"; exit 1; fi
 	@echo "reldir-import-probe: PASS"
+
+# P4.8 os.ReadLine stdin gate: run_golden.sh has no mechanism to pipe stdin
+# into a fixture (see its doc comment — env sidecars only), so ReadLine gets
+# a dedicated probe target instead of an examples/*.expected.txt golden
+# fixture (examples/os_readline_probe.goo deliberately has no sibling
+# .expected.txt, so run_golden.sh's glob skips it entirely).
+#
+# Stdin is fed via `<` file redirection, NOT a `|` pipe: a pipe's `rc=$?`
+# would capture only the LAST stage's exit status (the CLAUDE.md piped-
+# exit-codes gotcha — `cmd | othercmd` masks `cmd`'s own failure), which
+# here would hide a ReadLine/exit-code regression in os_readline_probe
+# itself. Redirection has no such stage to mask: `rc=$?` is the probe
+# binary's own exit code, captured directly off the invocation.
+readline-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== readline-probe: os.ReadLine reads stdin lines until EOF ==="
+	@"$(COMPILER)" examples/os_readline_probe.goo -o build/os_readline_probe.out
+	@printf 'alpha\nbeta\ngamma\n' > build/readline_probe.stdin
+	@./build/os_readline_probe.out < build/readline_probe.stdin > build/readline_probe.actual.txt; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "readline-probe: FAIL (exit $$rc)"; exit 1; fi
+	@if diff -u examples/os_readline_probe.probe_expected.txt build/readline_probe.actual.txt; then \
+	  echo "readline-probe: PASS"; \
+	else \
+	  echo "readline-probe: FAIL (see diff above)"; \
+	  exit 1; \
+	fi
+
+# P4.11: stdlib e2e smoke suite + shim-table drift catch. Runs
+# scripts/check_stdlib_coverage.sh, which mechanically extracts every
+# SHIM_TABLE row (shim_signatures.c), seeded sync/time export, package value
+# member (os.Args, math.Pi, time.* Duration constants), and goostd exported
+# func (strings/strconv/utf8/bits) and requires each to appear in at least
+# one golden-wired examples/*.goo fixture. A stdlib symbol added without
+# smoke coverage fails THIS target — the drift catch
+# docs/2026-07-08-v1-roadmap.md:159 asks for. Pure source/text scan, no
+# compiler build needed (unlike most probes above). Supersedes the narrower
+# `smoke-stdlib` (4 symbols, M7-era) as the authoritative stdlib coverage
+# gate; `smoke-stdlib` itself is left running as-is since a coord milestone
+# still references it by name.
+stdlib-smoke-coverage:
+	@bash scripts/check_stdlib_coverage.sh
 
 # Forward references (Go package-scope semantics): a function body may call a
 # function declared LATER in the same file/package. Requires the type checker's
