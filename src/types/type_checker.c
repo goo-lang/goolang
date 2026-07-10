@@ -2948,7 +2948,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 
     // For-range: register the key as int and the value (if present)
     // as the element type of the range expression, both in scope for
-    // the body. Slice/array/string/map range are supported; other
+    // the body. Slice/array/string/map/channel range are supported; other
     // ranged types are rejected below.
     if (for_stmt->range_expr) {
         Type* range_type = type_check_expression(checker, for_stmt->range_expr);
@@ -2985,9 +2985,35 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
                 scope_pop(checker);
                 return 0;
             }
+        } else if (range_type->kind == TYPE_CHANNEL) {
+            // Range over channel: Go permits at most one iteration variable
+            // (the received element) — there is no index to offer. The
+            // grammar's single-var form (`for v := range ch`) parses `v`
+            // into key_name, mirroring the slice/array/string index slot
+            // (the grammar predates channel range and has no dedicated
+            // production for it); that slot is reinterpreted here as the
+            // received element by aliasing key_type to elem_type below, so
+            // the generic key_name-binding code just past this if/else
+            // chain does the right thing unmodified. The two-var form
+            // (`for i, v := range ch`) always sets value_name — reject it
+            // outright, matching Go's "permits only one iteration variable".
+            if (for_stmt->value_name) {
+                type_error(checker, for_stmt->range_expr->pos,
+                          "range over channel permits at most one iteration variable");
+                scope_pop(checker);
+                return 0;
+            }
+            elem_type = range_type->data.channel.element_type;
+            if (!elem_type) {
+                type_error(checker, for_stmt->range_expr->pos,
+                          "range over channel: missing element type");
+                scope_pop(checker);
+                return 0;
+            }
+            key_type = elem_type;
         } else {
             type_error(checker, for_stmt->range_expr->pos,
-                      "for-range supported only on slice/array/string/map types");
+                      "for-range supported only on slice/array/string/map/channel types");
             scope_pop(checker);
             return 0;
         }

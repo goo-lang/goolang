@@ -1268,6 +1268,127 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     return body_ok;
 }
 
+// Range-over-channel codegen (P3.2): repeatedly calls goo_chan_recv; a 0
+// status (closed+drained — P3.1's zero-value contract memsets the
+// out-buffer on that terminal call, so the loop never sees stack garbage)
+// is the loop-exit condition, mirroring how Go's compiler lowers `for v :=
+// range ch`. Diverges from the slice/array/string skeleton for the same
+// reason maps do (see codegen_generate_map_range_loop just above): a
+// channel lowers to a bare opaque pointer (type_mapping.c TYPE_CHANNEL),
+// not a {ptr,len} aggregate, and there is no length to index against —
+// trying a receive and checking its status IS the only way to know the
+// loop is done.
+//
+// Grammar quirk: the single-var form `for v := range ch` parses `v` into
+// ForStmtNode.key_name (the slice/array/string index slot — the grammar
+// predates channel range and has no dedicated production for it). There is
+// no index for a channel, so key_name is reinterpreted here as the
+// received element. The two-variable form is rejected in the type checker
+// before codegen ever runs (type_check_for_stmt's TYPE_CHANNEL arm), so
+// value_name is always NULL by the time this function is reached.
+//
+// `chan_ptr` is the already-evaluated (and auto-loaded, if the range
+// expression was an lvalue) channel pointer; `chan_type` is its Goo Type
+// (TYPE_CHANNEL), carrying element_type. Returns 0 and leaves an error on
+// codegen->diagnostics via codegen_error on failure, else the body's
+// success flag — same convention as the map/slice/array/string arms.
+static int codegen_generate_channel_range_loop(CodeGenerator* codegen, TypeChecker* checker,
+                                                ForStmtNode* for_stmt, ASTNode* stmt,
+                                                LLVMValueRef chan_ptr, Type* chan_type) {
+    Type* elem_type = chan_type->data.channel.element_type;
+    if (!elem_type) {
+        codegen_error(codegen, stmt->pos, "range over channel: missing element type");
+        return 0;
+    }
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, elem_type);
+    if (!elem_llvm) {
+        codegen_error(codegen, stmt->pos, "range over channel: unresolvable element type");
+        return 0;
+    }
+
+    // Declare-if-needed, matching function_codegen.c's comma-ok receive
+    // (~:2000-2005) — the pattern this brief points at. Each of the three
+    // goo_chan_recv call sites (single-value receive in lowlevel_codegen.c,
+    // comma-ok in function_codegen.c, this loop) declares independently
+    // rather than sharing a central table, same trade-off
+    // codegen_generate_map_range_loop makes for goo_map_iter_next_sv above.
+    LLVMTypeRef recv_param_types[] = { void_ptr_type, void_ptr_type };
+    LLVMTypeRef recv_func_type = LLVMFunctionType(i32, recv_param_types, 2, 0);
+    LLVMValueRef recv_func = LLVMGetNamedFunction(codegen->module, "goo_chan_recv");
+    if (!recv_func) {
+        recv_func = LLVMAddFunction(codegen->module, "goo_chan_recv", recv_func_type);
+    }
+
+    // Element slot: allocated ONCE outside the loop and reused every
+    // iteration — goo_chan_recv writes into it by pointer each call.
+    LLVMValueRef elem_alloca = codegen_alloc_local(codegen, elem_llvm,
+                                                   for_stmt->key_name ? for_stmt->key_name : "range_cv");
+    if (for_stmt->key_name) {
+        ValueInfo* vv = value_info_new(for_stmt->key_name, elem_alloca, elem_type);
+        vv->is_lvalue = 1;
+        vv->is_initialized = 1;
+        vscope_add(codegen, vv);
+    }
+
+    // Mirror the loop var to type-checker scope (parallels the map/slice/
+    // array/string arms).
+    scope_push(checker);
+    if (for_stmt->key_name) {
+        Variable* vvar = variable_new(for_stmt->key_name, elem_type, stmt->pos);
+        if (vvar) { vvar->is_initialized = 1; scope_add_variable(checker->current_scope, vvar); }
+    }
+
+    LLVMBasicBlockRef rcond = codegen_create_block(codegen, "chanrange.cond");
+    LLVMBasicBlockRef rbody = codegen_create_block(codegen, "chanrange.body");
+    LLVMBasicBlockRef rpost = codegen_create_block(codegen, "chanrange.post");
+    LLVMBasicBlockRef rexit = codegen_create_block(codegen, "chanrange.exit");
+
+    LLVMBuildBr(codegen->builder, rcond);
+
+    // cond: goo_chan_recv(ch, &elem_slot) — blocks while the channel is open
+    // and empty (correct Go semantics; the deadlock detector handles a
+    // producer that never sends/closes), returns 1 with the received value
+    // in elem_slot, or 0 (closed+drained, elem_slot zeroed by the runtime's
+    // P3.1 contract) which is the loop-exit condition.
+    codegen_set_insert_point(codegen, rcond);
+    LLVMValueRef elem_ptr = LLVMBuildBitCast(codegen->builder, elem_alloca, void_ptr_type, "chanrange_elem_ptr");
+    LLVMValueRef recv_args[2] = { chan_ptr, elem_ptr };
+    LLVMValueRef status = LLVMBuildCall2(codegen->builder, recv_func_type, recv_func,
+                                         recv_args, 2, "chanrange_status");
+    LLVMValueRef cond_v = LLVMBuildICmp(codegen->builder, LLVMIntNE, status,
+                                        LLVMConstInt(i32, 0, 0), "chanrange_cond");
+    LLVMBuildCondBr(codegen->builder, cond_v, rbody, rexit);
+
+    // body: elem_alloca already holds the received value (loaded by
+    // goo_chan_recv itself, out-parameter style) — just run the loop body.
+    codegen_set_insert_point(codegen, rbody);
+    if (!cfctx_push_loop(&codegen->cfctx, rexit, rpost)) {
+        codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
+        scope_pop(checker);
+        return 0;
+    }
+    int body_ok = 1;
+    if (for_stmt->body) {
+        body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
+    }
+    cfctx_pop(&codegen->cfctx);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+        LLVMBuildBr(codegen->builder, rpost);
+
+    // post: nothing to advance — the next cond-block recv call does the
+    // work (parallels the map arm's cursor-advances-in-the-cond-call note).
+    codegen_set_insert_point(codegen, rpost);
+    LLVMBuildBr(codegen->builder, rcond);
+
+    codegen_set_insert_point(codegen, rexit);
+    scope_pop(checker);
+    return body_ok;
+}
+
 int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available");
@@ -1304,6 +1425,16 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (range_val->goo_type && range_val->goo_type->kind == TYPE_MAP) {
             int ok = codegen_generate_map_range_loop(codegen, checker, for_stmt, stmt,
                                                       raw, range_val->goo_type);
+            value_info_free(range_val);
+            return ok;
+        }
+
+        // Channel range diverges immediately too — `raw` here is the
+        // channel's opaque pointer (already auto-loaded above, same as the
+        // map case), not a {ptr,len} aggregate.
+        if (range_val->goo_type && range_val->goo_type->kind == TYPE_CHANNEL) {
+            int ok = codegen_generate_channel_range_loop(codegen, checker, for_stmt, stmt,
+                                                          raw, range_val->goo_type);
             value_info_free(range_val);
             return ok;
         }
