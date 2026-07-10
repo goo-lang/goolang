@@ -2270,6 +2270,39 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     if ((binary->operator == TOKEN_LSHIFT || binary->operator == TOKEN_RSHIFT) &&
         LLVMGetTypeKind(LLVMTypeOf(left_llvm)) == LLVMIntegerTypeKind &&
         LLVMGetTypeKind(LLVMTypeOf(right_llvm)) == LLVMIntegerTypeKind) {
+        // Go: a NEGATIVE shift count is a runtime panic ("runtime error:
+        // negative shift amount"), distinct from an in-range-but-huge count
+        // (which saturates — the width guard in the operator switch below).
+        // Checked on the ORIGINAL count value BEFORE the width coercion
+        // beneath: the coercion zero-extends narrower counts and truncates
+        // wider ones, both of which destroy the sign bit this check needs.
+        // Only a SIGNED count type can be negative; unsigned counts skip the
+        // check entirely (zero extra IR). A count that is a compile-time
+        // NON-NEGATIVE constant also skips it (the common `x << 3` shape
+        // stays guard-free; constant NEGATIVE counts are rejected at compile
+        // time by the checker, so codegen never sees them — the guard here
+        // is the runtime-value path).
+        if (right_val->goo_type && type_is_signed(right_val->goo_type) &&
+            !(LLVMIsAConstantInt(right_llvm) &&
+              LLVMConstIntGetSExtValue(right_llvm) >= 0)) {
+            LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+            if (panic_fn) {
+                LLVMValueRef zero_c = LLVMConstInt(LLVMTypeOf(right_llvm), 0, 0);
+                LLVMValueRef isneg = LLVMBuildICmp(codegen->builder, LLVMIntSLT,
+                                                   right_llvm, zero_c, "shneg");
+                LLVMBasicBlockRef panic_bb = codegen_create_block(codegen, "shneg.panic");
+                LLVMBasicBlockRef cont_bb = codegen_create_block(codegen, "shneg.cont");
+                LLVMBuildCondBr(codegen->builder, isneg, panic_bb, cont_bb);
+                codegen_set_insert_point(codegen, panic_bb);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder,
+                    "runtime error: negative shift amount", "shneg_msg");
+                LLVMValueRef pargs[1] = { msg };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn),
+                               panic_fn, pargs, 1, "");
+                LLVMBuildUnreachable(codegen->builder);
+                codegen_set_insert_point(codegen, cont_bb);
+            }
+        }
         unsigned lw = LLVMGetIntTypeWidth(LLVMTypeOf(left_llvm));
         unsigned rw = LLVMGetIntTypeWidth(LLVMTypeOf(right_llvm));
         if (rw < lw) {
@@ -2554,6 +2587,14 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         // Guard explicitly with select rather than relying on hardware
         // wraparound. right_llvm is already coerced to left_llvm's width
         // above, so a single same-width comparison suffices.
+        //
+        // A NEGATIVE count is a separate case, handled separately: it panics
+        // at runtime ("runtime error: negative shift amount") rather than
+        // saturating. That guard is emitted above, before the width
+        // coercion, on the count's original (uncoerced, sign-preserving)
+        // value — by the time control reaches here, any negative count has
+        // already been caught, so the ULT comparison below only ever needs
+        // to distinguish in-range from huge-but-non-negative.
         case TOKEN_LSHIFT: {
             LLVMTypeRef shty = LLVMTypeOf(left_llvm);
             unsigned width = LLVMGetIntTypeWidth(shty);

@@ -1824,7 +1824,13 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 
     int link_status = 0;
     int link_failed;
-    if (waitpid(link_pid, &link_status, 0) < 0) {
+    pid_t waited;
+    // EINTR retry: a caught signal interrupting waitpid must not be
+    // misread as a failed link.
+    do {
+        waited = waitpid(link_pid, &link_status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
         link_failed = 1;
     } else {
         link_failed = !(WIFEXITED(link_status) && WEXITSTATUS(link_status) == 0);

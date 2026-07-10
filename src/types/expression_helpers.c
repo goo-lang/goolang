@@ -46,8 +46,18 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
                 case TOKEN_MULTIPLY: *out = l * r; return 1;
                 case TOKEN_DIVIDE:   if (r == 0) return 0; *out = l / r; return 1;
                 case TOKEN_MODULO:   if (r == 0) return 0; *out = l % r; return 1;
-                case TOKEN_LSHIFT:   *out = (r >= 64) ? 0 : (l << r); return 1;
-                case TOKEN_RSHIFT:   *out = (r >= 64) ? 0 : (l >> r); return 1;
+                // A negative constant shift count must NOT fold (Go rejects it
+                // at compile time; the checker's shift arm reports it) — bail
+                // so no consumer sees a bogus folded value. r >= 64 (checked
+                // on the reinterpreted-unsigned value AFTER the sign check)
+                // still folds to 0, matching Go's arbitrary-precision shift
+                // truncated to 64 bits.
+                case TOKEN_LSHIFT:
+                    if ((int64_t)r < 0) return 0;
+                    *out = (r >= 64) ? 0 : (l << r); return 1;
+                case TOKEN_RSHIFT:
+                    if ((int64_t)r < 0) return 0;
+                    *out = (r >= 64) ? 0 : (l >> r); return 1;
                 case TOKEN_BIT_AND:  *out = l & r; return 1;
                 case TOKEN_AND_NOT:  *out = l & ~r; return 1; // &^ bit-clear
                 case TOKEN_BIT_OR:   *out = l | r; return 1;
@@ -184,8 +194,18 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out) {
                 case TOKEN_MULTIPLY: *out = l * r; return 1;
                 case TOKEN_DIVIDE:   if (r == 0) return 0; *out = l / r; return 1;
                 case TOKEN_MODULO:   if (r == 0) return 0; *out = l % r; return 1;
-                case TOKEN_LSHIFT:   *out = (r >= 64) ? 0 : (l << r); return 1;
-                case TOKEN_RSHIFT:   *out = (r >= 64) ? 0 : (l >> r); return 1;
+                // A negative constant shift count must NOT fold (Go rejects it
+                // at compile time; the checker's shift arm reports it) — bail
+                // so no consumer sees a bogus folded value. r >= 64 (checked
+                // on the reinterpreted-unsigned value AFTER the sign check)
+                // still folds to 0, matching Go's arbitrary-precision shift
+                // truncated to 64 bits.
+                case TOKEN_LSHIFT:
+                    if ((int64_t)r < 0) return 0;
+                    *out = (r >= 64) ? 0 : (l << r); return 1;
+                case TOKEN_RSHIFT:
+                    if ((int64_t)r < 0) return 0;
+                    *out = (r >= 64) ? 0 : (l >> r); return 1;
                 case TOKEN_BIT_AND:  *out = l & r; return 1;
                 case TOKEN_AND_NOT:  *out = l & ~r; return 1; // &^ bit-clear
                 case TOKEN_BIT_OR:   *out = l | r; return 1;

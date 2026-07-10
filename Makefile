@@ -1441,8 +1441,22 @@ link-libs-probe: $(COMPILER) $(RUNTIME_LIB)
 	@"$(COMPILER)" build/link_libs_probe.goo -l m -o build/link_libs_probe.out >build/link_libs_probe.log 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "link-libs-probe: FAIL (compile/link failed with -l m)"; cat build/link_libs_probe.log; exit 1; fi
 	@out="$$(./build/link_libs_probe.out)"; \
-	  if [ "$$out" != "linked" ]; then echo "link-libs-probe: FAIL (got '$$out', want 'linked')"; exit 1; fi; \
-	  echo "link-libs-probe: PASS"
+	  if [ "$$out" != "linked" ]; then echo "link-libs-probe: FAIL (got '$$out', want 'linked')"; exit 1; fi
+	@# Negative case is the discriminating half: -lm is unconditionally
+	@# appended by the linker argv construction, so the positive case above
+	@# would pass even if -l threading were silently dropped. A bogus
+	@# library name MUST fail the link, and the echoed failing link command
+	@# (codegen_error's "Linking failed with command: ..." on stderr) must
+	@# still show -ltotallybogus_xyz — proving the flag actually reached
+	@# argv rather than being swallowed. A dropped flag would let the link
+	@# succeed and fail this half of the probe instead.
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("nope") }\n' > build/link_libs_bogus.goo
+	@rm -f build/link_libs_bogus.out build/link_libs_bogus.out.o
+	@"$(COMPILER)" build/link_libs_bogus.goo -l totallybogus_xyz -o build/link_libs_bogus.out >build/link_libs_bogus.log 2>build/link_libs_bogus.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "link-libs-probe: FAIL (bogus -l linked fine — flag not reaching linker argv)"; exit 1; fi; \
+	  if ! grep -q -- "-ltotallybogus_xyz" build/link_libs_bogus.err; then echo "link-libs-probe: FAIL (echoed link command missing -ltotallybogus_xyz)"; cat build/link_libs_bogus.err; exit 1; fi; \
+	  if [ -e build/link_libs_bogus.out.o ]; then echo "link-libs-probe: FAIL (failed link left stray .o behind)"; exit 1; fi; \
+	  echo "link-libs-probe: PASS (positive + negative)"
 
 # P0-3: a run of blank lines must NOT overflow the stack. The newline ASI
 # handler now iterates instead of tail-recursing, so 1,000,000 consecutive
