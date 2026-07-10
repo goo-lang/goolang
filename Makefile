@@ -76,13 +76,12 @@ CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
-# The package/ subsystem (IPFS package manager — task #42) has pre-existing
-# build breakage: gmod_cli.c includes both goo_mod.h and package_manager.h
-# which redefine the same types; gmod_ipfs_cli.c includes missing
-# gmod_cli.h; gateway_intelligence.c has a stale ipfs_gateway_create call.
-# No core compiler code (compiler/, parser/, types/, codegen/, lexer/, ast/)
-# depends on package/, so we exclude the subsystem from the compiler build.
-# Repair lives in a separate task.
+# Only import_resolver.c from package/ is part of the compiler. The rest of
+# the directory (IPFS/registry/p2p modules) is compiled by nothing and has
+# pre-existing build breakage (e.g. gateway_intelligence.c's stale
+# ipfs_gateway_create call); the broken gmod CLI itself was quarantined in
+# P5.5. Wiring a real package manager is post-v1
+# (docs/2026-07-08-v1-roadmap.md).
 PACKAGE_SRCS = $(SRCDIR)/package/import_resolver.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
@@ -105,17 +104,17 @@ RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BU
 COMPILER = $(BINDIR)/goo
 ANALYZER = $(BINDIR)/goo-analyzer
 TEST_RUNNER = $(BINDIR)/test_runner
-REPL = $(BINDIR)/goo-repl
-REPL_ENHANCED = $(BINDIR)/goo-repl-enhanced
-LSP_SERVER = $(BINDIR)/goo-lsp
+# P5.5: goo-repl, goo-repl-enhanced, goo-lsp, goo-lsp-standalone, gmod,
+# goo-debug-adapter, and goo-dashboard were quarantined out of the tree —
+# each fabricated its results (hardcoded eval, demo menus, simulated PID,
+# canned metrics) or did not compile (gmod). Recover from git history if a
+# real implementation is ever built (see docs/2026-07-08-v1-roadmap.md
+# post-v1 list). lsp-enhanced stays pending the P5.11 open decision.
 LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
-LSP_STANDALONE_SERVER = $(BINDIR)/goo-lsp-standalone
-GMOD_CLI = $(BINDIR)/gmod
-TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp gmod coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe
+.PHONY: all clean test install lexer analyzer test-interface coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe
 
 all: lexer
 
@@ -3836,20 +3835,6 @@ $(TEST_HARDWARE_AWARE): $(TESTDIR)/test_hardware_aware.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
-# REPL targets
-repl: $(REPL)
-
-$(REPL): $(SRCDIR)/ide/repl_main.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
-
-# Enhanced REPL with syntax highlighting
-repl-enhanced: $(REPL_ENHANCED)
-
-$(REPL_ENHANCED): $(SRCDIR)/ide/repl_enhanced_simple.c $(SRCDIR)/ide/repl_syntax.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ -lpthread
-
 # Development Workflow Tools
 PROJECT_WIZARD = $(BINDIR)/goo-wizard
 PROFILER_TOOL = $(BINDIR)/goo-profiler
@@ -3947,51 +3932,14 @@ $(ERGONOMIC_ERROR_TEST): $(TEST_UNIT_DIR)/error/ergonomic_errors_test.c $(ERROR_
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# LSP Server targets
-lsp: $(LSP_SERVER)
-
-$(LSP_SERVER): $(SRCDIR)/ide/lsp_simple.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $<
-
-# Enhanced LSP Server with AST integration
+# Enhanced LSP Server with AST integration. Known broken link (undefined
+# parser_cleanup) — repairing it is the P5.11 open decision; kept because it
+# is real AST-integrated code, unlike the quarantined toy LSPs (P5.5).
 lsp-enhanced: $(LSP_ENHANCED_SERVER)
 
 $(LSP_ENHANCED_SERVER): $(SRCDIR)/ide/lsp_enhanced.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
-
-# Standalone Enhanced LSP Server (no dependencies)
-lsp-standalone: $(LSP_STANDALONE_SERVER)
-
-$(LSP_STANDALONE_SERVER): $(SRCDIR)/ide/lsp_standalone.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $<
-
-# Package Manager CLI (gmod)
-gmod: $(GMOD_CLI)
-
-$(GMOD_CLI): $(SRCDIR)/package/gmod_cli.c $(PACKAGE_SRCS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lcurl -ljson-c
-
-# Debug Adapter Protocol (DAP) Server
-DEBUG_ADAPTER_SERVER = $(BINDIR)/goo-debug-adapter
-
-debug-adapter: $(DEBUG_ADAPTER_SERVER)
-
-$(DEBUG_ADAPTER_SERVER): $(SRCDIR)/ide/debug_adapter.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $<
-
-# Performance Dashboard Server
-PERFORMANCE_DASHBOARD_SERVER = $(BINDIR)/goo-dashboard
-
-dashboard: $(PERFORMANCE_DASHBOARD_SERVER)
-
-$(PERFORMANCE_DASHBOARD_SERVER): $(SRCDIR)/ide/dashboard_main.c $(SRCDIR)/ide/performance_dashboard.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
 # Async Streams Test
 ASYNC_STREAMS_TEST = $(BINDIR)/async_streams_test
@@ -4012,13 +3960,6 @@ test-async-streams: $(ASYNC_STREAMS_TEST)
 $(ASYNC_STREAMS_TEST): tests/concurrency/async_streams_test.c $(ASYNC_STREAMS_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS)
-
-test-repl: $(TEST_REPL)
-	./$(TEST_REPL)
-
-$(TEST_REPL): $(TEST_INTEGRATION_DIR)/repl_test.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 test-performance: $(TEST_PERFORMANCE)
 	./$(TEST_PERFORMANCE)
