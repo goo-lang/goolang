@@ -71,7 +71,6 @@ This project uses a Makefile for building:
 - `make test` - Run tests
 - `make clean` - Clean build artifacts
 - `make test-reference` - Run reference manager tests
-- `make test-interface` - Run interface system tests
 - `make test-flow` - Run flow analysis tests
 - `make verify-core` - Full probe net, no CompCert required. Authoritative
   ccomp-free gate; safe for pre-push on any machine.

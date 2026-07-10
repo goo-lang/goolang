@@ -128,7 +128,7 @@ LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe
 
 all: lexer
 
@@ -207,11 +207,10 @@ runtime-lib: $(RUNTIME_LIB)
 $(RUNTIME_LIB): $(RUNTIME_OBJS) | $(LIBDIR)
 	ar rcs $@ $^
 
-# Pipeline integration tests
-test-pipeline: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p tests
-	$(CC) $(CFLAGS) tests/test_runner.c -o tests/test_runner
-	./tests/test_runner
+# (P5.7: test-pipeline retired — tests/test_runner.c's assertions were
+# near-vacuous (`tokens_found || exit==0` style escape hatches). The golden
+# suites + tests/cli/cli_test.sh assert the same pipeline end-to-end with
+# real expected-output and exit-code checks.)
 
 # V1 CompCert-compatibility audit: prints counts for the non-CompCert-
 # friendly constructs catalogued in docs/COMPCERT_AUDIT.md. Static check
@@ -3781,7 +3780,7 @@ test-main: $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main_simple.c $(OBJS) -o $(BINDIR)/test-main $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Test targets
-TEST_INTERFACE_SYSTEM = $(BINDIR)/test_interface_system
+
 TEST_FLOW_ANALYSIS = $(BINDIR)/test_flow_analysis
 TEST_REFERENCE_MANAGER = $(BINDIR)/test_reference_manager
 TEST_HARDWARE_AWARE = $(BINDIR)/test_hardware_aware
@@ -3828,12 +3827,10 @@ clean:
 	rm -rf $(BUILDDIR) $(BINDIR)
 	rm -f $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.tab.h $(SRCDIR)/parser/parser.yy.c
 
-test-interface: $(TEST_INTERFACE_SYSTEM)
-	./$(TEST_INTERFACE_SYSTEM)
-
-$(TEST_INTERFACE_SYSTEM): $(TEST_UNIT_DIR)/interface/test_interface_system.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
+# (P5.7: test-interface retired — test_interface_system.c no longer compiled
+# against the current framework headers, and the interface/protocol framework
+# it exercised is unlinked from bin/goo since P5.6. Recover from git history
+# if the framework is ever revived.)
 
 test-flow: $(TEST_FLOW_ANALYSIS)
 	./$(TEST_FLOW_ANALYSIS)
@@ -3856,8 +3853,8 @@ DOC_GENERATOR = $(BINDIR)/goo-docs
 HEALTH_DASHBOARD = $(BINDIR)/goo-health
 
 # Complete development workflow toolchain
-# (test-tool removed: its source tools/test_runner/main.c was never created; the
-# maintained test runner is tests/test_runner.c, built by the test-pipeline target.)
+# (test-tool removed: its source tools/test_runner/main.c was never created;
+# the pipeline is asserted by the golden suites and tests/cli/cli_test.sh.)
 dev-tools: wizard profiler doc-generator health-dashboard
 
 # Project template wizard
