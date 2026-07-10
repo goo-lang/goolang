@@ -1390,6 +1390,74 @@ link-cleanup-probe: $(COMPILER) $(RUNTIME_LIB)
 	@GOO_RUNTIME=/nonexistent/libgoo_runtime.a "$(COMPILER)" build/cleanup_probe.goo -o build/cleanup_probe.out 2>/dev/null; true
 	@if [ -e build/cleanup_probe.out.o ]; then echo "link-cleanup-probe: FAIL (.o left behind)"; exit 1; else echo "link-cleanup-probe: PASS"; fi
 
+# P3.10: -O2 must actually run optimization passes (IR differs from -O0)
+# and must not change program behavior (O0 and O2 binaries produce
+# identical output) — the differential correctness gate for `make
+# verify-core`'s optimizer coverage.
+.PHONY: opt-differs-probe
+opt-differs-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build build/opt_o0 build/opt_o2
+	@echo "=== opt-differs-probe: -O2 IR differs from -O0, same runtime output (P3.10) ==="
+	@printf 'package main\n\nimport "fmt"\n\nfunc sum(n int) int {\n\ttotal := 0\n\tfor i := 0; i < n; i++ {\n\t\ttotal = total + i*2 - 1\n\t}\n\treturn total\n}\n\nfunc fib(n int) int {\n\tif n < 2 {\n\t\treturn n\n\t}\n\ta := 0\n\tb := 1\n\tfor i := 2; i <= n; i++ {\n\t\tc := a + b\n\t\ta = b\n\t\tb = c\n\t}\n\treturn b\n}\n\nfunc main() {\n\tx := sum(100)\n\ty := fib(20)\n\ttotal := 0\n\tfor i := 0; i < 50; i++ {\n\t\ttotal = total + x*i - y\n\t}\n\tfmt.Println(x, y, total)\n}\n' > build/opt_probe.goo
+	@"$(COMPILER)" --emit-llvm -O0 build/opt_probe.goo -o build/opt_o0/opt_probe >build/opt_probe_o0.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O0 compile failed)"; cat build/opt_probe_o0.log; exit 1; fi
+	@"$(COMPILER)" --emit-llvm -O2 build/opt_probe.goo -o build/opt_o2/opt_probe >build/opt_probe_o2.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "opt-differs-probe: FAIL (O2 compile failed)"; cat build/opt_probe_o2.log; exit 1; fi
+	@if cmp -s build/opt_o0/opt_probe.ll build/opt_o2/opt_probe.ll; then \
+	  echo "opt-differs-probe: FAIL (O2 IR identical to O0 — optimizer not running)"; exit 1; \
+	fi
+	@./build/opt_o0/opt_probe > build/opt_probe_o0.out; \
+	  ./build/opt_o2/opt_probe > build/opt_probe_o2.out; \
+	  if ! diff -u build/opt_probe_o0.out build/opt_probe_o2.out >/dev/null; then \
+	    echo "opt-differs-probe: FAIL (O0/O2 output mismatch — miscompile under optimization)"; \
+	    diff -u build/opt_probe_o0.out build/opt_probe_o2.out; exit 1; \
+	  fi
+	@echo "opt-differs-probe: PASS"
+
+# P3.11: an output path containing a space must link and run correctly.
+# Pre-fork/execvp, system(link_command) shelled the whole command through
+# /bin/sh, which word-splits unquoted paths — this probe FAILS against that
+# code (confirm failing-first before implementing the fork/execvp rewrite).
+.PHONY: link-spaces-probe
+link-spaces-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p 'build/dir with space'
+	@echo "=== link-spaces-probe: output path containing a space links and runs (P3.11) ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("hello") }\n' > build/link_spaces_probe.goo
+	@"$(COMPILER)" build/link_spaces_probe.goo -o 'build/dir with space/hello_probe' >build/link_spaces_probe.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "link-spaces-probe: FAIL (compile/link failed)"; cat build/link_spaces_probe.log; exit 1; fi
+	@out="$$('build/dir with space/hello_probe')"; \
+	  if [ "$$out" != "hello" ]; then echo "link-spaces-probe: FAIL (got '$$out', want 'hello')"; exit 1; fi; \
+	  echo "link-spaces-probe: PASS"
+
+# P3.11: the -l/--link CLI flag (goo.c's `-l` getopt case, options->link_libs)
+# must reach the link line without breaking it — proves the fork/execvp argv
+# construction correctly appends user libs after the runtime archive and
+# before -lm/-lpthread.
+.PHONY: link-libs-probe
+link-libs-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== link-libs-probe: -l flag reaches the link line without breaking it (P3.11) ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("linked") }\n' > build/link_libs_probe.goo
+	@"$(COMPILER)" build/link_libs_probe.goo -l m -o build/link_libs_probe.out >build/link_libs_probe.log 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "link-libs-probe: FAIL (compile/link failed with -l m)"; cat build/link_libs_probe.log; exit 1; fi
+	@out="$$(./build/link_libs_probe.out)"; \
+	  if [ "$$out" != "linked" ]; then echo "link-libs-probe: FAIL (got '$$out', want 'linked')"; exit 1; fi
+	@# Negative case is the discriminating half: -lm is unconditionally
+	@# appended by the linker argv construction, so the positive case above
+	@# would pass even if -l threading were silently dropped. A bogus
+	@# library name MUST fail the link, and the echoed failing link command
+	@# (codegen_error's "Linking failed with command: ..." on stderr) must
+	@# still show -ltotallybogus_xyz — proving the flag actually reached
+	@# argv rather than being swallowed. A dropped flag would let the link
+	@# succeed and fail this half of the probe instead.
+	@printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("nope") }\n' > build/link_libs_bogus.goo
+	@rm -f build/link_libs_bogus.out build/link_libs_bogus.out.o
+	@"$(COMPILER)" build/link_libs_bogus.goo -l totallybogus_xyz -o build/link_libs_bogus.out >build/link_libs_bogus.log 2>build/link_libs_bogus.err; rc=$$?; \
+	  if [ $$rc -eq 0 ]; then echo "link-libs-probe: FAIL (bogus -l linked fine — flag not reaching linker argv)"; exit 1; fi; \
+	  if ! grep -q -- "-ltotallybogus_xyz" build/link_libs_bogus.err; then echo "link-libs-probe: FAIL (echoed link command missing -ltotallybogus_xyz)"; cat build/link_libs_bogus.err; exit 1; fi; \
+	  if [ -e build/link_libs_bogus.out.o ]; then echo "link-libs-probe: FAIL (failed link left stray .o behind)"; exit 1; fi; \
+	  echo "link-libs-probe: PASS (positive + negative)"
+
 # P0-3: a run of blank lines must NOT overflow the stack. The newline ASI
 # handler now iterates instead of tail-recursing, so 1,000,000 consecutive
 # blank lines lex without a SIGSEGV. The fixture is generated at test time
@@ -2372,6 +2440,9 @@ VERIFY_ALL_DEPS := \
     print-aggregate-probe \
     ptr-recv-nonaddr-probe \
     link-cleanup-probe \
+    opt-differs-probe \
+    link-spaces-probe \
+    link-libs-probe \
     blank-lines-probe \
     comment-lines-probe \
     slice-write-bounds-probe \
@@ -2438,6 +2509,7 @@ VERIFY_ALL_DEPS := \
     arena-valgrind-probe \
     arena-rss-probe \
     test-golden \
+    test-golden-o2 \
     test-golden-reject \
     spmd-bench-probe
 
@@ -2496,10 +2568,13 @@ break-nested-probe: $(COMPILER) $(RUNTIME_LIB)
 	fi
 
 # P0-3: printing an unsupported type must be a clean compile error, not invalid IR.
+# Was []int (slice) until P3.8 (2026-07-10) added TYPE_SLICE/TYPE_ARRAY arms
+# to codegen_emit_fmt_value, making that a green compile — map stays
+# genuinely unsupported (no TYPE_MAP arm), so it keeps this probe honest.
 println-badtype-probe: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== println-badtype-probe: printing an unsupported type (slice) fails cleanly ==="
-	@printf 'package main\nimport "fmt"\nfunc main() { s := []int{1, 2}; fmt.Println(s) }\n' > build/println_bad.goo
+	@echo "=== println-badtype-probe: printing an unsupported type (map) fails cleanly ==="
+	@printf 'package main\nimport "fmt"\nfunc main() { s := map[string]int{"a": 1}; fmt.Println(s) }\n' > build/println_bad.goo
 	@"$(COMPILER)" build/println_bad.goo -o build/println_bad.out 2>build/println_bad.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "println-badtype-probe: FAIL (compiled an unsupported print — expected error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/println_bad.err; then echo "println-badtype-probe: FAIL (invalid IR reached verifier)"; cat build/println_bad.err; exit 1; fi; \
@@ -3401,10 +3476,20 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden test-golden-reject
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden test-golden-o2 test-golden-reject
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
+
+# Phase 3 exit gate (P3.10): the ENTIRE golden suite must also be green
+# with real optimization passes on — a fixture that passes at -O0 but
+# fails here is a miscompile-under-optimization (this exact gate caught
+# the shift-width poison bug and the pre-datalayout pass-ordering bug
+# when -O was first wired). GOOFLAGS is run_golden.sh's compile-flags
+# passthrough.
+test-golden-o2: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== test-golden-o2: golden suite at -O2 (miscompile-under-optimization gate) ==="
+	@COMPILER="$(COMPILER)" GOOFLAGS="-O2" bash scripts/run_golden.sh
 
 # P0.9: data-driven compile-REJECT golden suite — the negative-space sibling
 # of test-golden. Every tests/golden/reject/<name>.goo must fail to compile;

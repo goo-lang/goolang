@@ -1785,6 +1785,24 @@ int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* decla
     return 1;
 }
 
+// Go rejects a CONSTANT negative shift count at compile time ("invalid
+// negative shift count"); a runtime-value count panics instead (codegen's
+// shneg guard). Returns 0 (and reports) iff the count folds to a constant
+// that is negative when read as signed. Reading the folded uint64 as int64
+// also catches counts >= 2^63 — Go rejects those too (as "shift count too
+// large"); collapsing both onto this one diagnostic is deliberate v1 scope.
+static int check_const_shift_count(TypeChecker* checker, ASTNode* count_expr,
+                                   Position pos) {
+    uint64_t folded;
+    if (goo_fold_const_int_ctx(checker, count_expr, &folded) &&
+        (int64_t)folded < 0) {
+        type_error(checker, pos, "invalid negative shift count: %lld",
+                   (long long)(int64_t)folded);
+        return 0;
+    }
+    return 1;
+}
+
 // CHANGE-TOGETHER (task 2, checker/codegen hygiene): this function is the
 // SOLE place that computes a binary expression's result type, and it is the
 // SOLE place that RECORDS it, on `expr->node_type`, at each of its two
@@ -2041,8 +2059,22 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_AND_NOT:   // &^  (bit-clear: a & ~b)
         case TOKEN_BIT_OR:
         case TOKEN_BIT_XOR:
+            result_type = type_check_bitwise_op(checker, left_type, right_type, binary->operator, expr->pos);
+            break;
+
+        // Shift operators: same bitwise checks as above, plus a compile-time
+        // reject on a constant-folded negative count (Go: "invalid negative
+        // shift count") — scoped to ONLY these two cases, not the shared
+        // bitwise body above, since `binary->right` means "shift count" here
+        // but "ordinary RHS operand" for &/&^/|/^ (a negative-when-signed
+        // fold there, e.g. an all-ones mask constant, is not a shift count
+        // and must not be rejected as one).
         case TOKEN_LSHIFT:
         case TOKEN_RSHIFT:
+            if (!check_const_shift_count(checker, binary->right, expr->pos)) {
+                result_type = NULL;
+                break;
+            }
             result_type = type_check_bitwise_op(checker, left_type, right_type, binary->operator, expr->pos);
             break;
             
@@ -2062,6 +2094,11 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_XOR_ASSIGN:
         case TOKEN_LSHIFT_ASSIGN:
         case TOKEN_RSHIFT_ASSIGN:
+            if ((binary->operator == TOKEN_LSHIFT_ASSIGN || binary->operator == TOKEN_RSHIFT_ASSIGN) &&
+                !check_const_shift_count(checker, binary->right, expr->pos)) {
+                result_type = NULL;
+                break;
+            }
             result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, binary->right, expr->pos);
             break;
             

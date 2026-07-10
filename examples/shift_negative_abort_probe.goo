@@ -1,0 +1,19 @@
+// shift_negative_abort_probe (P3.10 review fix): a NEGATIVE runtime shift
+// count must panic like Go ("runtime error: negative shift amount", exit 2)
+// instead of silently taking the width guard's saturate path (the ULT
+// comparison would otherwise reinterpret -1 as huge-unsigned). The count
+// arrives via a variable so neither the checker's constant rejection nor
+// the codegen constant-skip elides the runtime guard. Both << and >> guards
+// share one emission site (pre-coercion), so one aborting shape suffices;
+// the leading line pins that in-range shifts still work.
+package main
+
+import "fmt"
+
+func main() {
+	x := 8
+	k := 1
+	fmt.Println(x << k)
+	k = -1
+	fmt.Println(x << k)
+}

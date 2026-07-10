@@ -8,6 +8,8 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <errno.h>
 
 // stdlib Phase 0 (Task 4): compute the LLVM symbol name for a top-level symbol
 // emitted while codegenning a non-main package. For the main package
@@ -126,7 +128,14 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->target_triple = NULL;
     codegen->target_cpu = NULL;
     codegen->target_features = NULL;
-    
+
+    // P3.10: driver overwrites this from -O right after codegen_new.
+    codegen->opt_level = 0;
+
+    // P3.11: driver overwrites these from -l/--link right after codegen_new.
+    codegen->link_libs = NULL;
+    codegen->link_lib_count = 0;
+
     // WebAssembly configuration
     codegen->wasm_configured = 0;
     codegen->is_wasm_target = 0;
@@ -1557,6 +1566,26 @@ static const char* goo_runtime_archive_path(void) {
     return buf;
 }
 
+// Join an argv vector with spaces for a human-readable link-failure message
+// ONLY — the real link invocation below never goes through a shell (that's
+// the whole point of fork+execvp over system()), so this has no
+// quoting/injection exposure; it exists purely to keep the diagnostic as
+// informative as the old system()-command string was. Returns NULL on
+// allocation failure (caller degrades to a generic message).
+static char* codegen_join_argv(char* const argv[]) {
+    size_t len = 0;
+    for (int i = 0; argv[i]; i++) len += strlen(argv[i]) + 1;
+    if (len == 0) return NULL;
+    char* out = malloc(len);
+    if (!out) return NULL;
+    out[0] = '\0';
+    for (int i = 0; argv[i]; i++) {
+        strcat(out, argv[i]);
+        if (argv[i + 1]) strcat(out, " ");
+    }
+    return out;
+}
+
 int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #if LLVM_AVAILABLE
     if (!codegen || !filename) return 0;
@@ -1589,10 +1618,16 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         // Create target machine
         const char* cpu = codegen->target_cpu ? codegen->target_cpu : "generic";
         const char* features = codegen->target_features ? codegen->target_features : "";
-        
+
+        // P3.10: -O0 (opt_level==0, the default) keeps LLVMCodeGenLevelDefault
+        // exactly as before — the byte-identical contract. Only -O3 asks
+        // the backend's own codegen for Aggressive; -O1/-O2 stay Default
+        // (codegen_optimize's new-PM IR pipeline does the real work there).
+        LLVMCodeGenOptLevel cg_opt_level = (codegen->opt_level >= 3)
+            ? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelDefault;
         codegen->target_machine = LLVMCreateTargetMachine(
             target, target_triple, cpu, features,
-            LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault
+            cg_opt_level, LLVMRelocDefault, LLVMCodeModelDefault
         );
         
         if (!codegen->target_machine) {
@@ -1653,45 +1688,22 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         return 0;
     }
     
-    // Link object file to create executable
-    // Use system linker (ld on Unix, link.exe on Windows)
+    // Link object file to create executable.
+    //
+    // fork()+execvp() on an argv vector instead of system(link_command):
+    // system() shells the whole command through /bin/sh, which (a) forced a
+    // fixed 2048-byte buffer here and (b) word-splits any unquoted path
+    // component — an output path containing a space silently broke (e.g.
+    // `-o "build/dir with space/hello"` linked into three garbage argv
+    // words). execvp takes argv entries directly: no shell, no buffer
+    // limit, no quoting to get right. (P3.11)
+#ifdef _WIN32
+    // No POSIX fork()/execvp() on Windows, and Windows is out of the v1 test
+    // surface (no CI runs it) — keep the original shell-based path here.
     char link_command[2048];
-    
-#ifdef __APPLE__
-    // macOS linking with runtime library using clang
-    char* target_triple = codegen->target_triple;
-    if (!target_triple) {
-        target_triple = LLVMGetDefaultTargetTriple();
-    }
-    snprintf(link_command, sizeof(link_command),
-             "clang -target %s -o %s %s %s -lm -lpthread",
-             target_triple, filename, object_filename, goo_runtime_archive_path());
-    if (!codegen->target_triple) {
-        LLVMDisposeMessage(target_triple);
-    }
-#elif defined(__linux__)
-    // Linux linking with runtime library using gcc. -lm/-lpthread must follow
-    // the archive (the runtime uses libm and pthreads); newer binutils enforces
-    // this ordering and otherwise fails with undefined references.
-    // -no-pie: the LLVM backend emits non-PIC objects (R_X86_64_32S relocs),
-    // but distros like Ubuntu default gcc to -pie, which rejects them with
-    // "relocation ... can not be used when making a PIE object". Force a
-    // non-PIE link to match the object model.
-    snprintf(link_command, sizeof(link_command),
-             "gcc -no-pie -o %s %s %s -lm -lpthread",
-             filename, object_filename, goo_runtime_archive_path());
-#elif defined(_WIN32)
-    // Windows linking with runtime library
     snprintf(link_command, sizeof(link_command),
              "link.exe /OUT:%s %s %s /ENTRY:main /SUBSYSTEM:CONSOLE",
              filename, object_filename, goo_runtime_archive_path());
-#else
-    // Generic Unix linking with runtime library using gcc (see -no-pie note above)
-    snprintf(link_command, sizeof(link_command),
-             "gcc -no-pie -o %s %s %s -lm -lpthread",
-             filename, object_filename, goo_runtime_archive_path());
-#endif
-    
     int link_result = system(link_command);
     if (link_result != 0) {
         codegen_error(codegen, (Position){0, 0, 0, "codegen"},
@@ -1700,20 +1712,256 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         free(object_filename);
         return 0;
     }
-    
+#else
+#ifdef __APPLE__
+    const char* linker_name = "clang";
+#else
+    const char* linker_name = "gcc"; // Linux and generic Unix
+#endif
+
+#ifdef __APPLE__
+    char* link_triple = codegen->target_triple;
+    int owns_link_triple = 0;
+    if (!link_triple) {
+        link_triple = LLVMGetDefaultTargetTriple();
+        owns_link_triple = 1;
+    }
+#endif
+
+    // argv layout: <linker> [-target <triple> | -no-pie] -o <exe> <obj>
+    // <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed non-NULL slots
+    // covers the larger (__APPLE__) branch with room to spare on Linux;
+    // + one slot per user lib + the NULL terminator.
+    size_t fixed_slots = 9;
+    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count + 1;
+    char** argv = malloc(max_argv * sizeof(char*));
+    char** lib_flags = codegen->link_lib_count
+        ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
+        : NULL;
+    if (!argv || (codegen->link_lib_count && !lib_flags)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Memory allocation failed");
+        free(argv);
+        free(lib_flags);
+#ifdef __APPLE__
+        if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+        remove(object_filename);
+        free(object_filename);
+        return 0;
+    }
+
+    size_t argn = 0;
+    argv[argn++] = (char*)linker_name;
+#ifdef __APPLE__
+    argv[argn++] = "-target";
+    argv[argn++] = link_triple;
+#else
+    // -no-pie: see the ordering/relocation comment preserved below.
+    argv[argn++] = "-no-pie";
+#endif
+    argv[argn++] = "-o";
+    argv[argn++] = (char*)filename;
+    argv[argn++] = object_filename;
+    argv[argn++] = (char*)goo_runtime_archive_path();
+
+    // User-requested libs (-l flags collected by the driver) land AFTER the
+    // runtime archive and BEFORE -lm/-lpthread: user libs may depend on
+    // nothing of ours, and this preserves the archive-before-defaults
+    // ordering the -lm/-lpthread comment below documents (newer binutils
+    // enforces it).
+    int lib_alloc_failed = 0;
+    for (size_t i = 0; i < codegen->link_lib_count; i++) {
+        size_t need = strlen("-l") + strlen(codegen->link_libs[i]) + 1;
+        lib_flags[i] = malloc(need);
+        if (!lib_flags[i]) { lib_alloc_failed = 1; break; }
+        snprintf(lib_flags[i], need, "-l%s", codegen->link_libs[i]);
+        argv[argn++] = lib_flags[i];
+    }
+    if (lib_alloc_failed) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Memory allocation failed");
+        for (size_t i = 0; i < codegen->link_lib_count; i++) free(lib_flags[i]);
+        free(lib_flags);
+        free(argv);
+#ifdef __APPLE__
+        if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+        remove(object_filename);
+        free(object_filename);
+        return 0;
+    }
+
+    // -lm/-lpthread must follow the archive (the runtime uses libm and
+    // pthreads); newer binutils enforces this ordering and otherwise fails
+    // with undefined references.
+    argv[argn++] = "-lm";
+    argv[argn++] = "-lpthread";
+    argv[argn] = NULL;
+
+    pid_t link_pid = fork();
+    if (link_pid < 0) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Failed to fork for linking: %s", strerror(errno));
+        for (size_t i = 0; i < codegen->link_lib_count; i++) free(lib_flags[i]);
+        free(lib_flags);
+        free(argv);
+#ifdef __APPLE__
+        if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+        remove(object_filename);
+        free(object_filename);
+        return 0;
+    }
+
+    if (link_pid == 0) {
+        // Child: replace this process image with the linker. -no-pie: the
+        // LLVM backend emits non-PIC objects (R_X86_64_32S relocs), but
+        // distros like Ubuntu default gcc to -pie, which rejects them with
+        // "relocation ... can not be used when making a PIE object". execvp
+        // only returns on failure (e.g. linker not on PATH).
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    int link_status = 0;
+    int link_failed;
+    pid_t waited;
+    // EINTR retry: a caught signal interrupting waitpid must not be
+    // misread as a failed link.
+    do {
+        waited = waitpid(link_pid, &link_status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        link_failed = 1;
+    } else {
+        link_failed = !(WIFEXITED(link_status) && WEXITSTATUS(link_status) == 0);
+    }
+
+    if (link_failed) {
+        char* joined = codegen_join_argv(argv);
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Linking failed with command: %s", joined ? joined : "(link command)");
+        free(joined);
+    }
+
+    for (size_t i = 0; i < codegen->link_lib_count; i++) free(lib_flags[i]);
+    free(lib_flags);
+    free(argv);
+#ifdef __APPLE__
+    if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+
+    if (link_failed) {
+        remove(object_filename);   // don't leave a stray object behind
+        free(object_filename);
+        return 0;
+    }
+#endif // _WIN32 / POSIX
+
     // Clean up object file
     remove(object_filename);
     free(object_filename);
-    
+
     return 1;
 #else
     return 0;
 #endif
 }
 
-int codegen_optimize(CodeGenerator* codegen __attribute__((unused)), int level __attribute__((unused))) {
-    // TODO: Implement optimization passes
+int codegen_optimize(CodeGenerator* codegen, int level) {
+#if LLVM_AVAILABLE
+    if (!codegen) return 0;
+    // O0 is the byte-identical contract: skip entirely, no IR mutation,
+    // no target machine built. Every fixture compiled without -O must see
+    // exactly the same IR as before this function existed.
+    if (level <= 0) return 1;
+
+    // LLVMRunPasses needs a target machine (TTI-aware passes, e.g.
+    // vectorization, consult it). codegen_emit_executable builds one
+    // lazily using this exact triple/cpu/features recipe, but that runs
+    // AFTER codegen_optimize (driver calls this before either emit path)
+    // — so codegen->target_machine isn't available yet here. Build a
+    // scratch one, use it only for the pass run, and dispose it; don't
+    // restructure emit to share state for what is a one-shot compile-time
+    // cost.
+    char* error_message = NULL;
+    char* target_triple = codegen->target_triple;
+    int owns_triple = 0;
+    if (!target_triple) {
+        target_triple = LLVMGetDefaultTargetTriple();
+        owns_triple = 1;
+    }
+
+    LLVMTargetRef target;
+    if (LLVMGetTargetFromTriple(target_triple, &target, &error_message)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Failed to get target for optimization: %s", error_message);
+        LLVMDisposeMessage(error_message);
+        if (owns_triple) LLVMDisposeMessage(target_triple);
+        return 0;
+    }
+
+    const char* cpu = codegen->target_cpu ? codegen->target_cpu : "generic";
+    const char* features = codegen->target_features ? codegen->target_features : "";
+    // Only O3 asks the backend's own codegen for Aggressive; O1/O2 stay at
+    // Default (the new-PM IR pipeline below is what does the real
+    // optimization work at those levels — this mirrors the identical
+    // mapping applied to the "real" target machine in
+    // codegen_emit_executable).
+    LLVMCodeGenOptLevel cg_level = (level >= 3) ? LLVMCodeGenLevelAggressive
+                                                 : LLVMCodeGenLevelDefault;
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+        target, target_triple, cpu, features,
+        cg_level, LLVMRelocDefault, LLVMCodeModelDefault);
+    if (owns_triple) LLVMDisposeMessage(target_triple);
+
+    if (!tm) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Failed to create target machine for optimization");
+        return 0;
+    }
+
+    // The module has no datalayout yet — codegen_emit_executable is the only
+    // other place that sets one, and it now runs AFTER this function. Without
+    // it, layout-sensitive folds (e.g. InstCombine collapsing a struct GEP to
+    // a raw byte offset) size and place fields using LLVM's generic default
+    // alignment (i64 ABI-aligned to 4 bytes) instead of this target's real
+    // x86-64 layout (i64 aligned to 8) — the GEP then freezes in the WRONG
+    // (smaller) offset for any field after a narrower one (e.g. `int` after
+    // `bool`), while the struct's actual in-memory layout at runtime still
+    // follows the real target's rules. That mismatch is a silent
+    // misaligned-read miscompile, not a missed optimization: confirmed by
+    // reading back an unrelated pad byte as the value's low word (observed
+    // as `value * 2^32` on affected fixtures). Set it from the same scratch
+    // target machine before any pass runs so folds agree with reality.
+    LLVMTargetDataRef opt_target_data = LLVMCreateTargetDataLayout(tm);
+    char* opt_data_layout = LLVMCopyStringRepOfTargetData(opt_target_data);
+    LLVMSetDataLayout(codegen->module, opt_data_layout);
+    LLVMDisposeMessage(opt_data_layout);
+    LLVMDisposeTargetData(opt_target_data);
+
+    const char* pipeline = "default<O1>";
+    if (level == 2) pipeline = "default<O2>";
+    else if (level >= 3) pipeline = "default<O3>";
+
+    LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef err = LLVMRunPasses(codegen->module, pipeline, tm, opts);
+    LLVMDisposePassBuilderOptions(opts);
+    LLVMDisposeTargetMachine(tm);
+
+    if (err) {
+        char* msg = LLVMGetErrorMessage(err);
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Optimization passes failed: %s", msg);
+        LLVMDisposeErrorMessage(msg);
+        return 0;
+    }
+
     return 1;
+#else
+    (void)codegen;
+    (void)level;
+    return 1;
+#endif
 }
 
 int codegen_verify_module(CodeGenerator* codegen __attribute__((unused))) {

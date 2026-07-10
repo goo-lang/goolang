@@ -1,0 +1,13 @@
+// shift_negative_const_reject (P3.10 review fix): a CONSTANT negative shift
+// count is a compile-time error in Go ("invalid negative shift count") —
+// the checker's shift arm folds the count and rejects, so this never
+// reaches codegen's runtime guard.
+package main
+
+import "fmt"
+
+func main() {
+	x := 8
+	y := x << -1
+	fmt.Println(y)
+}

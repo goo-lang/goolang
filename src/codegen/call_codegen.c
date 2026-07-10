@@ -2258,6 +2258,11 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
 //     nil/nonnil block, both joining a cont block — no phi needed, this is
 //     print side effects only) — nil prints "<nil>", non-nil prints "&" then
 //     loads the struct and recurses on the pointee at depth+1.
+//   - TYPE_SLICE (P3.8): "[" e0 " " e1 ... "]", an IR loop over the
+//     RUNTIME-dynamic length extracted from the {ptr,len,cap} aggregate,
+//     each element GEP'd and recursed on at depth+1.
+//   - TYPE_ARRAY (P3.8): same "[...]" shape as TYPE_SLICE, but unrolled
+//     like the struct arm (compile-time-known length, no address needed).
 //
 // `depth` starts at 0 for a top-level Println argument. depth > 6 prints
 // "..." and stops WITHOUT recursing further: this formatter recurses over
@@ -2268,9 +2273,9 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
 // required for the compiler to terminate on such a type, not merely a
 // nicety for deeply-nested output.
 //
-// Pointer-to-non-struct (e.g. *int), slices, maps, arrays, and functions
-// stay out of scope (existing clean codegen_error) — Go prints raw
-// addresses for those, which is non-deterministic and not needed here.
+// Pointer-to-non-struct (e.g. *int), maps, and functions stay out of scope
+// (existing clean codegen_error) — Go prints raw addresses for those, which
+// is non-deterministic and not needed here.
 //
 // Returns 1 on success, 0 after emitting a source-located codegen_error.
 static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
@@ -2448,13 +2453,116 @@ static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
         LLVMBuildBr(codegen->builder, cont_bb);
 
         codegen_set_insert_point(codegen, cont_bb);
+    } else if (kind == TYPE_SLICE) {
+        // "[" e0 " " e1 ... "]" — Go's %v slice shape. Length is a RUNTIME
+        // value (extracted from the {ptr,len,cap} aggregate), unlike a
+        // struct's compile-time field count, so — unlike the struct/array
+        // arms — this needs a real IR loop (cond/body/post blocks) rather
+        // than an unrolled C loop. []byte recurses into the TYPE_UINT8 arm
+        // above and so prints as NUMBERS ("[104 105]"), matching Go's %v
+        // (only %s strings a []byte) — no special-casing needed here.
+        LLVMValueRef bracket_open = LLVMBuildGlobalStringPtr(codegen->builder, "[", "fmt_slice_open");
+        LLVMValueRef boargs[] = { bracket_open };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, boargs, 1, "");
+
+        Type* elem_type = ty->data.slice.element_type;
+        LLVMTypeRef llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        if (!llvm_elem) {
+            codegen_error(codegen, pos, "fmt.Println: cannot lower slice element type");
+            return 0;
+        }
+        LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, val, 0, "fmt_slice_data");
+        LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, val, 1, "fmt_slice_len");
+
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+        LLVMValueRef idx_alloca = codegen_create_entry_alloca(codegen, i32, "fmt_slice_i");
+        LLVMBuildStore(codegen->builder, LLVMConstInt(i32, 0, 0), idx_alloca);
+
+        LLVMBasicBlockRef cond_bb = codegen_create_block(codegen, "fmt.slice.cond");
+        LLVMBasicBlockRef body_bb = codegen_create_block(codegen, "fmt.slice.body");
+        LLVMBasicBlockRef post_bb = codegen_create_block(codegen, "fmt.slice.post");
+        LLVMBasicBlockRef exit_bb = codegen_create_block(codegen, "fmt.slice.exit");
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, cond_bb);
+        LLVMValueRef i_loaded = LLVMBuildLoad2(codegen->builder, i32, idx_alloca, "fmt_slice_i_ld");
+        LLVMValueRef i64w = LLVMBuildSExt(codegen->builder, i_loaded,
+                                          LLVMInt64TypeInContext(codegen->context), "fmt_slice_i64");
+        LLVMValueRef loop_cond = LLVMBuildICmp(codegen->builder, LLVMIntSLT, i64w, len64, "fmt_slice_cond");
+        LLVMBuildCondBr(codegen->builder, loop_cond, body_bb, exit_bb);
+
+        codegen_set_insert_point(codegen, body_bb);
+        // Separator: a runtime SELECT between "" (first element) and " "
+        // (all others) rather than a branch on i==0 — just a choice of
+        // which literal to print, so it doesn't need its own block.
+        LLVMValueRef is_first = LLVMBuildICmp(codegen->builder, LLVMIntEQ, i_loaded,
+                                              LLVMConstInt(i32, 0, 0), "fmt_slice_first");
+        LLVMValueRef sep_space = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_slice_sp");
+        LLVMValueRef sep_empty = LLVMBuildGlobalStringPtr(codegen->builder, "", "fmt_slice_nosp");
+        LLVMValueRef sep = LLVMBuildSelect(codegen->builder, is_first, sep_empty, sep_space, "fmt_slice_sep");
+        LLVMValueRef separgs[] = { sep };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, separgs, 1, "");
+
+        LLVMValueRef indices[] = { i_loaded };
+        LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem, data_ptr, indices, 1, "fmt_slice_elem_ptr");
+        LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "fmt_slice_elem");
+        if (!codegen_emit_fmt_value(codegen, checker, elem_val, elem_type, depth + 1, pos)) {
+            return 0;
+        }
+        LLVMBuildBr(codegen->builder, post_bb);
+
+        codegen_set_insert_point(codegen, post_bb);
+        LLVMValueRef i_next = LLVMBuildAdd(codegen->builder, i_loaded, LLVMConstInt(i32, 1, 0), "fmt_slice_inc");
+        LLVMBuildStore(codegen->builder, i_next, idx_alloca);
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, exit_bb);
+        LLVMValueRef bracket_close = LLVMBuildGlobalStringPtr(codegen->builder, "]", "fmt_slice_close");
+        LLVMValueRef bcargs[] = { bracket_close };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, bcargs, 1, "");
+    } else if (kind == TYPE_ARRAY) {
+        // Static length (known at compile time): unrolled exactly like the
+        // struct arm above rather than an IR loop. `val` here is already a
+        // loaded raw [N x T] LLVM aggregate value — every call site
+        // auto-loads an lvalue before reaching this helper (see e.g.
+        // Println's arg-load block) — not an address, so extractvalue at
+        // each constant index is both simpler and correct (LLVM arrays
+        // support extractvalue the same as structs).
+        LLVMValueRef bracket_open = LLVMBuildGlobalStringPtr(codegen->builder, "[", "fmt_array_open");
+        LLVMValueRef boargs[] = { bracket_open };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, boargs, 1, "");
+
+        size_t n = ty->data.array.length;
+        Type* elem_type = ty->data.array.element_type;
+        for (size_t i = 0; i < n; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_array_sp");
+                LLVMValueRef spargs[] = { sp };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                              print_func, spargs, 1, "");
+            }
+            LLVMValueRef ev = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_array_elem");
+            if (!codegen_emit_fmt_value(codegen, checker, ev, elem_type, depth + 1, pos)) {
+                return 0;
+            }
+        }
+
+        LLVMValueRef bracket_close = LLVMBuildGlobalStringPtr(codegen->builder, "]", "fmt_array_close");
+        LLVMValueRef bcargs[] = { bracket_close };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, bcargs, 1, "");
     } else {
         // P0-3: an unsupported argument type is a clean source-located
         // codegen error, not a type-mismatched goo_print call that only
         // surfaces (as invalid IR) at the LLVM verifier.
         codegen_error(codegen, pos,
                       "fmt.Println: unsupported argument type (only string, integer, "
-                      "bool, float, struct, and pointer-to-struct are supported in v1)");
+                      "bool, float, struct, pointer-to-struct, slice, and array "
+                      "are supported in v1)");
         return 0;
     }
 
@@ -2672,10 +2780,115 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
         LLVMBasicBlockRef incoming_blocks[] = { nil_end, nn_end };
         LLVMAddIncoming(phi, incoming_vals, incoming_blocks, 2);
         return phi;
+    } else if (kind == TYPE_SLICE) {
+        // Same shape as codegen_emit_fmt_value's TYPE_SLICE arm (dynamic
+        // runtime length -> a real IR loop, not the struct arm's unrolled
+        // C loop), but threading a STRING ACCUMULATOR instead of printing.
+        // The accumulator is carried through the loop via an alloca +
+        // load/store (matching this file's index-variable convention,
+        // e.g. the range loop's idx_alloca) rather than a loop-carried
+        // phi: the recursive call below can itself open new basic blocks
+        // (a nested slice/struct/pointer element), which would leave a
+        // phi's incoming-block bookkeeping stale — exactly the failure
+        // mode the pointer-to-struct arm's nn_end comment above warns
+        // about. A store-then-branch from "wherever the recursive call
+        // left the builder" sidesteps that class of bug entirely.
+        LLVMValueRef bracket_open = fmt_sprintf_lit(codegen, string_llvm, "[");
+        LLVMValueRef boargs[] = { acc, bracket_open };
+        acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                             concat_fn, boargs, 2, "sp_acc");
+
+        Type* elem_type = ty->data.slice.element_type;
+        LLVMTypeRef llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        if (!llvm_elem) {
+            codegen_error(codegen, pos, "fmt.Sprintf: cannot lower slice element type");
+            return NULL;
+        }
+        LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, val, 0, "sp_slice_data");
+        LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, val, 1, "sp_slice_len");
+
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+        LLVMValueRef idx_alloca = codegen_create_entry_alloca(codegen, i32, "sp_slice_i");
+        LLVMBuildStore(codegen->builder, LLVMConstInt(i32, 0, 0), idx_alloca);
+        LLVMValueRef acc_alloca = codegen_create_entry_alloca(codegen, string_llvm, "sp_slice_acc");
+        LLVMBuildStore(codegen->builder, acc, acc_alloca);
+
+        LLVMBasicBlockRef cond_bb = codegen_create_block(codegen, "spfmt.slice.cond");
+        LLVMBasicBlockRef body_bb = codegen_create_block(codegen, "spfmt.slice.body");
+        LLVMBasicBlockRef post_bb = codegen_create_block(codegen, "spfmt.slice.post");
+        LLVMBasicBlockRef exit_bb = codegen_create_block(codegen, "spfmt.slice.exit");
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, cond_bb);
+        LLVMValueRef i_loaded = LLVMBuildLoad2(codegen->builder, i32, idx_alloca, "sp_slice_i_ld");
+        LLVMValueRef i64w = LLVMBuildSExt(codegen->builder, i_loaded,
+                                          LLVMInt64TypeInContext(codegen->context), "sp_slice_i64");
+        LLVMValueRef loop_cond = LLVMBuildICmp(codegen->builder, LLVMIntSLT, i64w, len64, "sp_slice_cond");
+        LLVMBuildCondBr(codegen->builder, loop_cond, body_bb, exit_bb);
+
+        codegen_set_insert_point(codegen, body_bb);
+        LLVMValueRef is_first = LLVMBuildICmp(codegen->builder, LLVMIntEQ, i_loaded,
+                                              LLVMConstInt(i32, 0, 0), "sp_slice_first");
+        LLVMValueRef sep_space = fmt_sprintf_lit(codegen, string_llvm, " ");
+        LLVMValueRef sep_empty = fmt_sprintf_lit(codegen, string_llvm, "");
+        LLVMValueRef sep = LLVMBuildSelect(codegen->builder, is_first, sep_empty, sep_space, "sp_slice_sep");
+        LLVMValueRef cur = LLVMBuildLoad2(codegen->builder, string_llvm, acc_alloca, "sp_slice_acc_ld");
+        LLVMValueRef separgs[] = { cur, sep };
+        LLVMValueRef with_sep = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                               concat_fn, separgs, 2, "sp_slice_acc_sep");
+
+        LLVMValueRef indices[] = { i_loaded };
+        LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem, data_ptr, indices, 1, "sp_slice_elem_ptr");
+        LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "sp_slice_elem");
+        LLVMValueRef with_elem = codegen_build_fmt_value_string(codegen, checker, with_sep, elem_val,
+                                                                 elem_type, depth + 1, pos);
+        if (!with_elem) return NULL;
+        LLVMBuildStore(codegen->builder, with_elem, acc_alloca);
+        LLVMBuildBr(codegen->builder, post_bb);
+
+        codegen_set_insert_point(codegen, post_bb);
+        LLVMValueRef i_next = LLVMBuildAdd(codegen->builder, i_loaded, LLVMConstInt(i32, 1, 0), "sp_slice_inc");
+        LLVMBuildStore(codegen->builder, i_next, idx_alloca);
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, exit_bb);
+        LLVMValueRef acc_final = LLVMBuildLoad2(codegen->builder, string_llvm, acc_alloca, "sp_slice_acc_final");
+        LLVMValueRef bracket_close = fmt_sprintf_lit(codegen, string_llvm, "]");
+        LLVMValueRef bcargs[] = { acc_final, bracket_close };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, bcargs, 2, "sp_acc");
+    } else if (kind == TYPE_ARRAY) {
+        // Static length: unrolled exactly like the struct arm above (same
+        // reasoning as codegen_emit_fmt_value's TYPE_ARRAY arm — `val` is
+        // already a loaded [N x T] aggregate, not an address).
+        LLVMValueRef bracket_open = fmt_sprintf_lit(codegen, string_llvm, "[");
+        LLVMValueRef boargs[] = { acc, bracket_open };
+        acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                             concat_fn, boargs, 2, "sp_acc");
+
+        size_t n = ty->data.array.length;
+        Type* elem_type = ty->data.array.element_type;
+        for (size_t i = 0; i < n; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+                LLVMValueRef spargs[] = { acc, sp };
+                acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                     concat_fn, spargs, 2, "sp_acc");
+            }
+            LLVMValueRef ev = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "sp_array_elem");
+            acc = codegen_build_fmt_value_string(codegen, checker, acc, ev, elem_type, depth + 1, pos);
+            if (!acc) return NULL;
+        }
+
+        LLVMValueRef bracket_close = fmt_sprintf_lit(codegen, string_llvm, "]");
+        LLVMValueRef cargs2[] = { acc, bracket_close };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs2, 2, "sp_acc");
     } else {
         codegen_error(codegen, pos,
                       "fmt.Sprintf: %%v: unsupported argument type (only string, integer, "
-                      "bool, float, struct, and pointer-to-struct are supported in v1)");
+                      "bool, float, struct, pointer-to-struct, slice, and array "
+                      "are supported in v1)");
         return NULL;
     }
 }
@@ -3334,12 +3547,14 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
             } else if (kind == TYPE_STRUCT ||
                        (kind == TYPE_POINTER && arg_val->goo_type &&
                         arg_val->goo_type->data.pointer.pointee_type &&
-                        arg_val->goo_type->data.pointer.pointee_type->kind == TYPE_STRUCT)) {
-                // %v of a struct / pointer-to-struct. Printf mode reuses the
-                // recursive print-based formatter shared with fmt.Println
-                // (codegen_emit_fmt_value -> {f0 f1} / &{...}). Sprintf mode
-                // uses the string-building counterpart (codegen_build_fmt_value_string)
-                // since that helper PRINTS rather than accumulating a goo_string.
+                        arg_val->goo_type->data.pointer.pointee_type->kind == TYPE_STRUCT) ||
+                       kind == TYPE_SLICE || kind == TYPE_ARRAY) {
+                // %v of a struct / pointer-to-struct / slice / array. Printf
+                // mode reuses the recursive print-based formatter shared
+                // with fmt.Println (codegen_emit_fmt_value -> {f0 f1} /
+                // &{...} / [e0 e1]). Sprintf mode uses the string-building
+                // counterpart (codegen_build_fmt_value_string) since that
+                // helper PRINTS rather than accumulating a goo_string.
                 if (sprintf_mode) {
                     acc = codegen_build_fmt_value_string(c, tc, acc, arg_val->llvm_value,
                                                           arg_val->goo_type, 0, arg_cursor->pos);
@@ -3359,10 +3574,10 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                               sprintf_mode
                               ? "fmt.Sprintf: %%v: unsupported argument type "
                                 "(only string, integer, bool, float, struct, "
-                                "pointer-to-struct supported in v1)"
+                                "pointer-to-struct, slice, array supported in v1)"
                               : "fmt.Printf: %%v: unsupported argument type "
                                 "(only string, integer, bool, float, struct, "
-                                "pointer-to-struct supported in v1)");
+                                "pointer-to-struct, slice, array supported in v1)");
                 value_info_free(arg_val);
                 ok = 0;
                 break;

@@ -1,0 +1,6 @@
+drained
+consumed 7
+consumed 5
+consumed 3
+inputs [3 5 7]
+total 15

@@ -1,0 +1,51 @@
+// phase3_capstone_probe: the Phase 3 exit-gate program (roadmap
+// docs/2026-07-08-v1-roadmap.md) — one producer/consumer program using
+// every runtime/codegen feature the phase shipped, in concert:
+//   goroutine producer (P3.3-era semantics: main syncs via the channel),
+//   close(ch) (P3.1), for-range over the channel (P3.2), defer inside the
+//   consume loop (P3.4, runtime defer stack — per-iteration snapshots,
+//   LIFO at function exit), a method value as the consume callback (P3.6),
+//   a non-constant package-scope global (P3.7), and fmt %v slice printing
+//   (P3.8). Compiles and runs green at BOTH -O0 and -O2 (P3.10) via the
+//   golden suite's GOOFLAGS mechanism — verify-core runs both.
+package main
+
+import "fmt"
+
+type Tally struct {
+	total int
+}
+
+func (t *Tally) add(v int) {
+	t.total = t.total + v
+}
+
+func seed() []int {
+	return []int{3, 5, 7}
+}
+
+var inputs = seed() // P3.7: non-constant global via goo.global_init
+
+func produce(ch chan int) {
+	for _, v := range inputs {
+		ch <- v
+	}
+	close(ch) // P3.1
+}
+
+func consume(ch chan int, sink func(int)) {
+	for v := range ch { // P3.2: terminates on closed+drained
+		defer fmt.Println("consumed", v) // P3.4: defer in a loop, LIFO at exit
+		sink(v)                          // P3.6: method value callback
+	}
+	fmt.Println("drained")
+}
+
+func main() {
+	t := &Tally{total: 0}
+	ch := make(chan int, 2)
+	go produce(ch)
+	consume(ch, t.add)
+	fmt.Println("inputs", inputs) // P3.8: %v slice rendering
+	fmt.Println("total", t.total)
+}

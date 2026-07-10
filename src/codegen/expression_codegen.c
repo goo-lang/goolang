@@ -2270,6 +2270,39 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     if ((binary->operator == TOKEN_LSHIFT || binary->operator == TOKEN_RSHIFT) &&
         LLVMGetTypeKind(LLVMTypeOf(left_llvm)) == LLVMIntegerTypeKind &&
         LLVMGetTypeKind(LLVMTypeOf(right_llvm)) == LLVMIntegerTypeKind) {
+        // Go: a NEGATIVE shift count is a runtime panic ("runtime error:
+        // negative shift amount"), distinct from an in-range-but-huge count
+        // (which saturates — the width guard in the operator switch below).
+        // Checked on the ORIGINAL count value BEFORE the width coercion
+        // beneath: the coercion zero-extends narrower counts and truncates
+        // wider ones, both of which destroy the sign bit this check needs.
+        // Only a SIGNED count type can be negative; unsigned counts skip the
+        // check entirely (zero extra IR). A count that is a compile-time
+        // NON-NEGATIVE constant also skips it (the common `x << 3` shape
+        // stays guard-free; constant NEGATIVE counts are rejected at compile
+        // time by the checker, so codegen never sees them — the guard here
+        // is the runtime-value path).
+        if (right_val->goo_type && type_is_signed(right_val->goo_type) &&
+            !(LLVMIsAConstantInt(right_llvm) &&
+              LLVMConstIntGetSExtValue(right_llvm) >= 0)) {
+            LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+            if (panic_fn) {
+                LLVMValueRef zero_c = LLVMConstInt(LLVMTypeOf(right_llvm), 0, 0);
+                LLVMValueRef isneg = LLVMBuildICmp(codegen->builder, LLVMIntSLT,
+                                                   right_llvm, zero_c, "shneg");
+                LLVMBasicBlockRef panic_bb = codegen_create_block(codegen, "shneg.panic");
+                LLVMBasicBlockRef cont_bb = codegen_create_block(codegen, "shneg.cont");
+                LLVMBuildCondBr(codegen->builder, isneg, panic_bb, cont_bb);
+                codegen_set_insert_point(codegen, panic_bb);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder,
+                    "runtime error: negative shift amount", "shneg_msg");
+                LLVMValueRef pargs[1] = { msg };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn),
+                               panic_fn, pargs, 1, "");
+                LLVMBuildUnreachable(codegen->builder);
+                codegen_set_insert_point(codegen, cont_bb);
+            }
+        }
         unsigned lw = LLVMGetIntTypeWidth(LLVMTypeOf(left_llvm));
         unsigned rw = LLVMGetIntTypeWidth(LLVMTypeOf(right_llvm));
         if (rw < lw) {
@@ -2541,17 +2574,60 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             result = LLVMBuildXor(codegen->builder, left_llvm, right_llvm, "xor");
             break;
             
-        case TOKEN_LSHIFT:
-            result = LLVMBuildShl(codegen->builder, left_llvm, right_llvm, "shl");
+        // Go defines shift by count >= the operand's width as "shifted 1 bit
+        // at a time, n times" — which saturates to 0 (both directions,
+        // unsigned right shift) or to the sign (0 / -1, signed right shift).
+        // LLVM's shl/lshr/ashr are POISON for such a count, not 0 — a
+        // divergence that's invisible at -O0 (x86 shift instructions mask
+        // the count mod the operand width in hardware, so the poison value
+        // often happens to look right) but exploitable once real
+        // optimization passes run and assume in-range shifts (found via the
+        // P3.10 -O0/-O2 differential golden gate: math/bits Div64's s==0
+        // fast path does lo >> (64-s) == lo >> 64, corrupted only at -O2).
+        // Guard explicitly with select rather than relying on hardware
+        // wraparound. right_llvm is already coerced to left_llvm's width
+        // above, so a single same-width comparison suffices.
+        //
+        // A NEGATIVE count is a separate case, handled separately: it panics
+        // at runtime ("runtime error: negative shift amount") rather than
+        // saturating. That guard is emitted above, before the width
+        // coercion, on the count's original (uncoerced, sign-preserving)
+        // value — by the time control reaches here, any negative count has
+        // already been caught, so the ULT comparison below only ever needs
+        // to distinguish in-range from huge-but-non-negative.
+        case TOKEN_LSHIFT: {
+            LLVMTypeRef shty = LLVMTypeOf(left_llvm);
+            unsigned width = LLVMGetIntTypeWidth(shty);
+            LLVMValueRef width_c = LLVMConstInt(shty, width, 0);
+            LLVMValueRef in_range = LLVMBuildICmp(codegen->builder, LLVMIntULT,
+                                                  right_llvm, width_c, "shl.inrange");
+            LLVMValueRef raw = LLVMBuildShl(codegen->builder, left_llvm, right_llvm, "shl");
+            result = LLVMBuildSelect(codegen->builder, in_range, raw,
+                                     LLVMConstInt(shty, 0, 0), "shl.guarded");
             break;
-            
-        case TOKEN_RSHIFT:
+        }
+
+        case TOKEN_RSHIFT: {
+            LLVMTypeRef shty = LLVMTypeOf(left_llvm);
+            unsigned width = LLVMGetIntTypeWidth(shty);
+            LLVMValueRef width_c = LLVMConstInt(shty, width, 0);
+            LLVMValueRef in_range = LLVMBuildICmp(codegen->builder, LLVMIntULT,
+                                                  right_llvm, width_c, "shr.inrange");
             if (type_is_signed(left_val->goo_type)) {
-                result = LLVMBuildAShr(codegen->builder, left_llvm, right_llvm, "ashr");
+                LLVMValueRef raw = LLVMBuildAShr(codegen->builder, left_llvm, right_llvm, "ashr");
+                // Out-of-range saturates to the sign fill (0 or -1), exactly
+                // what ashr by width-1 produces — and width-1 is always a
+                // valid, non-poison shift amount.
+                LLVMValueRef sat = LLVMBuildAShr(codegen->builder, left_llvm,
+                                                 LLVMConstInt(shty, width - 1, 0), "ashr.sat");
+                result = LLVMBuildSelect(codegen->builder, in_range, raw, sat, "ashr.guarded");
             } else {
-                result = LLVMBuildLShr(codegen->builder, left_llvm, right_llvm, "lshr");
+                LLVMValueRef raw = LLVMBuildLShr(codegen->builder, left_llvm, right_llvm, "lshr");
+                result = LLVMBuildSelect(codegen->builder, in_range, raw,
+                                         LLVMConstInt(shty, 0, 0), "lshr.guarded");
             }
             break;
+        }
             
         default:
             codegen_error(codegen, expr->pos, "Unsupported binary operator");

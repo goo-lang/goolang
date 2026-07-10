@@ -24,6 +24,9 @@ set -u
 COMPILER="${COMPILER:-bin/goo}"
 EX_DIR="${EX_DIR:-examples}"
 GOLDEN_TIMEOUT="${GOLDEN_TIMEOUT:-10}"
+# P3.10: optional passthrough of extra compiler flags (e.g. "-O2") for the
+# differential optimizer gate; default empty = today's behavior, unchanged.
+GOOFLAGS="${GOOFLAGS:-}"
 pass=0; fail=0; failed=()
 for goo in "$EX_DIR"/*.goo; do
     exp="${goo%.goo}.expected.txt"
@@ -33,7 +36,10 @@ for goo in "$EX_DIR"/*.goo; do
     out_stdout="build/golden_${base}.stdout.txt"
     out_stderr="build/golden_${base}.stderr.txt"
     mkdir -p build
-    if ! "$COMPILER" "$goo" -o "$out_bin" >/dev/null 2>"build/golden_${base}.cerr"; then
+    # $GOOFLAGS intentionally unquoted: lets callers pass multiple flags
+    # (e.g. "-O2 -v") that need independent word-splitting; empty by
+    # default so this is a no-op unless a caller sets it.
+    if ! "$COMPILER" "$goo" -o "$out_bin" $GOOFLAGS >/dev/null 2>"build/golden_${base}.cerr"; then
         echo "FAIL  $base (compile/link)"; fail=$((fail+1)); failed+=("$base"); continue
     fi
 
