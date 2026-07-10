@@ -1,0 +1,18 @@
+package main
+
+// import_alias_probe (P4.4): Go-style nested import spellings ("unicode/utf8",
+// "math/bits") must resolve to the SAME goostd package directories as their
+// flat spellings ("utf8", "bits" — see utf8_probe.goo / bits_onescount_probe.goo).
+// RuneLen(20013) exercises the 3-byte UTF-8 encoding range for U+4E2D ('中');
+// a literal '中' char isn't used because multi-byte rune literals are a
+// deferred lexer feature (see lexer_decode_char_value), unrelated to this task.
+import (
+	"fmt"
+	"unicode/utf8"
+	"math/bits"
+)
+
+func main() {
+	fmt.Println(utf8.RuneLen(20013)) // '中' U+4E2D -> 3-byte encoding
+	fmt.Println(bits.OnesCount8(255))
+}

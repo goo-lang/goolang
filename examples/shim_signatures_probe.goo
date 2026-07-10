@@ -1,0 +1,38 @@
+package main
+
+// shim_signatures_probe (P4.1): calls ONE symbol from each stdlib-shim
+// package with CORRECT arg types/arity, proving the new declarative
+// signature table (src/types/shim_signatures.c) didn't break lowering for
+// any package it covers. Reject-side coverage (wrong types/arity) lives in
+// tests/golden/reject/shim_*_reject.goo.
+import "fmt"
+import "os"
+import "math"
+import "strings"
+import "strconv"
+import "errors"
+
+func main() {
+	fmt.Println("fmt.Println ok")
+	fmt.Printf("fmt.Printf %d\n", 7)
+
+	fmt.Println(math.Sqrt(16.0))
+	fmt.Println(strings.Contains("hello world", "world"))
+	fmt.Println(strconv.Itoa(99))
+
+	n, err := strconv.Atoi("42")
+	if err == nil {
+		fmt.Println(n)
+	}
+
+	e := errors.New("boom")
+	fmt.Println(e.Error())
+
+	wrapped := fmt.Errorf("outer: %w", e)
+	fmt.Println(errors.Unwrap(wrapped).Error())
+
+	written := os.WriteFile("/tmp/goo_shim_signatures_probe.txt", "hi")
+	fmt.Println(written)
+
+	os.Exit(0)
+}
