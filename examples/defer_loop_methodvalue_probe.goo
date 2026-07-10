@@ -1,0 +1,33 @@
+// defer_loop_methodvalue_probe (P3.4 review R2 x P3.6): a METHOD VALUE as
+// the callee of a loop-nested defer. `f := p.bump` builds the bound-thunk
+// {fn, env} pair (P3.6, function_codegen.c's codegen_get_method_bound_
+// thunk) with the pointer receiver captured in env; the defer-stack path
+// then snapshots that PAIR like any function-valued callee (see
+// defer_loop_closure_probe) and each of the three pushed registrations
+// calls it at function exit — the caller observes all three pointer-
+// receiver mutations (c.n == 3). Before the callee-snapshot fix this was
+// the same cross-function-reference verifier ICE as the closure shapes.
+package main
+
+import "fmt"
+
+type C struct {
+    n int
+}
+
+func (c *C) bump() {
+    c.n = c.n + 1
+}
+
+func helper(p *C) {
+    f := p.bump
+    for i := 0; i < 3; i++ {
+        defer f()
+    }
+}
+
+func main() {
+    c := C{0}
+    helper(&c)
+    fmt.Println("n", c.n)
+}

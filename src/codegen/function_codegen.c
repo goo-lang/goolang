@@ -174,22 +174,31 @@ static int escape_is_promoted(const char* name) {
 // one `defer` lexically nested under a for/range loop routes ALL of its
 // defers through the runtime stack; everything else keeps the untouched
 // static path. Only real iteration counts as "loop-nested" — switch/select/
-// if/match/try/catch/unsafe do not repeat their body, so a defer under one
-// of THOSE alone is exactly as expressible as a defer under a plain `if`
-// (one conditional execution, no per-iteration multiplication), and stays
-// on the static path. `for_depth` therefore only increments across
-// AST_FOR_STMT's body (ForStmtNode covers both C-style and range `for` —
+// if/match/try/catch/unsafe/arena/label do not repeat their body, so a
+// defer under one of THOSE alone is exactly as expressible as a defer under
+// a plain `if` (one conditional execution, no per-iteration multiplication)
+// and stays on the static path. `for_depth` therefore only increments
+// across AST_FOR_STMT (ForStmtNode covers both C-style and range `for` —
 // range_expr non-NULL selects the range-desugared form — so one case
-// handles both, matching the escape pre-pass's own ForStmtNode walk above).
+// handles both).
 //
-// Unlike escape_walk, this walker does NOT need to visit expression nodes
-// (BINARY_EXPR, CALL_EXPR, ...): `defer` is a statement, never nested inside
-// an expression, so nothing reachable only through an expression can ever
-// contain an AST_DEFER_STMT. It also does not descend into a nested
-// AST_FUNC_LIT body (same gap escape_walk has) — a literal is codegen'd as
-// its own function with its OWN pre-pass call (see
-// codegen_generate_func_lit), so its defers are that function's concern,
-// not the enclosing one's.
+// COVERAGE / MAINTENANCE CONTRACT: this walker must reach EVERY statement
+// list a function body can transitively contain — including statement
+// bodies nested inside EXPRESSIONS (`catch { ... }` bodies, match-case
+// bodies), which is why the expression node kinds are walked too, not just
+// statement containers. A container missed here makes a loop-nested defer
+// under it silently take the static single-slot path — historically a
+// silent run-once-with-last-snapshot miscompile (review finding 2026-07-10:
+// AST_ARENA_BLOCK, AST_LABEL_STMT, and CatchExprNode.catch_body were all
+// missing). Two defenses now exist: (1) any NEW node type that carries a
+// statement list, a wrapped statement, or expression children MUST be added
+// to this switch, and (2) the static path in codegen_generate_defer_stmt
+// fail-closes — a loop-nested defer that reaches it anyway (cfctx
+// real-loop check there) is a hard "internal" error, never a silent
+// miscompile — so a future gap here surfaces at compile time.
+// AST_FUNC_LIT is the one deliberate non-recursion: a literal is codegen'd
+// as its own function with its OWN pre-pass call (codegen_generate_func_lit),
+// so its defers are that function's concern, not the enclosing one's.
 static int g_defer_needs_stack;
 
 static void defer_prepass_walk(ASTNode* n, int for_depth) {
@@ -197,31 +206,156 @@ static void defer_prepass_walk(ASTNode* n, int for_depth) {
         switch (n->type) {
             case AST_DEFER_STMT:
                 if (for_depth > 0) g_defer_needs_stack = 1;
+                // The deferred call's arguments can themselves contain a
+                // statement-bearing expression (a catch body) — keep walking.
+                defer_prepass_walk(((DeferStmtNode*)n)->call, for_depth);
                 break;
             case AST_FOR_STMT: {
                 ForStmtNode* s = (ForStmtNode*)n;
+                // init and range_expr evaluate once, at the loop's own
+                // depth; condition/post re-evaluate per iteration and the
+                // body runs per iteration — those three at depth + 1.
+                defer_prepass_walk(s->init, for_depth);
+                defer_prepass_walk(s->range_expr, for_depth);
+                defer_prepass_walk(s->condition, for_depth + 1);
+                defer_prepass_walk(s->post, for_depth + 1);
                 defer_prepass_walk(s->body, for_depth + 1);
                 break;
             }
+
+            // --- statement containers ---
             case AST_BLOCK_STMT: defer_prepass_walk(((BlockStmtNode*)n)->statements, for_depth); break;
+            case AST_EXPR_STMT:  defer_prepass_walk(((ExprStmtNode*)n)->expr, for_depth); break;
             case AST_IF_STMT: {
                 IfStmtNode* s = (IfStmtNode*)n;
+                defer_prepass_walk(s->condition, for_depth);
                 defer_prepass_walk(s->then_stmt, for_depth);
                 defer_prepass_walk(s->else_stmt, for_depth);
                 break;
             }
             case AST_IF_LET_STMT: {
                 IfLetStmtNode* s = (IfLetStmtNode*)n;
+                defer_prepass_walk(s->nullable_expr, for_depth);
                 defer_prepass_walk(s->then_stmt, for_depth);
                 defer_prepass_walk(s->else_stmt, for_depth);
                 break;
             }
-            case AST_SWITCH_STMT: defer_prepass_walk(((SwitchStmtNode*)n)->cases, for_depth); break;
-            case AST_CASE_CLAUSE: defer_prepass_walk(((CaseClauseNode*)n)->body, for_depth); break;
+            case AST_SWITCH_STMT: {
+                SwitchStmtNode* s = (SwitchStmtNode*)n;
+                defer_prepass_walk(s->tag, for_depth);
+                defer_prepass_walk(s->cases, for_depth);
+                break;
+            }
+            case AST_CASE_CLAUSE: {
+                CaseClauseNode* c = (CaseClauseNode*)n;
+                defer_prepass_walk(c->exprs, for_depth);
+                defer_prepass_walk(c->body, for_depth);
+                break;
+            }
+            case AST_TYPE_SWITCH: {
+                TypeSwitchNode* s = (TypeSwitchNode*)n;
+                defer_prepass_walk(s->expr, for_depth);
+                defer_prepass_walk(s->cases, for_depth);
+                break;
+            }
+            case AST_TYPE_CASE:   defer_prepass_walk(((TypeCaseNode*)n)->body, for_depth); break;
             case AST_SELECT_STMT: defer_prepass_walk(((SelectStmtNode*)n)->cases, for_depth); break;
-            case AST_SELECT_CASE: defer_prepass_walk(((SelectCaseNode*)n)->body, for_depth); break;
-            case AST_UNSAFE_STMT: defer_prepass_walk(((UnsafeStmtNode*)n)->body, for_depth); break;
-            default: break;  // expressions, decls, return/go/break/continue: no defer reachable
+            case AST_SELECT_CASE: {
+                SelectCaseNode* c = (SelectCaseNode*)n;
+                defer_prepass_walk(c->comm, for_depth);
+                defer_prepass_walk(c->body, for_depth);
+                break;
+            }
+            case AST_UNSAFE_STMT:    defer_prepass_walk(((UnsafeStmtNode*)n)->body, for_depth); break;
+            case AST_ARENA_BLOCK:    defer_prepass_walk(((ArenaBlockNode*)n)->body, for_depth); break;
+            case AST_COMPTIME_BLOCK: defer_prepass_walk(((ComptimeBlockNode*)n)->body, for_depth); break;
+            case AST_CONTRACT_BLOCK: defer_prepass_walk(((ContractBlockNode*)n)->clauses, for_depth); break;
+            case AST_LABEL_STMT:     defer_prepass_walk(((LabelStmtNode*)n)->stmt, for_depth); break;
+            case AST_GO_STMT:        defer_prepass_walk(((GoStmtNode*)n)->call, for_depth); break;
+            case AST_RETURN_STMT:    defer_prepass_walk(((ReturnStmtNode*)n)->values, for_depth); break;
+            case AST_VAR_DECL:       defer_prepass_walk(((VarDeclNode*)n)->values, for_depth); break;
+            case AST_CONST_DECL:     defer_prepass_walk(((ConstDeclNode*)n)->values, for_depth); break;
+            case AST_MULTI_ASSIGN: {
+                MultiAssignNode* m = (MultiAssignNode*)n;
+                defer_prepass_walk(m->targets, for_depth);
+                defer_prepass_walk(m->values, for_depth);
+                break;
+            }
+
+            // --- expressions: can carry a statement body directly (catch/
+            // match) or reach one through their children ---
+            case AST_BINARY_EXPR: {
+                BinaryExprNode* b = (BinaryExprNode*)n;
+                defer_prepass_walk(b->left, for_depth);
+                defer_prepass_walk(b->right, for_depth);
+                break;
+            }
+            case AST_UNARY_EXPR:   defer_prepass_walk(((UnaryExprNode*)n)->operand, for_depth); break;
+            case AST_POSTFIX_EXPR: defer_prepass_walk(((PostfixExprNode*)n)->operand, for_depth); break;
+            case AST_CALL_EXPR: {
+                CallExprNode* c = (CallExprNode*)n;
+                defer_prepass_walk(c->function, for_depth);
+                defer_prepass_walk(c->args, for_depth);
+                break;
+            }
+            case AST_INDEX_EXPR: {
+                IndexExprNode* ix = (IndexExprNode*)n;
+                defer_prepass_walk(ix->expr, for_depth);
+                defer_prepass_walk(ix->index, for_depth);
+                break;
+            }
+            case AST_SELECTOR_EXPR: defer_prepass_walk(((SelectorExprNode*)n)->expr, for_depth); break;
+            case AST_SLICE_EXPR:    defer_prepass_walk(((SliceLitNode*)n)->elements, for_depth); break;
+            case AST_SLICE_INDEX_EXPR: {
+                SliceIndexExprNode* s = (SliceIndexExprNode*)n;
+                defer_prepass_walk(s->expr, for_depth);
+                defer_prepass_walk(s->low, for_depth);
+                defer_prepass_walk(s->high, for_depth);
+                break;
+            }
+            case AST_ARRAY_LITERAL: defer_prepass_walk(((ArrayLitNode*)n)->elements, for_depth); break;
+            case AST_KEYED_ELEMENT: {
+                KeyedElementNode* k = (KeyedElementNode*)n;
+                defer_prepass_walk(k->key, for_depth);
+                defer_prepass_walk(k->value, for_depth);
+                break;
+            }
+            // AST_PAREN_EXPR is a repurposed map-literal slot (MapLitNode).
+            case AST_PAREN_EXPR: {
+                MapLitNode* m = (MapLitNode*)n;
+                defer_prepass_walk(m->keys, for_depth);
+                defer_prepass_walk(m->values, for_depth);
+                break;
+            }
+            case AST_STRUCT_LITERAL: defer_prepass_walk(((StructLiteralNode*)n)->field_values, for_depth); break;
+            case AST_TRY_EXPR:       defer_prepass_walk(((TryExprNode*)n)->expr, for_depth); break;
+            case AST_CATCH_EXPR: {
+                // catch_body is a full statement list nested inside an
+                // EXPRESSION — the reason this walker recurses into
+                // expressions at all (verified miscompile shape before this
+                // coverage: `x := f() catch e { for { defer ... } ... }`).
+                CatchExprNode* ce = (CatchExprNode*)n;
+                defer_prepass_walk(ce->expr, for_depth);
+                defer_prepass_walk(ce->catch_body, for_depth);
+                break;
+            }
+            case AST_MATCH_EXPR: {
+                MatchExprNode* m = (MatchExprNode*)n;
+                defer_prepass_walk(m->expr, for_depth);
+                defer_prepass_walk(m->cases, for_depth);
+                break;
+            }
+            case AST_MATCH_CASE: {
+                MatchCaseNode* mc = (MatchCaseNode*)n;
+                defer_prepass_walk(mc->guard, for_depth);
+                defer_prepass_walk(mc->body, for_depth);
+                break;
+            }
+            case AST_TYPE_ASSERT: defer_prepass_walk(((TypeAssertNode*)n)->expr, for_depth); break;
+            case AST_ADDR_OF:     defer_prepass_walk(((AddrOfNode*)n)->operand, for_depth); break;
+
+            default: break;  // leaves (identifier, literal, type nodes) and
+                             // AST_FUNC_LIT (deliberate — see contract above)
         }
     }
 }

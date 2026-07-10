@@ -2548,6 +2548,26 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
 // correct for every call shape the static path already supports — builtins
 // like fmt.Println, user functions, methods — for free, instead of
 // reimplementing call_codegen.c's builtin/method/vararg resolution here.
+//
+// CALLEE SNAPSHOT (review 2026-07-10): a callee that is itself a VALUE — a
+// func literal (capturing or not), a local variable holding a func value, a
+// method value, a call returning a func — cannot be re-emitted inside the
+// thunk: re-emission would resolve it against the OUTER function's
+// allocas/instructions (codegen's value table is flat), producing LLVM's
+// "Referring to an instruction in another function" verifier ICE. Go's own
+// rule decides the fix ("each time a defer statement executes, the function
+// value and parameters are evaluated as usual and saved anew"): the callee
+// is just one more defer-time value, so it is snapshotted into the env like
+// any argument — evaluated NOW in the outer function (it lowers to the
+// universal {fn_ptr, env_ptr} funcval pair; TYPE_FUNCTION's LLVM lowering,
+// type_mapping.c), stored as the env's leading field, and rebound in the
+// thunk to a synthetic identifier spliced into call->function for the
+// emission — call_codegen's indirect-funcval path then handles the actual
+// call (nil check, env-first ABI, variadic packing) unchanged. Callees that
+// resolve to module-global symbols from any function (package selectors,
+// named top-level functions, method selectors — the receiver, not the
+// method, is the value there) keep the plain re-emit, which also keeps the
+// static path's exact capability envelope for them.
 static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker* checker,
                                              ASTNode* stmt, FunctionInfo* fi,
                                              CallExprNode* call) {
@@ -2563,15 +2583,37 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
     // below): `defer x.m(args)` snapshots the selector base at defer-time
     // UNLESS it's a package selector (fmt.Println) whose base has no
     // runtime value.
+    //
+    // callee_expr: non-NULL when the callee itself must be snapshotted (see
+    // the CALLEE SNAPSHOT doc block above). Mutually exclusive with
+    // recv_base by construction — a selector callee takes the recv arm, a
+    // non-selector callee the value-classification arm.
     ASTNode* recv_base = NULL;
+    ASTNode* callee_expr = NULL;
     if (call->function && call->function->type == AST_SELECTOR_EXPR) {
         ASTNode* base = ((SelectorExprNode*)call->function)->expr;
         if (base && base->node_type && base->node_type->kind != TYPE_PACKAGE)
             recv_base = base;
+    } else if (call->function && call->function->type == AST_IDENTIFIER) {
+        // Identifier callee: a NAMED top-level function is not in codegen's
+        // value table (it lives in the type-checker's function registry and
+        // resolves to a module-global symbol from any function — safe to
+        // re-emit in the thunk). A value-table hit whose type is a function
+        // is a func-typed local/param — a value that must be snapshotted.
+        ValueInfo* cv = codegen_lookup_value(codegen,
+                                             ((IdentifierNode*)call->function)->name);
+        if (cv && cv->goo_type && cv->goo_type->kind == TYPE_FUNCTION)
+            callee_expr = call->function;
+    } else if (call->function && call->function->node_type &&
+               call->function->node_type->kind == TYPE_FUNCTION) {
+        // Any other function-typed callee expression: func literal
+        // (capturing or not), call returning a func, indexed func slot, ...
+        callee_expr = call->function;
     }
+
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
-    size_t total = argc + (recv_base ? 1 : 0);
+    size_t total = argc + (recv_base ? 1 : 0) + (callee_expr ? 1 : 0);
 
     // Evaluate every snapshot value now, in ORIGINAL-function context, at
     // the current (possibly loop-body) insert point.
@@ -2584,6 +2626,32 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
     }
 
     size_t idx = 0;
+    if (callee_expr) {
+        // Evaluate the callee to its funcval pair (Go: the function value
+        // is evaluated when the defer statement executes). A capturing
+        // literal builds its capture env HERE, in the outer function, where
+        // the captured slots are legal to reference.
+        ValueInfo* cvv = codegen_generate_expression(codegen, checker, callee_expr);
+        if (!cvv) {
+            free(vals); free(types);
+            codegen_error(codegen, callee_expr->pos, "failed to evaluate deferred callee");
+            return 0;
+        }
+        LLVMValueRef cval = cvv->llvm_value;
+        Type* ct = cvv->goo_type ? cvv->goo_type : callee_expr->node_type;
+        if (cvv->is_lvalue && ct) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, ct);
+            if (lt) cval = LLVMBuildLoad2(codegen->builder, lt, cval, "sdefer_fn");
+        }
+        value_info_free(cvv);
+        if (!ct || ct->kind != TYPE_FUNCTION) {
+            free(vals); free(types);
+            codegen_error(codegen, callee_expr->pos,
+                          "internal: deferred callee did not resolve to a function type");
+            return 0;
+        }
+        vals[idx] = cval; types[idx] = ct; idx++;
+    }
     if (recv_base) {
         ValueInfo* rv = codegen_generate_expression(codegen, checker, recv_base);
         if (!rv) {
@@ -2707,9 +2775,14 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
     // codegen->current_function_info was just repointed at it), bind a
     // synthetic identifier to it exactly the way the static path's
     // codegen_generate_defer_stmt does for its own entry-alloca snapshots —
-    // same naming scheme (`__goo_defer<N>_recv`/`_arg<M>`); safe to reuse
-    // verbatim because a function is EITHER fully static or fully
-    // stack-mode, never mixed, so there is no cross-mode collision risk.
+    // same naming scheme (`__goo_defer<N>_recv`/`_arg<M>`, plus `_fn` for a
+    // snapshotted callee); safe to reuse verbatim because a function is
+    // EITHER fully static or fully stack-mode, never mixed, so there is no
+    // cross-mode collision risk. A snapshotted CALLEE binds as a func-typed
+    // lvalue, which is precisely the shape call_codegen's indirect-funcval
+    // arm expects — the spliced call below goes through the same nil-check +
+    // env-first indirect call any `f()` on a func-typed local takes.
+    ASTNode* callee_synth = NULL;
     ASTNode* recv_synth = NULL;
     ASTNode* args_synth_head = NULL;
     ASTNode* prev_synth = NULL;
@@ -2721,12 +2794,15 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
         LLVMValueRef slot = codegen_create_entry_alloca(codegen, field_llvm, "sdefer_thunk_slot");
         LLVMBuildStore(codegen->builder, field_val, slot);
 
-        int is_recv = (recv_base && i == 0);
+        int is_callee = (callee_expr && i == 0);
+        int is_recv = (recv_base && i == 0);  // exclusive with is_callee
         char nm[64];
-        if (is_recv) {
+        if (is_callee) {
+            snprintf(nm, sizeof(nm), "__goo_defer%zu_fn", fi->deferred_count);
+        } else if (is_recv) {
             snprintf(nm, sizeof(nm), "__goo_defer%zu_recv", fi->deferred_count);
         } else {
-            size_t argi = i - (recv_base ? 1 : 0);
+            size_t argi = i - ((recv_base || callee_expr) ? 1 : 0);
             snprintf(nm, sizeof(nm), "__goo_defer%zu_arg%zu", fi->deferred_count, argi);
         }
 
@@ -2736,7 +2812,9 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
 
         IdentifierNode* id = ast_identifier_new(nm, stmt->pos);
         ((ASTNode*)id)->node_type = types[i];
-        if (is_recv) {
+        if (is_callee) {
+            callee_synth = (ASTNode*)id;
+        } else if (is_recv) {
             recv_synth = (ASTNode*)id;
         } else {
             ASTNode* idn = (ASTNode*)id;
@@ -2751,11 +2829,18 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
     // after — same transactional pattern codegen_emit_deferred_calls uses,
     // just performed once (at thunk-build time) instead of once per exit
     // site, since the call is emitted exactly once here (inside the
-    // thunk), not re-emitted at every function exit.
+    // thunk), not re-emitted at every function exit. A snapshotted callee
+    // splices call->function itself (the whole callee expression is
+    // replaced by the synthetic identifier); a method receiver splices only
+    // the selector's base, leaving the selector node in place.
     ASTNode* saved_args = call->args;
+    ASTNode* saved_fn = NULL;
     SelectorExprNode* sel = NULL;
     ASTNode* saved_recv = NULL;
-    if (recv_synth && call->function && call->function->type == AST_SELECTOR_EXPR) {
+    if (callee_synth) {
+        saved_fn = call->function;
+        call->function = callee_synth;
+    } else if (recv_synth && call->function && call->function->type == AST_SELECTOR_EXPR) {
         sel = (SelectorExprNode*)call->function;
         saved_recv = sel->expr;
         sel->expr = recv_synth;
@@ -2766,6 +2851,7 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
     if (result) value_info_free(result);
 
     call->args = saved_args;
+    if (callee_synth) call->function = saved_fn;
     if (sel) sel->expr = saved_recv;
 
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
@@ -2834,6 +2920,28 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // supported.
     if (fi->defer_stack_mode) {
         return codegen_generate_defer_stmt_stack(codegen, checker, stmt, fi, call);
+    }
+
+    // Fail-closed backstop (defense in depth, review 2026-07-10): the
+    // pre-pass decided this function needs no runtime stack, yet codegen is
+    // NOW inside a real loop (cfctx tracks actual loop frames independently
+    // of the pre-pass — loop_is_loop[i] is 1 only for cfctx_push_loop
+    // frames, 0 for switch/select/type-switch break-scopes, so this never
+    // fires for a defer under a plain switch). That means the pre-pass
+    // walker missed the container this loop is nested under. Emitting the
+    // static single-slot form here would run the defer ONCE with the last
+    // iteration's snapshot — the exact silent-miscompile class the walker's
+    // ARENA_BLOCK/LABEL_STMT gaps produced before they were fixed. Refuse
+    // loudly instead: a compile error is strictly better than wrong output,
+    // and matches pre-P3.4 behavior (which rejected all loop defers).
+    for (int i = 0; i < codegen->cfctx.loop_depth; i++) {
+        if (codegen->cfctx.loop_is_loop[i]) {
+            codegen_error(codegen, stmt->pos,
+                          "internal: loop-nested defer reached the static defer path "
+                          "(defer pre-pass coverage bug — see defer_prepass_walk's "
+                          "maintenance contract, function_codegen.c)");
+            return 0;
+        }
     }
 
     // First defer of this function: reset the parallel codegen-info cache.
