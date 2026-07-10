@@ -31,6 +31,13 @@ func midX(pts []shapes.Point) int {
 	return sum
 }
 
+// Qualified RETURN type position (review parity): before this case the
+// probe never pinned a main function DECLARED as returning a package-
+// qualified type — a regression there would have gone uncaught.
+func doublePoint(p shapes.Point) shapes.Point {
+	return shapes.NewPoint(p.X*2, p.Y*2)
+}
+
 func main() {
 	var p shapes.Point
 	p = shapes.NewPoint(3, 4)
@@ -44,4 +51,8 @@ func main() {
 
 	pts := []shapes.Point{p, q}
 	fmt.Println(midX(pts))
+
+	d := doublePoint(p) // qualified return position: (3,4) -> (6,8)
+	fmt.Println(d.X)
+	fmt.Println(d.Y)
 }

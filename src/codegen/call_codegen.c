@@ -1375,22 +1375,28 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
 
         const char* tn = type_receiver_name(recv_type);
         char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
-        LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
 
-        // P4.3 (packages-B): recv_type may be a package-owned receiver type
-        // (e.g. shapes.Point) — the DEFINITION side always emits such a
-        // method under the goo_pkg__<pkg>__ prefixed symbol
-        // (function_codegen.c), so a miss under the bare mangled name
-        // retries there before falling to the embedding-promotion search
-        // below (which would otherwise misdiagnose an ordinary package
-        // method as "no such method" and go hunting through embedded
-        // fields for it). `mangled` itself stays the BARE "T__m" string
-        // throughout — it doubles as the checker-Variable lookup key
-        // further down (never prefixed; see type_checker_lookup_method).
-        // `method_owner_type` tracks which type's owner_package applies to
-        // that lookup — recv_type here, or the embedded owner below.
+        // P4.3 (packages-B, review-fix CRITICAL): the emitted symbol is
+        // decided by the receiver type's OWNER, never by whichever module
+        // symbol happens to exist under the bare name. A package-owned
+        // receiver (e.g. shapes.Point) resolves the goo_pkg__<pkg>__
+        // prefixed symbol ONLY — the DEFINITION side always emits package
+        // methods under that prefix (function_codegen.c), for intra- and
+        // cross-package callers alike — while a main-owned receiver
+        // (owner NULL) resolves the bare symbol ONLY. The pre-fix
+        // bare-first-with-prefix-retry order let a same-named MAIN method
+        // (`func (p *Point) Scale` on main's own Point) silently hijack
+        // cross-package dispatch: pointer receivers ran the wrong body,
+        // value receivers died in the LLVM verifier — see
+        // pkg_method_hijack_probe. `mangled` itself stays the BARE "T__m"
+        // string throughout — it doubles as the checker-Variable lookup
+        // key further down (never prefixed; type_checker_lookup_method
+        // applies the same owner-routing there). `method_owner_type`
+        // tracks which type's owner applies to that lookup — recv_type
+        // here, or the embedded owner below.
         Type* method_owner_type = recv_type;
-        if (!fn && mangled) {
+        LLVMValueRef fn = NULL;
+        if (mangled) {
             Package* owner_pkg = type_receiver_owner_package(recv_type);
             if (owner_pkg) {
                 char* pkg_sym = codegen_pkg_mangled_symbol(owner_pkg->name, mangled);
@@ -1398,6 +1404,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     fn = LLVMGetNamedFunction(codegen->module, pkg_sym);
                     free(pkg_sym);
                 }
+            } else {
+                fn = LLVMGetNamedFunction(codegen->module, mangled);
             }
         }
 
@@ -1427,12 +1435,13 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (er.kind == EMBED_METHOD) {
                 const char* otn = type_receiver_name(er.owner);
                 char* omangled = otn ? type_method_mangled_name(otn, msel->selector) : NULL;
-                LLVMValueRef ofn = omangled ? LLVMGetNamedFunction(codegen->module, omangled) : NULL;
-                // P4.3: same package-prefix retry as the direct (non-
-                // embedded) lookup above, for a method promoted from a
-                // package-owned embedded field (e.g. `Wrap` embeds
-                // shapes.Point).
-                if (!ofn && omangled) {
+                // P4.3 (review-fix CRITICAL): same owner-routed symbol
+                // choice as the direct (non-embedded) lookup above — a
+                // method promoted from a package-owned embedded field
+                // (e.g. `Wrap` embeds shapes.Point) resolves the prefixed
+                // symbol ONLY, a main-owned one the bare symbol ONLY.
+                LLVMValueRef ofn = NULL;
+                if (omangled) {
                     Package* oowner_pkg = type_receiver_owner_package(er.owner);
                     if (oowner_pkg) {
                         char* opkg_sym = codegen_pkg_mangled_symbol(oowner_pkg->name, omangled);
@@ -1440,6 +1449,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                             ofn = LLVMGetNamedFunction(codegen->module, opkg_sym);
                             free(opkg_sym);
                         }
+                    } else {
+                        ofn = LLVMGetNamedFunction(codegen->module, omangled);
                     }
                 }
                 if (ofn) {

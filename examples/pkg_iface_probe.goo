@@ -1,0 +1,31 @@
+// pkg_iface_probe (P4.3 review fix, MAJOR): a package-owned concrete type
+// (kinds.Rect) must satisfy a package-exported QUALIFIED interface
+// (kinds.Shaper) — the pre-fix interface-satisfaction lookup only consulted
+// the current scope for the mangled method name ("Rect__Area"), so the
+// assignment rejected with "Rect does not implement Shaper (missing method
+// Area)" even though Rect declares Area() in its own package. Also pins the
+// already-working main-type-satisfies-package-interface direction (Sq), and
+// vtable dispatch through the interface value for BOTH concretes. Expected
+// output verified via `go run` on the equivalent two-package Go module
+// (scratchpad kindsmod/).
+package main
+
+import "fmt"
+import "kinds"
+
+type Sq struct {
+	N int
+}
+
+func (s Sq) Area() int {
+	return s.N * s.N
+}
+
+func main() {
+	var s kinds.Shaper
+	s = kinds.NewRect(3, 5)
+	fmt.Println(s.Area())
+
+	s = Sq{N: 4}
+	fmt.Println(s.Area())
+}

@@ -639,7 +639,17 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
             Package* owner_pkg = type_receiver_owner_package(lookup_type);
             if (owner_pkg) {
                 pkg_emit_name = codegen_pkg_mangled_symbol(owner_pkg->name, mangled);
-                if (pkg_emit_name) emit_name = pkg_emit_name;
+                if (!pkg_emit_name) {
+                    // Review-fix (CRITICAL hardening): never degrade a
+                    // package-owned bind to the bare name — a same-named
+                    // main method would hijack it. Fail cleanly instead.
+                    codegen_error(codegen, expr->pos,
+                                  "internal: cannot mangle package method symbol for '%s'",
+                                  selector->selector);
+                    free(mangled);
+                    return NULL;
+                }
+                emit_name = pkg_emit_name;
             }
             ValueInfo* mv = codegen_generate_method_value(codegen, checker, expr, selector,
                                                            recv_static_type, mvar, emit_name);

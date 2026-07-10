@@ -493,19 +493,37 @@ Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name) {
 }
 
 // P4.3 (packages-B): see the doc comment on the declaration (types.h) for the
-// full rationale. Current-scope lookup first (today's intra-package/main
-// behavior, unchanged); only on a miss does a package-owned receiver fall
-// back to its declaring package's exports scope, gated on the METHOD name
-// (not the combined mangled name) being exported.
+// full rationale. Dispatch is decided by the receiver type's OWNER, never by
+// which scope happens to resolve the bare mangled name first (review-fix,
+// CRITICAL): a main-package method with the same receiver-type name AND
+// method name ("Point__Scale") used to hijack cross-package dispatch because
+// the bare current-scope lookup ran first.
+//
+//   - owner set, owner != current_package (a cross-package receiver): the
+//     owning package's exports are the ONLY legitimate source — Go's rule
+//     is that methods on a package's type can only be defined in that
+//     package, so NO fallback to the current scope exists (a bare hit there
+//     is by construction a different, same-named type's method, or an
+//     out-of-package method declaration Go itself would reject). Gated on
+//     the METHOD name being exported (see the declaration comment for why
+//     the mangled name's own leading case is not sufficient).
+//   - owner == current_package (a package's own body checking/codegen'ing
+//     calls on its own types): the method Variable lives in the still-pushed
+//     package scope under the bare name — exports aren't even populated
+//     until the whole body has been checked (package_export_filter runs
+//     last) — so the current-scope lookup is the correct source, and
+//     unexported methods are correctly callable intra-package.
+//   - owner NULL (a main-declared or anonymous/builtin receiver): current
+//     scope, today's behavior.
 Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
                                       const char* method_name, const char* mangled_name) {
-    if (!mangled_name) return NULL;
-    Variable* m = type_checker_lookup_variable(checker, mangled_name);
-    if (m) return m;
+    if (!checker || !mangled_name) return NULL;
     struct Package* owner = type_receiver_owner_package(recv_type);
-    if (!owner) return NULL;
-    if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') return NULL;
-    return scope_lookup_variable(owner->exports, mangled_name);
+    if (owner && owner != checker->current_package) {
+        if (!method_name || method_name[0] < 'A' || method_name[0] > 'Z') return NULL;
+        return scope_lookup_variable(owner->exports, mangled_name);
+    }
+    return type_checker_lookup_variable(checker, mangled_name);
 }
 
 // Function generics Task 3: active-type-param stack. Pushed by
@@ -1474,7 +1492,16 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
         if (!tn) { *method_out = im->name; *reason_out = "missing"; return 0; }
 
         char* mangled = type_method_mangled_name(tn, im->name);
-        Variable* mv = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        // P4.3 review-fix (MAJOR): a package-owned concrete's methods live in
+        // its declaring package's exports, not the current scope — without
+        // the owner-routed lookup, `kinds.Rect` could never satisfy
+        // `kinds.Shaper` from main ("missing method Area"). Touches ONLY
+        // where method existence is resolved; the receiver-kind method-set
+        // rules below (P2.1) and the RTTI implementer collector are
+        // deliberately untouched (see recv-kind collector coupling note).
+        Variable* mv = mangled
+            ? type_checker_lookup_method(checker, concrete, im->name, mangled)
+            : NULL;
         free(mangled);
         Type* impl = NULL;
         int via_embed = 0;

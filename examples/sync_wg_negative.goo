@@ -1,0 +1,15 @@
+// sync-wg-negative-probe (P4.3/B3 review parity): driving a WaitGroup's
+// counter negative panics with Go's own message ("sync: negative WaitGroup
+// counter"), exit 2 — same shape as sync_unlock_unlocked (the message used
+// to be the non-Go "WaitGroup counter went negative", src/runtime/sync.c's
+// goo_waitgroup_add). `go vet`-style compile-time detection is NOT
+// expected; this is the runtime abort contract, verified against go run's
+// behavior on `var wg sync.WaitGroup; wg.Add(-1)`.
+package main
+
+import "sync"
+
+func main() {
+	var wg sync.WaitGroup
+	wg.Add(-1)
+}

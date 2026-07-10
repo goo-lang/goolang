@@ -1,0 +1,55 @@
+// embed-pkg-probe (P4.3 review parity, qualified embedded fields): a struct
+// may embed a package-qualified type — `sync.Mutex` (the classic Counter
+// idiom) and `shapes.Point` (a source-package struct). The embedded field is
+// stored under its UNQUALIFIED name (Go's rule: field `Mutex` / `Point`),
+// its FIELDS promote (w.X), its METHODS promote (c.Lock / w.Sum — resolved
+// through the owning package's exports, prefix-routed like every direct
+// method call), and the promoted Lock/Unlock genuinely serialize: 4
+// goroutines x 1000 increments under c.Lock() must print exactly 4000.
+// Deterministic output; the concurrent half mirrors sync_probe's shape.
+package main
+
+import "fmt"
+import "shapes"
+import "sync"
+
+type Counter struct {
+	sync.Mutex
+	n int
+}
+
+type Wrap struct {
+	shapes.Point
+	label int
+}
+
+var c Counter
+var wg sync.WaitGroup
+
+func worker() {
+	for i := 0; i < 1000; i++ {
+		c.Lock() // promoted through the embedded sync.Mutex
+		c.n = c.n + 1
+		c.Unlock()
+	}
+	wg.Done()
+}
+
+func main() {
+	wg.Add(4)
+	go worker()
+	go worker()
+	go worker()
+	go worker()
+	wg.Wait()
+	fmt.Println("counter:", c.n)
+
+	// Source-package struct embed: promoted fields and promoted method.
+	var w Wrap
+	w.X = 3 // promoted field write through the embedded shapes.Point
+	w.Y = 4
+	w.label = 9
+	fmt.Println(w.Sum()) // promoted method (shapes' Sum: X+Y)
+	fmt.Println(w.Point.X) // explicit embedded-field path too
+	fmt.Println(w.label)
+}

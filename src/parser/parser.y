@@ -19,10 +19,13 @@ extern Lexer* current_lexer;
 // declarations, which this file includes above.
 
 // Struct embedding: build the VarDeclNode for an anonymous field `Name` /
-// `*Name`. The field is stored under the type's own name (Go's rule), with
-// is_embedded set; the type node matches what type_name / pointer_type
-// reductions would have built.
-static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
+// `*Name` / `pkg.Name` / `*pkg.Name` (review parity: qualified embeds). The
+// field is stored under the type's UNQUALIFIED name (Go's rule — `sync.
+// Mutex` embeds as field `Mutex`), with is_embedded set; the type node
+// matches what type_name / pointer_type reductions would have built,
+// including the B1 package qualifier when `pkg_node` is non-NULL.
+static ASTNode* make_embedded_field(ASTNode* pkg_node, ASTNode* ident_node,
+                                    int is_pointer) {
     IdentifierNode* ident = (IdentifierNode*)ident_node;
     VarDeclNode* field = ast_var_decl_new(get_current_position());
     field->names = malloc(sizeof(char*));
@@ -34,7 +37,9 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     basic->base.node_type = NULL;
     basic->base.next = NULL;
     basic->name = strdup(ident->name);
-    basic->package = NULL;  // embedding is always a bare name (B1 scope: no qualified embeds)
+    basic->package = pkg_node
+        ? strdup(((IdentifierNode*)pkg_node)->name)
+        : NULL;
     ASTNode* ty = (ASTNode*)basic;
     if (is_pointer) {
         PointerTypeNode* ptr = (PointerTypeNode*)malloc(sizeof(PointerTypeNode));
@@ -48,6 +53,7 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     field->type = ty;
     field->values = NULL;
     field->is_embedded = 1;
+    if (pkg_node) ast_node_free(pkg_node);
     ast_node_free(ident_node);
     return (ASTNode*)field;
 }
@@ -2339,11 +2345,23 @@ struct_field:
     | identifier SEMICOLON {
         // Embedded (anonymous) field `Base;` — the ';' is explicit in
         // one-liners and ASI-inserted at newlines inside struct bodies.
-        $$ = make_embedded_field($1, 0);
+        $$ = make_embedded_field(NULL, $1, 0);
     }
     | MULTIPLY identifier SEMICOLON {
         // Embedded pointer field `*Base;`.
-        $$ = make_embedded_field($2, 1);
+        $$ = make_embedded_field(NULL, $2, 1);
+    }
+    | identifier DOT identifier SEMICOLON {
+        // Qualified embedded field `pkg.Type;` (review parity, packages-B).
+        // Disambiguation from `name pkg.Type` (a NAMED field with a
+        // qualified type, via the `identifier type` arm above) is one-token:
+        // DOT directly after the FIRST identifier can only start this arm —
+        // no type may begin with DOT. Mirrors B1's type_name qualified arm.
+        $$ = make_embedded_field($1, $3, 0);
+    }
+    | MULTIPLY identifier DOT identifier SEMICOLON {
+        // Qualified embedded pointer field `*pkg.Type;`.
+        $$ = make_embedded_field($2, $4, 1);
     }
     ;
 

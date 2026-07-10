@@ -931,20 +931,26 @@ Variable* scope_lookup_variable(Scope* scope, const char* name);
 Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
 
 // P4.3 (packages-B, cross-package methods): resolve a method Variable for
-// `recv_type`, falling back to the declaring package's exports scope when
-// `mangled_name` ("T__m") isn't visible in the current scope chain — true
-// whenever recv_type is package-owned, since the package's own body scope
-// (where the method Variable was registered) is torn down right after that
-// package is checked+codegen'd (compile_resolved_packages, goo.c); main's
-// scope chain never sees it directly. The exports-scope fallback demands
-// `method_name` itself start with an uppercase letter (Go's per-identifier
-// export rule): the combined mangled name can start uppercase purely from
-// an exported RECEIVER type even when the method name is lowercase
-// (unexported) — e.g. "Point__secret" — so gating on the type's own leading
-// letter (package_export_filter's check) is not sufficient here. `mangled_
-// name` is always the BARE "T__m" string, never package-symbol-prefixed —
-// callers needing the prefixed LLVM symbol derive it separately (see
-// codegen_pkg_mangled_symbol, codegen.h) with type_receiver_owner_package.
+// `recv_type`, routed by the receiver type's OWNING package (Type.owner_
+// package) — NOT by whichever scope resolves the bare name first. For a
+// CROSS-package receiver (owner set and != current_package) the declaring
+// package's exports scope is the ONLY source consulted (Go: methods on a
+// package's type can only be defined in that package) — a bare current-scope
+// hit would be a same-named MAIN type's method silently hijacking dispatch
+// (review-fix CRITICAL; see pkg_method_hijack_probe). The package's own body
+// scope is torn down right after it is checked+codegen'd (compile_resolved_
+// packages, goo.c), so main's scope chain never legitimately holds these
+// methods. Intra-package (owner == current_package) and main-owned (owner
+// NULL) receivers resolve in the current scope chain as always. The exports
+// path demands `method_name` itself start with an uppercase letter (Go's
+// per-identifier export rule): the combined mangled name can start uppercase
+// purely from an exported RECEIVER type even when the method name is
+// lowercase (unexported) — e.g. "Point__secret" — so gating on the type's
+// own leading letter (package_export_filter's check) is not sufficient here.
+// `mangled_name` is always the BARE "T__m" string, never package-symbol-
+// prefixed — callers needing the prefixed LLVM symbol derive it separately
+// (see codegen_pkg_mangled_symbol, codegen.h) with
+// type_receiver_owner_package.
 Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
                                       const char* method_name, const char* mangled_name);
 

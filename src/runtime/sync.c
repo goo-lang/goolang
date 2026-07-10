@@ -101,7 +101,10 @@ void goo_waitgroup_add(goo_waitgroup_t* wg, int delta) {
     wg->counter += delta;
     
     if (wg->counter < 0) {
-        goo_panic("WaitGroup counter went negative");
+        // Go's exact message (sync/waitgroup.go) — review parity fix: the
+        // earlier "WaitGroup counter went negative" wording diverged from
+        // upstream. Pinned by sync_wg_negative (golden, exit 2 + stderr).
+        goo_panic("sync: negative WaitGroup counter");
     }
     
     if (wg->counter == 0) {
