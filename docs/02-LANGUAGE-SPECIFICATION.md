@@ -81,6 +81,12 @@ void
 // Maps
 map[string]int
 map[K]V where K: Hash + Eq
+// Nil-map semantics (Go parity, decided + shipped 2026-07-10, locked by
+// examples/nil_map_write_abort_probe.goo and nil_map_read_probe.goo):
+// writing to a nil map panics "assignment to entry in nil map" (exit 2,
+// including compound assignment m[k]+=1); reads yield the zero value,
+// comma-ok reports false, len is 0, delete is a no-op, and range iterates
+// zero times.
 
 // Tuples
 (int, string, bool)
@@ -179,6 +185,15 @@ the negation.
 **Not implemented in v1** (tracked as v2+ candidates): a force-unwrap
 operator (`x!`), a presence-test (`x?`), and a coalesce operator
 (`x ?? default`). `if let` is the only unwrap path.
+
+**Shift semantics** (Go parity, shipped 2026-07-10 with real `-O` passes):
+a shift count `>=` the operand's width yields 0 (or the sign fill, for a
+signed right shift), and a runtime-negative count panics
+`runtime error: negative shift amount` — both locked by probes and
+identical at `-O0` and `-O2`. Known v1 edge (pre-existing, documented not
+fixed): a runtime count that is an exact multiple of 256/the operand width
+beyond the coercion width (e.g. `x << k` with `k == 256` for an 8-bit
+operand) truncates before the guard and wraps instead of saturating.
 
 ## Variables and Constants
 
