@@ -1,0 +1,31 @@
+// switch_dup_case_reject (correctness follow-ups arc3 Task 4, Mandate A): Go
+// rejects two case clauses whose constant values coincide; this checker used
+// to compile them silently (first-match-wins all the way to codegen). Two
+// shapes in one fixture:
+//   - a plain literal duplicate (`case 1:` twice)
+//   - a FOLDED-collision duplicate (`case 3:` vs `case - -3:` — unary minus
+//     over unary minus over 3 folds to the same int64 value 3, even though
+//     the two case expressions are textually different AST shapes)
+// Scoped to integer constants only (see type_check_switch_stmt's Mandate A
+// doc comment for the honest string/float scope notes: goo_fold_const_int is
+// the only constant folder reused here, and it is integer-literal-only).
+package main
+
+func classify(n int) string {
+	switch n {
+	case 1:
+		return "one"
+	case 3:
+		return "three"
+	case - -3:
+		return "also three, folded"
+	case 1:
+		return "duplicate one"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	println(classify(1))
+}

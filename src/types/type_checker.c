@@ -3805,6 +3805,70 @@ void stamp_int_const_expr_type(ASTNode* node, Type* target) {
 // expression's own (already-checked) bool type is left untouched, exactly
 // as before this fix — the tagless-switch shape is not a wall this task
 // adds.
+//
+// Correctness-followups arc 3, task 4 — two independent additions layered
+// onto the fix above, both scoped to what this function can already see:
+//
+// Mandate A (duplicate constant case values): Go rejects two case clauses
+// whose constant VALUES coincide, even after folding (`case 1:` and
+// `case - -1:` both denote 1). This checker never tracked that at all —
+// first-match-wins silently swallowed the second clause all the way to
+// codegen. Fix: for an INTEGER-tag switch (type_is_integer(tag_type)),
+// fold every case expression through the same goo_fold_const_int the
+// int-int representability branch below already calls, and flag a second
+// occurrence of an already-seen folded value. Scoped to integer constants
+// only, matching goo_fold_const_int's own literal-only reach:
+//   - STRING case duplicates (`case "a" + "b":` vs `case "ab":`) are NOT
+//     detected here even though a value-level folder exists
+//     (goo_fold_const_string, expression_helpers.c) — extending it would
+//     need its own collision table (string equality, not integer identity)
+//     and its own diagnostic shape, both outside this task's explicit
+//     ask (the `%lld`-valued "duplicate case value" message below). Go
+//     rejects string-case duplicates too; this is an honest scope gap,
+//     not a claim that strings can't be compared.
+//   - FLOAT-literal case duplicates (`case 2.5:` twice) are NOT detected:
+//     no untyped-float constant folder exists in this codebase (only
+//     goo_fold_const_int, integer-only — see type_check_return_stmt's
+//     float_const_coerce comment above for the same documented gap), and
+//     this task does not add one.
+//   - An int-CONSTANT case under a FLOAT tag (`switch f float64 { case 2:
+//     case 2: }`, task 3's stamped-to-float shape) IS covered, since
+//     goo_fold_const_int folds the still-integer-shaped AST regardless of
+//     the tag's kind; the gate below is on the TAG being integer, so this
+//     one shape (float tag) is deliberately left to the existing
+//     literal-int-under-float-tag path rather than re-derived here — see
+//     the loop body for exactly where.
+// A duplicate's diagnostic fires at the SECOND occurrence with a
+// cross-reference position, house style shared with ownership_checker.c's
+// "Use of moved variable '%s' (moved at %s:%d:%d)".
+//
+// The dup-tracking table is a fixed-capacity flat array scoped to a single
+// call of this function (stack-local, reset per switch — nested switches
+// each get their own via ordinary recursion), matching lane_ownership.c's
+// documented flat-table convention for small per-construct tables: no
+// heap allocation, so xmalloc/xrealloc do not apply here; past the cap it
+// silently stops tracking additional values (an under-detect — a missed
+// duplicate, never a false one — the same safe direction lane_ownership.c
+// chose for its own per-function tables).
+//
+// Mandate B (struct-typed switch tag wall): codegen_generate_switch_stmt
+// (statement_codegen.c) special-cases string tags (goo_string_eq) and
+// float tags (FCmp) but falls through to a plain LLVMBuildICmp(IntEQ) for
+// anything else — including a struct-typed tag, which is neither an
+// integer nor a pointer LLVM operand. Empirically confirmed at this arc's
+// HEAD: `switch p { case other: }` (p, other both `Point` structs, a
+// COMPARABLE struct type) crashes module verification with "Invalid
+// operand types for ICmp instruction  %switch.cmp = icmp eq %Point ...",
+// and a struct with a slice field (non-comparable) crashes identically —
+// struct-tag switch lowering is simply unwritten, for comparable and
+// non-comparable structs alike. This is a v1 WALL for an unimplemented
+// feature, NOT Go parity: Go allows switching on a comparable struct
+// value (and would itself reject a non-comparable one, or panic on `==`
+// at runtime for the interface-boxed case). A future lowering task should
+// REMOVE this wall — likely routing struct-tag comparison through the
+// same field-by-field equality codegen.c's boxed-`any` equality path
+// already builds for comparable structs — rather than treat the wall as
+// spec.
 int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_SWITCH_STMT) return 0;
 
@@ -3815,6 +3879,34 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
         tag_type = type_check_expression(checker, sw->tag);
         if (!tag_type) ok = 0;
     }
+
+    // Mandate B: wall off a struct-typed tag before any case is examined —
+    // see the doc comment above. Falls through (does not early-return) so
+    // clause bodies still get checked, matching this function's existing
+    // cascade-suppression convention (a bad tag doesn't block reporting
+    // unrelated errors inside case bodies).
+    if (tag_type && !type_is_poison(tag_type) && tag_type->kind != TYPE_UNKNOWN &&
+        tag_type->kind == TYPE_STRUCT) {
+        if (type_struct_fields_comparable(tag_type)) {
+            type_error(checker, sw->tag->pos,
+                       "switch on a struct-typed value is not supported "
+                       "(v1 limitation: struct-tag switch lowering is not "
+                       "implemented; Go allows this for a comparable struct)");
+        } else {
+            type_error(checker, sw->tag->pos,
+                       "switch on a struct-typed value is not supported "
+                       "(%s is additionally non-comparable, so Go would "
+                       "reject this too)",
+                       type_to_string(tag_type));
+        }
+        ok = 0;
+    }
+
+    // Mandate A's per-switch dup table — see the doc comment above.
+#define SWITCH_DUP_CASE_MAX_VALUES 64
+    uint64_t dup_values[SWITCH_DUP_CASE_MAX_VALUES];
+    Position dup_pos[SWITCH_DUP_CASE_MAX_VALUES];
+    size_t dup_count = 0;
 
     for (ASTNode* c = sw->cases; c; c = c->next) {
         CaseClauseNode* clause = (CaseClauseNode*)c;
@@ -3829,6 +3921,38 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
             if (!tag_type || type_is_poison(tag_type) || type_is_poison(e_type) ||
                 tag_type->kind == TYPE_UNKNOWN || e_type->kind == TYPE_UNKNOWN) {
                 continue;
+            }
+
+            // Mandate A: fold + dup-check BEFORE the kind-equality early-out
+            // just below — the exact RED shape (`case 1:` then `case 1:` on
+            // a plain int tag) has tag_type->kind == e_type->kind and would
+            // otherwise never reach the fold at all. Gated on an
+            // INTEGER-kind tag (see the doc comment's scope list); a
+            // successful fold means `e` is one of goo_fold_const_int's
+            // literal-or-constant-arithmetic shapes, so this never
+            // misfires on a non-constant case expression.
+            if (type_is_integer(tag_type)) {
+                uint64_t raw;
+                if (goo_fold_const_int(e, &raw)) {
+                    size_t prev = dup_count; // index of a match, if any
+                    for (size_t k = 0; k < dup_count; k++) {
+                        if (dup_values[k] == raw) { prev = k; break; }
+                    }
+                    if (prev < dup_count) {
+                        Position pp = dup_pos[prev];
+                        type_error(checker, e->pos,
+                                   "duplicate case value %lld (previous case "
+                                   "at %s:%d:%d)",
+                                   (long long)(int64_t)raw,
+                                   pp.filename ? pp.filename : "<unknown>",
+                                   pp.line, pp.column);
+                        ok = 0;
+                    } else if (dup_count < SWITCH_DUP_CASE_MAX_VALUES) {
+                        dup_values[dup_count] = raw;
+                        dup_pos[dup_count] = e->pos;
+                        dup_count++;
+                    }
+                }
             }
 
             if (tag_type->kind == e_type->kind) continue; // already comparable today
@@ -3896,6 +4020,7 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
     }
     return ok;
 }
+#undef SWITCH_DUP_CASE_MAX_VALUES
 
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_GO_STMT) return 0;

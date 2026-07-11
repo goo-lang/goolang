@@ -1,0 +1,1 @@
+switch on a struct-typed value is not supported
