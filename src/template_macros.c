@@ -403,7 +403,7 @@ ComptimeValue* template_macro_evaluator(MacroContext* ctx, ComptimeValue** args)
     // Add parameters from remaining arguments
     for (size_t i = 1; i < ctx->arg_count; i++) {
         char param_name[32];
-        sprintf(param_name, "param%zu", i);
+        snprintf(param_name, sizeof(param_name), "param%zu", i);
         add_template_parameter(template_ctx, param_name, TEMPLATE_PARAM_VALUE, args[i]);
     }
     
