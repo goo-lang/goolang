@@ -886,6 +886,20 @@ static void mark_type_params_used(const Type* t, int* seen, size_t n) {
 }
 
 static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) {
+    // v1: package-level `func init()` is a HARD REJECT with a clear message.
+    // Before this guard the declaration compiled but the initializer was
+    // SILENTLY never executed (Go runs it before main) — the worst
+    // divergence class. Methods named init (func (t T) init()) stay legal,
+    // as in Go. Real init support (declaration order, multiple inits,
+    // imports-first) is post-v1; spec fixture pkg_init_func pins the reject.
+    if (!func->receiver && func->name && strcmp(func->name, "init") == 0) {
+        type_error(checker, func->base.pos,
+                   "init functions are not supported in v1 (the body would "
+                   "silently never run); initialize package-level vars in "
+                   "their declarations or call a setup function from main");
+        return 0;
+    }
+
     size_t param_count = 0;
     for (ASTNode* p = func->params; p; p = p->next) {
         if (p->type == AST_VAR_DECL) param_count++;
