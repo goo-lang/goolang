@@ -61,6 +61,13 @@ done
 # no-match, so this stays clean under set -e / pipefail even with zero warnings.
 parse_errors="$(awk '{ for (i = 1; i < NF; i++) if ($(i+1) == "file(s)") s += $i } END { print s+0 }' "$errfile")"
 
+# Drop findings in generated files (bison output: parser.tab.c / parser.tab.h).
+# They are build artifacts, not hand-written source — their findings aren't
+# actionable, and they exist only after `make`, so scanning them would make the
+# gate depend on build state (fresh checkout vs built tree).
+{ grep -vE ':[^:]*/parser\.tab\.[ch]:' "$current" || true; } > "$current.filtered"
+mv "$current.filtered" "$current"
+
 sort -u -o "$current" "$current"
 echo "scanned findings: $(wc -l < "$current" | tr -d ' ')  |  parse-error files: ${parse_errors:-0}" >&2
 

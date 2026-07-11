@@ -46,28 +46,34 @@ recall floor, not a clean bill. The count is reported on every run
 | `c-format-string` | 134 | high | printf-family with a non-literal format argument |
 | `c-backdoor` | 78 | critical | untrusted input reaching `system`/`exec*` |
 
-## First-run findings (2026-07-11)
+## Findings (2026-07-11)
 
-**392 findings baselined** (`scripts/safety-baseline.txt`), against Goo `main`.
+**387 findings baselined** (`scripts/safety-baseline.txt`), against Goo `main`.
+Generated files (bison's `parser.tab.c`/`.tab.h`) are excluded from the scan —
+they are build artifacts, not hand-written source, and exist only after `make`.
 
 | Rule | Count | Triage |
 | --- | --- | --- |
-| `c-unchecked-alloc` | 220 | Mostly real unchecked `malloc`/`calloc` returns (`T *x = malloc(); *x = …`). Genuinely relevant for a no-GC compiler that should handle allocation failure. A subset are *field-target* mis-attributions: `obj->field = malloc()` is tracked as the base `obj` (see Known limitations), giving a misleading variable name. High volume → grandfathered, review in bulk. |
+| `c-unchecked-alloc` | 216 | Mostly real unchecked `malloc`/`calloc` returns (`T *x = malloc(); *x = …`). Genuinely relevant for a no-GC compiler that should handle allocation failure. A subset are *field-target* mis-attributions: `obj->field = malloc()` is tracked as the base `obj` (see Known limitations), giving a misleading variable name. High volume → grandfathered, review in bulk. |
 | `c-unsafe-string-api` | 166 | Real unbounded string operations. Whether each is exploitable depends on whether the destination is correctly sized — a per-site review, not an automatic bug. Triage-grade prompts to prefer the `n`-variants. |
-| `c-format-string` | 3 | **All true positives.** `snprintf(result, size, fmt, …)` in `comptime/comptime_intrinsics.c` with a *variable* `fmt` — an attacker-influenced format is a real CWE-134 risk. |
-| `c-backdoor` | 2 | The compiler invoking its own toolchain — `system(link_command)` (linker) and `execvp(argv[0], argv)` (gcc) in `codegen/codegen.c`. Command-injection *shaped* (a hostile output filename could inject), so worth ensuring `filename` is sanitized, but expected behavior, not a backdoor. |
-| `c-use-after-free` | 1 | **True positive.** `concurrency/numa_scheduling.c:151` — `free(topology)` then `if (topology == g_numa_topology)` reads the freed pointer's value in a comparison, which is undefined behavior under C11 §6.2.4. |
+| `c-format-string` | 3 | `snprintf(result, size, fmt, …)` in `comptime/comptime_intrinsics.c` with a *variable* `fmt`. **Now guarded** — `@format` validates the format string before `snprintf` (rejects `%n`, extra specifiers, and type mismatches), so these are safe, but snare still flags the syntactic pattern (it cannot see the guard). |
+| `c-backdoor` | 2 | The compiler invoking its own toolchain — `system(link_command)` (Windows-only linker path) and `execvp(argv[0], argv)` (gcc) in `codegen/codegen.c`. `execvp` uses an argv vector with no shell (the *secure* pattern), and `system` is `#ifdef _WIN32`-only with the developer's own `-o` path. Not vulnerabilities. |
+| `c-use-after-free` | 0 | **Fixed.** `numa_scheduling.c` no longer compares `topology` after `free(topology)` (the global reset moved ahead of the free). |
 | `c-double-free` | 0 | Clean. |
 
-### Highest-value items to fix
+### Highest-value items — status
 
-1. **`numa_scheduling.c:151`** — null out or capture `topology == g_numa_topology`
-   *before* `free(topology)`; comparing a freed pointer is UB.
-2. **`comptime_intrinsics.c` variable-format `snprintf`s** — if `fmt` can carry
-   user/macro-controlled `%` directives, pass a fixed format and the value as an
-   argument.
-3. **`codegen.c` `system`/`execvp`** — confirm the output filename reaching the
-   link command cannot inject shell/argv.
+1. ✅ **`numa_scheduling.c` use-after-free** — fixed (global reset moved before
+   the free).
+2. ✅ **`comptime_intrinsics.c` `@format` format-string** — fixed (the format is
+   validated before `snprintf`; `%n`, extra specifiers, and type mismatches are
+   rejected with a compile error).
+3. ⚪ **`codegen.c` `system`/`execvp`** — reviewed, not a vulnerability: `execvp`
+   is an argv-vector exec with no shell, and `system` is Windows-only over the
+   developer's own `-o` path.
+
+The remaining baseline is the two medium tiers (`c-unchecked-alloc`,
+`c-unsafe-string-api`) — real but voluminous; review in bulk rather than gating.
 
 ## Baseline policy
 
