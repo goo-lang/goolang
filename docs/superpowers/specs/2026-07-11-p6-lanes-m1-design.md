@@ -1,7 +1,7 @@
 # Phase 6 Milestone 1 — Compile-time-proven SPMD lanes (design)
 
 **Date:** 2026-07-11
-**Status:** Design approved; implementation plan pending.
+**Status:** Implemented (M1) — 2026-07-11; plan: docs/superpowers/plans/2026-07-11-p6-lanes-m1.md
 **Track:** Phase 6 (scientific compute / SPMD lanes) — see
 `docs/2026-07-08-v1-roadmap.md` Post-v1 Phase 6, and the direction memory
 `goolang-parallel-lanes-comptime`.
