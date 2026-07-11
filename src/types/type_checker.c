@@ -3674,9 +3674,13 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 // not a general untyped-float-constant implementation —
                 // untyped FLOAT constants (`3.9`) have no folder
                 // (`goo_fold_const_int` is int-only) and are NOT covered by
-                // this gate; a float64-default literal narrowed into
-                // func() float32 is a separate, still-open gap (see the
-                // arc's task report).
+                // this gate. Narrowing an untyped FLOAT constant into
+                // func() float32 (e.g. `return 3.9` from a float32 fn) is a
+                // KNOWN FALSE-REJECT here (Go accepts: constant conversion
+                // with rounding); out of scope here because no untyped-FLOAT
+                // constant folder exists to reuse — backlog item, see the
+                // mirror float-case-on-int-tag crash (see the arc's task
+                // report).
                 int float_const_coerce =
                     type_is_float(expected) &&
                     is_untyped_int_const_expr(ret_stmt->values);

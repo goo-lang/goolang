@@ -50,6 +50,29 @@ func classify32(f float32) string {
 	}
 }
 
+// Reviewer-probed mixed-case shape (correctness-followups arc 3, task 3
+// fix round 1): the exact crash shape that motivated the adjacent
+// codegen fix (statement_codegen.c's tag_is_float FCmp branch) — a
+// float64-tag switch with an INT-const case (1), a genuine FLOAT LITERAL
+// case (2.5; `switch f { case 2.5: }` was the original bare-float-literal
+// verifier crash, distinct from the int-const-case shape classify64/32
+// above already covered), and a negative INT-const case (-3), all on ONE
+// tag so every case-kind shares a tag_is_float codegen lowering. Arm names
+// are plain strings (not float-formatted output) so stdout stays
+// exact-decimal-safe regardless of float-printing precision.
+func classifyMixed64(f float64) string {
+	switch f {
+	case 1:
+		return "mixed-one"
+	case 2.5:
+		return "mixed-two-point-five"
+	case -3:
+		return "mixed-neg-three"
+	default:
+		return "mixed-other"
+	}
+}
+
 func main() {
 	fmt.Println(retFloat64())
 	fmt.Println(retFloat32())
@@ -63,4 +86,10 @@ func main() {
 	fmt.Println(classify32(-3))
 	fmt.Println(classify32(2))
 	fmt.Println(classify32(9))
+	// Drive all four resolution paths of classifyMixed64: int-const case
+	// hit, float-literal case hit, negative-int-const case hit, default.
+	fmt.Println(classifyMixed64(1))
+	fmt.Println(classifyMixed64(2.5))
+	fmt.Println(classifyMixed64(-3))
+	fmt.Println(classifyMixed64(9))
 }
