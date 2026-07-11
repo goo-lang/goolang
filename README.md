@@ -39,7 +39,7 @@ Prerequisites: a **C23** toolchain (GCC/Clang), **LLVM 22**, **Bison**, and
 report.)
 
 ```bash
-git clone https://github.com/dd0wney/goolang.git
+git clone https://github.com/goo-lang/goolang.git
 cd goolang
 make lexer          # builds the compiler -> bin/goo
 ```
