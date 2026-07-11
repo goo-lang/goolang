@@ -1,0 +1,14 @@
+// Task 1 (chan-send representability, correctness-followups arc 3): a
+// negative untyped constant sent to an unsigned-element channel must be
+// REJECTED at compile time — Go never lets `-1` satisfy a `uint8` target,
+// regardless of how the negative value was produced (int_const_fits_
+// expected's unconditional `sval >= 0` requirement for narrower unsigned
+// widths). Before this fix, `ch <- -1` into `chan uint8` compiled and the
+// receiver printed 255 (silent two's-complement wraparound).
+package main
+
+func main() {
+	ch := make_chan(uint8, 1)
+	ch <- -1
+	println(<-ch)
+}

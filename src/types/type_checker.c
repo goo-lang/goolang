@@ -3198,7 +3198,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 // which the constant is representable (Go representability rule); the caller
 // (`int_const_coerce`) accepts both widening and narrowing targets, but only
 // after int_const_fits_expected confirms the folded value fits — see there.
-static int is_untyped_int_const_expr(ASTNode* node) {
+int is_untyped_int_const_expr(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
         return ((LiteralNode*)node)->literal_type == TOKEN_INT;
@@ -3227,7 +3227,7 @@ static int is_untyped_int_const_expr(ASTNode* node) {
 // wrapping the literal) is negated; `0 - 1` (BinaryExprNode) is NOT, even
 // though goo_fold_const_int folds both to the identical 64-bit pattern —
 // that gap is `int_const_fits_expected`'s documented deviation.
-static int is_negated_int_const_expr(ASTNode* node) {
+int is_negated_int_const_expr(ASTNode* node) {
     return node && node->type == AST_UNARY_EXPR &&
            ((UnaryExprNode*)node)->operator == TOKEN_MINUS;
 }
@@ -3244,7 +3244,7 @@ static int is_negated_int_const_expr(ASTNode* node) {
 // unrepresentable value — Go accepts int8(0 - 5) == -5. Only a literal
 // actually WRITTEN >= 2^63 in source (`18446744073709551615`) is
 // unrepresentable in every signed width, including int64.
-static int is_bare_int_literal(ASTNode* node) {
+int is_bare_int_literal(ASTNode* node) {
     return node && node->type == AST_LITERAL &&
            ((LiteralNode*)node)->literal_type == TOKEN_INT;
 }
@@ -3341,8 +3341,8 @@ static int is_bare_int_literal(ASTNode* node) {
 // unreachable in practice, but is called out here for completeness) would
 // likewise not be flagged by `bare_literal` and would fall through to the
 // ordinary sval range checks below.
-static int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
-                                    int bare_literal) {
+int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
+                             int bare_literal) {
     int64_t sval = (int64_t)raw;
     if (type_is_signed(expected)) {
         // A bare literal >= 2^63 as WRITTEN IN SOURCE (e.g.
@@ -3708,7 +3708,7 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
 // whole subtree — not just top-level — is what makes a compound case
 // expression (`-5`, `1+2`) emit at the switch tag's width, matching a bare
 // literal case (`'\n'`, `300`).
-static void stamp_int_const_expr_type(ASTNode* node, Type* target) {
+void stamp_int_const_expr_type(ASTNode* node, Type* target) {
     if (!node) return;
     node->node_type = target;
     if (node->type == AST_UNARY_EXPR) {
@@ -3993,6 +3993,7 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
                     ok = 0;
                 } else {
                     Type* val_t = type_check_expression(checker, send->right);
+                    Type* elem_t = chan_t->data.channel.element_type;
                     if (!val_t) {
                         ok = 0;
                     // Fix 2: sibling of the TOKEN_ARROW gate in
@@ -4003,11 +4004,33 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
                                    checker, send->right, val_t,
                                    send->right->pos, "sent on a channel")) {
                         ok = 0;
-                    } else if (!type_compatible(val_t, chan_t->data.channel.element_type)) {
+                    // Task 1 (chan-send representability, correctness-
+                    // followups arc 3): this comm path never routes through
+                    // type_check_channel_send_op either (see the comment
+                    // above this block), so it needs the identical
+                    // representability gate that function's Task 1 fix adds
+                    // — same helpers, same TU, called directly (no header
+                    // needed here, unlike expression_checker.c's call site).
+                    } else if (type_is_integer(elem_t) && type_is_integer(val_t) &&
+                               elem_t->kind != val_t->kind &&
+                               is_untyped_int_const_expr(send->right)) {
+                        uint64_t raw;
+                        int negated = is_negated_int_const_expr(send->right);
+                        int bare_literal = is_bare_int_literal(send->right);
+                        if (goo_fold_const_int(send->right, &raw) &&
+                            !int_const_fits_expected(raw, elem_t, negated, bare_literal)) {
+                            type_error(checker, send->right->pos,
+                                       "constant %lld overflows %s",
+                                       (long long)(int64_t)raw, type_to_string(elem_t));
+                            ok = 0;
+                        } else {
+                            stamp_int_const_expr_type(send->right, elem_t);
+                        }
+                    } else if (!type_compatible(val_t, elem_t)) {
                         type_error(checker, send->right->pos,
                                    "select send: cannot use %s as %s channel element",
                                    type_to_string(val_t),
-                                   type_to_string(chan_t->data.channel.element_type));
+                                   type_to_string(elem_t));
                         ok = 0;
                     }
                 }

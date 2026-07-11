@@ -1112,7 +1112,12 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr);
 // Expression helper functions
 Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
-Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, Position pos);
+// `value_expr` is the RHS expression node (Task 1, correctness-followups arc
+// 3: needed to detect an untyped-int-constant send and representability-gate
+// it against the channel's element type — see the definition's doc comment);
+// pass NULL if unavailable, same convention as type_check_assignment_op's
+// value_expr above.
+Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, ASTNode* value_expr, Position pos);
 Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Position pos);
 Type* type_check_logical_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
@@ -1138,6 +1143,32 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out);
 // resolution); the original context-free goo_fold_const_int above is
 // unchanged and keeps its existing (non-identifier) call sites.
 int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
+
+// Go untyped-int-constant representability machinery (type_checker.c): an
+// untyped integer constant (a bare literal, a unary-minus over one, or
+// constant arithmetic recursively built from those) unifies with a
+// DIFFERENTLY-KINDED integer target iff its folded value is representable
+// there — the rule `return 300` (int8 fn), `case 300:` (int8 tag), and
+// `ch <- 300` (chan int8) all share. Originally `static` to type_checker.c
+// (return_stmt's and switch_stmt's own gates live in that TU); promoted
+// here, unchanged, for Task 1 (chan-send representability, correctness-
+// followups arc 3) so expression_checker.c's type_check_channel_send_op can
+// reuse the identical gate instead of forking a copy — see that function's
+// call site and type_check_switch_stmt's doc comment (type_checker.c) for
+// the full case tables and the negated/bare_literal conjunction rationale.
+int is_untyped_int_const_expr(ASTNode* node);
+int is_negated_int_const_expr(ASTNode* node);
+int is_bare_int_literal(ASTNode* node);
+int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
+                             int bare_literal);
+
+// Stamp an untyped-int-constant-rooted expression subtree (is_untyped_int_
+// const_expr's exact shape) to `target` at every level, so codegen emits the
+// constant at the unified target's width. Only call AFTER int_const_fits_
+// expected has confirmed representability — see type_check_switch_stmt
+// (type_checker.c) for the full rationale; promoted alongside the
+// predicates above for the same cross-TU reuse (Task 1).
+void stamp_int_const_expr_type(ASTNode* node, Type* target);
 
 // Comptime value params Task 3 (fix round 2): does `t` contain a TYPE_ARRAY
 // anywhere in its structure (through nested arrays, slices, pointers,

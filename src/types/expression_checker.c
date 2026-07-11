@@ -2116,7 +2116,7 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
                                                 expr->pos, "sent on a channel")) {
                 return NULL;
             }
-            result_type = type_check_channel_send_op(checker, left_type, right_type, expr->pos);
+            result_type = type_check_channel_send_op(checker, left_type, right_type, binary->right, expr->pos);
             break;
             
         default:
@@ -4694,23 +4694,59 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
 }
 
 // Channel operation type checking
-Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, Position pos) {
+Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, ASTNode* value_expr, Position pos) {
     if (!checker || !channel_type || !value_type) return NULL;
-    
+
     // Left operand must be a channel
     if (channel_type->kind != TYPE_CHANNEL) {
         type_error(checker, pos, "Cannot send to non-channel type %s", type_to_string(channel_type));
         return NULL;
     }
-    
-    // Check if value type is compatible with channel element type
+
     Type* element_type = channel_type->data.channel.element_type;
+
+    // Task 1 (chan-send representability, correctness-followups arc 3):
+    // an untyped int constant sent into an integer-element channel of a
+    // DIFFERENT kind (`ch <- 300` into `chan int8`) used to fall straight
+    // through to the blanket type_compatible check below, which treats any
+    // two integer kinds as compatible — so codegen materialized the
+    // constant at ITS OWN default width (int64) with no narrowing
+    // conversion, and the runtime silently truncated on receive (300 ->
+    // 44). Mirrors type_check_switch_stmt's identical fix for a `case`
+    // value against a differently-kinded tag (type_checker.c — see its doc
+    // comment for the full case table and the uint64 negated/bare_literal
+    // conjunction rationale): unify iff int_const_fits_expected confirms
+    // representability, then stamp the constant's own type to match so
+    // codegen emits it at the element's width directly. Same-kind sends
+    // (e.g. a bare literal into `chan int`, both TYPE_INT64) need no gate —
+    // they already flow through type_compatible below unchanged.
+    if (value_expr && type_is_integer(element_type) && type_is_integer(value_type) &&
+        element_type->kind != value_type->kind &&
+        is_untyped_int_const_expr(value_expr)) {
+        uint64_t raw;
+        int negated = is_negated_int_const_expr(value_expr);
+        int bare_literal = is_bare_int_literal(value_expr);
+        if (goo_fold_const_int(value_expr, &raw) &&
+            !int_const_fits_expected(raw, element_type, negated, bare_literal)) {
+            type_error(checker, value_expr->pos, "constant %lld overflows %s",
+                       (long long)(int64_t)raw, type_to_string(element_type));
+            return NULL;
+        }
+        // Representable (or the fold itself failed — the same documented
+        // gap int_const_fits_expected's other two callers carry, left
+        // unchecked here too): stamp the whole constant subtree to the
+        // element type so codegen emits it at that width, not int64.
+        stamp_int_const_expr_type(value_expr, element_type);
+        return type_checker_get_builtin(checker, TYPE_VOID);
+    }
+
+    // Check if value type is compatible with channel element type
     if (!type_compatible(value_type, element_type)) {
-        type_error(checker, pos, "Cannot send %s to channel of %s", 
+        type_error(checker, pos, "Cannot send %s to channel of %s",
                   type_to_string(value_type), type_to_string(element_type));
         return NULL;
     }
-    
+
     // Channel send operation returns void
     return type_checker_get_builtin(checker, TYPE_VOID);
 }
