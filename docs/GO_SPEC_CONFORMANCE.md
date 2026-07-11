@@ -1,7 +1,7 @@
 # Go Spec Conformance Matrix
 
-**Snapshot:** 2026-07-11, v1.0.0 (`c0b6806`) — **79% conformance**
-(38 works / 48 tested constructs, excluding 2 deliberate rejections).
+**Snapshot:** 2026-07-11, post-v1.0.0 — **80% conformance**
+(38 works / 47 tested constructs, excluding 3 deliberate rejections).
 
 **Method.** One tiny fixture per Go-spec construct under `tests/spec/`,
 statuses determined **empirically** (compiled and run against `bin/goo`,
@@ -42,19 +42,20 @@ percentage moves only with evidence.
 | Statements | 10 | 1 | – | – | if-init, for (3 forms), range (slices, string→**runes**, channels), switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select; **divergent:** named-result defer |
 | Builtins | 3 | – | 1 | 2 | len/cap/make/new/append/delete, copy, panic (exit 2); **rejected:** recover (clean v1 diagnostic); **absent:** min/max, clear |
 | Generics | 1 | – | – | 3 | `[T any]` inference-only funcs; **absent:** explicit instantiation, union constraints (P2.10), generic types |
-| Packages | – | 1 | – | 1 | **divergent (SILENT):** `init()` compiles but never runs; **absent:** shim-package alias imports |
+| Packages | – | – | 1 | 1 | **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran); **absent:** shim-package alias imports |
 | Errors | 1 | – | – | – | (T, error) ↔ !T bridging, e.Error() |
 | System | – | – | 1 | – | **rejected:** unsafe (v1 Non-goal) |
 
 ## Known divergences (pinned by fixtures — changing them fails the gate)
 
-1. **`init()` silently never runs** (`pkg_init_func`) — compiles clean,
-   initializer skipped (Go: 42, Goo: 1). The *silent* class is the worst
-   kind; v1.0.1 candidate fix: clean compile reject (recover-style
-   diagnostic) or a real implementation.
-2. **Named-result defer mutation** (`div_named_result_defer`) — a deferred
+1. **Named-result defer mutation** (`div_named_result_defer`) — a deferred
    function's write to a named result is not reflected in the returned
    value (Go: 6, Goo: 5). Documented in `docs/02-LANGUAGE-SPECIFICATION.md`.
+
+(Resolved: `init()` previously compiled but silently never ran — the matrix
+caught it at v1.0.0; it is now a clean compile reject with a positioned
+diagnostic, pinned by `pkg_init_func`. Methods named `init` remain legal,
+as in Go. Real init support is post-v1.)
 
 ## Corrections this matrix has already produced
 

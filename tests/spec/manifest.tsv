@@ -53,7 +53,7 @@ generic_explicit_inst	reject	absent	Generics	f[int](...) explicit instantiation 
 generic_constraint_union	reject	absent	Generics	int|float64 constraint (P2.10, deferred post-v1)
 generic_type	reject	absent	Generics	generic type declarations unsupported
 pkg_alias_import	reject	absent	Packages	shim-package alias import (import f "fmt") unresolved; known gap
-pkg_init_func	run	divergent	Packages	SILENT: init() compiles but never runs (Go: 42, Goo: 1); v1.0.1 candidate = clean reject or implement
+pkg_init_func	reject	rejected	Packages	v1 decision: init functions cleanly rejected (previously compiled but SILENTLY never ran); real init support is post-v1
 err_interface_bridge	run	works	Errors	(T, error) bridged to !T catch; e.Error() works
 div_named_result_defer	run	divergent	Statements	deferred mutation of named result not returned (Go: 6, Goo: 5); documented in 02-LANGUAGE-SPECIFICATION
 sys_unsafe	reject	rejected	System	package unsafe is a v1 Non-goal (parse reject)
