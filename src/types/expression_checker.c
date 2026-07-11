@@ -3994,19 +3994,35 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     // monomorphization seed once every argument (including each comptime
     // one, above) has validated — mirrors type_check_record_instantiation's
     // generic-axis recording (type_check_generic_call) but keyed on int64_t
-    // comptime VALUES instead of concrete Types. A plain identifier callee
-    // is the ONLY shape that can reach here with comptime values (fix
-    // round 1): a struct-method selector cannot (declare_function_signature
-    // rejects comptime params on methods outright) and a package-function
-    // selector cannot either (same rejection for package declarations — see
-    // the current_package block there for the three lifetime reasons real
-    // cross-package support is deferred). Gated on comptime_first_check so
-    // a codegen-phase re-invocation doesn't append duplicate seeds after
-    // the monomorphizer already ran (see the entry-reset comment at the top
-    // of this function).
+    // comptime VALUES instead of concrete Types. Two callee shapes reach here
+    // with comptime values: a plain identifier callee (a local comptime-param
+    // function) and — since the P6 M1 wall lift — a package-function SELECTOR
+    // (`pkg.Fill(4, ...)`), whose checked_callee is the surviving export copy.
+    // A struct-method selector never does (declare_function_signature rejects
+    // comptime params on methods), and an interface-method call has a NULL
+    // checked_callee — so gating on checked_callee alone (rather than the
+    // callee's AST shape) is exact. Gated on comptime_first_check so a
+    // codegen-phase re-invocation doesn't append duplicate seeds after the
+    // monomorphizer already ran (see the entry-reset comment at the top of
+    // this function).
     if (comptime_first_check &&
-        call->comptime_value_arg_count > 0 && call->function && checked_callee &&
-        call->function->type == AST_IDENTIFIER) {
+        call->comptime_value_arg_count > 0 && call->function && checked_callee) {
+        // P6 M1 (comptime-wall lift, front (b)): reject a SAME-package INTERNAL
+        // comptime call. Its bare-name callee is the package's own inner-scope
+        // Variable (owner_pkg NULL), which scope_pop frees right after the
+        // package is codegen'd — before the main-pass monomorphizer consumes
+        // the seed, a use-after-free. A cross-package `pkg.Fill(...)` call
+        // instead binds the surviving EXPORT COPY (owner_pkg set); a top-level
+        // (main) call runs with current_package == NULL. Only the intersection
+        // (inside a package body AND callee has no owning package) is the
+        // dangling case — rejected precisely here rather than by banning every
+        // package-level comptime declaration.
+        if (checker->current_package && !checked_callee->owner_pkg) {
+            type_error(checker, expr->pos,
+                "comptime call to '%s' from within a package is not yet supported",
+                callee_name ? callee_name : "?");
+            return NULL;
+        }
         int64_t* rec_values = malloc(call->comptime_value_arg_count * sizeof(int64_t));
         if (!rec_values) {
             // Fix round 1 (finding 5): a silent skip here would surface much

@@ -1,0 +1,57 @@
+// P6 M1 Task 3 golden: goostd/lanes v1 (Partition/Lane/Run, no halos yet).
+// Probes, in one program, the trio that was unproven in a vendored (GOOROOT)
+// package before this branch: a comptime param on a package function
+// (lanes.Partition's `comptime count int`), goroutines/channels driven from
+// vendored source (lanes.Run spawns one goroutine per lane over a buffered
+// `chan int`), and fmt.Println(float64) (every printed value here is a
+// float64, so the latent mixed-width sequential-int-print bug is not in
+// play).
+//
+// The per-lane transform is lane-DEPENDENT (multiplies by ctx.ID()+1, not a
+// fixed constant), so this golden pins three things a lane-independent body
+// can't: (1) ctx.ID() itself gets real coverage, not just Own(); (2) the
+// tile-index -> lane-index mapping is correct (a swapped/off-by-one mapping
+// would multiply the wrong tile by the wrong factor and change the printed
+// values); (3) lanes stay disjoint and Run's in-place reassembly of the
+// shared backing array is correct (each tile is written only by its own
+// lane, then all four are read back through one contiguous `out` slice).
+//
+// data is 8 ascending float64s partitioned into 4 lanes of width 2. Lane i
+// owns tile [2i, 2i+1] and multiplies it by (i+1):
+//   lane 0: [1,2]   * 1 = [1,2]
+//   lane 1: [3,4]   * 2 = [6,8]
+//   lane 2: [5,6]   * 3 = [15,18]
+//   lane 3: [7,8]   * 4 = [28,32]
+// Run joins all 4 goroutines before returning the shared backing array:
+// [1 2 6 8 15 18 28 32].
+//   out[0] = 1    (lane 0's first element, 1*1)
+//   out[7] = 32   (lane 3's last element, 8*4)
+//   sum    = 110  (1+2+6+8+15+18+28+32)
+package main
+
+import "fmt"
+import "lanes"
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	p := lanes.Partition(data, 4)
+	out := lanes.Run(p, 1, func(ctx *lanes.Lane) {
+		t := ctx.Own()
+		i := 0
+		for i < len(t) {
+			t[i] = t[i] * float64(ctx.ID()+1)
+			i = i + 1
+		}
+	})
+
+	sum := 0.0
+	i := 0
+	for i < len(out) {
+		sum = sum + out[i]
+		i = i + 1
+	}
+
+	fmt.Println(out[0])
+	fmt.Println(out[7])
+	fmt.Println(sum)
+}

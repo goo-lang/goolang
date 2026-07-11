@@ -1,0 +1,57 @@
+// P6 M1 Task 5, fix round 1 golden: pins REASSIGNMENT-revives-a-moved-name
+// semantics (lane_ownership.c). A plain `=` to a bare identifier is a
+// WRITE, not a read — and Go-shaped reassignment revives the name, so a
+// later read of it must NOT reject. This is exactly the reviewer's
+// false-reject repro shape: build data, Partition + Run it once (any
+// trivial body), REASSIGN data to a fresh slice, read the fresh value
+// directly (print one element), Partition + Run the fresh value again,
+// print a checksum of the second run's result. Before the fix round 1
+// walker change, this program false-rejected with two spurious
+// use-after-move errors (at the reassignment itself and at the later
+// read) — see docs/superpowers/sdd/task-5-report.md's "Fix round 1".
+package main
+
+import "fmt"
+import "lanes"
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0}
+	p1 := lanes.Partition(data, 2)
+	out1 := lanes.Run(p1, 1, func(ctx *lanes.Lane) {
+		t := ctx.Own()
+		i := 0
+		for i < len(t) {
+			t[i] = t[i] * 2.0
+			i = i + 1
+		}
+	})
+	_ = out1
+
+	// Reassignment: `data` is a bare identifier LHS of a plain `=` — a
+	// write, not a read of the moved value, and it revives `data` as a
+	// brand-new (never-moved) name.
+	data = []float64{10.0, 20.0, 30.0, 40.0}
+
+	// A read of the revived name must be legal.
+	fmt.Println(data[0])
+
+	// Partition the fresh value again — must not reject, since `data`
+	// was revived by the reassignment above.
+	p2 := lanes.Partition(data, 2)
+	out2 := lanes.Run(p2, 1, func(ctx *lanes.Lane) {
+		t := ctx.Own()
+		i := 0
+		for i < len(t) {
+			t[i] = t[i] + 1.0
+			i = i + 1
+		}
+	})
+
+	sum := 0.0
+	i := 0
+	for i < len(out2) {
+		sum = sum + out2[i]
+		i = i + 1
+	}
+	fmt.Println(sum)
+}

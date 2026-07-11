@@ -399,6 +399,19 @@ typedef struct Variable {
     // every non-function Variable (ordinary locals, consts, package markers).
     // Not owned — the FuncDeclNode is owned by the AST, freed independently.
     struct ASTNode* func_decl_node;
+    // P6 M1 (comptime-wall lift): for a function EXPORT COPY published into a
+    // package's `exports` scope (package_export_filter), the Package that owns
+    // that function — so the comptime monomorphizer (comptime_instantiate,
+    // monomorphize.c) can package-qualify the instance symbol
+    // (goo_pkg__<pkg>__<base>__n<v>) and a user `func Fill` never shares an
+    // instance with `cpkg.Fill`. NULL for every non-export Variable, including
+    // a package's OWN inner-scope function Variable (which scope_pop frees
+    // after the package's codegen) — the seed-recording guard in
+    // expression_checker.c reads exactly this NULL to reject a same-package
+    // internal comptime call whose inner-scope callee would dangle before the
+    // main-pass monomorphizer runs. Not owned — the Package is owned by
+    // TypeChecker.packages. Tail-appended per the no-header-deps convention.
+    struct Package* owner_pkg;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by
@@ -432,6 +445,18 @@ typedef struct Package {
     Scope* exports;         // fresh Variable copies of exported symbols (owned)
     int state;              // 0=unvisited 1=in-progress 2=done
     struct Package* next;   // intrusive list link
+    // P6 M1 (comptime-wall lift): the package's PROGRAM AST, ownership
+    // transferred here from the PkgGraph (compile_resolved_packages, goo.c)
+    // after the package compiles. The PkgGraph is torn down (pkg_graph_free)
+    // before main is type-checked/codegen'd, but a comptime-param package
+    // function's template FuncDecl — reachable via an export copy's
+    // func_decl_node — must survive until main's monomorphizer emits its
+    // instances (codegen_monomorphize). Holding the AST on the Package, which
+    // outlives codegen (freed only at type_checker_free), is what keeps that
+    // FuncDecl (and every package-level symbol its body references) alive.
+    // NULL for a package whose AST the graph still owns (compile failed, or no
+    // transfer yet). Freed by ast_node_free in type_checker_free.
+    struct ASTNode* owned_ast;
 } Package;
 
 // Forward declarations for enhanced interface system
@@ -907,7 +932,7 @@ void type_checker_free(TypeChecker* checker);
 // scopes never share ownership of the same Variable node).
 Package* type_checker_find_package(TypeChecker* checker, const char* import_path);
 Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name);
-void package_export_filter(Scope* pkg_scope, Scope* exports);
+void package_export_filter(Scope* pkg_scope, Scope* exports, struct Package* owner);
 
 // Seed a TYPE_PACKAGE marker for an imported package into the current scope,
 // carrying the resolved Package*. This is the SINGLE seeding path for both the

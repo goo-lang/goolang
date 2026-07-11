@@ -1,0 +1,20 @@
+// P6 M1 Task 6 (Obligation 3): a lane view attributed to the *Lane context
+// must not escape into a SECOND goroutine. `t := ctx.Own()` is lane-derived;
+// `go leak(t)` passes that view to another goroutine and must be rejected.
+// docs/superpowers/specs/2026-07-11-p6-lanes-m1-design.md Component 4,
+// obligation 3.
+package main
+
+import "lanes"
+
+func leak(v []float64) { _ = v }
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0}
+	p := lanes.Partition(data, 2)
+	out := lanes.Run(p, 1, func(ctx *lanes.Lane) {
+		t := ctx.Own()
+		go leak(t)
+	})
+	_ = out
+}

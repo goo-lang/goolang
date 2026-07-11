@@ -16,10 +16,16 @@
 #   3. time.Duration constants          (goo.c: time_export_value calls)
 #   4. Seeded package funcs             (goo.c: time_export_func calls — Sleep/Now)
 #   5. Seeded methods                   (goo.c: sync_export_method + time_export_method)
-#   6. goostd exported funcs            (^func [A-Z] in strings/strconv/utf8/bits —
-#      the four REAL stdlib source dirs; test-only goostd packages like
-#      kinds/shapes/mypkg/pkgcheck/fwdref are compiler-test fixtures, not
-#      stdlib, and are intentionally out of scope here)
+#   6. goostd exported funcs            (^func [A-Z] in strings/strconv/utf8/bits/
+#      lanes — the REAL stdlib source dirs; test-only goostd packages like
+#      kinds/shapes/mypkg/pkgcheck/fwdref/cpkg are compiler-test fixtures, not
+#      stdlib, and are intentionally out of scope here. `^func [A-Z]` only
+#      matches bare package-level funcs, not methods — goostd/lanes' methods
+#      (Own/ID/Publish/HaloLeft/HaloRight/Step, all `func (l *Lane) ...`) are
+#      invisible to this regex and NOT extracted; they are covered by
+#      examples/lanes_stencil_probe.goo's golden, just not mechanically
+#      verified by this script. Extending the extractor to receivers is
+#      YAGNI for this milestone — not worth it for one package.)
 #
 # Robustness: every extraction step asserts a sane MINIMUM count and dies
 # loudly if it comes up short — a shim_signatures.c/goo.c rename or move
@@ -183,7 +189,16 @@ while IFS= read -r name; do
 done <<< "$method_names"
 
 # --- 6. goostd exported funcs (real stdlib source dirs only) ------------
-GOOSTD_PKG_DIRS="strings:goostd/strings strconv:goostd/strconv utf8:goostd/utf8 bits:goostd/bits"
+# lanes (P6 M1): Partition/Run are plain package funcs and match `^func [A-Z]`
+# below; the Lane methods (Own/ID/Publish/HaloLeft/HaloRight/Step) do NOT —
+# receivers make them `^func (l *Lane) ...`, invisible to this regex. They
+# get real functional coverage from examples/lanes_stencil_probe.goo (the
+# BSP halo-exchange golden), just not mechanical extraction here — extending
+# the extractor to receiver methods is YAGNI for one package this milestone.
+# goostd/cpkg is a deliberate fixture package (comptime-generic compose
+# probes) outside stdlib scope, same as kinds/shapes/mypkg/pkgcheck/fwdref —
+# not added here.
+GOOSTD_PKG_DIRS="strings:goostd/strings strconv:goostd/strconv utf8:goostd/utf8 bits:goostd/bits lanes:goostd/lanes"
 
 GOOSTD_MIN=50
 goostd_total=0
@@ -204,7 +219,7 @@ for entry in $GOOSTD_PKG_DIRS; do
 done
 
 if [ "$goostd_total" -lt "$GOOSTD_MIN" ]; then
-    echo "check-stdlib-coverage: FAIL (extracted only $goostd_total exported funcs across goostd/{strings,strconv,utf8,bits}, expected >= $GOOSTD_MIN — package layout may have moved)"
+    echo "check-stdlib-coverage: FAIL (extracted only $goostd_total exported funcs across goostd/{strings,strconv,utf8,bits,lanes}, expected >= $GOOSTD_MIN — package layout may have moved)"
     exit 1
 fi
 

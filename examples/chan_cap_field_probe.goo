@@ -1,0 +1,30 @@
+// Regression probe for the make(chan T, <struct-field-selector>) capacity bug:
+// a buffered-channel capacity given as a struct-field selector (p.count) must
+// LOAD the field's value before it reaches the ZExt in codegen, not pass the
+// field's address. Before the fix this emitted invalid IR
+// ("ZExt only operates on integer / zext ptr %count to i64").
+// All prints are single-width ints to avoid the latent mixed-width print bug.
+package main
+
+import "fmt"
+
+type Sizer struct {
+	count int
+}
+
+func fill(s Sizer) int {
+	ch := make(chan int, s.count)
+	ch <- 10
+	ch <- 20
+	ch <- 30
+	sum := 0
+	sum = sum + <-ch
+	sum = sum + <-ch
+	sum = sum + <-ch
+	return sum
+}
+
+func main() {
+	s := Sizer{count: 3}
+	fmt.Println(fill(s))
+}

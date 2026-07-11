@@ -102,6 +102,7 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
                                                      const char* sel_name,
                                                      int* handled) {
     *handled = 0;
+    CallExprNode* call = (CallExprNode*)expr;
     size_t n = strlen("goo_pkg__") + strlen(pkg_name) + strlen("__")
              + strlen(sel_name) + 1;
     char* sym = malloc(n);
@@ -109,10 +110,33 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
     snprintf(sym, n, "goo_pkg__%s__%s", pkg_name, sel_name);
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, sym);
     free(sym);
+
+    // P6 M1 (comptime-wall lift): a comptime-param package function has NO
+    // bare `goo_pkg__<pkg>__<sel>` body in the module — the template is never
+    // emitted directly (codegen.c skips it), only per-value monomorphized
+    // INSTANCES are, under `goo_pkg__<pkg>__<sel>__n<v>...`
+    // (comptime_instantiate, monomorphize.c). Rewire `cpkg.Fill(4, 10)` to its
+    // instance symbol here — the SAME construction the emitter used, so the two
+    // sites always agree. The comptime parameter stays a real ABI argument on
+    // the instance (see fill__n4's (i64,i64) signature), so the arg loop below
+    // passes every actual unchanged; only the callee SYMBOL differs. Runs
+    // before main's body is emitted since codegen_monomorphize completes at the
+    // top of the main-pass codegen_generate_program (codegen.c).
+    if (!fn && call->comptime_value_arg_count > 0) {
+        char* base = codegen_pkg_mangled_symbol(pkg_name, sel_name);
+        char* inst_sym = base
+            ? codegen_mangle_comptime_instance(base, call->comptime_value_args,
+                                               call->comptime_value_arg_count)
+            : NULL;
+        free(base);
+        if (inst_sym) {
+            fn = LLVMGetNamedFunction(codegen->module, inst_sym);
+            free(inst_sym);
+        }
+    }
     if (!fn) return NULL;  // not a real package symbol → shim fallback
 
     *handled = 1;
-    CallExprNode* call = (CallExprNode*)expr;
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
     LLVMValueRef* args = argc ? malloc(sizeof(LLVMValueRef) * argc) : NULL;
@@ -2323,6 +2347,20 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
         ASTNode* size_arg = call->args->next;  // Second argument
         ValueInfo* size_val = codegen_generate_expression(codegen, checker, size_arg);
         if (!size_val) return NULL;
+
+        // Load through the address first when the capacity is an lvalue
+        // (e.g. a struct-field selector `p.count`) — otherwise the pointer
+        // itself reaches the ZExt below and fails verification. Mirrors the
+        // load-if-lvalue idiom the make(slice) length/capacity path uses.
+        if (size_val->is_lvalue && size_val->goo_type) {
+            LLVMTypeRef st = codegen_type_to_llvm(codegen, size_val->goo_type);
+            if (st) {
+                size_val->llvm_value = LLVMBuildLoad2(codegen->builder, st,
+                                                      size_val->llvm_value,
+                                                      "make_chan_cap_load");
+                size_val->is_lvalue = 0;
+            }
+        }
 
         // Convert to size_t if needed
         buffer_size = size_val->llvm_value;

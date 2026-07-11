@@ -1,0 +1,20 @@
+// P6 M1 Task 6 (Obligation 4, view-capture rule): a lane body may reach no
+// partition state except its own *Lane context. Capturing the Partitioned
+// value `p` (here via `q := p`) into the lane body is a compile error.
+// (Field access `p.backing` is export-blocked cross-package, so the capture
+// payload is `p` itself — the CAPTURE is the violation, per the brief.)
+// docs/superpowers/specs/2026-07-11-p6-lanes-m1-design.md Component 4,
+// obligation 4.
+package main
+
+import "lanes"
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0}
+	p := lanes.Partition(data, 2)
+	out := lanes.Run(p, 1, func(ctx *lanes.Lane) {
+		q := p
+		_ = q
+	})
+	_ = out
+}
