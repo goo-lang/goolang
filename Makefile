@@ -1802,7 +1802,8 @@ comptime-value-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 # all — generic type-parameter inference for a package-qualified call doesn't
 # unify `x T` against the second argument, so it fails noisily-but-cleanly with
 # a generic-inference diagnostic ("argument 2: cannot use int64 as T") rather
-# than a comptime-specific one. Pinned as-observed (arc2-repro-report.md), not
+# than a comptime-specific one. Pinned as-observed (captured fresh for this
+# case; matches expression_checker.c's "argument %zu: cannot use %s as %s"), not
 # as a designed error message — composed generic+comptime across a package
 # boundary is simply unimplemented, and this case is the tripwire for it.
 comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
