@@ -1,6 +1,7 @@
 #include "types.h"
 #include "comptime.h"
 #include "embedding.h"
+#include "lane_ownership.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -754,6 +755,15 @@ int type_check_program(TypeChecker* checker, ASTNode* program) {
             if (!type_check_function_decl(checker, decl)) return 0;
         }
     }
+
+    // P6 M1 Task 5: lanes-specific ownership checks (lane_ownership.c,
+    // Component 4 of docs/superpowers/specs/2026-07-11-p6-lanes-m1-design.md).
+    // Deliberately run AFTER pass 2, not folded into it: Task 6's obligations
+    // 3/4 (extending this same walk) need every FuncLitNode.captured_names
+    // fully populated, which only holds once every function body has been
+    // type-checked (see docs/superpowers/specs/2026-07-11-p6-lanes-m1-spike-
+    // findings.md Section 2.0).
+    if (!lane_ownership_check_program(checker, program)) return 0;
 
     return checker->error_count == 0;
 }

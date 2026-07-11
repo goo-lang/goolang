@@ -1,0 +1,15 @@
+// P6 M1 Task 5 (Obligation 1): lanes.Partition(arr, count) MOVES arr — any
+// later read of arr in the same function body must be rejected.
+// docs/superpowers/specs/2026-07-11-p6-lanes-m1-design.md Component 4,
+// obligation 1.
+package main
+
+import "lanes"
+import "fmt"
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0}
+	p := lanes.Partition(data, 2)
+	fmt.Println(data[0])
+	_ = p
+}
