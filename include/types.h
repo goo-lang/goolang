@@ -920,6 +920,7 @@ int type_is_error_union(const Type* type);
 int type_is_error(const Type* type);
 int type_is_poison(const Type* type);
 int type_is_error_result_tuple(const Type* type);
+int type_struct_fields_comparable(const Type* type);
 
 // Type checker functions
 TypeChecker* type_checker_new(void);

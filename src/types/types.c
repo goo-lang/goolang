@@ -974,6 +974,45 @@ int type_is_error_result_tuple(const Type* type) {
            type_is_error(type->data.struct_type.fields[1].type);
 }
 
+// Can a value comparator (`==`) be synthesized for this STRUCT? True iff
+// EVERY declared field is a comparator-safe kind: string, a scalar
+// (integer/uint/bool/char), a float, a pointer, or a nested struct that is
+// itself value-comparable. A slice/map/func/interface field is never
+// comparable in Go; an ARRAY field is Go-comparable in principle but v1's
+// comparator (codegen_get_or_emit_struct_key_eq) has no per-element loop, so
+// it is treated as not-yet-comparable here too — keeping this predicate in
+// exact lockstep with what that comparator can actually lower. Returns 0 for
+// a non-struct.
+//
+// Two callers, one truth: (1) the checker's static `==` gate
+// (type_check_comparison_op) rejects a non-comparable struct comparison with
+// a positioned Go-parity diagnostic instead of letting it reach codegen; (2)
+// codegen's per-type equality synthesis (codegen_get_or_emit_type_eq) routes
+// a NON-comparable boxed struct to the runtime uncomparable-panic stub rather
+// than emitting an illegal icmp over an aggregate field. The map-key path has
+// its own sibling predicate (struct_is_comparable_key, type_checker.c) that
+// additionally distinguishes the array-deferral diagnostic; the two agree on
+// the accept/reject boundary for every non-array field.
+int type_struct_fields_comparable(const Type* type) {
+    if (!type || type->kind != TYPE_STRUCT) return 0;
+    for (size_t i = 0; i < type->data.struct_type.field_count; i++) {
+        Type* f = type->data.struct_type.fields[i].type;
+        if (!f) return 0;
+        switch (f->kind) {
+            case TYPE_STRING: case TYPE_BOOL: case TYPE_CHAR:
+            case TYPE_FLOAT32: case TYPE_FLOAT64: case TYPE_POINTER:
+                break;
+            case TYPE_STRUCT:
+                if (!type_struct_fields_comparable(f)) return 0;
+                break;
+            default:
+                if (type_is_integer(f)) break;
+                return 0;  // slice/map/func/interface/array/... not v1-comparable
+        }
+    }
+    return 1;
+}
+
 // Method name mangling: `func (T) m()` is lowered to an ordinary function
 // named "T__m". The declaration and every call site derive the same name
 // from the receiver's type, so a plain function/variable lookup resolves

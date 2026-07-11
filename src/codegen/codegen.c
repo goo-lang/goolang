@@ -1105,12 +1105,21 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
 //     equal to itself, matching Go/IEEE-754 — not a bug).
 //   - string: inttoptr each word to the `{i8*,i64}` string aggregate, load,
 //     extractvalue the char* (field 0), strcmp == 0.
-//   - struct: delegates STRAIGHT to codegen_get_or_emit_struct_key_eq (#129)
-//     — its i32(i64,i64)-over-ptr-to-heap-copy signature already matches a
-//     struct concrete's boxing exactly; not re-synthesized, and NOT cached
-//     in typeeq_cache_keys/vals (structeq_cache_keys/vals already memoizes
-//     it, so a second lookup here would just be a wasted linear scan ahead
-//     of the one structeq_cache already does).
+//   - struct (all fields comparator-safe): delegates STRAIGHT to
+//     codegen_get_or_emit_struct_key_eq (#129) — its i32(i64,i64)-over-ptr-
+//     to-heap-copy signature already matches a struct concrete's boxing
+//     exactly; not re-synthesized, and NOT cached in typeeq_cache_keys/vals
+//     (structeq_cache_keys/vals already memoizes it, so a second lookup here
+//     would just be a wasted linear scan ahead of the one structeq_cache
+//     already does).
+//   - struct with a slice/map/func/interface/array field (NON-comparable in
+//     Go): falls through to the uncomparable-panic stub below (arc3 Task 2).
+//     struct_key_eq cannot lower `==` over an aggregate field, and the eq_fn
+//     is baked into the descriptor eagerly at BOXING time — so delegating
+//     unconditionally crashed the verifier the moment such a struct was boxed
+//     into `any`, even without any comparison. Routing to the stub keeps
+//     boxing legal and defers the error to a runtime panic on an actual
+//     interface `==` (Go-faithful for a dynamic `any` operand).
 //   - slice/map/func (uncomparable dynamic types, reachable through
 //     `map[any]V` once a later task admits interface map keys): the single
 //     shared `i32 @goo.uncmpeq(i64,i64)` stub — calls
@@ -1131,9 +1140,21 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
                                          Type* concrete) {
     if (!codegen || !concrete) return NULL;
 
-    // Struct concretes delegate directly — no synthesis, no typeeq_cache
-    // entry (see comment above).
-    if (concrete->kind == TYPE_STRUCT) {
+    // Struct concretes: a struct whose fields are ALL comparator-safe gets
+    // its real per-field value comparator (no synthesis here, no typeeq_cache
+    // entry — see comment above). A struct with a slice/map/func/interface/
+    // array field is NON-comparable in Go: boxing it into `any` is legal, but
+    // codegen_get_or_emit_struct_key_eq would emit an illegal `icmp eq` over
+    // that aggregate field (a verifier crash at BOXING time — the eq_fn is
+    // baked eagerly into the type descriptor whether or not the value is ever
+    // compared). Route those to the shared uncomparable-panic stub instead
+    // (fall through to the !scalar_kind branch below): boxing then succeeds,
+    // and only an actual interface `==` on the boxed value panics at runtime
+    // ("comparing uncomparable ..."), which is Go-faithful — Go likewise
+    // defers the error to a runtime panic when the static type is `any`. The
+    // static-type case (both operands the concrete struct type) is walled
+    // earlier with a positioned diagnostic in type_check_comparison_op.
+    if (concrete->kind == TYPE_STRUCT && type_struct_fields_comparable(concrete)) {
         return codegen_get_or_emit_struct_key_eq(codegen, checker, concrete);
     }
 
