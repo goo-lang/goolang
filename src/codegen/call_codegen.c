@@ -3346,6 +3346,31 @@ static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeC
         return NULL;
     }
 }
+
+// codegen_fmt_value_to_string: public one-shot entry point onto
+// codegen_build_fmt_value_string (above) for callers outside this file.
+// Declared in codegen.h. Currently the only cross-file caller is the
+// boxed-`any` %v formatter (codegen_get_or_emit_type_fmt, interface_codegen.c,
+// Task 3 / B5 aggregate-fmt fix): rather than re-implementing struct
+// formatting a second time for the boxed path, it loads the concrete struct
+// out of the interface's heap-boxed `data` and routes it through the EXACT
+// SAME recursive struct/pointer-to-struct/slice/array %v machinery
+// fmt.Sprintf's own %v verb already uses below (line ~4203) — byte-identical
+// output to the unboxed concrete print of the same value follows for free,
+// since it is the same code emitting it.
+//
+// Seeds an empty accumulator (mirrors every top-level call site's own
+// `fmt_sprintf_lit(..., "")`-then-concat start, e.g. codegen_generate_
+// sprintf_call below) and threads `val`/`ty` through unchanged. Returns the
+// resulting goo_string, or NULL after codegen_build_fmt_value_string (or the
+// TYPE_STRING lookup here) has already emitted a source-located codegen_error.
+LLVMValueRef codegen_fmt_value_to_string(CodeGenerator* codegen, TypeChecker* checker,
+                                         LLVMValueRef val, Type* ty, Position pos) {
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+    if (!string_llvm) return NULL;
+    LLVMValueRef acc0 = fmt_sprintf_lit(codegen, string_llvm, "");
+    return codegen_build_fmt_value_string(codegen, checker, acc0, val, ty, 0, pos);
+}
 #endif
 
 ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {

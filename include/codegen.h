@@ -652,11 +652,21 @@ LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* 
 // Per-type %v formatter reached via the descriptor's fmt_fn field (field
 // index 2). Emits (or reuses) `goo.fmt.<T>` / `goo.fmt.$ptr$<T>` of LLVM
 // type `goo_string(ptr)`: loads the concrete value from the `data` param
-// and returns its %v string. v1 scalar kinds only (int/uint widths, bool,
-// float32/64, string); pointer_form or any other concrete kind falls back
-// to a goo_string copy of the type name. See interface_codegen.c.
+// and returns its %v string. v1 scalar kinds and (Task 3 / B5) value-boxed
+// STRUCT concretes, via codegen_fmt_value_to_string below; pointer_form or
+// any other concrete kind (slice, map, ...) falls back to a goo_string copy
+// of the type name. See interface_codegen.c.
 LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
                                           Type* concrete, int pointer_form);
+// Public entry point onto call_codegen.c's recursive %v value-to-string
+// formatter (codegen_build_fmt_value_string — struct/pointer-to-struct/
+// slice/array, the same machinery fmt.Sprintf's %v verb uses), for callers
+// in other codegen files. Seeds an empty accumulator and formats `val` (of
+// goo type `ty`) as a single goo_string. See call_codegen.c for the full
+// contract; `pos` is only used for a codegen_error should `ty` contain an
+// unsupported shape.
+LLVMValueRef codegen_fmt_value_to_string(CodeGenerator* codegen, TypeChecker* checker,
+                                         LLVMValueRef val, Type* ty, Position pos);
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
                                       Type* iface, Type* concrete, int pointer_form);
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
