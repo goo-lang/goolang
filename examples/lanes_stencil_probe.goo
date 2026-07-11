@@ -1,0 +1,167 @@
+// P6 M1 Task 4 golden (the milestone's centerpiece): a 1D heat-equation
+// stencil computed two ways — a plain serial reference and a
+// goostd/lanes.Run BSP halo-exchange parallel version — and asserted
+// bit-for-bit IDENTICAL. This is the milestone's functional-correctness
+// gate: Task 3 proved lanes could partition/spawn/join; this fixture proves
+// the halo protocol (Publish/HaloLeft/HaloRight/Step, per the design doc's
+// Component 3) actually reproduces the serial answer, not just "runs
+// without deadlocking."
+//
+// Parameters (fixed, not derived from anything the compiler can fold away):
+//   N=16 cells, count=4 lanes (width 4 each), steps=8 BSP rounds, Dirichlet
+//   boundary=0.0 on both ends, initial condition = a unit spike at the
+//   center cell (index N/2=8), everywhere else 0.0.
+//
+// Update rule (own-cell + immediate neighbors only — no cross-lane
+// reduction, so it is associativity-safe per the design doc's risk note:
+// each cell's new value depends only on its own and its neighbors' OLD
+// values, never on a running sum split across lanes):
+//   new[i] = 0.25*old[i-1] + 0.5*old[i] + 0.25*old[i+1]
+// with old[-1] and old[N] both taken as the boundary constant.
+//
+// Serial reference: a plain nested loop (steps outer, cells inner) over a
+// private copy of the initial condition, entirely outside goostd/lanes —
+// no goroutines, no channels, just old/new float64 slices swapped each
+// round. This is what "the answer" means; it is never hand-computed.
+//
+// Parallel: lanes.Partition(parallelData, 4) then lanes.Run driving a body
+// that loops the BSP protocol itself (Run still calls body exactly once —
+// see lanes.go's Run doc comment): each round, Publish() sends this lane's
+// current boundary cells, HaloLeft()/HaloRight() block-receive the
+// neighbors' just-published values (the fixed boundary constant at the
+// domain's outer edges), then the lane computes every owned cell into a
+// SCRATCH slice (so this round's writes never clobber a value another
+// index in the same round still needs to read as "old") and copies the
+// scratch back over Own() only after the whole round's compute is done.
+// That scratch-then-copy is what makes a lane's intra-tile reads see
+// exactly the previous round's values, matching the serial reference's
+// old/new double-buffer discipline cell-for-cell.
+//
+// Comparison: element-wise `!=` on float64 — bit-for-bit, no epsilon. A
+// non-associativity-safe update (e.g. any reduction spanning lane
+// boundaries) could legitimately reorder floating-point additions and
+// produce a merely close-but-not-identical answer; this update rule is
+// chosen specifically so bit-identity is achievable and meaningful, not a
+// coincidence of luck.
+//
+// Output: "IDENTICAL" (or "MISMATCH", which would fail this golden and
+// signal a protocol bug), one checksum (sum of all 16 final cells — mass
+// drains slightly below 1.0 because Dirichlet 0.0 boundaries are a sink),
+// and two interior spot values: index 4 (the first cell of lane 1, whose
+// left neighbor is a halo received from lane 0) and index 8 (the original
+// spike location, now sitting at the lane1/lane2 tile boundary — its
+// value after 8 rounds depends on halo exchange having propagated
+// correctly across that boundary in both directions).
+package main
+
+import "fmt"
+import "lanes"
+
+func main() {
+	N := 16
+	steps := 8
+	boundary := 0.0
+
+	init := make([]float64, N)
+	i := 0
+	for i < N {
+		init[i] = 0.0
+		i = i + 1
+	}
+	init[N/2] = 1.0
+
+	// --- serial reference: plain nested loop, no lanes involved at all ---
+	serialOld := make([]float64, N)
+	i = 0
+	for i < N {
+		serialOld[i] = init[i]
+		i = i + 1
+	}
+	serialNew := make([]float64, N)
+	s := 0
+	for s < steps {
+		i = 0
+		for i < N {
+			left := boundary
+			if i > 0 {
+				left = serialOld[i-1]
+			}
+			right := boundary
+			if i < N-1 {
+				right = serialOld[i+1]
+			}
+			serialNew[i] = 0.25*left + 0.5*serialOld[i] + 0.25*right
+			i = i + 1
+		}
+		i = 0
+		for i < N {
+			serialOld[i] = serialNew[i]
+			i = i + 1
+		}
+		s = s + 1
+	}
+
+	// --- parallel: goostd/lanes BSP halo exchange ---
+	parallelData := make([]float64, N)
+	i = 0
+	for i < N {
+		parallelData[i] = init[i]
+		i = i + 1
+	}
+	p := lanes.Partition(parallelData, 4)
+	parallelResult := lanes.Run(p, steps, func(ctx *lanes.Lane) {
+		own := ctx.Own()
+		w := len(own)
+		scratch := make([]float64, w)
+		for {
+			ctx.Publish()
+			hl := ctx.HaloLeft()
+			hr := ctx.HaloRight()
+			j := 0
+			for j < w {
+				left := hl
+				if j > 0 {
+					left = own[j-1]
+				}
+				right := hr
+				if j < w-1 {
+					right = own[j+1]
+				}
+				scratch[j] = 0.25*left + 0.5*own[j] + 0.25*right
+				j = j + 1
+			}
+			j = 0
+			for j < w {
+				own[j] = scratch[j]
+				j = j + 1
+			}
+			if !ctx.Step() {
+				break
+			}
+		}
+	})
+
+	identical := true
+	i = 0
+	for i < N {
+		if serialOld[i] != parallelResult[i] {
+			identical = false
+		}
+		i = i + 1
+	}
+	if identical {
+		fmt.Println("IDENTICAL")
+	} else {
+		fmt.Println("MISMATCH")
+	}
+
+	checksum := 0.0
+	i = 0
+	for i < N {
+		checksum = checksum + parallelResult[i]
+		i = i + 1
+	}
+	fmt.Println(checksum)
+	fmt.Println(parallelResult[4])
+	fmt.Println(parallelResult[8])
+}
