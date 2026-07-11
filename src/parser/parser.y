@@ -177,7 +177,7 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 %type <node> opt_import_decl_list opt_top_level_decl_list
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
-%type <node> const_spec const_spec_list
+%type <node> const_spec_t const_spec_last const_spec_list_t const_spec_list
 %type <node> var_spec var_spec_list var_member
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
@@ -772,31 +772,71 @@ const_decl:
     }
     ;
 
-// F4: one spec inside a grouped const block. Untyped only (a typed spec
-// `NAME TYPE = expr` would create an `identifier type` vs bare-`identifier`
-// shift/reduce conflict — out of scope, see the F4 plan). A bare `NAME`
-// (no `= expr`) repeats the previous spec's value with iota incremented;
-// it is carried as values==NULL and filled in by desugar_const_group.
-const_spec:
-    identifier ASSIGN expression {
-        $$ = const_spec_new($1, $3);
+// Arc 6 (m): one spec inside a grouped const block — bare `NAME` (repeats
+// the previous spec's value with iota incremented; carried as values==NULL
+// and filled in by desugar_const_group), untyped `NAME = expr`, or typed
+// `NAME TYPE = expr`. F4 shipped this untyped-only, fearing an `identifier
+// type` vs bare-`identifier` shift/reduce conflict — and in F4's FLAT
+// juxtaposed list that conflict is real: a bare spec could reduce on the
+// next spec's leading IDENT, which is also exactly the misparse that made
+// `y int16 = 300` read as bare `y` plus a constant NAMED `int16`, silently
+// SHIFTING every later value in the group across names. The split below
+// dissolves both the conflict and the misparse structurally: every
+// non-final spec must carry its terminator ON THE SPEC (const_spec_t —
+// explicit `;` or the P5.10 generalized rule-1 ASI's, which fires inside
+// const groups like everywhere else; the house member-attached-SEMICOLON
+// pattern, workarounds.md §4), and only the FINAL spec (const_spec_last,
+// no terminator — ASI's `)` leniency exception) may omit it. A bare
+// spec's reduce therefore only ever happens on `;` or `)` lookahead,
+// never on IDENT — an IDENT after a spec name can only be its TYPE.
+// Same-line juxtaposition without `;` (`const ( x y = 2 )`) accordingly
+// parses as a typed spec, no longer as two shifted specs; Go rejects that
+// spelling outright, so no legitimate program changes meaning.
+const_spec_t:
+    identifier SEMICOLON {
+        $$ = const_spec_new($1, NULL, NULL);
     }
     | identifier ASSIGN expression SEMICOLON {
-        $$ = const_spec_new($1, $3);
+        $$ = const_spec_new($1, NULL, $3);
     }
-    | identifier {
-        $$ = const_spec_new($1, NULL);
-    }
-    | identifier SEMICOLON {
-        $$ = const_spec_new($1, NULL);
+    | identifier type ASSIGN expression SEMICOLON {
+        $$ = const_spec_new($1, $2, $4);
     }
     ;
 
-const_spec_list:
-    const_spec {
+const_spec_last:
+    identifier {
+        $$ = const_spec_new($1, NULL, NULL);
+    }
+    | identifier ASSIGN expression {
+        $$ = const_spec_new($1, NULL, $3);
+    }
+    | identifier type ASSIGN expression {
+        $$ = const_spec_new($1, $2, $4);
+    }
+    ;
+
+const_spec_list_t:
+    const_spec_t {
         $$ = $1;
     }
-    | const_spec_list const_spec {
+    | const_spec_list_t const_spec_t {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+// A group is 1+ specs: all-terminated (trailing `;` before `)`), or a
+// terminated run followed by one unterminated final spec, or a single
+// unterminated spec.
+const_spec_list:
+    const_spec_last {
+        $$ = $1;
+    }
+    | const_spec_list_t {
+        $$ = $1;
+    }
+    | const_spec_list_t const_spec_last {
         ast_add_child($1, $2);
         $$ = $1;
     }

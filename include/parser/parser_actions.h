@@ -62,11 +62,13 @@ void reinterpret_grouped_names(ASTNode* list);
 //   substitute_iota      — replace the identifier `iota` with its ordinal
 //                         literal
 //   const_spec_new       — build one ConstDeclNode for a grouped-const spec
+//                         (arc 6 (m): `type` carries a typed spec's declared
+//                         type, NULL for untyped/bare arms)
 //   desugar_const_group  — turn the spec chain into ordinary single const
 //                         decls
 ASTNode* clone_const_value(const ASTNode* n);
 void substitute_iota(ASTNode** slot, long idx);
-ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value);
+ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value);
 ASTNode* desugar_const_group(ASTNode* spec_chain);
 
 // P1.2 grouped-var desugaring: mirrors the F4 const-group mechanism above

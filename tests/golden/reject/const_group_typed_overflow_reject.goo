@@ -1,0 +1,16 @@
+// Correctness arc 6 (m) x arc 5 (h) interlock: a TYPED grouped-const spec
+// must parse as a typed spec AND route through the const-decl
+// representability gate. Before the (m) grammar fix this errored with the
+// WRONG diagnostic ("Constant declaration must have initializer" — the
+// bare-`a` misparse leaving values NULL); now it parses as `a int8 = 300`
+// and the arc-5 gate rejects it exactly like the single-decl form
+// (const_decl_overflow_reject).
+package main
+
+const (
+	a int8 = 300
+)
+
+func main() {
+	println(a)
+}
