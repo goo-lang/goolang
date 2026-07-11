@@ -1921,6 +1921,66 @@ comptime-generic-compose-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	  echo "  PASS distinct alloca sizes/types ([4 x i64], [2 x i64], [4 x double])"
 	@echo "comptime-generic-compose-ir-pin: PASS"
 
+# lanes-monomorphize-ir-pin (P6 M1 Task 7): cross-package comptime
+# monomorphization proof for goostd/lanes.Partition — same keystone as
+# comptime-generic-compose-ir-pin, one level up the package boundary.
+# examples/lanes_monomorphize_probe.goo calls lanes.Partition with two
+# distinct comptime counts (2 and 4) on two different backing arrays; the
+# emitted symbols are package-mangled
+# (`goo_pkg__lanes__Partition__n<value>` — codegen.c's package-mangling
+# composed with monomorphize.c's `__n<value>` comptime-instance suffix; see
+# goostd/cpkg's `goo_pkg__cpkg__Fill__n4` precedent, monomorphize.c:793).
+# Symbol spelling verified empirically against build/lm_ir.ll before this
+# target was written (see docs/superpowers/sdd/task-7-report.md) — it is
+# NOT guessed from the design doc's bare `lanes__Partition__n2` shorthand.
+#
+# Same three-part structure as comptime-generic-compose-ir-pin:
+#   (i)   per-symbol exactly-once grep catches collapse (0 defines) or
+#         misnaming for each of __n2 and __n4;
+#   (ii)  a TOTAL-count check (exactly 2 `goo_pkg__lanes__Partition__`
+#         -prefixed defines) closes the same LLVM auto-uniquify `.1` hole:
+#         a bypassed dedup guard would still leave the base symbol's own
+#         count at 1 (LLVM renames the SECOND insertion, not the first), so
+#         only the total check catches it;
+#   (iii) one call-edge grep per count, pinning call-site -> instance
+#         WIRING (not just instance existence) — a cross-wired dispatch
+#         would pass (i) and (ii) but land here. Partition's signature is
+#         (arr []float64, comptime count int): the comptime value is the
+#         SECOND argument (unlike kernel's first-argument comptime value in
+#         the sibling probe), and the first argument is always a register
+#         (the caller's own local slice variable, never a literal), so each
+#         edge pattern anchors on the literal trailing `i64 2)`/`i64 4)` and
+#         allows any register name for the slice-struct argument — the same
+#         "don't pin volatile register names" principle the sibling pin's
+#         doc comment states for its own register-argument edge.
+lanes-monomorphize-ir-pin: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== lanes-monomorphize-ir-pin: goostd/lanes.Partition instances are real and deduped ==="
+	@"$(COMPILER)" --emit-llvm examples/lanes_monomorphize_probe.goo -o build/lm_ir.ll >build/lm_ir.err 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "lanes-monomorphize-ir-pin: FAIL (compile failed)"; cat build/lm_ir.err; exit 1; fi
+	@for sym in goo_pkg__lanes__Partition__n2 goo_pkg__lanes__Partition__n4; do \
+	  n=$$(grep -cE "^define[^{]*@\"?$${sym}\"?\(" build/lm_ir.ll); \
+	  if [ "$$n" != "1" ]; then echo "lanes-monomorphize-ir-pin: FAIL ($$sym: expected exactly 1 define, found $$n)"; exit 1; fi; \
+	  echo "  PASS $$sym defined exactly once"; \
+	done
+	@total=$$(grep -cE "^define[^{]*@\"?goo_pkg__lanes__Partition__" build/lm_ir.ll); \
+	  if [ "$$total" != "2" ]; then \
+	    echo "lanes-monomorphize-ir-pin: FAIL (expected exactly 2 goo_pkg__lanes__Partition__ instance defines total, found $$total — a uniquified duplicate escaped dedup)"; \
+	    grep -nE "^define[^{]*@\"?goo_pkg__lanes__Partition__" build/lm_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS exactly 2 goo_pkg__lanes__Partition__ instance defines total (no uniquified duplicates)"
+	@if ! grep -qE 'call %Partitioned @"?goo_pkg__lanes__Partition__n2"?\(\{ ptr, i64, i64 \} %[A-Za-z0-9_]+, i64 2\)' build/lm_ir.ll; then \
+	    echo "lanes-monomorphize-ir-pin: FAIL (missing call edge: Partition(arrayA, 2) -> goo_pkg__lanes__Partition__n2)"; \
+	    grep -nE 'call [^@]+@"?goo_pkg__lanes__Partition__' build/lm_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS call edge Partition(arrayA, 2) -> goo_pkg__lanes__Partition__n2"
+	@if ! grep -qE 'call %Partitioned @"?goo_pkg__lanes__Partition__n4"?\(\{ ptr, i64, i64 \} %[A-Za-z0-9_]+, i64 4\)' build/lm_ir.ll; then \
+	    echo "lanes-monomorphize-ir-pin: FAIL (missing call edge: Partition(arrayB, 4) -> goo_pkg__lanes__Partition__n4)"; \
+	    grep -nE 'call [^@]+@"?goo_pkg__lanes__Partition__' build/lm_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS call edge Partition(arrayB, 4) -> goo_pkg__lanes__Partition__n4"
+	@echo "lanes-monomorphize-ir-pin: PASS"
+
 # spmd-bench-probe: SPMD harness sub-project, Task 3 — "the proof". Builds a
 # CPU-bound comptime-specialized kernel (`burn`: a tight LCG loop over a
 # comptime-fixed iteration count, deterministic and side-effect-free per
@@ -2620,6 +2680,7 @@ VERIFY_ALL_DEPS := \
     comptime-value-reject-probe \
     comptime-value-reject-matrix \
     comptime-generic-compose-ir-pin \
+    lanes-monomorphize-ir-pin \
     selectsend-reject-probe \
     globalcall-init-probe \
     floatint-reject-probe \
@@ -3722,7 +3783,7 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin spmd-bench-probe test-golden test-golden-o2 test-golden-reject
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin lanes-monomorphize-ir-pin spmd-bench-probe test-golden test-golden-o2 test-golden-reject
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
