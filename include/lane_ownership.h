@@ -57,9 +57,18 @@
 // (Task 6 ADDED AST_LABEL_STMT descent — `L: stmt` now recurses into its
 // wrapped statement in both lane_walk_stmt and lane_body_walk_stmt — so it
 // is no longer on this list.) This is the safe direction for a rejection
-// pass (under-reject, never a false reject — see the SCOPE note above), but
+// pass (under-reject; the one KNOWN false-reject surface is name shadowing,
+// since every table here is flat and shadow-unaware — Option A envelope,
+// documented at LaneWalkContext.outer_derived), but
 // it means obligation 1 (and Task 6's obligations 3/4) are simply not
-// enforced inside these shapes today. Separately: a bare, unbound
+// enforced inside these shapes today.
+//
+// NOTE: the obligation-3 body walker (lane_body_walk_stmt) has a NARROWER
+// statement coverage than the list above, which describes lane_walk_stmt:
+// inside a Run body, taint does not propagate through AST_MULTI_ASSIGN
+// targets or plain-assignment ExprStmts (`x = ctx.Own()`), and the body
+// walker does not descend into IF_LET/SELECT/ARENA/UNSAFE or into nested
+// non-launched FuncLit bodies. All under-reject only. Separately: a bare, unbound
 // `lanes.Partition(...)` statement (the
 // result discarded, not assigned via `:=`/`var`) records NO move at all —
 // only lane_handle_var_decl's VarDeclNode path recognizes a Partition call

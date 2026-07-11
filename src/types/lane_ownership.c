@@ -58,6 +58,10 @@ typedef struct {
     // a nested Run's capture-rule check can reject a body that captures an
     // OUTER lane's context. Borrowed (points at a caller's C-stack
     // LaneDerivedSet); saved/restored around each nested body walk.
+    // Shadow-UNAWARE like the rest of this pass (Option A): matching is by
+    // bare name, so a nested-Run body capturing an inner variable that
+    // shadows an outer lane-derived name CAN false-reject. Same envelope as
+    // obligation 1's flat moved_names table — documented, not accidental.
     const LaneDerivedSet* outer_derived;
 } LaneWalkContext;
 
@@ -398,6 +402,11 @@ static void lane_handle_var_decl(LaneWalkContext* ctx, VarDeclNode* vd) {
             // name (`p := ...`) — always true for the shapes this grammar
             // produces (Partition's own call is never used as a bare
             // statement), but guarded defensively rather than assumed.
+            // obligation 2: with comptime count and w = len(arr)/count, the
+            // blessed Partition's views are the intervals [i*w, (i+1)*w) —
+            // pairwise disjoint by constant-interval arithmetic (spec
+            // Component 4, obligation 2). Recording (count, source) here IS
+            // the obligation-2 bookkeeping; disjointness is structural.
             if (vd->name_count > 0 && vd->names && vd->names[0]) {
                 LanePartitionBinding* binding = malloc(sizeof(LanePartitionBinding));
                 if (binding) {  // fail closed: dropped entry, never crash
@@ -578,6 +587,13 @@ static void lane_body_walk_stmt(LaneWalkContext* ctx, ASTNode* stmt,
             GoStmtNode* gs = (GoStmtNode*)stmt;
             if (!gs->call || gs->call->type != AST_CALL_EXPR) return;
             CallExprNode* c = (CallExprNode*)gs->call;
+
+            // Known under-detects (spec-conformant: the brief scopes
+            // obligation 3 to call args + launched-literal captures):
+            // `go t.Method()` — the view as RECEIVER (c->function) is not
+            // walked; and closure indirection (`f := func(){ go leak(t) };
+            // go f()`) — FuncLit values are never lane-tainted, so `f`
+            // launching later escapes detection. Both under-reject only.
 
             // Surface 1: call arguments.
             for (ASTNode* a = c->args; a; a = a->next) {
