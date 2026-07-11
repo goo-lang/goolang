@@ -1,0 +1,17 @@
+// Spec: Declarations / Blank identifier — discard in range and assignment
+package main
+
+import "fmt"
+
+func two() (int, int) {
+	return 3, 9
+}
+
+func main() {
+	_, b := two()
+	total := 0
+	for _, v := range []int{1, 2} {
+		total = total + v
+	}
+	fmt.Println(b + total)
+}

@@ -1,0 +1,12 @@
+// Spec: Type parameters / Constraint with union type set
+package main
+
+import "fmt"
+
+func double[T int | float64](x T) T {
+	return x + x
+}
+
+func main() {
+	fmt.Println(double(21))
+}

@@ -1,0 +1,9 @@
+// Spec: Types / Numeric types — complex64/complex128
+package main
+
+import "fmt"
+
+func main() {
+	c := complex(1.0, 2.0)
+	fmt.Println(real(c))
+}

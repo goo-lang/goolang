@@ -1,0 +1,14 @@
+// Spec: Statements / If — init statement scope
+package main
+
+import "fmt"
+
+func val() int {
+	return 42
+}
+
+func main() {
+	if v := val(); v > 40 {
+		fmt.Println(v)
+	}
+}

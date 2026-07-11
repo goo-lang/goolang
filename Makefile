@@ -1539,6 +1539,16 @@ emit-llvm-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "emit-llvm-probe: FAIL (--emit-llvm still produced executable-path artifacts)"; exit 1; fi
 	@echo "emit-llvm-probe: PASS (IR only, exact -o naming, <stem>.ll default)"
 
+# Go spec conformance suite (tests/spec/ + manifest.tsv): one fixture per
+# spec construct, manifest records mode (run|reject) + honest status
+# (works|divergent|rejected|absent). The runner is a DRIFT GATE — behavior
+# changing in either direction fails until the matrix/doc are updated.
+# Human-readable report: docs/GO_SPEC_CONFORMANCE.md.
+.PHONY: spec-conformance
+spec-conformance: $(COMPILER) $(RUNTIME_LIB)
+	@echo "=== spec-conformance: Go spec construct matrix (tests/spec) ==="
+	@COMPILER="$(COMPILER)" bash scripts/run_spec_conformance.sh
+
 # P5 rider (2026-07-11): gpu_kernel must be a HARD COMPILE REJECT in v1.
 # The GPU grammar arms (kernel_decl/kernel_launch) are dead — TOKEN_KERNEL is
 # not mapped by lexer_bridge.c, so `gpu_kernel` reaches the parser as an
@@ -2596,6 +2606,7 @@ VERIFY_ALL_DEPS := \
     emit-llvm-probe \
     subcommand-probe \
     gpu-kernel-reject-probe \
+    spec-conformance \
     blank-lines-probe \
     comment-lines-probe \
     slice-write-bounds-probe \

@@ -1,0 +1,19 @@
+// Spec: Statements / For — three-clause, condition-only, infinite+break
+package main
+
+import "fmt"
+
+func main() {
+	total := 0
+	for i := 0; i < 5; i++ {
+		total = total + i
+	}
+	n := 0
+	for n < 3 {
+		n = n + 1
+	}
+	for {
+		break
+	}
+	fmt.Println(total + n)
+}

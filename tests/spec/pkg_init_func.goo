@@ -1,0 +1,18 @@
+// Spec: Program initialization / init function
+// DIVERGENT (SILENT — worst class): init() compiles but NEVER RUNS.
+// Go prints 42; Goo prints 1. Pinned here so the matrix gates it; the
+// v1.0.1 candidate fix is a clean compile reject (recover()-style
+// diagnostic) or a real implementation. Do NOT bless 42 until fixed.
+package main
+
+import "fmt"
+
+var n = 1
+
+func init() {
+	n = n + 41
+}
+
+func main() {
+	fmt.Println(n)
+}

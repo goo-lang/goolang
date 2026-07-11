@@ -1,0 +1,13 @@
+// Spec: Statements / Range — slice with index+value, map keys
+package main
+
+import "fmt"
+
+func main() {
+	s := []int{10, 20, 30}
+	total := 0
+	for i, v := range s {
+		total = total + i + v
+	}
+	fmt.Println(total)
+}

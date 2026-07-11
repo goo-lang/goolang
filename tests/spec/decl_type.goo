@@ -1,0 +1,11 @@
+// Spec: Declarations / Type declarations — named types
+package main
+
+import "fmt"
+
+type Celsius int
+
+func main() {
+	var t Celsius = 21
+	fmt.Println(t)
+}

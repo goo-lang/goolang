@@ -1,0 +1,11 @@
+// Spec: Built-in functions / panic — runtime abort with nonzero exit
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("before")
+	var m map[string]int
+	m["boom"] = 1
+	fmt.Println("unreachable")
+}

@@ -1,0 +1,8 @@
+// Spec: Packages / Import declarations — alias import of a shim package
+package main
+
+import f "fmt"
+
+func main() {
+	f.Println("aliased")
+}
