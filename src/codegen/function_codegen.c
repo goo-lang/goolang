@@ -2783,8 +2783,14 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 Type* ct = known ? known->type : NULL;
                 if (!ct) {
                     // Untyped int const default type is `int` (int64 here);
-                    // a value past int64's signed range takes uint64.
-                    ct = (folded <= 9223372036854775807ULL)
+                    // a value past int64's signed range takes uint64 — unless
+                    // the RHS is negative-ROOTED: the fold is 64-bit modular,
+                    // so `-5` also lands past INT64_MAX (0xFFFF...FB) and must
+                    // stay int64. Mirrors type_check_const_decl's identical
+                    // disambiguation (see its comment for the convention and
+                    // the `0 - 5` residual deviation).
+                    ct = (folded <= 9223372036854775807ULL ||
+                          is_negated_int_const_expr(const_decl->values))
                              ? type_checker_get_builtin(checker, TYPE_INT64)
                              : type_checker_get_builtin(checker, TYPE_UINT64);
                 }

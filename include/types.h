@@ -1171,6 +1171,17 @@ int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
 // predicates above for the same cross-TU reuse (Task 1).
 void stamp_int_const_expr_type(ASTNode* node, Type* target);
 
+// Correctness arc 4 (j): the shared chan-send representability gate — the
+// arc-3 literal gate deduped from its two send-sink copies and extended to
+// const-IDENTIFIER-bearing constant expressions (admission = "the checker-
+// aware folder folds it", closing the `const k = 300; ch <- k` fail-open).
+// Returns 0 = not applicable (caller falls through to its type_compatible
+// check), 1 = representable and handled (literal-only shapes stamped),
+// -1 = rejected (diagnostic already reported). See the definition
+// (type_checker.c) for the negated/bare_literal reconstruction rules.
+int chan_send_const_int_gate(TypeChecker* checker, ASTNode* value_expr,
+                             Type* value_type, Type* elem_type);
+
 // Comptime value params Task 3 (fix round 2): does `t` contain a TYPE_ARRAY
 // anywhere in its structure (through nested arrays, slices, pointers,
 // nullables)? Used by comptime-instance codegen (function_codegen.c /

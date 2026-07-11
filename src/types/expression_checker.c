@@ -4705,40 +4705,21 @@ Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type*
 
     Type* element_type = channel_type->data.channel.element_type;
 
-    // Task 1 (chan-send representability, correctness-followups arc 3):
-    // an untyped int constant sent into an integer-element channel of a
-    // DIFFERENT kind (`ch <- 300` into `chan int8`) used to fall straight
-    // through to the blanket type_compatible check below, which treats any
-    // two integer kinds as compatible — so codegen materialized the
-    // constant at ITS OWN default width (int64) with no narrowing
-    // conversion, and the runtime silently truncated on receive (300 ->
-    // 44). Mirrors type_check_switch_stmt's identical fix for a `case`
-    // value against a differently-kinded tag (type_checker.c — see its doc
-    // comment for the full case table and the uint64 negated/bare_literal
-    // conjunction rationale): unify iff int_const_fits_expected confirms
-    // representability, then stamp the constant's own type to match so
-    // codegen emits it at the element's width directly. Same-kind sends
-    // (e.g. a bare literal into `chan int`, both TYPE_INT64) need no gate —
-    // they already flow through type_compatible below unchanged.
-    if (value_expr && type_is_integer(element_type) && type_is_integer(value_type) &&
-        element_type->kind != value_type->kind &&
-        is_untyped_int_const_expr(value_expr)) {
-        uint64_t raw;
-        int negated = is_negated_int_const_expr(value_expr);
-        int bare_literal = is_bare_int_literal(value_expr);
-        if (goo_fold_const_int(value_expr, &raw) &&
-            !int_const_fits_expected(raw, element_type, negated, bare_literal)) {
-            type_error(checker, value_expr->pos, "constant %lld overflows %s",
-                       (long long)(int64_t)raw, type_to_string(element_type));
-            return NULL;
-        }
-        // Representable (or the fold itself failed — the same documented
-        // gap int_const_fits_expected's other two callers carry, left
-        // unchecked here too): stamp the whole constant subtree to the
-        // element type so codegen emits it at that width, not int64.
-        stamp_int_const_expr_type(value_expr, element_type);
-        return type_checker_get_builtin(checker, TYPE_VOID);
-    }
+    // Task 1 (chan-send representability, arc 3; const-identifier extension,
+    // arc 4 item (j)): a compile-time integer constant — literal shape OR an
+    // expression over cached const identifiers — sent into an integer-element
+    // channel of a DIFFERENT kind (`ch <- 300`, `const k = 300; ch <- k` into
+    // chan int8) used to fall straight through to the blanket type_compatible
+    // check below, which treats any two integer kinds as compatible — so
+    // codegen materialized the constant at its own width and the runtime
+    // silently truncated on receive (300 -> 44). Gate through the shared
+    // representability helper (chan_send_const_int_gate, type_checker.c —
+    // see its doc comment for the case classes and the negated/bare_literal
+    // reconstruction). Same-kind sends and non-constant values need no gate —
+    // they flow through type_compatible below unchanged.
+    int gate = chan_send_const_int_gate(checker, value_expr, value_type, element_type);
+    if (gate < 0) return NULL;
+    if (gate > 0) return type_checker_get_builtin(checker, TYPE_VOID);
 
     // Check if value type is compatible with channel element type
     if (!type_compatible(value_type, element_type)) {
