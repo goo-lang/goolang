@@ -37,6 +37,18 @@
 // is needed. The negative-uint64 reject shape (`-1 -> uint64`) stays covered
 // by tests/golden/reject/return_const_negative_unsigned_reject.goo's sibling,
 // return_const_negative_uint64_reject.goo, not here.
+//
+// doubleNeg/parenNeg (fix round 3, correctness-burndown arc): regression pin
+// for round 2's over-reject, found in re-review. Round 2 gated the uint64
+// arm on AST shape alone (`negated`), rejecting ANY top-level-unary-minus
+// return regardless of its folded sign — `- -1` and `-(1 - 2)` both FOLD to
+// +1 (goo_fold_const_int handles the double/parenthesized negation fine) but
+// were rejected with "constant 1 overflows uint64", which is wrong on its
+// face (1 fits uint64 trivially). The fix changed the uint64 arm to a
+// conjunction, `sval < 0 && negated`: outside [2^63, 2^64) the fold's sign is
+// authoritative and the AST shape is never consulted, so these two accept.
+// The `-1 -> uint64` reject (tests/golden/reject/return_const_negative_uint64_reject.goo)
+// still rejects: it satisfies BOTH conjuncts (sval<0 AND negated).
 package main
 
 import "fmt"
@@ -52,6 +64,8 @@ func boundary8min() int8   { return -128 }       // int8 lower boundary (INT8_MI
 func boundaryU8max() uint8 { return 255 }        // uint8 upper boundary (UINT8_MAX)
 func boundaryU64pow63() uint64 { return 9223372036854775808 }  // 2^63 (break point)
 func boundaryU64max() uint64   { return 18446744073709551615 } // uint64 MAX
+func doubleNeg() uint64    { return - -1 }        // folds to +1; over-reject regression pin
+func parenNeg() uint64     { return -(1 - 2) }    // folds to +1; over-reject regression pin
 
 func main() {
 	fmt.Println(narrow8())          // 100
@@ -65,4 +79,6 @@ func main() {
 	fmt.Println(boundaryU8max())    // 255
 	fmt.Println(boundaryU64pow63()) // 9223372036854775808
 	fmt.Println(boundaryU64max())   // 18446744073709551615
+	fmt.Println(doubleNeg())        // 1
+	fmt.Println(parenNeg())         // 1
 }

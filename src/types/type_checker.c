@@ -3263,15 +3263,41 @@ static int is_negated_int_const_expr(ASTNode* node) {
 // check. uint64 is NOT unconditionally satisfied — see `negated` below.
 //
 // `negated` (is_negated_int_const_expr on the ORIGINAL, unfolded return
-// expression — see the caller) is the fix for a real regression: this
-// function used to blanket-reject on `sval < 0` for every unsigned target
-// including uint64. But goo_fold_const_int is 64-bit MODULAR (documented at
-// its definition) — `-1` and `18446744073709551615` (MaxUint64) fold to the
-// IDENTICAL bit pattern (0xFFFFFFFFFFFFFFFF), so `sval < 0` can't tell a
-// genuine negative constant apart from a legal top-of-range uint64 constant;
-// the blanket check rejected every uint64/uint constant >= 2^63. `negated`
-// is the one signal that DOES distinguish them, because it comes from the
-// AST shape rather than the fold's output.
+// expression — see the caller) feeds the uint/uint64 arm's rejection rule
+// below: reject iff `sval < 0 && negated` — the fold's sign AND the AST
+// shape, a CONJUNCTION, not either alone (fix round 3, correctness-burndown
+// arc; round 2 used `negated` alone and over-rejected — see below).
+//
+// Why the conjunction, and why it's safe: goo_fold_const_int is 64-bit
+// MODULAR (documented at its definition), so `sval < 0` alone is ambiguous
+// ONLY inside [2^63, 2^64) — that's the one region where a legal top-of-range
+// uint64 literal (e.g. `18446744073709551615`, MaxUint64) and a genuinely
+// negative constant (e.g. `-1`) can share the identical bit pattern
+// (0xFFFFFFFFFFFFFFFF) and thus the same negative `sval`. `negated` (a
+// top-level-unary-minus AST check) is the one signal that disambiguates
+// exactly there. Outside that region (`sval >= 0`) the fold is authoritative
+// on its own and the shape check is never consulted — a double or
+// parenthesized negation that folds back to non-negative (`- -1`, `-(1 - 2)`,
+// both folding to +1) is accepted regardless of its unary-minus shape,
+// fixing round 2's over-reject (round 2 checked `negated` alone, so any
+// unary-minus-rooted expression rejected even when its fold was positive).
+//
+// Case table (uint64 target):
+//   -1                      -> sval<0, negated     -> REJECT (correct)
+//   18446744073709551615    -> sval<0, NOT negated -> ACCEPT (correct; MaxUint64)
+//   - -1, -(1 - 2)          -> sval=+1 (>=0)        -> ACCEPT (correct; shape
+//                                                      never consulted)
+//   -(9223372036854775808)  -> folds to INT64_MIN's bit pattern (negating
+//                              2^63 wraps to itself under 64-bit modular
+//                              arithmetic), sval<0, negated -> REJECT
+//                              (correct: mathematically negative)
+//   0 - 1                   -> sval<0, NOT negated -> ACCEPT-and-wraps to
+//                              18446744073709551615 — the ONE remaining
+//                              documented deviation (under-reject only; Go
+//                              would still reject this). Round 2's
+//                              over-reject deviation (rejecting `- -1` etc.)
+//                              is gone; only this pre-existing under-reject
+//                              gap remains.
 //
 // Documented deviation (same class as this file's existing `^`-rooted
 // deviation — see check_conversion_operand_range's doc comment):
@@ -3279,9 +3305,10 @@ static int is_negated_int_const_expr(ASTNode* node) {
 // PURE-ARITHMETIC negative result with no such literal minus sign — e.g.
 // `return 0 - 1` into a uint64 — is not flagged `negated` and slips through
 // as its two's-complement reinterpretation (18446744073709551615), where Go
-// would still reject it. Out of scope for this fix, same as the `^`-rooted
-// gap; narrower (uint8/16/32) targets are unaffected since they keep the
-// unconditional `sval < 0` rejection below.
+// would still reject it (goo_fold_const_int's 64-bit-modular fold is what
+// produces that reinterpretation). Out of scope for this fix, same as the
+// `^`-rooted gap; narrower (uint8/16/32) targets are unaffected since they
+// keep the unconditional `sval < 0` rejection below.
 static int int_const_fits_expected(uint64_t raw, Type* expected, int negated) {
     int64_t sval = (int64_t)raw;
     if (type_is_signed(expected)) {
@@ -3302,11 +3329,13 @@ static int int_const_fits_expected(uint64_t raw, Type* expected, int negated) {
         case TYPE_UINT16: return sval >= 0 && (uint64_t)sval <= UINT16_MAX;
         case TYPE_UINT32: return sval >= 0 && (uint64_t)sval <= UINT32_MAX;
         default:
-            // uint / uint64: reject iff the constant is SYNTACTICALLY
-            // negative-rooted (`negated`); otherwise every 64-bit fold is
-            // representable (the type's full [0, 2^64-1] range), including
-            // values >= 2^63 like MaxUint64 — see the deviation note above.
-            return !negated;
+            // uint / uint64: reject iff BOTH the fold is negative AND the
+            // constant is syntactically negative-rooted (`sval < 0 &&
+            // negated`) — see the conjunction rationale and case table
+            // above. Otherwise the fold is authoritative and the full 64-bit
+            // range [0, 2^64-1] is representable, including values >= 2^63
+            // like MaxUint64.
+            return !(sval < 0 && negated);
     }
 }
 
