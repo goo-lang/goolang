@@ -213,16 +213,16 @@ HardwareProfile* detect_hardware_profile(void) {
     // Build feature string based on detected capabilities
     char feature_buffer[1024] = {0};
     if (profile->capabilities & HW_CAP_SIMD_AVX2) {
-        strcat(feature_buffer, "+avx2");
+        strncat(feature_buffer, "+avx2", sizeof(feature_buffer) - strlen(feature_buffer) - 1);
     }
     if (profile->capabilities & HW_CAP_SIMD_AVX512) {
-        strcat(feature_buffer, "+avx512f");
+        strncat(feature_buffer, "+avx512f", sizeof(feature_buffer) - strlen(feature_buffer) - 1);
     }
     if (profile->capabilities & HW_CAP_AES_NI) {
-        strcat(feature_buffer, "+aes");
+        strncat(feature_buffer, "+aes", sizeof(feature_buffer) - strlen(feature_buffer) - 1);
     }
     if (profile->capabilities & HW_CAP_FMA) {
-        strcat(feature_buffer, "+fma");
+        strncat(feature_buffer, "+fma", sizeof(feature_buffer) - strlen(feature_buffer) - 1);
     }
     
     profile->feature_string = strdup(feature_buffer);

@@ -249,7 +249,7 @@ void ergo_add_stack_trace_to_error(Error* error, const ErgoErrorContext* ctx) {
                 frame->operation_description ? frame->operation_description : "unknown operation");
         
         if (strlen(stack_trace) + strlen(frame_info) < sizeof(stack_trace) - 1) {
-            strcat(stack_trace, frame_info);
+            strncat(stack_trace, frame_info, sizeof(stack_trace) - strlen(stack_trace) - 1);
         }
         
         frame = frame->parent;

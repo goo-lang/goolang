@@ -90,10 +90,6 @@ c-unsafe-string-api:src/comptime/comptime_intrinsics.c:538
 c-unsafe-string-api:src/comptime/comptime_intrinsics.c:54
 c-unsafe-string-api:src/comptime/comptime_intrinsics.c:542
 c-unsafe-string-api:src/comptime/comptime_intrinsics.c:543
-c-unsafe-string-api:src/comptime/hardware_aware.c:216
-c-unsafe-string-api:src/comptime/hardware_aware.c:219
-c-unsafe-string-api:src/comptime/hardware_aware.c:222
-c-unsafe-string-api:src/comptime/hardware_aware.c:225
 c-unsafe-string-api:src/concurrency/shared_variables.c:1363
 c-unsafe-string-api:src/concurrency/shared_variables.c:1372
 c-unsafe-string-api:src/concurrency/shared_variables.c:1382
@@ -109,7 +105,6 @@ c-unsafe-string-api:src/derive_macros.c:328
 c-unsafe-string-api:src/derive_macros.c:332
 c-unsafe-string-api:src/derive_macros.c:373
 c-unsafe-string-api:src/derive_macros.c:377
-c-unsafe-string-api:src/errors/ergonomic_errors.c:252
 c-unsafe-string-api:src/errors/ergonomic_errors.c:398
 c-unsafe-string-api:src/errors/ergonomic_errors.c:407
 c-unsafe-string-api:src/errors/error.c:475
@@ -178,7 +173,6 @@ c-unsafe-string-api:src/template_macros.c:208
 c-unsafe-string-api:src/template_macros.c:217
 c-unsafe-string-api:src/template_macros.c:225
 c-unsafe-string-api:src/template_macros.c:256
-c-unsafe-string-api:src/template_macros.c:406
 c-unsafe-string-api:src/template_macros.c:545
 c-unsafe-string-api:src/template_macros.c:554
 c-unsafe-string-api:src/template_macros.c:557
