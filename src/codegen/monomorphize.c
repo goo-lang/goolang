@@ -919,6 +919,40 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
                 alias->is_initialized = 1;
                 scope_add_variable(checker->current_scope, alias);
             }
+            // P6 M1: the instance's signature is re-resolved from the template
+            // AST here (codegen_generate_function_decl -> type_from_ast on the
+            // return/param types). An UNQUALIFIED package-local type name in
+            // that signature (`func Partition(...) Partitioned`, `Partitioned`
+            // declared in the same package) resolves via
+            // type_checker_lookup_variable — but the package's own type
+            // declarations were freed by scope_pop after the package's codegen,
+            // so a bare `Partitioned` here would fail "Unknown type". Publish
+            // the owning package's exported TYPE declarations into this same
+            // throwaway scope (mirroring the visibility the package's OWN
+            // codegen pass had via current_package), so unqualified references
+            // to them resolve. Only type exports (is_builtin, non
+            // package/function kind — exactly what type_check_type_decl marks)
+            // are aliased; value/function exports are irrelevant to type
+            // resolution and left out. Each alias is a fresh Variable sharing
+            // the export's Type* (not owned — no double free on scope_pop).
+            if (fn_var->owner_pkg->exports) {
+                for (Variable* ev = fn_var->owner_pkg->exports->variables;
+                     ev; ev = ev->next) {
+                    if (!ev->is_builtin || !ev->type ||
+                        ev->type->kind == TYPE_PACKAGE ||
+                        ev->type->kind == TYPE_FUNCTION) {
+                        continue;
+                    }
+                    Variable* talias = variable_new(ev->name, ev->type,
+                                                    ev->declared_pos);
+                    if (!talias) continue;
+                    talias->is_builtin = 1;
+                    talias->is_initialized = 1;
+                    if (!scope_add_variable(checker->current_scope, talias)) {
+                        variable_free(talias);
+                    }
+                }
+            }
             pushed_alias = 1;
         }
         ok = codegen_generate_comptime_function_instance(codegen, checker, tmpl, sym,
