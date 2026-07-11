@@ -463,6 +463,28 @@ Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* righ
         return NULL;
     }
 
+    // struct == struct where the struct is NON-comparable (has a slice/map/
+    // func/interface/array field): Go rejects this statically ("invalid
+    // operation: ... (struct containing []T cannot be compared)"). Without
+    // this arm the generic type_compatible fallback below ACCEPTS it (matching
+    // struct types are compatible) and hands codegen a comparison it can only
+    // lower via the value comparator — which, for a non-comparable struct,
+    // would emit an illegal icmp over an aggregate field (the same defect
+    // class the boxing path now routes to a runtime panic). A COMPARABLE
+    // struct `==` is Go-legal but not yet lowered in v1; it deliberately does
+    // NOT match here and falls through to the existing codegen limitation,
+    // keeping "statically illegal" distinct from "valid but unimplemented".
+    if ((op == TOKEN_EQ || op == TOKEN_NE) &&
+        left_type->kind == TYPE_STRUCT && right_type->kind == TYPE_STRUCT &&
+        type_equals(left_type, right_type) &&
+        !type_struct_fields_comparable(left_type)) {
+        type_error(checker, pos,
+                  "invalid operation: %s %s %s (struct is not comparable: has a slice/map/func/interface field)",
+                  type_to_string(left_type), op == TOKEN_EQ ? "==" : "!=",
+                  type_to_string(right_type));
+        return NULL;
+    }
+
     // pointer == pointer / chan == chan, NEITHER operand nil (F2 follow-up
     // to P2.2): Go allows two pointers to compare by address (identity) and
     // two channels to compare by identity — DISTINCT from the slice/map/

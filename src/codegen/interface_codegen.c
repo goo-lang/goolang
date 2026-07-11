@@ -332,11 +332,12 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
     // only: pointer_form is excluded here (a boxed *T reaching this
     // function is a rarer shape not covered by this task's shape matrix —
     // it stays on the type-name fallback, like every other not-yet-reused
-    // kind). A struct field that is itself a slice/map crashes earlier, at
-    // BOXING time, in the unrelated pre-existing struct-key-eq synthesis
-    // (codegen_get_or_emit_struct_key_eq emits an illegal icmp over a
-    // slice-aggregate field) — this function is never even reached for
-    // that shape, so no extra guard is needed here for it.
+    // kind). A struct field that is itself a slice/map is fine here: the
+    // %v formatter below prints such fields correctly. Boxing such a struct
+    // no longer crashes — codegen_get_or_emit_type_eq routes a non-comparable
+    // struct's descriptor eq_fn to the uncomparable-panic stub instead of
+    // synthesizing an illegal icmp (arc3 Task 2), so this arm IS reached for
+    // that shape and formats it.
     int is_struct = !pointer_form && concrete->kind == TYPE_STRUCT;
 
     if (is_sint) {

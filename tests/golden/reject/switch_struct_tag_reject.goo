@@ -1,0 +1,28 @@
+// switch_struct_tag_reject (correctness follow-ups arc3 Task 4, Mandate B):
+// codegen_generate_switch_stmt special-cases string tags (goo_string_eq) and
+// float tags (FCmp) but falls through to a plain LLVMBuildICmp(IntEQ) for
+// anything else — including a struct-typed tag, which is neither an integer
+// nor a pointer LLVM operand. Before this task, `switch p { case other: }`
+// (p, other both a COMPARABLE struct type) crashed module verification with
+// raw "Invalid operand types for ICmp instruction  icmp eq %Point ..." —
+// a live verifier leak reaching users, for a comparable struct that Go itself
+// allows switching on. This is a v1 WALL for an unimplemented feature, NOT Go
+// parity — a future lowering task should REMOVE this wall (see
+// type_check_switch_stmt's Mandate B doc comment), not treat it as spec.
+package main
+
+type Point struct {
+	X int
+	Y int
+}
+
+func main() {
+	p := Point{X: 1, Y: 2}
+	other := Point{X: 1, Y: 2}
+	switch p {
+	case other:
+		println("match")
+	default:
+		println("no match")
+	}
+}

@@ -1,0 +1,21 @@
+// struct_slice_eq_reject (correctness follow-ups arc3 Task 2): a struct with a
+// slice field is NON-comparable in Go — a static `==` on it is a compile-time
+// error ("invalid operation: ... struct containing []T cannot be compared").
+// Before this task the checker ACCEPTED it (matching struct types are
+// type_compatible) and handed codegen a comparison it can only lower via the
+// value comparator, which emits an illegal icmp over the slice aggregate. Now
+// type_check_comparison_op walls it with a positioned Go-parity diagnostic
+// BEFORE codegen. Companion accept golden: examples/box_slice_field_struct_probe
+// (boxing such a struct into `any` is legal and prints correctly — only static
+// `==` / map-key use is rejected).
+package main
+
+type WithSlice struct {
+	Items []int
+}
+
+func main() {
+	a := WithSlice{Items: []int{1, 2, 3}}
+	b := WithSlice{Items: []int{1, 2, 3}}
+	_ = a == b
+}

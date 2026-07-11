@@ -3198,7 +3198,7 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 // which the constant is representable (Go representability rule); the caller
 // (`int_const_coerce`) accepts both widening and narrowing targets, but only
 // after int_const_fits_expected confirms the folded value fits — see there.
-static int is_untyped_int_const_expr(ASTNode* node) {
+int is_untyped_int_const_expr(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
         return ((LiteralNode*)node)->literal_type == TOKEN_INT;
@@ -3227,7 +3227,7 @@ static int is_untyped_int_const_expr(ASTNode* node) {
 // wrapping the literal) is negated; `0 - 1` (BinaryExprNode) is NOT, even
 // though goo_fold_const_int folds both to the identical 64-bit pattern —
 // that gap is `int_const_fits_expected`'s documented deviation.
-static int is_negated_int_const_expr(ASTNode* node) {
+int is_negated_int_const_expr(ASTNode* node) {
     return node && node->type == AST_UNARY_EXPR &&
            ((UnaryExprNode*)node)->operator == TOKEN_MINUS;
 }
@@ -3244,7 +3244,7 @@ static int is_negated_int_const_expr(ASTNode* node) {
 // unrepresentable value — Go accepts int8(0 - 5) == -5. Only a literal
 // actually WRITTEN >= 2^63 in source (`18446744073709551615`) is
 // unrepresentable in every signed width, including int64.
-static int is_bare_int_literal(ASTNode* node) {
+int is_bare_int_literal(ASTNode* node) {
     return node && node->type == AST_LITERAL &&
            ((LiteralNode*)node)->literal_type == TOKEN_INT;
 }
@@ -3341,8 +3341,8 @@ static int is_bare_int_literal(ASTNode* node) {
 // unreachable in practice, but is called out here for completeness) would
 // likewise not be flagged by `bare_literal` and would fall through to the
 // ordinary sval range checks below.
-static int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
-                                    int bare_literal) {
+int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
+                             int bare_literal) {
     int64_t sval = (int64_t)raw;
     if (type_is_signed(expected)) {
         // A bare literal >= 2^63 as WRITTEN IN SOURCE (e.g.
@@ -3656,7 +3656,49 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                     }
                 }
 
-                if ((!same_kind || !same_width) && !int_const_coerce) {
+                // Untyped int constant into a FLOAT return type (`return 1`
+                // from a func() float64/float32 — correctness-followups arc
+                // 3, task 3). Go's representability rule for constants:
+                // EVERY integer value expressible in this AST shape
+                // (is_untyped_int_const_expr — bare literal, unary minus over
+                // one, or constant arithmetic) is representable as a
+                // floating value in BOTH float64 and float32, because Go
+                // defines rounding for a constant that exceeds the target
+                // float type's PRECISION (not its range) — an int64-range
+                // constant is always within range (float64 holds up to
+                // ~1.8e308, float32 up to ~3.4e38; nothing an int64-shaped
+                // literal can spell gets remotely close). So — unlike
+                // int_const_coerce just above — there is no
+                // int_const_fits_expected-style overflow rejection to run
+                // here: accept unconditionally. This is a v1 SCOPE DECISION,
+                // not a general untyped-float-constant implementation —
+                // untyped FLOAT constants (`3.9`) have no folder
+                // (`goo_fold_const_int` is int-only) and are NOT covered by
+                // this gate. Narrowing an untyped FLOAT constant into
+                // func() float32 (e.g. `return 3.9` from a float32 fn) is a
+                // KNOWN FALSE-REJECT here (Go accepts: constant conversion
+                // with rounding); out of scope here because no untyped-FLOAT
+                // constant folder exists to reuse — backlog item, see the
+                // mirror float-case-on-int-tag crash (see the arc's task
+                // report).
+                int float_const_coerce =
+                    type_is_float(expected) &&
+                    is_untyped_int_const_expr(ret_stmt->values);
+                if (float_const_coerce) {
+                    // Stamp the whole constant subtree to the float target
+                    // type so codegen_generate_literal's existing cross-kind
+                    // float-adaptation arm (TOKEN_INT case,
+                    // expression_codegen.c — the same one `1 < g` against a
+                    // float32 `g` already stamps into) emits an LLVMConstReal
+                    // identical to what a float literal of this value would
+                    // produce, instead of an int64 LLVMConstInt the return
+                    // path's own width-coercion block (integer-only) has no
+                    // conversion for.
+                    stamp_int_const_expr_type(ret_stmt->values, expected);
+                }
+
+                if ((!same_kind || !same_width) &&
+                    !int_const_coerce && !float_const_coerce) {
                     // Point at the returned value, not stmt->pos: a return
                     // statement's pos is the post-parse lookahead (the next
                     // decl's line), which mis-attributes the diagnostic.
@@ -3708,7 +3750,7 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
 // whole subtree — not just top-level — is what makes a compound case
 // expression (`-5`, `1+2`) emit at the switch tag's width, matching a bare
 // literal case (`'\n'`, `300`).
-static void stamp_int_const_expr_type(ASTNode* node, Type* target) {
+void stamp_int_const_expr_type(ASTNode* node, Type* target) {
     if (!node) return;
     node->node_type = target;
     if (node->type == AST_UNARY_EXPR) {
@@ -3763,6 +3805,71 @@ static void stamp_int_const_expr_type(ASTNode* node, Type* target) {
 // expression's own (already-checked) bool type is left untouched, exactly
 // as before this fix — the tagless-switch shape is not a wall this task
 // adds.
+//
+// Correctness-followups arc 3, task 4 — two independent additions layered
+// onto the fix above, both scoped to what this function can already see:
+//
+// Mandate A (duplicate constant case values): Go rejects two case clauses
+// whose constant VALUES coincide, even after folding (`case 1:` and
+// `case - -1:` both denote 1). This checker never tracked that at all —
+// first-match-wins silently swallowed the second clause all the way to
+// codegen. Fix: for an INTEGER-tag switch (type_is_integer(tag_type)),
+// fold every case expression through the same goo_fold_const_int the
+// int-int representability branch below already calls, and flag a second
+// occurrence of an already-seen folded value. Scoped to integer constants
+// only, matching goo_fold_const_int's own literal-only reach:
+//   - STRING case duplicates (`case "a" + "b":` vs `case "ab":`) are NOT
+//     detected here even though a value-level folder exists
+//     (goo_fold_const_string, expression_helpers.c) — extending it would
+//     need its own collision table (string equality, not integer identity)
+//     and its own diagnostic shape, both outside this task's explicit
+//     ask (the `%lld`-valued "duplicate case value" message below). Go
+//     rejects string-case duplicates too; this is an honest scope gap,
+//     not a claim that strings can't be compared.
+//   - FLOAT-literal case duplicates (`case 2.5:` twice) are NOT detected:
+//     no untyped-float constant folder exists in this codebase (only
+//     goo_fold_const_int, integer-only — see type_check_return_stmt's
+//     float_const_coerce comment above for the same documented gap), and
+//     this task does not add one.
+//   - An int-CONSTANT case under a FLOAT tag (`switch f float64 { case 2:
+//     case 2: }`, task 3's stamped-to-float shape) is NOT covered: the
+//     gate below requires type_is_integer(tag_type), so float-tag switches
+//     skip dup detection entirely (first-match-wins, silently). Known
+//     narrower-than-ideal scope — folding the still-integer-shaped case
+//     ASTs would work mechanically, but float-tag dup semantics belong
+//     with a future untyped-float folder so int-vs-float dup collisions
+//     (`case 2:` vs `case 2.0:`) are decided once, not half-here.
+// A duplicate's diagnostic fires at the SECOND occurrence with a
+// cross-reference position, house style shared with ownership_checker.c's
+// "Use of moved variable '%s' (moved at %s:%d:%d)".
+//
+// The dup-tracking table is a fixed-capacity flat array scoped to a single
+// call of this function (stack-local, reset per switch — nested switches
+// each get their own via ordinary recursion), matching lane_ownership.c's
+// documented flat-table convention for small per-construct tables: no
+// heap allocation, so xmalloc/xrealloc do not apply here; past the cap it
+// silently stops tracking additional values (an under-detect — a missed
+// duplicate, never a false one — the same safe direction lane_ownership.c
+// chose for its own per-function tables).
+//
+// Mandate B (struct-typed switch tag wall): codegen_generate_switch_stmt
+// (statement_codegen.c) special-cases string tags (goo_string_eq) and
+// float tags (FCmp) but falls through to a plain LLVMBuildICmp(IntEQ) for
+// anything else — including a struct-typed tag, which is neither an
+// integer nor a pointer LLVM operand. Empirically confirmed at this arc's
+// HEAD: `switch p { case other: }` (p, other both `Point` structs, a
+// COMPARABLE struct type) crashes module verification with "Invalid
+// operand types for ICmp instruction  %switch.cmp = icmp eq %Point ...",
+// and a struct with a slice field (non-comparable) crashes identically —
+// struct-tag switch lowering is simply unwritten, for comparable and
+// non-comparable structs alike. This is a v1 WALL for an unimplemented
+// feature, NOT Go parity: Go allows switching on a comparable struct
+// value (and would itself reject a non-comparable one, or panic on `==`
+// at runtime for the interface-boxed case). A future lowering task should
+// REMOVE this wall — likely routing struct-tag comparison through the
+// same field-by-field equality codegen.c's boxed-`any` equality path
+// already builds for comparable structs — rather than treat the wall as
+// spec.
 int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_SWITCH_STMT) return 0;
 
@@ -3773,6 +3880,34 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
         tag_type = type_check_expression(checker, sw->tag);
         if (!tag_type) ok = 0;
     }
+
+    // Mandate B: wall off a struct-typed tag before any case is examined —
+    // see the doc comment above. Falls through (does not early-return) so
+    // clause bodies still get checked, matching this function's existing
+    // cascade-suppression convention (a bad tag doesn't block reporting
+    // unrelated errors inside case bodies).
+    if (tag_type && !type_is_poison(tag_type) && tag_type->kind != TYPE_UNKNOWN &&
+        tag_type->kind == TYPE_STRUCT) {
+        if (type_struct_fields_comparable(tag_type)) {
+            type_error(checker, sw->tag->pos,
+                       "switch on a struct-typed value is not supported "
+                       "(v1 limitation: struct-tag switch lowering is not "
+                       "implemented; Go allows this for a comparable struct)");
+        } else {
+            type_error(checker, sw->tag->pos,
+                       "switch on a struct-typed value is not supported "
+                       "(%s is additionally non-comparable, so Go would "
+                       "reject this too)",
+                       type_to_string(tag_type));
+        }
+        ok = 0;
+    }
+
+    // Mandate A's per-switch dup table — see the doc comment above.
+#define SWITCH_DUP_CASE_MAX_VALUES 64
+    uint64_t dup_values[SWITCH_DUP_CASE_MAX_VALUES];
+    Position dup_pos[SWITCH_DUP_CASE_MAX_VALUES];
+    size_t dup_count = 0;
 
     for (ASTNode* c = sw->cases; c; c = c->next) {
         CaseClauseNode* clause = (CaseClauseNode*)c;
@@ -3787,6 +3922,38 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
             if (!tag_type || type_is_poison(tag_type) || type_is_poison(e_type) ||
                 tag_type->kind == TYPE_UNKNOWN || e_type->kind == TYPE_UNKNOWN) {
                 continue;
+            }
+
+            // Mandate A: fold + dup-check BEFORE the kind-equality early-out
+            // just below — the exact RED shape (`case 1:` then `case 1:` on
+            // a plain int tag) has tag_type->kind == e_type->kind and would
+            // otherwise never reach the fold at all. Gated on an
+            // INTEGER-kind tag (see the doc comment's scope list); a
+            // successful fold means `e` is one of goo_fold_const_int's
+            // literal-or-constant-arithmetic shapes, so this never
+            // misfires on a non-constant case expression.
+            if (type_is_integer(tag_type)) {
+                uint64_t raw;
+                if (goo_fold_const_int(e, &raw)) {
+                    size_t prev = dup_count; // index of a match, if any
+                    for (size_t k = 0; k < dup_count; k++) {
+                        if (dup_values[k] == raw) { prev = k; break; }
+                    }
+                    if (prev < dup_count) {
+                        Position pp = dup_pos[prev];
+                        type_error(checker, e->pos,
+                                   "duplicate case value %lld (previous case "
+                                   "at %s:%d:%d)",
+                                   (long long)(int64_t)raw,
+                                   pp.filename ? pp.filename : "<unknown>",
+                                   pp.line, pp.column);
+                        ok = 0;
+                    } else if (dup_count < SWITCH_DUP_CASE_MAX_VALUES) {
+                        dup_values[dup_count] = raw;
+                        dup_pos[dup_count] = e->pos;
+                        dup_count++;
+                    }
+                }
             }
 
             if (tag_type->kind == e_type->kind) continue; // already comparable today
@@ -3827,6 +3994,20 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                 continue;
             }
 
+            // Untyped int constant case against a FLOAT tag (`switch f {
+            // case 1: }`, f float64/float32 — correctness-followups arc 3,
+            // task 3; same v1 rule as type_check_return_stmt's
+            // float_const_coerce above, see its doc comment for the
+            // representability rationale). No int_const_fits_expected-style
+            // overflow check applies (unlike the int-int branch just above)
+            // — accept unconditionally and stamp so codegen's switch
+            // lowering compares two floats (fcmp) instead of an int64 case
+            // value against a float tag.
+            if (type_is_float(tag_type) && is_untyped_int_const_expr(e)) {
+                stamp_int_const_expr_type(e, tag_type);
+                continue;
+            }
+
             // Any other kind mismatch (e.g. a string case against an int tag)
             // — reject via the same check `tag == case` would perform.
             if (!type_check_comparison_op(checker, tag_type, e_type, TOKEN_EQ, e->pos)) {
@@ -3840,6 +4021,7 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
     }
     return ok;
 }
+#undef SWITCH_DUP_CASE_MAX_VALUES
 
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
     if (!checker || !stmt || stmt->type != AST_GO_STMT) return 0;
@@ -3993,6 +4175,7 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
                     ok = 0;
                 } else {
                     Type* val_t = type_check_expression(checker, send->right);
+                    Type* elem_t = chan_t->data.channel.element_type;
                     if (!val_t) {
                         ok = 0;
                     // Fix 2: sibling of the TOKEN_ARROW gate in
@@ -4003,11 +4186,33 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
                                    checker, send->right, val_t,
                                    send->right->pos, "sent on a channel")) {
                         ok = 0;
-                    } else if (!type_compatible(val_t, chan_t->data.channel.element_type)) {
+                    // Task 1 (chan-send representability, correctness-
+                    // followups arc 3): this comm path never routes through
+                    // type_check_channel_send_op either (see the comment
+                    // above this block), so it needs the identical
+                    // representability gate that function's Task 1 fix adds
+                    // — same helpers, same TU, called directly (no header
+                    // needed here, unlike expression_checker.c's call site).
+                    } else if (type_is_integer(elem_t) && type_is_integer(val_t) &&
+                               elem_t->kind != val_t->kind &&
+                               is_untyped_int_const_expr(send->right)) {
+                        uint64_t raw;
+                        int negated = is_negated_int_const_expr(send->right);
+                        int bare_literal = is_bare_int_literal(send->right);
+                        if (goo_fold_const_int(send->right, &raw) &&
+                            !int_const_fits_expected(raw, elem_t, negated, bare_literal)) {
+                            type_error(checker, send->right->pos,
+                                       "constant %lld overflows %s",
+                                       (long long)(int64_t)raw, type_to_string(elem_t));
+                            ok = 0;
+                        } else {
+                            stamp_int_const_expr_type(send->right, elem_t);
+                        }
+                    } else if (!type_compatible(val_t, elem_t)) {
                         type_error(checker, send->right->pos,
                                    "select send: cannot use %s as %s channel element",
                                    type_to_string(val_t),
-                                   type_to_string(chan_t->data.channel.element_type));
+                                   type_to_string(elem_t));
                         ok = 0;
                     }
                 }
