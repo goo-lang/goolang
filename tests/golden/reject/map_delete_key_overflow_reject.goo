@@ -1,0 +1,10 @@
+// Correctness arc 9 (i): the delete(m, k) key sink — same gate as the
+// index-key and map-literal-key sinks. `delete(m, 300)` on map[int8]int
+// must reject like Go instead of passing the raw folded i64 key to the
+// runtime (where it silently no-ops against any in-domain key).
+package main
+
+func main() {
+	m := map[int8]int{5: 1}
+	delete(m, 300)
+}

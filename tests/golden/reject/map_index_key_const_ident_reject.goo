@@ -1,0 +1,12 @@
+// Correctness arc 9 (i): const-identifier key at the INDEX sink (read
+// position) — `m[K]` with K = 300 on map[int8]int must reject via the
+// shared core, same as the literal-key and map-literal-key gates.
+package main
+
+const K = 300
+
+func main() {
+	m := map[int8]int{}
+	v := m[K]
+	_ = v
+}
