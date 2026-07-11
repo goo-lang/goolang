@@ -282,12 +282,16 @@ func ParseInt(s string) !int64 {
 //
 // A second deviation is structural, not behavioral: upstream's
 // appendEscapedRune uses a TAGGED switch (`switch r { case '\a': ... }`).
-// Goo's codegen has a confirmed bug where a switch tag narrower than i64
-// (rune/int32) compared against char-literal cases emits mismatched-width
-// LLVM IR (`icmp eq i32 %r, i64 10` — verifier failure); reported separately
-// below. Rewritten as a tagless switch (`switch { case r == '\a': ... }`),
-// which is definitionally identical control flow — same semantics, same
-// output — confirmed compiling and matching `go run` byte-for-byte.
+// FIXED as of the correctness-burndown arc 2 (task 2): a tagged switch on a
+// rune/int32 tag against char-literal cases now compiles and runs correctly
+// (type_check_switch_stmt unifies an untyped-constant case expression's
+// width with the tag's, representability-gated — see
+// examples/switch_rune_char_probe.goo). This function is NOT rewritten back
+// to a tagged switch here, though — that's a separate vendoring-fidelity
+// pass (matching upstream's exact source shape token-for-token), not a
+// correctness fix, so it's left as the tagless workaround below (still
+// definitionally identical control flow, still confirmed compiling and
+// matching `go run` byte-for-byte) until that pass happens.
 //
 // A third deviation: `utf8.RuneSelf` / `utf8.RuneError` (package-level
 // CONST selectors on an imported goostd source package) do not resolve —
@@ -375,17 +379,20 @@ func Quote(s string) string {
 
 // --- Compiler gaps found while vendoring (P4.10) ---
 //
-// 1. Switch-on-rune with char-literal cases miscompiles. A TAGGED switch
-//    (`switch r { case '\n': ... }`) where the tag is `rune` (int32) and
-//    case values are char literals fails LLVM module verification:
-//    `Both operands to ICmp instruction are not of the same type! icmp eq
-//    i32 %r, i64 10` — the case constant is emitted as i64 while the tag is
-//    i32. Reproduced minimally outside this package (see conversation probe
-//    p9.goo equivalent: a two-case switch on a `rune` parameter against
-//    '\n'/'a'). Workaround used throughout this file: tagless switches
-//    (`switch { case r == '\n': ... }`), which are semantically identical
-//    and compile/run correctly. NOT fixed here (out of scope — src/ is off
-//    limits for this task); flagged for a follow-up codegen fix.
+// 1. FIXED (correctness-burndown arc 2, task 2): switch-on-rune with
+//    char-literal cases used to miscompile. A TAGGED switch (`switch r {
+//    case '\n': ... }`) where the tag is `rune` (int32) and case values are
+//    char literals used to fail LLVM module verification (`Both operands to
+//    ICmp instruction are not of the same type! icmp eq i32 %r, i64 10` —
+//    the case constant emitted as i64 while the tag stayed i32). Fixed in
+//    type_check_switch_stmt (src/types/type_checker.c): an untyped-constant
+//    case expression now unifies with the tag's type, representability-
+//    gated (same rule as `return`'s int_const_fits_expected). Pinned by
+//    examples/switch_rune_char_probe.goo. This function's tagless workaround
+//    (`switch { case r == '\n': ... }`, semantically identical, still
+//    compiles/runs correctly) is kept as-is — reverting it to a tagged
+//    switch is a vendoring-fidelity pass, not a correctness fix; see the
+//    Quote doc comment above.
 //
 // 2. Cross-package CONST/value-member selector access into a goostd SOURCE
 //    package does not resolve: `utf8.RuneSelf` (a value, not a call) fails

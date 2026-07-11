@@ -1,0 +1,9 @@
+bell
+newline
+letter-a
+letter-z
+other
+neg-hundred
+zero
+max
+mid

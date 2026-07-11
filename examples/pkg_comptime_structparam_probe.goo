@@ -1,0 +1,20 @@
+// pkg_comptime_structparam_probe: a comptime package function whose OTHER
+// parameter is a package-local struct type (arc2 Task 4 R2,
+// .superpowers/sdd/arc2-repro-report.md R2) — `func Read(comptime n int, b
+// Box) int` declared in cpkg, called cross-package with a Box built in the
+// SAME package as Read/Box.
+//
+// Known gap (out of scope for this fixture — a real parser limitation, not
+// a comptime issue): a package-qualified composite literal like
+// `cpkg.Box{N: 7}` does not parse today. Worked around by building the Box
+// through cpkg's own `Make` constructor instead of a literal here.
+//
+// Read(3, cpkg.Make(7)) -> b.N(7) + n(3) = 10.
+package main
+
+import "cpkg"
+
+func main() {
+	b := cpkg.Make(7)
+	println(cpkg.Read(3, b))
+}

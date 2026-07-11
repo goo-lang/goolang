@@ -1883,9 +1883,17 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             final_return_value = boxed;
         }
 
-        // Integer widening: widen the return value to match the function's
-        // declared LLVM return type (e.g. `return 0` as i32 from an i64
-        // function). Mirrors the same SExt guard in var_decl.
+        // Integer width coercion: match the return value to the function's
+        // declared LLVM return type. Widening (`return 0` as i32 from an i64
+        // function) always applies. Narrowing (`return 1` from an int8
+        // function) is only reachable for an untyped integer CONSTANT that
+        // the checker has already confirmed is representable at the target
+        // width (Go representability rule) — a non-constant narrowing return,
+        // or a constant that doesn't fit, is rejected before codegen (see the
+        // int_const_coerce gate and its int_const_fits_expected range check in
+        // type_check_return_stmt) — so here we rebuild the constant at the
+        // target width rather than emit a Trunc on a runtime value. Mirrors
+        // var_decl's narrowing/widening const path.
         {
             LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
             LLVMTypeRef fn_ret = LLVMGetReturnType(LLVMGlobalGetValueType(cur_fn));
@@ -1894,9 +1902,17 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 LLVMGetTypeKind(fn_ret) == LLVMIntegerTypeKind) {
                 unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
                 unsigned to_bits   = LLVMGetIntTypeWidth(fn_ret);
-                if (from_bits < to_bits)
+                if (from_bits < to_bits) {
                     final_return_value = LLVMBuildSExt(codegen->builder, final_return_value,
                                                        fn_ret, "ret_sext");
+                } else if (from_bits > to_bits && LLVMIsConstant(final_return_value)) {
+                    int use_sext = return_value->goo_type
+                                 ? type_is_signed(return_value->goo_type) : 1;
+                    unsigned long long raw = use_sext
+                        ? (unsigned long long)LLVMConstIntGetSExtValue(final_return_value)
+                        : LLVMConstIntGetZExtValue(final_return_value);
+                    final_return_value = LLVMConstInt(fn_ret, raw, use_sext);
+                }
             }
         }
 

@@ -1,0 +1,17 @@
+package main
+
+// A bare integer literal written >= 2^63 in source can never be represented
+// by ANY signed target width, int8 included — Go rejects this at compile
+// time. Regression pin (fix round 4, correctness-burndown arc): before this
+// fix, int_const_fits_expected's signed arms trusted goo_fold_const_int's
+// 64-bit-modular fold unconditionally, so this literal's top bit (set, since
+// it is >= 2^63) reinterpreted as a small negative sval and slipped past the
+// per-width range checks — the function silently accepted this and codegen
+// emitted -1.
+func f() int8 {
+	return 18446744073709551615
+}
+
+func main() {
+	println(f())
+}

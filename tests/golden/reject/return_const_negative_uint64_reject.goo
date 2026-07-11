@@ -1,0 +1,9 @@
+package main
+
+func f() uint64 {
+	return -1
+}
+
+func main() {
+	println(f())
+}

@@ -5,15 +5,18 @@
 // distinct types sharing a bare name across packages, both boxed into `any`
 // and %v-formatted, silently shared one cached formatter: first-boxer-wins.
 //
-// Rect/Rect (struct pair): a REGRESSION GUARD, not a bug reproduction. Goo's
-// %v for a non-scalar interface-boxed value is a KNOWN v1 limitation — it
-// prints the bare type name ("Rect"), not Go's `{fields}` — unrelated to
-// this rider and unchanged by the fix. Both same-named Rects print "Rect"
-// identically whether or not the aliasing bug is fixed, because the v1
-// struct fallback never reads the boxed data. This pair exists to pin that
-// the fix does NOT start leaking the owning package into the visible text
-// (real Go's %v never prints a package-qualified name either) even though
-// the underlying SYMBOL keys become package-qualified.
+// Rect/Rect (struct pair): a REGRESSION GUARD, not a bug reproduction (this
+// rider is about the cache-key aliasing, not struct %v support). Correctness
+// burn-down Task 3 / B5 later taught codegen_get_or_emit_type_fmt to reuse
+// fmt.Sprintf's own struct %v machinery for value-boxed structs, so both
+// same-named Rects now print their real fields ("{3 5}" / "{30 50}"),
+// distinctly — no longer the bare "Rect"/"Rect" a pre-B5-fix compiler
+// produced. This pair still pins the thing THIS rider cares about: the fix
+// does NOT leak the owning package into the visible text (real Go's %v
+// never prints a package-qualified name either) even though the underlying
+// SYMBOL keys (goo.fmt.<pkg>__<T>) are package-qualified — kinds' Rect{3,5}
+// and main's Rect{30,50} each read their OWN boxed data through their own
+// formatter, proving the two never aliased one shared loader.
 //
 // Code/Stamp (scalar pairs): the ACTUAL bug reproduction. Scalar %v
 // formatters DO read the boxed value, so a shared, wrongly-typed loader

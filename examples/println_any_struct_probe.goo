@@ -1,0 +1,105 @@
+// println_any_struct_probe (correctness burn-down Task 3 / B5): a
+// value-boxed aggregate held in `any` printed a bare type name ("Point")
+// instead of Go's `{fields}` %v shape — the boxed and unboxed prints of the
+// SAME value visibly disagreed. Root cause: codegen_get_or_emit_type_fmt
+// (interface_codegen.c) only had scalar-kind arms and fell every non-scalar
+// concrete (struct, slice, map, ...) through to a bare-type-name fallback.
+// Fixed by routing a value-boxed STRUCT concrete through the exact SAME
+// struct/pointer-to-struct/slice/array %v machinery fmt.Sprintf's %v verb
+// already used (codegen_build_fmt_value_string, call_codegen.c) via a new
+// public entry point (codegen_fmt_value_to_string) — no new formatting
+// logic, pure reuse.
+//
+// Each IN-scope shape below prints the CONCRETE value immediately followed
+// by the SAME value boxed into `any` — the two lines must be byte-identical
+// (the acceptance bar). IN scope: flat struct, struct with a string field,
+// nested struct, named-scalar type (already worked pre-fix — scalars were
+// never broken; kept here as a shape-matrix control), and a struct field
+// that is itself a pointer-to-struct (found during implementation review:
+// reusing the shared %v machinery needs codegen->current_function /
+// current_function_info pointed at the synthesized goo.fmt.<T> function
+// for the call's duration, because the slice/pointer-to-struct arms open
+// EXTRA basic blocks via codegen_create_block / codegen_create_entry_alloca
+// — both key off those two fields, not the builder's insert point).
+//
+// OUT of scope, deliberately still on the fallback (last pair below): a
+// boxed SLICE-of-struct — `concrete` at the top level is TYPE_SLICE, not
+// TYPE_STRUCT, so codegen_get_or_emit_type_fmt's new struct arm never
+// fires; it still prints the bare type name ("[]Point"). Also OUT of
+// scope but NOT representable in a runnable golden at all: a struct with a
+// slice-typed FIELD boxed into `any` hits a separate, PRE-EXISTING,
+// unrelated bug at BOXING time (codegen_get_or_emit_struct_key_eq's
+// per-field equality synthesis emits an illegal `icmp` directly over the
+// slice-aggregate field instead of rejecting or delegating) — a Module
+// verification failure before fmt is ever reached, unrelated to and
+// unchanged by this fix.
+package main
+
+import "fmt"
+
+type Point struct {
+	X int
+	Y int
+}
+
+type Named struct {
+	Name string
+	Age  int
+}
+
+type Inner struct {
+	A int
+	B int
+}
+
+type Outer struct {
+	I Inner
+	Z int
+}
+
+type Code int32
+
+type WithPtr struct {
+	P *Inner
+	N int
+}
+
+func main() {
+	// Flat struct.
+	p := Point{X: 1, Y: 2}
+	var pAny any = p
+	fmt.Println(p)
+	fmt.Println(pAny)
+
+	// Struct with a string field.
+	nm := Named{Name: "abc", Age: 5}
+	var nmAny any = nm
+	fmt.Println(nm)
+	fmt.Println(nmAny)
+
+	// Nested struct.
+	o := Outer{I: Inner{A: 7, B: 8}, Z: 9}
+	var oAny any = o
+	fmt.Println(o)
+	fmt.Println(oAny)
+
+	// Named-scalar type boxed (control: already worked before this fix).
+	var c Code = 42
+	var cAny any = c
+	fmt.Println(c)
+	fmt.Println(cAny)
+
+	// Struct with a pointer-to-struct field.
+	inner := Inner{A: 3, B: 4}
+	w := WithPtr{P: &inner, N: 11}
+	var wAny any = w
+	fmt.Println(w)
+	fmt.Println(wAny)
+
+	// OUT of scope: boxed slice-of-struct still falls back to the bare
+	// type name (documented above) — NOT a byte-parity pair.
+	sl := []Point{{X: 1, Y: 2}, {X: 3, Y: 4}}
+	var slAny any = sl
+	fmt.Println(sl)
+	fmt.Println(slAny)
+}

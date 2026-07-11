@@ -253,16 +253,22 @@ static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
 // loads the concrete value from the `data` param and returns its %v
 // string via the matching goo_*_to_string runtime helper.
 //
-// v1 scalar kinds only (int/uint widths, bool, float32/64, string); a
-// pointer_form concrete or any other kind (struct, slice, map, ...) falls
-// back to a goo_string copy of the type name — the same "T" / "*T" string
-// codegen_get_or_emit_type_desc computes for its type_name field. This is
-// computed independently here (not fetched from the descriptor) rather
-// than calling codegen_get_or_emit_type_desc: that function calls INTO
-// this one to fill its fmt_fn field BEFORE the descriptor global exists
-// (LLVMGetNamedGlobal wouldn't find it yet), so a fallback-path call back
-// into codegen_get_or_emit_type_desc for the same (concrete, pointer_form)
-// would recurse forever instead of hitting its dedup cache.
+// v1 scalar kinds (int/uint widths, bool, float32/64, string) plus, since
+// Task 3 / B5, value-boxed STRUCT concretes — those reuse the exact same
+// struct-formatting machinery fmt.Sprintf's %v verb uses
+// (codegen_fmt_value_to_string, call_codegen.c), so a boxed `any` holding a
+// struct prints Go-style fields ("{1 2}") byte-identically to the unboxed
+// concrete print of the same value, not just its bare type name. A
+// pointer_form concrete or any other kind not yet reused (slice, map, ...)
+// still falls back to a goo_string copy of the type name — the same "T" /
+// "*T" string codegen_get_or_emit_type_desc computes for its type_name
+// field. This is computed independently here (not fetched from the
+// descriptor) rather than calling codegen_get_or_emit_type_desc: that
+// function calls INTO this one to fill its fmt_fn field BEFORE the
+// descriptor global exists (LLVMGetNamedGlobal wouldn't find it yet), so a
+// fallback-path call back into codegen_get_or_emit_type_desc for the same
+// (concrete, pointer_form) would recurse forever instead of hitting its
+// dedup cache.
 //
 // Mirrors build_thunk's function-creation + save/restore-builder pattern
 // (this file, above): a NEW function is created and its body emitted
@@ -271,7 +277,6 @@ static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
 // point must survive the call.
 LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
                                           Type* concrete, int pointer_form) {
-    (void)checker;
     if (!codegen || !concrete) return NULL;
 
     const char* cname = type_receiver_name(concrete);
@@ -320,6 +325,19 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
     int is_bool = !pointer_form && concrete->kind == TYPE_BOOL;
     int is_float = !pointer_form && (concrete->kind == TYPE_FLOAT32 || concrete->kind == TYPE_FLOAT64);
     int is_string = !pointer_form && concrete->kind == TYPE_STRING;
+    // Task 3 / B5: value-boxed STRUCT concretes reuse the SAME struct %v
+    // machinery fmt.Sprintf uses (codegen_fmt_value_to_string ->
+    // codegen_build_fmt_value_string, call_codegen.c) instead of falling
+    // into the bare-type-name branch below. Scoped to value-boxed structs
+    // only: pointer_form is excluded here (a boxed *T reaching this
+    // function is a rarer shape not covered by this task's shape matrix —
+    // it stays on the type-name fallback, like every other not-yet-reused
+    // kind). A struct field that is itself a slice/map crashes earlier, at
+    // BOXING time, in the unrelated pre-existing struct-key-eq synthesis
+    // (codegen_get_or_emit_struct_key_eq emits an illegal icmp over a
+    // slice-aggregate field) — this function is never even reached for
+    // that shape, so no extra guard is needed here for it.
+    int is_struct = !pointer_form && concrete->kind == TYPE_STRUCT;
 
     if (is_sint) {
         LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
@@ -362,9 +380,53 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
         // struct without deep-copying storage).
         LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
         result = LLVMBuildLoad2(codegen->builder, ty, data, "fmt.str");
+    } else if (is_struct) {
+        // Load the concrete struct out of the interface's heap-boxed `data`
+        // (same load-then-format shape every scalar arm above already
+        // uses), then hand the loaded VALUE + its Type straight to the
+        // shared %v formatter — no struct-shape logic lives in this file;
+        // "{" / field separators / "}" / recursion into nested struct,
+        // string, and scalar fields are ALL codegen_build_fmt_value_string's
+        // existing code, unchanged.
+        LLVMTypeRef ty = codegen_type_to_llvm(codegen, concrete);
+        if (!ty) { LLVMPositionBuilderAtEnd(codegen->builder, saved); return NULL; }
+        LLVMValueRef v = LLVMBuildLoad2(codegen->builder, ty, data, "fmt.struct.load");
+
+        // A struct FIELD of slice type, or of pointer-to-struct type,
+        // recurses through codegen_build_fmt_value_string arms that open
+        // EXTRA basic blocks via codegen_create_block / codegen_create_
+        // entry_alloca (function_codegen.c's loop/branch helpers) — both key
+        // off codegen->current_function / current_function_info, NOT the
+        // builder's current insert point. Every scalar arm above never hits
+        // this (single basic block, no extra allocas), so this is the only
+        // arm here that needs it: without pointing those two fields at THIS
+        // synthesized `fn` for the call's duration, a nested slice/pointer
+        // field would silently append its blocks to whichever function was
+        // being generated when this synthesis was triggered — a real
+        // "instruction/block referenced in another function" verifier
+        // failure (caught during review on a `struct { P *Inner }` shape).
+        // A minimal on-stack FunctionInfo stands in for the full one
+        // function_codegen.c builds for a real Goo function: only
+        // `.function`/`.entry_block` are ever read for this shape (no
+        // locals, defers, or named results exist in a %v formatter body),
+        // so zero-initializing the rest is safe. Mirrors function_codegen.c's
+        // own save-current_function/generate-body/restore discipline (e.g.
+        // its closure-body and go-statement-thunk generators).
+        LLVMValueRef saved_function = codegen->current_function;
+        FunctionInfo* saved_function_info = codegen->current_function_info;
+        FunctionInfo tmp_info = {0};
+        tmp_info.function = fn;
+        tmp_info.entry_block = entry;
+        codegen->current_function = fn;
+        codegen->current_function_info = &tmp_info;
+
+        result = codegen_fmt_value_to_string(codegen, checker, v, concrete, (Position){0});
+
+        codegen->current_function = saved_function;
+        codegen->current_function_info = saved_function_info;
     } else {
-        // pointer_form, or any non-scalar concrete kind not yet supported
-        // in v1 (struct/slice/map/...): bounded fallback — a goo_string
+        // pointer_form, or any non-scalar/non-struct concrete kind not yet
+        // supported in v1 (slice, map, ...): bounded fallback — a goo_string
         // copy of this type's own name ("T", or "*T" for pointer_form),
         // matching what codegen_get_or_emit_type_desc's type_name field
         // holds for the same (concrete, pointer_form).

@@ -2919,27 +2919,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_defer_stmt(checker, stmt);
         case AST_SELECT_STMT:
             return type_check_select_stmt(checker, stmt);
-        case AST_SWITCH_STMT: {
-            // Expression switch: type-check the tag, then every case
-            // expression and clause body. Case bodies are raw statement
-            // lists (linked via next), so they are walked here rather than
-            // dispatched as blocks. Each clause gets its own scope, matching
-            // Go's per-clause scoping.
-            SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
-            int ok = 1;
-            if (sw->tag && !type_check_expression(checker, sw->tag)) ok = 0;
-            for (ASTNode* c = sw->cases; c; c = c->next) {
-                CaseClauseNode* clause = (CaseClauseNode*)c;
-                for (ASTNode* e = clause->exprs; e; e = e->next) {
-                    if (!type_check_expression(checker, e)) ok = 0;
-                }
-                scope_push(checker);
-                if (!type_check_switch_like_body(checker, clause->body,
-                        FALLTHROUGH_CTX_EXPR_SWITCH, c->next == NULL)) ok = 0;
-                scope_pop(checker);
-            }
-            return ok;
-        }
+        case AST_SWITCH_STMT:
+            return type_check_switch_stmt(checker, stmt);
         case AST_TYPE_SWITCH:
             return type_check_type_switch_stmt(checker, stmt);
         case AST_COMPTIME_BLOCK: {
@@ -3210,13 +3191,13 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 // Returns non-zero if `node` is an untyped integer constant expression: a bare
 // integer literal, a unary minus applied to one (`-1`), or a binary/shift
 // expression whose operands are themselves untyped integer constant
-// expressions (`1 + 1`, `1 << 3`). Codegen materializes all of these as an i32
-// constant and then SExt-WIDENS it to the declared integer return type (see the
-// return-widening path in statement_codegen.c). Because codegen only widens —
-// it never truncates — the caller must additionally gate on the declared return
-// type being no narrower than the operand (see `int_const_widen`); a narrowing
-// target (e.g. `return 65` into a byte) would otherwise reach the verifier as
-// invalid IR.
+// expressions (`1 + 1`, `1 << 3`). Codegen materializes all of these as an
+// integer constant and then coerces it to the declared integer return type
+// (SExt to widen, constant-rebuild to narrow — see the return-coercion path in
+// statement_codegen.c). Such a return coerces into any integer return type in
+// which the constant is representable (Go representability rule); the caller
+// (`int_const_coerce`) accepts both widening and narrowing targets, but only
+// after int_const_fits_expected confirms the folded value fits — see there.
 static int is_untyped_int_const_expr(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
@@ -3233,6 +3214,178 @@ static int is_untyped_int_const_expr(ASTNode* node) {
                is_untyped_int_const_expr(b->right);
     }
     return 0;
+}
+
+// Genuinely negative-rooted, per the AST SHAPE, not the fold's sign: is
+// `node` a top-level unary MINUS? Sibling to is_untyped_int_const_expr just
+// above and to expression_checker.c's check_conversion_operand_range /
+// adapt_untyped_int_operand `negated` convention, but deliberately shallower
+// — it does NOT recurse through nested unary or binary structure the way
+// those adapters do, because it exists for exactly one purpose: telling
+// int_const_fits_expected's uint64 arm apart from a same-bit-pattern
+// non-negative fold (see that function's doc comment). `-1` (UnaryExprNode
+// wrapping the literal) is negated; `0 - 1` (BinaryExprNode) is NOT, even
+// though goo_fold_const_int folds both to the identical 64-bit pattern —
+// that gap is `int_const_fits_expected`'s documented deviation.
+static int is_negated_int_const_expr(ASTNode* node) {
+    return node && node->type == AST_UNARY_EXPR &&
+           ((UnaryExprNode*)node)->operator == TOKEN_MINUS;
+}
+
+// Is `node` (the ORIGINAL, unfolded expression handed to int_const_fits_
+// expected) a bare integer-literal LEAF — no unary negation, no binary
+// arithmetic wrapping it? Sibling to is_negated_int_const_expr; feeds
+// int_const_fits_expected's signed-target bare-huge-literal reject (fix
+// round 4, correctness-burndown arc — see that function's doc comment for
+// the full rationale). The discriminator has to be this AST-SHAPE check, not
+// "folded raw > INT64_MAX" alone: legal constant arithmetic can fold into
+// that identical 64-bit range (`0 - 5` -> raw = 0xFFFFFFFFFFFFFFFB, since
+// -5's two's-complement encoding also has its top bit set) without being an
+// unrepresentable value — Go accepts int8(0 - 5) == -5. Only a literal
+// actually WRITTEN >= 2^63 in source (`18446744073709551615`) is
+// unrepresentable in every signed width, including int64.
+static int is_bare_int_literal(ASTNode* node) {
+    return node && node->type == AST_LITERAL &&
+           ((LiteralNode*)node)->literal_type == TOKEN_INT;
+}
+
+// Go representability rule for return_stmt's int_const_coerce gate: `raw` is
+// the constant's folded value (goo_fold_const_int's two's-complement 64-bit
+// encoding — decoding it back through int64_t is well-defined on a C23
+// two's-complement target, which this project requires). Returns non-zero iff
+// that value fits `expected`'s [min,max] range: signed [-2^(w-1), 2^(w-1)-1]
+// or unsigned [0, 2^w-1]. Mirrors expression_checker.c's literal_fits_type
+// (same bounds, same Go-conformant "constant N overflows T" shape) but keyed
+// off an already-folded 64-bit value rather than a single literal's text, so
+// it also covers constant arithmetic (`1 + 200`) that is_untyped_int_const_expr
+// admits but literal_fits_type cannot parse. int64 targets are satisfied by
+// every value EXCEPT a bare literal >= 2^63 (see `bare_literal` below and the
+// signed case table) — raw is already the exact 64-bit value for anything an
+// int64 can hold, but a literal actually written >= 2^63 cannot be held by
+// ANY signed width, int64 included. uint64 is NOT unconditionally satisfied
+// either — see `negated` below.
+//
+// `negated` (is_negated_int_const_expr on the ORIGINAL, unfolded return
+// expression — see the caller) feeds the uint/uint64 arm's rejection rule
+// below: reject iff `sval < 0 && negated` — the fold's sign AND the AST
+// shape, a CONJUNCTION, not either alone (fix round 3, correctness-burndown
+// arc; round 2 used `negated` alone and over-rejected — see below).
+//
+// `bare_literal` (is_bare_int_literal on that same original, unfolded
+// expression) feeds the SIGNED arms' rejection rule (fix round 4): reject
+// unconditionally iff `bare_literal && raw > INT64_MAX` — see the signed
+// case table and int_const_fits_expected's body below for the full
+// rationale (in short: only a literal actually written >= 2^63 in source is
+// unrepresentable in every signed width; arithmetic that folds into that
+// same raw range, e.g. `0 - 5`, is legal and must not be caught by this).
+//
+// Why the conjunction, and why it's safe: goo_fold_const_int is 64-bit
+// MODULAR (documented at its definition), so `sval < 0` alone is ambiguous
+// ONLY inside [2^63, 2^64) — that's the one region where a legal top-of-range
+// uint64 literal (e.g. `18446744073709551615`, MaxUint64) and a genuinely
+// negative constant (e.g. `-1`) can share the identical bit pattern
+// (0xFFFFFFFFFFFFFFFF) and thus the same negative `sval`. `negated` (a
+// top-level-unary-minus AST check) is the one signal that disambiguates
+// exactly there. Outside that region (`sval >= 0`) the fold is authoritative
+// on its own and the shape check is never consulted — a double or
+// parenthesized negation that folds back to non-negative (`- -1`, `-(1 - 2)`,
+// both folding to +1) is accepted regardless of its unary-minus shape,
+// fixing round 2's over-reject (round 2 checked `negated` alone, so any
+// unary-minus-rooted expression rejected even when its fold was positive).
+//
+// Case table (uint64 target):
+//   -1                      -> sval<0, negated     -> REJECT (correct)
+//   18446744073709551615    -> sval<0, NOT negated -> ACCEPT (correct; MaxUint64)
+//   - -1, -(1 - 2)          -> sval=+1 (>=0)        -> ACCEPT (correct; shape
+//                                                      never consulted)
+//   -(9223372036854775808)  -> folds to INT64_MIN's bit pattern (negating
+//                              2^63 wraps to itself under 64-bit modular
+//                              arithmetic), sval<0, negated -> REJECT
+//                              (correct: mathematically negative)
+//   0 - 1                   -> sval<0, NOT negated -> ACCEPT-and-wraps to
+//                              18446744073709551615 — the ONE remaining
+//                              documented deviation (under-reject only; Go
+//                              would still reject this). Round 2's
+//                              over-reject deviation (rejecting `- -1` etc.)
+//                              is gone; only this pre-existing under-reject
+//                              gap remains.
+//
+// Case table (SIGNED target, e.g. int8/int64 — fix round 4):
+//   18446744073709551615    -> bare literal, raw > INT64_MAX -> REJECT (every
+//                              signed width, including int64: no signed type
+//                              can hold a value >= 2^63)
+//   0 - 5 (-> int8)         -> raw = 0xFFFF...FB (> INT64_MAX!) but NOT a
+//                              bare literal (BinaryExprNode) -> skips the new
+//                              check, falls through to sval=-5 range test ->
+//                              ACCEPT (correct: Go accepts int8(0 - 5) == -5;
+//                              same documented-deviation class as the uint64
+//                              `0 - 1` row above — arithmetic that folds into
+//                              the huge-raw range is not itself huge)
+//   -(9223372036854775808)  -> UnaryExprNode, not a bare literal -> skips the
+//                              new check; sval=INT64_MIN accepted for int64,
+//                              rejected for narrower widths (unchanged)
+//
+// Documented deviation (same class as this file's existing `^`-rooted
+// deviation — see check_conversion_operand_range's doc comment):
+// `is_negated_int_const_expr` only recognizes a top-level unary minus, so a
+// PURE-ARITHMETIC negative result with no such literal minus sign — e.g.
+// `return 0 - 1` into a uint64 — is not flagged `negated` and slips through
+// as its two's-complement reinterpretation (18446744073709551615), where Go
+// would still reject it (goo_fold_const_int's 64-bit-modular fold is what
+// produces that reinterpretation). Out of scope for this fix, same as the
+// `^`-rooted gap; narrower (uint8/16/32) targets are unaffected since they
+// keep the unconditional `sval < 0` rejection below. The SAME class of gap
+// exists in reverse for signed targets — a pure-arithmetic expression that
+// folds to a value >= 2^63 (there is no such legal Go constant expression at
+// this integer width without an explicit huge literal, so this is currently
+// unreachable in practice, but is called out here for completeness) would
+// likewise not be flagged by `bare_literal` and would fall through to the
+// ordinary sval range checks below.
+static int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
+                                    int bare_literal) {
+    int64_t sval = (int64_t)raw;
+    if (type_is_signed(expected)) {
+        // A bare literal >= 2^63 as WRITTEN IN SOURCE (e.g.
+        // `18446744073709551615`) folds to a negative `sval` under 64-bit
+        // modular arithmetic (its top bit is set), which would otherwise
+        // slip past every per-width range check below and reinterpret as a
+        // small negative number (`return 18446744073709551615` into int8
+        // returning -1) — a reject->accept regression vs. base dd11713's old
+        // width gate (fix round 4, correctness-burndown arc, fable final
+        // review). No signed width, not even int64, can represent a value
+        // >= 2^63, so reject unconditionally here — before the per-width
+        // switch, since every arm would need the identical guard otherwise.
+        // Gated on `bare_literal` (an AST-shape check — see its doc comment)
+        // rather than `!negated`, so compound arithmetic that folds into the
+        // identical bit-pattern range (`0 - 5`) stays on the ordinary
+        // sval-range path below instead of being wrongly rejected — see the
+        // case table above.
+        if (bare_literal && raw > (uint64_t)INT64_MAX) return 0;
+        switch (expected->kind) {
+            case TYPE_INT8:  return sval >= INT8_MIN  && sval <= INT8_MAX;
+            case TYPE_INT16: return sval >= INT16_MIN && sval <= INT16_MAX;
+            case TYPE_INT32: return sval >= INT32_MIN && sval <= INT32_MAX;
+            default:         return 1; // int / int64
+        }
+    }
+    switch (expected->kind) {
+        // A negative constant can never satisfy a NARROWER unsigned target,
+        // at any width — Go rejects `var x uint8 = -1` regardless of how the
+        // negative value was produced (fold sign is trustworthy here: no
+        // narrower unsigned width can ever legitimately reach 2^63+, so
+        // there's no same-bit-pattern ambiguity to resolve via `negated`).
+        case TYPE_UINT8:  return sval >= 0 && (uint64_t)sval <= UINT8_MAX;
+        case TYPE_UINT16: return sval >= 0 && (uint64_t)sval <= UINT16_MAX;
+        case TYPE_UINT32: return sval >= 0 && (uint64_t)sval <= UINT32_MAX;
+        default:
+            // uint / uint64: reject iff BOTH the fold is negative AND the
+            // constant is syntactically negative-rooted (`sval < 0 &&
+            // negated`) — see the conjunction rationale and case table
+            // above. Otherwise the fold is authoritative and the full 64-bit
+            // range [0, 2^64-1] is representable, including values >= 2^63
+            // like MaxUint64.
+            return !(sval < 0 && negated);
+    }
 }
 
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
@@ -3455,12 +3608,61 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
             if (type_is_numeric(return_type) && type_is_numeric(expected)) {
                 int same_kind  = (type_is_float(return_type) == type_is_float(expected));
                 int same_width = (type_size(return_type) == type_size(expected));
-                int int_const_widen =
+                // An untyped integer constant expression (`return 1`,
+                // `return 1 + 1`) coerces into any integer return type in
+                // which it is REPRESENTABLE (Go representability rule) —
+                // WIDENING (`return 0` from an int64 fn) OR NARROWING
+                // (`return 1` from an int8 fn), exactly as Go accepts an
+                // untyped constant into a typed context. Codegen materializes
+                // the constant directly at the declared return width (SExt to
+                // widen, constant-rebuild to narrow — see the return-coercion
+                // path in statement_codegen.c), so no machine-representation
+                // mismatch reaches the verifier. The old gate additionally
+                // required expected be no NARROWER than the operand's default
+                // type (int64), which wrongly rejected every `return <literal>`
+                // from a sub-int64 function (int8/16/32, uint8/16/32) — a
+                // single-function false positive that the return-stmt's
+                // lookahead position (get_current_position in parser.y points
+                // at the NEXT decl) then mis-blamed on a later sibling, giving
+                // the illusion of cross-decl poisoning.
+                int int_const_coerce =
                     type_is_integer(expected) &&
-                    type_size(expected) >= type_size(return_type) &&
                     is_untyped_int_const_expr(ret_stmt->values);
-                if ((!same_kind || !same_width) && !int_const_widen) {
-                    type_error(checker, stmt->pos,
+
+                // Representability gate: an untyped constant's default type
+                // has no fixed width, but its VALUE does need to fit the
+                // declared return type — Go rejects `return 300` from a
+                // `func() int8` at compile time ("constant 300 overflows
+                // int8"), not truncate it silently. Fold the constant here
+                // (the same fold codegen's return-coercion block reaches for
+                // via LLVMConstIntGetSExtValue/ZExtValue, just done on the AST
+                // instead of the already-built LLVM constant) and reject
+                // out-of-range values before they can reach that unchecked
+                // narrowing rebuild. A fold failure (e.g. a divide-by-zero
+                // constant subexpression) is left to fall through unchecked —
+                // out of scope for this gate.
+                if (int_const_coerce) {
+                    uint64_t raw;
+                    int negated = is_negated_int_const_expr(ret_stmt->values);
+                    int bare_literal = is_bare_int_literal(ret_stmt->values);
+                    if (goo_fold_const_int(ret_stmt->values, &raw) &&
+                        !int_const_fits_expected(raw, expected, negated,
+                                                  bare_literal)) {
+                        type_error(checker, ret_stmt->values->pos,
+                                   "constant %lld overflows %s",
+                                   (long long)(int64_t)raw,
+                                   type_to_string(expected));
+                        return 0;
+                    }
+                }
+
+                if ((!same_kind || !same_width) && !int_const_coerce) {
+                    // Point at the returned value, not stmt->pos: a return
+                    // statement's pos is the post-parse lookahead (the next
+                    // decl's line), which mis-attributes the diagnostic.
+                    Position epos = ret_stmt->values ? ret_stmt->values->pos
+                                                      : stmt->pos;
+                    type_error(checker, epos,
                                "return type mismatch: cannot return %s from a "
                                "function returning %s",
                                type_to_string(return_type),
@@ -3487,6 +3689,156 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     }
 
     return 1;
+}
+
+// Retype an untyped-int-constant-rooted case expression — is_untyped_int_
+// const_expr's exact shape (a bare literal, a unary MINUS through to one, or
+// a binary op whose sides are both recursively const-rooted) — to `target`
+// at EVERY level, not just the leaf literal. Mirrors expression_checker.c's
+// adapt_untyped_int_operand (that function is `static` to its own file and
+// wired only into binary-expr checking, so this is a same-shape companion
+// kept local rather than a header edit for this one call site — same
+// rationale as this file's pre-existing is_untyped_int_const_expr/
+// int_const_fits_expected staying local instead of reaching into
+// expression_checker.c). Only ever called AFTER int_const_fits_expected has
+// confirmed representability (see type_check_switch_stmt below), so no
+// range check happens here — pure stamping. codegen_generate_literal reads
+// node_type off exactly the literal leaf to pick the emitted constant's
+// LLVM width (see expression_codegen.c's TOKEN_INT arm), so stamping the
+// whole subtree — not just top-level — is what makes a compound case
+// expression (`-5`, `1+2`) emit at the switch tag's width, matching a bare
+// literal case (`'\n'`, `300`).
+static void stamp_int_const_expr_type(ASTNode* node, Type* target) {
+    if (!node) return;
+    node->node_type = target;
+    if (node->type == AST_UNARY_EXPR) {
+        stamp_int_const_expr_type(((UnaryExprNode*)node)->operand, target);
+    } else if (node->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)node;
+        stamp_int_const_expr_type(b->left, target);
+        stamp_int_const_expr_type(b->right, target);
+    }
+}
+
+// Expression switch: type-check the tag, then every case expression and
+// clause body. Case bodies are raw statement lists (linked via next), so
+// they are walked here rather than dispatched as blocks. Each clause gets
+// its own scope, matching Go's per-clause scoping.
+//
+// B3 fix (correctness-burndown arc 2, task 2): a switch is definitionally a
+// chain of `tag == case` equality tests (see codegen_generate_switch_stmt's
+// own doc comment), but until this fix the checker never related a case
+// expression's type to the tag's at all — it merely type-checked each case
+// expression IN ISOLATION. Two failure modes followed, both reaching
+// codegen and crashing the LLVM verifier with a raw, unpositioned
+// "Module verification failed" instead of a clean diagnostic:
+//   1. A rune/int32 tag against a char-literal case (`'\a'`, `'\n'`, ...):
+//      the lexer bridge emits every char/rune literal as a plain TOKEN_INT
+//      carrying its decimal value (see lexer.c's `'\''` arm), which
+//      type_check_literal defaults to int64 — the same untyped-constant
+//      default a bare `10` gets. The tag stays i32 (rune); codegen ended up
+//      comparing `icmp eq i32 %r, i64 10` (this bug's exact reported
+//      symptom).
+//   2. A wrong-KIND case value (`case "x":` on an int tag) or a non-constant
+//      wrong-WIDTH case value (a typed int64 variable against a rune/int32
+//      tag) sailed through unchecked and crashed codegen's switch lowering
+//      with a mismatched-operand-type icmp the same way.
+//
+// Fix: for every case expression whose type's `kind` differs from the tag's,
+// route it through the SAME machinery a `tag == case` comparison already
+// uses. An untyped int constant (kind mismatch, const-rooted) unifies with
+// the tag's type iff representable — reusing int_const_fits_expected/
+// is_negated_int_const_expr, the exact representability gate Task 1 added
+// for `return`'s untyped-constant coercion, so `case 300:` on an int8 tag
+// still rejects as overflow instead of truncating. A non-constant int-kind
+// mismatch, or any other kind mismatch (string/bool/etc. against a
+// differently-kinded tag), is rejected via type_check_comparison_op — the
+// exact function `==` itself calls, so the diagnostic ("Cannot compare
+// incompatible types %s and %s") is worded identically to what `tag == case`
+// would produce by hand.
+//
+// A tagless switch (`switch { case cond: }` — goostd/strconv.go's own
+// workaround for this bug, see appendEscapedRune's comment) has no tag to
+// unify against (sw->tag is NULL); tag_type stays NULL and every case
+// expression's own (already-checked) bool type is left untouched, exactly
+// as before this fix — the tagless-switch shape is not a wall this task
+// adds.
+int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_SWITCH_STMT) return 0;
+
+    SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
+    int ok = 1;
+    Type* tag_type = NULL;
+    if (sw->tag) {
+        tag_type = type_check_expression(checker, sw->tag);
+        if (!tag_type) ok = 0;
+    }
+
+    for (ASTNode* c = sw->cases; c; c = c->next) {
+        CaseClauseNode* clause = (CaseClauseNode*)c;
+        for (ASTNode* e = clause->exprs; e; e = e->next) {
+            Type* e_type = type_check_expression(checker, e);
+            if (!e_type) { ok = 0; continue; }
+
+            // No tag (tagless switch), or an unresolved/poisoned operand on
+            // either side (T4.2 cascade-suppression convention used
+            // throughout this file): defer rather than risk a false-positive
+            // reject on something the checker couldn't pin down.
+            if (!tag_type || type_is_poison(tag_type) || type_is_poison(e_type) ||
+                tag_type->kind == TYPE_UNKNOWN || e_type->kind == TYPE_UNKNOWN) {
+                continue;
+            }
+
+            if (tag_type->kind == e_type->kind) continue; // already comparable today
+
+            if (type_is_integer(tag_type) && type_is_integer(e_type)) {
+                if (is_untyped_int_const_expr(e)) {
+                    uint64_t raw;
+                    int negated = is_negated_int_const_expr(e);
+                    int bare_literal = is_bare_int_literal(e);
+                    if (goo_fold_const_int(e, &raw) &&
+                        !int_const_fits_expected(raw, tag_type, negated,
+                                                  bare_literal)) {
+                        type_error(checker, e->pos, "constant %lld overflows %s",
+                                   (long long)(int64_t)raw, type_to_string(tag_type));
+                        ok = 0;
+                        continue;
+                    }
+                    // Representable (or the fold itself failed — left
+                    // unchecked, the same documented gap int_const_fits_
+                    // expected's other caller carries): stamp the whole
+                    // case-expr subtree to the tag's type so codegen emits
+                    // the constant at that width directly, closing the
+                    // width-mismatched ICmp this fix targets.
+                    stamp_int_const_expr_type(e, tag_type);
+                    continue;
+                }
+                // Non-constant int-kind mismatch (e.g. a typed int64
+                // variable used as a case value against a rune/int32 tag):
+                // only an untyped constant adapts (Go representability
+                // rule); a differently-sized TYPED value is not assignable
+                // to the tag's type and must not reach codegen, which has
+                // no lowering for a width-mismatched icmp.
+                type_error(checker, e->pos,
+                           "invalid case value: %s does not match switch "
+                           "expression type %s",
+                           type_to_string(e_type), type_to_string(tag_type));
+                ok = 0;
+                continue;
+            }
+
+            // Any other kind mismatch (e.g. a string case against an int tag)
+            // — reject via the same check `tag == case` would perform.
+            if (!type_check_comparison_op(checker, tag_type, e_type, TOKEN_EQ, e->pos)) {
+                ok = 0;
+            }
+        }
+        scope_push(checker);
+        if (!type_check_switch_like_body(checker, clause->body,
+                FALLTHROUGH_CTX_EXPR_SWITCH, c->next == NULL)) ok = 0;
+        scope_pop(checker);
+    }
+    return ok;
 }
 
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {

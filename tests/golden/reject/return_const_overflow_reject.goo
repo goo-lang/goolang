@@ -1,0 +1,9 @@
+package main
+
+func f() int8 {
+	return 300
+}
+
+func main() {
+	println(f())
+}

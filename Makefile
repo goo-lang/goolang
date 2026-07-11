@@ -1796,10 +1796,19 @@ comptime-value-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 # build/ (same env contract as import_resolver's goo_gooroot_dir): since the
 # P6 M1 wall lift a comptime-CONST arg into a package function COMPILES, so this
 # case pins the surviving wall — a RUNTIME arg across the package boundary still
-# rejects with "must be a compile-time constant".
+# rejects with "must be a compile-time constant". The package-generic-comptime
+# case is a DIFFERENT wall: `cpkg.GenFill[T any](comptime n int, x T) T` called
+# cross-package as `cpkg.GenFill(3, 5)` never reaches the comptime machinery at
+# all — generic type-parameter inference for a package-qualified call doesn't
+# unify `x T` against the second argument, so it fails noisily-but-cleanly with
+# a generic-inference diagnostic ("argument 2: cannot use int64 as T") rather
+# than a comptime-specific one. Pinned as-observed (captured fresh for this
+# case; matches expression_checker.c's "argument %zu: cannot use %s as %s"), not
+# as a designed error message — composed generic+comptime across a package
+# boundary is simply unimplemented, and this case is the tripwire for it.
 comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build/cvm_gooroot/goostd/cpkg
-	@printf 'package cpkg\nfunc Fill(comptime n int, s int) int { return s }\n' > build/cvm_gooroot/goostd/cpkg/cpkg.go
+	@printf 'package cpkg\nfunc Fill(comptime n int, s int) int { return s }\nfunc GenFill[T any](comptime n int, x T) T { return x }\n' > build/cvm_gooroot/goostd/cpkg/cpkg.go
 	@echo "=== comptime-value-reject-matrix: every comptime-param safety wall rejects cleanly ==="
 	@set -e; \
 	run_case() { \
@@ -1846,7 +1855,9 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "var-init-mismatch-instance" "length array in comptime instance"; \
 	printf 'package main\nfunc Id[T any](x T) T { return x }\nfunc f(comptime n int, s int) int {\n    var a [n]int\n    a[0] = s\n    b := Id(a)\n    return b[0]\n}\nfunc main() { _ = f(4, 5) }\n' > build/cvm.goo; \
 	run_case "generic-typeparam-comptime-array" "cannot bind a generic type parameter"; \
-	echo "comptime-value-reject-matrix: PASS (18/18 walls hold)"
+	printf 'package main\nimport "cpkg"\nfunc main() { _ = cpkg.GenFill(3, 5) }\n' > build/cvm.goo; \
+	run_case "package-generic-comptime" "argument 2: cannot use int64 as T"; \
+	echo "comptime-value-reject-matrix: PASS (19/19 walls hold)"
 
 # Composed generic+comptime IR pin (sub-project 2, Task 4 step 4): the golden
 # probe's stdout diff alone can't tell "one specialized instance reused
@@ -3398,8 +3409,8 @@ return-mismatch-probe: $(COMPILER) $(RUNTIME_LIB)
 	@printf 'package main\nfunc f() { return 5 }\nfunc main() {}\n' > build/rt_mm_void.goo
 	@printf 'package main\nfunc f() int { return 3.9 }\nfunc main() {}\n' > build/rt_mm_float.goo
 	@printf 'package main\nfunc big() uint32 { return 9 }\nfunc f() int { return big() }\nfunc main() {}\n' > build/rt_mm_width.goo
-	@printf 'package main\nfunc f() byte { return 65 }\nfunc main() {}\n' > build/rt_mm_narrow.goo
-	@printf 'package main\nimport "fmt"\nfunc i() int { return 42 }\nfunc w() int64 { return 42 }\nfunc c() int64 { return 1 + 1 }\nfunc s() string { return "ok" }\nfunc n() ?int { return 5 }\nfunc divmod(a int, b int) (int, int) { return a / b, a % b }\nfunc main() { fmt.Println(i()); fmt.Println(w()); fmt.Println(c()) }\n' > build/rt_mm_ok.goo
+	@printf 'package main\nfunc f() byte { return 300 }\nfunc main() {}\n' > build/rt_mm_narrow.goo
+	@printf 'package main\nimport "fmt"\nfunc i() int { return 42 }\nfunc w() int64 { return 42 }\nfunc c() int64 { return 1 + 1 }\nfunc s() string { return "ok" }\nfunc n() ?int { return 5 }\nfunc b() byte { return 65 }\nfunc divmod(a int, b int) (int, int) { return a / b, a % b }\nfunc main() { fmt.Println(i()); fmt.Println(w()); fmt.Println(c()); fmt.Println(b()) }\n' > build/rt_mm_ok.goo
 	@"$(COMPILER)" build/rt_mm_str.goo -o build/rt_mm_str.out 2>build/rt_mm_str.err; rc=$$?; \
 	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return \"str\" from int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_str.err; then echo "return-mismatch-probe: FAIL (invalid IR reached verifier)"; cat build/rt_mm_str.err; exit 1; fi; \
@@ -3416,10 +3427,13 @@ return-mismatch-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (return uint32 from int compiled — expected a type error)"; exit 1; fi; \
 	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (uint32->int reached verifier)"; cat build/rt_mm_width.err; exit 1; fi; \
 	  if ! grep -qiE "return type mismatch" build/rt_mm_width.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for uint32->int)"; cat build/rt_mm_width.err; exit 1; fi
+	@# Narrowing semantics updated by the correctness-burndown arc (Go
+	@# representability): a FITTING untyped constant (65 -> byte) is legal —
+	@# asserted via rt_mm_ok's b() — and only an OVERFLOWING one rejects.
 	@"$(COMPILER)" build/rt_mm_narrow.goo -o build/rt_mm_narrow.out 2>build/rt_mm_narrow.err; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (narrowing int literal return byte<-65 compiled — expected a type error)"; exit 1; fi; \
-	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_narrow.err; then echo "return-mismatch-probe: FAIL (narrowing int-literal return reached verifier)"; cat build/rt_mm_narrow.err; exit 1; fi; \
-	  if ! grep -qiE "return type mismatch" build/rt_mm_narrow.err; then echo "return-mismatch-probe: FAIL (no clean diagnostic for narrowing int-literal return)"; cat build/rt_mm_narrow.err; exit 1; fi
+	  if [ $$rc -eq 0 ]; then echo "return-mismatch-probe: FAIL (overflowing int literal return byte<-300 compiled — expected a type error)"; exit 1; fi; \
+	  if grep -qiE "Module verification failed|LLVM ERROR" build/rt_mm_narrow.err; then echo "return-mismatch-probe: FAIL (overflowing int-literal return reached verifier)"; cat build/rt_mm_narrow.err; exit 1; fi; \
+	  if ! grep -qiE "overflows" build/rt_mm_narrow.err; then echo "return-mismatch-probe: FAIL (no clean overflow diagnostic for int-literal return)"; cat build/rt_mm_narrow.err; exit 1; fi
 	@"$(COMPILER)" build/rt_mm_ok.goo -o build/rt_mm_ok.out 2>build/rt_mm_ok.err; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "return-mismatch-probe: FAIL (valid scalar/string/nullable/multi returns rejected)"; cat build/rt_mm_ok.err; exit 1; fi
 	@echo "return-mismatch-probe: PASS"
