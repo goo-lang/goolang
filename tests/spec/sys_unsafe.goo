@@ -1,0 +1,9 @@
+// Spec: System considerations / Package unsafe
+package main
+
+import "unsafe"
+
+func main() {
+	var x int
+	_ = unsafe.Sizeof(x)
+}

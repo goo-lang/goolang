@@ -1,0 +1,12 @@
+// Spec: Type parameters / Explicit instantiation f[int](...)
+package main
+
+import "fmt"
+
+func first[T any](a T, b T) T {
+	return a
+}
+
+func main() {
+	fmt.Println(first[int](7, 8))
+}

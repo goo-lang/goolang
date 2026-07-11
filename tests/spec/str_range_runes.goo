@@ -1,0 +1,13 @@
+// Spec: Statements / Range over string — Go semantics: yields RUNES with
+// byte-offset indices. VERIFIED GO-PARITY 2026-07-11 (earlier "bytes not
+// runes" note was stale): "aé" ranges twice — (0, 'a'=97), (1, 'é'=233).
+package main
+
+import "fmt"
+
+func main() {
+	for i, r := range "aé" {
+		fmt.Println(i)
+		fmt.Println(r)
+	}
+}

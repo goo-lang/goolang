@@ -1,0 +1,9 @@
+// Spec: Lexical elements / Rune literals
+package main
+
+import "fmt"
+
+func main() {
+	c := 'A'
+	fmt.Println(c)
+}

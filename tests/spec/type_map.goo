@@ -1,0 +1,16 @@
+// Spec: Types / Map types — make, write, read, delete, comma-ok
+package main
+
+import "fmt"
+
+func main() {
+	m := make(map[string]int)
+	m["a"] = 1
+	m["b"] = 2
+	delete(m, "a")
+	v, ok := m["b"]
+	fmt.Println(v)
+	fmt.Println(ok)
+	_, missing := m["a"]
+	fmt.Println(missing)
+}

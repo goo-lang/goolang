@@ -1,0 +1,23 @@
+// Spec: Types / Struct types — embedding with field/method promotion
+package main
+
+import "fmt"
+
+type Base struct {
+	n int
+}
+
+func (b *Base) Bump() {
+	b.n = b.n + 1
+}
+
+type Wrapper struct {
+	Base
+}
+
+func main() {
+	w := Wrapper{}
+	w.Bump()
+	w.Bump()
+	fmt.Println(w.n)
+}

@@ -1,0 +1,12 @@
+// Spec: Types / Pointer types — & * new
+package main
+
+import "fmt"
+
+func main() {
+	p := new(int)
+	*p = 41
+	q := &p
+	**q = **q + 1
+	fmt.Println(*p)
+}

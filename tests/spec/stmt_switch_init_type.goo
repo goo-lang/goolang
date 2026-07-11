@@ -1,0 +1,27 @@
+// Spec: Statements / Switch — init statement + type switch
+package main
+
+import "fmt"
+
+func describe(x any) string {
+	switch v := x.(type) {
+	case int:
+		if v > 0 {
+			return "posint"
+		}
+		return "int"
+	case string:
+		return "string"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	switch x := 2; x {
+	case 2:
+		fmt.Println("two")
+	}
+	fmt.Println(describe(7))
+	fmt.Println(describe("hi"))
+}

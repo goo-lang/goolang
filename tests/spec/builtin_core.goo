@@ -1,0 +1,15 @@
+// Spec: Built-in functions — len/cap/make/new/append/delete on one page
+package main
+
+import "fmt"
+
+func main() {
+	s := make([]int, 2, 8)
+	s = append(s, 9)
+	m := make(map[int]int)
+	m[1] = 1
+	delete(m, 1)
+	p := new(int)
+	*p = len(s) + cap(s) + len(m)
+	fmt.Println(*p)
+}

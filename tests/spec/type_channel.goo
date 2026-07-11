@@ -1,0 +1,17 @@
+// Spec: Types / Channel types — buffered, close, range
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 3)
+	ch <- 1
+	ch <- 2
+	ch <- 3
+	close(ch)
+	total := 0
+	for v := range ch {
+		total = total + v
+	}
+	fmt.Println(total)
+}

@@ -1,0 +1,22 @@
+// Spec: Statements / Go + Select
+package main
+
+import "fmt"
+
+func main() {
+	a := make(chan int, 1)
+	b := make(chan int, 1)
+	go func() {
+		a <- 5
+	}()
+	total := 0
+	for i := 0; i < 1; i++ {
+		select {
+		case v := <-a:
+			total = total + v
+		case v := <-b:
+			total = total + v * 100
+		}
+	}
+	fmt.Println(total)
+}

@@ -1,0 +1,9 @@
+// Spec: Built-in functions / min and max (Go 1.21)
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println(min(3, 1))
+	fmt.Println(max(3, 1))
+}

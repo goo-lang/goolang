@@ -1,0 +1,9 @@
+// Spec: Lexical elements / String literals — hex escapes
+package main
+
+import "fmt"
+
+func main() {
+	s := "\x41\x42"
+	fmt.Println(s)
+}

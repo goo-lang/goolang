@@ -1,0 +1,20 @@
+// Spec: Expressions / Composite literals — keyed array + elided struct elems
+package main
+
+import "fmt"
+
+type pair struct {
+	lo int
+	hi int
+}
+
+var table = []pair{
+	{1, 2},
+	{lo: 3, hi: 4},
+}
+
+func main() {
+	a := [5]int{0: 10, 3: 40}
+	fmt.Println(a[3])
+	fmt.Println(table[1].hi)
+}

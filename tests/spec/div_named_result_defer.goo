@@ -1,0 +1,17 @@
+// Spec: Statements / Defer + named results — Go: deferred mutation of a named
+// result changes the returned value (would print 6). DIVERGENT: Goo returns 5.
+// Pinned Goo behavior; documented in docs/02-LANGUAGE-SPECIFICATION.md.
+package main
+
+import "fmt"
+
+func f() (n int) {
+	defer func() {
+		n = n + 1
+	}()
+	return 5
+}
+
+func main() {
+	fmt.Println(f())
+}

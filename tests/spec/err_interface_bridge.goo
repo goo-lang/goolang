@@ -1,0 +1,13 @@
+// Spec: Errors — (T, error) interop with !T and e.Error()
+package main
+
+import "fmt"
+import "strconv"
+
+func main() {
+	n := strconv.Atoi("41") catch e {
+		fmt.Println(e.Error())
+		return
+	}
+	fmt.Println(n + 1)
+}

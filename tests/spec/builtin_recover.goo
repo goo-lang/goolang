@@ -1,0 +1,18 @@
+// Spec: Built-in functions / recover — regain control of a panic
+package main
+
+import "fmt"
+
+func safe() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("recovered")
+		}
+	}()
+	panic("boom")
+}
+
+func main() {
+	safe()
+	fmt.Println("after")
+}

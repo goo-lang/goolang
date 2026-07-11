@@ -1,0 +1,15 @@
+// Spec: Statements / Assignment — tuple assignment from call
+package main
+
+import "fmt"
+
+func two() (int, int) {
+	return 7, 9
+}
+
+func main() {
+	var a int
+	var b int
+	a, b = two()
+	fmt.Println(a * b)
+}

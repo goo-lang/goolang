@@ -1,0 +1,17 @@
+// Spec: Expressions / Method expressions — T.Method as function
+package main
+
+import "fmt"
+
+type Point struct {
+	x int
+}
+
+func (p Point) X() int {
+	return p.x
+}
+
+func main() {
+	f := Point.X
+	fmt.Println(f(Point{x: 9}))
+}
