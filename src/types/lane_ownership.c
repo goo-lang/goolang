@@ -408,7 +408,7 @@ static void lane_handle_var_decl(LaneWalkContext* ctx, VarDeclNode* vd) {
             // Component 4, obligation 2). Recording (count, source) here IS
             // the obligation-2 bookkeeping; disjointness is structural.
             if (vd->name_count > 0 && vd->names && vd->names[0]) {
-                LanePartitionBinding* binding = malloc(sizeof(LanePartitionBinding));
+                LanePartitionBinding* binding = xmalloc(sizeof(LanePartitionBinding));
                 if (binding) {  // fail closed: dropped entry, never crash
                     binding->binding_name = vd->names[0];
                     binding->source_name = src->name;

@@ -31,7 +31,7 @@ static WorkStealingDeque* work_stealing_deque_create(size_t capacity) {
     // Ensure capacity is power of 2 for fast modulo
     capacity = next_power_of_2(capacity);
     
-    WorkStealingDeque* deque = malloc(sizeof(WorkStealingDeque));
+    WorkStealingDeque* deque = xmalloc(sizeof(WorkStealingDeque));
     if (!deque) return NULL;
     
     deque->tasks = calloc(capacity, sizeof(ConcurrentTask*));
@@ -258,7 +258,7 @@ WorkStealingScope* work_stealing_scope_create_with_chunking(size_t worker_count,
 WorkStealingScope* work_stealing_scope_create(size_t worker_count, const char* name) {
     if (worker_count == 0) worker_count = sysconf(_SC_NPROCESSORS_ONLN);
     
-    WorkStealingScope* ws_scope = calloc(1, sizeof(WorkStealingScope));
+    WorkStealingScope* ws_scope = xcalloc(1, sizeof(WorkStealingScope));
     if (!ws_scope) return NULL;
     
     // Initialize base scope
@@ -349,7 +349,7 @@ Result_void_ptr work_stealing_parallel_for(
     void* context) {
     
     if (!scope || !function) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -374,7 +374,7 @@ Result_void_ptr work_stealing_parallel_for(
             if (pthread_create(&scope->base_scope.worker_threads[i], NULL, 
                              work_stealing_worker_thread, &scope->worker_contexts[i]) != 0) {
                 scope->base_scope.is_active = false;
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_INTERNAL,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -405,7 +405,7 @@ Result_void_ptr work_stealing_parallel_for(
     // Track all tasks for proper waiting
     ConcurrentTask** all_tasks = malloc(((total_items + chunk_size - 1) / chunk_size) * sizeof(ConcurrentTask*));
     if (!all_tasks) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -428,7 +428,7 @@ Result_void_ptr work_stealing_parallel_for(
         }
         
         // Create task arguments
-        ParallelForTaskArgs* args = malloc(sizeof(ParallelForTaskArgs));
+        ParallelForTaskArgs* args = xmalloc(sizeof(ParallelForTaskArgs));
         if (!args) continue;
         
         *args = (ParallelForTaskArgs){

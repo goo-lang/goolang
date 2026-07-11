@@ -76,7 +76,7 @@ static void* subscription_monitor_thread(void* arg) {
 }
 
 IpnsManager* ipns_manager_create(IpfsClient* ipfs_client) {
-    IpnsManager* manager = calloc(1, sizeof(IpnsManager));
+    IpnsManager* manager = xcalloc(1, sizeof(IpnsManager));
     if (!manager) return NULL;
     
     manager->ipfs_client = ipfs_client;
@@ -418,7 +418,7 @@ bool ipns_manager_start_subscription_monitor(IpnsManager* manager) {
     if (!manager || manager->subscription_thread_active) return false;
     
     if (!g_subscription_monitor) {
-        g_subscription_monitor = calloc(1, sizeof(SubscriptionMonitor));
+        g_subscription_monitor = xcalloc(1, sizeof(SubscriptionMonitor));
         if (!g_subscription_monitor) return false;
     }
     
@@ -452,7 +452,7 @@ bool ipns_manager_stop_subscription_monitor(IpnsManager* manager) {
 IpnsKey* ipns_key_create(const char* name) {
     if (!name) return NULL;
     
-    IpnsKey* key = calloc(1, sizeof(IpnsKey));
+    IpnsKey* key = xcalloc(1, sizeof(IpnsKey));
     if (!key) return NULL;
     
     key->name = strdup(name);
@@ -559,7 +559,7 @@ bool ipns_key_generate_keypair(IpnsKey* key) {
 IpnsRecord* ipns_record_create(const char* ipns_name, const IpfsCid* cid) {
     if (!ipns_name || !cid) return NULL;
     
-    IpnsRecord* record = calloc(1, sizeof(IpnsRecord));
+    IpnsRecord* record = xcalloc(1, sizeof(IpnsRecord));
     if (!record) return NULL;
     
     record->ipns_name = strdup(ipns_name);
@@ -593,7 +593,7 @@ void ipns_record_free(IpnsRecord* record) {
 IpnsSubscription* ipns_subscription_create(const char* ipns_name) {
     if (!ipns_name) return NULL;
     
-    IpnsSubscription* subscription = calloc(1, sizeof(IpnsSubscription));
+    IpnsSubscription* subscription = xcalloc(1, sizeof(IpnsSubscription));
     if (!subscription) return NULL;
     
     subscription->ipns_name = strdup(ipns_name);

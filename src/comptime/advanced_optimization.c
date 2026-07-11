@@ -6,7 +6,7 @@
 
 // Strategy manager implementation
 StrategyManager* create_strategy_manager(void) {
-    StrategyManager* manager = malloc(sizeof(StrategyManager));
+    StrategyManager* manager = xmalloc(sizeof(StrategyManager));
     if (!manager) return NULL;
     
     manager->strategies = NULL;
@@ -71,7 +71,7 @@ void integrate_pgo_data(StrategyManager* manager, ProfileData* pgo_data) {
 AdvancedStrategy* analyze_vectorization(ASTNode* node) {
     if (!node) return NULL;
     
-    AdvancedStrategy* strategy = malloc(sizeof(AdvancedStrategy));
+    AdvancedStrategy* strategy = xmalloc(sizeof(AdvancedStrategy));
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_VECTORIZATION;
@@ -93,7 +93,7 @@ AdvancedStrategy* analyze_vectorization(ASTNode* node) {
 AdvancedStrategy* analyze_inlining(ASTNode* function_node, int call_frequency) {
     if (!function_node) return NULL;
     
-    AdvancedStrategy* strategy = malloc(sizeof(AdvancedStrategy));
+    AdvancedStrategy* strategy = xmalloc(sizeof(AdvancedStrategy));
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_INLINING;
@@ -122,7 +122,7 @@ AdvancedStrategy* analyze_inlining(ASTNode* function_node, int call_frequency) {
 AdvancedStrategy* analyze_escape(ASTNode* allocation_node) {
     if (!allocation_node) return NULL;
     
-    AdvancedStrategy* strategy = malloc(sizeof(AdvancedStrategy));
+    AdvancedStrategy* strategy = xmalloc(sizeof(AdvancedStrategy));
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_ESCAPE_ANALYSIS;
@@ -143,7 +143,7 @@ AdvancedStrategy* analyze_escape(ASTNode* allocation_node) {
 AdvancedStrategy* analyze_loop_optimization(ASTNode* loop_node) {
     if (!loop_node) return NULL;
     
-    AdvancedStrategy* strategy = malloc(sizeof(AdvancedStrategy));
+    AdvancedStrategy* strategy = xmalloc(sizeof(AdvancedStrategy));
     if (!strategy) return NULL;
     
     strategy->type = STRATEGY_LOOP_UNROLLING;
@@ -332,7 +332,7 @@ static bool add_strategy_to_manager(StrategyManager* manager, AdvancedStrategy* 
 ComptimeValue* comptime_get_optimization_strategy(ComptimeValue* target, ComptimeValue* strategy_type) {
     if (!target || !strategy_type) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_STRING;
@@ -344,7 +344,7 @@ ComptimeValue* comptime_get_optimization_strategy(ComptimeValue* target, Comptim
 ComptimeValue* comptime_force_vectorization(ComptimeValue* target, ComptimeValue* vector_width) {
     if (!target || !vector_width) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_BOOL;
@@ -359,7 +359,7 @@ ComptimeValue* comptime_force_vectorization(ComptimeValue* target, ComptimeValue
 ComptimeValue* comptime_inline_aggressively(ComptimeValue* target) {
     if (!target) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_BOOL;
@@ -373,7 +373,7 @@ ComptimeValue* comptime_inline_aggressively(ComptimeValue* target) {
 ComptimeValue* comptime_stack_allocate(ComptimeValue* target) {
     if (!target) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_BOOL;

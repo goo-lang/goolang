@@ -14,7 +14,7 @@ uint64_t performance_get_timestamp_ns(void) {
 
 // Create performance monitor
 PerformanceMonitor* performance_monitor_create(PerformanceConfig config, size_t worker_count) {
-    PerformanceMonitor* monitor = calloc(1, sizeof(PerformanceMonitor));
+    PerformanceMonitor* monitor = xcalloc(1, sizeof(PerformanceMonitor));
     if (!monitor) return NULL;
     
     monitor->config = config;

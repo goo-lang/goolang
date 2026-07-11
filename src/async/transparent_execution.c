@@ -31,7 +31,7 @@ void async_context_set_current(AsyncContext* ctx) {
 
 // Create new async context
 AsyncContext* async_context_create(AsyncRuntime* runtime, AsyncTask* task) {
-    AsyncContext* ctx = calloc(1, sizeof(AsyncContext));
+    AsyncContext* ctx = xcalloc(1, sizeof(AsyncContext));
     if (!ctx) return NULL;
     
     ctx->runtime = runtime;
@@ -61,7 +61,7 @@ void async_context_destroy(AsyncContext* ctx) {
 
 // Function registry operations
 FunctionRegistry* function_registry_create(void) {
-    FunctionRegistry* registry = calloc(1, sizeof(FunctionRegistry));
+    FunctionRegistry* registry = xcalloc(1, sizeof(FunctionRegistry));
     if (!registry) return NULL;
     
     registry->function_capacity = 1024;
@@ -119,7 +119,7 @@ Result_void_ptr function_registry_register(FunctionRegistry* registry,
     // only original_function. Requiring original_function specifically wrongly rejects
     // the former.
     if (!registry || !name || (!original_function && !async_wrapper)) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -142,7 +142,7 @@ Result_void_ptr function_registry_register(FunctionRegistry* registry,
         if (!new_functions) {
             pthread_mutex_unlock(&g_registry_mutex);
             
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -297,7 +297,7 @@ Result_void_ptr transparent_function_execute(TransparentFunction* func, void* ar
     // ASYNC_NATIVE functions carry only an async_wrapper (original_function is NULL),
     // so accept a function that has either callable, not original_function specifically.
     if (!func || (!func->original_function && !func->async_wrapper)) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -449,7 +449,7 @@ Result_void_ptr transparent_create_wrapper(const char* name,
                                          void* analysis) {
     FunctionAnalysis* func_analysis = (FunctionAnalysis*)analysis;
     if (!name || !original_function) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -500,7 +500,7 @@ Result_void_ptr transparent_create_wrapper(const char* name,
 Result_void_ptr transparent_execution_init(void) {
     FunctionRegistry* registry = function_registry_global();
     if (!registry) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,

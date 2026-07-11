@@ -1186,7 +1186,7 @@ BlockEscapeResult* block_escape_analyze(ASTNode* program, const ParamEscapeResul
     size_t total = 0;
     for (size_t i = 0; i < units.count; i++) total += units.items[i].site_count;
 
-    BlockEscapeResult* result = malloc(sizeof(BlockEscapeResult));
+    BlockEscapeResult* result = xmalloc(sizeof(BlockEscapeResult));
     if (!result) {
         unit_list_free(&units);
         return NULL;

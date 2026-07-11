@@ -22,7 +22,7 @@ ContractExpression* contract_expression_create(
     struct ASTNode* condition,
     const char* description
 ) {
-    ContractExpression* expr = malloc(sizeof(ContractExpression));
+    ContractExpression* expr = xmalloc(sizeof(ContractExpression));
     if (!expr) return NULL;
     
     // Use C23 designated initializers
@@ -44,7 +44,7 @@ ContractExpression* contract_expression_create(
 FunctionContract* function_contract_create(const char* function_name) {
     if (!function_name) return NULL;
     
-    FunctionContract* contract = malloc(sizeof(FunctionContract));
+    FunctionContract* contract = xmalloc(sizeof(FunctionContract));
     if (!contract) return NULL;
     
     contract->function_name = strdup(function_name);
@@ -62,7 +62,7 @@ FunctionContract* function_contract_create(const char* function_name) {
 LoopContract* loop_contract_create(struct ASTNode* loop_node) {
     if (!loop_node) return NULL;
     
-    LoopContract* contract = malloc(sizeof(LoopContract));
+    LoopContract* contract = xmalloc(sizeof(LoopContract));
     if (!contract) return NULL;
     
     contract->loop_node = loop_node;
@@ -74,7 +74,7 @@ LoopContract* loop_contract_create(struct ASTNode* loop_node) {
 }
 
 ContractContext* contract_context_create(void) {
-    ContractContext* ctx = malloc(sizeof(ContractContext));
+    ContractContext* ctx = xmalloc(sizeof(ContractContext));
     if (!ctx) return NULL;
     
     ctx->function_contracts = NULL;
@@ -178,7 +178,7 @@ ContractVerificationInfo* verify_contract_expression(
 ) {
     if (!expr) return NULL;
     
-    ContractVerificationInfo* info = malloc(sizeof(ContractVerificationInfo));
+    ContractVerificationInfo* info = xmalloc(sizeof(ContractVerificationInfo));
     if (!info) return NULL;
     
     info->result = CONTRACT_UNKNOWN;

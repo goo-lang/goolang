@@ -37,7 +37,7 @@
 // =============================================================================
 
 TargetInfo* target_info_detect(void) {
-    TargetInfo* info = malloc(sizeof(TargetInfo));
+    TargetInfo* info = xmalloc(sizeof(TargetInfo));
     if (!info) return NULL;
     
     memset(info, 0, sizeof(TargetInfo));
@@ -119,7 +119,7 @@ TargetInfo* target_info_detect(void) {
 
 TargetInfo* target_info_from_string(const char* target_spec) {
     // Parse target specification string (e.g., "x86_64-unknown-linux-gnu")
-    TargetInfo* info = malloc(sizeof(TargetInfo));
+    TargetInfo* info = xmalloc(sizeof(TargetInfo));
     if (!info) return NULL;
     
     memset(info, 0, sizeof(TargetInfo));
@@ -168,7 +168,7 @@ bool target_has_feature(TargetInfo* info, HardwareFeature feature) {
 // =============================================================================
 
 OptimizationContext* comptime_optimization_context_new(ComptimeContext* comptime_ctx) {
-    OptimizationContext* ctx = malloc(sizeof(OptimizationContext));
+    OptimizationContext* ctx = xmalloc(sizeof(OptimizationContext));
     if (!ctx) return NULL;
     
     memset(ctx, 0, sizeof(OptimizationContext));
@@ -227,7 +227,7 @@ void comptime_optimization_context_free(OptimizationContext* ctx) {
 // =============================================================================
 
 OptimizationDirective* optimization_directive_new(const char* name, OptimizationGoal goal) {
-    OptimizationDirective* directive = malloc(sizeof(OptimizationDirective));
+    OptimizationDirective* directive = xmalloc(sizeof(OptimizationDirective));
     if (!directive) return NULL;
     
     memset(directive, 0, sizeof(OptimizationDirective));

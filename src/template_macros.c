@@ -43,7 +43,7 @@ bool register_template_macros(MacroRegistry* registry) {
 TemplateContext* create_template_context(const char* template_code) {
     if (!template_code) return NULL;
     
-    TemplateContext* ctx = (TemplateContext*)calloc(1, sizeof(TemplateContext));
+    TemplateContext* ctx = (TemplateContext*)xcalloc(1, sizeof(TemplateContext));
     if (!ctx) return NULL;
     
     ctx->template_code = strdup(template_code);
@@ -241,7 +241,7 @@ char* process_template_string(const char* template_str, TemplateContext* ctx) {
 TemplateExpansionResult* expand_template(TemplateContext* ctx) {
     if (!ctx) return NULL;
     
-    TemplateExpansionResult* result = (TemplateExpansionResult*)calloc(1, sizeof(TemplateExpansionResult));
+    TemplateExpansionResult* result = (TemplateExpansionResult*)xcalloc(1, sizeof(TemplateExpansionResult));
     if (!result) return NULL;
     
     // Process the template

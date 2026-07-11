@@ -14,7 +14,7 @@ static void profile_simulate_data(ProfileData* data);
 // =============================================================================
 
 ProfileData* comptime_profile_data_new(const char* source_file) {
-    ProfileData* data = malloc(sizeof(ProfileData));
+    ProfileData* data = xmalloc(sizeof(ProfileData));
     if (!data) return NULL;
     
     data->source_file = strdup(source_file);
@@ -100,7 +100,7 @@ void comptime_profile_data_free(ProfileData* data) {
 // =============================================================================
 
 ProfileCollector* profile_collector_new(ProfileMode mode) {
-    ProfileCollector* collector = malloc(sizeof(ProfileCollector));
+    ProfileCollector* collector = xmalloc(sizeof(ProfileCollector));
     if (!collector) return NULL;
     
     collector->mode = mode;
@@ -260,7 +260,7 @@ bool profile_is_function_cold(ProfileData* data, const char* function_name, doub
 int profile_add_function(ProfileData* data, const char* name, uint64_t call_count, uint64_t cycles) {
     if (!data || !name) return 0;
     
-    FunctionProfile* func = malloc(sizeof(FunctionProfile));
+    FunctionProfile* func = xmalloc(sizeof(FunctionProfile));
     if (!func) return 0;
     
     func->function_name = strdup(name);
@@ -280,7 +280,7 @@ int profile_add_function(ProfileData* data, const char* name, uint64_t call_coun
 int profile_add_branch(ProfileData* data, const char* location, uint64_t taken, uint64_t not_taken) {
     if (!data || !location) return 0;
     
-    BranchInfo* branch = malloc(sizeof(BranchInfo));
+    BranchInfo* branch = xmalloc(sizeof(BranchInfo));
     if (!branch) return 0;
     
     branch->location = strdup(location);
@@ -309,7 +309,7 @@ int profile_add_branch(ProfileData* data, const char* location, uint64_t taken, 
 int profile_add_loop(ProfileData* data, const char* location, uint64_t iterations, uint64_t invocations) {
     if (!data || !location) return 0;
     
-    LoopProfile* loop = malloc(sizeof(LoopProfile));
+    LoopProfile* loop = xmalloc(sizeof(LoopProfile));
     if (!loop) return 0;
     
     loop->location = strdup(location);
@@ -327,7 +327,7 @@ int profile_add_loop(ProfileData* data, const char* location, uint64_t iteration
 int profile_add_call_site(ProfileData* data, const char* location, const char* target, uint64_t count) {
     if (!data || !location || !target) return 0;
     
-    CallSiteProfile* call_site = malloc(sizeof(CallSiteProfile));
+    CallSiteProfile* call_site = xmalloc(sizeof(CallSiteProfile));
     if (!call_site) return 0;
     
     call_site->location = strdup(location);
@@ -429,7 +429,7 @@ void profile_calculate_branch_probabilities(ProfileData* data) {
 PGOContext* pgo_context_new(ProfileData* profile_data, OptimizationContext* opt_ctx) {
     if (!profile_data || !opt_ctx) return NULL;
     
-    PGOContext* ctx = malloc(sizeof(PGOContext));
+    PGOContext* ctx = xmalloc(sizeof(PGOContext));
     if (!ctx) return NULL;
     
     ctx->profile_data = profile_data;

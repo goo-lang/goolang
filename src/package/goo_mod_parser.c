@@ -45,7 +45,7 @@ typedef struct Parser {
 
 // Lexer functions
 Lexer* lexer_create(const char* input) {
-    Lexer* lexer = malloc(sizeof(Lexer));
+    Lexer* lexer = xmalloc(sizeof(Lexer));
     if (!lexer) {
         return NULL;
     }
@@ -225,7 +225,7 @@ Token lexer_next_token(Lexer* lexer) {
 
 // Parser functions
 Parser* parser_create(const char* input) {
-    Parser* parser = malloc(sizeof(Parser));
+    Parser* parser = xmalloc(sizeof(Parser));
     if (!parser) {
         return NULL;
     }
@@ -496,7 +496,7 @@ GooMod* goo_mod_parse_string(const char* content) {
     Parser* parser = parser_create(content);
     if (!parser) return NULL;
     
-    GooMod* gmod = calloc(1, sizeof(GooMod));
+    GooMod* gmod = xcalloc(1, sizeof(GooMod));
     if (!gmod) {
         parser_free(parser);
         return NULL;

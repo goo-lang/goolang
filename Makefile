@@ -8,7 +8,7 @@ CC = gcc
 # and example tests do) resolve from the repo root; plain "foo.h" still
 # resolves via -Iinclude. Both forms are in use; keeping both on the path
 # avoids "fatal error: include/foo.h: No such file" in those targets.
-CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE
+CFLAGS = -Wall -Wextra -std=c23 -g -I. -Iinclude -I/opt/homebrew/include -D_GNU_SOURCE -include include/xalloc.h
 LDFLAGS = -lm -pthread -ljson-c -lcurl -lz -L/opt/homebrew/lib
 
 # Incremental, header-aware builds ("only rebuild what changed"). -MMD writes a
@@ -258,7 +258,7 @@ CCOMP_LLVM_INC := $(shell /opt/homebrew/opt/llvm/bin/llvm-config --includedir 2>
 # -D_POSIX_C_SOURCE: -std=c99 hides POSIX symbols (struct timespec, CLOCK_*),
 #   which the gcc build gets via _XOPEN_SOURCE in runtime.h; expose them here too.
 # -finline-asm: let CompCert accept the inline asm in <cpuid.h> (hardware probe).
-CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -fstruct-passing -include include/ccomp_shim.h -D_POSIX_C_SOURCE=200809L -finline-asm -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+CCOMP_CFLAGS = -Iinclude -I/opt/homebrew/include -I$(CCOMP_LLVM_INC) -std=c99 -fstruct-passing -include include/ccomp_shim.h -include include/xalloc.h -D_POSIX_C_SOURCE=200809L -finline-asm -DLLVM_AVAILABLE=1 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
 
 # V1-ccomp-link: build bin/goo-ccomp from CompCert .o files. The
 # resulting binary is the Goo compiler compiled through CompCert

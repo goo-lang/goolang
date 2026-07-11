@@ -20,7 +20,7 @@ static char* str_dup(const char* str) {
 // Type checker initialization and cleanup
 
 TypeChecker* type_checker_new(void) {
-    TypeChecker* checker = malloc(sizeof(TypeChecker));
+    TypeChecker* checker = xmalloc(sizeof(TypeChecker));
     if (!checker) return NULL;
 
     checker->current_scope = scope_new(NULL);
@@ -180,7 +180,7 @@ Package* type_checker_find_package(TypeChecker* checker, const char* import_path
 Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name) {
     if (!checker || !import_path || !name) return NULL;
 
-    Package* pkg = malloc(sizeof(Package));
+    Package* pkg = xmalloc(sizeof(Package));
     if (!pkg) return NULL;
 
     pkg->import_path = str_dup(import_path);
@@ -588,7 +588,7 @@ void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
                                      struct ASTNode* call_site) {
     (void)call_site;
     if (!checker || !fn) { free(args); free(comptime_values); return; }
-    GenericInstantiation* inst = malloc(sizeof(GenericInstantiation));
+    GenericInstantiation* inst = xmalloc(sizeof(GenericInstantiation));
     if (!inst) { free(args); free(comptime_values); return; }
     inst->fn = fn;
     inst->args = args;
@@ -611,7 +611,7 @@ void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn
                                                struct ASTNode* call_site) {
     (void)call_site;
     if (!checker || !fn) { free(values); return; }
-    ComptimeInstantiation* inst = malloc(sizeof(ComptimeInstantiation));
+    ComptimeInstantiation* inst = xmalloc(sizeof(ComptimeInstantiation));
     if (!inst) { free(values); return; }
     inst->fn = fn;
     inst->values = values;
@@ -4379,7 +4379,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                         return NULL;
                     }
                     for (InterfaceMethod* sm = et->data.interface.methods; sm; sm = sm->next) {
-                        InterfaceMethod* im = calloc(1, sizeof(InterfaceMethod));
+                        InterfaceMethod* im = xcalloc(1, sizeof(InterfaceMethod));
                         if (!im) return NULL;
                         im->name = strdup(sm->name);
                         im->type = sm->type;
@@ -4454,7 +4454,7 @@ Type* type_from_ast(TypeChecker* checker, ASTNode* type_node) {
                 // Build the InterfaceMethod inline (mirrors the struct/enum
                 // cases building their types via type_new rather than pulling in
                 // the concept/protocol subsystem helpers).
-                InterfaceMethod* im = calloc(1, sizeof(InterfaceMethod));
+                InterfaceMethod* im = xcalloc(1, sizeof(InterfaceMethod));
                 if (!im) return NULL;
                 im->name = strdup(fn->name);
                 im->type = method_fn;

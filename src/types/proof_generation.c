@@ -17,7 +17,7 @@ _Static_assert(sizeof(SMTSolver) == sizeof(int), "SMTSolver should be int size")
 // =============================================================================
 
 ProofGenerationContext* proof_generation_context_create(void) {
-    ProofGenerationContext* ctx = malloc(sizeof(ProofGenerationContext));
+    ProofGenerationContext* ctx = xmalloc(sizeof(ProofGenerationContext));
     if (!ctx) return NULL;
     
     // Use C23 designated initializers
@@ -217,7 +217,7 @@ MemorySafetyProof* generate_memory_safety_proof(
 ) {
     if (!ctx || !code_block) return NULL;
     
-    MemorySafetyProof* proof = malloc(sizeof(MemorySafetyProof));
+    MemorySafetyProof* proof = xmalloc(sizeof(MemorySafetyProof));
     if (!proof) return NULL;
     
     // Initialize proof with C23 designated initializers

@@ -325,7 +325,7 @@ typedef struct MonoCallRef {
 } MonoCallRef;
 
 static void mono_push_call(MonoCallRef** head, CallExprNode* call) {
-    MonoCallRef* n = malloc(sizeof(MonoCallRef));
+    MonoCallRef* n = xmalloc(sizeof(MonoCallRef));
     if (!n) return; // best-effort: OOM here just misses this call site, not a crash
     n->call = call;
     n->next = *head;
@@ -635,7 +635,7 @@ static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
     }
     (*stamped_count)++;
 
-    MonoSeen* sn = malloc(sizeof(MonoSeen));
+    MonoSeen* sn = xmalloc(sizeof(MonoSeen));
     if (!sn) {
         free(sym);
         if (owns_args) free(args);
@@ -819,7 +819,7 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
     }
     (*stamped_count)++;
 
-    MonoSeen* sn = malloc(sizeof(MonoSeen));
+    MonoSeen* sn = xmalloc(sizeof(MonoSeen));
     if (!sn) { free(sym); return 0; }
     sn->sym = sym; // ownership moves to the seen list; freed once by the top-level driver
     sn->next = *seen;

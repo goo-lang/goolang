@@ -229,7 +229,7 @@ DependencyGraph* build_dependency_graph(ParallelContext* ctx, ASTNode* code_bloc
         return NULL;
     }
     
-    DependencyGraph* graph = (DependencyGraph*)calloc(1, sizeof(DependencyGraph));
+    DependencyGraph* graph = (DependencyGraph*)xcalloc(1, sizeof(DependencyGraph));
     if (!graph) {
         return NULL;
     }
@@ -318,7 +318,7 @@ void add_statement_to_graph(DependencyGraph* graph, ASTNode* stmt, size_t index)
     }
     
     // Create dependency node
-    DependencyNode* dep_node = (DependencyNode*)calloc(1, sizeof(DependencyNode));
+    DependencyNode* dep_node = (DependencyNode*)xcalloc(1, sizeof(DependencyNode));
     if (!dep_node) {
         return;
     }

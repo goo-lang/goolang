@@ -58,7 +58,7 @@ static char* str_dup(const char* str) {
 ConceptDefinition* concept_definition_new(const char* name, Position pos) {
     if (!name) return NULL;
     
-    ConceptDefinition* concept = malloc(sizeof(ConceptDefinition));
+    ConceptDefinition* concept = xmalloc(sizeof(ConceptDefinition));
     if (!concept) return NULL;
     
     concept->name = str_dup(name);
@@ -550,7 +550,7 @@ int concept_add_method_requirement(ConceptDefinition* concept, const char* metho
     if (!concept || !method_name || !method_signature) return 0;
     
     // Create a new interface method for the requirement
-    InterfaceMethod* method = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* method = xmalloc(sizeof(InterfaceMethod));
     if (!method) return 0;
     
     method->name = str_dup(method_name);

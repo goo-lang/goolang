@@ -941,7 +941,7 @@ ParamEscapeResult* param_escape_analyze(ASTNode* program) {
         if (fail_closed) break;
     }
 
-    ParamEscapeResult* result = malloc(sizeof(ParamEscapeResult));
+    ParamEscapeResult* result = xmalloc(sizeof(ParamEscapeResult));
     if (!result) {
         registry_free(&reg);
         return NULL;

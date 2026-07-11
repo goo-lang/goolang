@@ -81,7 +81,7 @@ bool crypto_memory_is_secure(const void* ptr, size_t size) {
 // Random number generation using /dev/urandom
 Result_void_ptr crypto_random_bytes(uint8_t* buffer, size_t buffer_size) {
     if (!buffer || buffer_size == 0) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -91,7 +91,7 @@ Result_void_ptr crypto_random_bytes(uint8_t* buffer, size_t buffer_size) {
     
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd < 0) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_CRYPTO_RANDOM_GENERATION_FAILED;
             err->message = "Failed to open /dev/urandom";
@@ -106,7 +106,7 @@ Result_void_ptr crypto_random_bytes(uint8_t* buffer, size_t buffer_size) {
         bytes_read = read(fd, buffer + total_read, buffer_size - total_read);
         if (bytes_read < 0) {
             close(fd);
-            Error* err = malloc(sizeof(Error));
+            Error* err = xmalloc(sizeof(Error));
             if (err) {
                 err->code = ERROR_CRYPTO_RANDOM_GENERATION_FAILED;
                 err->message = "Failed to read random bytes";
@@ -144,7 +144,7 @@ Result_void_ptr crypto_seed_entropy(const uint8_t* seed, size_t seed_length) {
     // In a real implementation, this would add entropy to the system
     // For now, just validate parameters
     if (!seed || seed_length == 0) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid seed parameters";
@@ -306,7 +306,7 @@ void crypto_context_destroy(CryptoContext* context) {
 
 Result_void_ptr crypto_context_set_security_context(CryptoContext* context, SecurityContext* security_context) {
     if (!context) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid crypto context";
@@ -505,7 +505,7 @@ void crypto_keypair_destroy(CryptoKeyPair* keypair) {
 
 Result_void_ptr crypto_key_set_access_control(CryptoKey* key, SecurityCapability required_caps, const char* owner) {
     if (!key) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_CRYPTO_INVALID_KEY;
             err->message = "Invalid key";
@@ -525,7 +525,7 @@ Result_void_ptr crypto_key_set_access_control(CryptoKey* key, SecurityCapability
 
 Result_void_ptr crypto_key_rotate(CryptoKey* key) {
     if (!key) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_CRYPTO_INVALID_KEY;
             err->message = "Invalid key";
@@ -609,7 +609,7 @@ void crypto_result_destroy(CryptoResult* result) {
 
 // Policy operations (stubs for now)
 CryptoPolicy* crypto_policy_create_default(void) {
-    CryptoPolicy* policy = malloc(sizeof(CryptoPolicy));
+    CryptoPolicy* policy = xmalloc(sizeof(CryptoPolicy));
     if (!policy) return NULL;
     
     memset(policy, 0, sizeof(CryptoPolicy));
@@ -669,7 +669,7 @@ void crypto_policy_destroy(CryptoPolicy* policy) {
 
 Result_void_ptr crypto_policy_apply(CryptoPolicy* policy) {
     if (!policy) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid policy";
@@ -683,7 +683,7 @@ Result_void_ptr crypto_policy_apply(CryptoPolicy* policy) {
 
 Result_void_ptr crypto_policy_validate_operation(const CryptoPolicy* policy, CryptoAlgorithmExtended algorithm, CryptoSecurityLevel security_level) {
     if (!policy) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "No policy specified";
@@ -693,7 +693,7 @@ Result_void_ptr crypto_policy_validate_operation(const CryptoPolicy* policy, Cry
     
     // Check minimum security level
     if (security_level < policy->min_security_level) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_CRYPTO_INSUFFICIENT_SECURITY;
             err->message = "Security level below policy minimum";
@@ -703,7 +703,7 @@ Result_void_ptr crypto_policy_validate_operation(const CryptoPolicy* policy, Cry
     
     // Check if algorithm is deprecated
     if (crypto_algorithm_is_deprecated(algorithm)) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_CRYPTO_POLICY_VIOLATION;
             err->message = "Algorithm is deprecated";

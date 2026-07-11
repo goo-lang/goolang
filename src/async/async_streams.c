@@ -30,7 +30,7 @@ StreamItem* stream_item_create(void* data, size_t size) {
 }
 
 StreamItem* stream_item_create_with_destructor(void* data, size_t size, void (*destructor)(void*)) {
-    StreamItem* item = calloc(1, sizeof(StreamItem));
+    StreamItem* item = xcalloc(1, sizeof(StreamItem));
     if (!item) return NULL;
     
     if (data && size > 0) {
@@ -81,7 +81,7 @@ void stream_item_unref(StreamItem* item) {
 }
 
 StreamItem* stream_item_end_marker(void) {
-    StreamItem* item = calloc(1, sizeof(StreamItem));
+    StreamItem* item = xcalloc(1, sizeof(StreamItem));
     if (!item) return NULL;
     
     item->is_end_marker = true;
@@ -93,7 +93,7 @@ StreamItem* stream_item_end_marker(void) {
 }
 
 StreamItem* stream_item_error(Error* error) {
-    StreamItem* item = calloc(1, sizeof(StreamItem));
+    StreamItem* item = xcalloc(1, sizeof(StreamItem));
     if (!item) return NULL;
     
     item->error = error;
@@ -111,7 +111,7 @@ AsyncIterator* async_iterator_create(const char* name,
     
     if (!next_fn) return NULL;
     
-    AsyncIterator* iter = calloc(1, sizeof(AsyncIterator));
+    AsyncIterator* iter = xcalloc(1, sizeof(AsyncIterator));
     if (!iter) return NULL;
     
     iter->id = generate_id();
@@ -386,7 +386,7 @@ Result_void_ptr async_iterator_cancel(AsyncIterator* iter) {
 StreamBuffer* stream_buffer_create(size_t capacity, BackpressureStrategy strategy) {
     if (capacity == 0) capacity = 1024; // Default capacity
     
-    StreamBuffer* buffer = calloc(1, sizeof(StreamBuffer));
+    StreamBuffer* buffer = xcalloc(1, sizeof(StreamBuffer));
     if (!buffer) return NULL;
     
     buffer->items = calloc(capacity, sizeof(StreamItem*));
@@ -632,7 +632,7 @@ bool stream_buffer_is_full(StreamBuffer* buffer) {
 
 // Backpressure controller operations
 BackpressureController* backpressure_controller_create(BackpressureStrategy strategy, size_t max_buffer_size) {
-    BackpressureController* controller = calloc(1, sizeof(BackpressureController));
+    BackpressureController* controller = xcalloc(1, sizeof(BackpressureController));
     if (!controller) return NULL;
     
     controller->strategy = strategy;
@@ -752,7 +752,7 @@ void backpressure_controller_update_metrics(BackpressureController* controller,
 StreamPipeline* stream_pipeline_create(const char* name, AsyncIterator* source) {
     if (!source) return NULL;
     
-    StreamPipeline* pipeline = calloc(1, sizeof(StreamPipeline));
+    StreamPipeline* pipeline = xcalloc(1, sizeof(StreamPipeline));
     if (!pipeline) return NULL;
     
     pipeline->id = generate_id();
@@ -1185,7 +1185,7 @@ Result_void_ptr stream_pipeline_map(StreamPipeline* pipeline, const char* name,
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid pipeline or map function"));
     }
     
-    StreamOperation* operation = calloc(1, sizeof(StreamOperation));
+    StreamOperation* operation = xcalloc(1, sizeof(StreamOperation));
     if (!operation) {
         return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate stream operation"));
     }
@@ -1248,7 +1248,7 @@ Result_void_ptr stream_pipeline_filter(StreamPipeline* pipeline, const char* nam
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid pipeline or filter function"));
     }
     
-    StreamOperation* operation = calloc(1, sizeof(StreamOperation));
+    StreamOperation* operation = xcalloc(1, sizeof(StreamOperation));
     if (!operation) {
         return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate stream operation"));
     }
@@ -1311,7 +1311,7 @@ Result_void_ptr stream_pipeline_batch(StreamPipeline* pipeline, const char* name
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid pipeline, batch function, or batch size"));
     }
     
-    StreamOperation* operation = calloc(1, sizeof(StreamOperation));
+    StreamOperation* operation = xcalloc(1, sizeof(StreamOperation));
     if (!operation) {
         return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate stream operation"));
     }
@@ -1367,7 +1367,7 @@ Result_void_ptr stream_pipeline_parallel(StreamPipeline* pipeline, const char* n
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid pipeline or parallel degree"));
     }
     
-    StreamOperation* operation = calloc(1, sizeof(StreamOperation));
+    StreamOperation* operation = xcalloc(1, sizeof(StreamOperation));
     if (!operation) {
         return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate stream operation"));
     }
@@ -1421,7 +1421,7 @@ Result_void_ptr stream_pipeline_buffer(StreamPipeline* pipeline, const char* nam
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid pipeline"));
     }
     
-    StreamOperation* operation = calloc(1, sizeof(StreamOperation));
+    StreamOperation* operation = xcalloc(1, sizeof(StreamOperation));
     if (!operation) {
         return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate stream operation"));
     }
@@ -1475,7 +1475,7 @@ Result_void_ptr stream_pipeline_throttle(StreamPipeline* pipeline, const char* n
         return ERR_PTR(error_create(ERROR_INVALID_EXPRESSION, "Invalid pipeline or throttle rate"));
     }
     
-    StreamOperation* operation = calloc(1, sizeof(StreamOperation));
+    StreamOperation* operation = xcalloc(1, sizeof(StreamOperation));
     if (!operation) {
         return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate stream operation"));
     }

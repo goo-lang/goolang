@@ -28,7 +28,7 @@ struct GooArena {
 
 // Allocates a block with room for at least `capacity` bytes. Panics on OOM.
 static GooArenaBlock* goo_arena_block_new(size_t capacity) {
-    GooArenaBlock* block = malloc(sizeof(GooArenaBlock));
+    GooArenaBlock* block = xmalloc(sizeof(GooArenaBlock));
     if (!block) {
         goo_panic("Out of memory");
     }
@@ -54,7 +54,7 @@ GooArena* goo_arena_new(size_t initial_size) {
     // sized exactly block_size.
     block_size += GOO_ARENA_ALIGNMENT;
 
-    GooArena* arena = malloc(sizeof(GooArena));
+    GooArena* arena = xmalloc(sizeof(GooArena));
     if (!arena) {
         goo_panic("Out of memory");
     }

@@ -73,7 +73,7 @@ SecurityAuditConfig security_audit_config_high_performance(void) {
 
 // Audit event operations
 AuditEvent* audit_event_create(AuditEventType event_type, AuditSeverity severity, const char* title) {
-    AuditEvent* event = calloc(1, sizeof(AuditEvent));
+    AuditEvent* event = xcalloc(1, sizeof(AuditEvent));
     if (!event) return NULL;
     
     event->event_id = generate_unique_id();
@@ -110,7 +110,7 @@ void audit_event_destroy(AuditEvent* event) {
 
 Result_void_ptr audit_event_set_details(AuditEvent* event, const char* description, const char* category) {
     if (!event) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid audit event";
@@ -133,7 +133,7 @@ Result_void_ptr audit_event_set_details(AuditEvent* event, const char* descripti
 
 Result_void_ptr audit_event_set_security_context(AuditEvent* event, SecurityCapability capabilities, TaintLevel taint_level) {
     if (!event) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid audit event";
@@ -160,7 +160,7 @@ Result_void_ptr audit_event_set_security_context(AuditEvent* event, SecurityCapa
 
 Result_void_ptr audit_event_set_source_info(AuditEvent* event, const char* module, const char* function, const char* file, uint32_t line) {
     if (!event) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid audit event";
@@ -190,7 +190,7 @@ Result_void_ptr audit_event_set_source_info(AuditEvent* event, const char* modul
 
 Result_void_ptr audit_event_add_correlation(AuditEvent* event, uint64_t correlation_id, uint64_t parent_id) {
     if (!event) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid audit event";
@@ -206,7 +206,7 @@ Result_void_ptr audit_event_add_correlation(AuditEvent* event, uint64_t correlat
 
 // Audit logger operations
 AuditLogger* audit_logger_create(void) {
-    AuditLogger* logger = calloc(1, sizeof(AuditLogger));
+    AuditLogger* logger = xcalloc(1, sizeof(AuditLogger));
     if (!logger) return NULL;
     
     // Initialize memory buffer
@@ -267,7 +267,7 @@ void audit_logger_destroy(AuditLogger* logger) {
 
 // Audit analyzer operations
 AuditAnalyzer* audit_analyzer_create(void) {
-    AuditAnalyzer* analyzer = calloc(1, sizeof(AuditAnalyzer));
+    AuditAnalyzer* analyzer = xcalloc(1, sizeof(AuditAnalyzer));
     if (!analyzer) return NULL;
     
     // Initialize anomaly detection
@@ -312,7 +312,7 @@ void audit_analyzer_destroy(AuditAnalyzer* analyzer) {
 
 // Compliance checker operations
 ComplianceChecker* compliance_checker_create(void) {
-    ComplianceChecker* checker = calloc(1, sizeof(ComplianceChecker));
+    ComplianceChecker* checker = xcalloc(1, sizeof(ComplianceChecker));
     if (!checker) return NULL;
     
     // Initialize framework storage
@@ -353,7 +353,7 @@ void compliance_checker_destroy(ComplianceChecker* checker) {
 
 // Threat detector operations
 ThreatDetector* threat_detector_create(void) {
-    ThreatDetector* detector = calloc(1, sizeof(ThreatDetector));
+    ThreatDetector* detector = xcalloc(1, sizeof(ThreatDetector));
     if (!detector) return NULL;
     
     // Initialize configuration
@@ -398,7 +398,7 @@ void threat_detector_destroy(ThreatDetector* detector) {
 
 // Main security audit system operations
 SecurityAuditSystem* security_audit_system_create(SecurityContext* security_context) {
-    SecurityAuditSystem* system = calloc(1, sizeof(SecurityAuditSystem));
+    SecurityAuditSystem* system = xcalloc(1, sizeof(SecurityAuditSystem));
     if (!system) return NULL;
     
     system->security_context = security_context;
@@ -504,7 +504,7 @@ void security_audit_system_destroy(SecurityAuditSystem* system) {
 
 Result_void_ptr security_audit_system_initialize(SecurityAuditSystem* system) {
     if (!system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid audit system";
@@ -524,7 +524,7 @@ Result_void_ptr security_audit_system_initialize(SecurityAuditSystem* system) {
         system->logger->file_config.log_file = fopen(system->logger->file_config.log_file_path, "a");
         if (!system->logger->file_config.log_file) {
             pthread_mutex_unlock(&system->system_mutex);
-            Error* err = malloc(sizeof(Error));
+            Error* err = xmalloc(sizeof(Error));
             if (err) {
                 err->code = ERROR_AUDIT_DESTINATION_FAILED;
                 err->message = "Failed to open audit log file";
@@ -546,7 +546,7 @@ Result_void_ptr security_audit_system_initialize(SecurityAuditSystem* system) {
 // Core auditing functions
 Result_void_ptr security_audit_log_event(SecurityAuditSystem* system, AuditEvent* event) {
     if (!system || !event) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -567,7 +567,7 @@ Result_void_ptr security_audit_log_event(SecurityAuditSystem* system, AuditEvent
         pthread_mutex_unlock(&system->event_processing.queue_mutex);
         system->statistics.processing_errors++;
         
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_AUDIT_LOG_FULL;
             err->message = "Audit event queue is full";
@@ -601,7 +601,7 @@ Result_void_ptr security_audit_log_event(SecurityAuditSystem* system, AuditEvent
 
 Result_void_ptr security_audit_log_simple(SecurityAuditSystem* system, AuditEventType type, AuditSeverity severity, const char* message) {
     if (!system || !message) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -611,7 +611,7 @@ Result_void_ptr security_audit_log_simple(SecurityAuditSystem* system, AuditEven
     
     AuditEvent* event = audit_event_create(type, severity, message);
     if (!event) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_OUT_OF_MEMORY;
             err->message = "Failed to create audit event";
@@ -627,7 +627,7 @@ Result_void_ptr security_audit_log_simple(SecurityAuditSystem* system, AuditEven
 // Integration functions
 Result_void_ptr security_audit_integrate_taint_analysis(SecurityAuditSystem* system, TaintAnalyzer* taint_analyzer) {
     if (!system || !taint_analyzer) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -642,7 +642,7 @@ Result_void_ptr security_audit_integrate_taint_analysis(SecurityAuditSystem* sys
 
 Result_void_ptr security_audit_integrate_capability_system(SecurityAuditSystem* system, CapabilitySystem* capability_system) {
     if (!system || !capability_system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -658,7 +658,7 @@ Result_void_ptr security_audit_integrate_capability_system(SecurityAuditSystem* 
 // Stub implementations for complex analysis functions
 Result_void_ptr security_audit_analyze_events(SecurityAuditSystem* system, uint64_t time_window_ms) {
     if (!system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid audit system";
@@ -680,7 +680,7 @@ Result_void_ptr security_audit_analyze_events(SecurityAuditSystem* system, uint6
 
 Result_void_ptr security_audit_log_capability_event(SecurityAuditSystem* system, SecurityCapability capability, const char* entity, bool granted) {
     if (!system || !entity) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -693,7 +693,7 @@ Result_void_ptr security_audit_log_capability_event(SecurityAuditSystem* system,
     
     AuditEvent* event = audit_event_create(event_type, severity, granted ? "Capability granted" : "Capability denied");
     if (!event) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_OUT_OF_MEMORY;
             err->message = "Failed to create audit event";
@@ -716,7 +716,7 @@ Result_void_ptr security_audit_log_capability_event(SecurityAuditSystem* system,
 // Configuration function
 Result_void_ptr security_audit_system_configure(SecurityAuditSystem* system, SecurityAuditConfig config) {
     if (!system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid audit system";

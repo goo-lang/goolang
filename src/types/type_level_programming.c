@@ -25,7 +25,7 @@ static char* str_dup(const char* str) {
 // =============================================================================
 
 TypeLevelComputation* type_level_computation_new(TypeLevelComputationKind kind, const char* name) {
-    TypeLevelComputation* computation = malloc(sizeof(TypeLevelComputation));
+    TypeLevelComputation* computation = xmalloc(sizeof(TypeLevelComputation));
     if (!computation) return NULL;
     
     computation->kind = kind;
@@ -296,7 +296,7 @@ Type* evaluate_const_generic(ASTNode* expr, TypeChecker* checker) {
 // struct body moved to type_level_internal.h (shared with eval unit)
 
 TypeFamily* type_family_new(const char* name) {
-    TypeFamily* family = malloc(sizeof(TypeFamily));
+    TypeFamily* family = xmalloc(sizeof(TypeFamily));
     if (!family) return NULL;
     
     family->name = str_dup(name);
@@ -338,7 +338,7 @@ void type_family_free(TypeFamily* family) {
 // =============================================================================
 
 TypeLevelNat* type_level_nat_zero(void) {
-    TypeLevelNat* nat = malloc(sizeof(TypeLevelNat));
+    TypeLevelNat* nat = xmalloc(sizeof(TypeLevelNat));
     if (!nat) return NULL;
     
     nat->kind = NAT_ZERO;
@@ -351,7 +351,7 @@ TypeLevelNat* type_level_nat_zero(void) {
 TypeLevelNat* type_level_nat_succ(TypeLevelNat* n) {
     if (!n) return NULL;
     
-    TypeLevelNat* nat = malloc(sizeof(TypeLevelNat));
+    TypeLevelNat* nat = xmalloc(sizeof(TypeLevelNat));
     if (!nat) return NULL;
     
     nat->kind = NAT_SUCC;
@@ -376,7 +376,7 @@ TypeLevelNat* type_level_nat_add(TypeLevelNat* a, TypeLevelNat* b) {
     
     if (a->kind == NAT_ZERO) {
         // Add(Zero, B) = B
-        TypeLevelNat* result = malloc(sizeof(TypeLevelNat));
+        TypeLevelNat* result = xmalloc(sizeof(TypeLevelNat));
         if (result) {
             *result = *b; // Copy b
             result->predecessor = b->predecessor; // Share reference
@@ -400,7 +400,7 @@ TypeLevelNat* type_level_nat_add(TypeLevelNat* a, TypeLevelNat* b) {
 // =============================================================================
 
 TypePattern* type_pattern_new(TypePatternKind kind, const char* name) {
-    TypePattern* pattern = malloc(sizeof(TypePattern));
+    TypePattern* pattern = xmalloc(sizeof(TypePattern));
     if (!pattern) return NULL;
     
     pattern->kind = kind;
@@ -450,7 +450,7 @@ int type_pattern_add_subpattern(TypePattern* pattern, TypePattern* subpattern) {
 // struct body moved to type_level_internal.h (shared with eval unit)
 
 PatternEnv* pattern_env_new(void) {
-    PatternEnv* env = malloc(sizeof(PatternEnv));
+    PatternEnv* env = xmalloc(sizeof(PatternEnv));
     if (!env) return NULL;
     
     env->var_names = NULL;
@@ -562,7 +562,7 @@ int type_matches_pattern(Type* type, TypePattern* pattern, PatternEnv* env) {
 int type_family_add_case(TypeFamily* family, TypePattern* pattern, TypeLevelComputation* result) {
     if (!family || !pattern || !result) return 0;
     
-    TypeFamilyCase* new_case = malloc(sizeof(TypeFamilyCase));
+    TypeFamilyCase* new_case = xmalloc(sizeof(TypeFamilyCase));
     if (!new_case) return 0;
     
     new_case->pattern = pattern;

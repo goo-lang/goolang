@@ -253,7 +253,7 @@ const char* token_type_string(TokenType type) {
 }
 
 Token* token_new(TokenType type, const char* literal, size_t length, Position pos) {
-    Token* token = malloc(sizeof(Token));
+    Token* token = xmalloc(sizeof(Token));
     if (!token) return NULL;
     
     token->type = type;

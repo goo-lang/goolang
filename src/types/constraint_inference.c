@@ -25,7 +25,7 @@ static char* str_dup(const char* str) {
 // =============================================================================
 
 ConstraintInferenceEngine* constraint_inference_engine_new(TypeChecker* type_checker) {
-    ConstraintInferenceEngine* engine = malloc(sizeof(ConstraintInferenceEngine));
+    ConstraintInferenceEngine* engine = xmalloc(sizeof(ConstraintInferenceEngine));
     if (!engine) return NULL;
     
     engine->type_checker = type_checker;
@@ -82,7 +82,7 @@ void constraint_inference_engine_free(ConstraintInferenceEngine* engine) {
 // =============================================================================
 
 TypeVariable* type_variable_new(const char* name, TypeVariableKind kind, Position pos) {
-    TypeVariable* var = malloc(sizeof(TypeVariable));
+    TypeVariable* var = xmalloc(sizeof(TypeVariable));
     if (!var) return NULL;
     
     var->name = str_dup(name);
@@ -156,7 +156,7 @@ TypeVariable* constraint_inference_engine_add_type_variable(ConstraintInferenceE
 // =============================================================================
 
 InterfaceConstraint* interface_constraint_new(ConstraintKind kind, Type* constrained_type, Position pos) {
-    InterfaceConstraint* constraint = malloc(sizeof(InterfaceConstraint));
+    InterfaceConstraint* constraint = xmalloc(sizeof(InterfaceConstraint));
     if (!constraint) return NULL;
     
     constraint->kind = kind;
@@ -187,7 +187,7 @@ void interface_constraint_free(InterfaceConstraint* constraint) {
 InterfaceConstraint* interface_constraint_copy(const InterfaceConstraint* constraint) {
     if (!constraint) return NULL;
     
-    InterfaceConstraint* copy = malloc(sizeof(InterfaceConstraint));
+    InterfaceConstraint* copy = xmalloc(sizeof(InterfaceConstraint));
     if (!copy) return NULL;
     
     *copy = *constraint; // Copy all fields
@@ -209,7 +209,7 @@ InterfaceConstraint* interface_constraint_copy(const InterfaceConstraint* constr
 }
 
 ConstraintSet* constraint_set_new(void) {
-    ConstraintSet* set = malloc(sizeof(ConstraintSet));
+    ConstraintSet* set = xmalloc(sizeof(ConstraintSet));
     if (!set) return NULL;
     
     set->constraints = NULL;
@@ -692,7 +692,7 @@ static const char* constraint_kind_to_trait_name(ConstraintKind kind) {
 TraitBoundSet* generate_trait_bounds_from_constraints(ConstraintInferenceEngine* engine, TypeVariable* var) {
     if (!engine || !var) return NULL;
     
-    TraitBoundSet* bounds = malloc(sizeof(TraitBoundSet));
+    TraitBoundSet* bounds = xmalloc(sizeof(TraitBoundSet));
     if (!bounds) return NULL;
     
     bounds->bounds = NULL;
@@ -705,7 +705,7 @@ TraitBoundSet* generate_trait_bounds_from_constraints(ConstraintInferenceEngine*
     if (constraints) {
         InterfaceConstraint* current = constraints->constraints;
         while (current) {
-            TraitBound* bound = malloc(sizeof(TraitBound));
+            TraitBound* bound = xmalloc(sizeof(TraitBound));
             if (bound) {
                 bound->kind = TRAIT_BOUND_SIMPLE;
                 bound->type_param_name = str_dup(var->name);
@@ -805,7 +805,7 @@ bool validate_generated_trait_bounds(TraitBoundSet* bounds) {
 int infer_constraints_from_arithmetic_context(ConstraintInferenceEngine* engine, Type* type, Position pos) {
     if (!engine || !type) return 0;
     
-    InterfaceConstraint* constraint = malloc(sizeof(InterfaceConstraint));
+    InterfaceConstraint* constraint = xmalloc(sizeof(InterfaceConstraint));
     if (!constraint) return 0;
     
     constraint->kind = CONSTRAINT_NUMERIC;
@@ -835,7 +835,7 @@ int infer_constraints_from_arithmetic_context(ConstraintInferenceEngine* engine,
 int infer_constraints_from_comparison_context(ConstraintInferenceEngine* engine, Type* type, Position pos) {
     if (!engine || !type) return 0;
     
-    InterfaceConstraint* constraint = malloc(sizeof(InterfaceConstraint));
+    InterfaceConstraint* constraint = xmalloc(sizeof(InterfaceConstraint));
     if (!constraint) return 0;
     
     constraint->kind = CONSTRAINT_PARTIAL_ORD;
@@ -902,7 +902,7 @@ int infer_constraints_from_usage_pattern(ConstraintInferenceEngine* engine, Type
     
     // Add constraints for each identified kind
     for (int i = 0; i < kind_count; i++) {
-        InterfaceConstraint* constraint = malloc(sizeof(InterfaceConstraint));
+        InterfaceConstraint* constraint = xmalloc(sizeof(InterfaceConstraint));
         if (!constraint) continue;
         
         constraint->kind = kinds[i];
@@ -942,7 +942,7 @@ int propagate_constraints(ConstraintInferenceEngine* engine) {
     while (current) {
         // If we have a comparison constraint, also infer partial equality
         if (current->kind == CONSTRAINT_PARTIAL_ORD) {
-            InterfaceConstraint* eq_constraint = malloc(sizeof(InterfaceConstraint));
+            InterfaceConstraint* eq_constraint = xmalloc(sizeof(InterfaceConstraint));
             if (eq_constraint) {
                 eq_constraint->kind = CONSTRAINT_PARTIAL_EQ;
                 eq_constraint->constrained_type = current->constrained_type;
@@ -972,7 +972,7 @@ int propagate_constraints(ConstraintInferenceEngine* engine) {
 // =============================================================================
 
 TraitBound* trait_bound_new(const char* type_param_name, Position source_pos) {
-    TraitBound* bound = malloc(sizeof(TraitBound));
+    TraitBound* bound = xmalloc(sizeof(TraitBound));
     if (!bound) return NULL;
     
     bound->kind = TRAIT_BOUND_SIMPLE;
@@ -990,7 +990,7 @@ TraitBound* trait_bound_new(const char* type_param_name, Position source_pos) {
 }
 
 TraitBoundSet* trait_bound_set_new(void) {
-    TraitBoundSet* set = malloc(sizeof(TraitBoundSet));
+    TraitBoundSet* set = xmalloc(sizeof(TraitBoundSet));
     if (!set) return NULL;
     
     set->bounds = NULL;

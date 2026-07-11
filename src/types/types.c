@@ -19,7 +19,7 @@ static char* str_dup(const char* str) {
 // Type creation functions
 
 Type* type_new(TypeKind kind) {
-    Type* type = malloc(sizeof(Type));
+    Type* type = xmalloc(sizeof(Type));
     if (!type) return NULL;
     
     memset(type, 0, sizeof(Type));
@@ -647,7 +647,7 @@ void type_free(Type* type) {
 Type* type_copy(const Type* type) {
     if (!type) return NULL;
     
-    Type* copy = malloc(sizeof(Type));
+    Type* copy = xmalloc(sizeof(Type));
     if (!copy) return NULL;
     
     *copy = *type;
@@ -1016,7 +1016,7 @@ struct Package* type_receiver_owner_package(const Type* type) {
 // Variable management
 
 Variable* variable_new(const char* name, Type* type, Position pos) {
-    Variable* var = malloc(sizeof(Variable));
+    Variable* var = xmalloc(sizeof(Variable));
     if (!var) return NULL;
 
     var->name = str_dup(name);
@@ -1056,7 +1056,7 @@ void variable_free(Variable* var) {
 // Scope management
 
 Scope* scope_new(Scope* parent) {
-    Scope* scope = malloc(sizeof(Scope));
+    Scope* scope = xmalloc(sizeof(Scope));
     if (!scope) return NULL;
     
     scope->variables = NULL;

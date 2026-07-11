@@ -73,7 +73,7 @@ static LSPDocument* find_document(const char* uri) {
 }
 
 static LSPDocument* create_document(const char* uri, const char* content, int version) {
-    LSPDocument* doc = malloc(sizeof(LSPDocument));
+    LSPDocument* doc = xmalloc(sizeof(LSPDocument));
     if (!doc) return NULL;
     
     doc->uri = strdup(uri);
@@ -647,7 +647,7 @@ static void process_message(const char* content) {
 
 // LSP server initialization and main loop
 bool lsp_enhanced_server_init(FILE* input, FILE* output) {
-    g_server = malloc(sizeof(EnhancedLSPServer));
+    g_server = xmalloc(sizeof(EnhancedLSPServer));
     if (!g_server) return false;
     
     g_server->input_stream = input;

@@ -17,7 +17,7 @@
 
 // Create a new error context
 ErrorContext* error_context_new(void) {
-    ErrorContext* ctx = (ErrorContext*)calloc(1, sizeof(ErrorContext));
+    ErrorContext* ctx = (ErrorContext*)xcalloc(1, sizeof(ErrorContext));
     if (!ctx) return NULL;
     
     ctx->max_errors = DEFAULT_MAX_ERRORS;
@@ -49,7 +49,7 @@ void error_context_free(ErrorContext* ctx) {
 static Error* create_error(ErrorContext* ctx, ErrorCode code, 
                           ErrorSeverity severity, const char* message,
                           const char* hint, SourceLocation location) {
-    Error* error = (Error*)calloc(1, sizeof(Error));
+    Error* error = (Error*)xcalloc(1, sizeof(Error));
     if (!error) return NULL;
     
     error->code = code;
@@ -395,7 +395,7 @@ bool source_location_is_valid(const SourceLocation* loc) {
 ErrorBuilder* error_builder_new(ErrorContext* ctx, ErrorCode code) {
     if (!ctx) return NULL;
     
-    ErrorBuilder* builder = (ErrorBuilder*)calloc(1, sizeof(ErrorBuilder));
+    ErrorBuilder* builder = (ErrorBuilder*)xcalloc(1, sizeof(ErrorBuilder));
     if (!builder) return NULL;
     
     builder->ctx = ctx;
@@ -461,7 +461,7 @@ void error_builder_emit(ErrorBuilder* builder) {
 
 // Simple error creation function for runtime use
 Error* error_create(ErrorCode code, const char* message) {
-    Error* error = (Error*)calloc(1, sizeof(Error));
+    Error* error = (Error*)xcalloc(1, sizeof(Error));
     if (!error) return NULL;
     
     error->code = code;

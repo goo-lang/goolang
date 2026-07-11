@@ -126,7 +126,7 @@ static void* optimization_thread(void* arg) {
 
 // Manager operations
 SharedVarManager* shared_var_manager_create(size_t max_variables) {
-    SharedVarManager* manager = calloc(1, sizeof(SharedVarManager));
+    SharedVarManager* manager = xcalloc(1, sizeof(SharedVarManager));
     if (!manager) return NULL;
     
     manager->max_variables = max_variables;
@@ -183,7 +183,7 @@ SharedVarManager* shared_var_manager_create(size_t max_variables) {
 
 Result_void_ptr shared_var_manager_start_optimization(SharedVarManager* manager) {
     if (!manager) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -205,7 +205,7 @@ Result_void_ptr shared_var_manager_start_optimization(SharedVarManager* manager)
     if (pthread_create(&manager->optimizer_thread, NULL, optimization_thread, manager) != 0) {
         manager->optimization_enabled = false;
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
@@ -299,7 +299,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
         unsupported_atomic:
         case SYNC_MODE_MUTEX:
             if (pthread_mutex_init(&var->sync_state.mutex.mutex, NULL) != 0) {
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_INTERNAL,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -316,7 +316,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
             var->sync_state.mutex.value = calloc(1, var->value_size);
             if (!var->sync_state.mutex.value) {
                 pthread_mutex_destroy(&var->sync_state.mutex.mutex);
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -332,7 +332,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
             
         case SYNC_MODE_RW_LOCK:
             if (pthread_rwlock_init(&var->sync_state.rwlock.rwlock, NULL) != 0) {
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_INTERNAL,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -348,7 +348,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
             var->sync_state.rwlock.value = calloc(1, var->value_size);
             if (!var->sync_state.rwlock.value) {
                 pthread_rwlock_destroy(&var->sync_state.rwlock.rwlock);
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -366,7 +366,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
             atomic_flag_clear(&var->sync_state.spinlock.spinlock);
             var->sync_state.spinlock.value = calloc(1, var->value_size);
             if (!var->sync_state.spinlock.value) {
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -398,7 +398,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     // Fall back to mutex for complex types
                     var->sync_state.adaptive.current_mode = SYNC_MODE_MUTEX;
                     if (pthread_mutex_init(&var->sync_state.adaptive.sync.mutex, NULL) != 0) {
-                        Error* error = malloc(sizeof(Error));
+                        Error* error = xmalloc(sizeof(Error));
                         *error = (Error){
                             .code = ERROR_INTERNAL,
                             .severity = ERROR_SEVERITY_ERROR,
@@ -413,7 +413,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
                     var->sync_state.adaptive.value = calloc(1, var->value_size);
                     if (!var->sync_state.adaptive.value) {
                         pthread_mutex_destroy(&var->sync_state.adaptive.sync.mutex);
-                        Error* error = malloc(sizeof(Error));
+                        Error* error = xmalloc(sizeof(Error));
                         *error = (Error){
                             .code = ERROR_OUT_OF_MEMORY,
                             .severity = ERROR_SEVERITY_ERROR,
@@ -431,7 +431,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
             
         case SYNC_MODE_CUSTOM:
             if (!var->config.custom_ops) {
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_INVALID_EXPRESSION,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -448,7 +448,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
             var->sync_state.custom.ops = var->config.custom_ops;
             var->sync_state.custom.value = calloc(1, var->value_size);
             if (!var->sync_state.custom.value) {
-                Error* error = malloc(sizeof(Error));
+                Error* error = xmalloc(sizeof(Error));
                 *error = (Error){
                     .code = ERROR_OUT_OF_MEMORY,
                     .severity = ERROR_SEVERITY_ERROR,
@@ -463,7 +463,7 @@ static Result_void_ptr init_sync_state(SharedVariable* var) {
             break;
             
         default:
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -489,7 +489,7 @@ SharedVariable* shared_var_create(SharedVarManager* manager, SharedVarConfig con
         return NULL;
     }
     
-    SharedVariable* var = calloc(1, sizeof(SharedVariable));
+    SharedVariable* var = xcalloc(1, sizeof(SharedVariable));
     if (!var) {
         pthread_mutex_unlock(&manager->registry_mutex);
         return NULL;
@@ -637,7 +637,7 @@ SyncGroup* sync_group_create(SharedVarManager* manager, const char* name, Consis
         return NULL;
     }
     
-    SyncGroup* group = calloc(1, sizeof(SyncGroup));
+    SyncGroup* group = xcalloc(1, sizeof(SyncGroup));
     if (!group) {
         pthread_mutex_unlock(&manager->registry_mutex);
         return NULL;
@@ -681,7 +681,7 @@ void sync_group_destroy(SyncGroup* group) {
 
 Result_void_ptr sync_group_add_variable(SyncGroup* group, SharedVariable* var) {
     if (!group || !var) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -699,7 +699,7 @@ Result_void_ptr sync_group_add_variable(SyncGroup* group, SharedVariable* var) {
     if (group->variable_count >= group->variable_capacity) {
         pthread_mutex_unlock(&group->group_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
@@ -722,7 +722,7 @@ Result_void_ptr sync_group_add_variable(SyncGroup* group, SharedVariable* var) {
 // Atomic operations implementation
 Result_int32_t shared_var_get_int32(SharedVariable* var) {
     if (!var || var->config.type != SHARED_TYPE_INT32) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -777,7 +777,7 @@ Result_int32_t shared_var_get_int32(SharedVariable* var) {
             break;
             
         default:
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -798,7 +798,7 @@ Result_int32_t shared_var_get_int32(SharedVariable* var) {
 
 Result_void_ptr shared_var_set_int32(SharedVariable* var, int32_t value) {
     if (!var || var->config.type != SHARED_TYPE_INT32) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -851,7 +851,7 @@ Result_void_ptr shared_var_set_int32(SharedVariable* var, int32_t value) {
             break;
             
         default:
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -874,7 +874,7 @@ Result_void_ptr shared_var_set_int32(SharedVariable* var, int32_t value) {
 
 Result_bool shared_var_cas_int32(SharedVariable* var, int32_t expected, int32_t desired) {
     if (!var || var->config.type != SHARED_TYPE_INT32) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -919,7 +919,7 @@ Result_bool shared_var_cas_int32(SharedVariable* var, int32_t expected, int32_t 
             break;
             
         default:
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -943,7 +943,7 @@ Result_bool shared_var_cas_int32(SharedVariable* var, int32_t expected, int32_t 
 
 Result_int32_t shared_var_fetch_add_int32(SharedVariable* var, int32_t value) {
     if (!var || var->config.type != SHARED_TYPE_INT32) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -982,7 +982,7 @@ Result_int32_t shared_var_fetch_add_int32(SharedVariable* var, int32_t value) {
             break;
             
         default:
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -1005,7 +1005,7 @@ Result_int32_t shared_var_fetch_add_int32(SharedVariable* var, int32_t value) {
 
 Result_int64_t shared_var_get_int64(SharedVariable* var) {
     if (!var || var->config.type != SHARED_TYPE_INT64) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1045,7 +1045,7 @@ Result_int64_t shared_var_get_int64(SharedVariable* var) {
 
 Result_void_ptr shared_var_set_int64(SharedVariable* var, int64_t value) {
     if (!var || var->config.type != SHARED_TYPE_INT64) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1084,7 +1084,7 @@ Result_void_ptr shared_var_set_int64(SharedVariable* var, int64_t value) {
 
 Result_uint32_t shared_var_get_uint32(SharedVariable* var) {
     if (!var || var->config.type != SHARED_TYPE_UINT32) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1133,7 +1133,7 @@ Result_uint32_t shared_var_get_uint32(SharedVariable* var) {
 
 Result_void_ptr shared_var_set_uint32(SharedVariable* var, uint32_t value) {
     if (!var || var->config.type != SHARED_TYPE_UINT32) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1181,7 +1181,7 @@ Result_void_ptr shared_var_set_uint32(SharedVariable* var, uint32_t value) {
 
 Result_bool shared_var_get_bool(SharedVariable* var) {
     if (!var || var->config.type != SHARED_TYPE_BOOL) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1230,7 +1230,7 @@ Result_bool shared_var_get_bool(SharedVariable* var) {
 
 Result_void_ptr shared_var_set_bool(SharedVariable* var, bool value) {
     if (!var || var->config.type != SHARED_TYPE_BOOL) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1279,7 +1279,7 @@ Result_void_ptr shared_var_set_bool(SharedVariable* var, bool value) {
 // String operations
 Result_void_ptr shared_var_get_string(SharedVariable* var, char* buffer, size_t buffer_size) {
     if (!var || var->config.type != SHARED_TYPE_STRING || !buffer) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1335,7 +1335,7 @@ Result_void_ptr shared_var_get_string(SharedVariable* var, char* buffer, size_t 
 
 Result_void_ptr shared_var_set_string(SharedVariable* var, const char* value) {
     if (!var || var->config.type != SHARED_TYPE_STRING) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1394,7 +1394,7 @@ Result_void_ptr shared_var_set_string(SharedVariable* var, const char* value) {
 // Additional fetch operations
 Result_int64_t shared_var_fetch_add_int64(SharedVariable* var, int64_t value) {
     if (!var || var->config.type != SHARED_TYPE_INT64) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1433,7 +1433,7 @@ Result_int64_t shared_var_fetch_add_int64(SharedVariable* var, int64_t value) {
 // Custom type operations
 Result_void_ptr shared_var_get_custom(SharedVariable* var, void* buffer, size_t buffer_size) {
     if (!var || var->config.type != SHARED_TYPE_CUSTOM || !buffer) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1477,7 +1477,7 @@ Result_void_ptr shared_var_get_custom(SharedVariable* var, void* buffer, size_t 
 
 Result_void_ptr shared_var_set_custom(SharedVariable* var, const void* value, size_t value_size) {
     if (!var || var->config.type != SHARED_TYPE_CUSTOM || !value) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1521,7 +1521,7 @@ Result_void_ptr shared_var_set_custom(SharedVariable* var, const void* value, si
 
 Result_bool shared_var_cas_custom(SharedVariable* var, const void* expected, const void* desired, size_t size) {
     if (!var || var->config.type != SHARED_TYPE_CUSTOM || !expected || !desired) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_TYPE_MISMATCH,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1579,7 +1579,7 @@ typedef struct STMTransaction {
 } STMTransaction;
 
 STMTransaction* stm_begin_transaction(void) {
-    STMTransaction* tx = calloc(1, sizeof(STMTransaction));
+    STMTransaction* tx = xcalloc(1, sizeof(STMTransaction));
     if (!tx) return NULL;
     
     tx->is_active = true;
@@ -1603,7 +1603,7 @@ STMTransaction* stm_begin_transaction(void) {
 
 Result_void_ptr stm_read(STMTransaction* tx, SharedVariable* var, void* buffer, size_t buffer_size) {
     if (!tx || !var || !buffer || !tx->is_active) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1662,7 +1662,7 @@ Result_void_ptr stm_read(STMTransaction* tx, SharedVariable* var, void* buffer, 
 
 Result_void_ptr stm_write(STMTransaction* tx, SharedVariable* var, const void* value, size_t value_size) {
     if (!tx || !var || !value || !tx->is_active) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1691,7 +1691,7 @@ Result_void_ptr stm_write(STMTransaction* tx, SharedVariable* var, const void* v
 
 Result_void_ptr stm_commit(STMTransaction* tx) {
     if (!tx || !tx->is_active) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1711,7 +1711,7 @@ Result_void_ptr stm_commit(STMTransaction* tx) {
         
         if (var && var->version != read_version) {
             // Conflict detected - transaction must be aborted
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_INVALID_EXPRESSION,
                 .severity = ERROR_SEVERITY_ERROR,

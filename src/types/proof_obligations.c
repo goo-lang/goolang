@@ -24,7 +24,7 @@ InferredInvariant* proof_infer_loop_invariants(ProofGenerationContext* ctx, stru
     
     printf("🔍 Inferring loop invariants using abstract interpretation (domain: %d)...\n", domain);
     
-    InferredInvariant* invariants = malloc(sizeof(InferredInvariant));
+    InferredInvariant* invariants = xmalloc(sizeof(InferredInvariant));
     if (!invariants) return NULL;
     
     // For demonstration, generate a simple invariant: loop counter >= 0
@@ -57,7 +57,7 @@ InferredInvariant* abstract_interpretation_intervals(
     // Simplified interval analysis
     printf("🔬 Running interval analysis...\n");
     
-    InferredInvariant* invariant = malloc(sizeof(InferredInvariant));
+    InferredInvariant* invariant = xmalloc(sizeof(InferredInvariant));
     if (!invariant) return NULL;
     
     // Create invariant: all variables have finite intervals
@@ -85,7 +85,7 @@ InferredInvariant* abstract_interpretation_shapes(
     // Simplified shape analysis
     printf("🔬 Running shape analysis...\n");
     
-    InferredInvariant* invariant = malloc(sizeof(InferredInvariant));
+    InferredInvariant* invariant = xmalloc(sizeof(InferredInvariant));
     if (!invariant) return NULL;
     
     // Create invariant: pointer structures are well-formed
@@ -116,7 +116,7 @@ TerminationMeasure* generate_termination_proof(ProofGenerationContext* ctx, stru
     printf("🔄 Generating loop termination proof (using %s invariants)...\n", 
            loop_invariants ? "inferred" : "default");
     
-    TerminationMeasure* measure = malloc(sizeof(TerminationMeasure));
+    TerminationMeasure* measure = xmalloc(sizeof(TerminationMeasure));
     if (!measure) return NULL;
     
     // Generate a simple ranking function: loop counter decreases
@@ -162,7 +162,7 @@ TerminationMeasure* discover_ranking_function(
     // This would analyze the loop structure and find suitable ranking functions
     // For now, return a simple linear ranking function
     
-    TerminationMeasure* measure = malloc(sizeof(TerminationMeasure));
+    TerminationMeasure* measure = xmalloc(sizeof(TerminationMeasure));
     if (!measure) return NULL;
     
     SMTExpression* linear_ranking = smt_var("loop_counter", NULL);
@@ -188,7 +188,7 @@ ProofObligation* contract_to_proof_obligation(
 ) {
     if (!contract) return NULL;
     
-    ProofObligation* obligation = malloc(sizeof(ProofObligation));
+    ProofObligation* obligation = xmalloc(sizeof(ProofObligation));
     if (!obligation) return NULL;
     
     // Determine proof type from contract type
@@ -266,7 +266,7 @@ int proof_cache_store(
 ) {
     if (!obligation_hash) return 0;
     
-    ProofCache* entry = malloc(sizeof(ProofCache));
+    ProofCache* entry = xmalloc(sizeof(ProofCache));
     if (!entry) return 0;
     
     *entry = (ProofCache) {
@@ -344,7 +344,7 @@ int generate_proof_for_assignment(
         smt_const_int(0)
     ));
     
-    ProofObligation* obligation = malloc(sizeof(ProofObligation));
+    ProofObligation* obligation = xmalloc(sizeof(ProofObligation));
     if (!obligation) return 0;
     
     *obligation = (ProofObligation) {
@@ -373,7 +373,7 @@ int generate_proof_for_function_call(
     printf("📞 Generating proof for function call\n");
     
     // Verify preconditions are met
-    ProofObligation* obligation = malloc(sizeof(ProofObligation));
+    ProofObligation* obligation = xmalloc(sizeof(ProofObligation));
     if (!obligation) return 0;
     
     *obligation = (ProofObligation) {
@@ -410,7 +410,7 @@ int generate_proof_for_array_access(
         }, 2)
     );
     
-    ProofObligation* obligation = malloc(sizeof(ProofObligation));
+    ProofObligation* obligation = xmalloc(sizeof(ProofObligation));
     if (!obligation) return 0;
     
     *obligation = (ProofObligation) {

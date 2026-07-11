@@ -60,11 +60,11 @@ static FileWatcher* find_watcher(HotReloadContext* ctx, const char* path) {
 // =============================================================================
 
 HotReloadContext* hot_reload_context_new(void) {
-    HotReloadContext* ctx = calloc(1, sizeof(HotReloadContext));
+    HotReloadContext* ctx = xcalloc(1, sizeof(HotReloadContext));
     if (!ctx) return NULL;
     
     // Initialize mutex
-    ctx->mutex = malloc(sizeof(pthread_mutex_t));
+    ctx->mutex = xmalloc(sizeof(pthread_mutex_t));
     if (!ctx->mutex) {
         free(ctx);
         return NULL;
@@ -76,7 +76,7 @@ HotReloadContext* hot_reload_context_new(void) {
     ctx->reload_timeout = 5.0; // 5 seconds
     
     // Initialize compiler
-    ctx->compiler = calloc(1, sizeof(IncrementalCompiler));
+    ctx->compiler = xcalloc(1, sizeof(IncrementalCompiler));
     if (ctx->compiler) {
         ctx->compiler->project_root = str_dup(".");
         ctx->compiler->build_dir = str_dup("build/hot_reload");
@@ -205,7 +205,7 @@ int hot_reload_register_function(HotReloadContext* ctx, const char* name,
         return -1;
     }
     
-    HotReloadableFunction* func = calloc(1, sizeof(HotReloadableFunction));
+    HotReloadableFunction* func = xcalloc(1, sizeof(HotReloadableFunction));
     if (!func) {
         pthread_mutex_unlock((pthread_mutex_t*)ctx->mutex);
         return -1;
@@ -236,7 +236,7 @@ int hot_reload_register_type(HotReloadContext* ctx, const char* name,
         return -1;
     }
     
-    HotReloadableType* hr_type = calloc(1, sizeof(HotReloadableType));
+    HotReloadableType* hr_type = xcalloc(1, sizeof(HotReloadableType));
     if (!hr_type) {
         pthread_mutex_unlock((pthread_mutex_t*)ctx->mutex);
         return -1;
@@ -271,7 +271,7 @@ int hot_reload_watch_file(HotReloadContext* ctx, const char* path,
         return -1;
     }
     
-    FileWatcher* watcher = calloc(1, sizeof(FileWatcher));
+    FileWatcher* watcher = xcalloc(1, sizeof(FileWatcher));
     if (!watcher) {
         pthread_mutex_unlock((pthread_mutex_t*)ctx->mutex);
         return -1;
@@ -309,7 +309,7 @@ int hot_reload_preserve_state(HotReloadContext* ctx, const char* type_name,
     
     pthread_mutex_lock((pthread_mutex_t*)ctx->mutex);
     
-    StatePreservation* state = calloc(1, sizeof(StatePreservation));
+    StatePreservation* state = xcalloc(1, sizeof(StatePreservation));
     if (!state) {
         pthread_mutex_unlock((pthread_mutex_t*)ctx->mutex);
         return -1;
@@ -498,7 +498,7 @@ int hot_reload_watch_directory(HotReloadContext* ctx, const char* path,
         return -1;
     }
     
-    FileWatcher* watcher = calloc(1, sizeof(FileWatcher));
+    FileWatcher* watcher = xcalloc(1, sizeof(FileWatcher));
     if (!watcher) {
         pthread_mutex_unlock((pthread_mutex_t*)ctx->mutex);
         return -1;

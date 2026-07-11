@@ -18,7 +18,7 @@ BoundsCheckInfo* analyze_bounds_check_with_proofs(
 ) {
     if (!ctx || !index_access || !proof_ctx) return NULL;
     
-    BoundsCheckInfo* info = malloc(sizeof(BoundsCheckInfo));
+    BoundsCheckInfo* info = xmalloc(sizeof(BoundsCheckInfo));
     if (!info) return NULL;
     
     memset(info, 0, sizeof(BoundsCheckInfo));
@@ -29,7 +29,7 @@ BoundsCheckInfo* analyze_bounds_check_with_proofs(
         IndexExprNode* idx_node = (IndexExprNode*)index_access;
         
         // Create a proof obligation for this bounds check
-        ProofObligation* obligation = malloc(sizeof(ProofObligation));
+        ProofObligation* obligation = xmalloc(sizeof(ProofObligation));
         if (!obligation) {
             bounds_check_info_free(info);
             return NULL;
@@ -274,7 +274,7 @@ SpeculativeProof* begin_speculative_proof(
 ) {
     if (!ctx || !spec_ctx || !proof_ctx) return NULL;
     
-    SpeculativeProof* spec_proof = malloc(sizeof(SpeculativeProof));
+    SpeculativeProof* spec_proof = xmalloc(sizeof(SpeculativeProof));
     if (!spec_proof) return NULL;
     
     memset(spec_proof, 0, sizeof(SpeculativeProof));

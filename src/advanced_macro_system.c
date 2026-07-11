@@ -7,7 +7,7 @@
 
 // Registry management
 MacroRegistry* create_macro_registry(void) {
-    MacroRegistry* registry = (MacroRegistry*)calloc(1, sizeof(MacroRegistry));
+    MacroRegistry* registry = (MacroRegistry*)xcalloc(1, sizeof(MacroRegistry));
     if (!registry) {
         // Memory allocation failure - return NULL
         return NULL;
@@ -39,7 +39,7 @@ void destroy_macro_registry(MacroRegistry* registry) {
 
 // Macro template management
 MacroTemplate* create_macro_template(const char* name, MacroType type) {
-    MacroTemplate* macro = (MacroTemplate*)calloc(1, sizeof(MacroTemplate));
+    MacroTemplate* macro = (MacroTemplate*)xcalloc(1, sizeof(MacroTemplate));
     if (!macro) {
         // Memory allocation failure - return NULL
         return NULL;
@@ -168,7 +168,7 @@ bool set_parameter_default(MacroTemplate* macro, const char* param_name, Comptim
 
 // Context management
 MacroContext* create_macro_context(MacroTemplate* macro, ComptimeValue** args, size_t arg_count) {
-    MacroContext* context = (MacroContext*)calloc(1, sizeof(MacroContext));
+    MacroContext* context = (MacroContext*)xcalloc(1, sizeof(MacroContext));
     if (!context) {
         // Memory allocation failure - return NULL
         return NULL;
@@ -204,7 +204,7 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
                             ComptimeValue** args, size_t arg_count, ASTNode* call_site) {
     if (!registry || !macro_name) return NULL;
     
-    MacroExpansion* expansion = (MacroExpansion*)calloc(1, sizeof(MacroExpansion));
+    MacroExpansion* expansion = (MacroExpansion*)xcalloc(1, sizeof(MacroExpansion));
     if (!expansion) {
         // Memory allocation failure - return NULL
         return NULL;

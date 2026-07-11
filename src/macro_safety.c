@@ -26,7 +26,7 @@ static const char* SAFETY_SEVERITY_NAMES[] = {
 
 // Create safety context
 MacroSafetyContext* create_safety_context(void) {
-    MacroSafetyContext* ctx = (MacroSafetyContext*)calloc(1, sizeof(MacroSafetyContext));
+    MacroSafetyContext* ctx = (MacroSafetyContext*)xcalloc(1, sizeof(MacroSafetyContext));
     if (!ctx) return NULL;
     
     ctx->results = NULL;
@@ -70,7 +70,7 @@ void destroy_safety_context(MacroSafetyContext* ctx) {
 // Create safety result
 SafetyCheckResult* create_safety_result(SafetyCheckType type, bool passed, SafetySeverity severity,
                                        const char* message, int line, int column) {
-    SafetyCheckResult* result = (SafetyCheckResult*)calloc(1, sizeof(SafetyCheckResult));
+    SafetyCheckResult* result = (SafetyCheckResult*)xcalloc(1, sizeof(SafetyCheckResult));
     if (!result) return NULL;
     
     result->type = type;
@@ -334,7 +334,7 @@ bool validate_macro_parameters(MacroTemplate* macro, ComptimeValue** args, size_
 
 // Create memory tracker
 MemorySafetyTracker* create_memory_tracker(void) {
-    MemorySafetyTracker* tracker = (MemorySafetyTracker*)calloc(1, sizeof(MemorySafetyTracker));
+    MemorySafetyTracker* tracker = (MemorySafetyTracker*)xcalloc(1, sizeof(MemorySafetyTracker));
     if (!tracker) return NULL;
     
     tracker->live_pointers = NULL;
@@ -422,7 +422,7 @@ bool detect_use_after_free(MemorySafetyTracker* tracker, void* ptr) {
 
 // Create optimization settings
 OptimizationSettings* create_optimization_settings(void) {
-    OptimizationSettings* settings = (OptimizationSettings*)calloc(1, sizeof(OptimizationSettings));
+    OptimizationSettings* settings = (OptimizationSettings*)xcalloc(1, sizeof(OptimizationSettings));
     if (!settings) return NULL;
     
     settings->enable_inlining = true;
@@ -642,7 +642,7 @@ MacroExpansion* expand_macro_with_safety(MacroTemplate* macro, MacroContext* ctx
     start_performance_monitoring(safety_ctx);
     
     // Perform normal macro expansion - simplified for testing
-    MacroExpansion* expansion = (MacroExpansion*)calloc(1, sizeof(MacroExpansion));
+    MacroExpansion* expansion = (MacroExpansion*)xcalloc(1, sizeof(MacroExpansion));
     if (expansion) {
         expansion->success = true;
         expansion->expanded_code = strdup("int safe_var = 42;");

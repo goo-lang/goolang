@@ -6,7 +6,7 @@
 
 // Create dynamic chunking context
 DynamicChunkingContext* dynamic_chunking_create(DynamicChunkingConfig config, size_t worker_count) {
-    DynamicChunkingContext* ctx = calloc(1, sizeof(DynamicChunkingContext));
+    DynamicChunkingContext* ctx = xcalloc(1, sizeof(DynamicChunkingContext));
     if (!ctx) return NULL;
     
     ctx->config = config;

@@ -24,7 +24,7 @@ static char* str_dup(const char* str) {
 // =============================================================================
 
 ProtocolDefinition* protocol_definition_new(const char* name, Position pos) {
-    ProtocolDefinition* protocol = malloc(sizeof(ProtocolDefinition));
+    ProtocolDefinition* protocol = xmalloc(sizeof(ProtocolDefinition));
     if (!protocol) return NULL;
     
     protocol->name = str_dup(name);
@@ -269,7 +269,7 @@ InterfaceMethod* protocol_get_all_methods(ProtocolDefinition* protocol) {
 ProtocolConformance* protocol_conformance_new(Type* type, ProtocolDefinition* protocol, Position pos) {
     if (!type || !protocol) return NULL;
     
-    ProtocolConformance* conformance = malloc(sizeof(ProtocolConformance));
+    ProtocolConformance* conformance = xmalloc(sizeof(ProtocolConformance));
     if (!conformance) return NULL;
     
     conformance->conforming_type = type_copy(type);
@@ -344,7 +344,7 @@ int protocol_conformance_add_associated_type_binding(ProtocolConformance* confor
 // =============================================================================
 
 ProtocolRegistry* protocol_registry_new(void) {
-    ProtocolRegistry* registry = malloc(sizeof(ProtocolRegistry));
+    ProtocolRegistry* registry = xmalloc(sizeof(ProtocolRegistry));
     if (!registry) return NULL;
     
     registry->protocols = NULL;
@@ -546,7 +546,7 @@ typedef struct ProtocolExtension {
 ProtocolExtension* protocol_extension_new(ProtocolDefinition* protocol, Position pos) {
     if (!protocol) return NULL;
     
-    ProtocolExtension* extension = malloc(sizeof(ProtocolExtension));
+    ProtocolExtension* extension = xmalloc(sizeof(ProtocolExtension));
     if (!extension) return NULL;
     
     extension->extended_protocol = protocol;
@@ -927,7 +927,7 @@ ProtocolDefinition* create_iterator_protocol(Position pos) {
 // =============================================================================
 
 InterfaceMethod* interface_method_new(const char* name, Type* type) {
-    InterfaceMethod* method = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* method = xmalloc(sizeof(InterfaceMethod));
     if (!method) return NULL;
     
     method->name = str_dup(name);
@@ -950,7 +950,7 @@ void interface_method_free(InterfaceMethod* method) {
 InterfaceMethod* interface_method_copy(const InterfaceMethod* method) {
     if (!method) return NULL;
     
-    InterfaceMethod* copy = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* copy = xmalloc(sizeof(InterfaceMethod));
     if (!copy) return NULL;
     
     copy->name = str_dup(method->name);
