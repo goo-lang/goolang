@@ -72,6 +72,16 @@ makes M1 a milestone rather than a research epic.
   `capacity > 0` send/receive path, exercised by spec-conformance fixtures
   (`tests/spec/type_channel.goo`, `tests/spec/stmt_go_select.goo`). No
   hidden runtime prerequisite.
+- **Prerequisite gap (found during planning):** comptime parameters are
+  currently REJECTED on package functions (`type_checker.c:1018-1020`,
+  pinned by `comptime-value-reject-matrix` case 8), so `Partition`'s
+  signature requires lifting that wall — with package-qualified
+  monomorphization symbols — before Component 1 can compile. The
+  implementation plan carries this as its own early task; the matrix case
+  is replaced (runtime-arg-across-packages still rejects), not dropped.
+  Relatedly, no goostd package uses goroutines, channels, closures, or
+  comptime today — `goostd/lanes` is the first, so the plan de-risks that
+  combination with a committed fixture package before the real one.
 
 ## Architecture
 
