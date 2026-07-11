@@ -1,0 +1,14 @@
+// Correctness arc 4 (j): a CONST-IDENTIFIER send must hit the same
+// representability gate as arc 3's literal send (chan_send_overflow_reject).
+// Before this fix the gate keyed on is_untyped_int_const_expr — an AST-shape
+// predicate that never admits AST_IDENTIFIER — so `ch <- k` fell through to
+// the blanket any-int type_compatible and the receiver printed 44 (300 mod
+// 256): the exact fail-open the arc-3 fable sink-sweep recorded as item (j).
+package main
+
+func main() {
+	const k = 300
+	ch := make_chan(int8, 1)
+	ch <- k
+	println(<-ch)
+}

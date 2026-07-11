@@ -1,0 +1,16 @@
+// Correctness arc 4 (j), typed-const arm: an explicitly TYPED const that
+// cannot represent the element type's range must also reject — Go rejects
+// this as a type mismatch; Goo's v1 any-int type_compatible laxness accepted
+// it and printed 44. The gate keys on the cached folded value
+// (has_const_int_value), which a typed const decl caches too, so the unsafe
+// direction closes for both. (A REPRESENTABLE typed const still adapts where
+// Go would demand a conversion — the documented v1 laxness, same as plain
+// variables; see examples/chan_send_const_ident.goo.)
+package main
+
+func main() {
+	const k int64 = 300
+	ch := make_chan(int8, 1)
+	ch <- k
+	println(<-ch)
+}

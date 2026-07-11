@@ -3772,6 +3772,80 @@ void stamp_int_const_expr_type(ASTNode* node, Type* target) {
     }
 }
 
+// Correctness arc 4 (j): the shared chan-send representability gate, deduped
+// from the two send sinks that each carried an inline copy of arc 3's
+// literal-only gate (type_check_channel_send_op in expression_checker.c and
+// the select-comm send path in type_check_select_stmt below) — and extended
+// to close the const-IDENTIFIER fail-open both copies shared: their
+// is_untyped_int_const_expr admission is an AST-shape predicate that never
+// matches AST_IDENTIFIER, so `const k = 300; ch <- k` into a chan int8 fell
+// through to the blanket any-int type_compatible and the receiver printed 44.
+// Admission is now "does the checker-aware folder fold it": goo_fold_const_
+// int_ctx succeeds exactly when the expression is built entirely from integer
+// literals and cached-const identifiers, a superset of the old shape
+// predicate (it also folds ^/~ unaries the shape walk never admitted — those
+// now get the same representability treatment instead of silently wrapping).
+//
+// int_const_fits_expected wants the negated/bare_literal AST-shape signals of
+// the ORIGINAL expression (see its doc comment), which a folded identifier no
+// longer has — reconstruction is by shape class:
+//   - bare identifier: the resolved const's own type is authoritative (the
+//     arc-4 T1 decl fix is what makes its signedness trustworthy for
+//     negative folds): a signed const folding negative IS genuinely negative
+//     (negated=1); an unsigned const holding a raw > INT64_MAX IS a huge
+//     positive, unrepresentable in every signed width (bare_literal=1).
+//   - pure literal shape (is_untyped_int_const_expr): arc 3's exact
+//     conventions, bit-compatible — including the subtree stamp that makes
+//     codegen emit the constant at the element width.
+//   - compound with identifier leaves (`k + 100`): top-level shape checks
+//     only, bare_literal=0 — inheriting the same documented under-reject
+//     deviation class as `0 - 1` (a fold that lands in [2^63, 2^64) via
+//     arithmetic reads as huge-positive). NOT stamped: identifier leaves
+//     load at their variable's own width, so stamping the literal leaves
+//     would fight adapt_untyped_int_operand's earlier stamp and hand binary
+//     codegen mixed-width operands. Unstamped is safe — codegen_generate_
+//     channel_send coerces the send value to the element width regardless,
+//     and truncation of a representable value is exact.
+//
+// Returns 0 if the gate does not apply (caller falls through to its ordinary
+// type_compatible check), 1 if the send is representable and handled, -1 if
+// rejected (diagnostic already reported at value_expr's position).
+int chan_send_const_int_gate(TypeChecker* checker, ASTNode* value_expr,
+                             Type* value_type, Type* elem_type) {
+    if (!checker || !value_expr || !value_type || !elem_type) return 0;
+    if (!type_is_integer(elem_type) || !type_is_integer(value_type) ||
+        elem_type->kind == value_type->kind)
+        return 0;
+    uint64_t raw;
+    if (!goo_fold_const_int_ctx(checker, value_expr, &raw)) return 0;
+
+    int negated, bare_literal, stamp;
+    if (value_expr->type == AST_IDENTIFIER) {
+        Variable* var = type_checker_lookup_variable(
+            checker, ((IdentifierNode*)value_expr)->name);
+        int var_signed = var && var->type && type_is_signed(var->type);
+        negated = var_signed && (int64_t)raw < 0;
+        bare_literal = !var_signed && raw > (uint64_t)INT64_MAX;
+        stamp = 0;
+    } else if (is_untyped_int_const_expr(value_expr)) {
+        negated = is_negated_int_const_expr(value_expr);
+        bare_literal = is_bare_int_literal(value_expr);
+        stamp = 1;
+    } else {
+        negated = is_negated_int_const_expr(value_expr);
+        bare_literal = 0;
+        stamp = 0;
+    }
+
+    if (!int_const_fits_expected(raw, elem_type, negated, bare_literal)) {
+        type_error(checker, value_expr->pos, "constant %lld overflows %s",
+                   (long long)(int64_t)raw, type_to_string(elem_type));
+        return -1;
+    }
+    if (stamp) stamp_int_const_expr_type(value_expr, elem_type);
+    return 1;
+}
+
 // Expression switch: type-check the tag, then every case expression and
 // clause body. Case bodies are raw statement lists (linked via next), so
 // they are walked here rather than dispatched as blocks. Each clause gets
@@ -4196,34 +4270,27 @@ int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt) {
                                    checker, send->right, val_t,
                                    send->right->pos, "sent on a channel")) {
                         ok = 0;
-                    // Task 1 (chan-send representability, correctness-
-                    // followups arc 3): this comm path never routes through
-                    // type_check_channel_send_op either (see the comment
-                    // above this block), so it needs the identical
-                    // representability gate that function's Task 1 fix adds
-                    // — same helpers, same TU, called directly (no header
-                    // needed here, unlike expression_checker.c's call site).
-                    } else if (type_is_integer(elem_t) && type_is_integer(val_t) &&
-                               elem_t->kind != val_t->kind &&
-                               is_untyped_int_const_expr(send->right)) {
-                        uint64_t raw;
-                        int negated = is_negated_int_const_expr(send->right);
-                        int bare_literal = is_bare_int_literal(send->right);
-                        if (goo_fold_const_int(send->right, &raw) &&
-                            !int_const_fits_expected(raw, elem_t, negated, bare_literal)) {
-                            type_error(checker, send->right->pos,
-                                       "constant %lld overflows %s",
-                                       (long long)(int64_t)raw, type_to_string(elem_t));
+                    // Task 1 (chan-send representability, arc 3; const-
+                    // identifier extension, arc 4 item (j)): this comm path
+                    // never routes through type_check_channel_send_op either
+                    // (see the comment above this block), so it calls the
+                    // same shared representability gate that site does —
+                    // chan_send_const_int_gate, deduped from the two former
+                    // inline copies (see its doc comment for the case
+                    // classes). Not-applicable (0) falls through to the
+                    // select-specific type_compatible diagnostic below.
+                    } else {
+                        int gate = chan_send_const_int_gate(checker, send->right,
+                                                            val_t, elem_t);
+                        if (gate < 0) {
                             ok = 0;
-                        } else {
-                            stamp_int_const_expr_type(send->right, elem_t);
+                        } else if (gate == 0 && !type_compatible(val_t, elem_t)) {
+                            type_error(checker, send->right->pos,
+                                       "select send: cannot use %s as %s channel element",
+                                       type_to_string(val_t),
+                                       type_to_string(elem_t));
+                            ok = 0;
                         }
-                    } else if (!type_compatible(val_t, elem_t)) {
-                        type_error(checker, send->right->pos,
-                                   "select send: cannot use %s as %s channel element",
-                                   type_to_string(val_t),
-                                   type_to_string(elem_t));
-                        ok = 0;
                     }
                 }
             } else if (sc->comm->type == AST_UNARY_EXPR &&
