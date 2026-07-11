@@ -39,8 +39,8 @@ type Partitioned struct {
 // never read or write them.
 type Lane struct {
 	id       int
-	steps    int
-	step     int
+	steps    int // total rounds requested (Run's `steps` param, frozen for Task 4's BSP loop)
+	step     int // current-round counter; unused in v1 (Run calls body exactly once)
 	own      []float64
 	haloL    float64
 	haloR    float64
@@ -58,6 +58,10 @@ type Lane struct {
 // constant arithmetic specialized per instance. The body reads only its own
 // params (arr, count) — no package-level globals — per the comptime
 // package-function body-scoping limitation.
+//
+// count must evenly divide len(arr): width is floor(len(arr)/count), so a
+// non-divisor count silently drops the tail len(arr)%count elements from
+// every lane's view — they are never written by Run.
 func Partition(arr []float64, comptime count int) Partitioned {
 	w := len(arr) / count
 	return Partitioned{backing: arr, count: count, width: w}
@@ -67,6 +71,13 @@ func Partition(arr []float64, comptime count int) Partitioned {
 // disjoint sub-slice of p.backing, runs body against it, and joins every
 // lane (draining `count` receives) before returning. No halos: lanes never
 // touch each other's data in this v1.
+//
+// v1 calls body exactly once per lane regardless of steps — multi-step BSP
+// (using Lane.step to iterate `steps` rounds) is the next task, not this one.
+//
+// An unrecovered panic inside body terminates the whole process (exit(2) via
+// goo_panic, src/runtime/runtime.c:143-149), not just the offending lane —
+// there is no per-goroutine recover boundary here.
 func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
 	done := make(chan int, p.count)
 	for i := 0; i < p.count; i++ {
