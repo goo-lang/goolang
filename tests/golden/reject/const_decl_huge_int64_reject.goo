@@ -1,0 +1,13 @@
+// Correctness arc 5 (h), bare-huge-literal arm: a literal written >= 2^63
+// cannot be represented by ANY signed width, int64 included — the same
+// fix-round-4 rule the return gate enforces (int_const_fits_expected's
+// bare_literal reject). This is why the decl gate has NO kind-difference
+// precondition (unlike the chan-send gate): the RHS's checked type here is
+// already int64, same kind as the declared type, and the hole is purely
+// value-level.
+package main
+
+func main() {
+	const k int64 = 18446744073709551615
+	println(k)
+}

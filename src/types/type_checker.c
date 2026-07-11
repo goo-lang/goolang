@@ -2213,6 +2213,26 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
                       type_to_string(declared_type));
             return 0;
         }
+
+        // Arc 5 (h): a TYPED integer const decl had NO representability
+        // gate — type_compatible's any-int laxness accepted `const k int8 =
+        // 300`, and the two codegen materialization paths then disagreed
+        // about the value (a local const emitted at the fold's default
+        // width and printed 300, the declared type ignored; a package const
+        // emitted at the declared width and silently wrapped to 44). var
+        // decls already rejected the literal shape (adapt_untyped_int_
+        // operand's range check) — const decls were the asymmetric hole.
+        // Judge the FOLDED RHS against the declared type via the shared
+        // core (see check_const_int_expr_fits): unlike the chan-send gate
+        // there is no kind-difference precondition, because `const k int64
+        // = 18446744073709551615` is a same-kind, value-level hole (the
+        // same bare-huge-literal rule the return gate enforces). Not-
+        // applicable (0) — non-integer target, unfoldable RHS, comptime-
+        // param-tainted — falls through unchanged.
+        if (check_const_int_expr_fits(checker, const_decl->values,
+                                      declared_type) < 0) {
+            return 0;
+        }
         value_type = declared_type;
     }
 
@@ -3810,49 +3830,89 @@ void stamp_int_const_expr_type(ASTNode* node, Type* target) {
 // Returns 0 if the gate does not apply (caller falls through to its ordinary
 // type_compatible check), 1 if the send is representable and handled, -1 if
 // rejected (diagnostic already reported at value_expr's position).
+//
+// Arc 5 (h): the screen->fold->reconstruct->fit core moved to
+// check_const_int_expr_fits below when the typed-const/var decl gates became
+// its second and third consumers; this wrapper keeps only what is genuinely
+// send-specific — the kind-DIFFERENCE precondition (a same-kind send cannot
+// be unrepresentable: the decl gates have no such precondition because
+// `const k int64 = 18446744073709551615` is a same-kind, value-level hole)
+// and the pure-literal-shape stamp that makes codegen emit the constant at
+// the element width.
 int chan_send_const_int_gate(TypeChecker* checker, ASTNode* value_expr,
                              Type* value_type, Type* elem_type) {
     if (!checker || !value_expr || !value_type || !elem_type) return 0;
     if (!type_is_integer(elem_type) || !type_is_integer(value_type) ||
         elem_type->kind == value_type->kind)
         return 0;
-    // Comptime-value-param screen (arc-4 review fix): inside a comptime
-    // function's TEMPLATE body the param is a Variable with a PLACEHOLDER
-    // const_int_value (1, bound purely for type-validity), which goo_fold_
-    // const_int_ctx resolves like any cached const — so without this screen
-    // the gate judged `ch <- 1000000 / n` from n=1 (hard-rejecting valid
-    // instances, or blessing invalid ones). Same guard the folder's other
-    // consumers use (see goo_expr_references_comptime_param's doc comment);
-    // such sends fall back to the caller's type_compatible path, judged
-    // per-instance by codegen as before the gate existed.
-    if (goo_expr_references_comptime_param(checker, value_expr)) return 0;
-    uint64_t raw;
-    if (!goo_fold_const_int_ctx(checker, value_expr, &raw)) return 0;
+    int fit = check_const_int_expr_fits(checker, value_expr, elem_type);
+    if (fit > 0 && is_untyped_int_const_expr(value_expr))
+        stamp_int_const_expr_type(value_expr, elem_type);
+    return fit;
+}
 
-    int negated, bare_literal, stamp;
-    if (value_expr->type == AST_IDENTIFIER) {
+// The shared representability core for every ident-aware constant sink
+// (chan-send gate above; typed-const and var decl gates, arc 5 item (h)):
+// does `expr`, IF it is a compile-time integer constant the checker-aware
+// folder can resolve, fit integer type `target`? Returns 0 when the gate
+// simply does not apply — not a foldable constant, a non-integer target, or
+// comptime-param-tainted — so callers fall back to their ordinary path; 1
+// when the folded value fits; -1 when it does not (the "constant %lld
+// overflows %s" diagnostic is emitted here, at expr's position, so all
+// consumers report identically).
+//
+// Comptime-value-param screen (arc-4 review fix): inside a comptime
+// function's TEMPLATE body the param is a Variable with a PLACEHOLDER
+// const_int_value (1, bound purely for type-validity), which goo_fold_
+// const_int_ctx resolves like any cached const — so without this screen
+// the gate judged `ch <- 1000000 / n` from n=1 (hard-rejecting valid
+// instances, or blessing invalid ones). Same guard the folder's other
+// consumers use (see goo_expr_references_comptime_param's doc comment);
+// such expressions fall back to the caller's path, judged per-instance by
+// codegen as before these gates existed.
+//
+// int_const_fits_expected wants the negated/bare_literal AST-shape signals
+// of the ORIGINAL expression (see its doc comment), which a folded
+// identifier no longer has — reconstruction is by shape class:
+//   - bare identifier: the resolved const's own type is authoritative (the
+//     arc-4 T1 decl fix is what makes its signedness trustworthy for
+//     negative folds): a signed const folding negative IS genuinely
+//     negative (negated=1); an unsigned const holding a raw > INT64_MAX IS
+//     a huge positive, unrepresentable in every signed width
+//     (bare_literal=1).
+//   - pure literal shape (is_untyped_int_const_expr): the arc-3
+//     conventions, bit-compatible.
+//   - compound with identifier leaves (`k + 100`): top-level shape checks
+//     only, bare_literal=0 — inheriting the same documented under-reject
+//     deviation class as `0 - 1` (a fold that lands in [2^63, 2^64) via
+//     arithmetic reads as huge-positive).
+int check_const_int_expr_fits(TypeChecker* checker, ASTNode* expr,
+                              Type* target) {
+    if (!checker || !expr || !target || !type_is_integer(target)) return 0;
+    if (goo_expr_references_comptime_param(checker, expr)) return 0;
+    uint64_t raw;
+    if (!goo_fold_const_int_ctx(checker, expr, &raw)) return 0;
+
+    int negated, bare_literal;
+    if (expr->type == AST_IDENTIFIER) {
         Variable* var = type_checker_lookup_variable(
-            checker, ((IdentifierNode*)value_expr)->name);
+            checker, ((IdentifierNode*)expr)->name);
         int var_signed = var && var->type && type_is_signed(var->type);
         negated = var_signed && (int64_t)raw < 0;
         bare_literal = !var_signed && raw > (uint64_t)INT64_MAX;
-        stamp = 0;
-    } else if (is_untyped_int_const_expr(value_expr)) {
-        negated = is_negated_int_const_expr(value_expr);
-        bare_literal = is_bare_int_literal(value_expr);
-        stamp = 1;
+    } else if (is_untyped_int_const_expr(expr)) {
+        negated = is_negated_int_const_expr(expr);
+        bare_literal = is_bare_int_literal(expr);
     } else {
-        negated = is_negated_int_const_expr(value_expr);
+        negated = is_negated_int_const_expr(expr);
         bare_literal = 0;
-        stamp = 0;
     }
 
-    if (!int_const_fits_expected(raw, elem_type, negated, bare_literal)) {
-        type_error(checker, value_expr->pos, "constant %lld overflows %s",
-                   (long long)(int64_t)raw, type_to_string(elem_type));
+    if (!int_const_fits_expected(raw, target, negated, bare_literal)) {
+        type_error(checker, expr->pos, "constant %lld overflows %s",
+                   (long long)(int64_t)raw, type_to_string(target));
         return -1;
     }
-    if (stamp) stamp_int_const_expr_type(value_expr, elem_type);
     return 1;
 }
 

@@ -1182,6 +1182,17 @@ void stamp_int_const_expr_type(ASTNode* node, Type* target);
 int chan_send_const_int_gate(TypeChecker* checker, ASTNode* value_expr,
                              Type* value_type, Type* elem_type);
 
+// Arc 5 (h): the shared screen->fold->reconstruct->fit core behind every
+// ident-aware constant sink (the chan-send gate above; the typed-const and
+// var decl gates). Returns 0 = not applicable (not a foldable constant /
+// non-integer target / comptime-param-tainted — caller falls back to its
+// ordinary path), 1 = folded value fits `target`, -1 = overflow (the
+// "constant %lld overflows %s" diagnostic already emitted at expr's
+// position). See the definition (type_checker.c) for the negated/
+// bare_literal reconstruction rules per shape class.
+int check_const_int_expr_fits(TypeChecker* checker, ASTNode* expr,
+                              Type* target);
+
 // Comptime value params Task 3 (fix round 2): does `t` contain a TYPE_ARRAY
 // anywhere in its structure (through nested arrays, slices, pointers,
 // nullables)? Used by comptime-instance codegen (function_codegen.c /

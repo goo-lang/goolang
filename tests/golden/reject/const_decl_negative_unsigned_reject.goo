@@ -1,0 +1,10 @@
+// Correctness arc 5 (h), negative arm: a negative constant can never
+// satisfy an unsigned declared type (Go rejects `const k uint8 = -5`).
+// Before the fix this compiled and printed -5 (the local-const
+// materialization path ignored the declared uint8 entirely).
+package main
+
+func main() {
+	const k uint8 = -5
+	println(k)
+}
