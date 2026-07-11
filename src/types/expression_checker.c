@@ -759,6 +759,20 @@ static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* fiel
             if (!adapt_untyped_int_operand(checker, v, field_type, 0, 1)) return NULL;
             return field_type;
         }
+        // Arc 7 (n): a CONST IDENTIFIER is not a literal leaf, so ident-
+        // bearing constant slot values (`S{x: a}`, `[]int8{a}`, `[2]int8{a,
+        // 1}`, map values — every composite slot routes through here, Task
+        // 3b) skipped the rooted adapter above and codegen's width coercion
+        // truncated the store. Judge the FOLDED value via the shared core
+        // (check_const_int_expr_fits — same admission and disjointness
+        // argument as the arc-5 var-decl leg: is_untyped_int_rooted admits
+        // no identifier leaf, so literal shapes keep the per-literal
+        // adapter semantics bit-for-bit). Fit (1) falls through returning
+        // `vt` unchanged — the caller's type_compatible laxness accepts and
+        // codegen's coercion is exact for a representable value. Not-
+        // applicable (0) — plain variables, comptime-param-tainted — stays
+        // on the v1 laxness path unchanged.
+        if (check_const_int_expr_fits(checker, v, field_type) < 0) return NULL;
     }
     return vt;
 }
@@ -2114,6 +2128,28 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_RSHIFT_ASSIGN:
             if ((binary->operator == TOKEN_LSHIFT_ASSIGN || binary->operator == TOKEN_RSHIFT_ASSIGN) &&
                 !check_const_shift_count(checker, binary->right, expr->pos)) {
+                result_type = NULL;
+                break;
+            }
+            // Arc 7 (n): const-IDENT-bearing constant RHS representability.
+            // The pre-switch literal adaptation range-checks literal-rooted
+            // RHS shapes (`v = 300` into int8 rejects there), but a const
+            // identifier is not rooted, so `v = a` / `v = a + 100` /
+            // `s.x = a` fell through to type_check_assignment_op's any-int
+            // laxness and codegen truncated the store. Judge the FOLDED
+            // value against the assignment target via the shared core
+            // (check_const_int_expr_fits) — left_type is the field/element
+            // type for selector/index targets, so those are covered by the
+            // same call. Compound arithmetic assigns convert the constant
+            // to the target's type first (Go semantics), so the same rule
+            // applies; SHIFT-assigns are excluded — their RHS is a shift
+            // COUNT (validated above), not a value converting to the
+            // target's type. The rooted guard keeps literal shapes on the
+            // pre-switch adapter's path (disjoint, bit-for-bit unchanged).
+            if (binary->operator != TOKEN_LSHIFT_ASSIGN &&
+                binary->operator != TOKEN_RSHIFT_ASSIGN &&
+                !is_untyped_int_rooted(binary->right, 0) &&
+                check_const_int_expr_fits(checker, binary->right, left_type) < 0) {
                 result_type = NULL;
                 break;
             }

@@ -1,0 +1,13 @@
+// Correctness arc 7 (n): plain assignment. The binary-op literal adaptation
+// range-checks literal-rooted RHS shapes (`v = 300` rejects); a const
+// identifier fell through to type_check_assignment_op's any-int laxness and
+// codegen truncated the store (printed 44). Compound constant expressions
+// (`v = a + 100`) shared the hole — the checker-aware folder judges both.
+package main
+
+func main() {
+	const a = 300
+	var v int8 = 1
+	v = a
+	println(v)
+}
