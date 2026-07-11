@@ -3208,13 +3208,12 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 // Returns non-zero if `node` is an untyped integer constant expression: a bare
 // integer literal, a unary minus applied to one (`-1`), or a binary/shift
 // expression whose operands are themselves untyped integer constant
-// expressions (`1 + 1`, `1 << 3`). Codegen materializes all of these as an i32
-// constant and then SExt-WIDENS it to the declared integer return type (see the
-// return-widening path in statement_codegen.c). Because codegen only widens —
-// it never truncates — the caller must additionally gate on the declared return
-// type being no narrower than the operand (see `int_const_widen`); a narrowing
-// target (e.g. `return 65` into a byte) would otherwise reach the verifier as
-// invalid IR.
+// expressions (`1 + 1`, `1 << 3`). Codegen materializes all of these as an
+// integer constant and then coerces it to the declared integer return type
+// (SExt to widen, constant-rebuild to narrow — see the return-coercion path in
+// statement_codegen.c). Because a compile-time constant can be materialized at
+// any width, such a return coerces into ANY integer return type; the caller
+// (`int_const_coerce`) therefore accepts both widening and narrowing targets.
 static int is_untyped_int_const_expr(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
@@ -3453,12 +3452,32 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
             if (type_is_numeric(return_type) && type_is_numeric(expected)) {
                 int same_kind  = (type_is_float(return_type) == type_is_float(expected));
                 int same_width = (type_size(return_type) == type_size(expected));
-                int int_const_widen =
+                // An untyped integer constant expression (`return 1`,
+                // `return 1 + 1`) is representable at ANY integer width, so it
+                // coerces into any integer return type — WIDENING (`return 0`
+                // from an int64 fn) OR NARROWING (`return 1` from an int8 fn),
+                // exactly as Go accepts an untyped constant into a typed
+                // context. Codegen materializes the constant directly at the
+                // declared return width (SExt to widen, constant-rebuild to
+                // narrow — see the return-coercion path in statement_codegen.c),
+                // so no machine-representation mismatch reaches the verifier.
+                // The old gate additionally required expected be no NARROWER
+                // than the operand's default type (int64), which wrongly
+                // rejected every `return <literal>` from a sub-int64 function
+                // (int8/16/32, uint8/16/32) — a single-function false positive
+                // that the return-stmt's lookahead position (get_current_position
+                // in parser.y points at the NEXT decl) then mis-blamed on a
+                // later sibling, giving the illusion of cross-decl poisoning.
+                int int_const_coerce =
                     type_is_integer(expected) &&
-                    type_size(expected) >= type_size(return_type) &&
                     is_untyped_int_const_expr(ret_stmt->values);
-                if ((!same_kind || !same_width) && !int_const_widen) {
-                    type_error(checker, stmt->pos,
+                if ((!same_kind || !same_width) && !int_const_coerce) {
+                    // Point at the returned value, not stmt->pos: a return
+                    // statement's pos is the post-parse lookahead (the next
+                    // decl's line), which mis-attributes the diagnostic.
+                    Position epos = ret_stmt->values ? ret_stmt->values->pos
+                                                      : stmt->pos;
+                    type_error(checker, epos,
                                "return type mismatch: cannot return %s from a "
                                "function returning %s",
                                type_to_string(return_type),
