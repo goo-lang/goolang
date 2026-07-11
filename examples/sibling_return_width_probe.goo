@@ -1,32 +1,46 @@
-// sibling_return_width_probe: an untyped integer constant `return <lit>` is
-// representable at ANY integer width, so it must coerce into a sub-int64
-// return type (int8/16/32, uint8/16/32) — narrowing from the literal's
-// default int64 — exactly as Go accepts an untyped constant into a typed
-// context. Regression pin for the false "cannot return int64 from a function
-// returning int8" rejection: the old checker gate required the return type be
-// no narrower than the literal's default int64, so EVERY narrow-int-returning
-// function was wrongly rejected on its own. The return statement's lookahead
-// position (parser.y uses get_current_position, which lands on the NEXT decl)
-// then mis-blamed the error on a later sibling, giving the illusion that an
-// int8 function "poisoned" a following int64 sibling. This fixture places a
-// narrow int8 function BEFORE a wide int64 sibling (the exact poisoning shape)
-// and exercises each result's RUNTIME value, not just compile success.
+// sibling_return_width_probe: an untyped integer constant `return <lit>`
+// coerces into any integer width in which it is representable (Go
+// representability rule), so it must coerce into a sub-int64 return type
+// (int8/16/32, uint8/16/32) — narrowing from the literal's default int64 —
+// exactly as Go accepts an untyped constant into a typed context, PROVIDED
+// the value fits the target's range. Regression pin for the false "cannot
+// return int64 from a function returning int8" rejection: the old checker
+// gate required the return type be no narrower than the literal's default
+// int64, so EVERY narrow-int-returning function was wrongly rejected on its
+// own. The return statement's lookahead position (parser.y uses
+// get_current_position, which lands on the NEXT decl) then mis-blamed the
+// error on a later sibling, giving the illusion that an int8 function
+// "poisoned" a following int64 sibling. This fixture places a narrow int8
+// function BEFORE a wide int64 sibling (the exact poisoning shape) and
+// exercises each result's RUNTIME value, not just compile success.
+//
+// boundary8max/boundary8min/boundaryU8max additionally pin the exact edges
+// of the representability range (fix round 1, correctness-burndown arc):
+// int8's [-128, 127] and uint8's [0, 255] — one step past any of these
+// (300, -129, -1 into uint8) is a compile-time "constant N overflows T"
+// rejection, covered by the tests/golden/reject fixtures instead of here.
 package main
 
 import "fmt"
 
-func narrow8() int8   { return 100 }        // fits int8 (max 127)
-func wide64() int64   { return 333333333333 }
-func narrow16() int16 { return 30000 }
-func unarrow8() uint8 { return 200 }        // fits uint8 (max 255)
-func neg8() int8      { return -5 }          // signed narrowing of a negative
-func arith32() int32  { return 1000 * 2 }    // untyped constant arithmetic
+func narrow8() int8        { return 100 }        // fits int8 (max 127)
+func wide64() int64        { return 333333333333 }
+func narrow16() int16      { return 30000 }
+func unarrow8() uint8      { return 200 }        // fits uint8 (max 255)
+func neg8() int8           { return -5 }          // signed narrowing of a negative
+func arith32() int32       { return 1000 * 2 }    // untyped constant arithmetic
+func boundary8max() int8   { return 127 }        // int8 upper boundary (INT8_MAX)
+func boundary8min() int8   { return -128 }       // int8 lower boundary (INT8_MIN)
+func boundaryU8max() uint8 { return 255 }        // uint8 upper boundary (UINT8_MAX)
 
 func main() {
-	fmt.Println(narrow8())  // 100
-	fmt.Println(wide64())   // 333333333333
-	fmt.Println(narrow16()) // 30000
-	fmt.Println(unarrow8()) // 200
-	fmt.Println(neg8())     // -5
-	fmt.Println(arith32())  // 2000
+	fmt.Println(narrow8())       // 100
+	fmt.Println(wide64())        // 333333333333
+	fmt.Println(narrow16())      // 30000
+	fmt.Println(unarrow8())      // 200
+	fmt.Println(neg8())          // -5
+	fmt.Println(arith32())       // 2000
+	fmt.Println(boundary8max())  // 127
+	fmt.Println(boundary8min())  // -128
+	fmt.Println(boundaryU8max()) // 255
 }

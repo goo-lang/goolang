@@ -1886,11 +1886,14 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         // Integer width coercion: match the return value to the function's
         // declared LLVM return type. Widening (`return 0` as i32 from an i64
         // function) always applies. Narrowing (`return 1` from an int8
-        // function) is only reachable for an untyped integer CONSTANT — the
-        // checker rejects a non-constant narrowing return before codegen (see
-        // the int_const_coerce gate in type_check_return_stmt) — so here we
-        // rebuild the constant at the target width rather than emit a Trunc on
-        // a runtime value. Mirrors var_decl's narrowing/widening const path.
+        // function) is only reachable for an untyped integer CONSTANT that
+        // the checker has already confirmed is representable at the target
+        // width (Go representability rule) — a non-constant narrowing return,
+        // or a constant that doesn't fit, is rejected before codegen (see the
+        // int_const_coerce gate and its int_const_fits_expected range check in
+        // type_check_return_stmt) — so here we rebuild the constant at the
+        // target width rather than emit a Trunc on a runtime value. Mirrors
+        // var_decl's narrowing/widening const path.
         {
             LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
             LLVMTypeRef fn_ret = LLVMGetReturnType(LLVMGlobalGetValueType(cur_fn));

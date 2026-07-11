@@ -3211,9 +3211,10 @@ int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt) {
 // expressions (`1 + 1`, `1 << 3`). Codegen materializes all of these as an
 // integer constant and then coerces it to the declared integer return type
 // (SExt to widen, constant-rebuild to narrow — see the return-coercion path in
-// statement_codegen.c). Because a compile-time constant can be materialized at
-// any width, such a return coerces into ANY integer return type; the caller
-// (`int_const_coerce`) therefore accepts both widening and narrowing targets.
+// statement_codegen.c). Such a return coerces into any integer return type in
+// which the constant is representable (Go representability rule); the caller
+// (`int_const_coerce`) accepts both widening and narrowing targets, but only
+// after int_const_fits_expected confirms the folded value fits — see there.
 static int is_untyped_int_const_expr(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_LITERAL)
@@ -3230,6 +3231,38 @@ static int is_untyped_int_const_expr(ASTNode* node) {
                is_untyped_int_const_expr(b->right);
     }
     return 0;
+}
+
+// Go representability rule for return_stmt's int_const_coerce gate: `raw` is
+// the constant's folded value (goo_fold_const_int's two's-complement 64-bit
+// encoding — decoding it back through int64_t is well-defined on a C23
+// two's-complement target, which this project requires). Returns non-zero iff
+// that value fits `expected`'s [min,max] range: signed [-2^(w-1), 2^(w-1)-1]
+// or unsigned [0, 2^w-1]. Mirrors expression_checker.c's literal_fits_type
+// (same bounds, same Go-conformant "constant N overflows T" shape) but keyed
+// off an already-folded 64-bit value rather than a single literal's text, so
+// it also covers constant arithmetic (`1 + 200`) that is_untyped_int_const_expr
+// admits but literal_fits_type cannot parse. int64/uint64 targets are always
+// satisfied: raw IS already the exact 64-bit value, nothing narrower to check.
+static int int_const_fits_expected(uint64_t raw, Type* expected) {
+    int64_t sval = (int64_t)raw;
+    if (type_is_signed(expected)) {
+        switch (expected->kind) {
+            case TYPE_INT8:  return sval >= INT8_MIN  && sval <= INT8_MAX;
+            case TYPE_INT16: return sval >= INT16_MIN && sval <= INT16_MAX;
+            case TYPE_INT32: return sval >= INT32_MIN && sval <= INT32_MAX;
+            default:         return 1; // int / int64
+        }
+    }
+    // A negative constant can never satisfy an unsigned target, at any width
+    // (including uint64 — Go rejects `var x uint64 = -1` too).
+    if (sval < 0) return 0;
+    switch (expected->kind) {
+        case TYPE_UINT8:  return (uint64_t)sval <= UINT8_MAX;
+        case TYPE_UINT16: return (uint64_t)sval <= UINT16_MAX;
+        case TYPE_UINT32: return (uint64_t)sval <= UINT32_MAX;
+        default:          return 1; // uint / uint64
+    }
 }
 
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
@@ -3453,24 +3486,50 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 int same_kind  = (type_is_float(return_type) == type_is_float(expected));
                 int same_width = (type_size(return_type) == type_size(expected));
                 // An untyped integer constant expression (`return 1`,
-                // `return 1 + 1`) is representable at ANY integer width, so it
-                // coerces into any integer return type — WIDENING (`return 0`
-                // from an int64 fn) OR NARROWING (`return 1` from an int8 fn),
-                // exactly as Go accepts an untyped constant into a typed
-                // context. Codegen materializes the constant directly at the
-                // declared return width (SExt to widen, constant-rebuild to
-                // narrow — see the return-coercion path in statement_codegen.c),
-                // so no machine-representation mismatch reaches the verifier.
-                // The old gate additionally required expected be no NARROWER
-                // than the operand's default type (int64), which wrongly
-                // rejected every `return <literal>` from a sub-int64 function
-                // (int8/16/32, uint8/16/32) — a single-function false positive
-                // that the return-stmt's lookahead position (get_current_position
-                // in parser.y points at the NEXT decl) then mis-blamed on a
-                // later sibling, giving the illusion of cross-decl poisoning.
+                // `return 1 + 1`) coerces into any integer return type in
+                // which it is REPRESENTABLE (Go representability rule) —
+                // WIDENING (`return 0` from an int64 fn) OR NARROWING
+                // (`return 1` from an int8 fn), exactly as Go accepts an
+                // untyped constant into a typed context. Codegen materializes
+                // the constant directly at the declared return width (SExt to
+                // widen, constant-rebuild to narrow — see the return-coercion
+                // path in statement_codegen.c), so no machine-representation
+                // mismatch reaches the verifier. The old gate additionally
+                // required expected be no NARROWER than the operand's default
+                // type (int64), which wrongly rejected every `return <literal>`
+                // from a sub-int64 function (int8/16/32, uint8/16/32) — a
+                // single-function false positive that the return-stmt's
+                // lookahead position (get_current_position in parser.y points
+                // at the NEXT decl) then mis-blamed on a later sibling, giving
+                // the illusion of cross-decl poisoning.
                 int int_const_coerce =
                     type_is_integer(expected) &&
                     is_untyped_int_const_expr(ret_stmt->values);
+
+                // Representability gate: an untyped constant's default type
+                // has no fixed width, but its VALUE does need to fit the
+                // declared return type — Go rejects `return 300` from a
+                // `func() int8` at compile time ("constant 300 overflows
+                // int8"), not truncate it silently. Fold the constant here
+                // (the same fold codegen's return-coercion block reaches for
+                // via LLVMConstIntGetSExtValue/ZExtValue, just done on the AST
+                // instead of the already-built LLVM constant) and reject
+                // out-of-range values before they can reach that unchecked
+                // narrowing rebuild. A fold failure (e.g. a divide-by-zero
+                // constant subexpression) is left to fall through unchecked —
+                // out of scope for this gate.
+                if (int_const_coerce) {
+                    uint64_t raw;
+                    if (goo_fold_const_int(ret_stmt->values, &raw) &&
+                        !int_const_fits_expected(raw, expected)) {
+                        type_error(checker, ret_stmt->values->pos,
+                                   "constant %lld overflows %s",
+                                   (long long)(int64_t)raw,
+                                   type_to_string(expected));
+                        return 0;
+                    }
+                }
+
                 if ((!same_kind || !same_width) && !int_const_coerce) {
                     // Point at the returned value, not stmt->pos: a return
                     // statement's pos is the post-parse lookahead (the next
