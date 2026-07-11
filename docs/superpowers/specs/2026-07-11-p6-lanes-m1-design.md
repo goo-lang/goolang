@@ -16,8 +16,8 @@ carrier. Concretely, at the end of M1:
 - `lanes.Partition(arr, count)` splits a slice into `count` disjoint,
   exclusively-owned per-lane views, and the compiler **rejects** any
   program that (a) touches the source slice after partitioning, (b) lets a
-  lane view escape into a second goroutine, or (c) writes outside a lane's
-  own view.
+  lane view escape into a second goroutine, or (c) lets a lane body reach
+  any view other than its own.
 - A 1D heat-equation stencil runs `count` lane goroutines through a fixed
   number of BSP steps, exchanging boundary values by per-neighbor channel
   handshake, and produces a result bit-identical to a serial reference.
@@ -67,6 +67,11 @@ makes M1 a milestone rather than a research epic.
   `block_escape` (fail-closed `default:` arms): any new AST shape M1
   introduces must be handled in both, conservatively, or omission stays
   safe. See those files' header comments.
+- **Buffered capacity-1 channels** (Component 3's one runtime dependency)
+  are verified implemented: `src/runtime/channels.c` carries the full
+  `capacity > 0` send/receive path, exercised by spec-conformance fixtures
+  (`tests/spec/type_channel.goo`, `tests/spec/stmt_go_select.goo`). No
+  hidden runtime prerequisite.
 
 ## Architecture
 
@@ -189,8 +194,21 @@ path. Four proof obligations:
    existing Sink #4 goroutine-escape path to record which lane view escapes
    into which `go` call; a view escaping into two goroutines is
    `ERROR_INVALID_BORROW`.
-4. **Writes stay within a lane's own view.** A lane body writing an index
-   outside its `Own()` view is a positioned out-of-partition compile error.
+4. **A lane body reaches no view but its own (view-capture rule).** A lane
+   body may touch lane-shared state only through its own `*Lane` context:
+   capturing the `Partitioned` value, the pre-partition backing array, or
+   another lane's view (directly or via closure capture) into a lane body
+   is a positioned `ERROR_INVALID_BORROW`-family diagnostic. This is
+   deliberately a *capture/escape* rule — the same machinery as
+   obligation 3, checked at the `Run`/`go` boundary — **not** index-range
+   analysis of writes. Dynamic out-of-range indexing *through a lane's own
+   view* is already a runtime bounds panic by ordinary slice semantics
+   (each view is a sub-slice with its own length), and static index-range
+   verification of arbitrary lane bodies is general bounds analysis — the
+   exact rabbit hole the scope boundary below walls off. Comptime-constant
+   indices provably out of a view's range MAY additionally be rejected at
+   compile time where the constant-folder already sees them, but that is
+   opportunistic, not a proof obligation.
 
 Scope boundary (Option A): these checks run only where reachable from
 `Partition`/`go`; general borrow-checking of arbitrary Goo is out of scope
@@ -209,8 +227,9 @@ All gates wired into `make verify-core`. Safety-first ordering.
      `ERROR_USE_AFTER_MOVE`.
    - `partition-escape-reject-probe`: a lane view captured into a second
      goroutine → `ERROR_INVALID_BORROW`.
-   - `partition-bounds-reject-probe`: a lane writing outside its view →
-     out-of-partition diagnostic.
+   - `partition-capture-reject-probe`: a lane body capturing the
+     `Partitioned` value / backing array / another lane's view →
+     view-capture diagnostic (obligation 4).
    If any of these compiles, the milestone fails.
 2. **Functional correctness golden** — `stencil_probe`: 1D heat-equation
    stencil, fixed `count`/steps/initial-condition; expected output produced
@@ -230,16 +249,21 @@ All gates wired into `make verify-core`. Safety-first ordering.
 
 - **View→goroutine attribution across `go`.** Obligation 3 extends Sink #4
   to carry view identity; the exact representation (tagging the escape
-  fact with the partition index) is the riskiest new analysis and should be
-  spiked first. Precedent exists (#30) but not for per-element identity.
-- **Diagnostic quality.** Obligation 4's out-of-partition message needs a
+  fact with the partition index) is the riskiest new analysis. **Ordering
+  requirement: this is spiked BEFORE the implementation plan's task
+  breakdown commits to an approach** — the spike's outcome (representation
+  of view identity in the escape fact) shapes the obligation-3 and
+  obligation-4 tasks, since both ride the same capture/escape machinery.
+  Precedent exists (#30) but not for per-element identity.
+- **Diagnostic quality.** Obligations 3/4's capture diagnostics need a
   position and an actionable phrasing; a poor diagnostic here is the kind
   of UX gap the conformance work flagged (method-expression/explicit-inst
   errors). Budget for message-quality, not just detection.
 - **Race-detector availability.** Confirm helgrind/TSan works against the
-  compiled binaries in the local gate environment; if not, the race-probe
-  becomes a documented manual runbook (spike discipline) rather than a
-  verify-core gate.
+  compiled binaries in the local gate environment — **resolve during the
+  obligation-3 spike** (it is a cheap environment probe and decides probe
+  4's shape early). If unavailable, the race-probe becomes a documented
+  manual runbook (spike discipline) rather than a verify-core gate.
 - **`float64` bit-for-bit reproducibility.** The serial reference and the
   parallel run must produce identical bits — the stencil update must be
   associativity-safe (each cell's new value depends only on its own +
