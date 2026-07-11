@@ -3233,6 +3233,22 @@ static int is_untyped_int_const_expr(ASTNode* node) {
     return 0;
 }
 
+// Genuinely negative-rooted, per the AST SHAPE, not the fold's sign: is
+// `node` a top-level unary MINUS? Sibling to is_untyped_int_const_expr just
+// above and to expression_checker.c's check_conversion_operand_range /
+// adapt_untyped_int_operand `negated` convention, but deliberately shallower
+// — it does NOT recurse through nested unary or binary structure the way
+// those adapters do, because it exists for exactly one purpose: telling
+// int_const_fits_expected's uint64 arm apart from a same-bit-pattern
+// non-negative fold (see that function's doc comment). `-1` (UnaryExprNode
+// wrapping the literal) is negated; `0 - 1` (BinaryExprNode) is NOT, even
+// though goo_fold_const_int folds both to the identical 64-bit pattern —
+// that gap is `int_const_fits_expected`'s documented deviation.
+static int is_negated_int_const_expr(ASTNode* node) {
+    return node && node->type == AST_UNARY_EXPR &&
+           ((UnaryExprNode*)node)->operator == TOKEN_MINUS;
+}
+
 // Go representability rule for return_stmt's int_const_coerce gate: `raw` is
 // the constant's folded value (goo_fold_const_int's two's-complement 64-bit
 // encoding — decoding it back through int64_t is well-defined on a C23
@@ -3242,9 +3258,31 @@ static int is_untyped_int_const_expr(ASTNode* node) {
 // (same bounds, same Go-conformant "constant N overflows T" shape) but keyed
 // off an already-folded 64-bit value rather than a single literal's text, so
 // it also covers constant arithmetic (`1 + 200`) that is_untyped_int_const_expr
-// admits but literal_fits_type cannot parse. int64/uint64 targets are always
-// satisfied: raw IS already the exact 64-bit value, nothing narrower to check.
-static int int_const_fits_expected(uint64_t raw, Type* expected) {
+// admits but literal_fits_type cannot parse. int64 targets are always
+// satisfied: raw IS already the exact 64-bit value, nothing narrower to
+// check. uint64 is NOT unconditionally satisfied — see `negated` below.
+//
+// `negated` (is_negated_int_const_expr on the ORIGINAL, unfolded return
+// expression — see the caller) is the fix for a real regression: this
+// function used to blanket-reject on `sval < 0` for every unsigned target
+// including uint64. But goo_fold_const_int is 64-bit MODULAR (documented at
+// its definition) — `-1` and `18446744073709551615` (MaxUint64) fold to the
+// IDENTICAL bit pattern (0xFFFFFFFFFFFFFFFF), so `sval < 0` can't tell a
+// genuine negative constant apart from a legal top-of-range uint64 constant;
+// the blanket check rejected every uint64/uint constant >= 2^63. `negated`
+// is the one signal that DOES distinguish them, because it comes from the
+// AST shape rather than the fold's output.
+//
+// Documented deviation (same class as this file's existing `^`-rooted
+// deviation — see check_conversion_operand_range's doc comment):
+// `is_negated_int_const_expr` only recognizes a top-level unary minus, so a
+// PURE-ARITHMETIC negative result with no such literal minus sign — e.g.
+// `return 0 - 1` into a uint64 — is not flagged `negated` and slips through
+// as its two's-complement reinterpretation (18446744073709551615), where Go
+// would still reject it. Out of scope for this fix, same as the `^`-rooted
+// gap; narrower (uint8/16/32) targets are unaffected since they keep the
+// unconditional `sval < 0` rejection below.
+static int int_const_fits_expected(uint64_t raw, Type* expected, int negated) {
     int64_t sval = (int64_t)raw;
     if (type_is_signed(expected)) {
         switch (expected->kind) {
@@ -3254,14 +3292,21 @@ static int int_const_fits_expected(uint64_t raw, Type* expected) {
             default:         return 1; // int / int64
         }
     }
-    // A negative constant can never satisfy an unsigned target, at any width
-    // (including uint64 — Go rejects `var x uint64 = -1` too).
-    if (sval < 0) return 0;
     switch (expected->kind) {
-        case TYPE_UINT8:  return (uint64_t)sval <= UINT8_MAX;
-        case TYPE_UINT16: return (uint64_t)sval <= UINT16_MAX;
-        case TYPE_UINT32: return (uint64_t)sval <= UINT32_MAX;
-        default:          return 1; // uint / uint64
+        // A negative constant can never satisfy a NARROWER unsigned target,
+        // at any width — Go rejects `var x uint8 = -1` regardless of how the
+        // negative value was produced (fold sign is trustworthy here: no
+        // narrower unsigned width can ever legitimately reach 2^63+, so
+        // there's no same-bit-pattern ambiguity to resolve via `negated`).
+        case TYPE_UINT8:  return sval >= 0 && (uint64_t)sval <= UINT8_MAX;
+        case TYPE_UINT16: return sval >= 0 && (uint64_t)sval <= UINT16_MAX;
+        case TYPE_UINT32: return sval >= 0 && (uint64_t)sval <= UINT32_MAX;
+        default:
+            // uint / uint64: reject iff the constant is SYNTACTICALLY
+            // negative-rooted (`negated`); otherwise every 64-bit fold is
+            // representable (the type's full [0, 2^64-1] range), including
+            // values >= 2^63 like MaxUint64 — see the deviation note above.
+            return !negated;
     }
 }
 
@@ -3520,8 +3565,9 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 // out of scope for this gate.
                 if (int_const_coerce) {
                     uint64_t raw;
+                    int negated = is_negated_int_const_expr(ret_stmt->values);
                     if (goo_fold_const_int(ret_stmt->values, &raw) &&
-                        !int_const_fits_expected(raw, expected)) {
+                        !int_const_fits_expected(raw, expected, negated)) {
                         type_error(checker, ret_stmt->values->pos,
                                    "constant %lld overflows %s",
                                    (long long)(int64_t)raw,

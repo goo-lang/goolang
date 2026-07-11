@@ -19,6 +19,24 @@
 // int8's [-128, 127] and uint8's [0, 255] — one step past any of these
 // (300, -129, -1 into uint8) is a compile-time "constant N overflows T"
 // rejection, covered by the tests/golden/reject fixtures instead of here.
+//
+// boundaryU64pow63/boundaryU64max (fix round 2, correctness-burndown arc):
+// regression pin for a real bug found in re-review of the round-1 commit —
+// int_const_fits_expected applied a blanket `sval < 0` rejection before its
+// width switch, but goo_fold_const_int folds 64-bit MODULARLY (documented at
+// its definition), so a uint64 constant >= 2^63 (its top bit set) folds to
+// the SAME bit pattern as a small negative int64 — `18446744073709551615`
+// (MaxUint64) folds bit-identical to `-1`. That blanket check therefore
+// rejected EVERY legal uint64/uint constant >= 2^63 ("constant -1 overflows
+// uint64" — wrong on its face, the source said no such thing). Verified
+// break point before the fix: 2^63-1 accepted, 2^63 rejected. These two pin
+// the exact boundary (2^63 itself) and the type's true top (MaxUint64), both
+// printed directly — fmt's uint64 path zero-extends and calls the dedicated
+// unsigned printer (goo_print_uint/goo_println_uint, "%llu"), hand-verified
+// here to print correctly for the full range, so no MATCH-style indirection
+// is needed. The negative-uint64 reject shape (`-1 -> uint64`) stays covered
+// by tests/golden/reject/return_const_negative_unsigned_reject.goo's sibling,
+// return_const_negative_uint64_reject.goo, not here.
 package main
 
 import "fmt"
@@ -32,15 +50,19 @@ func arith32() int32       { return 1000 * 2 }    // untyped constant arithmetic
 func boundary8max() int8   { return 127 }        // int8 upper boundary (INT8_MAX)
 func boundary8min() int8   { return -128 }       // int8 lower boundary (INT8_MIN)
 func boundaryU8max() uint8 { return 255 }        // uint8 upper boundary (UINT8_MAX)
+func boundaryU64pow63() uint64 { return 9223372036854775808 }  // 2^63 (break point)
+func boundaryU64max() uint64   { return 18446744073709551615 } // uint64 MAX
 
 func main() {
-	fmt.Println(narrow8())       // 100
-	fmt.Println(wide64())        // 333333333333
-	fmt.Println(narrow16())      // 30000
-	fmt.Println(unarrow8())      // 200
-	fmt.Println(neg8())          // -5
-	fmt.Println(arith32())       // 2000
-	fmt.Println(boundary8max())  // 127
-	fmt.Println(boundary8min())  // -128
-	fmt.Println(boundaryU8max()) // 255
+	fmt.Println(narrow8())          // 100
+	fmt.Println(wide64())           // 333333333333
+	fmt.Println(narrow16())         // 30000
+	fmt.Println(unarrow8())         // 200
+	fmt.Println(neg8())             // -5
+	fmt.Println(arith32())          // 2000
+	fmt.Println(boundary8max())     // 127
+	fmt.Println(boundary8min())     // -128
+	fmt.Println(boundaryU8max())    // 255
+	fmt.Println(boundaryU64pow63()) // 9223372036854775808
+	fmt.Println(boundaryU64max())   // 18446744073709551615
 }
