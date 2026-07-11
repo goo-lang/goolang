@@ -156,8 +156,16 @@ void substitute_iota(ASTNode** slot, long idx) {
 
 // F4: build one ConstDeclNode for a grouped-const spec. `value` may be NULL
 // for a bare spec (filled in later by desugar_const_group). Mirrors the
-// single-const construction in the const_decl rule.
-ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value) {
+// single-const construction in the const_decl rule. Arc 6 (m): `type` may
+// carry the spec's declared type (`NAME TYPE = expr`; NULL for the untyped
+// and bare arms) — it rides the ConstDeclNode into the same
+// type_check_const_decl declared-type path (and arc-5 representability
+// gate) the single typed form uses. A bare spec deliberately does NOT
+// inherit the previous spec's type, only its value (Go inherits both;
+// type-node cloning is out of scope for v1 — the ast_node_copy hazard —
+// and the desugared VALUES are identical either way, the bare spec just
+// stays untyped-default). See desugar_const_group.
+ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
     ConstDeclNode* c = (ConstDeclNode*)xmalloc(sizeof(ConstDeclNode));
     c->base.type = AST_CONST_DECL;
     c->base.pos = get_current_position();
@@ -168,7 +176,7 @@ ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value) {
     c->names = xmalloc(sizeof(char*));
     c->names[0] = strdup(ident->name);
     c->name_count = 1;
-    c->type = NULL;
+    c->type = type;
     c->values = value;
     c->is_comptime = 0;
 
