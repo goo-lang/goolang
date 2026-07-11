@@ -1,0 +1,22 @@
+// correctness-burndown arc 2, task 2 (B3 sibling wall): a NON-constant case
+// expression whose integer width differs from the switch tag's (here an
+// int64 variable used as a case value against a rune/int32 tag) is not an
+// untyped constant, so it does not adapt the way a literal case does — it
+// must reject cleanly instead of reaching codegen's switch lowering, which
+// has no way to safely lower a width-mismatched `icmp` (the same class of
+// LLVM-verifier leak the literal-case fix in this arc closes).
+package main
+
+func classify(r rune) string {
+	var x int64 = 10
+	switch r {
+	case x:
+		return "matched"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	println(classify(10))
+}

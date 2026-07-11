@@ -1,0 +1,68 @@
+// switch_rune_char_probe (correctness-burndown arc 2, task 2 — B3): tagged
+// switch on a rune/int32 TAG against char-literal CASE values. Before this
+// fix, the checker never unified a case expression's type with the tag's:
+// every char/rune literal ('\a', '\n', 'a', ...) is lexed as a plain
+// TOKEN_INT carrying its decimal value (see lexer.c's char-literal arm) and
+// defaults to int64 like any other untyped constant, while the tag stayed
+// i32 (rune) — codegen emitted `icmp eq i32 %r, i64 10` and the LLVM
+// verifier rejected the module outright ("Module verification failed",
+// exit 1), leaking raw LLVM text to the user instead of compiling. Fixed in
+// type_check_switch_stmt (type_checker.c): an untyped-int-constant case
+// expression now unifies with the tag's type, gated by the same
+// representability rule Task 1 added for `return` (see that fix's
+// int_const_fits_expected).
+//
+// Second shape: a tagged switch on an int8 tag, with case constants that
+// fit (including a negative one) — the SAME width-unification path, at a
+// narrower width than rune/int32, and exercising a negative literal case
+// (is_negated_int_const_expr's shape) alongside positive ones.
+package main
+
+import "fmt"
+
+// classify exercises the exact reported bug shape: a rune (int32) tag
+// against char-literal cases, including a control-character escape ('\a'),
+// the specific escape from the bug report ('\n'), and plain ASCII letters —
+// plus a default arm for anything else.
+func classify(r rune) string {
+	switch r {
+	case '\a':
+		return "bell"
+	case '\n':
+		return "newline"
+	case 'a':
+		return "letter-a"
+	case 'z':
+		return "letter-z"
+	default:
+		return "other"
+	}
+}
+
+// classifyByte exercises the same width-unification fix at a narrower tag
+// width (int8), including a negative case constant.
+func classifyByte(n int8) string {
+	switch n {
+	case -100:
+		return "neg-hundred"
+	case 0:
+		return "zero"
+	case 127:
+		return "max"
+	default:
+		return "mid"
+	}
+}
+
+func main() {
+	fmt.Println(classify('\a'))
+	fmt.Println(classify('\n'))
+	fmt.Println(classify('a'))
+	fmt.Println(classify('z'))
+	fmt.Println(classify('q')) // no case matches -> default
+
+	fmt.Println(classifyByte(-100))
+	fmt.Println(classifyByte(0))
+	fmt.Println(classifyByte(127))
+	fmt.Println(classifyByte(5)) // no case matches -> default
+}

@@ -1,0 +1,20 @@
+// correctness-burndown arc 2, task 2 (B3 overflow-honesty companion): an
+// untyped-constant case value that doesn't fit the switch tag's (narrower)
+// type must be REJECTED at compile time, not silently truncated — the same
+// Go representability rule Task 1 enforced for `return` (see
+// int_const_fits_expected). `case 300:` overflows an int8 tag exactly the
+// way `return 300` overflows an `int8`-returning function.
+package main
+
+func classify(n int8) string {
+	switch n {
+	case 300:
+		return "big"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	println(classify(5))
+}

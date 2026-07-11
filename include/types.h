@@ -1069,6 +1069,7 @@ int type_check_expr_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_if_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt);
+int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt);

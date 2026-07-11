@@ -2917,27 +2917,8 @@ int type_check_statement(TypeChecker* checker, ASTNode* stmt) {
             return type_check_defer_stmt(checker, stmt);
         case AST_SELECT_STMT:
             return type_check_select_stmt(checker, stmt);
-        case AST_SWITCH_STMT: {
-            // Expression switch: type-check the tag, then every case
-            // expression and clause body. Case bodies are raw statement
-            // lists (linked via next), so they are walked here rather than
-            // dispatched as blocks. Each clause gets its own scope, matching
-            // Go's per-clause scoping.
-            SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
-            int ok = 1;
-            if (sw->tag && !type_check_expression(checker, sw->tag)) ok = 0;
-            for (ASTNode* c = sw->cases; c; c = c->next) {
-                CaseClauseNode* clause = (CaseClauseNode*)c;
-                for (ASTNode* e = clause->exprs; e; e = e->next) {
-                    if (!type_check_expression(checker, e)) ok = 0;
-                }
-                scope_push(checker);
-                if (!type_check_switch_like_body(checker, clause->body,
-                        FALLTHROUGH_CTX_EXPR_SWITCH, c->next == NULL)) ok = 0;
-                scope_pop(checker);
-            }
-            return ok;
-        }
+        case AST_SWITCH_STMT:
+            return type_check_switch_stmt(checker, stmt);
         case AST_TYPE_SWITCH:
             return type_check_type_switch_stmt(checker, stmt);
         case AST_COMPTIME_BLOCK: {
@@ -3638,6 +3619,154 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
     }
 
     return 1;
+}
+
+// Retype an untyped-int-constant-rooted case expression — is_untyped_int_
+// const_expr's exact shape (a bare literal, a unary MINUS through to one, or
+// a binary op whose sides are both recursively const-rooted) — to `target`
+// at EVERY level, not just the leaf literal. Mirrors expression_checker.c's
+// adapt_untyped_int_operand (that function is `static` to its own file and
+// wired only into binary-expr checking, so this is a same-shape companion
+// kept local rather than a header edit for this one call site — same
+// rationale as this file's pre-existing is_untyped_int_const_expr/
+// int_const_fits_expected staying local instead of reaching into
+// expression_checker.c). Only ever called AFTER int_const_fits_expected has
+// confirmed representability (see type_check_switch_stmt below), so no
+// range check happens here — pure stamping. codegen_generate_literal reads
+// node_type off exactly the literal leaf to pick the emitted constant's
+// LLVM width (see expression_codegen.c's TOKEN_INT arm), so stamping the
+// whole subtree — not just top-level — is what makes a compound case
+// expression (`-5`, `1+2`) emit at the switch tag's width, matching a bare
+// literal case (`'\n'`, `300`).
+static void stamp_int_const_expr_type(ASTNode* node, Type* target) {
+    if (!node) return;
+    node->node_type = target;
+    if (node->type == AST_UNARY_EXPR) {
+        stamp_int_const_expr_type(((UnaryExprNode*)node)->operand, target);
+    } else if (node->type == AST_BINARY_EXPR) {
+        BinaryExprNode* b = (BinaryExprNode*)node;
+        stamp_int_const_expr_type(b->left, target);
+        stamp_int_const_expr_type(b->right, target);
+    }
+}
+
+// Expression switch: type-check the tag, then every case expression and
+// clause body. Case bodies are raw statement lists (linked via next), so
+// they are walked here rather than dispatched as blocks. Each clause gets
+// its own scope, matching Go's per-clause scoping.
+//
+// B3 fix (correctness-burndown arc 2, task 2): a switch is definitionally a
+// chain of `tag == case` equality tests (see codegen_generate_switch_stmt's
+// own doc comment), but until this fix the checker never related a case
+// expression's type to the tag's at all — it merely type-checked each case
+// expression IN ISOLATION. Two failure modes followed, both reaching
+// codegen and crashing the LLVM verifier with a raw, unpositioned
+// "Module verification failed" instead of a clean diagnostic:
+//   1. A rune/int32 tag against a char-literal case (`'\a'`, `'\n'`, ...):
+//      the lexer bridge emits every char/rune literal as a plain TOKEN_INT
+//      carrying its decimal value (see lexer.c's `'\''` arm), which
+//      type_check_literal defaults to int64 — the same untyped-constant
+//      default a bare `10` gets. The tag stays i32 (rune); codegen ended up
+//      comparing `icmp eq i32 %r, i64 10` (this bug's exact reported
+//      symptom).
+//   2. A wrong-KIND case value (`case "x":` on an int tag) or a non-constant
+//      wrong-WIDTH case value (a typed int64 variable against a rune/int32
+//      tag) sailed through unchecked and crashed codegen's switch lowering
+//      with a mismatched-operand-type icmp the same way.
+//
+// Fix: for every case expression whose type's `kind` differs from the tag's,
+// route it through the SAME machinery a `tag == case` comparison already
+// uses. An untyped int constant (kind mismatch, const-rooted) unifies with
+// the tag's type iff representable — reusing int_const_fits_expected/
+// is_negated_int_const_expr, the exact representability gate Task 1 added
+// for `return`'s untyped-constant coercion, so `case 300:` on an int8 tag
+// still rejects as overflow instead of truncating. A non-constant int-kind
+// mismatch, or any other kind mismatch (string/bool/etc. against a
+// differently-kinded tag), is rejected via type_check_comparison_op — the
+// exact function `==` itself calls, so the diagnostic ("Cannot compare
+// incompatible types %s and %s") is worded identically to what `tag == case`
+// would produce by hand.
+//
+// A tagless switch (`switch { case cond: }` — goostd/strconv.go's own
+// workaround for this bug, see appendEscapedRune's comment) has no tag to
+// unify against (sw->tag is NULL); tag_type stays NULL and every case
+// expression's own (already-checked) bool type is left untouched, exactly
+// as before this fix — the tagless-switch shape is not a wall this task
+// adds.
+int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
+    if (!checker || !stmt || stmt->type != AST_SWITCH_STMT) return 0;
+
+    SwitchStmtNode* sw = (SwitchStmtNode*)stmt;
+    int ok = 1;
+    Type* tag_type = NULL;
+    if (sw->tag) {
+        tag_type = type_check_expression(checker, sw->tag);
+        if (!tag_type) ok = 0;
+    }
+
+    for (ASTNode* c = sw->cases; c; c = c->next) {
+        CaseClauseNode* clause = (CaseClauseNode*)c;
+        for (ASTNode* e = clause->exprs; e; e = e->next) {
+            Type* e_type = type_check_expression(checker, e);
+            if (!e_type) { ok = 0; continue; }
+
+            // No tag (tagless switch), or an unresolved/poisoned operand on
+            // either side (T4.2 cascade-suppression convention used
+            // throughout this file): defer rather than risk a false-positive
+            // reject on something the checker couldn't pin down.
+            if (!tag_type || type_is_poison(tag_type) || type_is_poison(e_type) ||
+                tag_type->kind == TYPE_UNKNOWN || e_type->kind == TYPE_UNKNOWN) {
+                continue;
+            }
+
+            if (tag_type->kind == e_type->kind) continue; // already comparable today
+
+            if (type_is_integer(tag_type) && type_is_integer(e_type)) {
+                if (is_untyped_int_const_expr(e)) {
+                    uint64_t raw;
+                    int negated = is_negated_int_const_expr(e);
+                    if (goo_fold_const_int(e, &raw) &&
+                        !int_const_fits_expected(raw, tag_type, negated)) {
+                        type_error(checker, e->pos, "constant %lld overflows %s",
+                                   (long long)(int64_t)raw, type_to_string(tag_type));
+                        ok = 0;
+                        continue;
+                    }
+                    // Representable (or the fold itself failed — left
+                    // unchecked, the same documented gap int_const_fits_
+                    // expected's other caller carries): stamp the whole
+                    // case-expr subtree to the tag's type so codegen emits
+                    // the constant at that width directly, closing the
+                    // width-mismatched ICmp this fix targets.
+                    stamp_int_const_expr_type(e, tag_type);
+                    continue;
+                }
+                // Non-constant int-kind mismatch (e.g. a typed int64
+                // variable used as a case value against a rune/int32 tag):
+                // only an untyped constant adapts (Go representability
+                // rule); a differently-sized TYPED value is not assignable
+                // to the tag's type and must not reach codegen, which has
+                // no lowering for a width-mismatched icmp.
+                type_error(checker, e->pos,
+                           "invalid case value: %s does not match switch "
+                           "expression type %s",
+                           type_to_string(e_type), type_to_string(tag_type));
+                ok = 0;
+                continue;
+            }
+
+            // Any other kind mismatch (e.g. a string case against an int tag)
+            // — reject via the same check `tag == case` would perform.
+            if (!type_check_comparison_op(checker, tag_type, e_type, TOKEN_EQ, e->pos)) {
+                ok = 0;
+            }
+        }
+        scope_push(checker);
+        if (!type_check_switch_like_body(checker, clause->body,
+                FALLTHROUGH_CTX_EXPR_SWITCH, c->next == NULL)) ok = 0;
+        scope_pop(checker);
+    }
+    return ok;
 }
 
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt) {
