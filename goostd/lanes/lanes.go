@@ -48,7 +48,7 @@ type Partitioned struct {
 type Lane struct {
 	id       int
 	steps    int // total rounds requested (Run's `steps` param, frozen for Task 4's BSP loop)
-	step     int // current-round counter; unused in v1 (Run calls body exactly once)
+	step     int // current-round counter; advanced by Step() each BSP round
 	own      []float64
 	haloL    float64
 	haloR    float64

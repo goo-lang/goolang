@@ -35,7 +35,11 @@
 // lookups that all fail to match "lanes" (there are none to match). The
 // walk fails CLOSED in the sense that matters for a rejection pass: an AST
 // shape it does not specifically recognize is simply not flagged — never
-// crashes, never rejects code this pass was not built to reason about.
+// crashes. The known EXCEPTIONS to "never rejects code this pass was not
+// built to reason about" are the name-shadowing surfaces below (including
+// detection-level shadowing of the package name itself) and the
+// flow-insensitive branch note — all documented, all clean positioned
+// diagnostics, none a crash.
 //
 // Task 6 extends the SAME per-function walk (see LaneWalkContext in
 // lane_ownership.c) to add the view-attribution (obligation 3, at `go`/
@@ -57,9 +61,18 @@
 // (Task 6 ADDED AST_LABEL_STMT descent — `L: stmt` now recurses into its
 // wrapped statement in both lane_walk_stmt and lane_body_walk_stmt — so it
 // is no longer on this list.) This is the safe direction for a rejection
-// pass (under-reject; the one KNOWN false-reject surface is name shadowing,
-// since every table here is flat and shadow-unaware — Option A envelope,
-// documented at LaneWalkContext.outer_derived), but
+// pass (under-reject; the KNOWN false-reject surfaces are (a) name
+// shadowing, since every table here is flat and shadow-unaware — Option A
+// envelope, documented at LaneWalkContext.outer_derived; (b) DETECTION-
+// level shadowing: lane_call_is_lanes_selector resolves the qualifier via
+// type_checker_lookup_variable after function-local scopes are popped, so
+// a LOCAL VARIABLE named `lanes` with its own Partition/Run method is
+// misattributed as the package call and its argument move-poisoned —
+// exotic, clean diagnostic, no crash; a code fix needs parse-time scope
+// info, out of Option A scope; and (c) flow-insensitivity: a Partition
+// inside a conditional branch poisons post-branch reads even when the
+// branch may not execute at runtime — conservative move-checker behavior),
+// but
 // it means obligation 1 (and Task 6's obligations 3/4) are simply not
 // enforced inside these shapes today.
 //

@@ -190,9 +190,15 @@ drift from it. In brief:
 - A bare, unbound `lanes.Partition(...)` statement (result discarded, not
   bound via `:=`/`var`) records no move at all.
 - Every tracking table is flat and **shadow-unaware**: a shadowed name
-  reusing a moved/lane-derived identifier is the one known false-reject/
+  reusing a moved/lane-derived identifier is a known false-reject/
   false-accept-adjacent surface — a documented Option A scope boundary, not
-  a bug fixed under M1.
+  a bug fixed under M1. This extends to **detection itself**: a local
+  variable named `lanes` with its own `Partition`/`Run` method is
+  misattributed as the package call and false-rejects (clean diagnostic,
+  no crash) — rename the variable.
+- Move tracking is **flow-insensitive**: a `Partition` inside a conditional
+  branch poisons reads after the branch even when the branch may not
+  execute at runtime — conservative move-checker behavior.
 
 All of the above is a deliberate under-reject direction: real and
 load-bearing for the shapes it covers, not a proof that no lanes program
