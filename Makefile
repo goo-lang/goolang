@@ -1792,8 +1792,11 @@ comptime-value-reject-probe: $(COMPILER) $(RUNTIME_LIB)
 # compile, emit its specific diagnostic, and never leak LLVM-verifier noise.
 # The single-case comptime-value-reject-probe above stays as-is (it predates
 # this matrix and other docs reference it); this is the breadth net. The
-# package-declaration case compiles against a throwaway GOOROOT tree under
-# build/ (same env contract as import_resolver's goo_gooroot_dir).
+# package-runtime-arg case resolves `cpkg` from a throwaway GOOROOT tree under
+# build/ (same env contract as import_resolver's goo_gooroot_dir): since the
+# P6 M1 wall lift a comptime-CONST arg into a package function COMPILES, so this
+# case pins the surviving wall — a RUNTIME arg across the package boundary still
+# rejects with "must be a compile-time constant".
 comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build/cvm_gooroot/goostd/cpkg
 	@printf 'package cpkg\nfunc Fill(comptime n int, s int) int { return s }\n' > build/cvm_gooroot/goostd/cpkg/cpkg.go
@@ -1821,8 +1824,8 @@ comptime-value-reject-matrix: $(COMPILER) $(RUNTIME_LIB)
 	run_case "channel-send" "cannot be sent on a channel"; \
 	printf 'package main\ntype S struct { v int }\nfunc (s S) Fill(comptime n int, x int) int { return x }\nfunc main() { }\n' > build/cvm.goo; \
 	run_case "method-declaration" "not yet supported on methods"; \
-	printf 'package main\nimport "cpkg"\nfunc main() { _ = cpkg.Fill(2, 1) }\n' > build/cvm.goo; \
-	run_case "package-declaration" "comptime parameters on package functions are not yet supported"; \
+	printf 'package main\nimport "cpkg"\nfunc main() { x := 5; _ = cpkg.Fill(x, 1) }\n' > build/cvm.goo; \
+	run_case "package-runtime-arg" "must be a compile-time constant"; \
 	printf 'package main\nfunc bad[T any](comptime n T) T { return n }\nfunc main() { }\n' > build/cvm.goo; \
 	run_case "composed-tparam-comptime-type" "comptime parameter type cannot be a type parameter"; \
 	printf 'package main\nfunc kernel[T any](comptime n int, seed T) T { return seed }\nfunc main() { x := 5; _ = kernel(x, 10) }\n' > build/cvm.goo; \

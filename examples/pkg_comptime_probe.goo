@@ -1,0 +1,12 @@
+// P6 M1 (comptime-wall lift): a comptime-param function declared in an imported
+// GOOROOT package (goostd/cpkg) monomorphizes per call value across the package
+// boundary. Fill(4, 10) -> 23, Fill(8, 10) -> 27. Resolves cpkg via the dev-tree
+// GOOROOT tier; instances emit as goo_pkg__cpkg__Fill__n4 / __n8.
+package main
+
+import "cpkg"
+
+func main() {
+	println(cpkg.Fill(4, 10))
+	println(cpkg.Fill(8, 10))
+}

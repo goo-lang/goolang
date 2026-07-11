@@ -1047,6 +1047,18 @@ static bool compile_resolved_packages(PkgGraph* g, TypeChecker* checker,
                     e->import_path);
             return false;
         }
+        // P6 M1 (comptime-wall lift): transfer this package's AST ownership from
+        // the graph to its Package. pkg_graph_free (goo.c) runs right after this
+        // function, BEFORE main is type-checked/codegen'd — but a comptime-param
+        // package function's template FuncDecl (reachable via an export copy's
+        // func_decl_node) must survive until main's monomorphizer emits its
+        // instances. The Package outlives codegen (freed at type_checker_free),
+        // so parking the AST there keeps that template alive; nulling e->ast
+        // makes pkg_graph_free skip it (no double free). Non-comptime imports
+        // are unaffected — they simply keep their (now Package-owned) AST alive
+        // a little longer, freed once at the same final teardown.
+        p->owned_ast = e->ast;
+        e->ast = NULL;
     }
     return true;
 }

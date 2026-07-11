@@ -116,6 +116,12 @@ void type_checker_free(TypeChecker* checker) {
         free(pkg->import_path);
         free(pkg->name);
         scope_free(pkg->exports);
+        // P6 M1: the package AST whose ownership compile_resolved_packages
+        // transferred here (NULL if the graph still owns it). Freed last, after
+        // the exports scope whose Variables' func_decl_node pointed into it —
+        // scope_free frees only the Variable copies, never the AST nodes they
+        // reference, so the order is not load-bearing, only tidy.
+        ast_node_free(pkg->owned_ast);
         free(pkg);
         pkg = next;
     }
@@ -180,6 +186,7 @@ Package* type_checker_add_package(TypeChecker* checker, const char* import_path,
     pkg->name = str_dup(name);
     pkg->exports = scope_new(NULL);
     pkg->state = 0;  // unvisited
+    pkg->owned_ast = NULL;  // P6 M1: set by compile_resolved_packages on success
     pkg->next = checker->packages;
     checker->packages = pkg;
 
@@ -191,7 +198,20 @@ Package* type_checker_add_package(TypeChecker* checker, const char* import_path,
 // and exports never co-own a Variable node — variable_free frees only the name
 // (str_dup'd copy) and the comptime value, never the shared Type*, so sharing
 // the Type* pointer across the two scopes is safe.
-void package_export_filter(Scope* pkg_scope, Scope* exports) {
+//
+// P6 M1 (comptime-wall lift): the copy also carries `func_decl_node` and
+// `owner_pkg` (== `owner`). The FuncDeclNode back-reference is what lets a
+// `pkg.Fill(4, ...)` selector call — which resolves to THIS export copy as its
+// callee (expression_checker.c) — capture its comptime argument and record a
+// monomorphization seed that survives to main-pass codegen: the package's own
+// inner-scope Fill Variable is freed by scope_pop (goo.c) right after the
+// package is codegen'd, but this export copy lives on the Package's `exports`
+// scope (TypeChecker-owned) and the FuncDeclNode it points at lives on the
+// PkgGraph AST, so both outlast the package scope teardown. `owner_pkg` then
+// package-qualifies the instance symbol at monomorphization time. For a
+// non-function export `func_decl_node` is NULL (a no-op copy); `owner_pkg` is
+// set on every export uniformly (only ever read for function seeds).
+void package_export_filter(Scope* pkg_scope, Scope* exports, struct Package* owner) {
     if (!pkg_scope || !exports) return;
 
     for (Variable* v = pkg_scope->variables; v; v = v->next) {
@@ -203,6 +223,8 @@ void package_export_filter(Scope* pkg_scope, Scope* exports) {
         copy->is_initialized = v->is_initialized;
         copy->mutability = v->mutability;
         copy->is_builtin = v->is_builtin;
+        copy->func_decl_node = v->func_decl_node;
+        copy->owner_pkg = owner;
         if (!scope_add_variable(exports, copy)) {
             // Duplicate name already present in exports — discard the copy.
             variable_free(copy);
@@ -808,7 +830,7 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program) {
 
     // Publish the package's exported (capitalised) top-level symbols so
     // cross-package selector resolution (Task 5) can reach them by name.
-    package_export_filter(checker->current_scope, pkg->exports);
+    package_export_filter(checker->current_scope, pkg->exports, pkg);
 
     return checker->error_count == 0;
 }
@@ -992,37 +1014,23 @@ static int declare_function_signature(TypeChecker* checker, FuncDeclNode* func) 
         }
     }
 
-    // Comptime value params Task 3 (fix round 1, finding 3 — FALLBACK): a
-    // function declared inside an imported PACKAGE cannot carry comptime
-    // parameters yet. Real cross-package monomorphization fights the
-    // package lifetime model on three fronts: (a) the package's scope and
-    // current_package are torn down (scope_pop FREES its Variables — see
-    // compile_resolved_packages' lifetime contract, goo.c) before main's
-    // type-check ever records a `pkg.Fill(4, ...)` seed, so the
-    // monomorphizer, which runs at main-pass codegen, could neither resolve
-    // the function's signature (codegen_generate_function_decl's
-    // type_checker_lookup_variable) nor any package-level symbol its body
-    // references; (b) an INTERNAL package call would record a seed whose
-    // `fn` Variable is freed by that same scope_pop — a use-after-free in
-    // the worklist, not just a missing symbol; (c) instance symbols would
-    // need package-qualified mangling threaded through both mangle sites to
-    // avoid cross-package `Fill__n4` collisions. Rejecting at DECLARATION
-    // time (rather than only at main's call sites, the narrower fallback)
-    // is what closes (b): if no package can declare one, no dangling seed
-    // can exist. Documented follow-up; reviewed controller decision
-    // (Task 3 fix round 1).
-    if (checker->current_package) {
-        for (ASTNode* p = func->params; p; p = p->next) {
-            if (p->type != AST_VAR_DECL) continue;
-            VarDeclNode* pd = (VarDeclNode*)p;
-            if (pd->is_comptime_param) {
-                type_error(checker, p->pos,
-                    "comptime parameters on package functions are not yet supported");
-                type_checker_pop_type_params(checker, saved_tp);
-                return 0;
-            }
-        }
-    }
+    // P6 M1 (comptime-wall lift): comptime parameters on a package function
+    // ARE now supported (the DECLARATION wall that used to reject them here is
+    // gone). The three lifetime fronts the original wall guarded against are
+    // each resolved: (a)/(c) a `pkg.Fill(4, ...)` selector call from importing
+    // code resolves to the function's EXPORT COPY, which package_export_filter
+    // now stamps with `func_decl_node` (the template, living on the surviving
+    // PkgGraph AST) and `owner_pkg` (for package-qualified instance mangling,
+    // `goo_pkg__<pkg>__<base>__n<v>` — comptime_instantiate, monomorphize.c),
+    // so the main-pass monomorphizer resolves and emits the instance without
+    // touching the torn-down package scope; (b) a SAME-package INTERNAL comptime
+    // call — whose bare-name callee is the inner-scope Variable that scope_pop
+    // frees before the main-pass worklist runs — is still rejected, but now
+    // precisely at the recording site (expression_checker.c, gated on the
+    // callee's NULL owner_pkg) rather than by banning the declaration outright.
+    // The runtime-arg-across-packages wall (`must be a compile-time constant`)
+    // is unchanged: it fires at the call site (type_check_capture_comptime_arg),
+    // not here.
 
     // Task 2: a variadic parameter (`name ...T`) must be the LAST parameter
     // (Go: "can only use ... with final parameter in list"). Check this

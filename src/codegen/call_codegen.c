@@ -102,6 +102,7 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
                                                      const char* sel_name,
                                                      int* handled) {
     *handled = 0;
+    CallExprNode* call = (CallExprNode*)expr;
     size_t n = strlen("goo_pkg__") + strlen(pkg_name) + strlen("__")
              + strlen(sel_name) + 1;
     char* sym = malloc(n);
@@ -109,10 +110,33 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
     snprintf(sym, n, "goo_pkg__%s__%s", pkg_name, sel_name);
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, sym);
     free(sym);
+
+    // P6 M1 (comptime-wall lift): a comptime-param package function has NO
+    // bare `goo_pkg__<pkg>__<sel>` body in the module — the template is never
+    // emitted directly (codegen.c skips it), only per-value monomorphized
+    // INSTANCES are, under `goo_pkg__<pkg>__<sel>__n<v>...`
+    // (comptime_instantiate, monomorphize.c). Rewire `cpkg.Fill(4, 10)` to its
+    // instance symbol here — the SAME construction the emitter used, so the two
+    // sites always agree. The comptime parameter stays a real ABI argument on
+    // the instance (see fill__n4's (i64,i64) signature), so the arg loop below
+    // passes every actual unchanged; only the callee SYMBOL differs. Runs
+    // before main's body is emitted since codegen_monomorphize completes at the
+    // top of the main-pass codegen_generate_program (codegen.c).
+    if (!fn && call->comptime_value_arg_count > 0) {
+        char* base = codegen_pkg_mangled_symbol(pkg_name, sel_name);
+        char* inst_sym = base
+            ? codegen_mangle_comptime_instance(base, call->comptime_value_args,
+                                               call->comptime_value_arg_count)
+            : NULL;
+        free(base);
+        if (inst_sym) {
+            fn = LLVMGetNamedFunction(codegen->module, inst_sym);
+            free(inst_sym);
+        }
+    }
     if (!fn) return NULL;  // not a real package symbol → shim fallback
 
     *handled = 1;
-    CallExprNode* call = (CallExprNode*)expr;
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
     LLVMValueRef* args = argc ? malloc(sizeof(LLVMValueRef) * argc) : NULL;

@@ -788,7 +788,24 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
     if (!decl_node || decl_node->type != AST_FUNC_DECL) return 1; // defensive; always set (declare_function_signature)
     FuncDeclNode* tmpl = (FuncDeclNode*)decl_node;
 
-    char* sym = codegen_mangle_comptime_instance(fn_var->name, values, n);
+    // P6 M1 (comptime-wall lift): package-qualify the instance base for a
+    // package-owned comptime function (fn_var is the surviving export copy,
+    // owner_pkg set by package_export_filter). `goo_pkg__cpkg__Fill` then
+    // `__n<v>` -> `goo_pkg__cpkg__Fill__n4`, so a user `func Fill` (bare
+    // `Fill__n4`) and `cpkg.Fill` can never share an instance
+    // (struct-interning-hazard discipline, applied to function symbols). The
+    // call site (codegen_generate_pkg_selector_call, call_codegen.c) rebuilds
+    // the identical string from the same package name + selector + values. A
+    // local (non-package) comptime function has owner_pkg == NULL and keeps its
+    // bare `<name>__n<v>` mangling, byte-identical to before this task.
+    char* pkg_base = NULL;
+    if (fn_var->owner_pkg && fn_var->owner_pkg->name) {
+        pkg_base = codegen_pkg_mangled_symbol(fn_var->owner_pkg->name, fn_var->name);
+        if (!pkg_base) return 0;
+    }
+    char* sym = codegen_mangle_comptime_instance(pkg_base ? pkg_base : fn_var->name,
+                                                 values, n);
+    free(pkg_base);
     if (!sym) return 0;
     if (LLVMGetNamedFunction(codegen->module, sym) || mono_seen_has(*seen, sym)) {
         free(sym);
@@ -877,8 +894,36 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
     mono_free_calls(calls);
 
     if (ok) {
+        // P6 M1 (comptime-wall lift): a PACKAGE function's template is not in
+        // main's checker scope at monomorphization time — the package scope was
+        // torn down (scope_pop, goo.c) after the package's own codegen. But
+        // codegen_generate_function_decl recovers the instance's parameter
+        // signature via type_checker_lookup_variable(emit_name); a miss there
+        // silently emits a 0-parameter instance (param_count stays 0) whose body
+        // then can't resolve the parameters as identifiers ("Undefined
+        // identifier 'n'"). Publish the template Variable under its bare name in
+        // a throwaway scope for the duration of this one emission, mirroring the
+        // visibility the package's OWN codegen pass had (current_package kept it
+        // in scope there). A local (owner_pkg == NULL) comptime function is
+        // already in scope, so this is package-only and leaves the local path
+        // byte-identical. scope_pop frees the alias (a fresh copy sharing the
+        // template's Type*, which it does not own — no double free).
+        int pushed_alias = 0;
+        if (fn_var->owner_pkg) {
+            scope_push(checker);
+            Variable* alias = variable_new(fn_var->name, fn_var->type,
+                                           fn_var->declared_pos);
+            if (alias) {
+                alias->func_decl_node = fn_var->func_decl_node;
+                alias->owner_pkg = fn_var->owner_pkg;
+                alias->is_initialized = 1;
+                scope_add_variable(checker->current_scope, alias);
+            }
+            pushed_alias = 1;
+        }
         ok = codegen_generate_comptime_function_instance(codegen, checker, tmpl, sym,
                                                           values, n);
+        if (pushed_alias) scope_pop(checker);
     }
     return ok;
 }
