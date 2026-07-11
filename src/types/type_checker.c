@@ -2142,8 +2142,10 @@ int type_check_var_decl(TypeChecker* checker, ASTNode* decl) {
         var_decl->values) {
         if (final_type->data.struct_type.field_count >= var_decl->name_count) {
             per_name_types = malloc(sizeof(Type*) * var_decl->name_count);
-            for (size_t i = 0; i < var_decl->name_count; i++) {
-                per_name_types[i] = final_type->data.struct_type.fields[i].type;
+            if (per_name_types) {
+                for (size_t i = 0; i < var_decl->name_count; i++) {
+                    per_name_types[i] = final_type->data.struct_type.fields[i].type;
+                }
             }
         }
     } else if (var_decl->name_count == 2 && var_decl->is_short_decl &&

@@ -1312,6 +1312,11 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
     // non-constant unsigned element (uint8 200) zero-extends instead of
     // sign-extending into a negative value. See slice_coerce_elem's comment.
     int* elem_signed = count ? calloc(count, sizeof(int)) : NULL;
+    if (count && (!elem_vals || !elem_signed)) {
+        free(elem_vals);
+        free(elem_signed);
+        return NULL;
+    }
     size_t idx = 0;
     for (ASTNode* e = first_elem; e; e = e->next, idx++) {
         if ((elem_is_nullable || elem_is_nilable_bare) && e->type == AST_LITERAL &&

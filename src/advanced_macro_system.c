@@ -463,6 +463,10 @@ char* process_template(const char* template_str, MacroContext* context) {
             if (end) {
                 size_t name_len = end - start;
                 char* param_name = (char*)malloc(name_len + 1);
+                if (!param_name) { // allocation failure: skip this {{...}} substitution
+                    in = end + 2;
+                    continue;
+                }
                 strncpy(param_name, start, name_len);
                 param_name[name_len] = '\0';
                 
