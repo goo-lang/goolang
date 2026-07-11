@@ -2348,6 +2348,20 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
         ValueInfo* size_val = codegen_generate_expression(codegen, checker, size_arg);
         if (!size_val) return NULL;
 
+        // Load through the address first when the capacity is an lvalue
+        // (e.g. a struct-field selector `p.count`) — otherwise the pointer
+        // itself reaches the ZExt below and fails verification. Mirrors the
+        // load-if-lvalue idiom the make(slice) length/capacity path uses.
+        if (size_val->is_lvalue && size_val->goo_type) {
+            LLVMTypeRef st = codegen_type_to_llvm(codegen, size_val->goo_type);
+            if (st) {
+                size_val->llvm_value = LLVMBuildLoad2(codegen->builder, st,
+                                                      size_val->llvm_value,
+                                                      "make_chan_cap_load");
+                size_val->is_lvalue = 0;
+            }
+        }
+
         // Convert to size_t if needed
         buffer_size = size_val->llvm_value;
         if (LLVMTypeOf(buffer_size) != i64) {
