@@ -3230,6 +3230,23 @@ static int is_negated_int_const_expr(ASTNode* node) {
            ((UnaryExprNode*)node)->operator == TOKEN_MINUS;
 }
 
+// Is `node` (the ORIGINAL, unfolded expression handed to int_const_fits_
+// expected) a bare integer-literal LEAF — no unary negation, no binary
+// arithmetic wrapping it? Sibling to is_negated_int_const_expr; feeds
+// int_const_fits_expected's signed-target bare-huge-literal reject (fix
+// round 4, correctness-burndown arc — see that function's doc comment for
+// the full rationale). The discriminator has to be this AST-SHAPE check, not
+// "folded raw > INT64_MAX" alone: legal constant arithmetic can fold into
+// that identical 64-bit range (`0 - 5` -> raw = 0xFFFFFFFFFFFFFFFB, since
+// -5's two's-complement encoding also has its top bit set) without being an
+// unrepresentable value — Go accepts int8(0 - 5) == -5. Only a literal
+// actually WRITTEN >= 2^63 in source (`18446744073709551615`) is
+// unrepresentable in every signed width, including int64.
+static int is_bare_int_literal(ASTNode* node) {
+    return node && node->type == AST_LITERAL &&
+           ((LiteralNode*)node)->literal_type == TOKEN_INT;
+}
+
 // Go representability rule for return_stmt's int_const_coerce gate: `raw` is
 // the constant's folded value (goo_fold_const_int's two's-complement 64-bit
 // encoding — decoding it back through int64_t is well-defined on a C23
@@ -3239,15 +3256,26 @@ static int is_negated_int_const_expr(ASTNode* node) {
 // (same bounds, same Go-conformant "constant N overflows T" shape) but keyed
 // off an already-folded 64-bit value rather than a single literal's text, so
 // it also covers constant arithmetic (`1 + 200`) that is_untyped_int_const_expr
-// admits but literal_fits_type cannot parse. int64 targets are always
-// satisfied: raw IS already the exact 64-bit value, nothing narrower to
-// check. uint64 is NOT unconditionally satisfied — see `negated` below.
+// admits but literal_fits_type cannot parse. int64 targets are satisfied by
+// every value EXCEPT a bare literal >= 2^63 (see `bare_literal` below and the
+// signed case table) — raw is already the exact 64-bit value for anything an
+// int64 can hold, but a literal actually written >= 2^63 cannot be held by
+// ANY signed width, int64 included. uint64 is NOT unconditionally satisfied
+// either — see `negated` below.
 //
 // `negated` (is_negated_int_const_expr on the ORIGINAL, unfolded return
 // expression — see the caller) feeds the uint/uint64 arm's rejection rule
 // below: reject iff `sval < 0 && negated` — the fold's sign AND the AST
 // shape, a CONJUNCTION, not either alone (fix round 3, correctness-burndown
 // arc; round 2 used `negated` alone and over-rejected — see below).
+//
+// `bare_literal` (is_bare_int_literal on that same original, unfolded
+// expression) feeds the SIGNED arms' rejection rule (fix round 4): reject
+// unconditionally iff `bare_literal && raw > INT64_MAX` — see the signed
+// case table and int_const_fits_expected's body below for the full
+// rationale (in short: only a literal actually written >= 2^63 in source is
+// unrepresentable in every signed width; arithmetic that folds into that
+// same raw range, e.g. `0 - 5`, is legal and must not be caught by this).
 //
 // Why the conjunction, and why it's safe: goo_fold_const_int is 64-bit
 // MODULAR (documented at its definition), so `sval < 0` alone is ambiguous
@@ -3280,6 +3308,21 @@ static int is_negated_int_const_expr(ASTNode* node) {
 //                              is gone; only this pre-existing under-reject
 //                              gap remains.
 //
+// Case table (SIGNED target, e.g. int8/int64 — fix round 4):
+//   18446744073709551615    -> bare literal, raw > INT64_MAX -> REJECT (every
+//                              signed width, including int64: no signed type
+//                              can hold a value >= 2^63)
+//   0 - 5 (-> int8)         -> raw = 0xFFFF...FB (> INT64_MAX!) but NOT a
+//                              bare literal (BinaryExprNode) -> skips the new
+//                              check, falls through to sval=-5 range test ->
+//                              ACCEPT (correct: Go accepts int8(0 - 5) == -5;
+//                              same documented-deviation class as the uint64
+//                              `0 - 1` row above — arithmetic that folds into
+//                              the huge-raw range is not itself huge)
+//   -(9223372036854775808)  -> UnaryExprNode, not a bare literal -> skips the
+//                              new check; sval=INT64_MIN accepted for int64,
+//                              rejected for narrower widths (unchanged)
+//
 // Documented deviation (same class as this file's existing `^`-rooted
 // deviation — see check_conversion_operand_range's doc comment):
 // `is_negated_int_const_expr` only recognizes a top-level unary minus, so a
@@ -3289,10 +3332,33 @@ static int is_negated_int_const_expr(ASTNode* node) {
 // would still reject it (goo_fold_const_int's 64-bit-modular fold is what
 // produces that reinterpretation). Out of scope for this fix, same as the
 // `^`-rooted gap; narrower (uint8/16/32) targets are unaffected since they
-// keep the unconditional `sval < 0` rejection below.
-static int int_const_fits_expected(uint64_t raw, Type* expected, int negated) {
+// keep the unconditional `sval < 0` rejection below. The SAME class of gap
+// exists in reverse for signed targets — a pure-arithmetic expression that
+// folds to a value >= 2^63 (there is no such legal Go constant expression at
+// this integer width without an explicit huge literal, so this is currently
+// unreachable in practice, but is called out here for completeness) would
+// likewise not be flagged by `bare_literal` and would fall through to the
+// ordinary sval range checks below.
+static int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
+                                    int bare_literal) {
     int64_t sval = (int64_t)raw;
     if (type_is_signed(expected)) {
+        // A bare literal >= 2^63 as WRITTEN IN SOURCE (e.g.
+        // `18446744073709551615`) folds to a negative `sval` under 64-bit
+        // modular arithmetic (its top bit is set), which would otherwise
+        // slip past every per-width range check below and reinterpret as a
+        // small negative number (`return 18446744073709551615` into int8
+        // returning -1) — a reject->accept regression vs. base dd11713's old
+        // width gate (fix round 4, correctness-burndown arc, fable final
+        // review). No signed width, not even int64, can represent a value
+        // >= 2^63, so reject unconditionally here — before the per-width
+        // switch, since every arm would need the identical guard otherwise.
+        // Gated on `bare_literal` (an AST-shape check — see its doc comment)
+        // rather than `!negated`, so compound arithmetic that folds into the
+        // identical bit-pattern range (`0 - 5`) stays on the ordinary
+        // sval-range path below instead of being wrongly rejected — see the
+        // case table above.
+        if (bare_literal && raw > (uint64_t)INT64_MAX) return 0;
         switch (expected->kind) {
             case TYPE_INT8:  return sval >= INT8_MIN  && sval <= INT8_MAX;
             case TYPE_INT16: return sval >= INT16_MIN && sval <= INT16_MAX;
@@ -3576,8 +3642,10 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 if (int_const_coerce) {
                     uint64_t raw;
                     int negated = is_negated_int_const_expr(ret_stmt->values);
+                    int bare_literal = is_bare_int_literal(ret_stmt->values);
                     if (goo_fold_const_int(ret_stmt->values, &raw) &&
-                        !int_const_fits_expected(raw, expected, negated)) {
+                        !int_const_fits_expected(raw, expected, negated,
+                                                  bare_literal)) {
                         type_error(checker, ret_stmt->values->pos,
                                    "constant %lld overflows %s",
                                    (long long)(int64_t)raw,
@@ -3725,8 +3793,10 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                 if (is_untyped_int_const_expr(e)) {
                     uint64_t raw;
                     int negated = is_negated_int_const_expr(e);
+                    int bare_literal = is_bare_int_literal(e);
                     if (goo_fold_const_int(e, &raw) &&
-                        !int_const_fits_expected(raw, tag_type, negated)) {
+                        !int_const_fits_expected(raw, tag_type, negated,
+                                                  bare_literal)) {
                         type_error(checker, e->pos, "constant %lld overflows %s",
                                    (long long)(int64_t)raw, type_to_string(tag_type));
                         ok = 0;

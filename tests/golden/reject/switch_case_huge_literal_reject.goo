@@ -1,0 +1,20 @@
+package main
+
+// A bare integer literal written >= 2^63 in source is unrepresentable in any
+// signed switch tag width, int8 included — companion to
+// return_huge_literal_signed_reject.goo, pinning the SAME fix (round 4,
+// correctness-burndown arc) on the switch-case call site of
+// int_const_fits_expected (type_check_switch_stmt's untyped-constant-case
+// unification path, not just type_check_return_stmt's).
+func f(x int8) int {
+	switch x {
+	case 18446744073709551615:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func main() {
+	println(f(1))
+}
