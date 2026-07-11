@@ -1781,8 +1781,25 @@ int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* decla
             return adapt_untyped_int_operand(checker, value, target, 0, 1);
         return 1;
     }
-    if (type_is_integer(target) && is_untyped_int_rooted(value, 0))
-        return adapt_untyped_int_operand(checker, value, target, 0, 1);
+    if (type_is_integer(target)) {
+        if (is_untyped_int_rooted(value, 0))
+            return adapt_untyped_int_operand(checker, value, target, 0, 1);
+        // Arc 5 (h) sibling: a CONST IDENTIFIER is not a literal leaf, so
+        // ident-bearing constant initializers (`const a = 300; var v int8 =
+        // a`, or `a + 1`) skipped the per-literal adapter above entirely and
+        // codegen's width-coerce step truncated the store (printed 44).
+        // Judge the FOLDED value via the shared core (check_const_int_expr_
+        // fits — same admission as the arc-4 chan-send gate and the arc-5
+        // const-decl gate). The two branches are DISJOINT: is_untyped_int_
+        // rooted admits no identifier leaf, so every pure-literal shape
+        // keeps the adapter's per-literal semantics bit-for-bit, including
+        // its documented `100 + 100`-into-int8 deviation — only shapes the
+        // adapter never handled gain a check. Not-applicable (0) — plain
+        // variables, calls, comptime-param-tainted — stays accepted
+        // unchanged (the v1 any-int laxness for non-constants).
+        if (check_const_int_expr_fits(checker, value, target) < 0)
+            return 0;
+    }
     return 1;
 }
 

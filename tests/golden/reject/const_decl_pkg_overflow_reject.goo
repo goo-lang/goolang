@@ -1,0 +1,13 @@
+// Correctness arc 5 (h), package-level arm: same missing gate, different
+// downstream materialization — a PACKAGE const kept the checker Variable
+// alive into codegen, so it emitted at the declared width and silently
+// WRAPPED (this printed 44 = 300 mod 256, where the local-const sibling
+// printed 300). Both shapes must reject at the decl, before either
+// materialization path can disagree about the value.
+package main
+
+const g int8 = 300
+
+func main() {
+	println(g)
+}
