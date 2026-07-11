@@ -4906,3 +4906,11 @@ iface-target-assert-abort-probe: $(COMPILER) $(RUNTIME_LIB)
 .PHONY: stdlib-coverage
 stdlib-coverage:
 	python3 scripts/stdlib-coverage.py
+
+# Scan the C compiler/runtime source with snare's memory-safety rules and fail on
+# any finding not in scripts/safety-baseline.txt. Local-only gate (see
+# docs/SAFETY_SCAN.md). Needs the snare checkout at ../semgrep-competitor (override
+# with SNARE_DIR=) and jq.
+.PHONY: safety
+safety:
+	@bash scripts/safety-scan.sh
