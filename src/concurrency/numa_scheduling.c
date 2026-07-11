@@ -146,12 +146,17 @@ void numa_topology_destroy(NumaTopology* topology) {
     }
     
     free(topology->cpu_to_node_map);
-    free(topology);
-    
+
+    // Clear the global BEFORE freeing: comparing topology after free(topology)
+    // reads the value of a pointer whose lifetime has ended, which is undefined
+    // behavior (C11 §6.2.4). The comparison is pointer identity only, so doing
+    // it here (before the free) is equivalent and well-defined.
     if (topology == g_numa_topology) {
         g_numa_topology = NULL;
         g_numa_initialized = false;
     }
+
+    free(topology);
 }
 
 // Check if NUMA is available
