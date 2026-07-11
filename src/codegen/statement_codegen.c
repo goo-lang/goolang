@@ -167,6 +167,23 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                                i < rhs->goo_type->data.struct_type.field_count)
                               ? rhs->goo_type->data.struct_type.fields[i].type
                               : NULL;
+            // Box a concrete returned field into an interface-typed target's
+            // {vtable, data} value (mirrors the two-value pass-2 store
+            // below). Without the box the raw struct is stored over the
+            // interface slot and the vtable reads as stack garbage.
+            if (target->goo_type && target->goo_type->kind == TYPE_INTERFACE &&
+                field_goo && field_goo->kind != TYPE_INTERFACE) {
+                LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                           target->goo_type,
+                                                           field_goo, field);
+                if (!boxed) {
+                    codegen_error(codegen, t->pos,
+                                  "failed to box value into interface on destructure");
+                    value_info_free(rhs);
+                    return 0;
+                }
+                field = boxed;
+            }
             if (target->goo_type) {
                 LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
                 if (tt) {
