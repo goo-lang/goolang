@@ -1539,6 +1539,26 @@ emit-llvm-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "emit-llvm-probe: FAIL (--emit-llvm still produced executable-path artifacts)"; exit 1; fi
 	@echo "emit-llvm-probe: PASS (IR only, exact -o naming, <stem>.ll default)"
 
+# P5 rider (2026-07-11): gpu_kernel must be a HARD COMPILE REJECT in v1.
+# The GPU grammar arms (kernel_decl/kernel_launch) are dead — TOKEN_KERNEL is
+# not mapped by lexer_bridge.c, so `gpu_kernel` reaches the parser as an
+# identifier and fails to parse. That reject is the honest v1 surface (no
+# fabricated GPU output); this probe PINS it so a future grammar change
+# cannot half-revive GPU syntax without tripping a gate. Real GPU support is
+# post-v1 (lanes-then-GPU phasing, docs/2026-07-08-v1-roadmap.md).
+.PHONY: gpu-kernel-reject-probe
+gpu-kernel-reject-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== gpu-kernel-reject-probe: gpu_kernel is a clean compile reject (P5 rider) ==="
+	@printf 'package main\n\ngpu_kernel add(n int) {\n\tn = n + 1\n}\n\nfunc main() {\n}\n' > build/gpu_kernel_reject.goo
+	@rm -f build/gpu_kernel_reject_bin
+	@"$(COMPILER)" build/gpu_kernel_reject.goo -o build/gpu_kernel_reject_bin >build/gpu_kernel_reject.stdout 2>build/gpu_kernel_reject.stderr; rc=$$?; \
+	  if [ $$rc -ne 1 ]; then echo "gpu-kernel-reject-probe: FAIL (exit $$rc, want 1)"; exit 1; fi; \
+	  if [ -e build/gpu_kernel_reject_bin ]; then echo "gpu-kernel-reject-probe: FAIL (binary produced for gpu_kernel source)"; exit 1; fi; \
+	  if [ -s build/gpu_kernel_reject.stdout ]; then echo "gpu-kernel-reject-probe: FAIL (error text on stdout)"; exit 1; fi; \
+	  if ! grep -q "error" build/gpu_kernel_reject.stderr; then echo "gpu-kernel-reject-probe: FAIL (no error text on stderr)"; cat build/gpu_kernel_reject.stderr; exit 1; fi; \
+	  echo "gpu-kernel-reject-probe: PASS (exit 1, no binary, error on stderr)"
+
 # P5.3: `goo build` / `goo run` / `goo help` subcommands. build = Go parity
 # (executable named <stem> in the cwd); run = compile to a temp binary, exec
 # it forwarding args after `--`, propagate its exit code, clean up the temp;
@@ -2575,6 +2595,7 @@ VERIFY_ALL_DEPS := \
     run-exit-probe \
     emit-llvm-probe \
     subcommand-probe \
+    gpu-kernel-reject-probe \
     blank-lines-probe \
     comment-lines-probe \
     slice-write-bounds-probe \
