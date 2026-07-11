@@ -3656,7 +3656,45 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                     }
                 }
 
-                if ((!same_kind || !same_width) && !int_const_coerce) {
+                // Untyped int constant into a FLOAT return type (`return 1`
+                // from a func() float64/float32 — correctness-followups arc
+                // 3, task 3). Go's representability rule for constants:
+                // EVERY integer value expressible in this AST shape
+                // (is_untyped_int_const_expr — bare literal, unary minus over
+                // one, or constant arithmetic) is representable as a
+                // floating value in BOTH float64 and float32, because Go
+                // defines rounding for a constant that exceeds the target
+                // float type's PRECISION (not its range) — an int64-range
+                // constant is always within range (float64 holds up to
+                // ~1.8e308, float32 up to ~3.4e38; nothing an int64-shaped
+                // literal can spell gets remotely close). So — unlike
+                // int_const_coerce just above — there is no
+                // int_const_fits_expected-style overflow rejection to run
+                // here: accept unconditionally. This is a v1 SCOPE DECISION,
+                // not a general untyped-float-constant implementation —
+                // untyped FLOAT constants (`3.9`) have no folder
+                // (`goo_fold_const_int` is int-only) and are NOT covered by
+                // this gate; a float64-default literal narrowed into
+                // func() float32 is a separate, still-open gap (see the
+                // arc's task report).
+                int float_const_coerce =
+                    type_is_float(expected) &&
+                    is_untyped_int_const_expr(ret_stmt->values);
+                if (float_const_coerce) {
+                    // Stamp the whole constant subtree to the float target
+                    // type so codegen_generate_literal's existing cross-kind
+                    // float-adaptation arm (TOKEN_INT case,
+                    // expression_codegen.c — the same one `1 < g` against a
+                    // float32 `g` already stamps into) emits an LLVMConstReal
+                    // identical to what a float literal of this value would
+                    // produce, instead of an int64 LLVMConstInt the return
+                    // path's own width-coercion block (integer-only) has no
+                    // conversion for.
+                    stamp_int_const_expr_type(ret_stmt->values, expected);
+                }
+
+                if ((!same_kind || !same_width) &&
+                    !int_const_coerce && !float_const_coerce) {
                     // Point at the returned value, not stmt->pos: a return
                     // statement's pos is the post-parse lookahead (the next
                     // decl's line), which mis-attributes the diagnostic.
@@ -3824,6 +3862,20 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
                            "expression type %s",
                            type_to_string(e_type), type_to_string(tag_type));
                 ok = 0;
+                continue;
+            }
+
+            // Untyped int constant case against a FLOAT tag (`switch f {
+            // case 1: }`, f float64/float32 — correctness-followups arc 3,
+            // task 3; same v1 rule as type_check_return_stmt's
+            // float_const_coerce above, see its doc comment for the
+            // representability rationale). No int_const_fits_expected-style
+            // overflow check applies (unlike the int-int branch just above)
+            // — accept unconditionally and stamp so codegen's switch
+            // lowering compares two floats (fcmp) instead of an int64 case
+            // value against a float tag.
+            if (type_is_float(tag_type) && is_untyped_int_const_expr(e)) {
+                stamp_int_const_expr_type(e, tag_type);
                 continue;
             }
 

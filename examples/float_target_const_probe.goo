@@ -1,0 +1,66 @@
+package main
+
+import "fmt"
+
+// Untyped int constants adapting to float64/float32 targets
+// (correctness-followups arc 3, task 3). Go's constant-representability
+// rule: an untyped integer constant (bare literal, unary minus over one, or
+// constant arithmetic) is representable in EITHER float type as a floating
+// value with defined rounding — every int64-range constant is well within
+// both float64's (~1.8e308) and float32's (~3.4e38) range, so no overflow
+// case is reachable at these magnitudes. v1 scope: INT constants only —
+// untyped FLOAT constants (3.9) have no constant-folder in this checker and
+// are unaffected by this fix (see the arc's task report).
+//
+// Two positions exercised, matching the arc-2 fable review's two probed
+// bugs: (1) `return <int const>` from a float64/float32 function
+// (previously a false "cannot return int64 from a function returning
+// float64" reject), and (2) a float-tag switch with untyped-int-const case
+// values (previously a clean-but-wrong "Cannot compare incompatible types"
+// reject). Only exact-decimal values (0, 1, 2, 3, -3) are used so stdout is
+// deterministic regardless of float formatting precision.
+
+func retFloat64() float64 { return 1 }
+func retFloat32() float32 { return 2 }
+func retFloat64Zero() float64 { return 0 }
+func retFloat64Neg() float64 { return -3 }
+func retFloat64Compound() float64 { return 1 + 2 }
+
+func classify64(f float64) string {
+	switch f {
+	case 0:
+		return "zero"
+	case 1:
+		return "one"
+	case 3:
+		return "three"
+	default:
+		return "other"
+	}
+}
+
+func classify32(f float32) string {
+	switch f {
+	case -3:
+		return "neg-three"
+	case 2:
+		return "two"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	fmt.Println(retFloat64())
+	fmt.Println(retFloat32())
+	fmt.Println(retFloat64Zero())
+	fmt.Println(retFloat64Neg())
+	fmt.Println(retFloat64Compound())
+	fmt.Println(classify64(0))
+	fmt.Println(classify64(1))
+	fmt.Println(classify64(3))
+	fmt.Println(classify64(2.5))
+	fmt.Println(classify32(-3))
+	fmt.Println(classify32(2))
+	fmt.Println(classify32(9))
+}

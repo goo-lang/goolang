@@ -715,6 +715,23 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     // P1-4: a string tag can't be compared with icmp ({ptr,i64} is an invalid
     // ICmp operand); each case is matched with goo_string_eq instead.
     int tag_is_string = tag_vi->goo_type && tag_vi->goo_type->kind == TYPE_STRING;
+    // Correctness-followups arc 3, task 3 (found during implementation, not
+    // pre-existing scope): a float tag ALSO can't be compared with icmp —
+    // LLVM's ICmp requires integer/pointer operands, so `switch f { case
+    // 2.5: }` (f float64, case a SAME-KIND float — already type-checked as
+    // comparable before this task touched anything) crashed the verifier
+    // ("Invalid operand types for ICmp instruction") on every path, not just
+    // the untyped-int-constant-case shape this task's checker fix newly
+    // accepts. Confirmed via a same-kind float/float probe at this arc's
+    // HEAD, pre-dating any change in this commit — a pre-existing, never-
+    // triggered gap (no float-tag switch golden existed). Without this fix,
+    // the checker fix above would turn the untyped-int-into-float-tag case
+    // from a clean reject back into a verifier crash — the exact regression
+    // class this arc's Global Constraints forbid ("no LLVM verifier text may
+    // reach users"). Matched with LLVMBuildFCmp/LLVMRealOEQ, the same pair
+    // used for `==` on float operands elsewhere in codegen (see
+    // expression_codegen.c's binary-expr float arm).
+    int tag_is_float = tag_vi->goo_type && type_is_float(tag_vi->goo_type);
     value_info_free(tag_vi);
 
     LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "switch.merge");
@@ -757,6 +774,10 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                                                   fn, args, 2, "switch.streq");
                 LLVMValueRef z = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
                 cmp = LLVMBuildICmp(codegen->builder, LLVMIntNE, eqi, z, "switch.cmp");
+            } else if (tag_is_float) {
+                // See tag_is_float's doc comment above: ICmp is invalid on
+                // floating-point operands, so a float tag needs FCmp.
+                cmp = LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, tag_val, ev_rv, "switch.cmp");
             } else {
                 cmp = LLVMBuildICmp(codegen->builder, LLVMIntEQ, tag_val, ev_rv, "switch.cmp");
             }
