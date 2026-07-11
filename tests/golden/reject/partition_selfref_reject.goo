@@ -1,0 +1,19 @@
+// P6 M1 Task 6 (carry-forward from Task 5 review): pins revival ORDERING.
+// `data = clone(data)` reassigns `data` (a bare-identifier LHS revives the
+// name), but the RHS `clone(data)` READS `data` while it is still moved into
+// lanes.Partition — that read must reject BEFORE the write revives the name.
+// docs/superpowers/specs/2026-07-11-p6-lanes-m1-design.md Component 4,
+// obligation 1 (read-before-write ordering).
+package main
+
+import "lanes"
+
+func clone(v []float64) []float64 { return v }
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0}
+	p := lanes.Partition(data, 2)
+	data = clone(data)
+	_ = data
+	_ = p
+}

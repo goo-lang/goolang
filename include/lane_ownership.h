@@ -1,12 +1,32 @@
 #ifndef LANE_OWNERSHIP_H
 #define LANE_OWNERSHIP_H
 
-// P6 M1 Task 5 — lanes-specific ownership checks (Component 4 of
+// P6 M1 Tasks 5+6 — lanes-specific ownership checks (Component 4 of
 // docs/superpowers/specs/2026-07-11-p6-lanes-m1-design.md). This file
-// implements Obligation 1 only:
+// implements all four proof obligations, all as one per-function AST walk:
 //
-//   lanes.Partition(arr, count) MOVES arr. Any later read of arr in the
-//   same function body is a compile error.
+//   Obligation 1 (Task 5): lanes.Partition(arr, count) MOVES arr. Any later
+//     read of arr in the same function body is a compile error.
+//   Obligation 2 bookkeeping (Task 6): lanes.Run CONSUMES its Partitioned
+//     argument; a SECOND lanes.Run on the same binding is use-after-consume
+//     ("...consumed by lanes.Run"). The disjoint-view (count,width) split is
+//     recorded on LanePartitionBinding (structural for the blessed Partition).
+//   Obligation 3 (Task 6): single-goroutine attribution. Inside a lanes.Run
+//     body, the *Lane ctx param and every name transitively derived from it
+//     (`t := ctx.Own()`, `u := t`) are "lane-derived". A `go` that carries a
+//     lane-derived name — as a call argument OR as a captured name of the
+//     launched literal — is rejected ("...may not be passed to another
+//     goroutine"). Mirrors param_escape.c's Sink #4 two surfaces as a
+//     rejection. Transitive-copy depth is UNBOUNDED (single forward pass;
+//     Go's declare-before-use makes one pass sufficient).
+//   Obligation 4 (Task 6): view-capture rule. A lanes.Run body literal whose
+//     captured_names include a Partition binding, a moved source array, or a
+//     name lane-derived from an ENCLOSING Run body is rejected ("lane body
+//     may not capture ..."). This is a capture/escape rule, NOT index-range
+//     analysis (per the amended spec) — captured_names is TRUSTED from the
+//     checker (ast.h FuncLitNode; param_escape.c Sink #3 precedent), never
+//     recomputed by re-walking closure bodies. Benign captures (outer
+//     scalars, non-partition slices) stay legal.
 //
 // SCOPE (Option A, per the design's "Scope boundary"): this is NOT a
 // general borrow checker. It is a single, self-contained, per-function AST
@@ -24,18 +44,23 @@
 //
 // UNDER-WALKED STATEMENT KINDS (Task 6 must know this before extending the
 // walk): lane_walk_stmt's switch does not descend into every statement
-// kind the grammar produces. As of Task 5's fix round 1, these are NOT
-// recursed into at all — a lanes.Partition move or a moved-name read
-// occurring inside one of them is silently invisible to this pass:
-//   - AST_IF_LET_STMT   (`if let x = ... { }`)
-//   - AST_SELECT_STMT   (`select { case ...: }`)
-//   - AST_ARENA_BLOCK   (`arena { ... }`)
-//   - AST_UNSAFE_STMT   (`unsafe { ... }`)
+// kind the grammar produces. These are NOT recursed into at all — a
+// lanes.Partition move or a moved-name read occurring inside one of them is
+// silently invisible to this pass:
+//   - AST_IF_LET_STMT     (`if let x = ... { }`)
+//   - AST_SELECT_STMT     (`select { case ...: }`)
+//   - AST_ARENA_BLOCK     (`arena { ... }`)
+//   - AST_UNSAFE_STMT     (`unsafe { ... }`)
+//   - AST_COMPTIME_BLOCK  (`comptime { ... }`) — inert compile-time code;
+//                          deliberately NOT walked (documented, not a bug).
 //   - a local AST_CONST_DECL (function-body `const n = ...`)
-// This is the safe direction for a rejection pass (under-reject, never a
-// false reject — see the SCOPE note above), but it means obligation 1 (and
-// Task 6's obligations 3/4) are simply not enforced inside these shapes
-// today. Separately: a bare, unbound `lanes.Partition(...)` statement (the
+// (Task 6 ADDED AST_LABEL_STMT descent — `L: stmt` now recurses into its
+// wrapped statement in both lane_walk_stmt and lane_body_walk_stmt — so it
+// is no longer on this list.) This is the safe direction for a rejection
+// pass (under-reject, never a false reject — see the SCOPE note above), but
+// it means obligation 1 (and Task 6's obligations 3/4) are simply not
+// enforced inside these shapes today. Separately: a bare, unbound
+// `lanes.Partition(...)` statement (the
 // result discarded, not assigned via `:=`/`var`) records NO move at all —
 // only lane_handle_var_decl's VarDeclNode path recognizes a Partition call
 // as a move; an ExprStmt-level bare call reaches lane_check_reads/
