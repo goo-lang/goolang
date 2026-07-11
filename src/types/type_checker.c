@@ -3832,12 +3832,13 @@ void stamp_int_const_expr_type(ASTNode* node, Type* target) {
 //     float_const_coerce comment above for the same documented gap), and
 //     this task does not add one.
 //   - An int-CONSTANT case under a FLOAT tag (`switch f float64 { case 2:
-//     case 2: }`, task 3's stamped-to-float shape) IS covered, since
-//     goo_fold_const_int folds the still-integer-shaped AST regardless of
-//     the tag's kind; the gate below is on the TAG being integer, so this
-//     one shape (float tag) is deliberately left to the existing
-//     literal-int-under-float-tag path rather than re-derived here — see
-//     the loop body for exactly where.
+//     case 2: }`, task 3's stamped-to-float shape) is NOT covered: the
+//     gate below requires type_is_integer(tag_type), so float-tag switches
+//     skip dup detection entirely (first-match-wins, silently). Known
+//     narrower-than-ideal scope — folding the still-integer-shaped case
+//     ASTs would work mechanically, but float-tag dup semantics belong
+//     with a future untyped-float folder so int-vs-float dup collisions
+//     (`case 2:` vs `case 2.0:`) are decided once, not half-here.
 // A duplicate's diagnostic fires at the SECOND occurrence with a
 // cross-reference position, house style shared with ownership_checker.c's
 // "Use of moved variable '%s' (moved at %s:%d:%d)".
