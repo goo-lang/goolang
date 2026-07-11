@@ -108,13 +108,6 @@ c-unchecked-alloc:src/ide/repl_syntax.c:389
 c-unchecked-alloc:src/ide/repl_syntax.c:453
 c-unchecked-alloc:src/macro_hygiene.c:301
 c-unchecked-alloc:src/package/gateway_intelligence.c:45
-c-unchecked-alloc:src/package/goo_mod_parser.c:118
-c-unchecked-alloc:src/package/goo_mod_parser.c:133
-c-unchecked-alloc:src/package/goo_mod_parser.c:217
-c-unchecked-alloc:src/package/goo_mod_parser.c:251
-c-unchecked-alloc:src/package/goo_mod_parser.c:303
-c-unchecked-alloc:src/package/goo_mod_parser.c:49
-c-unchecked-alloc:src/package/goo_mod_parser.c:97
 c-unchecked-alloc:src/package/hybrid_registry.c:180
 c-unchecked-alloc:src/package/hybrid_registry.c:182
 c-unchecked-alloc:src/package/hybrid_registry.c:259
