@@ -1,0 +1,32 @@
+package main
+
+import "fmt"
+
+func pair8() (int8, int8) {
+	return 5, 6
+}
+
+func pairInt() (int, int) {
+	return 7, 8
+}
+
+// (r) destructure narrow-store probe: `x, y = f()` spreads a multi-return
+// struct via ExtractValue; each field must be coerced to its target's
+// width before the store. Width-matched fields were always fine; the
+// int→int8 leg exercises Goo's deliberate plain-var narrowing laxness
+// (Go rejects it, so this fixture's expected output is hand-derived for
+// that leg) — before the fix the raw i64 field store corrupted the stack
+// (correct prints, then SIGSEGV exit 139).
+func main() {
+	var x int8 = 0
+	var y int8 = 0
+	x, y = pair8()
+	fmt.Println(x)
+	fmt.Println(y)
+
+	var p int8 = 0
+	var q int8 = 0
+	p, q = pairInt()
+	fmt.Println(p)
+	fmt.Println(q)
+}

@@ -1,0 +1,32 @@
+package main
+
+import "fmt"
+
+type I interface {
+	M() int
+}
+
+type T struct {
+	V int
+}
+
+func (t T) M() int {
+	return t.V
+}
+
+func pair() (int, T) {
+	return 9, T{V: 42}
+}
+
+// (r rider) destructure interface-box probe: `n, i = f()` where a returned
+// concrete field lands in an interface-typed target must box it into the
+// {vtable, data} value (as the two-value pass-2 store does). Before the fix
+// the raw struct was stored over the interface slot — the vtable read as
+// stack garbage, so the method call after the destructure SIGSEGVed.
+func main() {
+	var n int = 0
+	var i I
+	n, i = pair()
+	fmt.Println(n)
+	fmt.Println(i.M())
+}

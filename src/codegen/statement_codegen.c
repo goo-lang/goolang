@@ -156,6 +156,42 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             }
             LLVMValueRef field = LLVMBuildExtractValue(codegen->builder,
                                                        rhs->llvm_value, (unsigned)i, "destr");
+            // Coerce the field to the target's width before storing (same
+            // rule as the two-value pass-2 store below): an int-returning
+            // f() spread into narrower targets otherwise stores 8 bytes
+            // over each narrow alloca and corrupts the stack. Per-field
+            // signedness comes from the multi-return's TYPE_STRUCT payload
+            // (mirrors the `:=` destructure in function_codegen.c).
+            Type* field_goo = (rhs->goo_type &&
+                               rhs->goo_type->kind == TYPE_STRUCT &&
+                               i < rhs->goo_type->data.struct_type.field_count)
+                              ? rhs->goo_type->data.struct_type.fields[i].type
+                              : NULL;
+            // Box a concrete returned field into an interface-typed target's
+            // {vtable, data} value (mirrors the two-value pass-2 store
+            // below). Without the box the raw struct is stored over the
+            // interface slot and the vtable reads as stack garbage.
+            if (target->goo_type && target->goo_type->kind == TYPE_INTERFACE &&
+                field_goo && field_goo->kind != TYPE_INTERFACE) {
+                LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                           target->goo_type,
+                                                           field_goo, field);
+                if (!boxed) {
+                    codegen_error(codegen, t->pos,
+                                  "failed to box value into interface on destructure");
+                    value_info_free(rhs);
+                    return 0;
+                }
+                field = boxed;
+            }
+            if (target->goo_type) {
+                LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+                if (tt) {
+                    field = codegen_coerce_to_type(codegen, field,
+                                                   field_goo ? type_is_signed(field_goo) : 1,
+                                                   tt);
+                }
+            }
             LLVMBuildStore(codegen->builder, field, target->llvm_value);
         }
         value_info_free(rhs);
@@ -246,6 +282,20 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                     return 0;
                 }
                 sval = boxed;
+            }
+            // Coerce a mismatched-width RHS to the target's width before
+            // storing (mirrors the single-assign TOKEN_ASSIGN arm). An
+            // untyped-int rvalue is an i64; storing it raw into an i8/i16/i32
+            // slot writes 8 bytes over a narrower alloca — clobbering
+            // adjacent locals and the epilogue (correct prints, then
+            // SIGSEGV/garbage). The shared helper no-ops on kinds it doesn't
+            // handle (aggregates, pointers, matching types).
+            if (target->goo_type && rtypes[i]) {
+                LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+                if (tt) {
+                    sval = codegen_coerce_to_type(codegen, sval,
+                                                  type_is_signed(rtypes[i]), tt);
+                }
             }
             // Do NOT free `target`: for an identifier it aliases the live
             // value-table entry (freeing it would undefine the variable).
