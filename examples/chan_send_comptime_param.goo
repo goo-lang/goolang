@@ -1,0 +1,21 @@
+// Correctness arc 4 (j), review fix: constant expressions over a COMPTIME
+// VALUE PARAM must not be judged by chan_send_const_int_gate. Inside the
+// template body the param is a Variable with a PLACEHOLDER const_int_value
+// (1, bound purely for type-validity — see type_check_const_decl's comptime
+// param binding), so goo_fold_const_int_ctx folds `1000000 / n` to 1000000
+// and the gate rejected this valid program (n=100000 makes the sent value
+// 10). Screen with goo_expr_references_comptime_param, the guard the
+// codebase already prescribes for this folder's consumers — such sends fall
+// back to the pre-gate type_compatible laxness, judged per-instance by
+// codegen, not falsely blessed or rejected from the placeholder.
+package main
+
+func send(comptime n int) {
+	ch := make_chan(int8, 1)
+	ch <- 1000000 / n
+	println(<-ch)
+}
+
+func main() {
+	send(100000)
+}

@@ -3816,6 +3816,16 @@ int chan_send_const_int_gate(TypeChecker* checker, ASTNode* value_expr,
     if (!type_is_integer(elem_type) || !type_is_integer(value_type) ||
         elem_type->kind == value_type->kind)
         return 0;
+    // Comptime-value-param screen (arc-4 review fix): inside a comptime
+    // function's TEMPLATE body the param is a Variable with a PLACEHOLDER
+    // const_int_value (1, bound purely for type-validity), which goo_fold_
+    // const_int_ctx resolves like any cached const — so without this screen
+    // the gate judged `ch <- 1000000 / n` from n=1 (hard-rejecting valid
+    // instances, or blessing invalid ones). Same guard the folder's other
+    // consumers use (see goo_expr_references_comptime_param's doc comment);
+    // such sends fall back to the caller's type_compatible path, judged
+    // per-instance by codegen as before the gate existed.
+    if (goo_expr_references_comptime_param(checker, value_expr)) return 0;
     uint64_t raw;
     if (!goo_fold_const_int_ctx(checker, value_expr, &raw)) return 0;
 
