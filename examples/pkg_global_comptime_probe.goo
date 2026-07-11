@@ -1,0 +1,15 @@
+// pkg_global_comptime_probe: a comptime package function reading a
+// package-level `var` (arc2 Task 4 R1, .superpowers/sdd/arc2-repro-report.md
+// R1) — confirms the global is read at each instance's actual comptime
+// value, not memoized/constant-folded once and shared across instances.
+// FillFromBase(5, 10) -> Base(100) + 10 + 5 = 115; a second, differently-
+// valued instance FillFromBase(2, 1) -> 100 + 1 + 2 = 103 proves the second
+// call re-reads Base rather than reusing the first instance's result.
+package main
+
+import "cpkg"
+
+func main() {
+	println(cpkg.FillFromBase(5, 10))
+	println(cpkg.FillFromBase(2, 1))
+}
