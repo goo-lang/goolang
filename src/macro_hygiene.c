@@ -297,6 +297,9 @@ bool check_macro_hygiene(MacroExpansion* expansion, MacroHygieneContext* ctx) {
                     if (var_end) {
                         size_t var_len = var_end - var_start;
                         char* var_name = (char*)malloc(var_len + 1);
+                        if (!var_name) {
+                            return false;
+                        }
                         strncpy(var_name, var_start, var_len);
                         var_name[var_len] = '\0';
                         

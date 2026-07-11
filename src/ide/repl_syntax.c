@@ -385,6 +385,9 @@ char* repl_highlight_line(const char* line, const SyntaxTheme* theme) {
             
             size_t word_len = p - start;
             char* word = malloc(word_len + 1);
+            if (!word) {
+                continue;
+            }
             strncpy(word, start, word_len);
             word[word_len] = '\0';
             

@@ -167,6 +167,10 @@ char* process_template_string(const char* template_str, TemplateContext* ctx) {
             // Extract the expression
             size_t expr_len = end - start;
             char* expr = (char*)malloc(expr_len + 1);
+            if (!expr) { // allocation failure: emit the char literally, don't substitute
+                *out++ = *in++;
+                continue;
+            }
             strncpy(expr, start, expr_len);
             expr[expr_len] = '\0';
             
