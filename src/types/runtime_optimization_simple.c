@@ -23,7 +23,7 @@
 // =============================================================================
 
 OptimizationContext* optimization_context_new(OptimizationSafetyLevel safety_level) {
-    OptimizationContext* ctx = malloc(sizeof(OptimizationContext));
+    OptimizationContext* ctx = xmalloc(sizeof(OptimizationContext));
     if (!ctx) {
         return NULL;
     }
@@ -186,7 +186,7 @@ int enable_hardware_verification(OptimizationContext* ctx, HardwareCapabilities 
 }
 
 HardwareVerifier* hardware_verifier_new(HardwareCapabilities caps) {
-    HardwareVerifier* verifier = malloc(sizeof(HardwareVerifier));
+    HardwareVerifier* verifier = xmalloc(sizeof(HardwareVerifier));
     if (!verifier) return NULL;
     
     memset(verifier, 0, sizeof(HardwareVerifier));
@@ -232,7 +232,7 @@ void hardware_verifier_free(HardwareVerifier* verifier) {
 // =============================================================================
 
 SpeculationContext* speculation_context_new(struct ASTNode* speculation_point) {
-    SpeculationContext* spec_ctx = malloc(sizeof(SpeculationContext));
+    SpeculationContext* spec_ctx = xmalloc(sizeof(SpeculationContext));
     if (!spec_ctx) return NULL;
     
     memset(spec_ctx, 0, sizeof(SpeculationContext));
@@ -332,7 +332,7 @@ int rollback_speculation(OptimizationContext* ctx, SpeculationContext* spec_ctx)
 // =============================================================================
 
 ProfileData* profile_data_new(const char* function_name) {
-    ProfileData* data = malloc(sizeof(ProfileData));
+    ProfileData* data = xmalloc(sizeof(ProfileData));
     if (!data) return NULL;
     
     memset(data, 0, sizeof(ProfileData));
@@ -376,7 +376,7 @@ int apply_profile_guided_optimization(OptimizationContext* ctx, ProfileData* dat
 AdaptiveOptimizer* adaptive_optimizer_new(OptimizationContext* ctx) {
     if (!ctx) return NULL;
     
-    AdaptiveOptimizer* optimizer = malloc(sizeof(AdaptiveOptimizer));
+    AdaptiveOptimizer* optimizer = xmalloc(sizeof(AdaptiveOptimizer));
     if (!optimizer) return NULL;
     
     memset(optimizer, 0, sizeof(AdaptiveOptimizer));
@@ -472,7 +472,7 @@ OptimizationDiagnostic* optimization_diagnostic_new(OptimizationType opt_type,
                                                    struct ASTNode* target,
                                                    OptimizationError error,
                                                    const char* message) {
-    OptimizationDiagnostic* diag = malloc(sizeof(OptimizationDiagnostic));
+    OptimizationDiagnostic* diag = xmalloc(sizeof(OptimizationDiagnostic));
     if (!diag) return NULL;
     
     memset(diag, 0, sizeof(OptimizationDiagnostic));
@@ -534,7 +534,7 @@ OptimizationBenchmark* benchmark_optimization(OptimizationContext* ctx,
                                              struct ASTNode* target) {
     if (!ctx || !target) return NULL;
     
-    OptimizationBenchmark* benchmark = malloc(sizeof(OptimizationBenchmark));
+    OptimizationBenchmark* benchmark = xmalloc(sizeof(OptimizationBenchmark));
     if (!benchmark) return NULL;
     
     memset(benchmark, 0, sizeof(OptimizationBenchmark));
@@ -563,7 +563,7 @@ void optimization_benchmark_free(OptimizationBenchmark* benchmark) {
 BoundsCheckInfo* analyze_bounds_check(OptimizationContext* ctx, struct ASTNode* index_access) {
     if (!ctx || !index_access) return NULL;
     
-    BoundsCheckInfo* info = malloc(sizeof(BoundsCheckInfo));
+    BoundsCheckInfo* info = xmalloc(sizeof(BoundsCheckInfo));
     if (!info) return NULL;
     
     memset(info, 0, sizeof(BoundsCheckInfo));

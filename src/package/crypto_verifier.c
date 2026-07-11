@@ -72,7 +72,7 @@ static char* hash_data_internal(const void* data, size_t size, HashAlgorithm alg
 }
 
 CryptoVerifier* crypto_verifier_create(void) {
-    CryptoVerifier* verifier = calloc(1, sizeof(CryptoVerifier));
+    CryptoVerifier* verifier = xcalloc(1, sizeof(CryptoVerifier));
     if (!verifier) return NULL;
     
     verifier->policy = crypto_verifier_create_policy();
@@ -336,7 +336,7 @@ PackageSignature** crypto_verifier_get_signatures(CryptoVerifier* verifier,
 }
 
 SecurityPolicy* crypto_verifier_create_policy(void) {
-    SecurityPolicy* policy = calloc(1, sizeof(SecurityPolicy));
+    SecurityPolicy* policy = xcalloc(1, sizeof(SecurityPolicy));
     if (!policy) return NULL;
     
     // Default policy settings
@@ -422,7 +422,7 @@ bool crypto_verifier_check_policy_compliance(CryptoVerifier* verifier,
 SigningKey* signing_key_create(const char* name, CryptoAlgorithm algorithm) {
     if (!name) return NULL;
     
-    SigningKey* key = calloc(1, sizeof(SigningKey));
+    SigningKey* key = xcalloc(1, sizeof(SigningKey));
     if (!key) return NULL;
     
     key->key_id = generate_unique_id();
@@ -537,7 +537,7 @@ PackageSignature* package_signature_create(const char* package_name,
                                          const IpfsCid* cid) {
     if (!package_name || !version || !cid) return NULL;
     
-    PackageSignature* signature = calloc(1, sizeof(PackageSignature));
+    PackageSignature* signature = xcalloc(1, sizeof(PackageSignature));
     if (!signature) return NULL;
     
     signature->signature_id = generate_unique_id();
@@ -602,7 +602,7 @@ bool crypto_verifier_verify_hash(const char* expected_hash, const char* actual_h
 CryptoStats* crypto_verifier_get_stats(CryptoVerifier* verifier) {
     if (!verifier) return NULL;
     
-    CryptoStats* stats = calloc(1, sizeof(CryptoStats));
+    CryptoStats* stats = xcalloc(1, sizeof(CryptoStats));
     if (!stats) return NULL;
     
     pthread_mutex_lock(&stats_mutex);

@@ -4237,7 +4237,7 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
 // is DEFINED as this sugar — the rewrite is the spec, executed.
 static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position pos) {
     for (size_t i = 0; i < r->len; i++) {
-        SelectorExprNode* s = (SelectorExprNode*)malloc(sizeof(SelectorExprNode));
+        SelectorExprNode* s = (SelectorExprNode*)xmalloc(sizeof(SelectorExprNode));
         s->base.type = AST_SELECTOR_EXPR;
         s->base.pos = pos;
         s->base.node_type = NULL;

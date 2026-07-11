@@ -49,7 +49,7 @@ static bool ensure_cache_directory(const char* cache_dir) {
 }
 
 HybridRegistry* hybrid_registry_create(void) {
-    HybridRegistry* registry = calloc(1, sizeof(HybridRegistry));
+    HybridRegistry* registry = xcalloc(1, sizeof(HybridRegistry));
     if (!registry) return NULL;
     
     // Create sub-components
@@ -176,7 +176,7 @@ bool hybrid_registry_initialize(HybridRegistry* registry) {
     p2p_discovery_start(registry->p2p_discovery);
     
     // Initialize download thread pool
-    g_download_pool = calloc(1, sizeof(ThreadPool));
+    g_download_pool = xcalloc(1, sizeof(ThreadPool));
     g_download_pool->thread_count = registry->max_concurrent_downloads;
     g_download_pool->threads = calloc(g_download_pool->thread_count, sizeof(pthread_t));
     g_download_pool->active = true;
@@ -419,7 +419,7 @@ DownloadPlan* hybrid_registry_create_download_plan(HybridRegistry* registry,
                                                   PackageMetadata* package) {
     if (!registry || !package) return NULL;
     
-    DownloadPlan* plan = calloc(1, sizeof(DownloadPlan));
+    DownloadPlan* plan = xcalloc(1, sizeof(DownloadPlan));
     if (!plan) return NULL;
     
     plan->package = package;
@@ -431,7 +431,7 @@ DownloadPlan* hybrid_registry_create_download_plan(HybridRegistry* registry,
     
     // Add IPFS source if available
     if (package->ipfs_cid) {
-        DownloadPlan* source = calloc(1, sizeof(DownloadPlan));
+        DownloadPlan* source = xcalloc(1, sizeof(DownloadPlan));
         source->backend_type = BACKEND_IPFS;
         source->source_url = strdup(package->ipfs_cid->hash);
         source->expected_speed = 10.0f; // Estimate
@@ -442,7 +442,7 @@ DownloadPlan* hybrid_registry_create_download_plan(HybridRegistry* registry,
     
     // Add traditional URL if available
     if (package->traditional_url) {
-        DownloadPlan* source = calloc(1, sizeof(DownloadPlan));
+        DownloadPlan* source = xcalloc(1, sizeof(DownloadPlan));
         source->backend_type = BACKEND_TRADITIONAL;
         source->source_url = strdup(package->traditional_url);
         source->expected_speed = 5.0f; // Estimate
@@ -461,7 +461,7 @@ DownloadPlan* hybrid_registry_create_download_plan(HybridRegistry* registry,
     if (results) {
         for (size_t i = 0; i < result_count && plan->source_count < 5; i++) {
             if (results[i]->announcement->seeder_count > 0) {
-                DownloadPlan* source = calloc(1, sizeof(DownloadPlan));
+                DownloadPlan* source = xcalloc(1, sizeof(DownloadPlan));
                 source->backend_type = BACKEND_P2P;
                 source->source_url = strdup(results[i]->announcement->cid->hash);
                 source->expected_speed = 8.0f; // Estimate
@@ -556,7 +556,7 @@ RegistryBackend* registry_backend_create(BackendType type, const char* name,
                                        const char* url) {
     if (!name || !url) return NULL;
     
-    RegistryBackend* backend = calloc(1, sizeof(RegistryBackend));
+    RegistryBackend* backend = xcalloc(1, sizeof(RegistryBackend));
     if (!backend) return NULL;
     
     backend->type = type;
@@ -641,7 +641,7 @@ bool registry_backend_update_stats(RegistryBackend* backend,
 PackageMetadata* package_metadata_create(const char* name, const char* version) {
     if (!name || !version) return NULL;
     
-    PackageMetadata* metadata = calloc(1, sizeof(PackageMetadata));
+    PackageMetadata* metadata = xcalloc(1, sizeof(PackageMetadata));
     if (!metadata) return NULL;
     
     metadata->name = strdup(name);
@@ -792,7 +792,7 @@ PackageMetadata* package_metadata_deserialize(const char* json_data) {
 
 // Strategy operations
 ResolutionStrategy* hybrid_registry_create_strategy(void) {
-    ResolutionStrategy* strategy = calloc(1, sizeof(ResolutionStrategy));
+    ResolutionStrategy* strategy = xcalloc(1, sizeof(ResolutionStrategy));
     if (!strategy) return NULL;
     
     // Default strategy

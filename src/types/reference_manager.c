@@ -20,7 +20,7 @@ static int is_reference_valid_at(ReferenceInfo* ref, size_t position);
 
 // Create a new reference manager
 ReferenceManager* reference_manager_new(FlowSensitiveAnalyzer* flow_analyzer) {
-    ReferenceManager* mgr = calloc(1, sizeof(ReferenceManager));
+    ReferenceManager* mgr = xcalloc(1, sizeof(ReferenceManager));
     if (!mgr) return NULL;
     
     mgr->flow_analyzer = flow_analyzer;
@@ -367,7 +367,7 @@ void reference_manager_print_statistics(ReferenceManager* mgr) {
 // Internal helper implementations
 
 static LifetimeScope* lifetime_scope_new(LifetimeScopeKind kind, size_t start_pos, LifetimeScope* parent) {
-    LifetimeScope* scope = calloc(1, sizeof(LifetimeScope));
+    LifetimeScope* scope = xcalloc(1, sizeof(LifetimeScope));
     if (!scope) return NULL;
     
     scope->kind = kind;
@@ -399,7 +399,7 @@ static void lifetime_scope_free(LifetimeScope* scope) {
 }
 
 static ReferenceInfo* reference_info_new(const char* name, const char* target, ReferenceKind kind, size_t position) {
-    ReferenceInfo* ref = calloc(1, sizeof(ReferenceInfo));
+    ReferenceInfo* ref = xcalloc(1, sizeof(ReferenceInfo));
     if (!ref) return NULL;
     
     ref->name = strdup(name);
@@ -421,7 +421,7 @@ static void reference_info_free(ReferenceInfo* ref) {
 }
 
 static BorrowTracker* borrow_tracker_new(const char* target_name) {
-    BorrowTracker* tracker = calloc(1, sizeof(BorrowTracker));
+    BorrowTracker* tracker = xcalloc(1, sizeof(BorrowTracker));
     if (!tracker) return NULL;
     
     tracker->target_name = strdup(target_name);

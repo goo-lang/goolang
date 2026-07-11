@@ -10,7 +10,7 @@
 // =============================================================================
 
 MacroRegistry* create_macro_registry(void) {
-    MacroRegistry* registry = malloc(sizeof(MacroRegistry));
+    MacroRegistry* registry = xmalloc(sizeof(MacroRegistry));
     if (!registry) return NULL;
     
     registry->macros = NULL;
@@ -55,7 +55,7 @@ void destroy_macro_registry(MacroRegistry* registry) {
 MacroTemplate* create_macro_template(const char* name, MacroType type) {
     if (!name) return NULL;
     
-    MacroTemplate* macro = malloc(sizeof(MacroTemplate));
+    MacroTemplate* macro = xmalloc(sizeof(MacroTemplate));
     if (!macro) return NULL;
     
     macro->name = strdup(name);
@@ -195,7 +195,7 @@ bool set_parameter_default(MacroTemplate* macro, const char* param_name, Comptim
 MacroContext* create_macro_context(MacroTemplate* macro, ComptimeValue** args, size_t arg_count) {
     if (!macro) return NULL;
     
-    MacroContext* context = malloc(sizeof(MacroContext));
+    MacroContext* context = xmalloc(sizeof(MacroContext));
     if (!context) return NULL;
     
     context->macro = macro;
@@ -242,7 +242,7 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
                            ComptimeValue** args, size_t arg_count, ASTNode* call_site) {
     if (!registry || !macro_name) return NULL;
     
-    MacroExpansion* expansion = malloc(sizeof(MacroExpansion));
+    MacroExpansion* expansion = xmalloc(sizeof(MacroExpansion));
     if (!expansion) return NULL;
     
     expansion->expanded_ast = NULL;
@@ -413,7 +413,7 @@ void register_builtin_macros(MacroRegistry* registry) {
 ComptimeValue* builtin_macro_assert(MacroContext* ctx, ComptimeValue** args) {
     if (!ctx || !args || ctx->arg_count < 1) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_STRING;
@@ -441,7 +441,7 @@ ComptimeValue* builtin_macro_assert(MacroContext* ctx, ComptimeValue** args) {
 ComptimeValue* builtin_macro_debug_print(MacroContext* ctx, ComptimeValue** args) {
     if (!ctx || !args || ctx->arg_count < 1) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_STRING;
@@ -463,7 +463,7 @@ ComptimeValue* builtin_macro_debug_print(MacroContext* ctx, ComptimeValue** args
 ComptimeValue* builtin_macro_compile_time_if(MacroContext* ctx, ComptimeValue** args) {
     if (!ctx || !args || ctx->arg_count < 2) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_STRING;
@@ -488,7 +488,7 @@ ComptimeValue* builtin_macro_compile_time_if(MacroContext* ctx, ComptimeValue** 
 ComptimeValue* builtin_macro_typeof(MacroContext* ctx, ComptimeValue** args) {
     if (!ctx || !args || ctx->arg_count < 1) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_TYPE;
@@ -501,7 +501,7 @@ ComptimeValue* builtin_macro_typeof(MacroContext* ctx, ComptimeValue** args) {
 ComptimeValue* builtin_macro_stringify(MacroContext* ctx, ComptimeValue** args) {
     if (!ctx || !args || ctx->arg_count < 1) return NULL;
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_STRING;

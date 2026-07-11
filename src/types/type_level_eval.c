@@ -155,7 +155,7 @@ typedef struct TypeEvalContext {
 } TypeEvalContext;
 
 TypeEvalContext* type_eval_context_new(TypeChecker* checker) {
-    TypeEvalContext* ctx = malloc(sizeof(TypeEvalContext));
+    TypeEvalContext* ctx = xmalloc(sizeof(TypeEvalContext));
     if (!ctx) return NULL;
     
     ctx->type_checker = checker;

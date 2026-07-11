@@ -2386,7 +2386,7 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
     LLVMValueRef channel = LLVMBuildCall2(codegen->builder, make_chan_func_type, make_chan_func, args, 2, "new_channel");
 
     // Create result value info
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = channel;
     result_info->goo_type = expr->node_type;  // resolved TYPE_CHANNEL from type checker (Task 2 uses this)
@@ -3429,7 +3429,7 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
     }
     
     // Return void value
-    ValueInfo* result = malloc(sizeof(ValueInfo));
+    ValueInfo* result = xmalloc(sizeof(ValueInfo));
     result->name = NULL;
     result->llvm_value = NULL;
     result->goo_type = type_checker_get_builtin(checker, TYPE_VOID);

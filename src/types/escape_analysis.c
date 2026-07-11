@@ -26,7 +26,7 @@ static char* str_dup(const char* str) {
 
 EscapeContext* escape_context_new(ASTNode* escape_site, ASTNode* target_function, 
                                  EscapeKind kind, size_t call_depth) {
-    EscapeContext* context = malloc(sizeof(EscapeContext));
+    EscapeContext* context = xmalloc(sizeof(EscapeContext));
     if (!context) return NULL;
     
     context->escape_site = escape_site;
@@ -52,7 +52,7 @@ void escape_context_free(EscapeContext* context) {
 // =============================================================================
 
 FunctionEscapeInfo* function_escape_info_new(const char* function_name, ASTNode* function_node) {
-    FunctionEscapeInfo* info = malloc(sizeof(FunctionEscapeInfo));
+    FunctionEscapeInfo* info = xmalloc(sizeof(FunctionEscapeInfo));
     if (!info) return NULL;
     
     info->function_name = str_dup(function_name);
@@ -91,7 +91,7 @@ void function_escape_info_free(FunctionEscapeInfo* info) {
 // =============================================================================
 
 EscapeAnalyzer* escape_analyzer_new(ReferenceManager* reference_manager) {
-    EscapeAnalyzer* analyzer = malloc(sizeof(EscapeAnalyzer));
+    EscapeAnalyzer* analyzer = xmalloc(sizeof(EscapeAnalyzer));
     if (!analyzer) return NULL;
     
     analyzer->reference_manager = reference_manager;

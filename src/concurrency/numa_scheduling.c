@@ -21,7 +21,7 @@ NumaTopology* numa_topology_discover(void) {
         return g_numa_topology;
     }
     
-    NumaTopology* topology = calloc(1, sizeof(NumaTopology));
+    NumaTopology* topology = xcalloc(1, sizeof(NumaTopology));
     if (!topology) return NULL;
     
 #ifdef __linux__
@@ -284,7 +284,7 @@ void numa_free(void* ptr, size_t size) {
 
 // Memory region management
 NumaMemoryRegion* numa_memory_region_create(void* base, size_t size, uint32_t preferred_node) {
-    NumaMemoryRegion* region = calloc(1, sizeof(NumaMemoryRegion));
+    NumaMemoryRegion* region = xcalloc(1, sizeof(NumaMemoryRegion));
     if (!region) return NULL;
     
     region->base_address = base;
@@ -320,7 +320,7 @@ bool numa_memory_region_is_local(const NumaMemoryRegion* region, uint32_t worker
 
 // NUMA-aware task scope creation
 NumaTaskScope* numa_task_scope_create(NumaParallelForConfig config, const char* name) {
-    NumaTaskScope* scope = calloc(1, sizeof(NumaTaskScope));
+    NumaTaskScope* scope = xcalloc(1, sizeof(NumaTaskScope));
     if (!scope) return NULL;
     
     // Initialize base task scope
@@ -423,7 +423,7 @@ void numa_task_scope_destroy(NumaTaskScope* scope) {
 // Start NUMA-aware task scope
 Result_void_ptr numa_task_scope_start(NumaTaskScope* scope) {
     if (!scope || !scope->numa_initialized) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -638,7 +638,7 @@ Result_void_ptr numa_parallel_for(
     void* context) {
     
     if (!scope || !function) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,

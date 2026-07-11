@@ -24,7 +24,7 @@ static uint64_t generate_unique_id(void) {
 
 // Capability token operations
 CapabilityToken* capability_token_create(SecurityCapability capability, const char* granted_to) {
-    CapabilityToken* token = calloc(1, sizeof(CapabilityToken));
+    CapabilityToken* token = xcalloc(1, sizeof(CapabilityToken));
     if (!token) return NULL;
     
     token->token_id = generate_unique_id();
@@ -91,7 +91,7 @@ void capability_token_destroy(CapabilityToken* token) {
 // Capability requirement operations
 CapabilityRequirement* capability_requirement_create(SecurityCapability capability, 
                                                     const char* description) {
-    CapabilityRequirement* req = calloc(1, sizeof(CapabilityRequirement));
+    CapabilityRequirement* req = xcalloc(1, sizeof(CapabilityRequirement));
     if (!req) return NULL;
     
     req->required_capability = capability;
@@ -115,7 +115,7 @@ void capability_requirement_destroy(CapabilityRequirement* requirement) {
 
 // Capability policy operations
 CapabilityPolicy* capability_policy_create(const char* name) {
-    CapabilityPolicy* policy = calloc(1, sizeof(CapabilityPolicy));
+    CapabilityPolicy* policy = xcalloc(1, sizeof(CapabilityPolicy));
     if (!policy) return NULL;
     
     if (name) {
@@ -238,7 +238,7 @@ CapabilityPolicy* capability_policy_create_permissive(void) {
 
 // Capability context operations
 CapabilityContext* capability_context_create(const char* name, int context_type) {
-    CapabilityContext* context = calloc(1, sizeof(CapabilityContext));
+    CapabilityContext* context = xcalloc(1, sizeof(CapabilityContext));
     if (!context) return NULL;
     
     if (name) {
@@ -289,7 +289,7 @@ void capability_context_destroy(CapabilityContext* context) {
 
 // Capability checker operations
 CapabilityChecker* capability_checker_create(CapabilitySystem* system) {
-    CapabilityChecker* checker = calloc(1, sizeof(CapabilityChecker));
+    CapabilityChecker* checker = xcalloc(1, sizeof(CapabilityChecker));
     if (!checker) return NULL;
     
     checker->capability_system = system;
@@ -352,7 +352,7 @@ void capability_checker_destroy(CapabilityChecker* checker) {
 
 // Main capability system operations
 CapabilitySystem* capability_system_create(SecurityContext* security_context) {
-    CapabilitySystem* system = calloc(1, sizeof(CapabilitySystem));
+    CapabilitySystem* system = xcalloc(1, sizeof(CapabilitySystem));
     if (!system) return NULL;
     
     system->security_context = security_context;
@@ -479,7 +479,7 @@ void capability_system_destroy(CapabilitySystem* system) {
 
 Result_void_ptr capability_system_initialize(CapabilitySystem* system) {
     if (!system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid capability system";
@@ -524,7 +524,7 @@ Result_void_ptr capability_system_initialize(CapabilitySystem* system) {
 Result_void_ptr capability_system_grant(CapabilitySystem* system, SecurityCapability capability, 
                                 const char* entity, uint64_t validity_ms) {
     if (!system || !entity) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -538,7 +538,7 @@ Result_void_ptr capability_system_grant(CapabilitySystem* system, SecurityCapabi
     if (system->active_policy && 
         (capability & system->active_policy->forbidden_capabilities)) {
         pthread_mutex_unlock(&system->system_mutex);
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_CAPABILITY_SYS_DENIED;
             err->message = "Capability is forbidden by policy";
@@ -550,7 +550,7 @@ Result_void_ptr capability_system_grant(CapabilitySystem* system, SecurityCapabi
     CapabilityToken* token = capability_token_create(capability, entity);
     if (!token) {
         pthread_mutex_unlock(&system->system_mutex);
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_OUT_OF_MEMORY;
             err->message = "Failed to create capability token";
@@ -589,7 +589,7 @@ Result_void_ptr capability_system_grant(CapabilitySystem* system, SecurityCapabi
     } else {
         capability_token_destroy(token);
         pthread_mutex_unlock(&system->system_mutex);
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_OUT_OF_MEMORY;
             err->message = "Token storage full";
@@ -600,7 +600,7 @@ Result_void_ptr capability_system_grant(CapabilitySystem* system, SecurityCapabi
 
 Result_bool capability_system_check(CapabilitySystem* system, const char* entity, SecurityCapability capability) {
     if (!system || !entity) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -659,7 +659,7 @@ Result_bool capability_system_check(CapabilitySystem* system, const char* entity
 // Stub implementations for complex functions
 Result_void_ptr capability_check_ast(CapabilityChecker* checker, ASTNode* root) {
     if (!checker || !root) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -675,7 +675,7 @@ Result_void_ptr capability_check_ast(CapabilityChecker* checker, ASTNode* root) 
 
 Result_void_ptr capability_check_function(CapabilityChecker* checker, ASTNode* function_node) {
     if (!checker || !function_node) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";

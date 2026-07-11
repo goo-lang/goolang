@@ -14,7 +14,7 @@
 // =============================================================================
 
 ProtocolDefinition* protocol_definition_new(const char* name, Position position) {
-    ProtocolDefinition* protocol = calloc(1, sizeof(ProtocolDefinition));
+    ProtocolDefinition* protocol = xcalloc(1, sizeof(ProtocolDefinition));
     if (!protocol) return NULL;
     
     protocol->name = name ? strdup(name) : NULL;
@@ -280,7 +280,7 @@ void associated_type_free(AssociatedType* assoc) {
 // =============================================================================
 
 ProtocolConformance* protocol_conformance_new(Type* conforming_type, ProtocolDefinition* protocol) {
-    ProtocolConformance* conformance = calloc(1, sizeof(ProtocolConformance));
+    ProtocolConformance* conformance = xcalloc(1, sizeof(ProtocolConformance));
     if (!conformance) return NULL;
     
     conformance->conforming_type = conforming_type;
@@ -707,7 +707,7 @@ void register_standard_protocols(TypeChecker* checker) {
         
         ProtocolRequirement eq_req = protocol_requirement_new_method("==", eq_signature);
         
-        equatable->requirements = malloc(sizeof(ProtocolRequirement));
+        equatable->requirements = xmalloc(sizeof(ProtocolRequirement));
         equatable->requirements[0] = eq_req;
         equatable->requirement_count = 1;
         
@@ -719,7 +719,7 @@ void register_standard_protocols(TypeChecker* checker) {
     ProtocolDefinition* comparable = protocol_definition_new("Comparable", (Position){0, 0, ""});
     if (comparable) {
         // Inherit from Equatable
-        comparable->super_protocols = malloc(sizeof(ProtocolDefinition*));
+        comparable->super_protocols = xmalloc(sizeof(ProtocolDefinition*));
         comparable->super_protocols[0] = equatable;
         comparable->super_protocol_count = 1;
         
@@ -730,7 +730,7 @@ void register_standard_protocols(TypeChecker* checker) {
         
         ProtocolRequirement lt_req = protocol_requirement_new_method("<", lt_signature);
         
-        comparable->requirements = malloc(sizeof(ProtocolRequirement));
+        comparable->requirements = xmalloc(sizeof(ProtocolRequirement));
         comparable->requirements[0] = lt_req;
         comparable->requirement_count = 1;
         
@@ -770,7 +770,7 @@ void register_standard_protocols(TypeChecker* checker) {
         // Add Element associated type
         AssociatedType element_assoc = associated_type_new("Element", NULL);
         
-        collection->associated_types = malloc(sizeof(AssociatedType));
+        collection->associated_types = xmalloc(sizeof(AssociatedType));
         collection->associated_types[0] = element_assoc;
         collection->associated_type_count = 1;
         
@@ -778,7 +778,7 @@ void register_standard_protocols(TypeChecker* checker) {
         Type* int_type = type_checker_get_builtin(checker, TYPE_INT);
         ProtocolRequirement count_req = protocol_requirement_new_property("count", int_type, 1, 0);
         
-        collection->requirements = malloc(sizeof(ProtocolRequirement));
+        collection->requirements = xmalloc(sizeof(ProtocolRequirement));
         collection->requirements[0] = count_req;
         collection->requirement_count = 1;
         

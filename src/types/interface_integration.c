@@ -244,7 +244,7 @@ Type* type_checker_lookup_associated_type(TypeChecker* checker, Type* type, cons
 
 // Concept Registry Functions
 ConceptRegistry* concept_registry_new(void) {
-    ConceptRegistry* registry = malloc(sizeof(ConceptRegistry));
+    ConceptRegistry* registry = xmalloc(sizeof(ConceptRegistry));
     if (!registry) return NULL;
     
     registry->concepts = malloc(sizeof(ConceptDefinition*) * 16);
@@ -283,7 +283,7 @@ ConceptDefinition* concept_registry_lookup(ConceptRegistry* registry, const char
 
 // HKT Registry Functions
 HKTRegistry* hkt_registry_new(void) {
-    HKTRegistry* registry = malloc(sizeof(HKTRegistry));
+    HKTRegistry* registry = xmalloc(sizeof(HKTRegistry));
     if (!registry) return NULL;
     
     registry->hkts = malloc(sizeof(HigherKindedType*) * 16);

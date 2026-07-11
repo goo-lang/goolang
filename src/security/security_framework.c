@@ -103,7 +103,7 @@ const char* crypto_algorithm_to_string(CryptoAlgorithm algorithm) {
 
 // Taint tracking implementation
 TaintTracker* taint_tracker_create(void) {
-    TaintTracker* tracker = calloc(1, sizeof(TaintTracker));
+    TaintTracker* tracker = xcalloc(1, sizeof(TaintTracker));
     if (!tracker) return NULL;
     
     tracker->object_capacity = 10000;
@@ -156,7 +156,7 @@ void taint_tracker_destroy(TaintTracker* tracker) {
 }
 
 TaintedData* taint_data_create(void* data, size_t size, TaintLevel taint_level, const char* source) {
-    TaintedData* tainted = calloc(1, sizeof(TaintedData));
+    TaintedData* tainted = xcalloc(1, sizeof(TaintedData));
     if (!tainted) return NULL;
     
     tainted->data = data;
@@ -199,7 +199,7 @@ void taint_data_destroy(TaintedData* tainted) {
 
 Result_void_ptr taint_propagate(TaintTracker* tracker, TaintedData* input, TaintedData* output, const char* operation) {
     if (!tracker || !input || !output || !operation) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -254,7 +254,7 @@ Result_void_ptr taint_propagate(TaintTracker* tracker, TaintedData* input, Taint
 
 Result_void_ptr taint_sanitize(TaintTracker* tracker, TaintedData* tainted, const char* sanitization_method) {
     if (!tracker || !tainted || !sanitization_method) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -308,7 +308,7 @@ Result_void_ptr taint_sanitize(TaintTracker* tracker, TaintedData* tainted, cons
 
 Result_void_ptr taint_validate(TaintTracker* tracker, TaintedData* tainted, const char* validation_method) {
     if (!tracker || !tainted || !validation_method) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -364,7 +364,7 @@ bool taint_is_safe_for_operation(TaintedData* tainted, const char* operation) {
 
 // Capability management implementation
 CapabilityManager* capability_manager_create(void) {
-    CapabilityManager* manager = calloc(1, sizeof(CapabilityManager));
+    CapabilityManager* manager = xcalloc(1, sizeof(CapabilityManager));
     if (!manager) return NULL;
     
     // Set default system capabilities
@@ -421,7 +421,7 @@ void capability_manager_destroy(CapabilityManager* manager) {
 }
 
 CapabilitySet* capability_set_create(uint32_t capabilities) {
-    CapabilitySet* set = calloc(1, sizeof(CapabilitySet));
+    CapabilitySet* set = xcalloc(1, sizeof(CapabilitySet));
     if (!set) return NULL;
     
     set->granted_capabilities = capabilities;
@@ -446,7 +446,7 @@ void capability_set_destroy(CapabilitySet* set) {
 
 Result_bool capability_check(CapabilityManager* manager, uint32_t required_capabilities, const char* operation) {
     if (!manager) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -510,7 +510,7 @@ Result_bool capability_check(CapabilityManager* manager, uint32_t required_capab
 
 Result_void_ptr capability_grant(CapabilityManager* manager, uint32_t capabilities, const char* context) {
     if (!manager) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -530,7 +530,7 @@ Result_void_ptr capability_grant(CapabilityManager* manager, uint32_t capabiliti
     if (!new_set) {
         pthread_mutex_unlock(&manager->capability_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -548,7 +548,7 @@ Result_void_ptr capability_grant(CapabilityManager* manager, uint32_t capabiliti
         capability_set_destroy(new_set);
         pthread_mutex_unlock(&manager->capability_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
@@ -571,7 +571,7 @@ Result_void_ptr capability_grant(CapabilityManager* manager, uint32_t capabiliti
 
 Result_void_ptr capability_revoke(CapabilityManager* manager, uint32_t capabilities, const char* context) {
     if (!manager) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -602,7 +602,7 @@ Result_void_ptr capability_revoke(CapabilityManager* manager, uint32_t capabilit
 
 Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabilities, const char* target) {
     if (!manager || !target) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -632,7 +632,7 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
     if (!can_delegate) {
         pthread_mutex_unlock(&manager->capability_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_CAPABILITY_DENIED,
             .severity = ERROR_SEVERITY_ERROR,
@@ -650,7 +650,7 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
     if (!delegated_set) {
         pthread_mutex_unlock(&manager->capability_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -671,7 +671,7 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
         capability_set_destroy(delegated_set);
         pthread_mutex_unlock(&manager->capability_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
@@ -691,7 +691,7 @@ Result_void_ptr capability_delegate(CapabilityManager* manager, uint32_t capabil
 
 // Security auditor implementation
 SecurityAuditor* security_auditor_create(void) {
-    SecurityAuditor* auditor = calloc(1, sizeof(SecurityAuditor));
+    SecurityAuditor* auditor = xcalloc(1, sizeof(SecurityAuditor));
     if (!auditor) return NULL;
     
     auditor->rule_capacity = 200;
@@ -733,7 +733,7 @@ void security_auditor_destroy(SecurityAuditor* auditor) {
 }
 
 SecurityViolation* security_violation_create(int violation_type, int severity, const char* description, const char* location) {
-    SecurityViolation* violation = calloc(1, sizeof(SecurityViolation));
+    SecurityViolation* violation = xcalloc(1, sizeof(SecurityViolation));
     if (!violation) return NULL;
     
     violation->violation_id = generate_unique_id();
@@ -766,7 +766,7 @@ void security_violation_destroy(SecurityViolation* violation) {
 
 Result_void_ptr security_audit_report_violation(SecurityAuditor* auditor, SecurityViolation* violation) {
     if (!auditor || !violation) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -799,7 +799,7 @@ Result_void_ptr security_audit_report_violation(SecurityAuditor* auditor, Securi
 
 Result_void_ptr security_audit_operation(SecurityAuditor* auditor, const char* operation, const void* context) {
     if (!auditor || !operation) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -849,7 +849,7 @@ Result_void_ptr security_audit_operation(SecurityAuditor* auditor, const char* o
 
 // Crypto manager implementation
 CryptoManager* crypto_manager_create(void) {
-    CryptoManager* manager = calloc(1, sizeof(CryptoManager));
+    CryptoManager* manager = xcalloc(1, sizeof(CryptoManager));
     if (!manager) return NULL;
     
     // Set secure defaults
@@ -915,7 +915,7 @@ void crypto_manager_destroy(CryptoManager* manager) {
 // Simplified crypto operations (in real implementation, use proper crypto library)
 Result_void_ptr crypto_encrypt(CryptoManager* manager, const void* plaintext, size_t plaintext_len, void** ciphertext, size_t* ciphertext_len) {
     if (!manager || !plaintext || !ciphertext || !ciphertext_len) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -937,7 +937,7 @@ Result_void_ptr crypto_encrypt(CryptoManager* manager, const void* plaintext, si
     if (!*ciphertext) {
         pthread_mutex_unlock(&manager->crypto_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -962,7 +962,7 @@ Result_void_ptr crypto_encrypt(CryptoManager* manager, const void* plaintext, si
 
 Result_void_ptr crypto_decrypt(CryptoManager* manager, const void* ciphertext, size_t ciphertext_len, void** plaintext, size_t* plaintext_len) {
     if (!manager || !ciphertext || !plaintext || !plaintext_len) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -982,7 +982,7 @@ Result_void_ptr crypto_decrypt(CryptoManager* manager, const void* ciphertext, s
     if (*plaintext_len > ciphertext_len) {
         pthread_mutex_unlock(&manager->crypto_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_CRYPTO_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
@@ -999,7 +999,7 @@ Result_void_ptr crypto_decrypt(CryptoManager* manager, const void* ciphertext, s
     if (!*plaintext) {
         pthread_mutex_unlock(&manager->crypto_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1024,7 +1024,7 @@ Result_void_ptr crypto_decrypt(CryptoManager* manager, const void* ciphertext, s
 
 Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algorithm, uint64_t* key_id) {
     if (!manager || !key_id) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1042,7 +1042,7 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
     if (manager->key_count >= manager->key_capacity) {
         pthread_mutex_unlock(&manager->crypto_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1082,7 +1082,7 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
         if (manager->config.reject_weak_algorithms) {
             pthread_mutex_unlock(&manager->crypto_mutex);
             
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_CRYPTO_OPERATION_FAILED,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -1102,7 +1102,7 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
     if (!key_material) {
         pthread_mutex_unlock(&manager->crypto_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1145,7 +1145,7 @@ Result_void_ptr crypto_generate_key(CryptoManager* manager, CryptoAlgorithm algo
 
 // Main security context operations
 SecurityContext* security_context_create(SecurityPolicy policy) {
-    SecurityContext* context = calloc(1, sizeof(SecurityContext));
+    SecurityContext* context = xcalloc(1, sizeof(SecurityContext));
     if (!context) return NULL;
     
     context->policy = policy;
@@ -1234,7 +1234,7 @@ void security_context_destroy(SecurityContext* context) {
 
 Result_void_ptr security_context_initialize(SecurityContext* context) {
     if (!context) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1251,7 +1251,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
     if (context->enable_dynamic_taint_tracking) {
         context->taint_tracker = taint_tracker_create();
         if (!context->taint_tracker) {
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -1268,7 +1268,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
     if (context->enable_capability_enforcement) {
         context->capability_manager = capability_manager_create();
         if (!context->capability_manager) {
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -1285,7 +1285,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
     if (context->enable_runtime_monitoring) {
         context->auditor = security_auditor_create();
         if (!context->auditor) {
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -1306,7 +1306,7 @@ Result_void_ptr security_context_initialize(SecurityContext* context) {
     // Always create crypto manager for secure defaults
     context->crypto_manager = crypto_manager_create();
     if (!context->crypto_manager) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,

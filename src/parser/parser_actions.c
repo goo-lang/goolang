@@ -63,7 +63,7 @@ void reinterpret_grouped_names(ASTNode* list) {
         ASTNode* cloned = ast_type_clone(shared);
         if (!cloned) continue;                         // unclonable shared type: leave as-is
         BasicTypeNode* bt = (BasicTypeNode*)vd->type;  // misparsed type-name == the intended name
-        vd->names = (char**)malloc(sizeof(char*));
+        vd->names = (char**)xmalloc(sizeof(char*));
         vd->names[0] = strdup(bt->name);
         vd->name_count = 1;
         ast_node_free(vd->type);                       // drop the misparsed bare type-name
@@ -158,14 +158,14 @@ void substitute_iota(ASTNode** slot, long idx) {
 // for a bare spec (filled in later by desugar_const_group). Mirrors the
 // single-const construction in the const_decl rule.
 ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value) {
-    ConstDeclNode* c = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
+    ConstDeclNode* c = (ConstDeclNode*)xmalloc(sizeof(ConstDeclNode));
     c->base.type = AST_CONST_DECL;
     c->base.pos = get_current_position();
     c->base.node_type = NULL;
     c->base.next = NULL;
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
-    c->names = malloc(sizeof(char*));
+    c->names = xmalloc(sizeof(char*));
     c->names[0] = strdup(ident->name);
     c->name_count = 1;
     c->type = NULL;
@@ -221,7 +221,7 @@ ASTNode* var_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
     VarDeclNode* var = ast_var_decl_new(get_current_position());
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
-    var->names = malloc(sizeof(char*));
+    var->names = xmalloc(sizeof(char*));
     var->names[0] = strdup(ident->name);
     var->name_count = 1;
     var->type = type;
@@ -249,7 +249,7 @@ ASTNode* desugar_var_group(ASTNode* spec_chain) {
 // in codegen, not here.
 ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
                              ASTNode* v1, ASTNode* v2, int is_short_decl) {
-    MultiAssignNode* ma = (MultiAssignNode*)malloc(sizeof(MultiAssignNode));
+    MultiAssignNode* ma = (MultiAssignNode*)xmalloc(sizeof(MultiAssignNode));
     ma->base.type = AST_MULTI_ASSIGN;
     ma->base.pos = get_current_position();
     ma->base.node_type = NULL;
@@ -268,7 +268,7 @@ ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
 }
 
 ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call) {
-    MultiAssignNode* ma = (MultiAssignNode*)malloc(sizeof(MultiAssignNode));
+    MultiAssignNode* ma = (MultiAssignNode*)xmalloc(sizeof(MultiAssignNode));
     ma->base.type = AST_MULTI_ASSIGN;
     ma->base.pos = get_current_position();
     ma->base.node_type = NULL;
@@ -292,7 +292,7 @@ ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call) {
 // ExprStmt to match the plain-assignment shape.
 ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs) {
     BinaryExprNode* binary = ast_binary_expr_new(lhs, op, rhs, get_current_position());
-    ExprStmtNode* es = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
+    ExprStmtNode* es = (ExprStmtNode*)xmalloc(sizeof(ExprStmtNode));
     es->base.type = AST_EXPR_STMT;
     es->base.pos = get_current_position();
     es->base.node_type = NULL;
@@ -302,7 +302,7 @@ ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs) {
 }
 
 ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits) {
-    StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
+    StructLiteralNode* lit = (StructLiteralNode*)xcalloc(1, sizeof(StructLiteralNode));
     lit->base.type = AST_STRUCT_LITERAL;
     lit->base.pos = get_current_position();
     lit->type_name = type_name_owned;  /* NULL => elided (type inferred) */
@@ -330,7 +330,7 @@ ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits) {
 }
 
 ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries) {
-    MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
+    MapLitNode* lit = (MapLitNode*)xmalloc(sizeof(MapLitNode));
     lit->base.type = AST_PAREN_EXPR;
     lit->base.pos = get_current_position();
     lit->base.node_type = NULL;
@@ -374,11 +374,11 @@ ASTNode* func_result_from_params(ASTNode* params_list) {
             VarDeclNode* vd = (VarDeclNode*)p;
             if (vd->name_count == 0 || !vd->names) {
                 char buf[16]; snprintf(buf, sizeof(buf), "_%zu", idx);
-                vd->names = malloc(sizeof(char*));
+                vd->names = xmalloc(sizeof(char*));
                 vd->names[0] = strdup(buf); vd->name_count = 1;
             }
         }
-        StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
+        StructTypeNode* st = (StructTypeNode*)xmalloc(sizeof(StructTypeNode));
         st->base.type = AST_STRUCT_TYPE;
         st->base.pos = get_current_position();
         st->base.node_type = NULL;
@@ -390,14 +390,14 @@ ASTNode* func_result_from_params(ASTNode* params_list) {
 }
 
 ASTNode* const_decl_new(ASTNode* name_ident, ASTNode* type, ASTNode* value, int is_comptime) {
-    ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
+    ConstDeclNode* const_node = (ConstDeclNode*)xmalloc(sizeof(ConstDeclNode));
     const_node->base.type = AST_CONST_DECL;
     const_node->base.pos = get_current_position();
     const_node->base.node_type = NULL;
     const_node->base.next = NULL;
 
     IdentifierNode* ident = (IdentifierNode*)name_ident;
-    const_node->names = malloc(sizeof(char*));
+    const_node->names = xmalloc(sizeof(char*));
     const_node->names[0] = strdup(ident->name);
     const_node->name_count = 1;
     const_node->type = type;
@@ -409,7 +409,7 @@ ASTNode* const_decl_new(ASTNode* name_ident, ASTNode* type, ASTNode* value, int 
 }
 
 ASTNode* call_expr_new(ASTNode* function, ASTNode* args, int has_spread) {
-    CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
+    CallExprNode* call = (CallExprNode*)xmalloc(sizeof(CallExprNode));
     call->base.type = AST_CALL_EXPR;
     call->base.pos = get_current_position();
     call->base.node_type = NULL;
@@ -425,7 +425,7 @@ ASTNode* call_expr_new(ASTNode* function, ASTNode* args, int has_spread) {
 }
 
 ASTNode* index_expr_new(ASTNode* expr, ASTNode* index) {
-    IndexExprNode* node = (IndexExprNode*)malloc(sizeof(IndexExprNode));
+    IndexExprNode* node = (IndexExprNode*)xmalloc(sizeof(IndexExprNode));
     node->base.type = AST_INDEX_EXPR;
     node->base.pos = get_current_position();
     node->base.node_type = NULL;
@@ -436,7 +436,7 @@ ASTNode* index_expr_new(ASTNode* expr, ASTNode* index) {
 }
 
 ASTNode* slice_index_expr_new(ASTNode* expr, ASTNode* low, ASTNode* high) {
-    SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
+    SliceIndexExprNode* slice = (SliceIndexExprNode*)xmalloc(sizeof(SliceIndexExprNode));
     slice->base.type = AST_SLICE_INDEX_EXPR;
     slice->base.pos = get_current_position();
     slice->base.node_type = NULL;
@@ -449,7 +449,7 @@ ASTNode* slice_index_expr_new(ASTNode* expr, ASTNode* low, ASTNode* high) {
 
 ASTNode* selector_expr_new(ASTNode* expr, ASTNode* ident_node) {
     IdentifierNode* ident = (IdentifierNode*)ident_node;
-    SelectorExprNode* selector = (SelectorExprNode*)malloc(sizeof(SelectorExprNode));
+    SelectorExprNode* selector = (SelectorExprNode*)xmalloc(sizeof(SelectorExprNode));
     selector->base.type = AST_SELECTOR_EXPR;
     selector->base.pos = get_current_position();
     selector->base.node_type = NULL;
@@ -461,7 +461,7 @@ ASTNode* selector_expr_new(ASTNode* expr, ASTNode* ident_node) {
 }
 
 ASTNode* type_assert_expr_new(ASTNode* expr, ASTNode* asserted_type) {
-    TypeAssertNode* ta = (TypeAssertNode*)malloc(sizeof(TypeAssertNode));
+    TypeAssertNode* ta = (TypeAssertNode*)xmalloc(sizeof(TypeAssertNode));
     ta->base.type = AST_TYPE_ASSERT;
     ta->base.pos = get_current_position();
     ta->base.node_type = NULL;
@@ -475,7 +475,7 @@ ASTNode* func_param_new(ASTNode* name_ident, ASTNode* type, int is_variadic, int
     VarDeclNode* param = ast_var_decl_new(get_current_position());
     if (name_ident) {
         IdentifierNode* ident = (IdentifierNode*)name_ident;
-        param->names = malloc(sizeof(char*));
+        param->names = xmalloc(sizeof(char*));
         param->names[0] = strdup(ident->name);
         param->name_count = 1;
     } else {
@@ -493,7 +493,7 @@ ASTNode* func_param_new(ASTNode* name_ident, ASTNode* type, int is_variadic, int
 ASTNode* var_decl_new_1(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
     VarDeclNode* var = ast_var_decl_new(get_current_position());
     IdentifierNode* ident = (IdentifierNode*)name_ident;
-    var->names = malloc(sizeof(char*));
+    var->names = xmalloc(sizeof(char*));
     var->names[0] = strdup(ident->name);
     var->name_count = 1;
     var->type = type;
@@ -536,7 +536,7 @@ ASTNode* var_decl_new_3(ASTNode* name_ident1, ASTNode* name_ident2, ASTNode* nam
 ASTNode* short_var_decl_new_1(ASTNode* name_ident, ASTNode* value) {
     VarDeclNode* var = ast_var_decl_new(get_current_position());
     IdentifierNode* ident = (IdentifierNode*)name_ident;
-    var->names = malloc(sizeof(char*));
+    var->names = xmalloc(sizeof(char*));
     var->names[0] = strdup(ident->name);
     var->name_count = 1;
     var->values = value;
@@ -569,7 +569,7 @@ ASTNode* struct_field_new(ASTNode* name_ident, ASTNode* type) {
     // Type's struct_type.fields[].
     IdentifierNode* ident = (IdentifierNode*)name_ident;
     VarDeclNode* field = ast_var_decl_new(get_current_position());
-    field->names = malloc(sizeof(char*));
+    field->names = xmalloc(sizeof(char*));
     field->names[0] = strdup(ident->name);
     field->name_count = 1;
     field->type = type;
@@ -579,7 +579,7 @@ ASTNode* struct_field_new(ASTNode* name_ident, ASTNode* type) {
 }
 
 ASTNode* slice_lit_new(ASTNode* elements, ASTNode* elem_type) {
-    SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
+    SliceLitNode* lit = (SliceLitNode*)xmalloc(sizeof(SliceLitNode));
     lit->base.type = AST_SLICE_EXPR;
     lit->base.pos = get_current_position();
     lit->base.node_type = NULL;
@@ -590,7 +590,7 @@ ASTNode* slice_lit_new(ASTNode* elements, ASTNode* elem_type) {
 }
 
 ASTNode* array_lit_new(ASTNode* elements, ASTNode* array_type) {
-    ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
+    ArrayLitNode* lit = (ArrayLitNode*)xmalloc(sizeof(ArrayLitNode));
     lit->base.type = AST_ARRAY_LITERAL;
     lit->base.pos = get_current_position();
     lit->base.node_type = NULL;
@@ -602,7 +602,7 @@ ASTNode* array_lit_new(ASTNode* elements, ASTNode* array_type) {
 
 ASTNode* struct_lit_empty_new(ASTNode* type_ident) {
     IdentifierNode* type_ident_node = (IdentifierNode*)type_ident;
-    StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
+    StructLiteralNode* lit = (StructLiteralNode*)xcalloc(1, sizeof(StructLiteralNode));
     lit->base.type = AST_STRUCT_LITERAL;
     lit->base.pos = get_current_position();
     lit->type_name = strdup(type_ident_node->name);
@@ -656,7 +656,7 @@ ASTNode* map_entry_list_append(ASTNode* keys_head, ASTNode* new_key) {
 // functions already expect from `operand catch e { fallback }` — this is
 // sugar over proven machinery, not a new code path.
 CatchExprNode* catch_expr_arrow_new(ASTNode* operand, ASTNode* fallback) {
-    ExprStmtNode* es = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
+    ExprStmtNode* es = (ExprStmtNode*)xmalloc(sizeof(ExprStmtNode));
     es->base.type = AST_EXPR_STMT;
     es->base.pos = get_current_position();
     es->base.node_type = NULL;

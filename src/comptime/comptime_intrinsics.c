@@ -447,7 +447,7 @@ ComptimeResult* comptime_eval_function_call_advanced(ComptimeContext* ctx, ASTNo
 
 // Code generation pipeline integration
 CodeGenPipeline* comptime_codegen_pipeline_new(void) {
-    CodeGenPipeline* pipeline = malloc(sizeof(CodeGenPipeline));
+    CodeGenPipeline* pipeline = xmalloc(sizeof(CodeGenPipeline));
     if (!pipeline) return NULL;
     
     pipeline->generated_functions = NULL;

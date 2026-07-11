@@ -21,7 +21,7 @@ static char* str_dup(const char* str) {
 
 
 ProgramNode* ast_program_new(Position pos) {
-    ProgramNode* node = (ProgramNode*)malloc(sizeof(ProgramNode));
+    ProgramNode* node = (ProgramNode*)xmalloc(sizeof(ProgramNode));
     if (!node) return NULL;
     
     node->base.type = AST_PROGRAM;
@@ -36,7 +36,7 @@ ProgramNode* ast_program_new(Position pos) {
 }
 
 PackageDeclNode* ast_package_decl_new(const char* name, Position pos) {
-    PackageDeclNode* node = (PackageDeclNode*)malloc(sizeof(PackageDeclNode));
+    PackageDeclNode* node = (PackageDeclNode*)xmalloc(sizeof(PackageDeclNode));
     if (!node) return NULL;
     
     node->base.type = AST_PACKAGE_DECL;
@@ -49,7 +49,7 @@ PackageDeclNode* ast_package_decl_new(const char* name, Position pos) {
 }
 
 ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Position pos) {
-    ImportSpecNode* node = (ImportSpecNode*)malloc(sizeof(ImportSpecNode));
+    ImportSpecNode* node = (ImportSpecNode*)xmalloc(sizeof(ImportSpecNode));
     if (!node) return NULL;
     
     node->base.type = AST_IMPORT_SPEC;
@@ -63,7 +63,7 @@ ImportSpecNode* ast_import_spec_new(const char* path, const char* alias, Positio
 }
 
 FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
-    FuncDeclNode* node = (FuncDeclNode*)malloc(sizeof(FuncDeclNode));
+    FuncDeclNode* node = (FuncDeclNode*)xmalloc(sizeof(FuncDeclNode));
     if (!node) return NULL;
     
     node->base.type = AST_FUNC_DECL;
@@ -87,7 +87,7 @@ FuncDeclNode* ast_func_decl_new(const char* name, Position pos) {
 // comment (ast.h) for field shapes; the parser assigns params/return_type/
 // body from its own RHS symbols after construction.
 FuncLitNode* ast_func_lit_new(Position pos) {
-    FuncLitNode* node = (FuncLitNode*)malloc(sizeof(FuncLitNode));
+    FuncLitNode* node = (FuncLitNode*)xmalloc(sizeof(FuncLitNode));
     if (!node) return NULL;
 
     node->base.type = AST_FUNC_LIT;
@@ -104,7 +104,7 @@ FuncLitNode* ast_func_lit_new(Position pos) {
 }
 
 ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos) {
-    ConceptDeclNode* node = (ConceptDeclNode*)malloc(sizeof(ConceptDeclNode));
+    ConceptDeclNode* node = (ConceptDeclNode*)xmalloc(sizeof(ConceptDeclNode));
     if (!node) return NULL;
 
     node->base.type = AST_CONCEPT_DECL;
@@ -119,7 +119,7 @@ ConceptDeclNode* ast_concept_decl_new(const char* name, Position pos) {
 }
 
 VarDeclNode* ast_var_decl_new(Position pos) {
-    VarDeclNode* node = (VarDeclNode*)malloc(sizeof(VarDeclNode));
+    VarDeclNode* node = (VarDeclNode*)xmalloc(sizeof(VarDeclNode));
     if (!node) return NULL;
     
     node->base.type = AST_VAR_DECL;
@@ -141,7 +141,7 @@ VarDeclNode* ast_var_decl_new(Position pos) {
 }
 
 IdentifierNode* ast_identifier_new(const char* name, Position pos) {
-    IdentifierNode* node = (IdentifierNode*)malloc(sizeof(IdentifierNode));
+    IdentifierNode* node = (IdentifierNode*)xmalloc(sizeof(IdentifierNode));
     if (!node) return NULL;
     
     node->base.type = AST_IDENTIFIER;
@@ -154,7 +154,7 @@ IdentifierNode* ast_identifier_new(const char* name, Position pos) {
 }
 
 LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos) {
-    LiteralNode* node = (LiteralNode*)malloc(sizeof(LiteralNode));
+    LiteralNode* node = (LiteralNode*)xmalloc(sizeof(LiteralNode));
     if (!node) return NULL;
     
     node->base.type = AST_LITERAL;
@@ -171,7 +171,7 @@ LiteralNode* ast_literal_new(TokenType type, const char* value, Position pos) {
 }
 
 LiteralNode* ast_string_literal_new(const char* data, size_t length, Position pos) {
-    LiteralNode* node = (LiteralNode*)malloc(sizeof(LiteralNode));
+    LiteralNode* node = (LiteralNode*)xmalloc(sizeof(LiteralNode));
     if (!node) return NULL;
 
     node->base.type = AST_LITERAL;
@@ -193,7 +193,7 @@ LiteralNode* ast_string_literal_new(const char* data, size_t length, Position po
 }
 
 BinaryExprNode* ast_binary_expr_new(ASTNode* left, TokenType op, ASTNode* right, Position pos) {
-    BinaryExprNode* node = (BinaryExprNode*)malloc(sizeof(BinaryExprNode));
+    BinaryExprNode* node = (BinaryExprNode*)xmalloc(sizeof(BinaryExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_BINARY_EXPR;
@@ -208,7 +208,7 @@ BinaryExprNode* ast_binary_expr_new(ASTNode* left, TokenType op, ASTNode* right,
 }
 
 UnaryExprNode* ast_unary_expr_new(TokenType op, ASTNode* operand, Position pos) {
-    UnaryExprNode* node = (UnaryExprNode*)malloc(sizeof(UnaryExprNode));
+    UnaryExprNode* node = (UnaryExprNode*)xmalloc(sizeof(UnaryExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_UNARY_EXPR;
@@ -222,7 +222,7 @@ UnaryExprNode* ast_unary_expr_new(TokenType op, ASTNode* operand, Position pos) 
 }
 
 PostfixExprNode* ast_postfix_expr_new(ASTNode* operand, TokenType op, Position pos) {
-    PostfixExprNode* node = (PostfixExprNode*)malloc(sizeof(PostfixExprNode));
+    PostfixExprNode* node = (PostfixExprNode*)xmalloc(sizeof(PostfixExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_POSTFIX_EXPR;
@@ -236,7 +236,7 @@ PostfixExprNode* ast_postfix_expr_new(ASTNode* operand, TokenType op, Position p
 }
 
 BlockStmtNode* ast_block_stmt_new(Position pos) {
-    BlockStmtNode* node = (BlockStmtNode*)malloc(sizeof(BlockStmtNode));
+    BlockStmtNode* node = (BlockStmtNode*)xmalloc(sizeof(BlockStmtNode));
     if (!node) return NULL;
     
     node->base.type = AST_BLOCK_STMT;
@@ -249,7 +249,7 @@ BlockStmtNode* ast_block_stmt_new(Position pos) {
 }
 
 IfLetStmtNode* ast_if_let_stmt_new(const char* var_name, ASTNode* nullable_expr, ASTNode* then_stmt, ASTNode* else_stmt, Position pos) {
-    IfLetStmtNode* node = (IfLetStmtNode*)malloc(sizeof(IfLetStmtNode));
+    IfLetStmtNode* node = (IfLetStmtNode*)xmalloc(sizeof(IfLetStmtNode));
     if (!node) return NULL;
     
     node->base.type = AST_IF_LET_STMT;
@@ -275,7 +275,7 @@ IfLetStmtNode* ast_if_let_stmt_new(const char* var_name, ASTNode* nullable_expr,
 }
 
 GoStmtNode* ast_go_stmt_new(ASTNode* call, Position pos) {
-    GoStmtNode* node = (GoStmtNode*)malloc(sizeof(GoStmtNode));
+    GoStmtNode* node = (GoStmtNode*)xmalloc(sizeof(GoStmtNode));
     if (!node) return NULL;
     
     node->base.type = AST_GO_STMT;
@@ -288,7 +288,7 @@ GoStmtNode* ast_go_stmt_new(ASTNode* call, Position pos) {
 }
 
 SelectStmtNode* ast_select_stmt_new(Position pos) {
-    SelectStmtNode* node = (SelectStmtNode*)malloc(sizeof(SelectStmtNode));
+    SelectStmtNode* node = (SelectStmtNode*)xmalloc(sizeof(SelectStmtNode));
     if (!node) return NULL;
     
     node->base.type = AST_SELECT_STMT;
@@ -301,7 +301,7 @@ SelectStmtNode* ast_select_stmt_new(Position pos) {
 }
 
 SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos) {
-    SelectCaseNode* node = (SelectCaseNode*)malloc(sizeof(SelectCaseNode));
+    SelectCaseNode* node = (SelectCaseNode*)xmalloc(sizeof(SelectCaseNode));
     if (!node) return NULL;
     
     node->base.type = AST_SELECT_CASE;
@@ -321,7 +321,7 @@ SelectCaseNode* ast_select_case_new(ASTNode* comm, ASTNode* body, Position pos) 
 }
 
 SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos) {
-    SwitchStmtNode* node = (SwitchStmtNode*)malloc(sizeof(SwitchStmtNode));
+    SwitchStmtNode* node = (SwitchStmtNode*)xmalloc(sizeof(SwitchStmtNode));
     if (!node) return NULL;
 
     node->base.type = AST_SWITCH_STMT;
@@ -335,7 +335,7 @@ SwitchStmtNode* ast_switch_stmt_new(ASTNode* tag, ASTNode* cases, Position pos) 
 }
 
 CaseClauseNode* ast_case_clause_new(ASTNode* exprs, ASTNode* body, Position pos) {
-    CaseClauseNode* node = (CaseClauseNode*)malloc(sizeof(CaseClauseNode));
+    CaseClauseNode* node = (CaseClauseNode*)xmalloc(sizeof(CaseClauseNode));
     if (!node) return NULL;
 
     node->base.type = AST_CASE_CLAUSE;
@@ -349,7 +349,7 @@ CaseClauseNode* ast_case_clause_new(ASTNode* exprs, ASTNode* body, Position pos)
 }
 
 TypeSwitchNode* ast_type_switch_new(ASTNode* bind_name, ASTNode* expr, ASTNode* cases, Position pos) {
-    TypeSwitchNode* node = (TypeSwitchNode*)malloc(sizeof(TypeSwitchNode));
+    TypeSwitchNode* node = (TypeSwitchNode*)xmalloc(sizeof(TypeSwitchNode));
     if (!node) return NULL;
 
     node->base.type = AST_TYPE_SWITCH;
@@ -364,7 +364,7 @@ TypeSwitchNode* ast_type_switch_new(ASTNode* bind_name, ASTNode* expr, ASTNode* 
 }
 
 TypeCaseNode* ast_type_case_new(ASTNode* types, ASTNode* body, Position pos) {
-    TypeCaseNode* node = (TypeCaseNode*)malloc(sizeof(TypeCaseNode));
+    TypeCaseNode* node = (TypeCaseNode*)xmalloc(sizeof(TypeCaseNode));
     if (!node) return NULL;
 
     node->base.type = AST_TYPE_CASE;
@@ -378,7 +378,7 @@ TypeCaseNode* ast_type_case_new(ASTNode* types, ASTNode* body, Position pos) {
 }
 
 DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos) {
-    DeferStmtNode* node = (DeferStmtNode*)malloc(sizeof(DeferStmtNode));
+    DeferStmtNode* node = (DeferStmtNode*)xmalloc(sizeof(DeferStmtNode));
     if (!node) return NULL;
     
     node->base.type = AST_DEFER_STMT;
@@ -393,7 +393,7 @@ DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos) {
 // Goo extension constructors
 
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos) {
-    ErrorUnionTypeNode* node = (ErrorUnionTypeNode*)malloc(sizeof(ErrorUnionTypeNode));
+    ErrorUnionTypeNode* node = (ErrorUnionTypeNode*)xmalloc(sizeof(ErrorUnionTypeNode));
     if (!node) return NULL;
     
     node->base.type = AST_ERROR_UNION_TYPE;
@@ -407,7 +407,7 @@ ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos) 
 }
 
 NullableTypeNode* ast_nullable_type_new(ASTNode* base_type, Position pos) {
-    NullableTypeNode* node = (NullableTypeNode*)malloc(sizeof(NullableTypeNode));
+    NullableTypeNode* node = (NullableTypeNode*)xmalloc(sizeof(NullableTypeNode));
     if (!node) return NULL;
     
     node->base.type = AST_NULLABLE_TYPE;
@@ -420,7 +420,7 @@ NullableTypeNode* ast_nullable_type_new(ASTNode* base_type, Position pos) {
 }
 
 TryExprNode* ast_try_expr_new(ASTNode* expr, Position pos) {
-    TryExprNode* node = (TryExprNode*)malloc(sizeof(TryExprNode));
+    TryExprNode* node = (TryExprNode*)xmalloc(sizeof(TryExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_TRY_EXPR;
@@ -433,7 +433,7 @@ TryExprNode* ast_try_expr_new(ASTNode* expr, Position pos) {
 }
 
 CatchExprNode* ast_catch_expr_new(ASTNode* expr, const char* error_var, ASTNode* catch_body, Position pos) {
-    CatchExprNode* node = (CatchExprNode*)malloc(sizeof(CatchExprNode));
+    CatchExprNode* node = (CatchExprNode*)xmalloc(sizeof(CatchExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_CATCH_EXPR;
@@ -448,7 +448,7 @@ CatchExprNode* ast_catch_expr_new(ASTNode* expr, const char* error_var, ASTNode*
 }
 
 ComptimeBlockNode* ast_comptime_block_new(ASTNode* body, Position pos) {
-    ComptimeBlockNode* node = (ComptimeBlockNode*)malloc(sizeof(ComptimeBlockNode));
+    ComptimeBlockNode* node = (ComptimeBlockNode*)xmalloc(sizeof(ComptimeBlockNode));
     if (!node) return NULL;
     
     node->base.type = AST_COMPTIME_BLOCK;
@@ -461,7 +461,7 @@ ComptimeBlockNode* ast_comptime_block_new(ASTNode* body, Position pos) {
 }
 
 ChanTypeNode* ast_chan_type_new(ASTNode* element_type, ChannelPattern pattern, Position pos) {
-    ChanTypeNode* node = (ChanTypeNode*)malloc(sizeof(ChanTypeNode));
+    ChanTypeNode* node = (ChanTypeNode*)xmalloc(sizeof(ChanTypeNode));
     if (!node) return NULL;
     
     node->base.type = AST_CHAN_TYPE;
@@ -476,7 +476,7 @@ ChanTypeNode* ast_chan_type_new(ASTNode* element_type, ChannelPattern pattern, P
 }
 
 ReferenceTypeNode* ast_reference_type_new(ASTNode* element_type, int is_mutable, Position pos) {
-    ReferenceTypeNode* node = (ReferenceTypeNode*)malloc(sizeof(ReferenceTypeNode));
+    ReferenceTypeNode* node = (ReferenceTypeNode*)xmalloc(sizeof(ReferenceTypeNode));
     if (!node) return NULL;
     
     node->base.type = AST_REFERENCE_TYPE;
@@ -490,7 +490,7 @@ ReferenceTypeNode* ast_reference_type_new(ASTNode* element_type, int is_mutable,
 }
 
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos) {
-    UnsafeStmtNode* node = (UnsafeStmtNode*)malloc(sizeof(UnsafeStmtNode));
+    UnsafeStmtNode* node = (UnsafeStmtNode*)xmalloc(sizeof(UnsafeStmtNode));
     if (!node) return NULL;
     
     node->base.type = AST_UNSAFE_STMT;
@@ -503,7 +503,7 @@ UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos) {
 }
 
 ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos) {
-    ArenaBlockNode* node = (ArenaBlockNode*)malloc(sizeof(ArenaBlockNode));
+    ArenaBlockNode* node = (ArenaBlockNode*)xmalloc(sizeof(ArenaBlockNode));
     if (!node) return NULL;
     node->base.type = AST_ARENA_BLOCK;
     node->base.pos = pos;
@@ -515,7 +515,7 @@ ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos) {
 
 // gofmt-syntax-b Task 1 (P1.5): label statement + labeled break/continue.
 LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos) {
-    LabelStmtNode* node = (LabelStmtNode*)malloc(sizeof(LabelStmtNode));
+    LabelStmtNode* node = (LabelStmtNode*)xmalloc(sizeof(LabelStmtNode));
     if (!node) return NULL;
     node->base.type = AST_LABEL_STMT;
     node->base.pos = pos;
@@ -527,7 +527,7 @@ LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos)
 }
 
 BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos) {
-    BreakLabelStmtNode* node = (BreakLabelStmtNode*)malloc(sizeof(BreakLabelStmtNode));
+    BreakLabelStmtNode* node = (BreakLabelStmtNode*)xmalloc(sizeof(BreakLabelStmtNode));
     if (!node) return NULL;
     node->base.type = AST_BREAK_LABEL_STMT;
     node->base.pos = pos;
@@ -538,7 +538,7 @@ BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos) {
 }
 
 ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position pos) {
-    ContinueLabelStmtNode* node = (ContinueLabelStmtNode*)malloc(sizeof(ContinueLabelStmtNode));
+    ContinueLabelStmtNode* node = (ContinueLabelStmtNode*)xmalloc(sizeof(ContinueLabelStmtNode));
     if (!node) return NULL;
     node->base.type = AST_CONTINUE_LABEL_STMT;
     node->base.pos = pos;
@@ -550,7 +550,7 @@ ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position p
 
 // gofmt-syntax-b Task 2 (P1.6): goto statement.
 GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos) {
-    GotoStmtNode* node = (GotoStmtNode*)malloc(sizeof(GotoStmtNode));
+    GotoStmtNode* node = (GotoStmtNode*)xmalloc(sizeof(GotoStmtNode));
     if (!node) return NULL;
     node->base.type = AST_GOTO_STMT;
     node->base.pos = pos;
@@ -568,7 +568,7 @@ GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos) {
 // why every other constructor here does its own malloc rather than
 // delegating to an ast.c-only helper).
 ASTNode* ast_break_stmt_new(Position pos) {
-    ASTNode* node = (ASTNode*)malloc(sizeof(ASTNode));
+    ASTNode* node = (ASTNode*)xmalloc(sizeof(ASTNode));
     if (!node) return NULL;
     node->type = AST_BREAK_STMT;
     node->pos = pos;
@@ -578,7 +578,7 @@ ASTNode* ast_break_stmt_new(Position pos) {
 }
 
 ASTNode* ast_continue_stmt_new(Position pos) {
-    ASTNode* node = (ASTNode*)malloc(sizeof(ASTNode));
+    ASTNode* node = (ASTNode*)xmalloc(sizeof(ASTNode));
     if (!node) return NULL;
     node->type = AST_CONTINUE_STMT;
     node->pos = pos;
@@ -588,7 +588,7 @@ ASTNode* ast_continue_stmt_new(Position pos) {
 }
 
 ASTNode* ast_fallthrough_stmt_new(Position pos) {
-    ASTNode* node = (ASTNode*)malloc(sizeof(ASTNode));
+    ASTNode* node = (ASTNode*)xmalloc(sizeof(ASTNode));
     if (!node) return NULL;
     node->type = AST_FALLTHROUGH_STMT;
     node->pos = pos;
@@ -598,7 +598,7 @@ ASTNode* ast_fallthrough_stmt_new(Position pos) {
 }
 
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos) {
-    AsmStmtNode* node = (AsmStmtNode*)malloc(sizeof(AsmStmtNode));
+    AsmStmtNode* node = (AsmStmtNode*)xmalloc(sizeof(AsmStmtNode));
     if (!node) return NULL;
     
     node->base.type = AST_ASM_STMT;
@@ -615,7 +615,7 @@ AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos) {
 }
 
 UnsafePtrTypeNode* ast_unsafe_ptr_type_new(ASTNode* element_type, Position pos) {
-    UnsafePtrTypeNode* node = (UnsafePtrTypeNode*)malloc(sizeof(UnsafePtrTypeNode));
+    UnsafePtrTypeNode* node = (UnsafePtrTypeNode*)xmalloc(sizeof(UnsafePtrTypeNode));
     if (!node) return NULL;
     
     node->base.type = AST_UNSAFE_PTR_TYPE;
@@ -628,7 +628,7 @@ UnsafePtrTypeNode* ast_unsafe_ptr_type_new(ASTNode* element_type, Position pos) 
 }
 
 PtrArithmeticNode* ast_ptr_arithmetic_new(ASTNode* pointer, TokenType operation, ASTNode* offset, Position pos) {
-    PtrArithmeticNode* node = (PtrArithmeticNode*)malloc(sizeof(PtrArithmeticNode));
+    PtrArithmeticNode* node = (PtrArithmeticNode*)xmalloc(sizeof(PtrArithmeticNode));
     if (!node) return NULL;
     
     node->base.type = AST_PTR_ARITHMETIC;
@@ -643,7 +643,7 @@ PtrArithmeticNode* ast_ptr_arithmetic_new(ASTNode* pointer, TokenType operation,
 }
 
 PtrDerefNode* ast_ptr_deref_new(ASTNode* pointer, Position pos) {
-    PtrDerefNode* node = (PtrDerefNode*)malloc(sizeof(PtrDerefNode));
+    PtrDerefNode* node = (PtrDerefNode*)xmalloc(sizeof(PtrDerefNode));
     if (!node) return NULL;
     
     node->base.type = AST_PTR_DEREF;
@@ -656,7 +656,7 @@ PtrDerefNode* ast_ptr_deref_new(ASTNode* pointer, Position pos) {
 }
 
 AddrOfNode* ast_addr_of_new(ASTNode* operand, Position pos) {
-    AddrOfNode* node = (AddrOfNode*)malloc(sizeof(AddrOfNode));
+    AddrOfNode* node = (AddrOfNode*)xmalloc(sizeof(AddrOfNode));
     if (!node) return NULL;
     
     node->base.type = AST_ADDR_OF;
@@ -669,7 +669,7 @@ AddrOfNode* ast_addr_of_new(ASTNode* operand, Position pos) {
 }
 
 PortIONode* ast_port_io_new(ASTNode* port, ASTNode* value, int is_input, int size, Position pos) {
-    PortIONode* node = (PortIONode*)malloc(sizeof(PortIONode));
+    PortIONode* node = (PortIONode*)xmalloc(sizeof(PortIONode));
     if (!node) return NULL;
     
     node->base.type = AST_PORT_IO;
@@ -685,7 +685,7 @@ PortIONode* ast_port_io_new(ASTNode* port, ASTNode* value, int is_input, int siz
 }
 
 MMIOAccessNode* ast_mmio_access_new(ASTNode* address, ASTNode* value, int is_volatile, int size, Position pos) {
-    MMIOAccessNode* node = (MMIOAccessNode*)malloc(sizeof(MMIOAccessNode));
+    MMIOAccessNode* node = (MMIOAccessNode*)xmalloc(sizeof(MMIOAccessNode));
     if (!node) return NULL;
     
     node->base.type = AST_MMIO_ACCESS;
@@ -701,7 +701,7 @@ MMIOAccessNode* ast_mmio_access_new(ASTNode* address, ASTNode* value, int is_vol
 }
 
 ExternDeclNode* ast_extern_decl_new(const char* name, const char* abi, ASTNode* params, ASTNode* return_type, const char* library, Position pos) {
-    ExternDeclNode* node = (ExternDeclNode*)malloc(sizeof(ExternDeclNode));
+    ExternDeclNode* node = (ExternDeclNode*)xmalloc(sizeof(ExternDeclNode));
     if (!node) return NULL;
     
     node->base.type = AST_EXTERN_DECL;
@@ -718,7 +718,7 @@ ExternDeclNode* ast_extern_decl_new(const char* name, const char* abi, ASTNode* 
 }
 
 AttributeNode* ast_attribute_new(const char* name, ASTNode* args, Position pos) {
-    AttributeNode* node = (AttributeNode*)malloc(sizeof(AttributeNode));
+    AttributeNode* node = (AttributeNode*)xmalloc(sizeof(AttributeNode));
     if (!node) return NULL;
     
     node->base.type = AST_ATTRIBUTE;
@@ -732,7 +732,7 @@ AttributeNode* ast_attribute_new(const char* name, ASTNode* args, Position pos) 
 }
 
 VolatileExprNode* ast_volatile_expr_new(ASTNode* expr, Position pos) {
-    VolatileExprNode* node = (VolatileExprNode*)malloc(sizeof(VolatileExprNode));
+    VolatileExprNode* node = (VolatileExprNode*)xmalloc(sizeof(VolatileExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_VOLATILE_EXPR;
@@ -745,7 +745,7 @@ VolatileExprNode* ast_volatile_expr_new(ASTNode* expr, Position pos) {
 }
 
 ParallelForNode* ast_parallel_for_new(ASTNode* init, ASTNode* condition, ASTNode* increment, ASTNode* body, const char* schedule_type, int chunk_size, Position pos) {
-    ParallelForNode* node = (ParallelForNode*)malloc(sizeof(ParallelForNode));
+    ParallelForNode* node = (ParallelForNode*)xmalloc(sizeof(ParallelForNode));
     if (!node) return NULL;
     
     node->base.type = AST_PARALLEL_FOR;
@@ -763,7 +763,7 @@ ParallelForNode* ast_parallel_for_new(ASTNode* init, ASTNode* condition, ASTNode
 }
 
 ParallelReduceNode* ast_parallel_reduce_new(ASTNode* array, ASTNode* init_value, ASTNode* reduction_func, const char* operation, Position pos) {
-    ParallelReduceNode* node = (ParallelReduceNode*)malloc(sizeof(ParallelReduceNode));
+    ParallelReduceNode* node = (ParallelReduceNode*)xmalloc(sizeof(ParallelReduceNode));
     if (!node) return NULL;
     
     node->base.type = AST_PARALLEL_REDUCE;
@@ -779,7 +779,7 @@ ParallelReduceNode* ast_parallel_reduce_new(ASTNode* array, ASTNode* init_value,
 }
 
 BarrierCallNode* ast_barrier_call_new(const char* barrier_name, Position pos) {
-    BarrierCallNode* node = (BarrierCallNode*)malloc(sizeof(BarrierCallNode));
+    BarrierCallNode* node = (BarrierCallNode*)xmalloc(sizeof(BarrierCallNode));
     if (!node) return NULL;
     
     node->base.type = AST_BARRIER_CALL;
@@ -792,7 +792,7 @@ BarrierCallNode* ast_barrier_call_new(const char* barrier_name, Position pos) {
 }
 
 AtomicExprNode* ast_atomic_expr_new(ASTNode* expr, const char* operation, ASTNode* operand, Position pos) {
-    AtomicExprNode* node = (AtomicExprNode*)malloc(sizeof(AtomicExprNode));
+    AtomicExprNode* node = (AtomicExprNode*)xmalloc(sizeof(AtomicExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_ATOMIC_EXPR;
@@ -807,7 +807,7 @@ AtomicExprNode* ast_atomic_expr_new(ASTNode* expr, const char* operation, ASTNod
 }
 
 ThreadLocalDeclNode* ast_thread_local_decl_new(const char* name, ASTNode* type, ASTNode* init_value, Position pos) {
-    ThreadLocalDeclNode* node = (ThreadLocalDeclNode*)malloc(sizeof(ThreadLocalDeclNode));
+    ThreadLocalDeclNode* node = (ThreadLocalDeclNode*)xmalloc(sizeof(ThreadLocalDeclNode));
     if (!node) return NULL;
     
     node->base.type = AST_THREAD_LOCAL_DECL;
@@ -822,7 +822,7 @@ ThreadLocalDeclNode* ast_thread_local_decl_new(const char* name, ASTNode* type, 
 }
 
 MatchExprNode* ast_match_expr_new(ASTNode* expr, ASTNode* cases, Position pos) {
-    MatchExprNode* node = (MatchExprNode*)malloc(sizeof(MatchExprNode));
+    MatchExprNode* node = (MatchExprNode*)xmalloc(sizeof(MatchExprNode));
     if (!node) return NULL;
     
     node->base.type = AST_MATCH_EXPR;
@@ -836,7 +836,7 @@ MatchExprNode* ast_match_expr_new(ASTNode* expr, ASTNode* cases, Position pos) {
 }
 
 MatchCaseNode* ast_match_case_new(ASTNode* pattern, ASTNode* guard, ASTNode* body, Position pos) {
-    MatchCaseNode* node = (MatchCaseNode*)malloc(sizeof(MatchCaseNode));
+    MatchCaseNode* node = (MatchCaseNode*)xmalloc(sizeof(MatchCaseNode));
     if (!node) return NULL;
     
     node->base.type = AST_MATCH_CASE;
@@ -851,7 +851,7 @@ MatchCaseNode* ast_match_case_new(ASTNode* pattern, ASTNode* guard, ASTNode* bod
 }
 
 PatternNode* ast_pattern_new(PatternType pattern_type, Position pos) {
-    PatternNode* node = (PatternNode*)malloc(sizeof(PatternNode));
+    PatternNode* node = (PatternNode*)xmalloc(sizeof(PatternNode));
     if (!node) return NULL;
     
     node->base.type = AST_PATTERN;
@@ -867,7 +867,7 @@ PatternNode* ast_pattern_new(PatternType pattern_type, Position pos) {
 }
 
 GuardConditionNode* ast_guard_condition_new(ASTNode* condition, Position pos) {
-    GuardConditionNode* node = (GuardConditionNode*)malloc(sizeof(GuardConditionNode));
+    GuardConditionNode* node = (GuardConditionNode*)xmalloc(sizeof(GuardConditionNode));
     if (!node) return NULL;
     
     node->base.type = AST_GUARD_CONDITION;
@@ -880,7 +880,7 @@ GuardConditionNode* ast_guard_condition_new(ASTNode* condition, Position pos) {
 }
 
 KernelDeclNode* ast_kernel_decl_new(const char* name, ASTNode* params, ASTNode* return_type, ASTNode* body, GPUTargetArch target_arch, Position pos) {
-    KernelDeclNode* node = (KernelDeclNode*)malloc(sizeof(KernelDeclNode));
+    KernelDeclNode* node = (KernelDeclNode*)xmalloc(sizeof(KernelDeclNode));
     if (!node) return NULL;
     
     node->base.type = AST_KERNEL_DECL;
@@ -900,7 +900,7 @@ KernelDeclNode* ast_kernel_decl_new(const char* name, ASTNode* params, ASTNode* 
 }
 
 KernelLaunchNode* ast_kernel_launch_new(ASTNode* kernel_func, ASTNode* grid_dim, ASTNode* block_dim, ASTNode* args, Position pos) {
-    KernelLaunchNode* node = (KernelLaunchNode*)malloc(sizeof(KernelLaunchNode));
+    KernelLaunchNode* node = (KernelLaunchNode*)xmalloc(sizeof(KernelLaunchNode));
     if (!node) return NULL;
     
     node->base.type = AST_KERNEL_LAUNCH;
@@ -918,7 +918,7 @@ KernelLaunchNode* ast_kernel_launch_new(ASTNode* kernel_func, ASTNode* grid_dim,
 }
 
 GPUMemoryAllocNode* ast_gpu_memory_alloc_new(ASTNode* size, ASTNode* element_type, GPUMemoryType memory_type, Position pos) {
-    GPUMemoryAllocNode* node = (GPUMemoryAllocNode*)malloc(sizeof(GPUMemoryAllocNode));
+    GPUMemoryAllocNode* node = (GPUMemoryAllocNode*)xmalloc(sizeof(GPUMemoryAllocNode));
     if (!node) return NULL;
     
     node->base.type = AST_GPU_MEMORY_ALLOC;
@@ -935,7 +935,7 @@ GPUMemoryAllocNode* ast_gpu_memory_alloc_new(ASTNode* size, ASTNode* element_typ
 }
 
 GPUMemoryCopyNode* ast_gpu_memory_copy_new(ASTNode* dest, ASTNode* src, ASTNode* size, int direction, Position pos) {
-    GPUMemoryCopyNode* node = (GPUMemoryCopyNode*)malloc(sizeof(GPUMemoryCopyNode));
+    GPUMemoryCopyNode* node = (GPUMemoryCopyNode*)xmalloc(sizeof(GPUMemoryCopyNode));
     if (!node) return NULL;
     
     node->base.type = AST_GPU_MEMORY_COPY;
@@ -953,7 +953,7 @@ GPUMemoryCopyNode* ast_gpu_memory_copy_new(ASTNode* dest, ASTNode* src, ASTNode*
 }
 
 GPUSyncNode* ast_gpu_sync_new(int sync_type, ASTNode* stream, ASTNode* event, Position pos) {
-    GPUSyncNode* node = (GPUSyncNode*)malloc(sizeof(GPUSyncNode));
+    GPUSyncNode* node = (GPUSyncNode*)xmalloc(sizeof(GPUSyncNode));
     if (!node) return NULL;
     
     node->base.type = AST_GPU_SYNC;
@@ -968,7 +968,7 @@ GPUSyncNode* ast_gpu_sync_new(int sync_type, ASTNode* stream, ASTNode* event, Po
 }
 
 GPUIntrinsicNode* ast_gpu_intrinsic_new(const char* intrinsic_name, ASTNode* args, GPUExecutionContext context, Position pos) {
-    GPUIntrinsicNode* node = (GPUIntrinsicNode*)malloc(sizeof(GPUIntrinsicNode));
+    GPUIntrinsicNode* node = (GPUIntrinsicNode*)xmalloc(sizeof(GPUIntrinsicNode));
     if (!node) return NULL;
     
     node->base.type = AST_GPU_INTRINSIC;
@@ -985,7 +985,7 @@ GPUIntrinsicNode* ast_gpu_intrinsic_new(const char* intrinsic_name, ASTNode* arg
 // WebAssembly constructors
 
 WasmExportNode* ast_wasm_export_new(const char* export_name, ASTNode* item, const char* export_type, Position pos) {
-    WasmExportNode* node = (WasmExportNode*)malloc(sizeof(WasmExportNode));
+    WasmExportNode* node = (WasmExportNode*)xmalloc(sizeof(WasmExportNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_EXPORT;
@@ -1000,7 +1000,7 @@ WasmExportNode* ast_wasm_export_new(const char* export_name, ASTNode* item, cons
 }
 
 WasmImportNode* ast_wasm_import_new(const char* module_name, const char* import_name, const char* local_name, const char* import_type, ASTNode* signature, Position pos) {
-    WasmImportNode* node = (WasmImportNode*)malloc(sizeof(WasmImportNode));
+    WasmImportNode* node = (WasmImportNode*)xmalloc(sizeof(WasmImportNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_IMPORT;
@@ -1017,7 +1017,7 @@ WasmImportNode* ast_wasm_import_new(const char* module_name, const char* import_
 }
 
 WasmMemoryNode* ast_wasm_memory_new(ASTNode* min_pages, ASTNode* max_pages, int is_shared, Position pos) {
-    WasmMemoryNode* node = (WasmMemoryNode*)malloc(sizeof(WasmMemoryNode));
+    WasmMemoryNode* node = (WasmMemoryNode*)xmalloc(sizeof(WasmMemoryNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_MEMORY;
@@ -1034,7 +1034,7 @@ WasmMemoryNode* ast_wasm_memory_new(ASTNode* min_pages, ASTNode* max_pages, int 
 }
 
 WasmTableNode* ast_wasm_table_new(WasmValueType element_type, ASTNode* min_size, ASTNode* max_size, Position pos) {
-    WasmTableNode* node = (WasmTableNode*)malloc(sizeof(WasmTableNode));
+    WasmTableNode* node = (WasmTableNode*)xmalloc(sizeof(WasmTableNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_TABLE;
@@ -1051,7 +1051,7 @@ WasmTableNode* ast_wasm_table_new(WasmValueType element_type, ASTNode* min_size,
 }
 
 WasmGlobalNode* ast_wasm_global_new(const char* name, WasmValueType value_type, int is_mutable, ASTNode* init_value, Position pos) {
-    WasmGlobalNode* node = (WasmGlobalNode*)malloc(sizeof(WasmGlobalNode));
+    WasmGlobalNode* node = (WasmGlobalNode*)xmalloc(sizeof(WasmGlobalNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_GLOBAL;
@@ -1069,7 +1069,7 @@ WasmGlobalNode* ast_wasm_global_new(const char* name, WasmValueType value_type, 
 }
 
 WasmTypeNode* ast_wasm_type_new(const char* name, ASTNode* params, ASTNode* results, Position pos) {
-    WasmTypeNode* node = (WasmTypeNode*)malloc(sizeof(WasmTypeNode));
+    WasmTypeNode* node = (WasmTypeNode*)xmalloc(sizeof(WasmTypeNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_TYPE;
@@ -1084,7 +1084,7 @@ WasmTypeNode* ast_wasm_type_new(const char* name, ASTNode* params, ASTNode* resu
 }
 
 WasmStartNode* ast_wasm_start_new(ASTNode* function, Position pos) {
-    WasmStartNode* node = (WasmStartNode*)malloc(sizeof(WasmStartNode));
+    WasmStartNode* node = (WasmStartNode*)xmalloc(sizeof(WasmStartNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_START;
@@ -1097,7 +1097,7 @@ WasmStartNode* ast_wasm_start_new(ASTNode* function, Position pos) {
 }
 
 WasmElemNode* ast_wasm_elem_new(ASTNode* table_index, ASTNode* offset, ASTNode* elements, Position pos) {
-    WasmElemNode* node = (WasmElemNode*)malloc(sizeof(WasmElemNode));
+    WasmElemNode* node = (WasmElemNode*)xmalloc(sizeof(WasmElemNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_ELEM;
@@ -1112,7 +1112,7 @@ WasmElemNode* ast_wasm_elem_new(ASTNode* table_index, ASTNode* offset, ASTNode* 
 }
 
 WasmDataNode* ast_wasm_data_new(ASTNode* memory_index, ASTNode* offset, ASTNode* data, Position pos) {
-    WasmDataNode* node = (WasmDataNode*)malloc(sizeof(WasmDataNode));
+    WasmDataNode* node = (WasmDataNode*)xmalloc(sizeof(WasmDataNode));
     if (!node) return NULL;
     
     node->base.type = AST_WASM_DATA;
@@ -1127,7 +1127,7 @@ WasmDataNode* ast_wasm_data_new(ASTNode* memory_index, ASTNode* offset, ASTNode*
 }
 
 JSInteropNode* ast_js_interop_new(JSInteropType interop_type, const char* object_name, const char* property_name, ASTNode* args, WasmEnvironment target_env, Position pos) {
-    JSInteropNode* node = (JSInteropNode*)malloc(sizeof(JSInteropNode));
+    JSInteropNode* node = (JSInteropNode*)xmalloc(sizeof(JSInteropNode));
     if (!node) return NULL;
     
     node->base.type = AST_JS_INTEROP;
@@ -1144,7 +1144,7 @@ JSInteropNode* ast_js_interop_new(JSInteropType interop_type, const char* object
 }
 
 DOMAccessNode* ast_dom_access_new(const char* api_name, const char* method_name, ASTNode* args, int is_property, Position pos) {
-    DOMAccessNode* node = (DOMAccessNode*)malloc(sizeof(DOMAccessNode));
+    DOMAccessNode* node = (DOMAccessNode*)xmalloc(sizeof(DOMAccessNode));
     if (!node) return NULL;
     
     node->base.type = AST_DOM_ACCESS;
@@ -1162,7 +1162,7 @@ DOMAccessNode* ast_dom_access_new(const char* api_name, const char* method_name,
 // Utility functions
 
 EnumTypeNode* ast_enum_type_new(ASTNode* variants, Position pos) {
-    EnumTypeNode* n = (EnumTypeNode*)calloc(1, sizeof(EnumTypeNode));
+    EnumTypeNode* n = (EnumTypeNode*)xcalloc(1, sizeof(EnumTypeNode));
     if (!n) return NULL;
     n->base.type = AST_ENUM_TYPE;
     n->base.pos = pos;
@@ -1173,7 +1173,7 @@ EnumTypeNode* ast_enum_type_new(ASTNode* variants, Position pos) {
 }
 
 InterfaceTypeNode* ast_interface_type_new(ASTNode* methods, Position pos) {
-    InterfaceTypeNode* n = (InterfaceTypeNode*)calloc(1, sizeof(InterfaceTypeNode));
+    InterfaceTypeNode* n = (InterfaceTypeNode*)xcalloc(1, sizeof(InterfaceTypeNode));
     if (!n) return NULL;
     n->base.type = AST_INTERFACE_TYPE;
     n->base.pos = pos;
@@ -1184,7 +1184,7 @@ InterfaceTypeNode* ast_interface_type_new(ASTNode* methods, Position pos) {
 }
 
 EnumVariantNode* ast_enum_variant_new(const char* name, ASTNode* fields, Position pos) {
-    EnumVariantNode* n = (EnumVariantNode*)calloc(1, sizeof(EnumVariantNode));
+    EnumVariantNode* n = (EnumVariantNode*)xcalloc(1, sizeof(EnumVariantNode));
     if (!n) return NULL;
     n->base.type = AST_ENUM_VARIANT;
     n->base.pos = pos;

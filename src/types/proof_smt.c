@@ -22,7 +22,7 @@ _Static_assert(sizeof(SMTSolver) == sizeof(int), "SMTSolver should be int size")
 SMTExpression* smt_var(const char* name, struct Type* type) {
     if (!name) return NULL;
     
-    SMTExpression* expr = malloc(sizeof(SMTExpression));
+    SMTExpression* expr = xmalloc(sizeof(SMTExpression));
     if (!expr) return NULL;
     
     *expr = (SMTExpression) {
@@ -38,7 +38,7 @@ SMTExpression* smt_var(const char* name, struct Type* type) {
 }
 
 SMTExpression* smt_const_int(int64_t value) {
-    SMTExpression* expr = malloc(sizeof(SMTExpression));
+    SMTExpression* expr = xmalloc(sizeof(SMTExpression));
     if (!expr) return NULL;
     
     *expr = (SMTExpression) {
@@ -54,7 +54,7 @@ SMTExpression* smt_const_int(int64_t value) {
 }
 
 SMTExpression* smt_const_bool(bool value) {
-    SMTExpression* expr = malloc(sizeof(SMTExpression));
+    SMTExpression* expr = xmalloc(sizeof(SMTExpression));
     if (!expr) return NULL;
     
     *expr = (SMTExpression) {
@@ -72,7 +72,7 @@ SMTExpression* smt_const_bool(bool value) {
 SMTExpression* smt_app(const char* function_name, SMTExpression** args, size_t arg_count) {
     if (!function_name) return NULL;
     
-    SMTExpression* expr = malloc(sizeof(SMTExpression));
+    SMTExpression* expr = xmalloc(sizeof(SMTExpression));
     if (!expr) return NULL;
     
     // Copy arguments array
@@ -104,7 +104,7 @@ SMTExpression* smt_app(const char* function_name, SMTExpression** args, size_t a
 SMTExpression* smt_forall(char** var_names, struct Type** var_types, size_t var_count, SMTExpression* body) {
     if (!var_names || !body || var_count == 0) return NULL;
     
-    SMTExpression* expr = malloc(sizeof(SMTExpression));
+    SMTExpression* expr = xmalloc(sizeof(SMTExpression));
     if (!expr) return NULL;
     
     // Copy variable names

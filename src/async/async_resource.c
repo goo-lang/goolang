@@ -30,7 +30,7 @@ static uint64_t generate_id(void) {
 
 // Initialize global resource manager
 static void init_global_resource_manager(void) {
-    g_resource_manager = calloc(1, sizeof(AsyncResourceManager));
+    g_resource_manager = xcalloc(1, sizeof(AsyncResourceManager));
     if (!g_resource_manager) return;
     
     g_resource_manager->resource_capacity = 64;
@@ -61,7 +61,7 @@ AsyncResource* async_resource_create(const char* name, AsyncResourceType type,
                                    AsyncResourceAcquireFn acquire_fn, AsyncResourceCleanupFn cleanup_fn,
                                    void* context, size_t context_size) {
     
-    AsyncResource* resource = calloc(1, sizeof(AsyncResource));
+    AsyncResource* resource = xcalloc(1, sizeof(AsyncResource));
     if (!resource) return NULL;
     
     resource->id = generate_id();
@@ -596,7 +596,7 @@ void async_resource_manager_print_global_stats(void) {
 // Deferred action implementation
 DeferredAction* deferred_action_create(const char* name, void (*action_fn)(void*, void*),
                                      void* data, void* context, size_t data_size) {
-    DeferredAction* action = calloc(1, sizeof(DeferredAction));
+    DeferredAction* action = xcalloc(1, sizeof(DeferredAction));
     if (!action) return NULL;
     
     action->id = generate_id();
@@ -690,7 +690,7 @@ static Result_void_ptr execute_single_deferred_action(DeferredAction* action, bo
 
 // Resource scope implementation
 AsyncResourceScope* async_resource_scope_create(const char* name, void* async_context) {
-    AsyncResourceScope* scope = calloc(1, sizeof(AsyncResourceScope));
+    AsyncResourceScope* scope = xcalloc(1, sizeof(AsyncResourceScope));
     if (!scope) return NULL;
     
     scope->id = generate_id();
@@ -1309,7 +1309,7 @@ static void memory_resource_cleanup(void* resource_data, void* context) {
 AsyncResource* async_memory_resource_create(const char* name, size_t size, size_t alignment) {
     (void)alignment; // TODO: Implement aligned allocation
     
-    size_t* size_context = malloc(sizeof(size_t));
+    size_t* size_context = xmalloc(sizeof(size_t));
     if (!size_context) return NULL;
     
     *size_context = size;

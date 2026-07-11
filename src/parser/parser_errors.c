@@ -19,7 +19,7 @@ void parser_error_init(ErrorContext* ctx) {
         parser_error_cleanup();
     }
     
-    g_parser_error_state = (ParserErrorState*)calloc(1, sizeof(ParserErrorState));
+    g_parser_error_state = (ParserErrorState*)xcalloc(1, sizeof(ParserErrorState));
     if (!g_parser_error_state) return;
     
     g_parser_error_state->error_ctx = ctx;

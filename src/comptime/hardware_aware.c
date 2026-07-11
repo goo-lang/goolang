@@ -143,7 +143,7 @@ static void detect_aarch64_features(HardwareProfile* profile) {
 
 // Hardware detection implementation
 HardwareProfile* detect_hardware_profile(void) {
-    HardwareProfile* profile = calloc(1, sizeof(HardwareProfile));
+    HardwareProfile* profile = xcalloc(1, sizeof(HardwareProfile));
     if (!profile) return NULL;
     
     // Detect architecture
@@ -295,7 +295,7 @@ int get_optimal_thread_count(const HardwareProfile* profile) {
 HardwareOptimization* create_hardware_optimization(const HardwareProfile* profile) {
     if (!profile) return NULL;
     
-    HardwareOptimization* opt = calloc(1, sizeof(HardwareOptimization));
+    HardwareOptimization* opt = xcalloc(1, sizeof(HardwareOptimization));
     if (!opt) return NULL;
     
     // Vectorization decisions
@@ -505,7 +505,7 @@ bool should_use_gpu_acceleration(const HardwareProfile* profile,
 }
 
 HardwareAwareContext* create_hardware_aware_context(void) {
-    HardwareAwareContext* context = calloc(1, sizeof(HardwareAwareContext));
+    HardwareAwareContext* context = xcalloc(1, sizeof(HardwareAwareContext));
     if (!context) return NULL;
     
     context->enable_runtime_adaptation = true;
@@ -701,7 +701,7 @@ ComptimeValue* comptime_target_has_capability(ComptimeValue* capability) {
         has_cap = context->profile->has_gpu;
     }
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_BOOL;
@@ -721,7 +721,7 @@ ComptimeValue* comptime_get_optimal_vector_width(ComptimeValue* operation) {
     
     int width = select_optimal_vector_width(context->profile, operation->string_value);
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_INT;
@@ -735,7 +735,7 @@ ComptimeValue* comptime_get_core_count(void) {
         return NULL;
     }
     
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_INT;

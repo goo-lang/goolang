@@ -152,7 +152,7 @@ typedef struct ResourceManager {
 // =============================================================================
 
 ResourceManager* resource_manager_new(TypeChecker* type_checker) {
-    ResourceManager* rm = malloc(sizeof(ResourceManager));
+    ResourceManager* rm = xmalloc(sizeof(ResourceManager));
     if (!rm) return NULL;
     
     rm->type_checker = type_checker;
@@ -237,7 +237,7 @@ void resource_manager_free(ResourceManager* rm) {
 // =============================================================================
 
 ScopeCleanup* scope_cleanup_new(size_t scope_id, size_t depth, ASTNode* scope_node) {
-    ScopeCleanup* scope = malloc(sizeof(ScopeCleanup));
+    ScopeCleanup* scope = xmalloc(sizeof(ScopeCleanup));
     if (!scope) return NULL;
     
     scope->scope_id = scope_id;
@@ -351,7 +351,7 @@ void resource_manager_exit_scope(ResourceManager* rm) {
 // =============================================================================
 
 ResourceInfo* resource_info_new(const char* name, ResourceType type, Position pos) {
-    ResourceInfo* res = malloc(sizeof(ResourceInfo));
+    ResourceInfo* res = xmalloc(sizeof(ResourceInfo));
     if (!res) return NULL;
     
     res->name = str_dup(name);
@@ -480,7 +480,7 @@ int resource_manager_mark_resource_borrowed(ResourceManager* rm, const char* nam
 // =============================================================================
 
 DeferInfo* defer_info_new(ASTNode* defer_stmt, size_t scope_depth, Position pos) {
-    DeferInfo* defer = malloc(sizeof(DeferInfo));
+    DeferInfo* defer = xmalloc(sizeof(DeferInfo));
     if (!defer) return NULL;
     
     defer->defer_stmt = defer_stmt;
@@ -531,7 +531,7 @@ int resource_manager_process_defer(ResourceManager* rm, ASTNode* defer_stmt, Pos
 // =============================================================================
 
 CleanupAction* cleanup_action_new(ResourceInfo* resource, CleanupMethod method, int priority) {
-    CleanupAction* action = malloc(sizeof(CleanupAction));
+    CleanupAction* action = xmalloc(sizeof(CleanupAction));
     if (!action) return NULL;
     
     action->resource = resource;

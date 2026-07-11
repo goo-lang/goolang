@@ -40,7 +40,7 @@ static void brute_force_response(const ThreatPattern* pattern, const AuditEvent*
 }
 
 ThreatPattern* create_brute_force_pattern(void) {
-    ThreatPattern* pattern = calloc(1, sizeof(ThreatPattern));
+    ThreatPattern* pattern = xcalloc(1, sizeof(ThreatPattern));
     if (!pattern) return NULL;
     
     strncpy(pattern->pattern_name, "brute_force_attack", sizeof(pattern->pattern_name) - 1);
@@ -49,7 +49,7 @@ ThreatPattern* create_brute_force_pattern(void) {
     
     // Configure pattern
     pattern->event_type_count = 1;
-    pattern->event_types = malloc(sizeof(AuditEventType));
+    pattern->event_types = xmalloc(sizeof(AuditEventType));
     if (pattern->event_types) {
         pattern->event_types[0] = AUDIT_EVENT_AUTHENTICATION_FAILURE;
     }
@@ -97,7 +97,7 @@ static bool privilege_escalation_matcher(const AuditEvent* events, size_t count,
 }
 
 ThreatPattern* create_privilege_escalation_pattern(void) {
-    ThreatPattern* pattern = calloc(1, sizeof(ThreatPattern));
+    ThreatPattern* pattern = xcalloc(1, sizeof(ThreatPattern));
     if (!pattern) return NULL;
     
     strncpy(pattern->pattern_name, "privilege_escalation", sizeof(pattern->pattern_name) - 1);
@@ -161,7 +161,7 @@ static bool data_exfiltration_matcher(const AuditEvent* events, size_t count, vo
 }
 
 ThreatPattern* create_data_exfiltration_pattern(void) {
-    ThreatPattern* pattern = calloc(1, sizeof(ThreatPattern));
+    ThreatPattern* pattern = xcalloc(1, sizeof(ThreatPattern));
     if (!pattern) return NULL;
     
     strncpy(pattern->pattern_name, "data_exfiltration", sizeof(pattern->pattern_name) - 1);
@@ -221,7 +221,7 @@ static bool anomalous_access_matcher(const AuditEvent* events, size_t count, voi
 }
 
 ThreatPattern* create_anomalous_access_pattern(void) {
-    ThreatPattern* pattern = calloc(1, sizeof(ThreatPattern));
+    ThreatPattern* pattern = xcalloc(1, sizeof(ThreatPattern));
     if (!pattern) return NULL;
     
     strncpy(pattern->pattern_name, "anomalous_access", sizeof(pattern->pattern_name) - 1);
@@ -268,7 +268,7 @@ static bool injection_attack_matcher(const AuditEvent* events, size_t count, voi
 }
 
 ThreatPattern* create_injection_attack_pattern(void) {
-    ThreatPattern* pattern = calloc(1, sizeof(ThreatPattern));
+    ThreatPattern* pattern = xcalloc(1, sizeof(ThreatPattern));
     if (!pattern) return NULL;
     
     strncpy(pattern->pattern_name, "injection_attack", sizeof(pattern->pattern_name) - 1);
@@ -276,7 +276,7 @@ ThreatPattern* create_injection_attack_pattern(void) {
             sizeof(pattern->description) - 1);
     
     pattern->event_type_count = 1;
-    pattern->event_types = malloc(sizeof(AuditEventType));
+    pattern->event_types = xmalloc(sizeof(AuditEventType));
     if (pattern->event_types) {
         pattern->event_types[0] = AUDIT_EVENT_TAINT_VIOLATION;
     }
@@ -311,7 +311,7 @@ static bool soc2_logging_checker(const AuditEvent* event, void* context) {
 }
 
 ComplianceRule* create_soc2_logging_rule(void) {
-    ComplianceRule* rule = calloc(1, sizeof(ComplianceRule));
+    ComplianceRule* rule = xcalloc(1, sizeof(ComplianceRule));
     if (!rule) return NULL;
     
     strncpy(rule->rule_id, "SOC2-LOG-001", sizeof(rule->rule_id) - 1);
@@ -346,7 +346,7 @@ static bool gdpr_data_access_checker(const AuditEvent* event, void* context) {
 }
 
 ComplianceRule* create_gdpr_data_access_rule(void) {
-    ComplianceRule* rule = calloc(1, sizeof(ComplianceRule));
+    ComplianceRule* rule = xcalloc(1, sizeof(ComplianceRule));
     if (!rule) return NULL;
     
     strncpy(rule->rule_id, "GDPR-DATA-001", sizeof(rule->rule_id) - 1);
@@ -384,7 +384,7 @@ static bool iso27001_access_control_checker(const AuditEvent* event, void* conte
 }
 
 ComplianceRule* create_iso27001_access_control_rule(void) {
-    ComplianceRule* rule = calloc(1, sizeof(ComplianceRule));
+    ComplianceRule* rule = xcalloc(1, sizeof(ComplianceRule));
     if (!rule) return NULL;
     
     strncpy(rule->rule_id, "ISO27001-AC-001", sizeof(rule->rule_id) - 1);
@@ -421,7 +421,7 @@ static bool hipaa_audit_checker(const AuditEvent* event, void* context) {
 }
 
 ComplianceRule* create_hipaa_audit_rule(void) {
-    ComplianceRule* rule = calloc(1, sizeof(ComplianceRule));
+    ComplianceRule* rule = xcalloc(1, sizeof(ComplianceRule));
     if (!rule) return NULL;
     
     strncpy(rule->rule_id, "HIPAA-AUDIT-001", sizeof(rule->rule_id) - 1);

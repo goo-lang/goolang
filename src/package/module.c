@@ -10,7 +10,7 @@
 Version* version_parse(const char* version_str) {
     if (!version_str) return NULL;
     
-    Version* version = calloc(1, sizeof(Version));
+    Version* version = xcalloc(1, sizeof(Version));
     if (!version) return NULL;
     
     // Parse semantic version format: major.minor.patch[-pre_release][+build_metadata]
@@ -154,7 +154,7 @@ bool version_satisfies(const Version* version, const VersionConstraint* constrai
 VersionConstraint* version_constraint_parse(const char* constraint_str) {
     if (!constraint_str) return NULL;
     
-    VersionConstraint* constraint = calloc(1, sizeof(VersionConstraint));
+    VersionConstraint* constraint = xcalloc(1, sizeof(VersionConstraint));
     if (!constraint) return NULL;
     
     // Determine constraint type and parse accordingly
@@ -193,7 +193,7 @@ void version_constraint_free(VersionConstraint* constraint) {
 Dependency* dependency_create(const char* name, const char* constraint_str) {
     if (!name) return NULL;
     
-    Dependency* dep = calloc(1, sizeof(Dependency));
+    Dependency* dep = xcalloc(1, sizeof(Dependency));
     if (!dep) return NULL;
     
     dep->name = string_duplicate(name);
@@ -246,7 +246,7 @@ void dependency_list_free(Dependency* list) {
 Module* module_create(const char* name, const char* version_str) {
     if (!name || !version_str) return NULL;
     
-    Module* module = calloc(1, sizeof(Module));
+    Module* module = xcalloc(1, sizeof(Module));
     if (!module) return NULL;
     
     module->name = string_duplicate(name);
@@ -395,7 +395,7 @@ bool module_validate(const Module* module, char** error_message) {
 Module* module_parse_toml(const char* toml_content) {
     if (!toml_content) return NULL;
     
-    Module* module = calloc(1, sizeof(Module));
+    Module* module = xcalloc(1, sizeof(Module));
     if (!module) return NULL;
     
     // Very basic TOML parsing - in a real implementation, use a proper TOML library

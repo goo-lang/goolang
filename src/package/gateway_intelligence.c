@@ -35,7 +35,7 @@ static long long get_time_ms(void) {
 }
 
 GatewayIntelligence* gateway_intelligence_create(IpfsClient* ipfs_client) {
-    GatewayIntelligence* intelligence = calloc(1, sizeof(GatewayIntelligence));
+    GatewayIntelligence* intelligence = xcalloc(1, sizeof(GatewayIntelligence));
     if (!intelligence) return NULL;
     
     intelligence->ipfs_client = ipfs_client;
@@ -310,7 +310,7 @@ float gateway_metrics_calculate_quality_score(const GatewayMetrics* metrics) {
 GatewayMetrics* gateway_metrics_create(const char* gateway_url) {
     if (!gateway_url) return NULL;
     
-    GatewayMetrics* metrics = calloc(1, sizeof(GatewayMetrics));
+    GatewayMetrics* metrics = xcalloc(1, sizeof(GatewayMetrics));
     if (!metrics) return NULL;
     
     metrics->gateway_url = strdup(gateway_url);
@@ -332,7 +332,7 @@ void gateway_metrics_free(GatewayMetrics* metrics) {
 }
 
 NetworkConditions* network_conditions_create(void) {
-    NetworkConditions* conditions = calloc(1, sizeof(NetworkConditions));
+    NetworkConditions* conditions = xcalloc(1, sizeof(NetworkConditions));
     if (!conditions) return NULL;
     
     // Default values
@@ -445,7 +445,7 @@ GatewayRanking** gateway_intelligence_rank_gateways(GatewayIntelligence* intelli
 GatewayRanking* gateway_ranking_create(IpfsGateway* gateway, GatewayMetrics* metrics) {
     if (!gateway || !metrics) return NULL;
     
-    GatewayRanking* ranking = calloc(1, sizeof(GatewayRanking));
+    GatewayRanking* ranking = xcalloc(1, sizeof(GatewayRanking));
     if (!ranking) return NULL;
     
     ranking->gateway = gateway;

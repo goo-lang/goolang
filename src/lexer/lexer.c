@@ -17,7 +17,7 @@ int goo_lexer_error_count = 0;
 
 Lexer* lexer_new(const char* input, const char* filename) {
     goo_lexer_error_count = 0;
-    Lexer* lexer = malloc(sizeof(Lexer));
+    Lexer* lexer = xmalloc(sizeof(Lexer));
     if (!lexer) return NULL;
     
     lexer->input = input;

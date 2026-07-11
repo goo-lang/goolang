@@ -24,7 +24,7 @@ static char* str_dup(const char* s) {
 // =============================================================================
 
 DependentTypeContext* dependent_type_context_new(TypeChecker* type_checker) {
-    DependentTypeContext* context = malloc(sizeof(DependentTypeContext));
+    DependentTypeContext* context = xmalloc(sizeof(DependentTypeContext));
     if (!context) return NULL;
     
     memset(context, 0, sizeof(DependentTypeContext));
@@ -111,7 +111,7 @@ void dependent_type_context_free(DependentTypeContext* context) {
 // =============================================================================
 
 DependentType* dependent_type_new(DependentTypeKind kind, const char* name) {
-    DependentType* type = malloc(sizeof(DependentType));
+    DependentType* type = xmalloc(sizeof(DependentType));
     if (!type) return NULL;
     
     memset(type, 0, sizeof(DependentType));
@@ -278,7 +278,7 @@ DependentType* create_sized_array_type(Type* element_type, int64_t size) {
 // =============================================================================
 
 RefinementType* create_refinement_type(const char* name, Type* base_type, TypeConstraint* constraint) {
-    RefinementType* type = malloc(sizeof(RefinementType));
+    RefinementType* type = xmalloc(sizeof(RefinementType));
     if (!type) return NULL;
     
     memset(type, 0, sizeof(RefinementType));
@@ -329,7 +329,7 @@ RefinementType* create_valid_index_type(const char* array_name) {
 // =============================================================================
 
 TypeConstraint* type_constraint_new(DependentConstraintType type) {
-    TypeConstraint* constraint = malloc(sizeof(TypeConstraint));
+    TypeConstraint* constraint = xmalloc(sizeof(TypeConstraint));
     if (!constraint) return NULL;
     
     memset(constraint, 0, sizeof(TypeConstraint));
@@ -433,7 +433,7 @@ TypeConstraint* create_custom_constraint(SymbolicExpression* expression) {
 // =============================================================================
 
 TypeParameter* type_parameter_new(TypeParameterKind kind, const char* name) {
-    TypeParameter* param = malloc(sizeof(TypeParameter));
+    TypeParameter* param = xmalloc(sizeof(TypeParameter));
     if (!param) return NULL;
     
     memset(param, 0, sizeof(TypeParameter));
@@ -491,7 +491,7 @@ int bind_value_parameter(DependentTypeContext* context, TypeParameter* param, in
 // =============================================================================
 
 ConstraintSolver* constraint_solver_new(DependentTypeContext* context) {
-    ConstraintSolver* solver = malloc(sizeof(ConstraintSolver));
+    ConstraintSolver* solver = xmalloc(sizeof(ConstraintSolver));
     if (!solver) return NULL;
     
     memset(solver, 0, sizeof(ConstraintSolver));

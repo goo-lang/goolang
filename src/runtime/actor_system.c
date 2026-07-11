@@ -23,7 +23,7 @@ static uint64_t generate_id(uint64_t* counter) {
 
 // Actor system message queue implementation
 ActorQueue* actor_queue_create(size_t capacity) {
-    ActorQueue* queue = malloc(sizeof(ActorQueue));
+    ActorQueue* queue = xmalloc(sizeof(ActorQueue));
     if (!queue) return NULL;
     
     queue->messages = calloc(capacity, sizeof(ActorMessage*));
@@ -77,7 +77,7 @@ void actor_queue_destroy(ActorQueue* queue) {
 
 Result_void_ptr actor_queue_enqueue(ActorQueue* queue, ActorMessage* message) {
     if (!queue || !message) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid queue or message";
@@ -89,7 +89,7 @@ Result_void_ptr actor_queue_enqueue(ActorQueue* queue, ActorMessage* message) {
     
     if (queue->closed) {
         pthread_mutex_unlock(&queue->mutex);
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_ACTOR_SYSTEM_SHUTDOWN;
             err->message = "Queue is closed";
@@ -101,7 +101,7 @@ Result_void_ptr actor_queue_enqueue(ActorQueue* queue, ActorMessage* message) {
         pthread_cond_wait(&queue->not_full, &queue->mutex);
         if (queue->closed) {
             pthread_mutex_unlock(&queue->mutex);
-            Error* err = malloc(sizeof(Error));
+            Error* err = xmalloc(sizeof(Error));
             if (err) {
                 err->code = ERROR_ACTOR_SYSTEM_SHUTDOWN;
                 err->message = "Queue closed while waiting";
@@ -166,7 +166,7 @@ ActorMessage* actor_queue_dequeue(ActorQueue* queue, uint64_t timeout_ms) {
 
 // Actor mailbox implementation
 ActorMailbox* actor_mailbox_create(size_t max_messages) {
-    ActorMailbox* mailbox = malloc(sizeof(ActorMailbox));
+    ActorMailbox* mailbox = xmalloc(sizeof(ActorMailbox));
     if (!mailbox) return NULL;
     
     mailbox->head = NULL;
@@ -212,7 +212,7 @@ void actor_mailbox_destroy(ActorMailbox* mailbox) {
 
 Result_void_ptr actor_mailbox_enqueue(ActorMailbox* mailbox, ActorMessage* message) {
     if (!mailbox || !message) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid mailbox or message";
@@ -224,7 +224,7 @@ Result_void_ptr actor_mailbox_enqueue(ActorMailbox* mailbox, ActorMessage* messa
     
     if (mailbox->closed) {
         pthread_mutex_unlock(&mailbox->mutex);
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_ACTOR_TERMINATED;
             err->message = "Actor mailbox is closed";
@@ -236,7 +236,7 @@ Result_void_ptr actor_mailbox_enqueue(ActorMailbox* mailbox, ActorMessage* messa
         pthread_cond_wait(&mailbox->not_full, &mailbox->mutex);
         if (mailbox->closed) {
             pthread_mutex_unlock(&mailbox->mutex);
-            Error* err = malloc(sizeof(Error));
+            Error* err = xmalloc(sizeof(Error));
             if (err) {
                 err->code = ERROR_ACTOR_TERMINATED;
                 err->message = "Mailbox closed while waiting";
@@ -329,7 +329,7 @@ void actor_mailbox_close(ActorMailbox* mailbox) {
 
 // Actor message implementation
 ActorMessage* actor_message_create(MessageType type, void* data, size_t data_size) {
-    ActorMessage* message = malloc(sizeof(ActorMessage));
+    ActorMessage* message = xmalloc(sizeof(ActorMessage));
     if (!message) return NULL;
     
     static uint64_t message_id_counter = 1;
@@ -385,7 +385,7 @@ uint64_t actor_message_get_correlation_id(const ActorMessage* message) {
 
 // Actor future implementation
 ActorFuture* actor_future_create(uint64_t correlation_id, uint64_t timeout_ms) {
-    ActorFuture* future = malloc(sizeof(ActorFuture));
+    ActorFuture* future = xmalloc(sizeof(ActorFuture));
     if (!future) return NULL;
     
     static uint64_t future_id_counter = 1;
@@ -449,7 +449,7 @@ Result_void_ptr actor_future_await(ActorFuture* future) {
 
 Result_void_ptr actor_future_await_timeout(ActorFuture* future, uint64_t timeout_ms) {
     if (!future) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid future";
@@ -465,7 +465,7 @@ Result_void_ptr actor_future_await_timeout(ActorFuture* future, uint64_t timeout
     }
     
     if (future->state == FUTURE_STATE_ERROR) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             memcpy(err, future->error, sizeof(Error));
         }
@@ -491,13 +491,13 @@ Result_void_ptr actor_future_await_timeout(ActorFuture* future, uint64_t timeout
             if (result == ETIMEDOUT) {
                 future->state = FUTURE_STATE_ERROR;
                 if (!future->error) {
-                    future->error = malloc(sizeof(Error));
+                    future->error = xmalloc(sizeof(Error));
                     if (future->error) {
                         future->error->code = ERROR_MESSAGE_TIMEOUT;
                         future->error->message = "Future timed out";
                     }
                 }
-                Error* err = malloc(sizeof(Error));
+                Error* err = xmalloc(sizeof(Error));
                 if (err) {
                     err->code = ERROR_MESSAGE_TIMEOUT;
                     err->message = "Future await timed out";
@@ -514,7 +514,7 @@ Result_void_ptr actor_future_await_timeout(ActorFuture* future, uint64_t timeout
         pthread_mutex_unlock(&future->mutex);
         return OK_PTR(future->result);
     } else {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             if (future->error) {
                 memcpy(err, future->error, sizeof(Error));
@@ -601,7 +601,7 @@ static void actor_future_set_error(ActorFuture* future, Error* error) {
     future->state = FUTURE_STATE_ERROR;
     
     if (error) {
-        future->error = malloc(sizeof(Error));
+        future->error = xmalloc(sizeof(Error));
         if (future->error) {
             memcpy(future->error, error, sizeof(Error));
         }
@@ -623,7 +623,7 @@ static void actor_future_set_error(ActorFuture* future, Error* error) {
 
 // Actor reference implementation
 ActorRef* actor_ref_create(uint64_t actor_id, const char* name) {
-    ActorRef* ref = malloc(sizeof(ActorRef));
+    ActorRef* ref = xmalloc(sizeof(ActorRef));
     if (!ref) return NULL;
     
     ref->actor_id = actor_id;
@@ -743,7 +743,7 @@ static void* actor_thread_function(void* arg) {
 
 // Actor system implementation
 ActorSystem* actor_system_create(const char* name, size_t thread_pool_size) {
-    ActorSystem* system = malloc(sizeof(ActorSystem));
+    ActorSystem* system = xmalloc(sizeof(ActorSystem));
     if (!system) return NULL;
     
     // Initialize system name
@@ -931,7 +931,7 @@ void actor_system_destroy(ActorSystem* system) {
 
 Result_void_ptr actor_system_start(ActorSystem* system) {
     if (!system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid actor system";
@@ -956,7 +956,7 @@ Result_void_ptr actor_system_start(ActorSystem* system) {
 
 Result_void_ptr actor_system_shutdown(ActorSystem* system, uint64_t timeout_ms) {
     if (!system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid actor system";
@@ -1028,7 +1028,7 @@ ActorRef* actor_spawn(ActorSystem* system, const char* name, ActorBehavior behav
     }
     
     // Create new actor
-    Actor* actor = malloc(sizeof(Actor));
+    Actor* actor = xmalloc(sizeof(Actor));
     if (!actor) {
         pthread_mutex_unlock(&system->actors_mutex);
         return NULL;
@@ -1227,7 +1227,7 @@ ActorFuture* actor_send_with_timeout(ActorRef* to, void* message, size_t message
 
 Result_void_ptr actor_send_fire_and_forget(ActorRef* to, void* message, size_t message_size) {
     if (!to || !actor_ref_is_valid(to) || !global_actor_system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_ACTOR_NOT_FOUND;
             err->message = "Invalid actor reference";
@@ -1238,7 +1238,7 @@ Result_void_ptr actor_send_fire_and_forget(ActorRef* to, void* message, size_t m
     // Find the target actor
     Actor* target_actor = actor_system_find_actor(global_actor_system, to->actor_id);
     if (!target_actor || target_actor->state != ACTOR_STATE_RUNNING) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_ACTOR_NOT_FOUND;
             err->message = "Target actor not found or not running";
@@ -1249,7 +1249,7 @@ Result_void_ptr actor_send_fire_and_forget(ActorRef* to, void* message, size_t m
     // Create the message
     ActorMessage* msg = actor_message_create(MESSAGE_TYPE_USER, message, message_size);
     if (!msg) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Failed to create message";
@@ -1273,7 +1273,7 @@ Result_void_ptr actor_send_fire_and_forget(ActorRef* to, void* message, size_t m
 
 Result_void_ptr actor_reply(ActorMessage* original_message, void* response, size_t response_size) {
     if (!original_message || !original_message->expects_response || !original_message->response_future) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid message or no response expected";
@@ -1290,7 +1290,7 @@ Result_void_ptr actor_reply(ActorMessage* original_message, void* response, size
 // Additional actor lifecycle functions
 Result_void_ptr actor_terminate(ActorRef* actor_ref) {
     if (!actor_ref || !actor_ref_is_valid(actor_ref) || !global_actor_system) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_ACTOR_NOT_FOUND;
             err->message = "Invalid actor reference";
@@ -1300,7 +1300,7 @@ Result_void_ptr actor_terminate(ActorRef* actor_ref) {
     
     Actor* actor = actor_system_find_actor(global_actor_system, actor_ref->actor_id);
     if (!actor) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_ACTOR_NOT_FOUND;
             err->message = "Actor not found";
@@ -1389,7 +1389,7 @@ void actor_system_get_statistics(ActorSystem* system, uint64_t* total_actors, ui
 
 Result_void_ptr actor_ref_resolve(ActorSystem* system, const char* path, ActorRef** result) {
     if (!system || !path || !result) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -1400,7 +1400,7 @@ Result_void_ptr actor_ref_resolve(ActorSystem* system, const char* path, ActorRe
     // Simple path resolution - just find by name
     Actor* actor = actor_system_find_actor_by_name(system, path);
     if (!actor) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_ACTOR_NOT_FOUND;
             err->message = "Actor not found";

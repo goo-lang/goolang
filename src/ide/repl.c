@@ -49,7 +49,7 @@ static double get_time_ms(void) {
 // =============================================================================
 
 REPLContext* repl_context_new(void) {
-    REPLContext* ctx = calloc(1, sizeof(REPLContext));
+    REPLContext* ctx = xcalloc(1, sizeof(REPLContext));
     if (!ctx) return NULL;
     
     // Initialize basic state
@@ -835,7 +835,7 @@ int repl_cmd_debug(REPLContext* ctx, const char* args) {
 // =============================================================================
 
 REPLValue* repl_value_new(REPLValueType type) {
-    REPLValue* value = calloc(1, sizeof(REPLValue));
+    REPLValue* value = xcalloc(1, sizeof(REPLValue));
     if (!value) return NULL;
     
     value->type = type;
@@ -1110,7 +1110,7 @@ Type* repl_infer_type(REPLContext* ctx, const char* expression) {
 int repl_history_add(REPLContext* ctx, const char* input, REPLValue* result, Type* type, double exec_time) {
     if (!ctx || !input) return -1;
     
-    REPLHistory* entry = calloc(1, sizeof(REPLHistory));
+    REPLHistory* entry = xcalloc(1, sizeof(REPLHistory));
     if (!entry) return -1;
     
     entry->input = str_dup(input);

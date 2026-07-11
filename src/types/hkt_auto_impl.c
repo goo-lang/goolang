@@ -35,7 +35,7 @@ static char* str_dup(const char* str) {
 
 // Generate map method for Vec type
 static InterfaceMethod* generate_vec_map_method(void) {
-    InterfaceMethod* method = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* method = xmalloc(sizeof(InterfaceMethod));
     if (!method) return NULL;
     
     method->name = str_dup("map");
@@ -67,7 +67,7 @@ static InterfaceMethod* generate_vec_map_method(void) {
 
 // Generate map method for Option type
 static InterfaceMethod* generate_option_map_method(void) {
-    InterfaceMethod* method = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* method = xmalloc(sizeof(InterfaceMethod));
     if (!method) return NULL;
     
     method->name = str_dup("map");
@@ -99,7 +99,7 @@ static InterfaceMethod* generate_option_map_method(void) {
 
 // Generate map method for Result type
 static InterfaceMethod* generate_result_map_method(void) {
-    InterfaceMethod* method = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* method = xmalloc(sizeof(InterfaceMethod));
     if (!method) return NULL;
     
     method->name = str_dup("map");
@@ -136,7 +136,7 @@ static InterfaceMethod* generate_result_map_method(void) {
 
 // Generate pure/return method for Option
 static InterfaceMethod* generate_option_pure_method(void) {
-    InterfaceMethod* method = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* method = xmalloc(sizeof(InterfaceMethod));
     if (!method) return NULL;
     
     method->name = str_dup("pure");
@@ -159,7 +159,7 @@ static InterfaceMethod* generate_option_pure_method(void) {
 
 // Generate bind method for Option
 static InterfaceMethod* generate_option_bind_method(void) {
-    InterfaceMethod* method = malloc(sizeof(InterfaceMethod));
+    InterfaceMethod* method = xmalloc(sizeof(InterfaceMethod));
     if (!method) return NULL;
     
     method->name = str_dup("bind");
@@ -196,7 +196,7 @@ static InterfaceMethod* generate_option_bind_method(void) {
 // Register an auto-generated implementation
 static void register_auto_impl(const char* type_name, const char* concept_name, 
                               InterfaceMethod* methods) {
-    AutoImplInfo* impl = malloc(sizeof(AutoImplInfo));
+    AutoImplInfo* impl = xmalloc(sizeof(AutoImplInfo));
     if (!impl) return;
     
     impl->type_name = str_dup(type_name);

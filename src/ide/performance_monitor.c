@@ -88,7 +88,7 @@ const char* performance_alert_type_to_string(PerformanceAlertType type) {
 // =============================================================================
 
 PerformanceMonitor* performance_monitor_new(void) {
-    PerformanceMonitor* monitor = calloc(1, sizeof(PerformanceMonitor));
+    PerformanceMonitor* monitor = xcalloc(1, sizeof(PerformanceMonitor));
     if (!monitor) return NULL;
     
     // Initialize default configuration
@@ -206,7 +206,7 @@ int performance_monitor_resume_recording(PerformanceMonitor* monitor) {
 // =============================================================================
 
 PerformanceSession* performance_session_new(uint64_t session_id) {
-    PerformanceSession* session = calloc(1, sizeof(PerformanceSession));
+    PerformanceSession* session = xcalloc(1, sizeof(PerformanceSession));
     if (!session) return NULL;
     
     session->session_id = session_id;
@@ -318,7 +318,7 @@ PerformanceSession* performance_monitor_get_current_session(PerformanceMonitor* 
 // =============================================================================
 
 PerformanceMetric* performance_metric_new(PerformanceMetricType type) {
-    PerformanceMetric* metric = calloc(1, sizeof(PerformanceMetric));
+    PerformanceMetric* metric = xcalloc(1, sizeof(PerformanceMetric));
     if (!metric) return NULL;
     
     metric->type = type;
@@ -435,7 +435,7 @@ int performance_monitor_record_timing(PerformanceMonitor* monitor, const char* o
 // =============================================================================
 
 PerformanceSample* performance_sample_new(PerformanceMetricType type, double value, const char* context) {
-    PerformanceSample* sample = calloc(1, sizeof(PerformanceSample));
+    PerformanceSample* sample = xcalloc(1, sizeof(PerformanceSample));
     if (!sample) return NULL;
     
     sample->timestamp_ms = performance_get_timestamp_ms();
@@ -618,7 +618,7 @@ int performance_monitor_track_codegen_time(PerformanceMonitor* monitor, const ch
 // =============================================================================
 
 PerformanceAlert* performance_alert_new(PerformanceAlertType type, const char* message, double threshold, double current_value) {
-    PerformanceAlert* alert = calloc(1, sizeof(PerformanceAlert));
+    PerformanceAlert* alert = xcalloc(1, sizeof(PerformanceAlert));
     if (!alert) return NULL;
     
     alert->type = type;
@@ -816,7 +816,7 @@ int performance_monitor_integrate_repl(PerformanceMonitor* monitor, REPLContext*
 // =============================================================================
 
 PerformanceProfiler* performance_profiler_start(PerformanceMonitor* monitor, const char* operation_name) {
-    PerformanceProfiler* profiler = malloc(sizeof(PerformanceProfiler));
+    PerformanceProfiler* profiler = xmalloc(sizeof(PerformanceProfiler));
     if (!profiler) return NULL;
     
     profiler->operation_name = str_dup(operation_name);

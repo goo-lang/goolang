@@ -96,7 +96,7 @@ AsyncRuntimeConfig async_runtime_config_numa_optimized(void) {
 AsyncTask* async_task_create(AsyncFunction function, void* context, size_t context_size) {
     if (!function) return NULL;
     
-    AsyncTask* task = calloc(1, sizeof(AsyncTask));
+    AsyncTask* task = xcalloc(1, sizeof(AsyncTask));
     if (!task) return NULL;
     
     // Initialize task context
@@ -159,7 +159,7 @@ void async_task_destroy(AsyncTask* task) {
 AsyncWaker* async_waker_create(AsyncTask* task) {
     if (!task) return NULL;
     
-    AsyncWaker* waker = calloc(1, sizeof(AsyncWaker));
+    AsyncWaker* waker = xcalloc(1, sizeof(AsyncWaker));
     if (!waker) return NULL;
     
     waker->task = task;
@@ -200,7 +200,7 @@ bool async_waker_is_awakened(AsyncWaker* waker) {
 AsyncFuture* async_future_create(AsyncTask* task) {
     if (!task) return NULL;
     
-    AsyncFuture* future = calloc(1, sizeof(AsyncFuture));
+    AsyncFuture* future = xcalloc(1, sizeof(AsyncFuture));
     if (!future) return NULL;
     
     future->task = task;
@@ -219,7 +219,7 @@ void async_future_destroy(AsyncFuture* future) {
 
 Result_void_ptr async_future_get(AsyncFuture* future, uint64_t timeout_ms) {
     if (!future || !future->task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -252,7 +252,7 @@ Result_void_ptr async_future_get(AsyncFuture* future, uint64_t timeout_ms) {
         if (wait_result != 0) {
             pthread_mutex_unlock(&task->state_mutex);
             
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OPERATION_CANCELLED,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -288,7 +288,7 @@ bool async_future_is_ready(AsyncFuture* future) {
 
 Result_void_ptr async_future_poll(AsyncFuture* future) {
     if (!future || !future->task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -359,7 +359,7 @@ bool async_should_execute_inline(AsyncTask* task) {
 // Inline executor implementation
 static Result_void_ptr inline_executor_submit(AsyncExecutor* executor, AsyncTask* task) {
     if (!executor || !task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -405,7 +405,7 @@ static Result_void_ptr inline_executor_shutdown(AsyncExecutor* executor, uint64_
 
 // Create inline executor
 static AsyncExecutor* create_inline_executor(AsyncRuntime* runtime) {
-    AsyncExecutor* executor = calloc(1, sizeof(AsyncExecutor));
+    AsyncExecutor* executor = xcalloc(1, sizeof(AsyncExecutor));
     if (!executor) return NULL;
     
     executor->type = EXECUTOR_TYPE_INLINE;
@@ -424,7 +424,7 @@ static AsyncExecutor* create_inline_executor(AsyncRuntime* runtime) {
 
 // Runtime creation and management
 AsyncRuntime* async_runtime_create(AsyncRuntimeConfig config) {
-    AsyncRuntime* runtime = calloc(1, sizeof(AsyncRuntime));
+    AsyncRuntime* runtime = xcalloc(1, sizeof(AsyncRuntime));
     if (!runtime) return NULL;
     
     runtime->config = config;
@@ -496,7 +496,7 @@ void async_runtime_destroy(AsyncRuntime* runtime) {
 
 Result_void_ptr async_runtime_start(AsyncRuntime* runtime) {
     if (!runtime || !runtime->is_initialized) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -524,7 +524,7 @@ Result_void_ptr async_runtime_start(AsyncRuntime* runtime) {
 
 Result_void_ptr async_runtime_shutdown(AsyncRuntime* runtime, uint64_t timeout_ms) {
     if (!runtime) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -561,7 +561,7 @@ Result_void_ptr async_runtime_shutdown(AsyncRuntime* runtime, uint64_t timeout_m
 // Task submission
 Result_void_ptr async_task_submit(AsyncRuntime* runtime, AsyncTask* task) {
     if (!runtime || !task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -575,7 +575,7 @@ Result_void_ptr async_task_submit(AsyncRuntime* runtime, AsyncTask* task) {
     }
     
     if (!runtime->is_running) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
@@ -594,7 +594,7 @@ Result_void_ptr async_task_submit(AsyncRuntime* runtime, AsyncTask* task) {
     // Select appropriate executor
     AsyncExecutor* executor = async_select_executor(runtime, task);
     if (!executor) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
@@ -711,7 +711,7 @@ Result_void_ptr async_set_global_runtime(AsyncRuntime* runtime) {
 Result_void_ptr async_submit_transparent(AsyncFunction function, void* context, size_t context_size) {
     AsyncRuntime* runtime = async_get_global_runtime();
     if (!runtime) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
@@ -726,7 +726,7 @@ Result_void_ptr async_submit_transparent(AsyncFunction function, void* context, 
     
     AsyncTask* task = async_task_create(function, context, context_size);
     if (!task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,

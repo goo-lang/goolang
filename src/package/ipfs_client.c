@@ -45,11 +45,11 @@ static int progress_callback(void* user_data, curl_off_t download_total, curl_of
 IpfsClient* ipfs_client_create(const IpfsClientConfig* config) {
     if (!config) return NULL;
     
-    IpfsClient* client = calloc(1, sizeof(IpfsClient));
+    IpfsClient* client = xcalloc(1, sizeof(IpfsClient));
     if (!client) return NULL;
     
     // Copy configuration
-    client->config = calloc(1, sizeof(IpfsClientConfig));
+    client->config = xcalloc(1, sizeof(IpfsClientConfig));
     if (!client->config) {
         free(client);
         return NULL;
@@ -343,7 +343,7 @@ bool ipfs_pin_remove(IpfsClient* client, const IpfsCid* cid) {
 IpfsGateway* ipfs_gateway_create(const char* url, const char* name) {
     if (!url) return NULL;
     
-    IpfsGateway* gateway = calloc(1, sizeof(IpfsGateway));
+    IpfsGateway* gateway = xcalloc(1, sizeof(IpfsGateway));
     if (!gateway) return NULL;
     
     gateway->url = strdup(url);
@@ -449,7 +449,7 @@ IpfsGateway* ipfs_gateway_select_best(IpfsClient* client) {
 IpfsCid* ipfs_cid_create(const char* hash) {
     if (!hash) return NULL;
     
-    IpfsCid* cid = calloc(1, sizeof(IpfsCid));
+    IpfsCid* cid = xcalloc(1, sizeof(IpfsCid));
     if (!cid) return NULL;
     
     cid->hash = strdup(hash);
@@ -502,7 +502,7 @@ IpfsPackageManifest* ipfs_package_publish(IpfsClient* client, const char* packag
     if (!content_cid) return NULL;
     
     // Create manifest
-    IpfsPackageManifest* manifest = calloc(1, sizeof(IpfsPackageManifest));
+    IpfsPackageManifest* manifest = xcalloc(1, sizeof(IpfsPackageManifest));
     if (!manifest) {
         ipfs_cid_free(content_cid);
         return NULL;
@@ -543,7 +543,7 @@ void ipfs_package_manifest_free(IpfsPackageManifest* manifest) {
 
 // Configuration management
 IpfsClientConfig* ipfs_config_create_default(void) {
-    IpfsClientConfig* config = calloc(1, sizeof(IpfsClientConfig));
+    IpfsClientConfig* config = xcalloc(1, sizeof(IpfsClientConfig));
     if (!config) return NULL;
     
     config->cache_dir = strdup("/tmp/goo_ipfs_cache");

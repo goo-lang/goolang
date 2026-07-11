@@ -50,7 +50,7 @@ void print_proof_generation_statistics(ProofGenerationContext* ctx) {
 ProofReport* generate_proof_summary(ProofGenerationContext* ctx) {
     if (!ctx) return NULL;
     
-    ProofReport* report = malloc(sizeof(ProofReport));
+    ProofReport* report = xmalloc(sizeof(ProofReport));
     if (!report) return NULL;
     
     *report = (ProofReport) {
@@ -370,7 +370,7 @@ double calculate_confidence_score(InferredInvariant* invariant) {
 // =============================================================================
 
 ProofGenerationConfig* proof_generation_config_default(void) {
-    ProofGenerationConfig* config = malloc(sizeof(ProofGenerationConfig));
+    ProofGenerationConfig* config = xmalloc(sizeof(ProofGenerationConfig));
     if (!config) return NULL;
     
     *config = (ProofGenerationConfig) {

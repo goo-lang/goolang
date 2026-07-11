@@ -18,7 +18,7 @@ uint64_t get_capability_timestamp(void) {
 
 // Create a new capability token
 CapabilityToken* capability_token_create(SecurityLevel level, uint64_t task_id) {
-    CapabilityToken* token = calloc(1, sizeof(CapabilityToken));
+    CapabilityToken* token = xcalloc(1, sizeof(CapabilityToken));
     if (!token) return NULL;
     
     token->token_id = atomic_fetch_add(&g_token_id_counter, 1);
@@ -113,7 +113,7 @@ bool capability_token_has_capability(CapabilityToken* token, CapabilityType type
 // Create a new security capability
 SecurityCapability* security_capability_create(CapabilityType type, SecurityLevel required_level, 
                                               void* resource, size_t resource_size) {
-    SecurityCapability* cap = calloc(1, sizeof(SecurityCapability));
+    SecurityCapability* cap = xcalloc(1, sizeof(SecurityCapability));
     if (!cap) return NULL;
     
     cap->capability_id = atomic_fetch_add(&g_capability_id_counter, 1);
@@ -166,7 +166,7 @@ bool security_capability_is_valid(SecurityCapability* capability) {
 
 // Create memory region
 MemoryRegion* memory_region_create(void* base, size_t size, uint32_t access_flags, const char* name) {
-    MemoryRegion* region = calloc(1, sizeof(MemoryRegion));
+    MemoryRegion* region = xcalloc(1, sizeof(MemoryRegion));
     if (!region) return NULL;
     
     region->base_address = base;
@@ -368,7 +368,7 @@ Result_void_ptr capability_secure_parallel_for(
     void* context) {
     
     if (!scope || !function) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -406,7 +406,7 @@ Result_void_ptr capability_secure_parallel_for(
     if (!all_secure_args || !tasks) {
         free(all_secure_args);
         free(tasks);
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -606,7 +606,7 @@ const char* security_level_to_string(SecurityLevel level) {
 
 // Error creation helpers
 Error* security_create_access_denied_error(CapabilityType cap_type, void* resource) {
-    Error* error = malloc(sizeof(Error));
+    Error* error = xmalloc(sizeof(Error));
     if (!error) return NULL;
     
     char* message = malloc(256);
@@ -632,7 +632,7 @@ Error* security_create_access_denied_error(CapabilityType cap_type, void* resour
 }
 
 Error* security_create_memory_violation_error(void* address, size_t size) {
-    Error* error = malloc(sizeof(Error));
+    Error* error = xmalloc(sizeof(Error));
     if (!error) return NULL;
     
     char* message = malloc(256);

@@ -86,7 +86,7 @@ static void* p2p_background_thread(void* arg) {
 }
 
 P2PDiscovery* p2p_discovery_create(IpfsClient* ipfs_client, CryptoVerifier* verifier) {
-    P2PDiscovery* discovery = calloc(1, sizeof(P2PDiscovery));
+    P2PDiscovery* discovery = xcalloc(1, sizeof(P2PDiscovery));
     if (!discovery) return NULL;
     
     discovery->ipfs_client = ipfs_client;
@@ -179,7 +179,7 @@ bool p2p_discovery_initialize(P2PDiscovery* discovery) {
 bool p2p_discovery_start(P2PDiscovery* discovery) {
     if (!discovery || g_p2p_thread) return false;
     
-    g_p2p_thread = calloc(1, sizeof(P2PThread));
+    g_p2p_thread = xcalloc(1, sizeof(P2PThread));
     if (!g_p2p_thread) return false;
     
     g_p2p_thread->discovery = discovery;
@@ -287,7 +287,7 @@ bool p2p_discovery_join_swarm(P2PDiscovery* discovery, const char* topic) {
 P2PSwarm* p2p_discovery_create_swarm(P2PDiscovery* discovery, const char* topic) {
     if (!discovery || !topic) return NULL;
     
-    P2PSwarm* swarm = calloc(1, sizeof(P2PSwarm));
+    P2PSwarm* swarm = xcalloc(1, sizeof(P2PSwarm));
     if (!swarm) return NULL;
     
     swarm->topic = strdup(topic);
@@ -537,7 +537,7 @@ bool p2p_discovery_gossip_publish(P2PDiscovery* discovery, const char* topic,
 P2PPeer* p2p_peer_create(const char* peer_id, const char* multiaddr) {
     if (!peer_id || !multiaddr) return NULL;
     
-    P2PPeer* peer = calloc(1, sizeof(P2PPeer));
+    P2PPeer* peer = xcalloc(1, sizeof(P2PPeer));
     if (!peer) return NULL;
     
     peer->peer_id = strdup(peer_id);
@@ -630,7 +630,7 @@ P2PPackageAnnouncement* p2p_announcement_create(const char* package_name,
                                                const IpfsCid* cid) {
     if (!package_name || !version || !cid) return NULL;
     
-    P2PPackageAnnouncement* announcement = calloc(1, sizeof(P2PPackageAnnouncement));
+    P2PPackageAnnouncement* announcement = xcalloc(1, sizeof(P2PPackageAnnouncement));
     if (!announcement) return NULL;
     
     announcement->package_name = strdup(package_name);
@@ -673,7 +673,7 @@ void p2p_announcement_free(P2PPackageAnnouncement* announcement) {
 
 // Search operations
 P2PSearchQuery* p2p_search_query_create(const char* query_string) {
-    P2PSearchQuery* query = calloc(1, sizeof(P2PSearchQuery));
+    P2PSearchQuery* query = xcalloc(1, sizeof(P2PSearchQuery));
     if (!query) return NULL;
     
     if (query_string) {
@@ -713,7 +713,7 @@ void p2p_search_query_free(P2PSearchQuery* query) {
 P2PSearchResult* p2p_search_result_create(P2PPackageAnnouncement* announcement) {
     if (!announcement) return NULL;
     
-    P2PSearchResult* result = calloc(1, sizeof(P2PSearchResult));
+    P2PSearchResult* result = xcalloc(1, sizeof(P2PSearchResult));
     if (!result) return NULL;
     
     result->announcement = announcement;
@@ -734,7 +734,7 @@ void p2p_search_result_free(P2PSearchResult* result) {
 P2PStats* p2p_discovery_get_stats(P2PDiscovery* discovery) {
     if (!discovery) return NULL;
     
-    P2PStats* stats = calloc(1, sizeof(P2PStats));
+    P2PStats* stats = xcalloc(1, sizeof(P2PStats));
     if (!stats) return NULL;
     
     pthread_mutex_lock(&g_stats_mutex);

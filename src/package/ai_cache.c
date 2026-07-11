@@ -128,7 +128,7 @@ static void* prefetch_thread(void* arg) {
 }
 
 AICacheManager* ai_cache_create(void) {
-    AICacheManager* cache = calloc(1, sizeof(AICacheManager));
+    AICacheManager* cache = xcalloc(1, sizeof(AICacheManager));
     if (!cache) return NULL;
     
     // Default configuration
@@ -544,7 +544,7 @@ CachePrediction** ai_cache_predict_future_access(AICacheManager* cache,
             free(features);
             
             if (probability > 0.5f) {
-                CachePrediction* pred = calloc(1, sizeof(CachePrediction));
+                CachePrediction* pred = xcalloc(1, sizeof(CachePrediction));
                 if (pred) {
                     pred->predicted_key = strdup(entry->key);
                     pred->probability = probability;
@@ -570,7 +570,7 @@ CacheEntry* cache_entry_create(const char* key, const void* data, size_t size,
                               CacheEntryType type) {
     if (!key || !data || size == 0) return NULL;
     
-    CacheEntry* entry = calloc(1, sizeof(CacheEntry));
+    CacheEntry* entry = xcalloc(1, sizeof(CacheEntry));
     if (!entry) return NULL;
     
     entry->key = strdup(key);
@@ -657,7 +657,7 @@ float cache_entry_compute_score(const CacheEntry* entry) {
 
 // ML model operations
 MLModel* ai_cache_create_model(int model_type) {
-    MLModel* model = calloc(1, sizeof(MLModel));
+    MLModel* model = xcalloc(1, sizeof(MLModel));
     if (!model) return NULL;
     
     model->type = model_type;
@@ -768,7 +768,7 @@ float ml_model_predict(MLModel* model, float* features) {
 CacheStats* ai_cache_get_stats(AICacheManager* cache) {
     if (!cache) return NULL;
     
-    CacheStats* stats = calloc(1, sizeof(CacheStats));
+    CacheStats* stats = xcalloc(1, sizeof(CacheStats));
     if (!stats) return NULL;
     
     pthread_mutex_lock(&g_cache_mutex);

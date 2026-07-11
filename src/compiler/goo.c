@@ -193,7 +193,7 @@ static char* make_temp_output_path(void) {
 }
 
 static CompilerOptions* parse_arguments(int argc, char* argv[], GooMode mode) {
-    CompilerOptions* options = calloc(1, sizeof(CompilerOptions));
+    CompilerOptions* options = xcalloc(1, sizeof(CompilerOptions));
     if (!options) {
         fprintf(stderr, "Error: Out of memory\n");
         return NULL;
@@ -492,7 +492,7 @@ static PkgEntry* pkg_graph_add(PkgGraph* g, const char* import_path) {
         g->entries = grown;
         g->entry_cap = new_cap;
     }
-    PkgEntry* e = calloc(1, sizeof(PkgEntry));
+    PkgEntry* e = xcalloc(1, sizeof(PkgEntry));
     if (!e) return NULL;
     e->import_path = str_dup(import_path);
     if (!e->import_path) { free(e); return NULL; }
@@ -625,7 +625,7 @@ static Type* sync_make_opaque_struct(TypeChecker* checker, Package* pkg, const c
 
     Type* result = type_new(TYPE_STRUCT);
     if (!result) return NULL;
-    result->data.struct_type.fields = calloc(1, sizeof(StructField));
+    result->data.struct_type.fields = xcalloc(1, sizeof(StructField));
     if (!result->data.struct_type.fields) { free(result); return NULL; }
     result->data.struct_type.field_count = 1;
     result->data.struct_type.fields[0].name = str_dup("_state");
@@ -722,7 +722,7 @@ static Type* time_make_time_struct(TypeChecker* checker, Package* pkg) {
 
     Type* result = type_new(TYPE_STRUCT);
     if (!result) return NULL;
-    result->data.struct_type.fields = calloc(1, sizeof(StructField));
+    result->data.struct_type.fields = xcalloc(1, sizeof(StructField));
     if (!result->data.struct_type.fields) { free(result); return NULL; }
     result->data.struct_type.field_count = 1;
     result->data.struct_type.fields[0].name = str_dup("_nanos");

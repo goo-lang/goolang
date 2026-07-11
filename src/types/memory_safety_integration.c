@@ -41,7 +41,7 @@ static MemorySafetyContext* g_memory_safety_ctx = NULL;
 MemorySafetyContext* memory_safety_context_new(TypeChecker* type_checker) {
     if (!type_checker) return NULL;
     
-    MemorySafetyContext* ctx = malloc(sizeof(MemorySafetyContext));
+    MemorySafetyContext* ctx = xmalloc(sizeof(MemorySafetyContext));
     if (!ctx) return NULL;
     
     memset(ctx, 0, sizeof(MemorySafetyContext));

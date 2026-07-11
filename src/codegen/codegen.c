@@ -67,7 +67,7 @@ static int codegen_configure_wasm_target(CodeGenerator* codegen) {
 
 CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
 #if LLVM_AVAILABLE
-    CodeGenerator* codegen = malloc(sizeof(CodeGenerator));
+    CodeGenerator* codegen = xmalloc(sizeof(CodeGenerator));
     if (!codegen) return NULL;
     
     // Initialize LLVM core
@@ -190,7 +190,7 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     
     return codegen;
 #else
-    CodeGenerator* codegen = malloc(sizeof(CodeGenerator));
+    CodeGenerator* codegen = xmalloc(sizeof(CodeGenerator));
     if (!codegen) return NULL;
     
     codegen->error_message = strdup("LLVM support not available in this build");
@@ -546,7 +546,7 @@ void codegen_warning(CodeGenerator* codegen, Position pos, const char* format, .
 
 // Value management
 ValueInfo* value_info_new(const char* name, LLVMValueRef llvm_value, Type* goo_type) {
-    ValueInfo* info = malloc(sizeof(ValueInfo));
+    ValueInfo* info = xmalloc(sizeof(ValueInfo));
     if (!info) return NULL;
     
     info->name = name ? strdup(name) : NULL;
@@ -602,7 +602,7 @@ int codegen_add_value(CodeGenerator* codegen, ValueInfo* info) {
 
 // Function management  
 FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* goo_type) {
-    FunctionInfo* info = malloc(sizeof(FunctionInfo));
+    FunctionInfo* info = xmalloc(sizeof(FunctionInfo));
     if (!info) return NULL;
     
     info->name = name ? strdup(name) : NULL;
