@@ -1,0 +1,13 @@
+// Correctness arc 7 (n): slice-literal elements route through the same
+// composite sink as struct fields (adapt_field_init_value, the Task 3b
+// shared slot adapter) — `[]int8{300}` already rejected, but a const
+// IDENTIFIER element fell through and truncated (printed 44). The
+// rejected decl is not used afterward: indexing a poisoned decl leaks the
+// internal <poisoned> marker (pre-existing P2.8 cascade gap, same on the
+// literal path []int8{300} — the runner's hygiene check enforces this).
+package main
+
+func main() {
+	const a = 300
+	xs := []int8{a}
+}

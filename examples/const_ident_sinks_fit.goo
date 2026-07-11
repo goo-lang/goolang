@@ -1,0 +1,36 @@
+// Correctness arc 7 (n), accept side: REPRESENTABLE const identifiers keep
+// flowing through every gated sink — struct-field init, slice/array
+// elements, plain/field/compound assignment — and arrive value-exact
+// (codegen's existing width coercions are exact for representable values).
+// Shift-assign keeps its count semantics (excluded from the gate).
+package main
+
+type S struct {
+	x int8
+}
+
+func main() {
+	const a = 100
+	const n = -5
+	s := S{x: a}
+	println(s.x)
+	xs := []int8{a, n}
+	println(xs[0])
+	println(xs[1])
+	ar := [2]int8{n, a}
+	println(ar[0])
+	var v int8 = 1
+	v = a
+	println(v)
+	v = n
+	println(v)
+	s.x = n
+	println(s.x)
+	var w int8 = 3
+	w += a
+	println(w)
+	const sh = 3
+	var m uint8 = 1
+	m <<= sh
+	println(m)
+}

@@ -1,0 +1,12 @@
+// Correctness arc 7 (n), negative arm: a negative const identifier assigned
+// into an unsigned target must reject (printed 251 before the fix). Rides
+// the arc-4 T1 decl typing (the const's own int64 signedness is what makes
+// "genuinely negative" reconstructible).
+package main
+
+func main() {
+	const a = -5
+	var v uint8 = 1
+	v = a
+	println(v)
+}

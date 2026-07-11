@@ -1,0 +1,16 @@
+// Correctness arc 7 (n): a const identifier stored into a NARROWER struct
+// field must hit the shared representability core. The composite-literal
+// adapter (adapt_field_init_value) range-checks literal-rooted shapes only
+// — a const identifier is not a literal leaf, so `S{x: a}` skipped the
+// check and codegen's width coercion truncated the store (printed 44).
+package main
+
+type S struct {
+	x int8
+}
+
+func main() {
+	const a = 300
+	s := S{x: a}
+	println(s.x)
+}

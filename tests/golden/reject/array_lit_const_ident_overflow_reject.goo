@@ -1,0 +1,11 @@
+// Correctness arc 7 (n): array-literal elements — same shared composite
+// sink, same const-identifier hole (printed 44 before the fix). The
+// rejected decl is not used afterward: indexing a poisoned decl leaks the
+// internal <poisoned> marker (pre-existing P2.8 cascade gap, same on the
+// literal path []int8{300} — the runner's hygiene check enforces this).
+package main
+
+func main() {
+	const a = 300
+	xs := [2]int8{a, 1}
+}
