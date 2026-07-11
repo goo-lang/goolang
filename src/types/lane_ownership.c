@@ -86,6 +86,27 @@ static int lane_name_is_moved(const LaneWalkContext* ctx, const char* name, Posi
     return 0;
 }
 
+// Reassignment (`x = e`, a bare-identifier LHS of a plain `=`) REVIVES a
+// previously-moved name — Go semantics: `x` now names a brand-new value
+// that was never passed to lanes.Partition, so a later read of `x` must not
+// reject. Drops every entry matching `name` from the flat moved-name table
+// via compaction (there is normally at most one, but this does not assume
+// that): O(moved_count), fine at this table's small fixed cap
+// (LANE_OWNERSHIP_MAX_MOVES_PER_FUNC).
+static void lane_clear_moved(LaneWalkContext* ctx, const char* name) {
+    if (!name) return;
+    size_t write = 0;
+    for (size_t read = 0; read < ctx->moved_count; read++) {
+        if (strcmp(ctx->moved_names[read], name) == 0) continue;  // revived
+        if (write != read) {
+            ctx->moved_names[write] = ctx->moved_names[read];
+            ctx->moved_pos[write] = ctx->moved_pos[read];
+        }
+        write++;
+    }
+    ctx->moved_count = write;
+}
+
 // Detection contract (spike-verified, see lane_ownership.h's DETECTION
 // MECHANISM note): `call_expr` is `<pkg-ident>.<selector>(...)` where
 // <pkg-ident> resolves through the checker's (persistent, never-popped-by-
@@ -220,7 +241,23 @@ static void lane_handle_var_decl(LaneWalkContext* ctx, VarDeclNode* vd) {
 
         if (arr_arg && arr_arg->type == AST_IDENTIFIER) {
             IdentifierNode* src = (IdentifierNode*)arr_arg;
-            lane_mark_moved(ctx, src->name, vd->values->pos);
+
+            // Move-site provenance: use the `lanes.Partition` SELECTOR's own
+            // ->pos (call->function — already verified non-NULL by
+            // lane_call_is_lanes_selector before this branch can be taken),
+            // NOT the enclosing CallExprNode's ->pos (vd->values->pos). The
+            // selector's pos is recorded at parse time right after the
+            // `Partition` identifier token is consumed (selector_expr_new,
+            // parser_actions.c), before the argument list/closing paren are
+            // parsed. The call expression's own pos (call_expr_new) is
+            // recorded only after the parser has looked ahead past the
+            // statement's terminator to decide whether to reduce — for a
+            // trailing call this lookahead routinely lands on the START of
+            // the NEXT source line, which is what produced the reviewer-
+            // observed "moved at 9:1" for a Partition call actually on line
+            // 8. The selector's pos does not suffer this lag.
+            Position move_pos = call->function->pos;
+            lane_mark_moved(ctx, src->name, move_pos);
 
             // Record the partition binding for Task 6 (view attribution /
             // capture rule), if this Partition result is itself bound to a
@@ -232,7 +269,7 @@ static void lane_handle_var_decl(LaneWalkContext* ctx, VarDeclNode* vd) {
                 if (binding) {  // fail closed: dropped entry, never crash
                     binding->binding_name = vd->names[0];
                     binding->source_name = src->name;
-                    binding->partition_pos = vd->values->pos;
+                    binding->partition_pos = move_pos;
 
                     uint64_t count_val = 0;
                     binding->lane_count_known = count_arg &&
@@ -259,6 +296,67 @@ static void lane_handle_var_decl(LaneWalkContext* ctx, VarDeclNode* vd) {
     lane_check_reads(ctx, vd->values);
 }
 
+// A `simple_stmt` lowers to AST_EXPR_STMT wrapping either an ordinary
+// expression-statement (e.g. a bare call) or — per parser.y's
+// `expression ASSIGN expression` rule (parser.y:1137-1146) and
+// compound_assign_stmt (parser_actions.c) — a top-level BinaryExprNode whose
+// ->operator is TOKEN_ASSIGN (`x = e`) or one of the TOKEN_*_ASSIGN compound
+// tokens (`x += e`, ...). Assignment cannot occur anywhere else in this
+// grammar: the `expression` nonterminal itself has no ASSIGN production (see
+// the parser.y comment on why the rule lives in simple_stmt, not
+// expression), so a BinaryExprNode reached from a nested read context
+// (lane_check_reads's own AST_BINARY_EXPR case, e.g. `a + b`) can never be
+// one of these — only this top-level entry point needs to special-case
+// assignment; lane_check_reads' generic BINARY_EXPR handling (both sides are
+// reads) stays correct and untouched for every other use.
+//
+// COMPOUND-ASSIGN AST FACT (established by reading parser.y:1137-1146 next
+// to parser_actions.c's compound_assign_stmt): `x += e` is NOT desugared
+// into ASSIGN plus a synthesized read of `x`. The compound operator's own
+// distinct TokenType (TOKEN_PLUS_ASSIGN, TOKEN_MINUS_ASSIGN, ...) is kept on
+// the BinaryExprNode as-is; codegen (not the parser) is what later lowers it
+// to load-op-store. So this walker CAN and DOES tell `x = e` apart from
+// `x += e` by checking ->operator == TOKEN_ASSIGN — the distinction is real
+// and reachable, not dead code.
+static void lane_handle_expr_stmt(LaneWalkContext* ctx, ASTNode* expr) {
+    if (!expr || expr->type != AST_BINARY_EXPR) {
+        lane_check_reads(ctx, expr);
+        return;
+    }
+
+    BinaryExprNode* bin = (BinaryExprNode*)expr;
+
+    if (bin->operator != TOKEN_ASSIGN) {
+        // Compound assign (`x += e`, ...) reads AND writes its LHS, so this
+        // is exactly the generic "both sides are reads" shape — which also
+        // correctly covers an ordinary (non-assignment) binary expression
+        // used as a bare statement (e.g. `a + b` alone on a line).
+        lane_check_reads(ctx, bin->left);
+        lane_check_reads(ctx, bin->right);
+        return;
+    }
+
+    // Plain `=`. RHS is always an ordinary read site.
+    lane_check_reads(ctx, bin->right);
+
+    if (bin->left && bin->left->type == AST_IDENTIFIER) {
+        // Bare-identifier LHS of `=` (`data = ...`): a pure write, never a
+        // read (the false-reject this fix addresses) — and Go-shaped
+        // reassignment REVIVES the name: `data` now names a value that was
+        // never passed to lanes.Partition, so a later read of `data` must
+        // not reject.
+        lane_clear_moved(ctx, ((IdentifierNode*)bin->left)->name);
+        return;
+    }
+
+    // Compound LHS shape (`s[i] = e`, `p.f = e`, `*p = e`, ...): the base
+    // being indexed/selected/dereferenced is still a READ — indexing or
+    // field-accessing a moved slice must still reject. Only a bare
+    // identifier LHS is a pure write; walk every other LHS shape like any
+    // other read site.
+    lane_check_reads(ctx, bin->left);
+}
+
 // Generic recursive statement walker. Same fail-closed contract as
 // lane_check_reads: an unrecognized statement kind is simply not
 // recursed into.
@@ -272,7 +370,7 @@ static void lane_walk_stmt(LaneWalkContext* ctx, ASTNode* stmt) {
             return;
         }
         case AST_EXPR_STMT:
-            lane_check_reads(ctx, ((ExprStmtNode*)stmt)->expr);
+            lane_handle_expr_stmt(ctx, ((ExprStmtNode*)stmt)->expr);
             return;
         case AST_VAR_DECL:
             lane_handle_var_decl(ctx, (VarDeclNode*)stmt);

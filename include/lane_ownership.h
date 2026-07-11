@@ -22,6 +22,25 @@
 // `lanes.Run` boundaries) and capture (obligation 4, closure
 // captured_names) checks, rather than introducing a second walker.
 //
+// UNDER-WALKED STATEMENT KINDS (Task 6 must know this before extending the
+// walk): lane_walk_stmt's switch does not descend into every statement
+// kind the grammar produces. As of Task 5's fix round 1, these are NOT
+// recursed into at all — a lanes.Partition move or a moved-name read
+// occurring inside one of them is silently invisible to this pass:
+//   - AST_IF_LET_STMT   (`if let x = ... { }`)
+//   - AST_SELECT_STMT   (`select { case ...: }`)
+//   - AST_ARENA_BLOCK   (`arena { ... }`)
+//   - AST_UNSAFE_STMT   (`unsafe { ... }`)
+//   - a local AST_CONST_DECL (function-body `const n = ...`)
+// This is the safe direction for a rejection pass (under-reject, never a
+// false reject — see the SCOPE note above), but it means obligation 1 (and
+// Task 6's obligations 3/4) are simply not enforced inside these shapes
+// today. Separately: a bare, unbound `lanes.Partition(...)` statement (the
+// result discarded, not assigned via `:=`/`var`) records NO move at all —
+// only lane_handle_var_decl's VarDeclNode path recognizes a Partition call
+// as a move; an ExprStmt-level bare call reaches lane_check_reads/
+// lane_handle_expr_stmt as an ordinary (non-move) read site.
+//
 // DETECTION MECHANISM (spike-verified — see
 // docs/superpowers/specs/2026-07-11-p6-lanes-m1-spike-findings.md
 // Section 2.1, citing expression_checker.c:4300-4307 / 3630-3642): a
