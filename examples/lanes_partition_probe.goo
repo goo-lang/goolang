@@ -1,0 +1,44 @@
+// P6 M1 Task 3 golden: goostd/lanes v1 (Partition/Lane/Run, no halos yet).
+// Probes, in one program, the trio that was unproven in a vendored (GOOROOT)
+// package before this branch: a comptime param on a package function
+// (lanes.Partition's `comptime count int`), goroutines/channels driven from
+// vendored source (lanes.Run spawns one goroutine per lane over a buffered
+// `chan int`), and fmt.Println(float64) (every printed value here is a
+// float64, so the latent mixed-width sequential-int-print bug is not in
+// play).
+//
+// data is 8 ascending float64s partitioned into 4 lanes of width 2. Each
+// lane's body doubles its own disjoint sub-slice view (ctx.Own()) in place;
+// Run joins all 4 goroutines before returning the shared backing array.
+// Doubled: [2 4 6 8 10 12 14 16].
+//   out[0] = 2   (lane 0's first element, 1*2)
+//   out[7] = 16  (lane 3's last element, 8*2)
+//   sum    = 72  (2+4+6+8+10+12+14+16)
+package main
+
+import "fmt"
+import "lanes"
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	p := lanes.Partition(data, 4)
+	out := lanes.Run(p, 1, func(ctx *lanes.Lane) {
+		t := ctx.Own()
+		i := 0
+		for i < len(t) {
+			t[i] = t[i] * 2.0
+			i = i + 1
+		}
+	})
+
+	sum := 0.0
+	i := 0
+	for i < len(out) {
+		sum = sum + out[i]
+		i = i + 1
+	}
+
+	fmt.Println(out[0])
+	fmt.Println(out[7])
+	fmt.Println(sum)
+}
