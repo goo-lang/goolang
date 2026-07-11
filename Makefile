@@ -76,13 +76,12 @@ CODEGEN_SRCS = $(SRCDIR)/codegen/codegen.c $(SRCDIR)/codegen/cfctx.c $(SRCDIR)/c
 RUNTIME_SRCS = $(SRCDIR)/runtime/runtime.c $(SRCDIR)/runtime/platform.c $(SRCDIR)/runtime/concurrency.c $(SRCDIR)/runtime/channels.c $(SRCDIR)/runtime/sync.c $(SRCDIR)/runtime/sync_shim.c $(SRCDIR)/runtime/time_shim.c $(SRCDIR)/runtime/deadlock.c $(SRCDIR)/runtime/arena.c $(SRCDIR)/runtime/defer.c
 ERROR_SRCS = $(SRCDIR)/errors/error.c $(SRCDIR)/errors/ergonomic_errors.c
 IDE_SRCS = $(SRCDIR)/ide/hot_reload.c $(SRCDIR)/ide/repl.c $(SRCDIR)/ide/performance_monitor.c $(SRCDIR)/ide/repl_errors.c $(SRCDIR)/ide/time_travel_debug.c $(SRCDIR)/ide/time_travel_debug_repl.c $(SRCDIR)/ide/repl_syntax.c
-# The package/ subsystem (IPFS package manager — task #42) has pre-existing
-# build breakage: gmod_cli.c includes both goo_mod.h and package_manager.h
-# which redefine the same types; gmod_ipfs_cli.c includes missing
-# gmod_cli.h; gateway_intelligence.c has a stale ipfs_gateway_create call.
-# No core compiler code (compiler/, parser/, types/, codegen/, lexer/, ast/)
-# depends on package/, so we exclude the subsystem from the compiler build.
-# Repair lives in a separate task.
+# Only import_resolver.c from package/ is part of the compiler. The rest of
+# the directory (IPFS/registry/p2p modules) is compiled by nothing and has
+# pre-existing build breakage (e.g. gateway_intelligence.c's stale
+# ipfs_gateway_create call); the broken gmod CLI itself was quarantined in
+# P5.5. Wiring a real package manager is post-v1
+# (docs/2026-07-08-v1-roadmap.md).
 PACKAGE_SRCS = $(SRCDIR)/package/import_resolver.c
 TEST_FRAMEWORK_SRCS = $(TEST_FRAMEWORK_DIR)/test_framework.c
 
@@ -92,6 +91,20 @@ COMPILER_SRCS = $(COMPILERDIR)/goo.c
 SRC_OBJS = $(CURRENT_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 TEST_FRAMEWORK_OBJ = $(TEST_FRAMEWORK_SRCS:$(TEST_FRAMEWORK_DIR)/%.c=$(BUILDDIR)/framework/%.o)
 OBJS = $(SRC_OBJS) $(TEST_FRAMEWORK_OBJ)
+
+# ---------------------------------------------------------------------------
+# P5.6: bin/goo links ONLY the reachable set below. The full TYPES_SRCS /
+# COMPTIME_SRCS / IDE_SRCS lists above still feed OBJS for the standalone
+# test targets that exercise the unlinked frameworks (constraint inference,
+# concept generics, HKT, flow analysis, reference manager, ...) — dropping a
+# module HERE quarantines it from the shipped compiler without deleting its
+# tests. The membership test is symbols, not headers: a module joins this
+# list only if the link otherwise fails with an undefined reference.
+# ---------------------------------------------------------------------------
+GOO_TYPES_SRCS = $(SRCDIR)/types/types.c $(SRCDIR)/types/type_checker.c $(SRCDIR)/types/expression_checker.c $(SRCDIR)/types/tc_fctx.c $(SRCDIR)/types/embedding.c $(SRCDIR)/types/expression_helpers.c $(SRCDIR)/types/channel_checker.c $(SRCDIR)/types/param_escape.c $(SRCDIR)/types/nonretaining.c $(SRCDIR)/types/block_escape.c $(SRCDIR)/types/terminating_stmt.c $(SRCDIR)/types/shim_signatures.c
+GOO_COMPTIME_SRCS = $(SRCDIR)/comptime/comptime.c $(SRCDIR)/comptime/comptime_value.c $(SRCDIR)/comptime/comptime_intrinsics.c $(SRCDIR)/comptime/comptime_types.c
+GOO_SRCS = $(LEXER_SRCS) $(PARSER_SRCS) $(AST_SRCS) $(GOO_TYPES_SRCS) $(CODEGEN_SRCS) $(RUNTIME_SRCS) $(ERROR_SRCS) $(PACKAGE_SRCS) $(GOO_COMPTIME_SRCS)
+GOO_OBJS = $(GOO_SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 
 # Runtime library
 RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
@@ -105,17 +118,17 @@ RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BU
 COMPILER = $(BINDIR)/goo
 ANALYZER = $(BINDIR)/goo-analyzer
 TEST_RUNNER = $(BINDIR)/test_runner
-REPL = $(BINDIR)/goo-repl
-REPL_ENHANCED = $(BINDIR)/goo-repl-enhanced
-LSP_SERVER = $(BINDIR)/goo-lsp
+# P5.5: goo-repl, goo-repl-enhanced, goo-lsp, goo-lsp-standalone, gmod,
+# goo-debug-adapter, and goo-dashboard were quarantined out of the tree —
+# each fabricated its results (hardcoded eval, demo menus, simulated PID,
+# canned metrics) or did not compile (gmod). Recover from git history if a
+# real implementation is ever built (see docs/2026-07-08-v1-roadmap.md
+# post-v1 list). lsp-enhanced stays pending the P5.11 open decision.
 LSP_ENHANCED_SERVER = $(BINDIR)/goo-lsp-enhanced
-LSP_STANDALONE_SERVER = $(BINDIR)/goo-lsp-standalone
-GMOD_CLI = $(BINDIR)/gmod
-TEST_REPL = $(BINDIR)/test_repl
 TEST_PERFORMANCE = $(BINDIR)/test_performance
 TEST_ERROR_REPORTING = $(BINDIR)/test_error_reporting
 
-.PHONY: all clean test install lexer analyzer test-interface test-repl repl repl-enhanced lsp gmod coverage coverage-report coverage-clean debug format check runtime-lib test-pipeline test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe
+.PHONY: all clean test install lexer analyzer coverage coverage-report coverage-clean debug format check runtime-lib test-lexer test-codegen test-units goostd-resolver-probe param-escape-test block-escape-test arena-routing-test arena-free-probe arena-valgrind-probe arena-rss-probe
 
 all: lexer
 
@@ -185,8 +198,8 @@ goo: $(COMPILER)
 # for test runners. The test framework's header (test/test_framework.h) is
 # missing from include/, so building TEST_FRAMEWORK_OBJ fails; that breakage
 # belongs to task #33 and shouldn't gate compiler builds.
-$(COMPILER): $(SRC_OBJS) $(COMPILER_SRCS) | $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(SRC_OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
+$(COMPILER): $(GOO_OBJS) $(COMPILER_SRCS) | $(BINDIR)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(COMPILER_SRCS) $(GOO_OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Runtime library
 runtime-lib: $(RUNTIME_LIB)
@@ -194,11 +207,10 @@ runtime-lib: $(RUNTIME_LIB)
 $(RUNTIME_LIB): $(RUNTIME_OBJS) | $(LIBDIR)
 	ar rcs $@ $^
 
-# Pipeline integration tests
-test-pipeline: $(COMPILER) $(RUNTIME_LIB)
-	@mkdir -p tests
-	$(CC) $(CFLAGS) tests/test_runner.c -o tests/test_runner
-	./tests/test_runner
+# (P5.7: test-pipeline retired — tests/test_runner.c's assertions were
+# near-vacuous (`tokens_found || exit==0` style escape hatches). The golden
+# suites + tests/cli/cli_test.sh assert the same pipeline end-to-end with
+# real expected-output and exit-code checks.)
 
 # V1 CompCert-compatibility audit: prints counts for the non-CompCert-
 # friendly constructs catalogued in docs/COMPCERT_AUDIT.md. Static check
@@ -3768,7 +3780,7 @@ test-main: $(OBJS) $(SRCDIR)/main_simple.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(SRCDIR)/main_simple.c $(OBJS) -o $(BINDIR)/test-main $(LDFLAGS) $(LLVM_LDFLAGS)
 
 # Test targets
-TEST_INTERFACE_SYSTEM = $(BINDIR)/test_interface_system
+
 TEST_FLOW_ANALYSIS = $(BINDIR)/test_flow_analysis
 TEST_REFERENCE_MANAGER = $(BINDIR)/test_reference_manager
 TEST_HARDWARE_AWARE = $(BINDIR)/test_hardware_aware
@@ -3815,12 +3827,10 @@ clean:
 	rm -rf $(BUILDDIR) $(BINDIR)
 	rm -f $(SRCDIR)/parser/parser.tab.c $(SRCDIR)/parser/parser.tab.h $(SRCDIR)/parser/parser.yy.c
 
-test-interface: $(TEST_INTERFACE_SYSTEM)
-	./$(TEST_INTERFACE_SYSTEM)
-
-$(TEST_INTERFACE_SYSTEM): $(TEST_UNIT_DIR)/interface/test_interface_system.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
+# (P5.7: test-interface retired — test_interface_system.c no longer compiled
+# against the current framework headers, and the interface/protocol framework
+# it exercised is unlinked from bin/goo since P5.6. Recover from git history
+# if the framework is ever revived.)
 
 test-flow: $(TEST_FLOW_ANALYSIS)
 	./$(TEST_FLOW_ANALYSIS)
@@ -3836,20 +3846,6 @@ $(TEST_HARDWARE_AWARE): $(TESTDIR)/test_hardware_aware.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
-# REPL targets
-repl: $(REPL)
-
-$(REPL): $(SRCDIR)/ide/repl_main.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
-
-# Enhanced REPL with syntax highlighting
-repl-enhanced: $(REPL_ENHANCED)
-
-$(REPL_ENHANCED): $(SRCDIR)/ide/repl_enhanced_simple.c $(SRCDIR)/ide/repl_syntax.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ -lpthread
-
 # Development Workflow Tools
 PROJECT_WIZARD = $(BINDIR)/goo-wizard
 PROFILER_TOOL = $(BINDIR)/goo-profiler
@@ -3857,8 +3853,8 @@ DOC_GENERATOR = $(BINDIR)/goo-docs
 HEALTH_DASHBOARD = $(BINDIR)/goo-health
 
 # Complete development workflow toolchain
-# (test-tool removed: its source tools/test_runner/main.c was never created; the
-# maintained test runner is tests/test_runner.c, built by the test-pipeline target.)
+# (test-tool removed: its source tools/test_runner/main.c was never created;
+# the pipeline is asserted by the golden suites and tests/cli/cli_test.sh.)
 dev-tools: wizard profiler doc-generator health-dashboard
 
 # Project template wizard
@@ -3947,51 +3943,14 @@ $(ERGONOMIC_ERROR_TEST): $(TEST_UNIT_DIR)/error/ergonomic_errors_test.c $(ERROR_
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# LSP Server targets
-lsp: $(LSP_SERVER)
-
-$(LSP_SERVER): $(SRCDIR)/ide/lsp_simple.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $<
-
-# Enhanced LSP Server with AST integration
+# Enhanced LSP Server with AST integration. Known broken link (undefined
+# parser_cleanup) — repairing it is the P5.11 open decision; kept because it
+# is real AST-integrated code, unlike the quarantined toy LSPs (P5.5).
 lsp-enhanced: $(LSP_ENHANCED_SERVER)
 
 $(LSP_ENHANCED_SERVER): $(SRCDIR)/ide/lsp_enhanced.c $(OBJS)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
-
-# Standalone Enhanced LSP Server (no dependencies)
-lsp-standalone: $(LSP_STANDALONE_SERVER)
-
-$(LSP_STANDALONE_SERVER): $(SRCDIR)/ide/lsp_standalone.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $<
-
-# Package Manager CLI (gmod)
-gmod: $(GMOD_CLI)
-
-$(GMOD_CLI): $(SRCDIR)/package/gmod_cli.c $(PACKAGE_SRCS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lcurl -ljson-c
-
-# Debug Adapter Protocol (DAP) Server
-DEBUG_ADAPTER_SERVER = $(BINDIR)/goo-debug-adapter
-
-debug-adapter: $(DEBUG_ADAPTER_SERVER)
-
-$(DEBUG_ADAPTER_SERVER): $(SRCDIR)/ide/debug_adapter.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $<
-
-# Performance Dashboard Server
-PERFORMANCE_DASHBOARD_SERVER = $(BINDIR)/goo-dashboard
-
-dashboard: $(PERFORMANCE_DASHBOARD_SERVER)
-
-$(PERFORMANCE_DASHBOARD_SERVER): $(SRCDIR)/ide/dashboard_main.c $(SRCDIR)/ide/performance_dashboard.c
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ $^ -lpthread
 
 # Async Streams Test
 ASYNC_STREAMS_TEST = $(BINDIR)/async_streams_test
@@ -4012,13 +3971,6 @@ test-async-streams: $(ASYNC_STREAMS_TEST)
 $(ASYNC_STREAMS_TEST): tests/concurrency/async_streams_test.c $(ASYNC_STREAMS_SOURCES)
 	@mkdir -p $(BINDIR)
 	$(BLOCKS_CC) $(BLOCKS_CFLAGS) -o $@ $^ $(BLOCKS_LDFLAGS)
-
-test-repl: $(TEST_REPL)
-	./$(TEST_REPL)
-
-$(TEST_REPL): $(TEST_INTEGRATION_DIR)/repl_test.c $(OBJS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(filter-out $(BUILDDIR)/main.o, $(OBJS)) $(LDFLAGS) $(LLVM_LDFLAGS)
 
 test-performance: $(TEST_PERFORMANCE)
 	./$(TEST_PERFORMANCE)
