@@ -92,6 +92,8 @@ static int token_ends_value(TokenType t) {
         case TOKEN_CHAR:
         case TOKEN_TRUE:
         case TOKEN_FALSE:
+        case TOKEN_NIL:         // P5.10: `= nil` ends a statement (Go: nil is
+                                // an identifier, so Go's rule covers it too)
         case TOKEN_RPAREN:
         case TOKEN_RBRACKET:
         case TOKEN_RBRACE:
@@ -103,15 +105,27 @@ static int token_ends_value(TokenType t) {
     }
 }
 
-// True if a character begins a binary operator that could continue the
-// previous expression across a newline (`*`, `+`, `-`, `/`, `%`, `&`, `|`,
-// `^`). When the next line starts with one of these after a value-ending
-// token, ASI inserts a semicolon so e.g. `p := &x` <nl> `*p = v` is two
-// statements, not the multiplication `&x * p`. Mirrors Go's rule: a line may
-// only be continued by leaving the operator at the END of the line.
-static int char_starts_continuation_op(char c) {
-    return c == '*' || c == '+' || c == '-' || c == '/' ||
-           c == '%' || c == '&' || c == '|' || c == '^';
+// (P5.10: char_starts_continuation_op was deleted — the generalized rule-1
+// ASI below no longer discriminates by the next line's first character
+// beyond the ')' / '}' / `...` / `else` leniency exceptions.)
+
+// P5.10: true when the upcoming characters spell the keyword `else` at a
+// word boundary — the one keyword allowed to CONTINUE the previous
+// statement across a newline (`}` <nl> `else {`), a pinned Goo leniency
+// (asi_else_probe; Go itself rejects that shape). Non-consuming bounded
+// lookahead over the raw input buffer.
+static int lexer_line_starts_with_else(Lexer* lexer) {
+    if (lexer->ch != 'e') return 0;
+    if (lexer->read_position + 2 >= lexer->input_length) return 0;
+    if (lexer->input[lexer->read_position] != 'l' ||
+        lexer->input[lexer->read_position + 1] != 's' ||
+        lexer->input[lexer->read_position + 2] != 'e') return 0;
+    if (lexer->read_position + 3 < lexer->input_length) {
+        char after = lexer->input[lexer->read_position + 3];
+        if ((after >= 'a' && after <= 'z') || (after >= 'A' && after <= 'Z') ||
+            (after >= '0' && after <= '9') || after == '_') return 0;
+    }
+    return 1;
 }
 
 Token* lexer_next_token(Lexer* lexer) {
@@ -162,45 +176,37 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
-            // Part 2 — greedy-join guard. Insert a `;` when a value-ending token
-            // is followed across a newline by a continuation operator (existing
-            // behaviour) OR by `(`, `[`, `.` — otherwise the parser joins the
-            // lines into a call / index / selector (silent miscompile). The
-            // guard is asymmetric: a legitimate multi-line continuation leaves
-            // the operator/dot at the END of line 1 (`foo().` <nl> `bar()`), so
-            // the token before the newline is not value-ending and this does not
-            // fire. `{` is deliberately excluded (`if cond` <nl> `{` must not
-            // split). The `/` sub-condition still guards a comment-opening `//`
-            // or `/*` from being treated as a continuation operator. The `.`
-            // sub-condition similarly must not fire on the first char of `...`
-            // (TOKEN_ELLIPSIS, variadic/spread) — that token has to flow onto
-            // the next line (e.g. `sum(a` <nl> `...)`), not be split from its
-            // value; there is no `..` range operator in Goo, so excluding it
-            // is unambiguous.
+            // Part 2 — generalized rule-1 ASI (P5.10). Go's actual rule: a
+            // newline after a value-ending token terminates the statement,
+            // period. This replaced the old hazard-targeted guard (insert
+            // only before continuation ops / `(` `[` `.` / `<-`) when the
+            // grammar moved to Go-shaped SEMICOLON-terminated statement
+            // lists — the parser now NEEDS the terminator between any two
+            // statements, so the lexer supplies it at every value-ending
+            // newline. Two deliberate exceptions, both pinned by golden
+            // fixtures (Goo is more lenient than Go here — Go would insert
+            // and then reject):
+            //   ')'  — a multi-line call's closing paren may follow the last
+            //          argument without a trailing comma (asi_multiline_probe).
+            //   '}'  — a composite literal's closing brace may follow the last
+            //          element without a trailing comma, and a block's final
+            //          statement needs no terminator (the grammar's final_stmt
+            //          arm consumes the bare form).
+            // EOF (ch == 0) deliberately gets the semicolon: the top-level
+            // decl arms carry member-attached trailing-SEMICOLON tolerance.
+            // Two more pinned Goo leniencies survive from the old targeted
+            // rule (both are loud Go errors, tolerated here by fixtures):
+            //   `...`  — a spread flowing onto its own line (`sum(a` <nl>
+            //            `...)`, asi_spread_probe). There is no `..` operator
+            //            in Goo, so the two-char peek is unambiguous.
+            //   `else` — an else on the line after the closing `}`
+            //            (asi_else_probe). Word-boundary checked so an
+            //            identifier merely STARTING with "else" still gets
+            //            the terminator.
             if (token_ends_value(lexer->prev_token_type) &&
-                (char_starts_continuation_op(lexer->ch) ||
-                 lexer->ch == '(' || lexer->ch == '[' || lexer->ch == '.') &&
-                !(lexer->ch == '/' &&
-                  (lexer_peek_char(lexer) == '/' || lexer_peek_char(lexer) == '*')) &&
-                !(lexer->ch == '.' && lexer_peek_char(lexer) == '.')) {
-                lexer->prev_token_type = TOKEN_SEMICOLON;
-                return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
-            }
-            // Part 2.5 — line-starting channel-receive guard. A value-ending
-            // token followed across a newline by `<-` would otherwise flow
-            // straight into a send expression (`x := 2` <nl> `<-ch` ->
-            // `2 <- ch`, rejected as "send to non-channel type"). Go treats
-            // the newline as a statement terminator here; `<-ch` alone on
-            // its own line is a receive (wait) statement, not a
-            // continuation of the previous line. `<` by itself is
-            // deliberately NOT in char_starts_continuation_op — plain
-            // comparisons (`x := 1` <nl> `< y`) and `<=`/`<<` at a line
-            // start are not this hazard and must keep joining as today, so
-            // this guard needs its own two-character, non-consuming
-            // lookahead (`<` then `-`) rather than widening Part 2's
-            // single-character peek.
-            if (token_ends_value(lexer->prev_token_type) &&
-                lexer->ch == '<' && lexer_peek_char(lexer) == '-') {
+                lexer->ch != ')' && lexer->ch != '}' &&
+                !(lexer->ch == '.' && lexer_peek_char(lexer) == '.') &&
+                !lexer_line_starts_with_else(lexer)) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
