@@ -1,7 +1,8 @@
 # LALR workaround map — where the grammar cheats, and how to extend it safely
 
-Anchors verified 2026-07-04 on main @ 32a53d1. Each entry answers: what breaks if you
-don't know this.
+Anchors verified 2026-07-04 on main @ 32a53d1; §§4/6/8 rewritten 2026-07-11
+post-P5.10 (PR #183: Go-shaped statement termination + generalized ASI).
+Each entry answers: what breaks if you don't know this.
 
 ## 1. LBRACE_BODY lexer bridge — `if X {` vs `X{...}`
 - Where: `src/parser/lexer_bridge.c:23` (frame push/pop), `:239` (emission decision);
@@ -31,13 +32,27 @@ don't know this.
   as a primary_expr arm (#111) — after a complete `slice_type`, LBRACE means composite
   literal, LPAREN means conversion; both are LR(1)-clean.
 
-## 4. Struct-body-scoped ASI — newline → `;` inside struct bodies ONLY
-- Where: `src/lexer/lexer.c:158` region.
-- Shipped with #109 as a scoped pilot. Enum bodies deliberately get NO ASI (multi-line
-  enum-variant embedding therefore hits a raw parse error — recorded message-quality gap).
-- Breaks if ignored: expecting ASI anywhere else (statement level, literals) fails —
-  Goo's grammar is otherwise newline-blind (see §6). One-line `struct { Base }` needs an
-  explicit `;` before `}` (no bare-identifier embed production — S/R conflict).
+## 4. Generalized rule-1 ASI (P5.10) — newline after a value-ender → `;`, four exceptions
+- Where: `src/lexer/lexer.c`, the `'\n'` case of lexer_next_token (Part 1 =
+  unconditional keyword terminators RETURN/BREAK/CONTINUE/FALLTHROUGH; Part 2 =
+  the generalized rule); `token_ends_value()` defines the ender set (NIL included).
+- Since P5.10 the lexer inserts a SEMICOLON at EVERY newline following a
+  value-ending token — Go spec rule 1 — because the grammar's statement lists are
+  now terminator-REQUIRING (see the statement_list/stmt_seq/final_stmt comment in
+  parser.y). Four exceptions, each a pinned Goo-accepts-where-Go-rejects leniency:
+  next char `)` (asi_multiline_probe), next char `}` (composite literals; blocks'
+  final statements ride final_stmt), `...` (asi_spread_probe), and the word `else`
+  (asi_else_probe, word-boundary checked). The older struct-body/var-group scoped
+  ASI (asi_ctx, #109/P1.2) remains in place beneath it — subsumed for value-enders,
+  still load-bearing for its group-scoped edge shapes.
+- Breaks if ignored: a new statement/decl construct whose members end in
+  value-enders WILL receive semicolons between newline-separated members — give it
+  member-attached trailing-SEMICOLON arms (`spec SEMICOLON`, the house pattern:
+  package_clause/import_spec/const_spec/enum_variant/top_level_decl all carry
+  them). NEVER a list-level `list SEMICOLON` arm (creates the more-list-vs-
+  trailing-terminator conflict — rejected twice, see var_member's note in
+  parser.y). And any new leniency exception in the lexer MUST come with a golden
+  that pins it, or a future cleanup will silently tighten the language.
 
 ## 5. COMMA-before-RBRACE arms — trailing commas in literals
 - All five literal productions now carry the arm (post-#111): map parser.y:2366,
@@ -46,14 +61,17 @@ don't know this.
   element token shifts) — safe to replicate for future bracketed list productions.
 - `{,}` stays rejected everywhere: every arm requires a non-empty list. Keep it that way.
 
-## 6. Newline-blind func-result absorption hazard
-- The grammar has no statement-level ASI, so `var f func()` followed on the NEXT LINE by
-  a type-start token gets absorbed into the func result type (`var f func()` ↵ `!b`
-  parses as `func() !b`). Whole-family hazard around `func_result` (parser.y:175, arms
-  from :371).
-- Breaks if ignored: adding tokens to a type's first set silently widens what the
-  func-result position can swallow from the next line. Check this before extending
-  type syntax.
+## 6. Func-result absorption hazard — NEUTRALIZED at statement level by P5.10
+- Historical form: with no statement-level ASI, `var f func()` followed on the NEXT
+  LINE by a type-start token was absorbed into the func result type (`func() !b`).
+- Post-P5.10 status: `)` is a value-ender, so the generalized ASI (§4) inserts a
+  SEMICOLON at the newline and the absorption cannot happen across lines (verified
+  empirically 2026-07-11: `var f func()` ↵ `!true` compiles as two statements).
+- STILL REAL on a single line: `var f func() !b` (same line) absorbs by design —
+  that IS a result type. The residual hazard when extending type syntax: any new
+  token added to a type's FIRST set widens what a SAME-LINE func-result position
+  can swallow. The cross-line case is now guarded by ASI rather than luck; do not
+  remove `)` from token_ends_value without re-opening this whole family.
 
 ## 7. Spread arm — final-only by construction
 - `call_expr: primary_expr LPAREN expression_list ELLIPSIS RPAREN` (#111): ELLIPSIS sits
@@ -62,8 +80,14 @@ don't know this.
   CallExprNode allocation site must zero it (all 5 sites live in parser.y — audit if you
   add one).
 
-## 8. Header edits — the silent-miscompile rule
-- The Makefile has NO header dependencies: after editing `include/ast.h` (or any header),
-  run `make clean && make lexer`, or stale objects silently miscompile.
-- `include/ast.h`: append new enum values and struct fields at the TAIL only — mid-enum
-  insertion renumbers every later node type against stale objects.
+## 8. Header edits — dependency tracking EXISTS now, tail-append still the rule
+- CORRECTED 2026-07-11: the Makefile HAS header dependencies (-MMD/-MP, PR #123) —
+  header edits rebuild their dependents automatically; `make clean` is no longer
+  required for correctness after an `include/ast.h` edit.
+- `include/ast.h`: append new enum values and struct fields at the TAIL only — the
+  convention survives the dep-tracking fix because out-of-tree consumers and any
+  future dep-tracking regression both fail silently on mid-enum renumbering, and
+  tail-append costs nothing.
+- If you add a field to a parser-allocated node, audit every
+  `malloc(sizeof(<Node>))` site to initialize it — malloc garbage in a flag is a
+  heisenbug factory (the has_spread audit precedent, §7).
