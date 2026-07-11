@@ -1,0 +1,67 @@
+// P5.10 targeted probe: statement-termination shapes that the Go-shaped
+// statement grammar (terminated nonfinal + bare final) plus generalized
+// rule-1 ASI must keep parsing exactly as before the restructure.
+//   - single-line blocks (bare FINAL statement before `}`)
+//   - multi-statement single-line blocks (explicit `;` + bare final)
+//   - unary-operator line starts after a value-ending line (*p, &x, -n, <-ch)
+//   - `}` <nl> `else` (pinned Goo leniency)
+//   - label immediately before `}` (bare `done:` epsilon form)
+//   - defer/go as final statements of a block
+package main
+
+import "fmt"
+
+func single(n int) int {
+	if n > 0 { n = n + 1 }
+	{ n = n + 10; n = n + 100 }
+	return n
+}
+
+func unaryStarts() int {
+	x := 5
+	p := &x
+	*p = *p + 1
+	y := 10
+	-y
+	+y
+	^y
+	return x + y
+}
+
+func elseNextLine(n int) string {
+	if n > 0 {
+		return "pos"
+	}
+	else {
+		return "nonpos"
+	}
+}
+
+func labeled(n int) int {
+	total := 0
+	for i := 0; i < n; i++ {
+		if i == 2 {
+			goto done
+		}
+		total = total + i
+	}
+done:
+	return total
+}
+
+func finals(ch chan int) int {
+	go func() { ch <- 7 }()
+	v := <-ch
+	defer fmt.Println("deferred")
+	return v
+}
+
+func main() {
+	fmt.Println(single(1))
+	fmt.Println(unaryStarts())
+	fmt.Println(elseNextLine(3))
+	fmt.Println(elseNextLine(-3))
+	fmt.Println(labeled(9))
+	ch := make(chan int, 1)
+	fmt.Println(finals(ch))
+}

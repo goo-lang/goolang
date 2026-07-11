@@ -126,10 +126,10 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 %token EXTERN FROM VOLATILE INLINE NO_STD
 %token PARALLEL REDUCE BARRIER ATOMIC THREAD_LOCAL
 %token OWNED BORROWED SHARED LET MATCH
-%token KERNEL DEVICE HOST GLOBAL SHARED_MEM CONSTANT LOCAL
-
-// WebAssembly Keywords
-%token WASM EXPORT MEMORY TABLE START ELEM DATA
+// P5.10: the GPU (KERNEL DEVICE HOST GLOBAL SHARED_MEM CONSTANT LOCAL) and
+// WebAssembly (WASM EXPORT MEMORY TABLE START ELEM DATA) token declarations
+// were deleted along with their unreachable productions — lexer_bridge.c
+// never mapped any of them, so no token stream could contain them.
 
 // Operators and punctuation
 %token PLUS MINUS MULTIPLY DIVIDE MODULO
@@ -181,8 +181,8 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 %type <node> var_spec var_spec_list var_member
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
-%type <node> statement_list statement block simple_stmt
-%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt label_stmt goto_stmt fallthrough_stmt
+%type <node> statement_list stmt_seq statement final_stmt block simple_stmt
+%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt goto_stmt fallthrough_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> switch_stmt case_clause_list case_clause
 %type <node> type_case_list type_case_clause type_list
@@ -209,10 +209,7 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
 %type <node> comptime_block ownership_qualifier if_let_stmt
 %type <node> attribute attribute_list volatile_expr
 %type <node> match_expr match_case_list match_case pattern guard_condition
-%type <node> kernel_decl kernel_launch gpu_memory_alloc gpu_memory_copy gpu_sync gpu_intrinsic
-%type <node> wasm_export wasm_import wasm_memory wasm_table wasm_global wasm_start
-%type <node> js_interop dom_access
-%type <token> chan_pattern gpu_memory_qualifier wasm_value_type
+%type <token> chan_pattern
 
 // Operator precedence (lowest to highest)
 %left COMMA
@@ -271,8 +268,19 @@ opt_top_level_decl_list:
     | top_level_decl_list { $$ = $1; }
     ;
 
+// P5.10: generalized rule-1 ASI (lexer.c) terminates every value-ending
+// line with a SEMICOLON, so each newline-separated construct below gains a
+// member-attached trailing-SEMICOLON arm (the house pattern — see the
+// var_member note further down for why list-level SEMICOLON arms were
+// rejected: they conflict on "more list vs trailing terminator").
 package_clause:
     PACKAGE identifier {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        PackageDeclNode* pkg = ast_package_decl_new(ident->name, ident->base.pos);
+        ast_node_free($2);
+        $$ = (ASTNode*)pkg;
+    }
+    | PACKAGE identifier SEMICOLON {
         IdentifierNode* ident = (IdentifierNode*)$2;
         PackageDeclNode* pkg = ast_package_decl_new(ident->name, ident->base.pos);
         ast_node_free($2);
@@ -297,6 +305,9 @@ import_decl:
     | IMPORT LPAREN import_spec_list RPAREN {
         $$ = $3;
     }
+    | IMPORT LPAREN import_spec_list RPAREN SEMICOLON {
+        $$ = $3;
+    }
     ;
 
 import_spec_list:
@@ -315,7 +326,19 @@ import_spec:
         free($1.data);
         $$ = (ASTNode*)imp;
     }
+    | STRING_LITERAL SEMICOLON {
+        ImportSpecNode* imp = ast_import_spec_new($1.data, NULL, get_current_position());
+        free($1.data);
+        $$ = (ASTNode*)imp;
+    }
     | identifier STRING_LITERAL {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        ImportSpecNode* imp = ast_import_spec_new($2.data, ident->name, ident->base.pos);
+        ast_node_free($1);
+        free($2.data);
+        $$ = (ASTNode*)imp;
+    }
+    | identifier STRING_LITERAL SEMICOLON {
         IdentifierNode* ident = (IdentifierNode*)$1;
         ImportSpecNode* imp = ast_import_spec_new($2.data, ident->name, ident->base.pos);
         ast_node_free($1);
@@ -334,17 +357,22 @@ top_level_decl_list:
     }
     ;
 
+// P5.10: the kernel_decl and wasm_* alternatives were deleted here. Their
+// bison tokens (KERNEL, MEMORY, TABLE, START, EXPORT, ...) were never
+// mapped by lexer_bridge.c, so every one of those arms was unreachable
+// dead grammar — and wasm_memory's `MEMORY expression expression` (two
+// ADJACENT expressions) was the sole source of the six 42-conflict
+// reduce/reduce families (unary +,-,*,&,^,<- vs expression) that made up
+// 252 of the baseline's 256 R/R conflicts. gpu_kernel's hard parse reject
+// is pinned by gpu-kernel-reject-probe; real GPU/WASM grammar returns with
+// their post-v1 phases (docs/2026-07-08-v1-roadmap.md Phases 6-7).
 top_level_decl:
     declaration { $$ = $1; }
+    | declaration SEMICOLON { $$ = $1; }
     | func_decl { $$ = $1; }
+    | func_decl SEMICOLON { $$ = $1; }
     | concept_decl { $$ = $1; }
-    | kernel_decl { $$ = $1; }
-    | wasm_export { $$ = $1; }
-    | wasm_import { $$ = $1; }
-    | wasm_memory { $$ = $1; }
-    | wasm_table { $$ = $1; }
-    | wasm_global { $$ = $1; }
-    | wasm_start { $$ = $1; }
+    | concept_decl SEMICOLON { $$ = $1; }
     ;
 
 
@@ -753,7 +781,13 @@ const_spec:
     identifier ASSIGN expression {
         $$ = const_spec_new($1, $3);
     }
+    | identifier ASSIGN expression SEMICOLON {
+        $$ = const_spec_new($1, $3);
+    }
     | identifier {
+        $$ = const_spec_new($1, NULL);
+    }
+    | identifier SEMICOLON {
         $$ = const_spec_new($1, NULL);
     }
     ;
@@ -965,118 +999,123 @@ block:
     }
     ;
 
+// P5.10: statement lists are Go-shaped — every statement in a list is
+// SEMICOLON-terminated EXCEPT that the final statement before the list's
+// terminator (RBRACE / CASE / DEFAULT) may omit it (Go spec "Semicolons"
+// rule 2, encoded in the grammar exactly as go/parser does). Together with
+// the lexer's generalized rule-1 ASI (lexer.c: insert at a newline after a
+// value-ending token unless the next char is ')' or '}'), this kills the
+// six 42-conflict reduce/reduce families: a bare expression statement can
+// now only be FINAL, FOLLOW(final_stmt) contains no expression-starting
+// tokens, so `expression: unary_expr` never competes with a unary-operator
+// statement start again. See references/conflict-ledger.md (P5.10 entry).
 statement_list:
+    stmt_seq {
+        $$ = $1;
+    }
+    | stmt_seq final_stmt {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    | final_stmt {
+        $$ = $1;
+    }
+    ;
+
+stmt_seq:
     statement {
         $$ = $1;
     }
-    | statement_list statement {
+    | stmt_seq statement {
         ast_add_child($1, $2);
         $$ = $1;
     }
     ;
 
+// Terminated statements — legal anywhere in a list. Every arm consumes its
+// SEMICOLON (explicit in source, or lexer-ASI-inserted at the newline).
 statement:
     simple_stmt SEMICOLON { $$ = $1; }
-    | simple_stmt { $$ = $1; }  // Allow statements without semicolon
-    | if_stmt { $$ = $1; }
-    | if_stmt SEMICOLON { $$ = $1; }  // Task 6b: tolerate ASI's `;` after a block's `}`
-    | if_let_stmt { $$ = $1; }
-    | for_stmt { $$ = $1; }
-    | for_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
+    | if_stmt SEMICOLON { $$ = $1; }
+    | if_let_stmt SEMICOLON { $$ = $1; }
+    | for_stmt SEMICOLON { $$ = $1; }
     | return_stmt SEMICOLON { $$ = $1; }
-    | return_stmt { $$ = $1; }  // Allow return without semicolon
     | break_stmt SEMICOLON { $$ = $1; }
-    | break_stmt { $$ = $1; }  // Allow break without semicolon
     | continue_stmt SEMICOLON { $$ = $1; }
-    | continue_stmt { $$ = $1; }  // Allow continue without semicolon
     | goto_stmt SEMICOLON { $$ = $1; }
-    | goto_stmt { $$ = $1; }  // Allow goto without semicolon
     | fallthrough_stmt SEMICOLON { $$ = $1; }
-    | fallthrough_stmt { $$ = $1; }  // Allow fallthrough without semicolon
     | go_stmt SEMICOLON { $$ = $1; }
-    | go_stmt { $$ = $1; }  // Allow go without semicolon
     | defer_stmt SEMICOLON { $$ = $1; }
-    | defer_stmt { $$ = $1; }  // Allow defer without semicolon
-    | select_stmt { $$ = $1; }
-    | select_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
-    | switch_stmt { $$ = $1; }
-    | switch_stmt SEMICOLON { $$ = $1; }  // Task 6b: ditto
-    | block { $$ = $1; }
-    | block SEMICOLON { $$ = $1; }  // Task 6b: ditto
-    | comptime_block { $$ = $1; }  // Goo extension
-    | unsafe_stmt { $$ = $1; }     // Goo extension
-    | arena_stmt { $$ = $1; }      // Goo extension
-    | asm_stmt SEMICOLON { $$ = $1; } // Goo extension
-    | asm_stmt { $$ = $1; }        // Goo extension
-    | parallel_for_stmt { $$ = $1; } // Goo extension
-    | label_stmt { $$ = $1; }      // gofmt-syntax-b Task 1 (P1.5): `L: stmt`
-    ;
-
-label_stmt:
-    identifier COLON statement {
-        // `L: stmt` — labels are function-scoped in Go (not block-scoped),
-        // so duplicate detection lives in the type checker, not here; the
-        // grammar accepts any statement as the labeled target (goto's
-        // arrival in Task 2 is what makes labeling a non-loop statement
-        // useful — legal to parse today, a no-op target until then).
+    | select_stmt SEMICOLON { $$ = $1; }
+    | switch_stmt SEMICOLON { $$ = $1; }
+    | block SEMICOLON { $$ = $1; }
+    | comptime_block SEMICOLON { $$ = $1; }  // Goo extension
+    | unsafe_stmt SEMICOLON { $$ = $1; }     // Goo extension
+    | arena_stmt SEMICOLON { $$ = $1; }      // Goo extension
+    | asm_stmt SEMICOLON { $$ = $1; }        // Goo extension
+    | parallel_for_stmt SEMICOLON { $$ = $1; } // Goo extension
+    // `L: stmt` — labeled TERMINATED statement (the inner statement carries
+    // the terminator). Labels are function-scoped in Go (not block-scoped),
+    // so duplicate detection lives in the type checker, not here.
+    | identifier COLON statement {
         IdentifierNode* lid = (IdentifierNode*)$1;
         LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
         ast_node_free($1);
         $$ = (ASTNode*)label_node;
     }
-    // Fix 5a: a label whose target is the implicit empty statement — Go's
-    // "goto-to-end-of-block" cleanup idiom (`goto done; ...; done: }`,
-    // `identifier COLON` with nothing else before the enclosing block ends
-    // — no ASI semicolon is inserted between COLON and the following RBRACE/
-    // CASE/DEFAULT: COLON is not a value-ending token, verified with
-    // --emit-tokens). The wrapped `stmt` is NULL; every consumer
-    // (type_check_statement's AST_LABEL_STMT case, codegen's AST_LABEL_STMT
-    // case, type_check_collect_goto_labels, ast_node_free) already treats
-    // a NULL label->stmt as a no-op fall-through, so the label is still a
-    // valid goto target that just falls through to whatever follows.
-    //
-    // Conflict-ledger note (see references/conflict-ledger.md): this arm
-    // (plus the explicit-SEMICOLON arm below) lands EVERY new conflict in
-    // exactly one pre-existing, non-shared state — the `identifier COLON •`
-    // dispatch reached only from label_stmt's own predecessor states (base
-    // state 598, single item, no other production shares it) — because
-    // `statement` occurs on both sides of the ambiguity (FOLLOW(label_stmt)
-    // overlaps FIRST(statement), since a label can be followed by another
-    // statement in the same list). Bison's default shift-preference resolves
-    // every one of those token classes in favor of continuing to parse a
-    // real trailing statement — IDENTICAL to today's behavior for every
-    // program that already parses — and only reduces the empty form via
-    // $default when the lookahead cannot start a statement at all (RBRACE,
-    // CASE, DEFAULT, ...). This is the same shift-wins "optional trailing
-    // construct" pattern already accepted at baseline for RETURN's optional
-    // expression (state 419, 21 S/R) and BREAK/CONTINUE's optional label
-    // (states 411/412) — additive only, verified via state-diff that every
-    // pre-existing conflicted state's count is unchanged.
+    // Explicit empty-labeled statement `done: ;` — the SEMICOLON must be
+    // consumed here or it dangles (there is no bare-SEMICOLON statement).
     | identifier COLON SEMICOLON {
-        // Explicit spelling: `done: ;` — the label wraps a literal empty
-        // statement (a lone `;`), not an implicit one. Same NULL-stmt AST
-        // shape as the epsilon arm below; kept as its own production
-        // (rather than folded into the epsilon arm) because the SEMICOLON
-        // must actually be consumed here, or it is left dangling for
-        // statement_list to fail on (there is no bare-SEMICOLON statement
-        // production).
-        IdentifierNode* lid = (IdentifierNode*)$1;
-        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
-        ast_node_free($1);
-        $$ = (ASTNode*)label_node;
-    }
-    | identifier COLON {
-        // Implicit spelling: `done:` with nothing between the colon and
-        // whatever ends the enclosing statement list (most commonly the
-        // block's closing `}`). See the conflict-ledger note above for why
-        // this is safe: reached only on lookahead tokens that cannot start
-        // a `statement`.
         IdentifierNode* lid = (IdentifierNode*)$1;
         LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
         ast_node_free($1);
         $$ = (ASTNode*)label_node;
     }
     ;
+
+// Unterminated (bare) statements — legal ONLY as the last statement of a
+// list, i.e. immediately before RBRACE/CASE/DEFAULT. This is what keeps
+// single-line blocks (`if x { y() }`) and last-statement-before-`}` shapes
+// (the lexer never inserts before '}' ) parsing exactly as before P5.10.
+final_stmt:
+    simple_stmt { $$ = $1; }
+    | if_stmt { $$ = $1; }
+    | if_let_stmt { $$ = $1; }
+    | for_stmt { $$ = $1; }
+    | return_stmt { $$ = $1; }
+    | break_stmt { $$ = $1; }
+    | continue_stmt { $$ = $1; }
+    | goto_stmt { $$ = $1; }
+    | fallthrough_stmt { $$ = $1; }
+    | go_stmt { $$ = $1; }
+    | defer_stmt { $$ = $1; }
+    | select_stmt { $$ = $1; }
+    | switch_stmt { $$ = $1; }
+    | block { $$ = $1; }
+    | comptime_block { $$ = $1; }  // Goo extension
+    | unsafe_stmt { $$ = $1; }     // Goo extension
+    | arena_stmt { $$ = $1; }      // Goo extension
+    | asm_stmt { $$ = $1; }        // Goo extension
+    | parallel_for_stmt { $$ = $1; } // Goo extension
+    // `L: stmt` where stmt is itself final: `for { ... L: y() }`.
+    | identifier COLON final_stmt {
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    // Fix 5a's bare `done:` label with an implicit empty target — by
+    // construction this only ever reduced at list-final position (lookahead
+    // RBRACE/CASE/DEFAULT via $default), so it lives here now; the wrapped
+    // stmt is NULL and every consumer treats that as a no-op fall-through.
+    | identifier COLON {
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    ;
+
 
 simple_stmt:
     expression {
@@ -2200,7 +2239,17 @@ enum_variant:
         $$ = (ASTNode*)ast_enum_variant_new(ident->name, $3, get_current_position());
         ast_node_free($1);
     }
+    | identifier LBRACE struct_field_list RBRACE SEMICOLON {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        $$ = (ASTNode*)ast_enum_variant_new(ident->name, $3, get_current_position());
+        ast_node_free($1);
+    }
     | identifier LBRACE RBRACE {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        $$ = (ASTNode*)ast_enum_variant_new(ident->name, NULL, get_current_position());
+        ast_node_free($1);
+    }
+    | identifier LBRACE RBRACE SEMICOLON {
         IdentifierNode* ident = (IdentifierNode*)$1;
         $$ = (ASTNode*)ast_enum_variant_new(ident->name, NULL, get_current_position());
         ast_node_free($1);
@@ -2967,132 +3016,6 @@ literal:
     }
     ;
 
-// GPU Programming Support
-
-// Kernel function declaration
-kernel_decl:
-    KERNEL identifier func_signature block {
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $3, NULL, $4, GPU_TARGET_NVPTX, get_current_position());
-        ast_node_free($2);
-        $$ = (ASTNode*)kernel;
-    }
-    | DEVICE KERNEL identifier func_signature block {
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $4, NULL, $5, GPU_TARGET_NVPTX, get_current_position());
-        ast_node_free($3);
-        $$ = (ASTNode*)kernel;
-    }
-    ;
-
-// Kernel launch expression  
-kernel_launch:
-    identifier LT LT LT expression COMMA expression GT GT GT LPAREN RPAREN {
-        // vectorAdd<<<gridSize, blockSize>>>()
-        IdentifierNode* kernel_name = (IdentifierNode*)$1;
-        KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, NULL, get_current_position());
-        $$ = (ASTNode*)launch;
-    }
-    | identifier LT LT LT expression COMMA expression GT GT GT LPAREN expression_list RPAREN {
-        // vectorAdd<<<gridSize, blockSize>>>(args)
-        IdentifierNode* kernel_name = (IdentifierNode*)$1;
-        KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, $12, get_current_position());
-        $$ = (ASTNode*)launch;
-    }
-    ;
-
-// GPU memory allocation
-gpu_memory_alloc:
-    identifier DOT identifier LBRACKET type RBRACKET LPAREN expression RPAREN {
-        // cuda.Malloc[float32](size)
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Malloc") == 0) {
-            GPUMemoryAllocNode* alloc = ast_gpu_memory_alloc_new($8, $5, GPU_MEMORY_GLOBAL, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)alloc;
-        } else {
-            yyerror("Unknown GPU memory allocation function");
-            $$ = NULL;
-        }
-    }
-    ;
-
-// GPU memory copy
-gpu_memory_copy:
-    identifier DOT identifier LPAREN expression COMMA expression COMMA expression COMMA identifier RPAREN {
-        // cuda.Memcpy(dest, src, size, direction)
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        IdentifierNode* direction = (IdentifierNode*)$11;
-        
-        int dir = 0; // Default to HostToDevice
-        if (strcmp(direction->name, "HostToDevice") == 0) dir = 0;
-        else if (strcmp(direction->name, "DeviceToHost") == 0) dir = 1;
-        else if (strcmp(direction->name, "DeviceToDevice") == 0) dir = 2;
-        
-        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Memcpy") == 0) {
-            GPUMemoryCopyNode* copy = ast_gpu_memory_copy_new($5, $7, $9, dir, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            ast_node_free($11);
-            $$ = (ASTNode*)copy;
-        } else {
-            yyerror("Unknown GPU memory copy function");
-            $$ = NULL;
-        }
-    }
-    ;
-
-// GPU synchronization
-gpu_sync:
-    identifier DOT identifier LPAREN RPAREN {
-        // cuda.DeviceSync()
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        
-        int sync_type = 0; // DeviceSync
-        if (strcmp(func->name, "DeviceSync") == 0) sync_type = 0;
-        else if (strcmp(func->name, "StreamSync") == 0) sync_type = 1;
-        
-        if (strcmp(package->name, "cuda") == 0) {
-            GPUSyncNode* sync = ast_gpu_sync_new(sync_type, NULL, NULL, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)sync;
-        } else {
-            yyerror("Unknown GPU sync function");
-            $$ = NULL;
-        }
-    }
-    ;
-
-// GPU intrinsic functions
-gpu_intrinsic:
-    identifier DOT identifier {
-        // blockIdx.x, threadIdx.y, etc.
-        IdentifierNode* object = (IdentifierNode*)$1;
-        IdentifierNode* member = (IdentifierNode*)$3;
-        
-        char intrinsic_name[64];
-        snprintf(intrinsic_name, sizeof(intrinsic_name), "%s.%s", object->name, member->name);
-        
-        GPUIntrinsicNode* intrinsic = ast_gpu_intrinsic_new(intrinsic_name, NULL, GPU_CONTEXT_KERNEL, get_current_position());
-        ast_node_free($1);
-        ast_node_free($3);
-        $$ = (ASTNode*)intrinsic;
-    }
-    ;
-
-// GPU memory qualifiers
-gpu_memory_qualifier:
-    GLOBAL { $$ = (int)GPU_MEMORY_GLOBAL; }
-    | SHARED_MEM { $$ = (int)GPU_MEMORY_SHARED; }
-    | CONSTANT { $$ = (int)GPU_MEMORY_CONSTANT; }
-    | LOCAL { $$ = (int)GPU_MEMORY_LOCAL; }
-    ;
-
 // Pattern matching
 match_expr:
     MATCH expression LBRACE match_case_list RBRACE {
@@ -3186,130 +3109,6 @@ guard_condition:
     }
     ;
 
-// WebAssembly Support
-
-wasm_export:
-    EXPORT STRING_LITERAL identifier {
-        // export "functionName" myFunction
-        IdentifierNode* item = (IdentifierNode*)$3;
-        WasmExportNode* export_node = ast_wasm_export_new($2.data, $3, "func", get_current_position());
-        free($2.data);
-        $$ = (ASTNode*)export_node;
-    }
-    ;
-
-wasm_import:
-    IMPORT STRING_LITERAL STRING_LITERAL identifier {
-        // import "module" "function" localName
-        IdentifierNode* local = (IdentifierNode*)$4;
-        WasmImportNode* import_node = ast_wasm_import_new($2.data, $3.data, local->name, "func", NULL, get_current_position());
-        free($2.data);
-        free($3.data);
-        ast_node_free($4);
-        $$ = (ASTNode*)import_node;
-    }
-    ;
-
-wasm_memory:
-    MEMORY expression {
-        // memory 1 (1 page = 64KB)
-        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, NULL, 0, get_current_position());
-        $$ = (ASTNode*)memory_node;
-    }
-    | MEMORY expression expression {
-        // memory 1 16 (min 1 page, max 16 pages)
-        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, $3, 0, get_current_position());
-        $$ = (ASTNode*)memory_node;
-    }
-    ;
-
-wasm_table:
-    TABLE expression wasm_value_type {
-        // table 10 funcref
-        WasmTableNode* table_node = ast_wasm_table_new((WasmValueType)$3, $2, NULL, get_current_position());
-        $$ = (ASTNode*)table_node;
-    }
-    ;
-
-wasm_global:
-    GLOBAL identifier wasm_value_type expression {
-        // global myGlobal i32 42
-        IdentifierNode* name = (IdentifierNode*)$2;
-        WasmGlobalNode* global_node = ast_wasm_global_new(name->name, (WasmValueType)$3, 0, $4, get_current_position());
-        ast_node_free($2);
-        $$ = (ASTNode*)global_node;
-    }
-    ;
-
-wasm_start:
-    START identifier {
-        // start main
-        WasmStartNode* start_node = ast_wasm_start_new($2, get_current_position());
-        $$ = (ASTNode*)start_node;
-    }
-    ;
-
-js_interop:
-    identifier DOT identifier LPAREN expression_list RPAREN {
-        // console.log(args) - JavaScript interop call
-        IdentifierNode* obj = (IdentifierNode*)$1;
-        IdentifierNode* method = (IdentifierNode*)$3;
-        
-        if (strcmp(obj->name, "console") == 0 || strcmp(obj->name, "window") == 0 || 
-            strcmp(obj->name, "document") == 0) {
-            JSInteropNode* js_node = ast_js_interop_new(JS_INTEROP_CALL, obj->name, method->name, $5, WASM_ENV_BROWSER, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)js_node;
-        } else {
-            // Regular selector expression
-            yyerror("Unknown JavaScript object");
-            $$ = NULL;
-        }
-    }
-    ;
-
-dom_access:
-    identifier DOT identifier {
-        // document.body - DOM property access
-        IdentifierNode* api = (IdentifierNode*)$1;
-        IdentifierNode* prop = (IdentifierNode*)$3;
-        
-        if (strcmp(api->name, "document") == 0 || strcmp(api->name, "window") == 0) {
-            DOMAccessNode* dom_node = ast_dom_access_new(api->name, prop->name, NULL, 1, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)dom_node;
-        } else {
-            yyerror("Unknown DOM API");
-            $$ = NULL;
-        }
-    }
-    ;
-
-wasm_value_type:
-    identifier {
-        // i32, i64, f32, f64, funcref, externref
-        IdentifierNode* type_name = (IdentifierNode*)$1;
-        if (strcmp(type_name->name, "i32") == 0) {
-            $$ = (int)WASM_TYPE_I32;
-        } else if (strcmp(type_name->name, "i64") == 0) {
-            $$ = (int)WASM_TYPE_I64;
-        } else if (strcmp(type_name->name, "f32") == 0) {
-            $$ = (int)WASM_TYPE_F32;
-        } else if (strcmp(type_name->name, "f64") == 0) {
-            $$ = (int)WASM_TYPE_F64;
-        } else if (strcmp(type_name->name, "funcref") == 0) {
-            $$ = (int)WASM_TYPE_FUNCREF;
-        } else if (strcmp(type_name->name, "externref") == 0) {
-            $$ = (int)WASM_TYPE_EXTERNREF;
-        } else {
-            yyerror("Unknown WebAssembly value type");
-            $$ = (int)WASM_TYPE_I32; // Default
-        }
-        ast_node_free($1);
-    }
-    ;
 
 %%
 

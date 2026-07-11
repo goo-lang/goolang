@@ -1,12 +1,12 @@
 # Bison conflict ledger
 
-Baseline: **121 shift/reduce + 256 reduce/reduce** — verified 2026-07-09 on
-`feat/go-syntax-grammar-b` (gofmt-syntax sub-project B, review Fix 5a, labeled
-empty statement). Previous baseline 88/256 verified 2026-07-09 on the same
-branch (Task 1, labels + labeled break/continue). Before that, 84/256 verified
-2026-07-08 on `feat/go-syntax-grammar-a` (gofmt-syntax sub-project A, Task 2,
-switch-with-init). The tripwire (`scripts/grammar-tripwire.sh`) asserts these
-numbers exactly; treat any delta as a stop-the-line event, not noise.
+Baseline: **31 shift/reduce + 0 reduce/reduce** — verified 2026-07-11 on
+`refactor/p5-10-rr-cleanup` (P5.10: Go-shaped statement termination + dead
+GPU/WASM grammar deletion; full justification below). Previous baseline
+121/256, verified 2026-07-09 on `feat/go-syntax-grammar-b` (gofmt-syntax
+sub-project B, review Fix 5a, labeled empty statement). The tripwire
+(`scripts/grammar-tripwire.sh`) asserts these numbers exactly; treat any
+delta as a stop-the-line event, not noise.
 
 ## Baseline history (every change was justified in its PR, never absorbed silently)
 
@@ -24,7 +24,80 @@ numbers exactly; treat any delta as a stop-the-line event, not noise.
 | gofmt-syntax-b Task 2 (goto) | **zero delta** | `goto_stmt: GOTO identifier` — a single arm with no bare/label-less alternative, unlike `break_stmt`/`continue_stmt` in Task 1 immediately above (which each had a competing `BREAK`/`CONTINUE`-alone reduce that manufactured the IDENTIFIER shift/reduce conflict). No such competing reduce exists for GOTO (the operand is mandatory), so there is nothing for a new state to conflict against; confirmed by direct tripwire run, not assumed. |
 | gofmt-syntax-b Task 3 (fallthrough) | **zero delta** | `fallthrough_stmt: FALLTHROUGH` — a single-token arm, no operand ever (unlike `goto`, which at least takes a mandatory identifier; unlike `break`/`continue`, which have a competing bare-vs-labeled reduce). FALLTHROUGH was already one of `src/lexer/lexer.c`'s unconditional keyword-terminator ASI tokens (same "Part 1" group as RETURN/BREAK/CONTINUE, present before this task — see Task 1's entry above) before this arm existed, so the grammar never sees `FALLTHROUGH <anything>` back to back on one line regardless; there is no competing reduce and no new FOLLOW-set collision for a new state to conflict against. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. |
 | gofmt-syntax-b Task 4 (select value-binding cases) | **zero delta** | `select_case` gained `CASE identifier SHORT_ASSIGN expression COLON statement_list`, `CASE identifier ASSIGN expression COLON statement_list`, and a grammar-accepted-but-always-type-rejected `CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list` (comma-ok) arm. Same "mandatory operand after a keyword/CASE token, no competing bare reduce" shape as `goto_stmt: GOTO identifier` (Task 2 immediately above): `CASE identifier` was already followed by a mandatory `SHORT_ASSIGN`/`ASSIGN`/`COLON`/`COMMA` in every existing `select_case`/`case_clause` arm, so there is no bare `CASE identifier`-alone reduce for the new arms' extra lookahead to conflict against. Receive-ness (`expression` must actually be a channel receive) is validated semantically, not encoded in the grammar, by design (spec T4) — keeping the grammar arm generic (`expression`, not `ARROW expression`) is exactly why there is nothing new for the token to fight over. Confirmed by direct tripwire run (88 S/R + 256 R/R, unchanged), not assumed. This row was added retroactively in gofmt-syntax-b Task 5's docs truth pass — Task 4 shipped the zero-delta result correctly but, unlike Task 2 and Task 3 immediately above, did not add a history-table row at the time; recorded now for consistency with the "every ledgered task gets a row, delta or not" convention this table otherwise follows without a gap. |
+| P5.10 (Go-shaped statement termination + dead GPU/WASM grammar deletion) | 121/256 → **31/0** (−90 S/R, −256 R/R) | Two independent mechanisms, isolated then combined. (1) The grammar's per-statement optional-SEMICOLON design (bare `simple_stmt`/`return_stmt`/... arms) was replaced by Go's actual shape — `statement_list: stmt_seq [final_stmt]`, terminated statements everywhere except a bare FINAL statement before RBRACE/CASE/DEFAULT — with the lexer's ASI generalized from hazard-targeted to Go rule 1 (insert at every value-ending newline; leniency exceptions `)` `}` `...` `else`, each pinned by a golden). This removed the bare-arm S/R artifacts wholesale (RETURN's 21-conflict state, label-epsilon's +33, BREAK/CONTINUE's +2, ...). (2) The unreachable GPU/WASM productions (tokens never mapped by lexer_bridge.c) were deleted; `wasm_memory: MEMORY expression expression` — two ADJACENT expressions — was the sole source of ALL six 42-conflict R/R families (unary `+ - * & ^ <-` vs `expression: unary_expr`), 252 of the 256 R/R; the defer/go pair (4 R/R) fell to the statement restructure. Differential: **all 415 golden fixtures emit byte-identical LLVM IR** before/after, golden 415/0 at -O0 AND -O2, reject 76/0, unit tests unchanged. Full justification below. |
 | gofmt-syntax-b review Fix 5a (labeled empty statement) | 88 → **121** S/R (+33) | `label_stmt` gained two arms, `identifier COLON SEMICOLON` (explicit `done: ;`) and `identifier COLON` (bare `done:` immediately before whatever ends the enclosing statement list — the goto-to-end-of-block idiom). Both arms' new items land in exactly ONE pre-existing, previously-unconflicted, single-item state (state 598, `label_stmt: identifier COLON • statement` — reached ONLY from label_stmt's own predecessor states, not shared/merged with any other production). The +33 is `statement`'s own FIRST set: FOLLOW(label_stmt) overlaps FIRST(statement) because a label can be followed by another real statement in the same `statement_list`, so 33 of `statement`'s FIRST tokens are now ambiguous between "shift, keep trying to parse a real trailing statement" and "reduce, the label's target is empty" — bison's default shift-wins resolves every one of them toward the pre-existing behavior (state 598's shift table is completely unchanged; the 33 shifts area is bracketed-reduce-suppressed, not shift-suppressed), so no previously-parsing program's parse tree changes. SEMICOLON is unambiguous (shifts toward the explicit-SEMICOLON arm; not in the epsilon arm's per-state reduce lookahead here). `$default` (RBRACE, CASE, DEFAULT, and everything else outside `statement`'s FIRST set and SEMICOLON) reduces the empty form — exactly the previously-rejected shapes this fix targets. R/R unchanged (256); every OTHER pre-existing conflicted state's count is byte-identical before/after (state-diffed, see "Justification" below) — this is the whole delta. Full justification below. |
+
+## Justification: P5.10 (121/256 → 31/0)
+
+**Where the 256 R/R actually lived** (`bison -v` state analysis, not the
+roadmap's guess): 6 states × 42 conflicts + 2 states × 2. The six 42-R/R
+states were `expression: unary_expr •` vs `unary_expr: <op> unary_expr •`
+for the six unary/binary-overloaded operators (`+ - * & ^ <-`) — a genuine
+grammar ambiguity REQUIRING two expressions to be adjacent somewhere. The
+only adjacency in the whole grammar was `wasm_memory: MEMORY expression
+expression` — a production whose MEMORY token lexer_bridge.c never mapped,
+i.e. dead grammar poisoning the live tables. The 2-R/R pair was
+`defer_stmt/go_stmt: ... call_expr •` vs `primary_expr: call_expr •`,
+fed by bare-statement adjacency.
+
+**Mechanism 1 — dead grammar deletion**: all GPU (kernel_decl,
+kernel_launch, gpu_memory_*/gpu_sync/gpu_intrinsic/gpu_memory_qualifier)
+and WASM (wasm_export/import/memory/table/global/start, js_interop,
+dom_access, wasm_value_type) productions and their 14 never-bridge-mapped
+tokens deleted. gpu_kernel's hard parse reject is pinned by
+gpu-kernel-reject-probe (verify-core) — behavior unchanged (it never
+parsed). Isolated effect: R/R 256 → 4.
+
+**Mechanism 2 — Go-shaped statement termination**: `statement_list:
+stmt_seq | stmt_seq final_stmt | final_stmt`; `statement` = every arm
+SEMICOLON-terminated (incl. previously arm-less if_let/comptime/unsafe/
+arena/parallel_for); `final_stmt` = the bare forms, legal only before the
+list terminator (Go spec "Semicolons" rule 2, exactly go/parser's shape).
+Label arms split accordingly (`id COLON statement` / `id COLON SEMICOLON`
+nonfinal; `id COLON final_stmt` / bare `id COLON` final — the epsilon arm
+only ever reduced at list-final position via $default, so this move is
+behavior-identical by construction). The lexer's ASI generalized from
+hazard-targeted to Go rule 1: insert at EVERY newline after a value-ending
+token (TOKEN_NIL added to token_ends_value — Go treats nil as an
+identifier), with FOUR leniency exceptions, each a pinned Goo-accepts-
+where-Go-rejects divergence: next char `)` (multiline call, no trailing
+comma — asi_multiline_probe), next char `}` (composite literals; blocks'
+final statements ride final_stmt), `...` (spread flowing onto its own line
+— asi_spread_probe), and the word `else` (`}` <nl> `else` — asi_else_probe).
+Newline-separated declaration constructs gained member-attached trailing-
+SEMICOLON arms (package_clause, import_spec, import group's RPAREN,
+top_level_decl members, const_spec, enum_variant) — the house pattern;
+list-level arms were NOT used (see the var_member note for why). Isolated
+effect: S/R 121 → 31, R/R 4 → 0.
+
+**The surviving 31 S/R (16 states)** are all instances of the three
+already-baselined families, none new: func-result shift-wins
+(func_signature/func_result absorption states, incl. interface_method
+variants), struct-lit-vs-bare-identifier (LBRACE dispatch, incl.
+type_switch_guard positions), and simple_stmt tuple-COMMA — plus the
+pre-existing expression-position state (expression_list/array_type/catch)
+and match's `pattern: identifier`. Removed wholesale: RETURN's 21-conflict
+state, label-epsilon's 33, BREAK/CONTINUE's 2 — all were artifacts of the
+bare statement arms.
+
+**Behavioral verification (the strongest differential this ledger has
+recorded):**
+- **IR byte-differential: all 415 golden fixtures emit byte-identical
+  LLVM IR** before vs after (this is the whole-corpus version of #108's
+  technique). Golden 415/0 at -O0 AND -O2; reject 76/0; `make test`
+  unchanged (unit suite + 13-case CLI suite).
+- New golden `p510_termination_probe` pins the roadmap's targeted shapes:
+  single-line blocks (`if x { n = n + 1 }`), multi-statement single-line
+  blocks (`{ a; b }` with `;`), unary-operator line starts (`*p`, `-y`,
+  `+y`, `^y` after value-ending lines), `}` <nl> `else`, bare label before
+  `}` (`done:` epsilon), and defer/go/`<-ch` final statements.
+- Bison also reports 5 pre-existing useless nonterminals (volatile_expr,
+  parallel_reduce_expr, barrier_call, atomic_expr, thread_local_decl) —
+  already useless at the 121/256 baseline (13 useless-warnings there),
+  NOT newly orphaned; left for a future sweep.
+
+`EXPECTED_SR=31` / `EXPECTED_RR=0` in `scripts/grammar-tripwire.sh`,
+updated in the same commit as this entry.
 
 ## What a justified delta looks like (the #92 precedent)
 
