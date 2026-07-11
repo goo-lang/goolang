@@ -2227,7 +2227,17 @@ int type_check_const_decl(TypeChecker* checker, ASTNode* decl) {
         if (goo_fold_const_int(const_decl->values, &folded)) {
             // Untyped int const default type is `int` (int64 here); a value past
             // int64's signed range takes uint64. Mirrors function_codegen.c.
-            value_type = (folded <= 9223372036854775807ULL)
+            // The fold is 64-bit MODULAR, so a raw pattern > INT64_MAX is
+            // ambiguous: a huge literal actually written >= 2^63 (MaxUint64)
+            // or a genuinely NEGATIVE constant (`-5` folds to 0xFFFF...FB).
+            // Disambiguate with the negated-shape check, the same convention
+            // int_const_fits_expected's uint64 arm documents: negative-rooted
+            // folds keep the signed default (int64 holding -5), only an
+            // unnegated huge fold takes uint64. Same residual deviation as
+            // there: pure-arithmetic negatives with no top-level minus
+            // (`0 - 5`) still read as huge-positive and take uint64.
+            value_type = (folded <= 9223372036854775807ULL ||
+                          is_negated_int_const_expr(const_decl->values))
                              ? type_checker_get_builtin(checker, TYPE_INT64)
                              : type_checker_get_builtin(checker, TYPE_UINT64);
         }
