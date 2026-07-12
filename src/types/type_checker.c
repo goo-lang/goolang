@@ -3747,7 +3747,17 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                     stamp_int_const_expr_type(ret_stmt->values, expected);
                 }
 
-                if ((!same_kind || !same_width) &&
+                // Arc 10 (o) rider: like the call-arg guard, a SAME-width
+                // differently-SIGNED pair (uint64 const returned from an
+                // int64 function) slid past the width test untouched and
+                // bit-reinterpreted; enter the gate for the sign mismatch
+                // too. Non-constant sign-only mismatches keep the
+                // pre-existing acceptance (plain-var laxness wall).
+                int ret_sign_differs = type_is_integer(return_type) &&
+                                       type_is_integer(expected) &&
+                                       type_is_signed(return_type) !=
+                                           type_is_signed(expected);
+                if ((!same_kind || !same_width || ret_sign_differs) &&
                     !int_const_coerce && !float_const_coerce) {
                     // Arc 10 (o): a const-IDENT-bearing constant return
                     // value is judged by the shared core, mirroring the
@@ -3764,7 +3774,7 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                                           checker, ret_stmt->values, expected)
                                     : 0;
                     if (ident_fit < 0) return 0;
-                    if (ident_fit == 0) {
+                    if (ident_fit == 0 && (!same_kind || !same_width)) {
                         // Point at the returned value, not stmt->pos: a return
                         // statement's pos is the post-parse lookahead (the next
                         // decl's line), which mis-attributes the diagnostic.
@@ -3777,6 +3787,8 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                                    type_to_string(expected));
                         return 0;
                     }
+                    // ident_fit == 0 with same kind and width (sign-only
+                    // mismatch, non-constant): pre-existing acceptance.
                 }
             }
 

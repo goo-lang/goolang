@@ -1771,14 +1771,36 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             LLVMValueRef* margs = malloc(sizeof(LLVMValueRef) * margc);
             if (!margs) { free(mangled); return NULL; }
             margs[0] = recv_arg;
+            // Arc 10 (o): coerce each numeric argument to the callee's
+            // declared LLVM parameter width, mirroring the plain user-call
+            // arg loop (T4) — this path had NO coercion, so a checker-
+            // admitted representable constant (`b.Set(K)`, K = 5, int8
+            // param) arrived as a raw i64 and failed LLVM verification.
+            // Param types come from the method's own signature; the shared
+            // helper no-ops on matching/non-numeric kinds.
+            LLVMTypeRef mfn_ty = LLVMGlobalGetValueType(fn);
+            unsigned mfn_params = LLVMCountParamTypes(mfn_ty);
+            LLVMTypeRef* mparam_tys = NULL;
+            if (mfn_params > 0) {
+                mparam_tys = malloc(sizeof(LLVMTypeRef) * mfn_params);
+                if (mparam_tys) LLVMGetParamTypes(mfn_ty, mparam_tys);
+            }
             int ok = 1;
             size_t i = 1;
             for (ASTNode* a = call->args; a; a = a->next, i++) {
                 ValueInfo* av = codegen_generate_expression(codegen, checker, a);
                 if (!av) { ok = 0; break; }
-                margs[i] = av->llvm_value;
+                LLVMValueRef v = av->llvm_value;
+                if (mparam_tys && i < mfn_params) {
+                    int src_signed = av->goo_type
+                                     ? type_is_signed(av->goo_type) : 1;
+                    v = codegen_coerce_to_type(codegen, v, src_signed,
+                                               mparam_tys[i]);
+                }
+                margs[i] = v;
                 value_info_free(av);
             }
+            free(mparam_tys);
             if (!ok) { free(margs); free(mangled); return NULL; }
             LLVMValueRef result = LLVMBuildCall2(codegen->builder,
                 LLVMGlobalGetValueType(fn), fn, margs, (unsigned)margc, "");

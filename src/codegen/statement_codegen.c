@@ -1974,8 +1974,18 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
                 unsigned to_bits   = LLVMGetIntTypeWidth(fn_ret);
                 if (from_bits < to_bits) {
-                    final_return_value = LLVMBuildSExt(codegen->builder, final_return_value,
-                                                       fn_ret, "ret_sext");
+                    // Arc 10 (o): extend by the VALUE's own signedness — an
+                    // unconditional SExt turned a uint8 const 200 returned
+                    // from an int16 function into -56. Mirrors the
+                    // narrowing arm's convention below (default signed when
+                    // no goo_type is attached).
+                    int widen_sext = return_value->goo_type
+                                   ? type_is_signed(return_value->goo_type) : 1;
+                    final_return_value = widen_sext
+                        ? LLVMBuildSExt(codegen->builder, final_return_value,
+                                        fn_ret, "ret_sext")
+                        : LLVMBuildZExt(codegen->builder, final_return_value,
+                                        fn_ret, "ret_zext");
                 } else if (from_bits > to_bits && LLVMIsConstant(final_return_value)) {
                     int use_sext = return_value->goo_type
                                  ? type_is_signed(return_value->goo_type) : 1;
