@@ -533,6 +533,28 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     // before the general base-expression path.
     if (selector->expr && selector->expr->type == AST_IDENTIFIER) {
         IdentifierNode* pkg = (IdentifierNode*)selector->expr;
+        // Arc 12 (p) rider: the GENERAL exports-backed const leg runs
+        // FIRST — the shim intercepts below match on the bare name
+        // string, so a USER source package that happens to be named
+        // `math` otherwise gets the hardcoded ConstReal pi emitted into
+        // whatever type the checker resolved from its REAL export (a
+        // silent checker/codegen divergence; found by the arc-12 review's
+        // shadowing probes). Genuine shim packages carry no folded
+        // integer exports (empty or type-only exports scopes), so this
+        // leg no-ops for them and the intercepts behave as before.
+        {
+            Variable* exp = goo_lookup_pkg_const(checker, expr);
+            if (exp && exp->has_const_int_value && exp->type &&
+                type_is_integer(exp->type)) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, exp->type);
+                if (lt) {
+                    LLVMValueRef v = LLVMConstInt(
+                        lt, (unsigned long long)exp->const_int_value,
+                        type_is_signed(exp->type));
+                    return value_info_new(NULL, v, exp->type);
+                }
+            }
+        }
         if (strcmp(pkg->name, "math") == 0 && strcmp(selector->selector, "Pi") == 0) {
             LLVMValueRef pi = LLVMConstReal(LLVMDoubleTypeInContext(codegen->context),
                                             3.14159265358979323846);
@@ -591,29 +613,6 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
                 LLVMValueRef v = LLVMConstInt(LLVMInt64TypeInContext(codegen->context),
                                               (unsigned long long)nanos, 1);
                 return value_info_new(NULL, v, duration_type);
-            }
-        }
-        // Arc 12 (p): GENERAL package-const materialization — `pkg.K` for
-        // any source-compiled package whose export carries a folded
-        // integer value (package_export_filter copies the cache). Emit the
-        // constant directly at the export's own type: integer consts are
-        // compile-time values, so no cross-module symbol reference is
-        // needed and the value is exact. Placed AFTER the hardcoded shim
-        // intercepts above (shim packages have empty exports scopes, so
-        // this leg never fires for them) and BEFORE the generic
-        // base-expression path (a bare package identifier has no value to
-        // generate — it used to fall through to "Undefined identifier").
-        {
-            Variable* exp = goo_lookup_pkg_const(checker, expr);
-            if (exp && exp->has_const_int_value && exp->type &&
-                type_is_integer(exp->type)) {
-                LLVMTypeRef lt = codegen_type_to_llvm(codegen, exp->type);
-                if (lt) {
-                    LLVMValueRef v = LLVMConstInt(
-                        lt, (unsigned long long)exp->const_int_value,
-                        type_is_signed(exp->type));
-                    return value_info_new(NULL, v, exp->type);
-                }
             }
         }
     }
