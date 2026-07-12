@@ -1,0 +1,20 @@
+package main
+
+import "fmt"
+
+// (o rider) unsigned const widening-return probe: the return-widening arm
+// unconditionally SExt'd, so a typed uint8 const 200 returned from an
+// int16 function printed -56. Widening now extends by the VALUE's own
+// signedness (ZExt for unsigned), mirroring codegen_coerce_to_type.
+// NOTE: Go rejects a typed cross-kind const here — Goo accepts when
+// representable (documented arc-4/5 wall) — so the expected output is
+// hand-derived (uint8 200 is exactly 200 in int16).
+const U uint8 = 200
+
+func g16() int16 {
+	return U
+}
+
+func main() {
+	fmt.Println(g16())
+}

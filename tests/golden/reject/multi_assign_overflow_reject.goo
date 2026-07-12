@@ -1,0 +1,13 @@
+// Correctness arc 10 (o rider): multi-assign values must gate against
+// their targets — `x, y = 300, 6` on int8 targets silently truncated
+// (printed 44) because type_check_multi_assign had no representability
+// pass at all; the shared core folds literal shapes too. Go rejects.
+package main
+
+func main() {
+	var x int8 = 0
+	var y int8 = 0
+	x, y = 300, 6
+	println(x)
+	println(y)
+}

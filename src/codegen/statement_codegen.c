@@ -1974,8 +1974,18 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
                 unsigned to_bits   = LLVMGetIntTypeWidth(fn_ret);
                 if (from_bits < to_bits) {
-                    final_return_value = LLVMBuildSExt(codegen->builder, final_return_value,
-                                                       fn_ret, "ret_sext");
+                    // Arc 10 (o): extend by the VALUE's own signedness — an
+                    // unconditional SExt turned a uint8 const 200 returned
+                    // from an int16 function into -56. Mirrors the
+                    // narrowing arm's convention below (default signed when
+                    // no goo_type is attached).
+                    int widen_sext = return_value->goo_type
+                                   ? type_is_signed(return_value->goo_type) : 1;
+                    final_return_value = widen_sext
+                        ? LLVMBuildSExt(codegen->builder, final_return_value,
+                                        fn_ret, "ret_sext")
+                        : LLVMBuildZExt(codegen->builder, final_return_value,
+                                        fn_ret, "ret_zext");
                 } else if (from_bits > to_bits && LLVMIsConstant(final_return_value)) {
                     int use_sext = return_value->goo_type
                                  ? type_is_signed(return_value->goo_type) : 1;
@@ -1983,6 +1993,16 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                         ? (unsigned long long)LLVMConstIntGetSExtValue(final_return_value)
                         : LLVMConstIntGetZExtValue(final_return_value);
                     final_return_value = LLVMConstInt(fn_ret, raw, use_sext);
+                } else if (from_bits > to_bits) {
+                    // Arc 10 (o): a checker-admitted narrowing return that
+                    // did NOT materialize as an LLVM constant — a const
+                    // identifier codegen resolves through its slot load.
+                    // The checker's shared-core gate only admits values
+                    // representable at the target width, so the Trunc is
+                    // exact; every other narrowing shape is still rejected
+                    // before codegen.
+                    final_return_value = LLVMBuildTrunc(codegen->builder, final_return_value,
+                                                        fn_ret, "ret_trunc");
                 }
             }
         }

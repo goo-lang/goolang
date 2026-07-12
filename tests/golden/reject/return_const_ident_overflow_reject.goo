@@ -1,0 +1,14 @@
+// Correctness arc 10 (o): a const-identifier return value must be judged
+// by the shared core — `return K` with K = 300 from an int8 function is
+// "constant 300 overflows int8" (Go).
+package main
+
+const K = 300
+
+func g() int8 {
+	return K
+}
+
+func main() {
+	g()
+}

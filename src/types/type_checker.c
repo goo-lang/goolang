@@ -2677,6 +2677,26 @@ int type_check_multi_assign(TypeChecker* checker, ASTNode* stmt) {
                            "Cannot assign %s to %s in multiple assignment",
                            type_to_string(vt), type_to_string(tt));
                 return 0;
+            } else if (i < ma->count && type_is_integer(tt)) {
+                // Arc 10 (o rider): multi-assign had NO representability
+                // pass — `x, y = 300, 6` on int8 targets truncated silently
+                // (this path also bypassed every arc-3..7 const gate; found
+                // as the arc-8 scope note). The shared core folds literal
+                // shapes AND const idents, so one call gates both — there is
+                // no pre-existing per-literal adapter here whose semantics
+                // could diverge. Fit (1): accept unchanged — codegen's
+                // multi-assign store coerces to the target width (arc 8),
+                // exact for a representable value. Destructure values
+                // (`a, b = f()`) are call results, never foldable — the
+                // core returns 0 and the plain-compatibility laxness above
+                // stands. The values walk maps target i to value i, so
+                // ma->values must be re-walked; only two targets exist (v1
+                // grammar), so the linear re-walk is constant.
+                ASTNode* v = ma->values;
+                for (size_t vi = 0; v && vi < i; vi++) v = v->next;
+                if (v && check_const_int_expr_fits(checker, v, tt) < 0) {
+                    return 0;
+                }
             }
         }
     }
@@ -3727,19 +3747,48 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                     stamp_int_const_expr_type(ret_stmt->values, expected);
                 }
 
-                if ((!same_kind || !same_width) &&
+                // Arc 10 (o) rider: like the call-arg guard, a SAME-width
+                // differently-SIGNED pair (uint64 const returned from an
+                // int64 function) slid past the width test untouched and
+                // bit-reinterpreted; enter the gate for the sign mismatch
+                // too. Non-constant sign-only mismatches keep the
+                // pre-existing acceptance (plain-var laxness wall).
+                int ret_sign_differs = type_is_integer(return_type) &&
+                                       type_is_integer(expected) &&
+                                       type_is_signed(return_type) !=
+                                           type_is_signed(expected);
+                if ((!same_kind || !same_width || ret_sign_differs) &&
                     !int_const_coerce && !float_const_coerce) {
-                    // Point at the returned value, not stmt->pos: a return
-                    // statement's pos is the post-parse lookahead (the next
-                    // decl's line), which mis-attributes the diagnostic.
-                    Position epos = ret_stmt->values ? ret_stmt->values->pos
-                                                      : stmt->pos;
-                    type_error(checker, epos,
-                               "return type mismatch: cannot return %s from a "
-                               "function returning %s",
-                               type_to_string(return_type),
-                               type_to_string(expected));
-                    return 0;
+                    // Arc 10 (o): a const-IDENT-bearing constant return
+                    // value is judged by the shared core, mirroring the
+                    // call-arg site — `return K` (K = 5) from an int8
+                    // function accepts (Go representability; codegen's
+                    // return-width block truncates the representable value
+                    // exactly), K = 300 rejects as overflow. Pure-literal
+                    // shapes never reach here (int_const_coerce above);
+                    // this leg sees only ident-bearing constants and
+                    // non-constants. Not applicable (0) keeps the clean
+                    // width-mismatch diagnostic below.
+                    int ident_fit = type_is_integer(expected)
+                                    ? check_const_int_expr_fits(
+                                          checker, ret_stmt->values, expected)
+                                    : 0;
+                    if (ident_fit < 0) return 0;
+                    if (ident_fit == 0 && (!same_kind || !same_width)) {
+                        // Point at the returned value, not stmt->pos: a return
+                        // statement's pos is the post-parse lookahead (the next
+                        // decl's line), which mis-attributes the diagnostic.
+                        Position epos = ret_stmt->values ? ret_stmt->values->pos
+                                                          : stmt->pos;
+                        type_error(checker, epos,
+                                   "return type mismatch: cannot return %s from a "
+                                   "function returning %s",
+                                   type_to_string(return_type),
+                                   type_to_string(expected));
+                        return 0;
+                    }
+                    // ident_fit == 0 with same kind and width (sign-only
+                    // mismatch, non-constant): pre-existing acceptance.
                 }
             }
 
