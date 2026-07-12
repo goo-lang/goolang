@@ -1,0 +1,32 @@
+// (q rider) LOCAL typed-const probe: a local const's checker Variable is
+// torn down by codegen time, and codegen's re-registration ignored the
+// declared type (defaulted int64) and cached no folded value — so every
+// codegen-phase re-check false-rejected `f64(k)` / `return m`. Registration
+// now honors the declared type and caches the fold. NOTE: Go rejects typed
+// consts cross-kind; Goo accepts when representable (documented arc-4/5
+// wall), so expected output is hand-derived (values are exact).
+package main
+
+import "fmt"
+
+func f64(x int64) int64 {
+	return x
+}
+
+func f8(x int8) int8 {
+	return x
+}
+
+func g64() int64 {
+	const m int8 = -3
+	return m
+}
+
+func main() {
+	const k int8 = 5
+	fmt.Println(f64(k))
+	fmt.Println(f8(k))
+	fmt.Println(g64())
+	const u uint8 = 200
+	fmt.Println(f64(u))
+}

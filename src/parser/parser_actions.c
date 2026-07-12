@@ -160,11 +160,9 @@ void substitute_iota(ASTNode** slot, long idx) {
 // carry the spec's declared type (`NAME TYPE = expr`; NULL for the untyped
 // and bare arms) — it rides the ConstDeclNode into the same
 // type_check_const_decl declared-type path (and arc-5 representability
-// gate) the single typed form uses. A bare spec deliberately does NOT
-// inherit the previous spec's type, only its value (Go inherits both;
-// type-node cloning is out of scope for v1 — the ast_node_copy hazard —
-// and the desugared VALUES are identical either way, the bare spec just
-// stays untyped-default). See desugar_const_group.
+// gate) the single typed form uses. Arc 11 (q): a bare spec inherits the
+// previous valued spec's TYPE as well as its value (Go semantics) — see
+// clone_const_type / desugar_const_group.
 ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
     ConstDeclNode* c = (ConstDeclNode*)xmalloc(sizeof(ConstDeclNode));
     c->base.type = AST_CONST_DECL;
@@ -184,30 +182,66 @@ ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* type, ASTNode* value) {
     return (ASTNode*)c;
 }
 
+// Arc 11 (q): clone a const spec's declared type for bare-spec
+// inheritance. Constants can only be declared with a (possibly
+// package-qualified) named basic type — AST_BASIC_TYPE is the single
+// shape the `type` grammar position produces for those — so this is the
+// whole legal surface. Anything else returns NULL and the bare spec
+// simply stays untyped (today's pre-fix behavior); the checker rejects
+// exotic const types on the ORIGINATING spec anyway. Deliberately a
+// dedicated per-shape cloner like clone_const_value above, NOT a generic
+// AST copy (the ast_node_copy under-allocation hazard that kept this
+// inheritance out of scope in arc 6).
+static ASTNode* clone_const_type(const ASTNode* n) {
+    if (!n || n->type != AST_BASIC_TYPE) return NULL;
+    const BasicTypeNode* src = (const BasicTypeNode*)n;
+    BasicTypeNode* basic = (BasicTypeNode*)xmalloc(sizeof(BasicTypeNode));
+    basic->base.type = AST_BASIC_TYPE;
+    basic->base.pos = n->pos;
+    basic->base.node_type = NULL;
+    basic->base.next = NULL;
+    basic->name = strdup(src->name);
+    basic->package = src->package ? strdup(src->package) : NULL;
+    return (ASTNode*)basic;
+}
+
 // F4: turn a chain of grouped-const specs into a chain of ordinary single
 // const decls. Walks the specs in order, tracking the iota ordinal and the
 // pristine (pre-substitution) value template for bare-spec repetition, then
 // substitutes iota into each spec's value. A leading bare spec (no prior
 // value) keeps values==NULL and is rejected downstream as a const without an
 // initializer — the same clean error the single-const path already gives.
+// Arc 11 (q): a bare spec repeats the previous valued spec's declared TYPE
+// too (Go repeats the entire spec), so `const ( a int8 = 127 + iota; b )`
+// desugars b as a TYPED int8 const and the arc-5 representability gate
+// rejects 128 instead of accepting an untyped-int64 b. The type template
+// is a borrowed pointer into the snapshot spec (types are never mutated
+// by desugaring, unlike values, which iota-substitution rewrites in
+// place — hence clone-per-bare-spec for both).
 ASTNode* desugar_const_group(ASTNode* spec_chain) {
     ASTNode* template = NULL;  // owned pristine (pre-iota) clone of last value
+    ASTNode* type_template = NULL;  // borrowed: last valued spec's type node
     long idx = 0;
 
     for (ASTNode* n = spec_chain; n; n = n->next) {
         ConstDeclNode* c = (ConstDeclNode*)n;
 
         if (c->values == NULL) {
-            // Bare spec: repeat the previous value with this spec's iota.
+            // Bare spec: repeat the previous value (and its declared type,
+            // if any) with this spec's iota.
             if (template) {
                 c->values = clone_const_value(template);
+                if (!c->type) c->type = clone_const_type(type_template);
             }
         } else {
             // Fresh value: snapshot it (pre-iota) so following bare specs
             // repeat THIS expression with their own iota, then substitute
-            // into the spec's own value in place.
+            // into the spec's own value in place. The type snapshot rides
+            // along — an untyped spec resets it to NULL (Go: bare specs
+            // after `p = 10` stay untyped).
             if (template) ast_node_free(template);
             template = clone_const_value(c->values);
+            type_template = c->type;
         }
 
         if (c->values) {
