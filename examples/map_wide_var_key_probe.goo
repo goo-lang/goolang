@@ -1,0 +1,30 @@
+package main
+
+import "fmt"
+
+// (i rider) wide-variable key probe: a plain WIDER variable as a map key
+// is the one key shape the checker deliberately leaves lax (the v1
+// plain-var narrowing wall — Go rejects it, so this fixture's expected
+// output is hand-derived from Go's explicit-conversion equivalent
+// m[int8(k)]). Laxness elsewhere means truncation, so the key must be
+// truncated into the declared domain before packing: m[k] with k int64 =
+// 261 on a map[int8]int is m[5]. Before the fix the raw i64 rode the
+// slot and 261 coexisted with 5 — the map silently behaved as map[int64].
+func main() {
+	m := map[int8]int{5: 42}
+	var k int64 = 261
+	m[k] = 99
+	fmt.Println(len(m))
+	var five int8 = 5
+	fmt.Println(m[five])
+
+	n := map[uint8]int{200: 1}
+	var w int64 = 456
+	n[w] = 7
+	fmt.Println(len(n))
+	var t uint8 = 200
+	fmt.Println(n[t])
+
+	delete(m, k)
+	fmt.Println(len(m))
+}

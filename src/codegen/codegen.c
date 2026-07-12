@@ -1406,6 +1406,24 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "ikey_slot");
     }
+    // Arc 9 (i) rider: truncate an integer key into the DECLARED key
+    // domain before packing. The checker deliberately admits a wider
+    // plain variable as a key (the v1 narrowing-laxness wall), and lax
+    // narrowing means truncation everywhere else — so `m[k]` with k
+    // int64 = 261 on a map[int8]int must hit key 5, not store a raw 261
+    // that coexists with 5 (a silent map[int64]). Trunc-then-widen: the
+    // coerce narrows raw to kt's width (no-op when already exact), and
+    // the slot packer below re-widens to i64 by kt's signedness. This is
+    // the single key funnel, so set/get/comma-ok/literal-init/delete all
+    // agree.
+    if (kt && type_is_integer(kt)) {
+        LLVMTypeRef llvm_kt = codegen_type_to_llvm(codegen, kt);
+        if (llvm_kt) {
+            int src_signed = key_val->goo_type
+                             ? type_is_signed(key_val->goo_type) : 1;
+            raw = codegen_coerce_to_type(codegen, raw, src_signed, llvm_kt);
+        }
+    }
     return codegen_map_value_to_slot(codegen, raw, kt);
 }
 

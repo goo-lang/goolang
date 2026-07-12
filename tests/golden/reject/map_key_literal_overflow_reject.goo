@@ -1,0 +1,11 @@
+// Correctness arc 9 (i): a map-literal KEY must hit the same
+// representability gate as map VALUES (arc 3) — `map[int8]int{300: 1}`
+// was accepted and stored the raw folded key (i64 300), so the map
+// silently behaved as map[int64]: m[44] missed, m[300] hit, violating
+// the declared int8 key domain. Go rejects at compile time.
+package main
+
+func main() {
+	m := map[int8]int{300: 1}
+	_ = m
+}

@@ -368,12 +368,28 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                     if (!check_interface_assign(checker, kt, want_key, k->pos)) {
                         return NULL;
                     }
-                } else if (!type_compatible(kt, want_key)) {
-                    type_error(checker, k->pos,
-                               "Map literal key %zu type '%s' is not compatible "
-                               "with declared key type '%s'",
-                               ki, type_to_string(kt), type_to_string(want_key));
-                    return NULL;
+                } else {
+                    // Arc 9 (i): keys take the SAME adaptation + range gate
+                    // as values (adapt_field_init_value below) — an untyped
+                    // `300` IS type_compatible with int8, so without this
+                    // pass `map[int8]int{300: 1}` was accepted and the raw
+                    // folded key (i64 300) reached the runtime: the map
+                    // silently behaved as map[int64] (m[44] missed, m[300]
+                    // hit), violating the declared key domain. Const-ident
+                    // keys are judged by the shared core inside the adapter
+                    // (arc 7). In-range keys are unaffected: codegen widens
+                    // a narrow key to the runtime's i64 by its signedness,
+                    // which equals the raw folded value for every
+                    // representable key.
+                    kt = adapt_field_init_value(checker, k, want_key, kt);
+                    if (!kt) return NULL;
+                    if (!type_compatible(kt, want_key)) {
+                        type_error(checker, k->pos,
+                                   "Map literal key %zu type '%s' is not compatible "
+                                   "with declared key type '%s'",
+                                   ki, type_to_string(kt), type_to_string(want_key));
+                        return NULL;
+                    }
                 }
             }
             size_t vi = 0;
@@ -394,10 +410,10 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 if (!vt) return NULL;
                 // Task 3b: same element adaptation + range check as the
                 // slice/array sinks — `map[string]int8{"a": 300}` rejects
-                // instead of silently truncating. Keys are checked above via
-                // type_compatible only (no adapt_field_init_value narrowing
-                // pass) — a wrong-width key literal is a compatibility
-                // mismatch, not a truncation to catch.
+                // instead of silently truncating. Keys take the same pass
+                // above (arc 9) — the old "a wrong-width key literal is a
+                // compatibility mismatch" rationale was false for untyped
+                // literals, which are compatible with every integer width.
                 vt = adapt_field_init_value(checker, v, want_val, vt);
                 if (!vt) return NULL;
                 // An interface-typed map value accepts any concrete
@@ -3465,11 +3481,29 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 if (!check_interface_assign(checker, key_t, map_t->data.map.key_type, expr->pos)) {
                     return NULL;
                 }
-            } else if (!type_compatible(key_t, map_t->data.map.key_type)) {
-                type_error(checker, expr->pos,
-                           "delete: cannot use %s as key of %s",
-                           type_to_string(key_t), type_to_string(map_t));
-                return NULL;
+            } else {
+                // Arc 9 (i): constant keys gate against the declared key
+                // width, same as the index-key choke point — an ungated
+                // `delete(m, 300)` on map[int8]int passed the raw folded
+                // i64 to the runtime and silently no-opped forever.
+                Type* want_key = map_t->data.map.key_type;
+                if (type_is_integer(want_key)) {
+                    if (is_untyped_int_rooted(call->args->next, 0)) {
+                        if (!adapt_untyped_int_operand(checker, call->args->next,
+                                                       want_key, 0, 1))
+                            return NULL;
+                        key_t = want_key;
+                    } else if (check_const_int_expr_fits(checker, call->args->next,
+                                                         want_key) < 0) {
+                        return NULL;
+                    }
+                }
+                if (!type_compatible(key_t, want_key)) {
+                    type_error(checker, expr->pos,
+                               "delete: cannot use %s as key of %s",
+                               type_to_string(key_t), type_to_string(map_t));
+                    return NULL;
+                }
             }
             expr->node_type = checker->builtin_types[TYPE_VOID];
             return checker->builtin_types[TYPE_VOID];
@@ -4176,12 +4210,37 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
                 if (!check_interface_assign(checker, index_type, want_key, index->index->pos)) {
                     return NULL;
                 }
-            } else if (!type_compatible(index_type, want_key)) {
-                type_error(checker, index->index->pos,
-                          "Map key type mismatch: expected %s, got %s",
-                          type_to_string(want_key),
-                          type_to_string(index_type));
-                return NULL;
+            } else {
+                // Arc 9 (i): gate constant keys against the declared key
+                // width — `m[300]` (read, write, or comma-ok; this arm is
+                // the single choke point for all three) on a map[int8]int
+                // must reject like Go instead of passing the raw folded
+                // i64 to the runtime, where it can never equal any key
+                // that is genuinely in the int8 domain. Literal-rooted
+                // shapes adapt (stamping the key to the declared width —
+                // codegen widens it back by signedness, exactly); const
+                // identifiers are judged by the shared representability
+                // core. Non-constant keys keep the plain compatibility
+                // check — a typed narrow variable is in-domain by
+                // construction.
+                if (type_is_integer(want_key)) {
+                    if (is_untyped_int_rooted(index->index, 0)) {
+                        if (!adapt_untyped_int_operand(checker, index->index,
+                                                       want_key, 0, 1))
+                            return NULL;
+                        index_type = want_key;
+                    } else if (check_const_int_expr_fits(checker, index->index,
+                                                         want_key) < 0) {
+                        return NULL;
+                    }
+                }
+                if (!type_compatible(index_type, want_key)) {
+                    type_error(checker, index->index->pos,
+                              "Map key type mismatch: expected %s, got %s",
+                              type_to_string(want_key),
+                              type_to_string(index_type));
+                    return NULL;
+                }
             }
             element_type = expr_type->data.map.value_type;
             break;

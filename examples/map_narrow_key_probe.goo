@@ -1,0 +1,28 @@
+package main
+
+import "fmt"
+
+// (i) narrow-key round-trip probe: with key gates in place, every
+// accepted key is representable, so the literal-init path (raw folded
+// i64) and the runtime path (sext/zext of the narrow slot) agree —
+// stores and lookups must round-trip across literal and variable keys,
+// signed (negative included) and unsigned.
+func main() {
+	m := map[int8]int{-5: 77, 6: 20}
+	var k int8 = -5
+	fmt.Println(m[k])
+	fmt.Println(m[6])
+	m[k] = 78
+	fmt.Println(m[-5])
+	var j int8 = 7
+	m[j] = 30
+	fmt.Println(m[7])
+	fmt.Println(len(m))
+
+	n := map[uint8]int{200: 1}
+	var u uint8 = 200
+	fmt.Println(n[u])
+	n[201] = 2
+	fmt.Println(n[u+1])
+	fmt.Println(len(n))
+}
