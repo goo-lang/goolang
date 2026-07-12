@@ -1,0 +1,12 @@
+// Correctness arc 13 (s): a compound literal constant folds-then-checks
+// against the declared type — `var a int8 = 100 + 100` silently stored
+// -56 (per-leaf range checks only: each 100 individually fits). The
+// adapter now judges the folded value of an unambiguous compound (not
+// negated-rooted, fold below the modular [2^63,2^64) window) via the
+// shared representability rule. Go rejects: 200 overflows int8.
+package main
+
+func main() {
+	var a int8 = 100 + 100
+	println(a)
+}
