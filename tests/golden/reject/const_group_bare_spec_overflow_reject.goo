@@ -1,0 +1,15 @@
+// Correctness arc 11 (q): a BARE spec in a const group repeats the
+// previous spec's expression AND its declared type (Go semantics) —
+// before this fix it inherited the VALUE only, so `b` here desugared to
+// an untyped `const b = 127 + iota` (= 128) and skipped the arc-5
+// typed-const representability gate. Go rejects: 128 overflows int8.
+package main
+
+func main() {
+	const (
+		a int8 = 127 + iota
+		b
+	)
+	println(a)
+	println(b)
+}

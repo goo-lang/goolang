@@ -2781,6 +2781,16 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 const char* const_name = const_decl->names[i];
                 Variable* known = type_checker_lookup_variable(checker, const_name);
                 Type* ct = known ? known->type : NULL;
+                // Arc 11 (q): honor the DECLARED type before falling back
+                // to the untyped default — a LOCAL typed const's checker
+                // Variable is torn down by codegen time (known == NULL), so
+                // `const k int8 = 5` re-registered below as int64 and every
+                // codegen-phase re-check (call args, returns) saw the wrong
+                // kind. Package consts never hit this (their Variable
+                // survives, ct != NULL).
+                if (!ct && const_decl->type) {
+                    ct = type_from_ast(checker, const_decl->type);
+                }
                 if (!ct) {
                     // Untyped int const default type is `int` (int64 here);
                     // a value past int64's signed range takes uint64 — unless
@@ -2819,6 +2829,16 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                     Variable* tcv = variable_new(const_name, ct, decl->pos);
                     if (tcv) {
                         tcv->is_initialized = 1;
+                        // Arc 11 (q): cache the folded value on the
+                        // re-registered Variable, exactly as
+                        // type_check_const_decl does on the original — the
+                        // codegen-phase re-checks' const gates (call args,
+                        // returns, multi-assign) resolve identifiers through
+                        // this Variable via goo_fold_const_int_ctx, and an
+                        // uncached one made every such fold fail (fit == 0,
+                        // false-rejecting a representable local const).
+                        tcv->has_const_int_value = 1;
+                        tcv->const_int_value = folded;
                         scope_add_variable(checker->current_scope, tcv);
                     }
                 }
