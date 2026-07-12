@@ -1676,13 +1676,22 @@ static int adapt_untyped_int_rec(TypeChecker* checker, ASTNode* n, Type* target,
 // falling back to the per-leaf pass unchanged.
 static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* target,
                                       int negated, int checkable) {
-    if (n && n->type == AST_BINARY_EXPR && checkable && !negated &&
+    // Peel leading unary `+` (identity — never changes the value) so
+    // `+(100 + 100)` reaches the same whole-fold gate as the bare
+    // compound (arc-13 review find). `-` stays behind the negated logic
+    // and `^` is the documented task-3 exclusion — neither is peeled.
+    ASTNode* top = n;
+    while (top && top->type == AST_UNARY_EXPR &&
+           ((UnaryExprNode*)top)->operator == TOKEN_PLUS) {
+        top = ((UnaryExprNode*)top)->operand;
+    }
+    if (top && top->type == AST_BINARY_EXPR && checkable && !negated &&
         type_is_integer(target)) {
         uint64_t folded;
-        if (goo_fold_const_int(n, &folded) &&
+        if (goo_fold_const_int(top, &folded) &&
             folded <= (uint64_t)INT64_MAX &&
             !int_const_fits_expected(folded, target, 0, 0)) {
-            type_error(checker, n->pos, "constant %lld overflows %s",
+            type_error(checker, top->pos, "constant %lld overflows %s",
                        (long long)(int64_t)folded, type_to_string(target));
             return 0;
         }
@@ -1857,8 +1866,9 @@ int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* decla
         // fits — same admission as the arc-4 chan-send gate and the arc-5
         // const-decl gate). The two branches are DISJOINT: is_untyped_int_
         // rooted admits no identifier leaf, so every pure-literal shape
-        // keeps the adapter's per-literal semantics bit-for-bit, including
-        // its documented `100 + 100`-into-int8 deviation — only shapes the
+        // keeps the adapter's semantics bit-for-bit (arc 13 closed the old
+        // `100 + 100`-into-int8 per-leaf deviation with the whole-fold
+        // wrapper) — only shapes the
         // adapter never handled gain a check. Not-applicable (0) — plain
         // variables, calls, comptime-param-tainted — stays accepted
         // unchanged (the v1 any-int laxness for non-constants).
