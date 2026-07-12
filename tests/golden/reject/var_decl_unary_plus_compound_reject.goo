@@ -1,0 +1,11 @@
+// Correctness arc 13 (s) rider: a compound wrapped in leading unary `+`
+// (identity — never changes the value) must reach the same whole-fold
+// gate as the bare compound; the wrapper peels `+` before the
+// binary-expr test. Unary `-` stays excluded via the negated logic and
+// `^` is the documented task-3 exclusion.
+package main
+
+func main() {
+	var a int8 = +(100 + 100)
+	println(a)
+}

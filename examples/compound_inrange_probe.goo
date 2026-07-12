@@ -1,0 +1,33 @@
+// (s) in-range compound guard probe: fold-then-check must reject ONLY
+// genuinely out-of-range folds — negated-rooted compounds, arithmetic
+// negatives (0 - 1), the modular window (1 << 63 into uint64), shifts,
+// and / % shapes all keep working with exact Go values.
+package main
+
+import "fmt"
+
+func f8(x int8) int8 {
+	return x
+}
+
+func main() {
+	var a int8 = 100 + 27
+	fmt.Println(a)
+	var b int8 = -(1 + 2)
+	fmt.Println(b)
+	var c int64 = 0 - 1
+	fmt.Println(c)
+	var d int8 = 1 << 6
+	fmt.Println(d)
+	var e int8 = 100 / 3
+	fmt.Println(e)
+	var g int8 = 100 % 7
+	fmt.Println(g)
+	fmt.Println(f8(60 + 60))
+	m := map[int8]int{5 + 1: 9}
+	fmt.Println(m[6])
+	var h int64 = 1 << 40
+	fmt.Println(h)
+	var i uint64 = 1 << 63
+	fmt.Println(i)
+}

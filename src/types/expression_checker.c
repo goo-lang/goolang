@@ -1599,8 +1599,8 @@ static int check_conversion_operand_range(TypeChecker* checker, ASTNode* n,
 // fit (the type_error was already emitted); every recursive call and every
 // external caller must check this return and propagate failure rather than
 // treat the tree as fully adapted.
-static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* target,
-                                      int negated, int checkable) {
+static int adapt_untyped_int_rec(TypeChecker* checker, ASTNode* n, Type* target,
+                                 int negated, int checkable) {
     if (!n) return 1;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT) {
         if (checkable &&
@@ -1615,7 +1615,7 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
             // Sign flips for a range check ONLY at unary MINUS — PLUS and
             // BIT_XOR (below) never change a literal's effective magnitude
             // the way MINUS does.
-            if (!adapt_untyped_int_operand(checker, u->operand, target, !negated, checkable))
+            if (!adapt_untyped_int_rec(checker, u->operand, target, !negated, checkable))
                 return 0;
             n->node_type = target;
         } else if (u->operator == TOKEN_PLUS || u->operator == TOKEN_BIT_XOR) {
@@ -1625,7 +1625,7 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
             // task-3 deviation note. The stamping side effect is unchanged
             // for `^`, matching pre-task-3 behavior exactly.
             int child_checkable = checkable && (u->operator != TOKEN_BIT_XOR);
-            if (!adapt_untyped_int_operand(checker, u->operand, target, negated, child_checkable))
+            if (!adapt_untyped_int_rec(checker, u->operand, target, negated, child_checkable))
                 return 0;
             n->node_type = target;
         }
@@ -1633,7 +1633,7 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
     if (n->type == AST_BINARY_EXPR) {
         BinaryExprNode* b = (BinaryExprNode*)n;
         if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT) {
-            if (!adapt_untyped_int_operand(checker, b->left, target, negated, checkable)) // shift type = left type
+            if (!adapt_untyped_int_rec(checker, b->left, target, negated, checkable)) // shift type = left type
                 return 0;
             n->node_type = target;
         } else if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
@@ -1641,18 +1641,62 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
                    b->operator == TOKEN_MODULO) {
             // Each side keeps ITS OWN negated/checkable state — a binary
             // MINUS does not flip either operand's sign for range-check
-            // purposes (only a unary MINUS wrapping a leaf does that); this
-            // is exactly the per-literal (no constant-folding) design that
-            // lets `100 + 100` into int8 through uncaught (each 100
-            // individually fits) — see the task-3 deviation note.
-            if (!adapt_untyped_int_operand(checker, b->left, target, negated, checkable))
+            // purposes (only a unary MINUS wrapping a leaf does that). The
+            // per-leaf checks alone let `100 + 100` into int8 through
+            // uncaught (each 100 individually fits) — the WHOLE-expression
+            // folded value is judged once, at the top-level entry in the
+            // adapt_untyped_int_operand wrapper below (arc 13).
+            if (!adapt_untyped_int_rec(checker, b->left, target, negated, checkable))
                 return 0;
-            if (!adapt_untyped_int_operand(checker, b->right, target, negated, checkable)) // binop result = operand type
+            if (!adapt_untyped_int_rec(checker, b->right, target, negated, checkable)) // binop result = operand type
                 return 0;
             n->node_type = target;
         }
     }
     return 1;
+}
+
+// Arc 13 (s): entry wrapper — fold-then-check the WHOLE compound against
+// the target ONCE, then run the per-leaf adaptation. Each leaf of
+// `100 + 100` individually fits int8, so the leaf checks alone silently
+// truncated the folded 200 at every adapter sink (var decls, assignments,
+// call args, composite slots, arc-9 map keys). Top-level only — judging
+// interior nodes would false-reject `(100 + 100) - 100` (= 100, fits) on
+// its inner subtree. Judged only when UNAMBIGUOUS: a negated caller
+// context (the fold here is of the unnegated subtree — the wrong value
+// to judge) or a fold in the modular window [2^63, 2^64) (where `0 - 1`
+// and `1 << 63` are indistinguishable post-fold) skips the check and
+// keeps the per-leaf laxness — so every newly rejected value is genuinely
+// unrepresentable and no Go-legal shape gains a false reject. The
+// returns/chan-send/const-decl gates judge the window via the
+// negated-shape heuristic instead (their documented `0 - 1` deviation);
+// this sink family deliberately stays lax there. goo_fold_const_int is
+// the context-free folder: rooted shapes have no identifier leaves, and
+// it returns 0 on anything it can't fold (e.g. division by zero),
+// falling back to the per-leaf pass unchanged.
+static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* target,
+                                      int negated, int checkable) {
+    // Peel leading unary `+` (identity — never changes the value) so
+    // `+(100 + 100)` reaches the same whole-fold gate as the bare
+    // compound (arc-13 review find). `-` stays behind the negated logic
+    // and `^` is the documented task-3 exclusion — neither is peeled.
+    ASTNode* top = n;
+    while (top && top->type == AST_UNARY_EXPR &&
+           ((UnaryExprNode*)top)->operator == TOKEN_PLUS) {
+        top = ((UnaryExprNode*)top)->operand;
+    }
+    if (top && top->type == AST_BINARY_EXPR && checkable && !negated &&
+        type_is_integer(target)) {
+        uint64_t folded;
+        if (goo_fold_const_int(top, &folded) &&
+            folded <= (uint64_t)INT64_MAX &&
+            !int_const_fits_expected(folded, target, 0, 0)) {
+            type_error(checker, top->pos, "constant %lld overflows %s",
+                       (long long)(int64_t)folded, type_to_string(target));
+            return 0;
+        }
+    }
+    return adapt_untyped_int_rec(checker, n, target, negated, checkable);
 }
 
 // Float analogue of is_untyped_int_rooted: is `n` an untyped-float-constant-
@@ -1822,8 +1866,9 @@ int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* decla
         // fits — same admission as the arc-4 chan-send gate and the arc-5
         // const-decl gate). The two branches are DISJOINT: is_untyped_int_
         // rooted admits no identifier leaf, so every pure-literal shape
-        // keeps the adapter's per-literal semantics bit-for-bit, including
-        // its documented `100 + 100`-into-int8 deviation — only shapes the
+        // keeps the adapter's semantics bit-for-bit (arc 13 closed the old
+        // `100 + 100`-into-int8 per-leaf deviation with the whole-fold
+        // wrapper) — only shapes the
         // adapter never handled gain a check. Not-applicable (0) — plain
         // variables, calls, comptime-param-tainted — stays accepted
         // unchanged (the v1 any-int laxness for non-constants).

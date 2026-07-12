@@ -1,0 +1,9 @@
+// Correctness arc 13 (s): compound literal constant at a composite slot
+// — []int8{100 + 100} silently truncated (adapt_field_init_value routes
+// slots through the same adapter).
+package main
+
+func main() {
+	s := []int8{100 + 100}
+	_ = s
+}
