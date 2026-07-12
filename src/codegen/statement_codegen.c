@@ -1983,6 +1983,16 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                         ? (unsigned long long)LLVMConstIntGetSExtValue(final_return_value)
                         : LLVMConstIntGetZExtValue(final_return_value);
                     final_return_value = LLVMConstInt(fn_ret, raw, use_sext);
+                } else if (from_bits > to_bits) {
+                    // Arc 10 (o): a checker-admitted narrowing return that
+                    // did NOT materialize as an LLVM constant — a const
+                    // identifier codegen resolves through its slot load.
+                    // The checker's shared-core gate only admits values
+                    // representable at the target width, so the Trunc is
+                    // exact; every other narrowing shape is still rejected
+                    // before codegen.
+                    final_return_value = LLVMBuildTrunc(codegen->builder, final_return_value,
+                                                        fn_ret, "ret_trunc");
                 }
             }
         }

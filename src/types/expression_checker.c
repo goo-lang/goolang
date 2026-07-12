@@ -3972,11 +3972,31 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 int same_kind  = (type_is_float(arg_type) == type_is_float(param_type));
                 int same_width = (type_size(arg_type) == type_size(param_type));
                 if (!same_kind || !same_width) {
-                    type_error(checker, arg->pos,
-                               "argument %zu: cannot use %s as %s",
-                               arg_count + 1,
-                               type_to_string(arg_type), type_to_string(param_type));
-                    return NULL;
+                    // Arc 10 (o): a const-IDENT-bearing constant argument is
+                    // representable, not a width mismatch — `f(K)` with
+                    // K = 5 into an int8 parameter must be accepted (Go),
+                    // and K = 300 must reject as overflow, not as "cannot
+                    // use int64 as int8". Literal-rooted shapes never reach
+                    // here (adapted above, so same_kind/same_width hold);
+                    // this leg sees only ident-bearing constants and
+                    // non-constants. Fit (1): accept — call_codegen's arg
+                    // loop (T4) coerces the value to the declared parameter
+                    // width, exact for a representable constant. Reject
+                    // (-1): the shared core already emitted the overflow
+                    // diagnostic. Not applicable (0): plain variables keep
+                    // this clean width mismatch.
+                    int fit = type_is_integer(param_type)
+                              ? check_const_int_expr_fits(checker, arg, param_type)
+                              : 0;
+                    if (fit < 0) return NULL;
+                    if (fit == 0) {
+                        type_error(checker, arg->pos,
+                                   "argument %zu: cannot use %s as %s",
+                                   arg_count + 1,
+                                   type_to_string(arg_type), type_to_string(param_type));
+                        return NULL;
+                    }
+                    arg_type = param_type;
                 }
             }
 

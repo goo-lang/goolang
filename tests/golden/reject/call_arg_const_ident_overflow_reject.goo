@@ -1,0 +1,15 @@
+// Correctness arc 10 (o): a const-identifier argument must be judged by
+// the shared representability core — `f(K)` with K = 300 into an int8
+// parameter is "constant 300 overflows int8" (Go), not a width mismatch
+// and not a silent acceptance.
+package main
+
+func f(x int8) int8 {
+	return x
+}
+
+const K = 300
+
+func main() {
+	f(K)
+}
