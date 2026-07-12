@@ -593,6 +593,29 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
                 return value_info_new(NULL, v, duration_type);
             }
         }
+        // Arc 12 (p): GENERAL package-const materialization — `pkg.K` for
+        // any source-compiled package whose export carries a folded
+        // integer value (package_export_filter copies the cache). Emit the
+        // constant directly at the export's own type: integer consts are
+        // compile-time values, so no cross-module symbol reference is
+        // needed and the value is exact. Placed AFTER the hardcoded shim
+        // intercepts above (shim packages have empty exports scopes, so
+        // this leg never fires for them) and BEFORE the generic
+        // base-expression path (a bare package identifier has no value to
+        // generate — it used to fall through to "Undefined identifier").
+        {
+            Variable* exp = goo_lookup_pkg_const(checker, expr);
+            if (exp && exp->has_const_int_value && exp->type &&
+                type_is_integer(exp->type)) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, exp->type);
+                if (lt) {
+                    LLVMValueRef v = LLVMConstInt(
+                        lt, (unsigned long long)exp->const_int_value,
+                        type_is_signed(exp->type));
+                    return value_info_new(NULL, v, exp->type);
+                }
+            }
+        }
     }
 
     // P3.6 (method values): decide field-vs-method BEFORE generating any

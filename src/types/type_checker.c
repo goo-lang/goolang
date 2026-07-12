@@ -226,6 +226,12 @@ void package_export_filter(Scope* pkg_scope, Scope* exports, struct Package* own
         copy->is_builtin = v->is_builtin;
         copy->func_decl_node = v->func_decl_node;
         copy->owner_pkg = owner;
+        // Arc 12 (p): carry the folded-constant cache — this export copy is
+        // what goo_lookup_pkg_const resolves `pkg.K` through, so without it
+        // every cross-package const was unfoldable: the representability
+        // gates fell open AND codegen had no value to materialize.
+        copy->has_const_int_value = v->has_const_int_value;
+        copy->const_int_value = v->const_int_value;
         if (!scope_add_variable(exports, copy)) {
             // Duplicate name already present in exports — discard the copy.
             variable_free(copy);
@@ -3943,9 +3949,15 @@ int check_const_int_expr_fits(TypeChecker* checker, ASTNode* expr,
     if (!goo_fold_const_int_ctx(checker, expr, &raw)) return 0;
 
     int negated, bare_literal;
-    if (expr->type == AST_IDENTIFIER) {
-        Variable* var = type_checker_lookup_variable(
-            checker, ((IdentifierNode*)expr)->name);
+    Variable* pkg_const = goo_lookup_pkg_const(checker, expr);
+    if (expr->type == AST_IDENTIFIER || pkg_const) {
+        // Arc 12 (p): a `pkg.K` selector const reconstructs its shape
+        // signals exactly like a bare local const identifier — the
+        // resolved const's own type is authoritative for signedness.
+        Variable* var = pkg_const
+            ? pkg_const
+            : type_checker_lookup_variable(
+                  checker, ((IdentifierNode*)expr)->name);
         int var_signed = var && var->type && type_is_signed(var->type);
         negated = var_signed && (int64_t)raw < 0;
         bare_literal = !var_signed && raw > (uint64_t)INT64_MAX;
