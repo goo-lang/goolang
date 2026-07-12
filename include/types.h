@@ -1145,6 +1145,16 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out);
 // unchanged and keeps its existing (non-identifier) call sites.
 int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
 
+// Arc 12 (p): resolve a `pkg.K` selector expression to the imported
+// package's exported Variable, or NULL when the shape doesn't match
+// (not a selector, base not an identifier, base not an imported-package
+// marker, or no such export). The returned Variable is owned by the
+// package's exports scope — callers read, never free. Single resolution
+// point for cross-package const machinery: the checker-aware folder's
+// selector arm, the shared representability core's shape reconstruction,
+// and codegen's package-const materialization all route through it.
+Variable* goo_lookup_pkg_const(TypeChecker* checker, ASTNode* expr);
+
 // Go untyped-int-constant representability machinery (type_checker.c): an
 // untyped integer constant (a bare literal, a unary-minus over one, or
 // constant arithmetic recursively built from those) unifies with a

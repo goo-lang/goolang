@@ -1,0 +1,13 @@
+// Correctness arc 12 (p): a qualified pkg.K selector const is judged by
+// the shared representability core like a local const identifier — the
+// export copy carries the folded value, the checker-aware folder resolves
+// the selector, and `var v int8 = rejconstpkg.K` (K = 300) rejects as
+// overflow (Go parity) instead of falling open.
+package main
+
+import "./rejconstpkg"
+
+func main() {
+	var v int8 = rejconstpkg.K
+	println(v)
+}

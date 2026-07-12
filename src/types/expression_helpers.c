@@ -150,14 +150,33 @@ int goo_expr_references_comptime_param(TypeChecker* checker, ASTNode* expr) {
     }
 }
 
+// Arc 12 (p): the single `pkg.K` resolution point (see header). Shape:
+// AST_SELECTOR_EXPR whose base is a bare identifier naming an imported
+// package's marker Variable (Variable->package != NULL, stamped by the
+// import seeding in type_checker.c); the selector then resolves against
+// that package's exports scope. Anything else — including a struct-field
+// selector whose base variable coincidentally exists — returns NULL
+// because a struct-typed base Variable never carries ->package.
+Variable* goo_lookup_pkg_const(TypeChecker* checker, ASTNode* expr) {
+    if (!checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
+    SelectorExprNode* sel = (SelectorExprNode*)expr;
+    if (!sel->expr || sel->expr->type != AST_IDENTIFIER || !sel->selector) return NULL;
+    Variable* marker = type_checker_lookup_variable(
+        checker, ((IdentifierNode*)sel->expr)->name);
+    if (!marker || !marker->package) return NULL;
+    return scope_lookup_variable(marker->package->exports, sel->selector);
+}
+
 // Checker-aware sibling of goo_fold_const_int (see header): additionally
 // resolves AST_IDENTIFIER against checker's scope chain, using the constant's
 // cached integer value (Variable->const_int_value, set by
 // type_check_const_decl when its RHS folds), and recurses through
 // unary/binary operators WITH the same checker context so a const-expression
-// built on a const-identifier (`[N+1]int`) folds too. Anything else
-// (literals, and anything goo_fold_const_int already rejects) falls through
-// to that context-free folder unchanged.
+// built on a const-identifier (`[N+1]int`) folds too. Arc 12 (p): a
+// `pkg.K` selector resolves through goo_lookup_pkg_const the same way (the
+// export copy carries the const cache — see package_export_filter).
+// Anything else (literals, and anything goo_fold_const_int already
+// rejects) falls through to that context-free folder unchanged.
 int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out) {
     if (!expr || !out) return 0;
     switch (expr->type) {
@@ -166,6 +185,14 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out) {
             Variable* var = checker ? type_checker_lookup_variable(checker, id->name) : NULL;
             if (var && var->has_const_int_value) {
                 *out = var->const_int_value;
+                return 1;
+            }
+            return 0;
+        }
+        case AST_SELECTOR_EXPR: {
+            Variable* exp = goo_lookup_pkg_const(checker, expr);
+            if (exp && exp->has_const_int_value) {
+                *out = exp->const_int_value;
                 return 1;
             }
             return 0;

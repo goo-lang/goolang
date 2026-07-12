@@ -1,0 +1,14 @@
+// Correctness arc 12 (p): pkg.K at the call-arg sink — the arc-10 gate
+// judges the selector const via the shared core (overflow, not a silent
+// truncation and not the pre-arc "Undefined identifier" codegen failure).
+package main
+
+import "./rejconstpkg"
+
+func f(x int8) int8 {
+	return x
+}
+
+func main() {
+	f(rejconstpkg.K)
+}
