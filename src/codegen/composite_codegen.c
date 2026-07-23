@@ -28,10 +28,18 @@
 void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
                                LLVMValueRef length, ASTNode* expr) {
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_bounds_fail");
+    // Known footgun (arc-17 review): if goo_bounds_fail was never declared,
+    // indexing is silently UNGUARDED. codegen_declare_runtime_functions
+    // always declares it today; anyone changing that wiring must not rely
+    // on this best-effort return.
     if (!fn) return;  // no symbol: index unguarded (best-effort)
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
     LLVMValueRef idx64 = index;
     unsigned iw = LLVMGetIntTypeWidth(LLVMTypeOf(index));
+    // Callers must pre-widen via codegen_widen_index (which picks ZExt vs
+    // SExt by the index's SIGNEDNESS); this fallback is defensive-only and
+    // sign-extends blindly — a raw unsigned narrow index passed here would
+    // be mis-extended. All current callers arrive already at i64.
     if (iw < 64)      idx64 = LLVMBuildSExt(codegen->builder, index, i64, "bc_idx");
     else if (iw > 64) idx64 = LLVMBuildTrunc(codegen->builder, index, i64, "bc_idx");
 
