@@ -1,0 +1,17 @@
+// return_float_overflow_float32_reject (correctness burndown arc 14, g
+// companion): the fix for the float32_narrow_probe false-reject must not
+// turn into a blanket accept-anything for a float literal returned from a
+// narrower float function — an OUT-OF-RANGE untyped float constant
+// (1e40 exceeds float32's ~3.4e38 finite range) must still be rejected at
+// compile time, exactly as `var f float32 = 1e40` already is
+// (examples/constf32_reject.goo). Go itself rejects this ("constant 1e+40
+// overflows float32").
+package main
+
+func f() float32 {
+	return 1e40
+}
+
+func main() {
+	println(f())
+}

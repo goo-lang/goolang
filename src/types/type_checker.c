@@ -3740,12 +3740,13 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 // untyped FLOAT constants (`3.9`) have no folder
                 // (`goo_fold_const_int` is int-only) and are NOT covered by
                 // this gate. Narrowing an untyped FLOAT constant into
-                // func() float32 (e.g. `return 3.9` from a float32 fn) is a
-                // KNOWN FALSE-REJECT here (Go accepts: constant conversion
-                // with rounding); out of scope here because no untyped-FLOAT
-                // constant folder exists to reuse — backlog item, see the
-                // mirror float-case-on-int-tag crash (see the arc's task
-                // report).
+                // func() float32 (e.g. `return 3.9` from a float32 fn) used
+                // to be a KNOWN FALSE-REJECT here (Go accepts: constant
+                // conversion with rounding) — closed by float_lit_coerce
+                // below, arc 14 (g), which reuses expression_checker.c's
+                // is_untyped_float_rooted/adapt_untyped_float_operand (this
+                // gate's own goo_fold_const_int is int-only and was never
+                // going to cover a float-literal-rooted return value).
                 int float_const_coerce =
                     type_is_float(expected) &&
                     is_untyped_int_const_expr(ret_stmt->values);
@@ -3762,6 +3763,30 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                     stamp_int_const_expr_type(ret_stmt->values, expected);
                 }
 
+                // Untyped FLOAT constant into a (possibly differently-sized)
+                // FLOAT return type (`return 3.9` from a func() float32 —
+                // correctness burndown arc 14, g). Disjoint from float_
+                // const_coerce above: is_untyped_float_rooted requires a
+                // float-literal LEAF somewhere in the expression, which
+                // is_untyped_int_const_expr's pure-integer-literal shape can
+                // never contain (so `return 1 + 0.5`, mixed and float-
+                // rooted per Go's kind-promotion rule, is caught HERE, not
+                // by the int path above). Bridges into expression_checker.c's
+                // adapt_untyped_float_operand, which range-checks (so
+                // `return 1e40` from a float32 function still rejects,
+                // "overflows float32") and recursively stamps every float-
+                // rooted node in the subtree — including an int-rooted
+                // sibling leaf of a mixed expression — to `expected`, so
+                // codegen_generate_literal emits the constant at the
+                // declared return width directly.
+                int float_lit_coerce = 0;
+                if (type_is_float(expected)) {
+                    int adapted = adapt_return_float_literal(checker, ret_stmt->values,
+                                                              expected);
+                    if (adapted < 0) return 0; // overflow — already reported
+                    float_lit_coerce = (adapted > 0);
+                }
+
                 // Arc 10 (o) rider: like the call-arg guard, a SAME-width
                 // differently-SIGNED pair (uint64 const returned from an
                 // int64 function) slid past the width test untouched and
@@ -3773,7 +3798,7 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                                        type_is_signed(return_type) !=
                                            type_is_signed(expected);
                 if ((!same_kind || !same_width || ret_sign_differs) &&
-                    !int_const_coerce && !float_const_coerce) {
+                    !int_const_coerce && !float_const_coerce && !float_lit_coerce) {
                     // Arc 10 (o): a const-IDENT-bearing constant return
                     // value is judged by the shared core, mirroring the
                     // call-arg site — `return K` (K = 5) from an int8

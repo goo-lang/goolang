@@ -1,0 +1,37 @@
+// float32_narrow_probe (correctness burndown arc 14, g): an untyped FLOAT
+// literal returned from a float32 function has default type float64 (Go's
+// untyped-float default), so the return-stmt's numeric-mismatch gate
+// (same_kind true, same_width false) previously false-rejected it with
+// "cannot return float64 from a function returning float32" — a Go-legal
+// program (constant conversion with rounding). float_const_coerce already
+// covered an untyped INT constant meeting a float target; this pins the
+// untyped-FLOAT-constant sibling, including a mixed int+float expression
+// (`1 + 0.5`, float-rooted per Go's kind-promotion rule) that must be
+// caught by the float path, not the (disjoint) int path.
+//
+// `== float32(x)` / `== x` comparisons print booleans instead of raw float
+// values (float_gaps_probe.goo's convention) to stay exact-decimal-safe.
+package main
+
+func narrowHalf() float32 {
+	return 1.5
+}
+
+func narrowFrac() float32 {
+	return 3.9
+}
+
+func narrowMixed() float32 {
+	return 1 + 0.5
+}
+
+func wide() float64 {
+	return 3.9
+}
+
+func main() {
+	println(narrowHalf() == float32(1.5))
+	println(narrowFrac() == float32(3.9))
+	println(narrowMixed() == float32(1.5))
+	println(wide() == 3.9)
+}
