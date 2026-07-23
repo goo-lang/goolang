@@ -360,6 +360,20 @@ typedef struct goo_type_info {
 } goo_type_info_t;
 
 // Bounds checking (for safe mode)
+//
+// arc-17: goo_bounds_fail/goo_slice_bounds_fail are UNCONDITIONAL-fail,
+// noreturn functions — codegen inlines the `index >= length` compare (resp.
+// the slice-bounds OR-chain) directly at the call site and only branches
+// into these on the cold failure edge (codegen_emit_bounds_check /
+// codegen_generate_slice_index_expr in src/codegen/composite_codegen.c).
+// `noreturn` matters both for codegen (the fail block ends in
+// LLVMBuildUnreachable right after the call) and for the plain C build.
+// goo_bounds_check/goo_slice_bounds_check below are kept as thin
+// conditional wrappers for source/ABI compatibility with pre-arc-17
+// callers — codegen itself no longer emits calls to them.
+void goo_bounds_fail(size_t index, size_t length, const char* file, int line) __attribute__((noreturn));
+void goo_slice_bounds_fail(int64_t low, int64_t high, int64_t max, const char* file, int line) __attribute__((noreturn));
+
 void goo_bounds_check(size_t index, size_t length, const char* file, int line);
 
 // Bounds check for slice/substring EXPRESSIONS `base[low:high]` — the
