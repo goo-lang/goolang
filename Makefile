@@ -2032,58 +2032,74 @@ lanes-monomorphize-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 # assertion 2 if left unscoped (measured; see docs/superpowers/sdd/
 # task-4-report.md's "Fix round" section).
 #
-# Three assertions. #1 and #3 are exactly the brief's contract; #2 is a
-# ONE-STEP downgrade taken per the brief's explicit fallback rule (spec
-# risk 3), not a silent weakening:
+# Four assertions. #1, #2 (upgraded), and #4 are exactly the brief's
+# contract; #3 is new unroll evidence kept alongside #2 rather than
+# dropped now that #2 is satisfiable again:
 #   1. the radius-2 instance symbol exists, exactly once:
 #      goo_pkg__lanes__StencilStep__n2 — proves Task 2's monomorphization.
-#   2. DOWNGRADED from "the -O2 body contains a double vector type" to
-#      "the -O2 body contains >=5 `fmul double`" (unroll evidence). The
-#      literal vector-type predicate was tried first (both before and
-#      after the M2-B2 T4b comptime-parameter fold) and FAILS either way,
-#      scoped to the function body: 0 matches. Root cause is NOT the
-#      comptime fold this target's sibling commit landed — it's
-#      `goo_bounds_check` calls surviving on every tap access
-#      (`declare void @goo_bounds_check(...)`, no readnone/nounwind/
-#      speculatable attributes), which LLVM must treat conservatively and
-#      which blocks SLP/loop vectorization outright regardless of how
-#      constant the trip count is. That is a documented, out-of-scope
-#      blocker (runtime/bounds-check codegen, not this task's remit — see
-#      the M2-B2 T4b brief). The fold DOES deliver strong, verifiable
-#      payoff short of vectorization: pre-fold, the specialized body had
-#      only 3 `fmul double`, one per tap loop, each still driven by a
-#      RUNTIME trip count (`%mul = shl i64 %1, 1`, %1 being the comptime
-#      param passed as an ordinary argument). Post-fold, the same body has
-#      16 `fmul double` — the interior and left-boundary tap loops are
-#      fully unrolled into straight-line code, and even the one boundary
-#      loop LLVM leaves as a genuine loop now branches on a literal trip
-#      count (`icmp eq i64 %postfix_inc325, 5`) instead of a runtime value.
-#      >=5 is the brief's literal downgrade threshold (the 5 taps of
-#      radius 2, unrolled) — 16 clears it with margin while staying a
-#      conservative, reproducible floor rather than pinning the exact
-#      count of an LLVM inlining/unrolling decision that could shift
-#      between LLVM versions.
-#   3. NO fast-math flags leaked in anywhere in the module ("fast" as a
+#   2. UPGRADED (arc-17) back to the brief's original literal predicate:
+#      the -O2 body contains a `<N x double>` vector type. This was
+#      DOWNGRADED to an fmul-count floor at M2-B2 T4b time because it
+#      FAILED — 0 matches, scoped to the function body — and the
+#      documented root cause was `goo_bounds_check` calls surviving on
+#      every tap access: an opaque, unconditionally-executed call into a
+#      prebuilt (non-LTO'd) archive that LLVM had to treat conservatively,
+#      blocking SLP/loop vectorization outright regardless of how
+#      constant the trip count was. arc-17 replaced that opaque call with
+#      an inline `icmp uge` + cond-br to a cold noreturn fail path
+#      (src/codegen/composite_codegen.c's codegen_emit_bounds_check) —
+#      removing the structural blocker, not just re-attributing it (no
+#      attribute set on a conditional call into a non-LTO'd archive could
+#      have worked; see runtime.c's goo_bounds_fail comment). Measured
+#      before/after (this probe's own IR, function-body-scoped):
+#        before (a861829, pre-arc-17): 0 `<N x double>` vector types in
+#          the body; 53 unconditional `goo_bounds_check` calls in the
+#          body (83 in the whole module); 16 scalar `fmul double`.
+#        after (arc-17): 10 `<2 x double>` vector-type occurrences in the
+#          body (2 `fmul <2 x double>`, 4 `load <2 x double>`, 4
+#          `extractelement <2 x double>` operand references) — genuine
+#          SLP vectorization of two adjacent tap multiplies; 15
+#          `goo_bounds_fail` calls remain in the body (33 in the whole
+#          module) — LLVM's own SCEV/GVN eliminated roughly 70% of the
+#          in-body checks as provably redundant once they were plain
+#          inline compares instead of opaque calls, though not all of
+#          them (the surviving 15 are checks LLVM could not prove
+#          redundant for this kernel shape — not a regression, a floor);
+#          20 scalar `fmul double` (the remaining un-vectorized taps).
+#      The predicate below greps the body for the literal substring
+#      `x double>` (width-agnostic — LLVM's SLP width choice is a tuning
+#      detail, not part of the contract) and requires at least one match.
+#   3. Unroll evidence, KEPT from the T4b-era downgrade as a second,
+#      independent witness (still true, still cheap, no reason to drop
+#      it now that #2 is satisfiable again): >=5 `fmul double` in the
+#      body. 20 found post-arc-17, comfortably clears the floor.
+#   4. NO fast-math flags leaked in anywhere in the module ("fast" as a
 #      whole IR keyword would break the bit-identity contract the golden
-#      differentials pin) — whole-module is correct here (unlike #2):
+#      differentials pin) — whole-module is correct here (unlike #2/#3):
 #      fast-math is a global miscompile risk regardless of which function
 #      it appears in, so there is no false-pass hazard in leaving this one
 #      unscoped.
 lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	@mkdir -p build
-	@echo "=== lanes-kernel-ir-pin: specialized instance, unroll evidence, no fast-math ==="
+	@echo "=== lanes-kernel-ir-pin: specialized instance, vectorization + unroll evidence, no fast-math ==="
 	@"$(COMPILER)" --emit-llvm -O2 examples/lanes_stencilstep_r2_probe.goo -o build/lk_ir.ll >build/lk_ir.err 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ]; then echo "lanes-kernel-ir-pin: FAIL (compile failed)"; cat build/lk_ir.err; exit 1; fi
 	@n=$$(grep -cE '^define[^{]*@"?goo_pkg__lanes__StencilStep__n2(\.[0-9]+)?"?\(' build/lk_ir.ll); \
 	  if [ "$$n" != "1" ]; then echo "lanes-kernel-ir-pin: FAIL (goo_pkg__lanes__StencilStep__n2 family: expected exactly 1 define, found $$n — a .N-suffixed duplicate means LLVM uniquified a double-emission)"; exit 1; fi; \
 	  echo "  PASS goo_pkg__lanes__StencilStep__n2 defined exactly once (family count, catches .N-uniquified duplicates)"
 	@awk '/^define void @"?goo_pkg__lanes__StencilStep__n2"?\(/,/^}/' build/lk_ir.ll > build/lk_n2_body.ll; \
-	  fmul=$$(grep -c "fmul double" build/lk_n2_body.ll); \
+	  vec=$$(grep -c "x double>" build/lk_n2_body.ll); \
+	  if [ "$$vec" -lt 1 ]; then \
+	    echo "lanes-kernel-ir-pin: FAIL (vectorization evidence: expected >=1 '<N x double>' vector type in the specialized instance body, found $$vec — see the arc-17 comment above; inline bounds checks may have regressed back to blocking SLP vectorization)"; \
+	    cat build/lk_n2_body.ll; exit 1; \
+	  fi; \
+	  echo "  PASS >=1 '<N x double>' vector type in the specialized instance body ($$vec occurrences found — genuine SLP vectorization, unlocked by arc-17's inline bounds checks)"
+	@fmul=$$(grep -c "fmul double" build/lk_n2_body.ll); \
 	  if [ "$$fmul" -lt 5 ]; then \
 	    echo "lanes-kernel-ir-pin: FAIL (unroll evidence: expected >=5 'fmul double' in the specialized instance body, found $$fmul — the comptime-fold specialization payoff is not real for this kernel shape)"; \
 	    cat build/lk_n2_body.ll; exit 1; \
 	  fi; \
-	  echo "  PASS >=5 fmul double in the specialized instance body ($$fmul found — unroll evidence; downgraded from the vector-type predicate, see comment above)"
+	  echo "  PASS >=5 fmul double in the specialized instance body ($$fmul found — unroll evidence, second witness alongside the vector-type check)"
 	@if grep -qwE "fast|reassoc|nnan|ninf|nsz|arcp|afn|contract" build/lk_ir.ll; then \
 	    echo "lanes-kernel-ir-pin: FAIL (fast-math flags present in the module — would break the bit-identity contract the golden differentials pin)"; \
 	    grep -nwE "fast|reassoc|nnan|ninf|nsz|arcp|afn|contract" build/lk_ir.ll; exit 1; \
