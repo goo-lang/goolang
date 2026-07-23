@@ -47,4 +47,13 @@ func main() {
 	subHigh := arr[:o.inner.id]
 	fmt.Println(subHigh[0])
 	fmt.Println(subHigh[1])
+
+	// Arc-16 review catch: the root cause is ANY non-identifier lvalue
+	// index expression, not just field selectors — a nested index-as-index
+	// (`arr[a[0]]`, no struct involved) SExt'd the same unloaded pointer
+	// pre-fix ("sext ptr %slice_elem... to i64"). The generic is_lvalue
+	// guard covers it; this line pins that a selector-only rewrite of the
+	// guard would regress.
+	a := []int{2, 0, 1}
+	fmt.Println(arr[a[0]])
 }
