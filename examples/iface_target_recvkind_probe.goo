@@ -1,0 +1,42 @@
+// iface_target_recvkind_probe (arc 18): the closed-world RTTI interface-
+// target matcher (codegen_interface_target_match, interface_codegen.c)
+// backs `x.(I)` / `case I:` when x's static type is a wider interface
+// (interface{}) and I is itself an interface. `Counter.Get` has a *C
+// receiver, so a value-boxed C{} must NOT match — only a pointer-boxed
+// &C{} is in the method set. Both the comma-ok assertion and the type
+// switch must agree, and the pointer-boxed shape must still match (the
+// over-reject guard — see examples/iface_target_ptr.goo, which this
+// fixture deliberately mirrors and extends with the value-boxed reject).
+package main
+
+import "fmt"
+
+type Counter interface{ Get() int }
+
+type C struct{ n int }
+
+func (c *C) Get() int { return c.n }
+
+func checkCommaOk(x interface{}) {
+	if v, ok := x.(Counter); ok {
+		fmt.Println("counter:", v.Get())
+	} else {
+		fmt.Println("not a counter")
+	}
+}
+
+func classify(x interface{}) {
+	switch v := x.(type) {
+	case Counter:
+		fmt.Println("switch counter:", v.Get())
+	default:
+		fmt.Println("switch other")
+	}
+}
+
+func main() {
+	checkCommaOk(C{n: 5})  // value-boxed: pointer-receiver method not in method set
+	checkCommaOk(&C{n: 5}) // pointer-boxed: satisfies
+	classify(C{n: 9})      // value-boxed: must not match the interface case
+	classify(&C{n: 9})     // pointer-boxed: must match
+}
