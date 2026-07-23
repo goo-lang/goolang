@@ -1,8 +1,9 @@
 // lanes_kernel_bench (P6 M2-B2 Task 5): the `stencil-kernel-bench`
-// Makefile target's parallel half — the SAME 3-tap radius-1 kernel and
-// initial condition as examples/lanes_stencilstep_probe.goo (coeffs
-// {0.25, 0.5, 0.25}, unit-spike initial condition, Dirichlet 0.0
-// boundary), scaled up to a CPU-bound size (1<<20 cells, 8 lanes, 100 BSP
+// Makefile target's parallel half — the SAME 3-tap radius-1 kernel as
+// examples/lanes_stencilstep_probe.goo (coeffs {0.25, 0.5, 0.25},
+// Dirichlet 0.0 boundary; that probe uses a linear-ramp initial
+// condition, this bench a unit spike — the kernel, not the data, is what
+// is shared), scaled up to a CPU-bound size (1<<20 cells, 8 lanes, 100 BSP
 // rounds via lanes.StencilStep) so the target has something worth timing.
 // This file is NOT golden-wired (no sibling .expected.txt) — it exists
 // only as the bench's parallel binary; correctness against a serial

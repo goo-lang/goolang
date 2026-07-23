@@ -458,7 +458,7 @@ of how constant its trip count is.
 
 Every kernel buffer `StencilStep` touches is per-lane and long-lived, never
 allocated inside the BSP round loop: `ctx.scratch` (tile-width-sized) is
-allocated once by `Run` before the lane's goroutine starts, and reused for
+allocated once as the first action of each lane's goroutine, and reused for
 every round of that lane's whole lifetime. `ctx.haloBufL`/`ctx.haloBufR`
 are different: `Run` cannot size them, because it doesn't know `radius`
 (that's a `StencilStep` argument, not a `Run`/`Partition` parameter), so
@@ -467,7 +467,7 @@ observes `len(haloBuf) < radius`, and never shrinks or reallocates it
 again for a smaller subsequent radius call on the same lane. The reason
 this discipline matters, not just style: v1 Goo has no systematic memory
 reclamation (malloc with no GC and no ownership-based freeing — see this
-file's CLAUDE.md memory-model note), so a per-round `make()` inside a
+repo's CLAUDE.md memory-model note), so a per-round `make()` inside a
 kernel that runs `steps` rounds would leak `steps * width` `float64`s per
 lane over a long-running kernel. One allocation per buffer per lane for
 the entire `Run` call is the only discipline available without arena
