@@ -1,0 +1,6 @@
+hello from aliased fmt
+4
+3.14159
+2
+boom
+true

@@ -632,6 +632,9 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
     // before the general base-expression path.
     if (selector->expr && selector->expr->type == AST_IDENTIFIER) {
         IdentifierNode* pkg = (IdentifierNode*)selector->expr;
+        // Task B (alias imports): canonical dispatch key, matching the
+        // call-dispatch chain in call_codegen.c — see that site's comment.
+        const char* dispatch_pkg = type_checker_pkg_dispatch_name(checker, pkg->name);
         // Arc 12 (p) rider: the GENERAL exports-backed const leg runs
         // FIRST — the shim intercepts below match on the bare name
         // string, so a USER source package that happens to be named
@@ -654,13 +657,13 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
                 }
             }
         }
-        if (strcmp(pkg->name, "math") == 0 && strcmp(selector->selector, "Pi") == 0) {
+        if (strcmp(dispatch_pkg, "math") == 0 && strcmp(selector->selector, "Pi") == 0) {
             LLVMValueRef pi = LLVMConstReal(LLVMDoubleTypeInContext(codegen->context),
                                             3.14159265358979323846);
             return value_info_new(NULL, pi,
                                   type_checker_get_builtin(checker, TYPE_FLOAT64));
         }
-        if (strcmp(pkg->name, "os") == 0 && strcmp(selector->selector, "Args") == 0) {
+        if (strcmp(dispatch_pkg, "os") == 0 && strcmp(selector->selector, "Args") == 0) {
             // os.Args ([]string): the slice header is >16 bytes (SysV MEMORY
             // class, m12/ABI rule), so it can't cross the codegen<->C
             // boundary by value — mirrors strings.Split's goo_slice_t* out
@@ -693,7 +696,7 @@ ValueInfo* codegen_generate_selector_expr(CodeGenerator* codegen, TypeChecker* c
         // seed_time_package_exports); re-deriving a fresh builtin int64
         // instead would work too (same kind/width) but discards that Type's
         // name and owner_package for no benefit.
-        if (strcmp(pkg->name, "time") == 0) {
+        if (strcmp(dispatch_pkg, "time") == 0) {
             int64_t nanos = 0;
             int matched = 1;
             if (strcmp(selector->selector, "Nanosecond") == 0) nanos = 1LL;

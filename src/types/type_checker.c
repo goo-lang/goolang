@@ -174,6 +174,19 @@ Package* type_checker_find_package(TypeChecker* checker, const char* import_path
     return NULL;
 }
 
+// See types.h doc comment. Single choke point: every shim-dispatch strcmp
+// site (checker AND codegen) resolves its package identity through here
+// instead of comparing the use-site identifier text directly, so `import f
+// "fmt"` dispatches identically to a bare `import "fmt"`.
+const char* type_checker_pkg_dispatch_name(TypeChecker* checker, const char* ident_name) {
+    if (!checker || !ident_name) return ident_name;
+    Variable* marker = type_checker_lookup_variable(checker, ident_name);
+    if (marker && marker->package && marker->package->import_path) {
+        return marker->package->import_path;
+    }
+    return ident_name;
+}
+
 // Create a package namespace and push it onto the registry. Strings are copied
 // (str_dup); the exports scope starts empty and is filled by the caller via
 // package_export_filter once the package body has been checked.

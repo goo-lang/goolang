@@ -52,7 +52,7 @@ generic_func_infer	run	works	Generics	[T any] func, inference-only monomorphizat
 generic_explicit_inst	reject	absent	Generics	f[int](...) explicit instantiation unsupported; poor diagnostic
 generic_constraint_union	reject	absent	Generics	int|float64 constraint (P2.10, deferred post-v1)
 generic_type	reject	absent	Generics	generic type declarations unsupported
-pkg_alias_import	reject	absent	Packages	shim-package alias import (import f "fmt") unresolved; known gap
+pkg_alias_import	run	works	Packages	shim-package alias import (import f "fmt") resolves via Package.import_path, not use-site identifier text (Task B)
 pkg_init_func	reject	rejected	Packages	v1 decision: init functions cleanly rejected (previously compiled but SILENTLY never ran); real init support is post-v1
 err_interface_bridge	run	works	Errors	(T, error) bridged to !T catch; e.Error() works
 div_named_result_defer	run	divergent	Statements	deferred mutation of named result not returned (Go: 6, Goo: 5); documented in 02-LANGUAGE-SPECIFICATION

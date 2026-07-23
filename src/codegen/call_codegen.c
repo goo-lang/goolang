@@ -1240,6 +1240,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         SelectorExprNode* sel = (SelectorExprNode*)call->function;
         if (sel->expr && sel->expr->type == AST_IDENTIFIER) {
             IdentifierNode* pkg = (IdentifierNode*)sel->expr;
+            // Task B (alias imports): every shim-dispatch strcmp below keys
+            // off the package's canonical import_path (resolved once here
+            // via type_checker_pkg_dispatch_name), not the use-site
+            // identifier text — so `import f "fmt"; f.Println(...)` matches
+            // the same "fmt" arms as an unaliased `fmt.Println(...)`.
+            // codegen_generate_pkg_selector_call just below is deliberately
+            // NOT switched to this: it looks up a SOURCE package's mangled
+            // `goo_pkg__<name>__<sel>` symbol, keyed by the package's own
+            // declared name (not its import path — those differ for a
+            // nested import like "unicode/utf8" -> "utf8"), a distinct
+            // identity from the shim table's canonical-import-path key.
+            const char* dispatch_pkg = type_checker_pkg_dispatch_name(checker, pkg->name);
             // stdlib Phase 0 (Task 5): a call into a source-compiled package
             // (exports emitted as goo_pkg__<pkg>__<name>) routes here FIRST. If
             // no such symbol exists we fall through to the hardcoded stdlib shim
@@ -1250,49 +1262,49 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     codegen, checker, expr, pkg->name, sel->selector, &handled);
                 if (handled) return pv;
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
                 // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
                 return codegen_generate_println_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Print") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Print") == 0) {
                 return codegen_generate_fmt_print_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Printf") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Printf") == 0) {
                 return codegen_generate_printf_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
                 return codegen_generate_sprintf_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprint") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Sprint") == 0) {
                 return codegen_generate_fmt_sprint_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintln") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Sprintln") == 0) {
                 return codegen_generate_fmt_sprintln_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
                 return codegen_generate_errorf_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_exit", TYPE_VOID, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Getenv") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "Getenv") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_os_getenv", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "WriteFile") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "WriteFile") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_write_file", TYPE_INT32, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadByte") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "ReadByte") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_read_byte", TYPE_INT32, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "FileSize") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "FileSize") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_file_size", TYPE_INT32, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadFile") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "ReadFile") == 0) {
                 if (!call->args) {
                     codegen_error(codegen, expr->pos, "os.ReadFile: expected one string argument");
                     return NULL;
@@ -1300,47 +1312,47 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_string_result_call(codegen, checker, expr,
                                                             "goo_os_read_file", call->args);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadLine") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "ReadLine") == 0) {
                 return codegen_generate_string_result_call(codegen, checker, expr,
                                                             "goo_os_read_line", NULL);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_sqrt", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Pow") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Pow") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_pow", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Abs") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Abs") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_abs", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Min") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Min") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_min", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Max") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Max") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_max", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Contains") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "Contains") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_contains", TYPE_BOOL, 1);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "ToUpper") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "ToUpper") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_to_upper", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "ToLower") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "ToLower") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_to_lower", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "TrimSpace") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "TrimSpace") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_trim_space", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Split") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "Split") == 0) {
                 // void goo_strings_split(goo_slice_t* out, const char* s, const char* sep)
                 // The []string result returns through an out-pointer: a 3-field
                 // slice can't cross the C ABI by value from hand-emitted IR.
@@ -1362,7 +1374,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, out, "split_slice");
                 return value_info_new(NULL, slice_val, ret_type);
             }
-            if (strcmp(pkg->name, "strconv") == 0 && strcmp(sel->selector, "Itoa") == 0) {
+            if (strcmp(dispatch_pkg, "strconv") == 0 && strcmp(sel->selector, "Itoa") == 0) {
                 // strconv.Itoa(int) -> string via goo_int_to_string(int64_t)
                 // SExt the int arg to i64 since goo_int_to_string takes int64_t.
                 LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_int_to_string");
@@ -1376,10 +1388,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 value_info_free(a);
                 return value_info_new(NULL, res, type_checker_get_builtin(checker, TYPE_STRING));
             }
-            if (strcmp(pkg->name, "strconv") == 0 && strcmp(sel->selector, "Atoi") == 0) {
+            if (strcmp(dispatch_pkg, "strconv") == 0 && strcmp(sel->selector, "Atoi") == 0) {
                 return codegen_generate_atoi_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "New") == 0) {
+            if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "New") == 0) {
                 // errors.New(string) -> error. Box the message into a heap goo_error and
                 // store its pointer (as i8*) in the nullable error handle.
                 if (!call->args) {
@@ -1409,7 +1421,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
             }
-            if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
+            if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
                 // errors.Unwrap(error) -> error: read goo_error.cause via the runtime
                 // helper, rebuild the nullable {is_null = cause==null, ptr = cause}.
                 if (!call->args) {
@@ -1440,7 +1452,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 uw_err_val = LLVMBuildInsertValue(codegen->builder, uw_err_val, cause, 1, "uw.ptr");
                 return value_info_new(NULL, uw_err_val, uw_err_type);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
                 // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
                 // Spill the []string value to a slot and pass its address — a
                 // 3-field slice can't cross the C ABI by value from hand-emitted IR.
@@ -1471,7 +1483,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // method-call intercept further below (that's for t.UnixNano()
             // only). Declare-on-first-use, same lazy pattern as every other
             // runtime call this function emits.
-            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Sleep") == 0) {
+            if (strcmp(dispatch_pkg, "time") == 0 && strcmp(sel->selector, "Sleep") == 0) {
                 // Duration IS int64 nanoseconds (Go parity), so the argument
                 // needs only the usual lvalue-load, no conversion.
                 LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_sleep_ns");
@@ -1497,7 +1509,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, sleep_args, 1, "");
                 return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
             }
-            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
+            if (strcmp(dispatch_pkg, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
                 // goo_time_unix_ns() int64 -> wrap into the single-field
                 // Time struct {i64 _nanos}. expr->node_type is already the
                 // checker-resolved Time struct type (the package-export

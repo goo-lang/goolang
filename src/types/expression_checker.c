@@ -4069,8 +4069,13 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 // before flipping check_signature on; no re-lookup of the
                 // Type itself, and no Variable to record as checked_callee
                 // (shim functions never have comptime params to walk).
+                // Task B (alias imports): dispatch on the resolved package's
+                // canonical import_path, matching type_check_selector_expr —
+                // see that call site's comment.
+                const char* dispatch_pkg = (pkg_marker && pkg_marker->package && pkg_marker->package->import_path)
+                    ? pkg_marker->package->import_path : pkg_ident->name;
                 if (!check_signature &&
-                    shim_signature_is_known_call(pkg_ident->name, sel->selector)) {
+                    shim_signature_is_known_call(dispatch_pkg, sel->selector)) {
                     check_signature = 1;
                     recv_offset = 0;
                     callee_name = sel->selector;
@@ -4802,7 +4807,17 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
             }
         }
 
-        Type* fn_type = stdlib_package_lookup(checker, pkg_ident->name, selector->selector);
+        // Task B (alias imports): dispatch on the package's canonical
+        // import_path (pkg_marker->package), not the use-site identifier —
+        // `f.Println` after `import f "fmt"` must resolve exactly like
+        // `fmt.Println`. pkg_marker was already resolved just above; a
+        // shim package's marker always carries a Package* (seeded by
+        // seed_imported_stdlib_markers), so this only falls back to the
+        // raw identifier for a non-package selector base (already handled
+        // by the TYPE_PACKAGE guard) or a defensive NULL.
+        const char* dispatch_pkg = (pkg_marker && pkg_marker->package && pkg_marker->package->import_path)
+            ? pkg_marker->package->import_path : pkg_ident->name;
+        Type* fn_type = stdlib_package_lookup(checker, dispatch_pkg, selector->selector);
         if (fn_type) {
             expr->node_type = fn_type;
             return fn_type;
