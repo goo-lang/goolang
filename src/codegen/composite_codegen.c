@@ -247,16 +247,28 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
             // Strings are like slices with byte elements
             element_type = type_checker_get_builtin(checker, TYPE_UINT8);
 
-            // Extract the data pointer from string struct
+            // Extract the data pointer AND length from string struct — field
+            // 0 is data, field 1 is length (goo_string_t { char* data;
+            // size_t length; }), mirroring the TYPE_SLICE arm above.
             LLVMValueRef string_ptr;
+            LLVMValueRef string_len;
             if (base_val->is_lvalue) {
                 LLVMValueRef string_val = LLVMBuildLoad2(codegen->builder,
                                                         codegen_type_to_llvm(codegen, base_type),
                                                         base_val->llvm_value, "string_load");
                 string_ptr = LLVMBuildExtractValue(codegen->builder, string_val, 0, "string_ptr");
+                string_len = LLVMBuildExtractValue(codegen->builder, string_val, 1, "string_len");
             } else {
                 string_ptr = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 0, "string_ptr");
+                string_len = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 1, "string_len");
             }
+
+            // arc-17 soundness fix: this arm previously had NO bounds check
+            // at all (unlike its TYPE_ARRAY/TYPE_SLICE siblings above), so an
+            // out-of-range `s[i]` silently read past the string's backing
+            // buffer instead of aborting. Same inline check, same place in
+            // the pipeline (before the element GEP) as the slice arm.
+            codegen_emit_bounds_check(codegen, idx64, string_len, expr);
 
             // Index into the string data
             result = LLVMBuildGEP2(codegen->builder,

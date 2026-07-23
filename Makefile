@@ -1769,6 +1769,24 @@ const-array-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
 	  if ! grep -q "length 5" build/cabp_expr.err; then echo "const-array-bounds-probe: FAIL (expr length not resolved to 5)"; cat build/cabp_expr.err; exit 1; fi
 	@echo "const-array-bounds-probe: PASS"
 
+# arc-17 soundness fix: the TYPE_STRING single-byte-read arm in
+# codegen_generate_index_expr had NO bounds check at all (unlike its
+# TYPE_ARRAY/TYPE_SLICE siblings, both of which called
+# codegen_emit_bounds_check before their GEP) — an out-of-range `s[i]`
+# silently read past the string's backing buffer instead of aborting.
+# Sibling of array-bounds-probe/slice-write-bounds-probe (variable index,
+# printf-generated program, same rc==2 + "bounds check failed" contract).
+string-bounds-probe: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== string-bounds-probe: s[i] with i out of range must abort (variable index) ==="
+	@printf 'package main\nfunc main(){ s := "abc"; i := 5; println(s[i]) }\n' > build/sbp_oob.goo
+	@"$(COMPILER)" build/sbp_oob.goo -o build/sbp_oob.out 2>build/sbp_oob.cerr || \
+	  { echo "string-bounds-probe: FAIL (compile)"; cat build/sbp_oob.cerr; exit 1; }
+	@./build/sbp_oob.out 2>build/sbp_oob.err; rc=$$?; \
+	  if [ $$rc -ne 2 ]; then echo "string-bounds-probe: FAIL (OOB string read expected panic exit 2, got rc=$$rc)"; exit 1; fi; \
+	  if ! grep -qi "bounds check failed" build/sbp_oob.err; then echo "string-bounds-probe: FAIL (no bounds message)"; cat build/sbp_oob.err; exit 1; fi
+	@echo "string-bounds-probe: PASS"
+
 # fix/const-array-length: a genuinely non-constant array length (a plain
 # runtime variable, not a const) must be a clean type error — NOT a silent
 # fallback to the placeholder length, and not a crash. See
@@ -3107,6 +3125,7 @@ VERIFY_ALL_DEPS := \
     array-bounds-probe \
     slice-expr-bounds-probe \
     const-array-bounds-probe \
+    string-bounds-probe \
     nonconst-arraylen-reject-probe \
     comptime-value-reject-probe \
     comptime-value-reject-matrix \

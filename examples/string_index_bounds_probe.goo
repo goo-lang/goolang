@@ -1,0 +1,39 @@
+// string_index_bounds_probe (arc-17): golden coverage for IN-BOUNDS string
+// byte-index reads `s[i]` — the sibling of index_bounds_probe (slice/array
+// single-element reads) and slice_expr_bounds_probe (slice/substring
+// EXPRESSIONS). Before arc-17, TYPE_STRING single-byte reads emitted NO
+// bounds check at all (composite_codegen.c's TYPE_STRING arm), unlike
+// TYPE_ARRAY/TYPE_SLICE which both called codegen_emit_bounds_check — an
+// out-of-range `s[i]` silently read past the backing buffer instead of
+// aborting. This fixture pins that the newly-added check does not disturb
+// any IN-BOUNDS read; the out-of-range case (which panics and so can't be
+// golden) is covered separately by the `string-bounds-probe` Makefile
+// target.
+package main
+
+import "fmt"
+
+func main() {
+	s := "abc"
+
+	// A variable index across the whole in-bounds range.
+	i := 0
+	fmt.Println(s[i])
+	i = 1
+	fmt.Println(s[i])
+	i = 2
+	fmt.Println(s[i])
+
+	// A literal index.
+	fmt.Println(s[0])
+
+	// Last-valid-index edge: len(s)-1 must NOT trip the check.
+	fmt.Println(s[len(s)-1])
+
+	// Index into a string built at runtime (not a compile-time constant),
+	// so this exercises the same codegen path as a genuinely dynamic read.
+	t := "hello"
+	for j := 0; j < len(t); j++ {
+		fmt.Println(t[j])
+	}
+}
