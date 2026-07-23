@@ -1,0 +1,22 @@
+// switch_float_case_int_tag_reject (correctness burndown arc 14, f):
+// type_check_switch_stmt's per-case loop has no branch for an integer tag
+// meeting an untyped-float case expression, so this fell through to
+// type_check_comparison_op — which happily accepts a float-vs-int
+// comparison — and codegen_generate_switch_stmt then emitted a plain
+// LLVMBuildICmp(IntEQ) with a float operand, crashing the LLVM verifier
+// ("Invalid operand types for ICmp instruction") instead of reporting a
+// clean diagnostic. Go's rule for a float CONSTANT meeting an integer
+// context is the conversion rule: `case 2.5:` is non-integral and must be
+// rejected ("constant 2.5 truncated to integer"), matching int(2.5)'s own
+// rejection.
+package main
+
+func main() {
+	n := 3
+	switch n {
+	case 2.5:
+		println("no")
+	default:
+		println("ok")
+	}
+}

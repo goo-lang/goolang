@@ -1737,6 +1737,15 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
 // changes, and this is the only external caller.
 extern int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* declared);
 
+// Arc 14 (f/g) bridges into expression_checker.c's untyped-float-constant
+// adapter — see that file's adapt_switch_case_float_into_int and adapt_
+// return_float_literal doc comments. Same forward-declared-`extern`
+// convention as adapt_var_decl_initializer just above (one external caller
+// each, no header change).
+extern int adapt_switch_case_float_into_int(TypeChecker* checker, ASTNode* case_expr,
+                                             Type* tag_type);
+extern int adapt_return_float_literal(TypeChecker* checker, ASTNode* value, Type* expected);
+
 // Registers a single var-decl name in scope, mirroring the bindings the
 // success path has always set (ownership, is_initialized). Both the
 // success path and the Task 3 failure-recovery path (below) construct a
@@ -4221,6 +4230,24 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
             if (type_is_float(tag_type) && is_untyped_int_const_expr(e)) {
                 stamp_int_const_expr_type(e, tag_type);
                 continue;
+            }
+
+            // Untyped float-literal case against an INTEGER tag (`switch n {
+            // case 2.5: }`, n an int — correctness burndown arc 14, f).
+            // Mirror image of the FLOAT-tag branch just above. Left
+            // unguarded, this fell through to type_check_comparison_op
+            // (which accepts a float-vs-int comparison) and codegen's
+            // switch lowering built an ICmp with a float operand, crashing
+            // the LLVM verifier. Bridges into expression_checker.c's
+            // conversion-operand range check so the diagnostic and
+            // representability rule match int(2.5)'s own rejection.
+            // Tri-state: 0 = e is not float-rooted, fall through to the
+            // ordinary comparison-op path below; >0 = fits, stamped to
+            // tag_type; <0 = rejected (already reported at e->pos).
+            if (type_is_integer(tag_type)) {
+                int adapted = adapt_switch_case_float_into_int(checker, e, tag_type);
+                if (adapted < 0) { ok = 0; continue; }
+                if (adapted > 0) continue;
             }
 
             // Any other kind mismatch (e.g. a string case against an int tag)
