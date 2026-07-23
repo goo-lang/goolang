@@ -2859,6 +2859,13 @@ static Type* type_check_generic_call_core(TypeChecker* checker, ASTNode* expr,
         type_error(checker, expr->pos,
                    "%s is marked generic but has no function signature",
                    callee_name);
+        // Fix round (T-C review, Finding 1): ownership of preseeded_bindings
+        // (the explicit-instantiation caller's calloc'd array — see the
+        // function's own doc comment) doesn't transfer to the local
+        // `bindings` variable until below; an early return before that point
+        // must free the caller's array itself or it leaks (e.g.
+        // `first[int](1)` with a defensive-only trip of this branch).
+        free(preseeded_bindings);
         return NULL;
     }
     size_t n = callee_var->type_param_count;
@@ -2871,6 +2878,10 @@ static Type* type_check_generic_call_core(TypeChecker* checker, ASTNode* expr,
         type_error(checker, expr->pos,
                    "wrong number of arguments to %s: expected %zu, got %zu",
                    callee_name, pc, argc);
+        // Fix round (T-C review, Finding 1): same pre-ownership leak as
+        // above — this is the ordinarily-reachable trip, e.g.
+        // `first[int](1)` where first expects 2 args.
+        free(preseeded_bindings);
         return NULL;
     }
 

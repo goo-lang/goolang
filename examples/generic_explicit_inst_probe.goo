@@ -9,7 +9,7 @@
 // expression_checker.c's type_check_call_expr dispatch for the full
 // argument).
 //
-// Four shapes pinned here:
+// Six shapes pinned here:
 //   1. Explicit matching inference: `first[int64](7, 8)` must behave
 //      identically to inferred `first(7, 8)` — both resolve to the SAME
 //      monomorphized instance (first__int64), proven by the IR pin in the
@@ -30,6 +30,27 @@
 //      argument (`Id[T](x)` inside `Wrap[T]`) — exercises the monomorphizer's
 //      nested-call discovery (monomorphize.c), not just the top-level
 //      instantiation seed list.
+//   5. `go f[T](...)`: explicit instantiation as a goroutine target (T-C
+//      review, Finding 2). Follows generic_go_probe.goo's channel-join
+//      idiom (a buffered done-channel per spawn, drained before reading any
+//      shared state — pthread mutex/condvar backed, so the drain is a
+//      genuine happens-before edge, not a data race), but ALSO writes its
+//      result into a pre-allocated SLOT (a `[]T` element) rather than
+//      putting the payload on the channel itself — this pins
+//      statement_codegen.c's go-stmt generic/explicit rewiring
+//      independently of generic_go_probe's tag-on-channel shape.
+//   6. `defer f[T](...)`: explicit instantiation as a defer target, in a
+//      function whose loop-nested defer forces it into RUNTIME STACK-MODE
+//      defer (fi->defer_stack_mode) — the only way to reach
+//      codegen_generate_defer_stmt_stack, the site holding the
+//      `call->type_arg_count > 0` guard this finding is about. The same
+//      function also defers `arr[0]()` and `arr[j]()` (a slice-of-funcs
+//      indexed call) — the EXACT shape the guard exists to keep OFF the
+//      "safe to re-emit bare identifier" leg (an ordinary index-expr
+//      callee must still be snapshotted BY VALUE, since `arr`'s slot does
+//      not exist inside the defer thunk). All three deferred effects are
+//      observable ONLY after the function's own prints, per Go's defer-
+//      runs-at-return-in-LIFO-order semantics.
 package main
 
 import "fmt"
@@ -54,6 +75,85 @@ func Wrap[T any](x T) T {
 	return Id[T](x)
 }
 
+// Shape 5: go f[T](...) writing into a result slot, joined via a plain
+// done-channel (the channel carries no payload of interest — the RESULT
+// lives in `slot`, only the join lives on the channel).
+func spawnInto[T any](x T, idx int64, slot []T, done chan int64) {
+	slot[idx] = x
+	done <- idx
+}
+
+func runGoExplicitInst() {
+	slot := make([]int64, 2)
+	done := make(chan int64, 2)
+	go spawnInto[int64](int64(100), 0, slot, done)
+	go spawnInto[int64](int64(200), 1, slot, done)
+	// Drain both before touching `slot`: each receive here is the
+	// synchronizing edge (pthread mutex/condvar under channels.c) that
+	// makes the corresponding goroutine's slot write visible here — the
+	// sum is order-independent (commutative), so which goroutine's done
+	// signal arrives first doesn't matter.
+	<-done
+	<-done
+	fmt.Println(slot[0] + slot[1])
+}
+
+// Shape 6 support: two ordinary (non-generic) no-arg functions, gathered
+// into a `[]func() int64` and called through it (`arr[0]()`, `arr[j]()`)
+// — the ordinary-index-expression shape the defer-stack guard protects.
+func constOne() int64 {
+	fmt.Println("constOne")
+	return 1
+}
+
+func constTwo() int64 {
+	fmt.Println("constTwo")
+	return 2
+}
+
+// announce[T any] is the defer target itself for shape 6 — an explicit
+// instantiation (`announce[int64](99, 99)`) used as a defer callee.
+// Mirrors generic_go_probe.goo's own tag idiom: printing a T-typed value
+// inside a generic template body is unsupported (see that probe's doc
+// comment), so `x` is captured but not printed, and `tag` (a plain int64)
+// carries the observable effect instead.
+func announce[T any](x T, tag int64) {
+	y := x
+	_ = y
+	fmt.Println("defer-explicit", tag)
+}
+
+func runDeferStackShapes() {
+	fmt.Println("defer-stack-begin")
+
+	// Loop-nested defer: the pre-pass (function_codegen.c's
+	// defer_prepass_needs_stack) sees this and forces the WHOLE function
+	// into stack-mode defer — every defer below, not just this one, now
+	// routes through codegen_generate_defer_stmt_stack.
+	i := 0
+	for i < 2 {
+		defer fmt.Println("loop", i)
+		i = i + 1
+	}
+
+	// defer f[T](...): explicit-instantiation callee. Must classify as a
+	// safe top-level-symbol re-emit (bare-identifier semantics under
+	// call->type_arg_count > 0), not a func-VALUE snapshot.
+	defer announce[int64](99, 99)
+
+	// arr[0]() / arr[j](): slice-of-funcs indexed defer callees — also
+	// IndexExpr-wrapping-an-identifier shaped, but call->type_arg_count is
+	// 0 for these (the checker never sets it — `arr` is a plain TYPE_SLICE
+	// Variable, never is_generic), so the guard correctly routes them to
+	// the value-snapshot leg instead of the bare-identifier leg.
+	arr := []func() int64{constOne, constTwo}
+	defer arr[0]()
+	j := 1
+	defer arr[j]()
+
+	fmt.Println("defer-stack-end")
+}
+
 func main() {
 	// 1. Explicit matching inference.
 	fmt.Println(first(7, 8))
@@ -70,4 +170,11 @@ func main() {
 	// 4. Nested explicit instantiation (outer's own type parameter).
 	fmt.Println(Wrap(int64(42)))
 	fmt.Println(Wrap("hi"))
+
+	// 5. go f[T](...): result-slot + channel/join sync.
+	runGoExplicitInst()
+
+	// 6. defer f[T](...): stack-mode defer-stack callee-snapshot guard,
+	//    plus the arr[0]()/arr[j]() misclassification shape it protects.
+	runDeferStackShapes()
 }
