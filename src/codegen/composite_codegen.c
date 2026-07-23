@@ -74,7 +74,22 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         value_info_free(base_val);
         return NULL;
     }
-    
+
+    // Arc 16: load an lvalue index (e.g. a bare struct-field selector
+    // `arr[s.id]`) before it is ever widened or used as a map key — mirrors
+    // the write path's identical load in codegen_emit_lvalue_address's
+    // AST_INDEX_EXPR arm (expression_codegen.c). Without this,
+    // codegen_widen_index below fed the field's ADDRESS into LLVMBuildSExt
+    // ("SExt only operates on integer" module-verifier crash) on every
+    // read whose index was itself an lvalue.
+    if (index_val->is_lvalue && index_val->goo_type) {
+        LLVMTypeRef it = codegen_type_to_llvm(codegen, index_val->goo_type);
+        if (it) {
+            index_val->llvm_value = LLVMBuildLoad2(codegen->builder, it, index_val->llvm_value, "idx");
+            index_val->is_lvalue = 0;
+        }
+    }
+
     Type* base_type = base_val->goo_type;
     Type* element_type = NULL;
     LLVMValueRef result = NULL;
@@ -314,6 +329,16 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
     if (sl->low) {
         ValueInfo* lv = codegen_generate_expression(codegen, checker, sl->low);
         if (!lv) { value_info_free(base_val); return NULL; }
+        // Arc 16: same missing-load bug as codegen_generate_index_expr — a
+        // bare struct-field selector low bound (`arr[s.lo:]`) is an lvalue
+        // (address), not yet a value; load it before it is widened below.
+        if (lv->is_lvalue && lv->goo_type) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, lv->goo_type);
+            if (lt) {
+                lv->llvm_value = LLVMBuildLoad2(codegen->builder, lt, lv->llvm_value, "low");
+                lv->is_lvalue = 0;
+            }
+        }
         low64 = lv->llvm_value;
         unsigned w = LLVMGetIntTypeWidth(LLVMTypeOf(low64));
         if (w < 64) low64 = LLVMBuildSExt(codegen->builder, low64, i64, "low64");
@@ -325,6 +350,14 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
     if (sl->high) {
         ValueInfo* hv = codegen_generate_expression(codegen, checker, sl->high);
         if (!hv) { value_info_free(base_val); return NULL; }
+        // Arc 16: same missing-load bug, high-bound arm.
+        if (hv->is_lvalue && hv->goo_type) {
+            LLVMTypeRef ht = codegen_type_to_llvm(codegen, hv->goo_type);
+            if (ht) {
+                hv->llvm_value = LLVMBuildLoad2(codegen->builder, ht, hv->llvm_value, "high");
+                hv->is_lvalue = 0;
+            }
+        }
         high64 = hv->llvm_value;
         unsigned w = LLVMGetIntTypeWidth(LLVMTypeOf(high64));
         if (w < 64) high64 = LLVMBuildSExt(codegen->builder, high64, i64, "high64");
