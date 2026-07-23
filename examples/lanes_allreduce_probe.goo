@@ -1,0 +1,51 @@
+// lanes_allreduce_probe (P6 M2-B2 Task 1): AllReduceSum/AllReduceMax are
+// deterministic BSP collectives — every lane contributes, every lane
+// receives the identical result, combined in fixed lane-ID order (never
+// arrival order), so the result is bit-identical across runs and
+// schedules for a given lane count. The reference below combines the
+// same per-tile partials in the same ID order sequentially; `==` must
+// therefore hold bit-for-bit, not just approximately.
+package main
+
+import "lanes"
+
+func main() {
+	data := []float64{0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5}
+	// Sequential reference: per-tile partial sums/maxes combined in ID order.
+	refSum := ((0.5 + 1.5) + (2.5 + 3.5)) + ((4.5 + 5.5) + (6.5 + 7.5))
+	refMax := 7.5
+
+	sums := []float64{0.0, 0.0, 0.0, 0.0}
+	maxes := []float64{0.0, 0.0, 0.0, 0.0}
+
+	p := lanes.Partition(data, 4)
+	lanes.Run(p, 1, func(ctx *lanes.Lane) {
+		own := ctx.Own()
+		local := 0.0
+		big := own[0]
+		for i := 0; i < len(own); i++ {
+			local = local + own[i]
+			if own[i] > big {
+				big = own[i]
+			}
+		}
+		s := ctx.AllReduceSum(local)
+		m := ctx.AllReduceMax(big)
+		sums[ctx.ID()] = s
+		maxes[ctx.ID()] = m
+	})
+
+	// Every lane must have received the identical, reference-equal result.
+	ok := true
+	for i := 0; i < 4; i++ {
+		if sums[i] != refSum {
+			ok = false
+		}
+		if maxes[i] != refMax {
+			ok = false
+		}
+	}
+	println(ok)
+	println(sums[0] == refSum)
+	println(maxes[3] == refMax)
+}

@@ -59,6 +59,18 @@ type Lane struct {
 	edgeL    bool
 	edgeR    bool
 	boundary float64
+
+	// M2-B2 (Task 1): deterministic-collective wiring. count is the total
+	// lane count (needed for the ID-order combine); partials[i] carries lane
+	// i's contribution to the combiner (lane 0); results[i] carries the
+	// combined value back to lane i (i >= 1; lane 0 keeps its own). All
+	// cap-1, wired by Run before any goroutine spawns, like the halo
+	// channels. Every lane holds the full slices, but lane i only ever
+	// sends on partials[i] / receives on results[i], and only lane 0 reads
+	// partials[*] / sends results[*].
+	count    int
+	partials []chan float64
+	results  []chan float64
 }
 
 // Partition splits arr into `count` equal-width tiles. count is a comptime
@@ -131,15 +143,30 @@ func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
 		leftward[i] = make(chan float64, 1)
 	}
 
+	// M2-B2 (Task 1): collective channels — one partial + one result slot
+	// per lane, cap 1 each. Sequential AllReduce calls stay correctly
+	// paired without extra synchronization because each channel is
+	// single-writer single-reader and FIFO: lane i's round-N+1 partial
+	// cannot be sent until its round-N result was received.
+	partials := make([]chan float64, p.count)
+	results := make([]chan float64, p.count)
+	for i := 0; i < p.count; i++ {
+		partials[i] = make(chan float64, 1)
+		results[i] = make(chan float64, 1)
+	}
+
 	for i := 0; i < p.count; i++ {
 		i := i // per-iteration rebind: capture THIS i, not the shared loop var
 		go func() {
 			l := Lane{
-				id:    i,
-				steps: steps,
-				own:   p.backing[i*p.width : (i+1)*p.width],
-				edgeL: i == 0,
-				edgeR: i == p.count-1,
+				id:       i,
+				steps:    steps,
+				own:      p.backing[i*p.width : (i+1)*p.width],
+				edgeL:    i == 0,
+				edgeR:    i == p.count-1,
+				count:    p.count,
+				partials: partials,
+				results:  results,
 			}
 			if !l.edgeR {
 				l.sendR = rightward[i]
@@ -242,4 +269,75 @@ func (l *Lane) HaloRight() float64 {
 func (l *Lane) Step() bool {
 	l.step = l.step + 1
 	return l.step < l.steps
+}
+
+// allReduce is the shared collective core: every lane contributes `local`;
+// the combined value is returned identically to every lane. Combination
+// happens in FIXED lane-ID order (lane 0's partial, then 1's, ...): lane 0
+// drains partials[0..count-1] in index order and broadcasts on
+// results[1..count-1]. ID order — never arrival order — is what makes the
+// result bit-identical across runs and schedules for a given lane count
+// (float addition is not associative, so this is load-bearing, not style).
+// Bit-identity across DIFFERENT lane counts is deliberately not promised:
+// a different tiling changes the rounding sequence.
+//
+// The call is also a barrier: no lane returns until lane 0 has combined
+// every contribution. Deadlock-freedom: every send targets a cap-1 channel
+// whose single buffered slot is empty at that point in the round (each
+// channel is used exactly once per collective, single-writer,
+// single-reader), so no send ever blocks on a peer that is itself blocked
+// sending — the same argument as Publish's cap-1 reasoning above.
+//
+// PROTOCOL RULE (documented, not enforced): collectives are whole-round
+// events. Every lane must call the same collective the same number of
+// times, in the same program position — all lanes or none, like the
+// Publish -> HaloLeft/HaloRight -> compute order.
+func (l *Lane) allReduce(local float64, useMax bool) float64 {
+	// Dialect adaptation (compiler codegen gap, not a language-spec issue):
+	// codegen_generate_index_expr (src/codegen/composite_codegen.c) is the
+	// READ-path index lowering and — unlike the WRITE-path in
+	// expression_codegen.c's codegen_emit_lvalue_address, which explicitly
+	// loads an lvalue index before widening it — never loads an lvalue
+	// index; it hands the raw field-address straight to
+	// codegen_widen_index, which then calls LLVMBuildSExt on a `ptr`, and
+	// LLVM's module verifier rejects that ("SExt only operates on
+	// integer"). `l.id` used directly as an index (`l.partials[l.id]`)
+	// triggers this because a struct-field selector always codegens as an
+	// lvalue (composite_codegen.c's codegen_generate_selector_expr).
+	// Binding it to a local first sidesteps the gap: a plain identifier's
+	// codegen path loads its value, so id below arrives as an rvalue.
+	// Confirmed general (not lanes-specific) with a two-field minimal
+	// repro; no src/ change made — see task-1-report.md.
+	id := l.id
+	l.partials[id] <- local
+	if id == 0 {
+		acc := <-l.partials[0]
+		for i := 1; i < l.count; i++ {
+			v := <-l.partials[i]
+			if useMax {
+				if v > acc {
+					acc = v
+				}
+			} else {
+				acc = acc + v
+			}
+		}
+		for i := 1; i < l.count; i++ {
+			l.results[i] <- acc
+		}
+		return acc
+	}
+	r := <-l.results[id]
+	return r
+}
+
+// AllReduceSum returns the ID-order sum of every lane's `local`.
+func (l *Lane) AllReduceSum(local float64) float64 {
+	return l.allReduce(local, false)
+}
+
+// AllReduceMax returns the maximum of every lane's `local` (ID-order scan;
+// max is order-insensitive but the fixed order keeps one code path).
+func (l *Lane) AllReduceMax(local float64) float64 {
+	return l.allReduce(local, true)
 }
