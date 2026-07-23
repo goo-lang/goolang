@@ -119,7 +119,7 @@ RUNTIME_LIB = $(LIBDIR)/libgoo_runtime.a
 # the runtime entrypoints. runtime.o's goo_init/goo_exit call into
 # deadlock.o, and concurrency.o calls channels/sync/platform — leaving
 # any of these out fails the link of even a hello-world executable.
-RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o
+RUNTIME_OBJS = $(BUILDDIR)/runtime/runtime.o $(BUILDDIR)/runtime/platform.o $(BUILDDIR)/runtime/concurrency.o $(BUILDDIR)/runtime/channels.o $(BUILDDIR)/runtime/sync.o $(BUILDDIR)/runtime/sync_shim.o $(BUILDDIR)/runtime/time_shim.o $(BUILDDIR)/runtime/deadlock.o $(BUILDDIR)/runtime/io.o $(BUILDDIR)/runtime/arena.o $(BUILDDIR)/runtime/defer.o $(BUILDDIR)/runtime/far_transport.o
 
 # M2-B1: vendored NNG (far transport). Pinned tarball, static lib, merged
 # into libgoo_runtime.a below so bin/goo-linked executables need no new
@@ -140,6 +140,9 @@ $(NNG_LIB): $(NNG_TARBALL)
 	  -DCMAKE_INSTALL_PREFIX=$(abspath $(NNG_BUILD)) -DCMAKE_INSTALL_LIBDIR=lib >/dev/null
 	cmake --build $(NNG_BUILD)/cm -j$(shell nproc) >/dev/null
 	cmake --install $(NNG_BUILD)/cm >/dev/null
+
+$(BUILDDIR)/runtime/far_transport.o: CFLAGS += -I$(NNG_BUILD)/include
+$(BUILDDIR)/runtime/far_transport.o: $(NNG_LIB)
 
 # Main targets
 COMPILER = $(BINDIR)/goo
@@ -4415,6 +4418,31 @@ test: $(TEST_RUNNER) test-cli
 .PHONY: test-cli
 test-cli: $(COMPILER) $(RUNTIME_LIB)
 	@bash tests/cli/cli_test.sh "$(COMPILER)"
+
+# M2-B1: far transport C unit test — shim ABI, FIFO, buffering envelope,
+# "far: closed" split. The ASan variant compiles the runtime objects it
+# needs directly (an archive built without ASan can't be reused). Beyond
+# runtime.c/platform.c, goo_init/goo_exit pull in deadlock.c, which pulls
+# in concurrency.c's g_scheduler, which pulls in sync.c's goo_mutex_* —
+# same transitive chain RUNTIME_OBJS's header comment describes.
+far-transport-test: $(RUNTIME_LIB)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -Iinclude -I$(NNG_BUILD)/include tests/runtime/far_transport_test.c $(RUNTIME_LIB) -o $(BINDIR)/far_transport_test -lm -lpthread
+	@$(BINDIR)/far_transport_test && echo "far-transport-test: PASS"
+
+# detect_leaks=0: the test's goo_string_t out-params (recv error strings)
+# are never freed, matching the documented v1 memory model (malloc, no
+# systematic reclamation — see CLAUDE.md). LeakSanitizer would flag that
+# expected-unfreed heap growth on every run; ASan's memory-corruption
+# checks (overflow/UAF/double-free), which this target exists to run,
+# stay fully active.
+far-transport-asan: $(NNG_LIB)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -g -fsanitize=address -Iinclude -I$(NNG_BUILD)/include \
+	  tests/runtime/far_transport_test.c src/runtime/far_transport.c src/runtime/runtime.c src/runtime/platform.c src/runtime/deadlock.c src/runtime/concurrency.c src/runtime/sync.c \
+	  $(NNG_LIB) -o $(BINDIR)/far_transport_asan -lm -lpthread
+	@ASAN_OPTIONS=detect_leaks=0 $(BINDIR)/far_transport_asan && echo "far-transport-asan: PASS"
+.PHONY: far-transport-test far-transport-asan
 
 $(TEST_RUNNER): $(OBJS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c | $(BINDIR)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) $(TEST_FRAMEWORK_DIR)/test_main.c $(TEST_UNIT_DIR)/constraint/constraint_inference_test.c $(TEST_UNIT_DIR)/type_system/concept_generics_test.c $(TEST_UNIT_DIR)/type_system/higher_kinded_types_test.c $(TEST_UNIT_DIR)/type_system/concept_declaration_test.c $(TEST_UNIT_DIR)/constraint/advanced_constraint_inference_test.c $(OBJS) -o $@ $(LDFLAGS) $(LLVM_LDFLAGS)
