@@ -1992,6 +1992,80 @@ lanes-monomorphize-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	  echo "  PASS call edge Partition(arrayB, 4) -> goo_pkg__lanes__Partition__n4"
 	@echo "lanes-monomorphize-ir-pin: PASS"
 
+# lanes-kernel-ir-pin (M2-B2 Task 4b): the specialized kernel instance must
+# exist AND show real specialization payoff at -O2 — proving the
+# comptime-fold actually unlocks optimization, not just that the mangling
+# plumbing produced a distinct symbol (that half is already pinned by
+# lanes-monomorphize-ir-pin, one level down the same package). Sibling of
+# lanes-monomorphize-ir-pin/comptime-generic-compose-ir-pin in every
+# respect: same IR-production recipe shape (--emit-llvm, rc-guarded,
+# build/-scoped), same "$$sym"?\( symbol-quoting-tolerant grep, same
+# awk '/^define .../,/^}/' function-body scoping this Makefile already
+# uses (comptime-generic-compose-ir-pin's alloca checks) rather than a
+# whole-module grep — a whole-module `x double>` on this probe's compiled
+# module matches 14 times in UNRELATED code and would silently false-pass
+# assertion 2 if left unscoped (measured; see docs/superpowers/sdd/
+# task-4-report.md's "Fix round" section).
+#
+# Three assertions. #1 and #3 are exactly the brief's contract; #2 is a
+# ONE-STEP downgrade taken per the brief's explicit fallback rule (spec
+# risk 3), not a silent weakening:
+#   1. the radius-2 instance symbol exists, exactly once:
+#      goo_pkg__lanes__StencilStep__n2 — proves Task 2's monomorphization.
+#   2. DOWNGRADED from "the -O2 body contains a double vector type" to
+#      "the -O2 body contains >=5 `fmul double`" (unroll evidence). The
+#      literal vector-type predicate was tried first (both before and
+#      after the M2-B2 T4b comptime-parameter fold) and FAILS either way,
+#      scoped to the function body: 0 matches. Root cause is NOT the
+#      comptime fold this target's sibling commit landed — it's
+#      `goo_bounds_check` calls surviving on every tap access
+#      (`declare void @goo_bounds_check(...)`, no readnone/nounwind/
+#      speculatable attributes), which LLVM must treat conservatively and
+#      which blocks SLP/loop vectorization outright regardless of how
+#      constant the trip count is. That is a documented, out-of-scope
+#      blocker (runtime/bounds-check codegen, not this task's remit — see
+#      the M2-B2 T4b brief). The fold DOES deliver strong, verifiable
+#      payoff short of vectorization: pre-fold, the specialized body had
+#      only 3 `fmul double`, one per tap loop, each still driven by a
+#      RUNTIME trip count (`%mul = shl i64 %1, 1`, %1 being the comptime
+#      param passed as an ordinary argument). Post-fold, the same body has
+#      16 `fmul double` — the interior and left-boundary tap loops are
+#      fully unrolled into straight-line code, and even the one boundary
+#      loop LLVM leaves as a genuine loop now branches on a literal trip
+#      count (`icmp eq i64 %postfix_inc325, 5`) instead of a runtime value.
+#      >=5 is the brief's literal downgrade threshold (the 5 taps of
+#      radius 2, unrolled) — 16 clears it with margin while staying a
+#      conservative, reproducible floor rather than pinning the exact
+#      count of an LLVM inlining/unrolling decision that could shift
+#      between LLVM versions.
+#   3. NO fast-math flags leaked in anywhere in the module ("fast" as a
+#      whole IR keyword would break the bit-identity contract the golden
+#      differentials pin) — whole-module is correct here (unlike #2):
+#      fast-math is a global miscompile risk regardless of which function
+#      it appears in, so there is no false-pass hazard in leaving this one
+#      unscoped.
+lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== lanes-kernel-ir-pin: specialized instance, unroll evidence, no fast-math ==="
+	@"$(COMPILER)" --emit-llvm -O2 examples/lanes_stencilstep_r2_probe.goo -o build/lk_ir.ll >build/lk_ir.err 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "lanes-kernel-ir-pin: FAIL (compile failed)"; cat build/lk_ir.err; exit 1; fi
+	@n=$$(grep -cE '^define[^{]*@"?goo_pkg__lanes__StencilStep__n2"?\(' build/lk_ir.ll); \
+	  if [ "$$n" != "1" ]; then echo "lanes-kernel-ir-pin: FAIL (goo_pkg__lanes__StencilStep__n2: expected exactly 1 define, found $$n)"; exit 1; fi; \
+	  echo "  PASS goo_pkg__lanes__StencilStep__n2 defined exactly once"
+	@awk '/^define void @"?goo_pkg__lanes__StencilStep__n2"?\(/,/^}/' build/lk_ir.ll > build/lk_n2_body.ll; \
+	  fmul=$$(grep -c "fmul double" build/lk_n2_body.ll); \
+	  if [ "$$fmul" -lt 5 ]; then \
+	    echo "lanes-kernel-ir-pin: FAIL (unroll evidence: expected >=5 'fmul double' in the specialized instance body, found $$fmul — the comptime-fold specialization payoff is not real for this kernel shape)"; \
+	    cat build/lk_n2_body.ll; exit 1; \
+	  fi; \
+	  echo "  PASS >=5 fmul double in the specialized instance body ($$fmul found — unroll evidence; downgraded from the vector-type predicate, see comment above)"
+	@if grep -qw "fast" build/lk_ir.ll; then \
+	    echo "lanes-kernel-ir-pin: FAIL (fast-math flags present in the module — would break the bit-identity contract the golden differentials pin)"; \
+	    grep -n "fast" build/lk_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS no fast-math flags anywhere in the module"
+	@echo "lanes-kernel-ir-pin: PASS"
+
 # spmd-bench-probe: SPMD harness sub-project, Task 3 — "the proof". Builds a
 # CPU-bound comptime-specialized kernel (`burn`: a tight LCG loop over a
 # comptime-fixed iteration count, deterministic and side-effect-free per
@@ -2887,6 +2961,7 @@ VERIFY_ALL_DEPS := \
     comptime-value-reject-matrix \
     comptime-generic-compose-ir-pin \
     lanes-monomorphize-ir-pin \
+    lanes-kernel-ir-pin \
     selectsend-reject-probe \
     globalcall-init-probe \
     floatint-reject-probe \
@@ -3994,7 +4069,7 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin lanes-monomorphize-ir-pin spmd-bench-probe stencil-race-runbook-probe stencil-parallel-probe test-golden test-golden-o2 test-golden-reject
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin lanes-monomorphize-ir-pin lanes-kernel-ir-pin spmd-bench-probe stencil-race-runbook-probe stencil-parallel-probe test-golden test-golden-o2 test-golden-reject
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh
