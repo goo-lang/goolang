@@ -10,3 +10,10 @@ source trees are never committed, only tarballs.
 
 NNG backs the `far` shim package (lanes M2-B1 far transport). MIT license.
 The build deliberately ignores any system/`/usr/local` nng install.
+
+Note: upstream's v1.12.0 tag ships an unbumped version header —
+`include/nng/nng.h` still has `NNG_MINOR_VERSION 11`, so the built
+library's `nng_version()` self-reports `1.11.0` at runtime, not `1.12.0`.
+Confirmed against GitHub's tag directly (not a local extraction fluke).
+Provenance is the sha256-pinned tag tarball above, not the runtime
+self-report.

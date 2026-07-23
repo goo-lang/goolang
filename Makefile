@@ -131,7 +131,7 @@ NNG_BUILD   := build/nng
 NNG_LIB     := $(NNG_BUILD)/lib/libnng.a
 
 $(NNG_LIB): $(NNG_TARBALL)
-	@echo "$(NNG_SHA256)  $(NNG_TARBALL)" | sha256sum -c - >/dev/null
+	@echo "$(NNG_SHA256)  $(NNG_TARBALL)" | sha256sum -c - >/dev/null || { echo "NNG tarball sha256 MISMATCH — expected $(NNG_SHA256)"; sha256sum $(NNG_TARBALL); exit 1; }
 	rm -rf build/nng-src $(NNG_BUILD)
 	mkdir -p build/nng-src
 	tar -xzf $(NNG_TARBALL) -C build/nng-src --strip-components=1
