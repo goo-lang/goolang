@@ -449,6 +449,44 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         scope_add_variable(checker->current_scope, copy_var);
     }
 
+    // clear(m) / clear(s) -> void (Go 1.21). Map: removes every entry;
+    // slice: zeroes every element up to len (len/cap unchanged). Real
+    // checking (map-or-slice kind gate) lives in the dedicated arm in
+    // type_check_call_expr, mirroring close/delete; registered here
+    // (void-returning stub, predeclared) so the bare identifier resolves
+    // rather than tripping "Undefined variable 'clear'".
+    Type* clear_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* clear_var = variable_new("clear", clear_type, (Position){0, 0, 0, "builtin"});
+    if (clear_var) {
+        clear_var->is_builtin = 1;
+        clear_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, clear_var);
+    }
+
+    // min(a, b, ...) / max(a, b, ...) -> the smallest/largest argument (Go
+    // 1.21). Variadic, 1+ args; the real signature — and result type,
+    // which depends on the arguments the way append's does — is
+    // special-cased in the dedicated arm in type_check_call_expr. Marked
+    // variadic (like panic) so the stub signature itself is never
+    // consulted; registered so the bare identifier resolves rather than
+    // tripping "Undefined variable 'min'"/'max'.
+    Type* min_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    min_type->data.function.is_variadic = 1;
+    Variable* min_var = variable_new("min", min_type, (Position){0, 0, 0, "builtin"});
+    if (min_var) {
+        min_var->is_builtin = 1;
+        min_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, min_var);
+    }
+    Type* max_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    max_type->data.function.is_variadic = 1;
+    Variable* max_var = variable_new("max", max_type, (Position){0, 0, 0, "builtin"});
+    if (max_var) {
+        max_var->is_builtin = 1;
+        max_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, max_var);
+    }
+
     // error(msg) -> !T: constructs the error case of the enclosing function's
     // error-union return type. Registered here so the bare identifier resolves
     // like len/cap/append; the call itself is special-cased in

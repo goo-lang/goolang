@@ -65,6 +65,40 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out) {
                 default: return 0;
             }
         }
+        // min(a, b, ...) / max(a, b, ...) (Go 1.21): a call to the builtin
+        // — never a user function of the same name (this context-free
+        // folder has no checker to consult for shadowing; see
+        // goo_fold_const_int_ctx's twin arm below for the checker-aware
+        // sibling, which is what every shadow-sensitive caller actually
+        // reaches through) — folds when every argument itself folds.
+        // Comparison reads the folded uint64 as a SIGNED int64: correct
+        // for every value representable in [-2^63, 2^63), which is every
+        // realistic constant; a value >= 2^63 reads as negative here, the
+        // same documented-gap class as this file's other overflow-clamp
+        // deviations (see the task report). Reused unchanged by
+        // goo_fold_const_int_ctx's default case, which delegates here for
+        // any node type it does not special-case itself — so this ONE arm
+        // covers both folders for the pure-literal-argument shape; the ctx
+        // version below exists only to additionally resolve
+        // identifier/selector-const arguments via itself.
+        case AST_CALL_EXPR: {
+            CallExprNode* call = (CallExprNode*)expr;
+            if (!call->function || call->function->type != AST_IDENTIFIER) return 0;
+            const char* fname = ((IdentifierNode*)call->function)->name;
+            int is_min = strcmp(fname, "min") == 0;
+            if (!is_min && strcmp(fname, "max") != 0) return 0;
+            if (!call->args) return 0;
+            uint64_t acc;
+            if (!goo_fold_const_int(call->args, &acc)) return 0;
+            for (ASTNode* a = call->args->next; a; a = a->next) {
+                uint64_t v;
+                if (!goo_fold_const_int(a, &v)) return 0;
+                int64_t sa = (int64_t)acc, sv = (int64_t)v;
+                if (is_min ? (sv < sa) : (sv > sa)) acc = v;
+            }
+            *out = acc;
+            return 1;
+        }
         default:
             return 0;
     }
@@ -239,6 +273,32 @@ int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out) {
                 case TOKEN_BIT_XOR:  *out = l ^ r; return 1;
                 default: return 0;
             }
+        }
+        // min(a, b, ...) / max(a, b, ...) (Go 1.21): checker-aware sibling
+        // of goo_fold_const_int's identical arm — needed as its OWN case
+        // (rather than falling through to the default delegation below)
+        // so an identifier/selector-const ARGUMENT (`min(K, 5)`) resolves
+        // through the checker too; the context-free version's args-loop
+        // can only ever fold pure-literal arguments. See that arm's doc
+        // comment for the shadowing caveat and the signed-int64-of-the-
+        // raw-fold comparison rationale — identical here.
+        case AST_CALL_EXPR: {
+            CallExprNode* call = (CallExprNode*)expr;
+            if (!call->function || call->function->type != AST_IDENTIFIER) return 0;
+            const char* fname = ((IdentifierNode*)call->function)->name;
+            int is_min = strcmp(fname, "min") == 0;
+            if (!is_min && strcmp(fname, "max") != 0) return 0;
+            if (!call->args) return 0;
+            uint64_t acc;
+            if (!goo_fold_const_int_ctx(checker, call->args, &acc)) return 0;
+            for (ASTNode* a = call->args->next; a; a = a->next) {
+                uint64_t v;
+                if (!goo_fold_const_int_ctx(checker, a, &v)) return 0;
+                int64_t sa = (int64_t)acc, sv = (int64_t)v;
+                if (is_min ? (sv < sa) : (sv > sa)) acc = v;
+            }
+            *out = acc;
+            return 1;
         }
         default:
             // AST_LITERAL and anything not special-cased above: delegate to

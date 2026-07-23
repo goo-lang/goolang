@@ -857,6 +857,22 @@ void goo_map_delete_sv(GooMapSV* m, int64_t k) {
     }
 }
 
+// Unlinks and frees every entry (no-op if m is NULL or already empty).
+// Backs clear(m) (Go 1.21). Same key-ownership contract as
+// goo_map_delete_sv above (frees only the entry nodes, never the key/value
+// payloads a caller's own storage still owns) — one linear pass instead of
+// clear's naive "delete every key" O(n^2) equivalent.
+void goo_map_clear_sv(GooMapSV* m) {
+    if (!m) return;
+    GooMapEntrySV* e = (GooMapEntrySV*)m->head;
+    while (e) {
+        GooMapEntrySV* next = e->next;
+        goo_free(e);
+        e = next;
+    }
+    m->head = NULL;
+}
+
 // Slice operations
 
 // Zero-initialized backing store for make([]T, n[, cap]). calloc (not

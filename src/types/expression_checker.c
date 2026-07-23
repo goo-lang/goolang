@@ -3082,6 +3082,197 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
     return result;
 }
 
+// min(a, b, ...) / max(a, b, ...) -> the smallest/largest argument (Go
+// 1.21). At least one argument required; every argument must be of an
+// "ordered" type — Go restricts min/max to types supporting `<` (v1 has no
+// user-defined ordered types beyond the three basic kinds, so: integer,
+// float, or string). The result type follows the SAME untyped-constant
+// rules as a chain of binary comparisons (type_check_binary_expr, above):
+// an untyped-constant-rooted argument (bare literal, unary -/+/^ through
+// to one, or a {+,-,*} subtree of those — is_untyped_int_rooted /
+// is_untyped_float_rooted) adapts to the single concrete (non-rooted) type
+// present among the OTHER arguments; two different concrete types is a
+// hard reject ("mismatched types"), the same rule `int8var + int16var`
+// gets. Reuses type_check_binary_expr's own adapters rather than inventing
+// a separate constraint system, per the task design.
+//
+// Two passes, not a left-to-right fold: a fold only re-adapts the MOST
+// RECENTLY visited node against a newly discovered concrete type, leaving
+// earlier already-folded literal nodes stamped at a stale width — e.g.
+// `min(1, 2, int32var)` would leave `1` stamped int64 while `2` and
+// int32var end up int32, an LLVM width mismatch codegen cannot recover
+// from. Pass 1 determines the target type without mutating any node; pass
+// 2 adapts (or rejects) every node against that now-known-correct target.
+//
+// Documented deviation from full Go constant semantics (see the task
+// report): Go treats an all-constant min/max call as itself a constant,
+// usable anywhere a constant expression is required, with EXACT
+// (arbitrary-precision) arithmetic. Goo folds the INTEGER case (see
+// goo_fold_const_int/goo_fold_const_int_ctx's AST_CALL_EXPR arm in
+// expression_helpers.c) so `[min(2,3)]int` and `var x int8 = min(1, 2)`
+// both work like a genuine constant, including overflow rejection — this
+// is the case the task's representability gates cover and must not
+// silently diverge on. FLOAT and STRING constant-folding are NOT
+// implemented (no goo_fold_const_float/string equivalent exists in this
+// checker); an all-constant `min("a", "b")` or `min(1.0, 2.0)` still
+// type-checks and runs correctly, just as an ordinary RUNTIME comparison
+// chain rather than a compile-time constant — it cannot be used where Go
+// requires a genuine constant (an array length, a case label, etc.).
+static Type* type_check_minmax_call(TypeChecker* checker, ASTNode* expr,
+                                     CallExprNode* call, const char* name) {
+    if (!call->args) {
+        type_error(checker, expr->pos, "%s expects at least one argument", name);
+        return NULL;
+    }
+
+    size_t n = 0;
+    for (ASTNode* a = call->args; a; a = a->next) n++;
+    ASTNode** nodes = malloc(n * sizeof(ASTNode*));
+    Type** types = malloc(n * sizeof(Type*));
+    if (!nodes || !types) {
+        free(nodes); free(types);
+        type_error(checker, expr->pos, "out of memory checking %s call", name);
+        return NULL;
+    }
+
+    size_t i = 0;
+    for (ASTNode* a = call->args; a; a = a->next, i++) {
+        Type* t = type_check_expression(checker, a);
+        if (!t) { free(nodes); free(types); return NULL; }
+        if (type_is_poison(t)) {
+            // P2.8 cascade suppression, matching close()'s identical guard.
+            free(nodes); free(types);
+            expr->node_type = t;
+            return t;
+        }
+        nodes[i] = a;
+        types[i] = t;
+    }
+
+    // Pass 1: classify every argument and settle on the target type,
+    // WITHOUT mutating any node yet (see the fold-order bug this avoids,
+    // in the doc comment above).
+    int any_string = 0, any_numeric = 0, any_rooted_float = 0;
+    Type* concrete_float = NULL; // the single non-rooted float type seen, if any
+    Type* concrete_int = NULL;   // the single non-rooted integer type seen, if any
+    for (i = 0; i < n; i++) {
+        Type* t = types[i];
+        if (t->kind == TYPE_STRING) { any_string = 1; continue; }
+        if (type_is_float(t)) {
+            any_numeric = 1;
+            if (is_untyped_float_rooted(nodes[i])) {
+                any_rooted_float = 1;
+            } else if (concrete_float && concrete_float->kind != t->kind) {
+                type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                           name, type_to_string(concrete_float), type_to_string(t));
+                free(nodes); free(types);
+                return NULL;
+            } else if (!concrete_float) {
+                concrete_float = t;
+            }
+            continue;
+        }
+        if (type_is_integer(t)) {
+            any_numeric = 1;
+            if (!is_untyped_int_rooted(nodes[i], 0)) {
+                if (concrete_int && concrete_int->kind != t->kind) {
+                    type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                               name, type_to_string(concrete_int), type_to_string(t));
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                if (!concrete_int) concrete_int = t;
+            }
+            continue;
+        }
+        type_error(checker, expr->pos,
+                   "%s: argument of type %s is not ordered (integer, float, or string required)",
+                   name, type_to_string(t));
+        free(nodes); free(types);
+        return NULL;
+    }
+
+    if (any_string && any_numeric) {
+        type_error(checker, expr->pos, "%s: cannot mix string and numeric arguments", name);
+        free(nodes); free(types);
+        return NULL;
+    }
+
+    Type* target;
+    if (any_string) {
+        target = checker->builtin_types[TYPE_STRING];
+    } else if (concrete_float) {
+        // A concrete (non-rooted) INT argument can never adapt to a float
+        // target — no implicit int->float conversion for a typed value,
+        // same rule type_check_binary_expr's cross-kind block enforces.
+        // Caught explicitly here rather than left to pass 2, whose
+        // per-node adapt only knows how to reject a ROOTED mismatch.
+        if (concrete_int) {
+            type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                       name, type_to_string(concrete_int), type_to_string(concrete_float));
+            free(nodes); free(types);
+            return NULL;
+        }
+        target = concrete_float;
+    } else if (concrete_int) {
+        target = concrete_int;
+    } else {
+        // Every numeric argument is untyped-constant-rooted (e.g. `min(1,
+        // 2)`, `max(1.0, 2.0)`, or a mix like `min(1, 2.5)`) — Go's default
+        // type for an untyped constant: float64 if ANY argument is
+        // float-family (kind promotion, matching is_untyped_float_rooted's
+        // own binop leg), else int (int64 here).
+        target = any_rooted_float ? checker->builtin_types[TYPE_FLOAT64]
+                                   : checker->builtin_types[TYPE_INT64];
+    }
+
+    // Pass 2: adapt every rooted node to `target` (or reject a genuine,
+    // non-adaptable mismatch pass 1's classification didn't already catch
+    // — e.g. a shift-rooted int meeting a float target, which is rooted
+    // under is_untyped_int_rooted(_, 0) but NOT under the stricter
+    // for_float_context=1 shape type_check_binary_expr's own cross-kind
+    // block requires).
+    for (i = 0; i < n; i++) {
+        Type* t = types[i];
+        ASTNode* node = nodes[i];
+        if (t->kind == TYPE_STRING || t->kind == target->kind) continue;
+
+        if (type_is_float(target)) {
+            if (type_is_float(t) && is_untyped_float_rooted(node)) {
+                if (!adapt_untyped_float_operand(checker, node, target, 0)) {
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                continue;
+            }
+            if (type_is_integer(t) && is_untyped_int_rooted(node, 1)) {
+                if (!adapt_untyped_int_operand(checker, node, target, 0, 1)) {
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                continue;
+            }
+        } else if (type_is_integer(target)) {
+            if (type_is_integer(t) && is_untyped_int_rooted(node, 0)) {
+                if (!adapt_untyped_int_operand(checker, node, target, 0, 1)) {
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                continue;
+            }
+        }
+        type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                   name, type_to_string(t), type_to_string(target));
+        free(nodes); free(types);
+        return NULL;
+    }
+
+    free(nodes);
+    free(types);
+    expr->node_type = target;
+    return target;
+}
+
 // Comptime value params (fix round 2's I2 guard; promoted in fix round 4):
 // the comptime-param-reference walk now lives in expression_helpers.c as
 // goo_expr_references_comptime_param — type_from_ast (type_checker.c)
@@ -3612,6 +3803,43 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             expr->node_type = checker->builtin_types[TYPE_VOID];
             return checker->builtin_types[TYPE_VOID];
+        }
+        // clear(m) / clear(s) -> void (Go 1.21). Map: removes every entry
+        // (equivalent to deleting every key, but codegen lowers it to one
+        // dedicated goo_map_clear_sv pass instead of an entry-by-entry
+        // delete loop). Slice: zeroes every element up to len — len and
+        // cap are UNCHANGED (this is not a truncation; codegen memsets the
+        // backing store, it never touches the header). Exactly one
+        // argument, which must be a map or slice — anything else would
+        // hand codegen a value with neither a GooMapSV* nor a {ptr,len,cap}
+        // header to clear.
+        if (strcmp(func_ident->name, "clear") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "clear expects exactly one argument (map or slice)");
+                return NULL;
+            }
+            Type* arg_t = type_check_expression(checker, call->args);
+            if (!arg_t) return NULL;
+            // P2.8 cascade suppression, matching close()'s identical guard.
+            if (type_is_poison(arg_t)) return arg_t;
+            if (arg_t->kind != TYPE_MAP && arg_t->kind != TYPE_SLICE) {
+                type_error(checker, expr->pos,
+                           "clear: argument must be a map or slice, got %s", type_to_string(arg_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_VOID];
+            return checker->builtin_types[TYPE_VOID];
+        }
+        // min(a, b, ...) / max(a, b, ...) -> the smallest/largest argument
+        // (Go 1.21). Real checking (arity, ordered-type gate, untyped-
+        // constant adaptation) lives in the shared type_check_minmax_call
+        // helper above (name-parameterized — the two builtins differ only
+        // in which comparison codegen emits, never in their TYPE rule).
+        if (strcmp(func_ident->name, "min") == 0) {
+            return type_check_minmax_call(checker, expr, call, "min");
+        }
+        if (strcmp(func_ident->name, "max") == 0) {
+            return type_check_minmax_call(checker, expr, call, "max");
         }
         // error(msg) -> !T. Constructs the error case of the enclosing function's
         // return type. The argument must be a string; the call is only valid inside

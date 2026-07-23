@@ -893,6 +893,43 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(key_arg);
             return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
         }
+        if (strcmp(func_name->name, "clear") == 0 && call->args) {
+            // clear(m) / clear(s) -> void (Go 1.21). Map: one
+            // goo_map_clear_sv pass (its own dedicated runtime routine,
+            // sibling to goo_map_delete_sv). Slice: memset the backing
+            // store over exactly `len` elements — NOT `cap`; Go leaves any
+            // extra capacity beyond len untouched — the header itself
+            // (data/len/cap) is never rewritten, so this is a value clear,
+            // not a truncation.
+            ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!arg) return NULL;
+            LLVMValueRef raw = arg->llvm_value;
+            if (arg->is_lvalue && arg->goo_type) {
+                LLVMTypeRef at = codegen_type_to_llvm(codegen, arg->goo_type);
+                if (at) raw = LLVMBuildLoad2(codegen->builder, at, raw, "clear_load");
+            }
+            if (arg->goo_type && arg->goo_type->kind == TYPE_MAP) {
+                LLVMValueRef clear_fn = LLVMGetNamedFunction(codegen->module, "goo_map_clear_sv");
+                if (!clear_fn) {
+                    codegen_error(codegen, expr->pos, "clear: goo_map_clear_sv unavailable");
+                    value_info_free(arg);
+                    return NULL;
+                }
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(clear_fn), clear_fn, &raw, 1, "");
+                value_info_free(arg);
+                return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+            }
+            // TYPE_SLICE — the only other kind the checker admits.
+            LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, raw, 0, "clear_data");
+            LLVMValueRef len  = LLVMBuildExtractValue(codegen->builder, raw, 1, "clear_len");
+            LLVMTypeRef clear_elem_llvm = codegen_type_to_llvm(codegen, arg->goo_type->data.slice.element_type);
+            LLVMValueRef elem_size = LLVMSizeOf(clear_elem_llvm);
+            LLVMValueRef total_bytes = LLVMBuildMul(codegen->builder, len, elem_size, "clear_bytes");
+            LLVMValueRef zero_byte = LLVMConstInt(LLVMInt8TypeInContext(codegen->context), 0, 0);
+            LLVMBuildMemSet(codegen->builder, data, zero_byte, total_bytes, 1);
+            value_info_free(arg);
+            return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+        }
         if (strcmp(func_name->name, "cap") == 0 && call->args) {
             // cap(slice) — extract field 2 (capacity) from the 3-field slice
             // header. Mirrors len() but reads field 2 instead of field 1.
@@ -1062,6 +1099,98 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             LLVMValueRef n = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(copy_fn),
                                             copy_fn, args, 5, "copy_n");
             return value_info_new(NULL, n, type_checker_get_builtin(checker, TYPE_INT64));
+        }
+        if ((strcmp(func_name->name, "min") == 0 || strcmp(func_name->name, "max") == 0) && call->args) {
+            // min(a, b, ...) / max(a, b, ...) -> a chain of compare+select
+            // folded left-to-right over the arguments, at the common type
+            // the checker already resolved (type_check_minmax_call in
+            // expression_checker.c stamped EVERY argument node to
+            // expr->node_type, adapting untyped-constant-rooted literals as
+            // needed — so every arg here already generates a value of the
+            // exact same LLVM type; no further coercion is needed).
+            int is_min = strcmp(func_name->name, "min") == 0;
+            Type* result_t = expr->node_type;
+            if (!result_t) {
+                codegen_error(codegen, expr->pos, "%s: missing resolved type", func_name->name);
+                return NULL;
+            }
+            LLVMTypeRef result_llvm = codegen_type_to_llvm(codegen, result_t);
+
+            ValueInfo* acc_v = codegen_generate_expression(codegen, checker, call->args);
+            if (!acc_v) return NULL;
+            LLVMValueRef acc = acc_v->llvm_value;
+            if (acc_v->is_lvalue) acc = LLVMBuildLoad2(codegen->builder, result_llvm, acc, "minmax_acc");
+            value_info_free(acc_v);
+
+            for (ASTNode* a = call->args->next; a; a = a->next) {
+                ValueInfo* v = codegen_generate_expression(codegen, checker, a);
+                if (!v) return NULL;
+                LLVMValueRef cur = v->llvm_value;
+                if (v->is_lvalue) cur = LLVMBuildLoad2(codegen->builder, result_llvm, cur, "minmax_arg");
+                value_info_free(v);
+
+                LLVMValueRef take_cur;
+                if (result_t->kind == TYPE_STRING) {
+                    // Lexicographic order via the same runtime comparator
+                    // `<`/`>` on strings already lowers through
+                    // (expression_codegen.c's codegen_string_cmp_to_i1) —
+                    // reimplemented inline here since that helper is
+                    // file-static in a different translation unit.
+                    LLVMValueRef cmp_fn = LLVMGetNamedFunction(codegen->module, "goo_string_cmp");
+                    if (!cmp_fn) {
+                        codegen_error(codegen, expr->pos, "%s: goo_string_cmp unavailable", func_name->name);
+                        return NULL;
+                    }
+                    LLVMValueRef cmp_args[2] = { cur, acc };
+                    LLVMValueRef cmp = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(cmp_fn),
+                                                      cmp_fn, cmp_args, 2, "minmax_strcmp");
+                    LLVMValueRef zero32 = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+                    take_cur = LLVMBuildICmp(codegen->builder, is_min ? LLVMIntSLT : LLVMIntSGT,
+                                             cmp, zero32, "minmax_take");
+                } else if (type_is_float(result_t)) {
+                    // Go: "if any argument is NaN, min/max returns NaN"
+                    // (pkg.go.dev/builtin#min) — propagated across the
+                    // WHOLE fold, not just the current pair: take_cur is
+                    // true when cur is NaN (adopt it, propagating), OR the
+                    // ordered comparison favors cur AND acc is NOT already
+                    // a propagated NaN (once acc is NaN it must stay NaN,
+                    // never overwritten by a later non-NaN cur — a plain
+                    // "ordered OR either-is-NaN" formula would wrongly let
+                    // a later finite cur clear an already-NaN acc).
+                    // Ordered fcmp (olt/ogt) is false for either operand
+                    // NaN, which is exactly the "not naturally comparable"
+                    // half this needs.
+                    //
+                    // Documented deviation (not exercised by the golden
+                    // probes): Go additionally treats negative zero as
+                    // smaller than positive zero for min (and the mirror
+                    // for max); IEEE ordered comparison treats -0.0 == 0.0,
+                    // so `min(-0.0, 0.0)` here may return either zero
+                    // rather than Go's guaranteed -0.0. A signbit-aware
+                    // tie-break would close this; out of scope alongside
+                    // the float/string constant-folding gap (see the task
+                    // report).
+                    LLVMRealPredicate pred = is_min ? LLVMRealOLT : LLVMRealOGT;
+                    LLVMValueRef ordered_take = LLVMBuildFCmp(codegen->builder, pred, cur, acc, "minmax_flt_cmp");
+                    LLVMValueRef cur_nan = LLVMBuildFCmp(codegen->builder, LLVMRealUNO, cur, cur, "minmax_cur_nan");
+                    LLVMValueRef acc_nan = LLVMBuildFCmp(codegen->builder, LLVMRealUNO, acc, acc, "minmax_acc_nan");
+                    LLVMValueRef acc_ok = LLVMBuildNot(codegen->builder, acc_nan, "minmax_acc_ok");
+                    LLVMValueRef ordered_and_acc_ok = LLVMBuildAnd(codegen->builder, ordered_take, acc_ok,
+                                                                   "minmax_ord_ok");
+                    take_cur = LLVMBuildOr(codegen->builder, cur_nan, ordered_and_acc_ok, "minmax_take");
+                } else {
+                    // Integer — signed vs. unsigned changes which icmp
+                    // predicate is correct (e.g. uint64 0xFFFF...FFFF is the
+                    // MAXIMUM, not -1).
+                    int is_signed = type_is_signed(result_t);
+                    LLVMIntPredicate pred = is_min
+                        ? (is_signed ? LLVMIntSLT : LLVMIntULT)
+                        : (is_signed ? LLVMIntSGT : LLVMIntUGT);
+                    take_cur = LLVMBuildICmp(codegen->builder, pred, cur, acc, "minmax_cmp");
+                }
+                acc = LLVMBuildSelect(codegen->builder, take_cur, cur, acc, "minmax_sel");
+            }
+            return value_info_new(NULL, acc, result_t);
         }
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);

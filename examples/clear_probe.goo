@@ -1,0 +1,38 @@
+// clear_probe: clear builtin (Go 1.21) — richer coverage than the
+// spec-conformance fixture (tests/spec/builtin_clear.goo), which only pins
+// the bare map-clear-then-len shape. This probe pins:
+//   - map clear: every entry gone (len 0, comma-ok read reports absent)
+//   - slice clear: every element zeroed up to len — cap and len are BOTH
+//     UNCHANGED (Go: clear(s) zeroes values, it never resizes)
+//   - clear on a nil map / nil slice is a no-op, not a panic
+package main
+
+import "fmt"
+
+func main() {
+	m := map[string]int{"a": 1, "b": 2, "c": 3}
+	clear(m)
+	fmt.Println(len(m))
+	v, ok := m["a"]
+	fmt.Println(v)
+	fmt.Println(ok)
+
+	s := []int{1, 2, 3, 4, 5}
+	s = s[:3] // len=3, cap=5 — the slice header's cap outlives the reslice
+	fmt.Println(len(s))
+	fmt.Println(cap(s))
+	clear(s)
+	fmt.Println(s[0])
+	fmt.Println(s[1])
+	fmt.Println(s[2])
+	fmt.Println(len(s)) // unchanged by clear
+	fmt.Println(cap(s)) // unchanged by clear
+
+	var nilMap map[string]int
+	clear(nilMap)
+	fmt.Println(len(nilMap))
+
+	var nilSlice []int
+	clear(nilSlice)
+	fmt.Println(len(nilSlice))
+}
