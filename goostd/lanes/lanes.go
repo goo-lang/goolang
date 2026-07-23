@@ -306,7 +306,7 @@ func (l *Lane) allReduce(local float64, useMax bool) float64 {
 	// lvalue (composite_codegen.c's codegen_generate_selector_expr).
 	// Binding it to a local first sidesteps the gap: a plain identifier's
 	// codegen path loads its value, so id below arrives as an rvalue.
-	// Confirmed general (not lanes-specific) with a two-field minimal
+	// Confirmed general (not lanes-specific) with a one-field-struct minimal
 	// repro; no src/ change made — see task-1-report.md.
 	id := l.id
 	l.partials[id] <- local
