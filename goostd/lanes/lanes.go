@@ -384,6 +384,13 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 	if len(coeffs) != 2*radius+1 {
 		panic("lanes.StencilStep: len(coeffs) must equal 2*radius+1")
 	}
+	// A radius wider than the tile would need cells beyond the immediate
+	// neighbor's tile (the sub-exchange protocol only reaches one neighbor
+	// deep) and would index haloBufL/haloBufR out of bounds — reject
+	// explicitly rather than corrupt (T2 review, Minor 3).
+	if radius > len(ctx.own) {
+		panic("lanes.StencilStep: radius must not exceed the lane tile width")
+	}
 	if len(ctx.haloBufL) < radius {
 		ctx.haloBufL = make([]float64, radius)
 	}
