@@ -1,0 +1,1 @@
+tests/golden/reject/fmt_struct_map_field_reject.goo:23:3: fmt.Sprintf: %v: unsupported argument type

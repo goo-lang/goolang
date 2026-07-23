@@ -647,8 +647,13 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen, TypeChecker* c
 // is a single extra deref; type_name is a C string (e.g. "int", "*Point");
 // fmt_fn is null until a later task fills it. Name-deduped by concrete type,
 // like the vtable globals — see interface_codegen.c.
+// `pos`: the boxing call site that first requests this concrete type's
+// descriptor (Arc 15 item l). The per-type descriptor/formatter is cached
+// (dedup by concrete+pointer_form), so `pos` is only the FIRST box site's
+// position — acceptable, since the goal is a real file:line reaching the
+// user instead of none, not attribution to every box site.
 LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* checker,
-                                           Type* concrete, int pointer_form);
+                                           Type* concrete, int pointer_form, Position pos);
 // Per-type %v formatter reached via the descriptor's fmt_fn field (field
 // index 2). Emits (or reuses) `goo.fmt.<T>` / `goo.fmt.$ptr$<T>` of LLVM
 // type `goo_string(ptr)`: loads the concrete value from the `data` param
@@ -656,8 +661,12 @@ LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* 
 // STRUCT concretes, via codegen_fmt_value_to_string below; pointer_form or
 // any other concrete kind (slice, map, ...) falls back to a goo_string copy
 // of the type name. See interface_codegen.c.
+// `pos`: see codegen_get_or_emit_type_desc's `pos` doc above — threaded down
+// so the unsupported-kind diagnostic codegen_fmt_value_to_string may emit
+// (struct field of an unsupported kind, e.g. map/func) carries a real
+// file:line instead of a hardcoded zero position (Arc 15 item l).
 LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
-                                          Type* concrete, int pointer_form);
+                                          Type* concrete, int pointer_form, Position pos);
 // Public entry point onto call_codegen.c's recursive %v value-to-string
 // formatter (codegen_build_fmt_value_string — struct/pointer-to-struct/
 // slice/array, the same machinery fmt.Sprintf's %v verb uses), for callers
@@ -667,10 +676,20 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
 // unsupported shape.
 LLVMValueRef codegen_fmt_value_to_string(CodeGenerator* codegen, TypeChecker* checker,
                                          LLVMValueRef val, Type* ty, Position pos);
+// `pos`: see codegen_get_or_emit_type_desc's `pos` doc above — threaded
+// through to it (Arc 15 item l).
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
-                                      Type* iface, Type* concrete, int pointer_form);
+                                      Type* iface, Type* concrete, int pointer_form,
+                                      Position pos);
+// `pos`: the boxing expression's own source position (e.g. a var-decl
+// initializer, call argument, or struct/slice/map literal element) —
+// threaded through codegen_interface_vtable to the per-type descriptor/
+// formatter synthesis so a user-facing diagnostic from the boxed %v leg
+// (codegen_get_or_emit_type_fmt) carries a real file:line instead of a
+// hardcoded zero position (Arc 15 item l).
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
-                                   Type* iface, Type* concrete, LLVMValueRef value);
+                                   Type* iface, Type* concrete, LLVMValueRef value,
+                                   Position pos);
 ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* checker,
                                       LLVMValueRef iface_val, Type* iface_type,
                                       const char* method_name,
@@ -678,19 +697,32 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
 // Task 2 (type assertions): shared vtable-pointer-compare + unbox lowering
 // for `x.(T)` (comma-ok and single-return) and Task 3's type switch. See
 // interface_codegen.c's doc comments on each for the exact contract.
+// `pos`: the assertion/type-switch-case expression's own source position
+// (review finding on Arc 15 item l — d30a22e threaded a real Position into
+// the codegen_interface_box leg only; this function ALSO cascades into
+// codegen_interface_vtable -> codegen_get_or_emit_type_desc ->
+// codegen_get_or_emit_type_fmt, which unconditionally synthesizes `target`'s
+// %v formatter as a side effect of the vtable lookup, so a program that
+// first reaches `target`'s formatter via `x.(target)` / `case target:`
+// rather than a direct box needs a real position here too, not a hardcoded
+// zero).
 LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* iface_type,
-                                            Type* target, LLVMValueRef* data_out);
+                                            Type* target, LLVMValueRef* data_out,
+                                            Position pos);
 LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
                                             LLVMValueRef data);
 // Interface-target RTTI, Task 1: `x.(I)` where I is itself an INTERFACE
 // (closed-world enumeration of I's concrete implementers), as opposed to
 // codegen_interface_assert_match's concrete-target vtable-pointer compare.
 // See interface_codegen.c's doc comments on each for the exact contract.
+// `pos`: see codegen_interface_assert_match's `pos` doc above — same
+// rationale (this function also enumerates each implementer through
+// codegen_get_or_emit_type_desc / codegen_interface_vtable).
 size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Type*** out);
 LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* target_iface,
-                                            LLVMValueRef* built_out);
+                                            LLVMValueRef* built_out, Position pos);
 
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);

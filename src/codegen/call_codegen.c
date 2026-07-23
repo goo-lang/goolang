@@ -2090,7 +2090,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     }
                 }
                 LLVMValueRef boxed = codegen_interface_box(codegen, checker, param_type,
-                                                           arg_val->goo_type, arg_val->llvm_value);
+                                                           arg_val->goo_type, arg_val->llvm_value, arg->pos);
                 if (!boxed) { value_info_free(arg_val); free(args); value_info_free(func_val); return NULL; }
                 arg_val->llvm_value = boxed;
                 arg_val->goo_type = param_type;

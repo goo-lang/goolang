@@ -52,13 +52,14 @@ static LLVMTypeRef thunk_fn_type(CodeGenerator* codegen, Type* method_type,
 // `im`. Returns the thunk function value (a ptr constant), or NULL on failure.
 static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
                                 Type* concrete, const char* concrete_name,
-                                const char* iface_name, InterfaceMethod* im) {
+                                const char* iface_name, InterfaceMethod* im,
+                                Position pos) {
     // After the C-representation normalization in codegen_interface_box, a
     // pointer concrete must never reach the thunk builder — its thunks are
     // the pointee's. A future direct caller of codegen_interface_vtable with
     // a raw *T would otherwise re-create the #109 verifier failure.
     if (concrete && concrete->kind == TYPE_POINTER) {
-        codegen_error(codegen, (Position){0},
+        codegen_error(codegen, pos,
                       "internal: pointer concrete reached thunk builder un-normalized");
         return NULL;
     }
@@ -140,7 +141,7 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
     if (!real_fn) {
-        codegen_error(codegen, (Position){0},
+        codegen_error(codegen, pos,
                       "internal: missing method implementation for interface thunk");
         return NULL;
     }
@@ -176,7 +177,7 @@ static LLVMValueRef build_thunk(CodeGenerator* codegen, TypeChecker* checker,
             }
         }
         if (!found) {
-            codegen_error(codegen, (Position){0},
+            codegen_error(codegen, pos,
                           "internal: embedding hop '%s' not found building thunk",
                           epath.path[h]);
             LLVMPositionBuilderAtEnd(codegen->builder, saved);
@@ -276,7 +277,7 @@ static LLVMValueRef iface_ptr_eq_fn(CodeGenerator* codegen) {
 // synthesis happens during interface boxing), so the caller's insert
 // point must survive the call.
 LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
-                                          Type* concrete, int pointer_form) {
+                                          Type* concrete, int pointer_form, Position pos) {
     if (!codegen || !concrete) return NULL;
 
     const char* cname = type_receiver_name(concrete);
@@ -421,7 +422,12 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
         codegen->current_function = fn;
         codegen->current_function_info = &tmp_info;
 
-        result = codegen_fmt_value_to_string(codegen, checker, v, concrete, (Position){0});
+        // Arc 15 item l: was a hardcoded (Position){0} — the cached per-type
+        // formatter has no source location of its own, so thread the boxing
+        // call site's position through instead. That is the position an
+        // unsupported-field diagnostic below (e.g. a map/func struct field)
+        // now reports, instead of "<unknown>:0:0".
+        result = codegen_fmt_value_to_string(codegen, checker, v, concrete, pos);
 
         codegen->current_function = saved_function;
         codegen->current_function_info = saved_function_info;
@@ -453,7 +459,7 @@ LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* c
 // fmt_fn is codegen_get_or_emit_type_fmt's per-type %v formatter (above).
 // Name-deduped by concrete type, like the vtable globals.
 LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* checker,
-                                           Type* concrete, int pointer_form) {
+                                           Type* concrete, int pointer_form, Position pos) {
     char gname[256];
     const char* cname = type_receiver_name(concrete);
     if (!cname) cname = type_to_string(concrete);
@@ -496,7 +502,7 @@ LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* 
     // If a builder-free path ever calls this, switch to a module-level constant
     // string global (see codegen_const_string_value in composite_codegen.c).
 
-    LLVMValueRef fmt_fn = codegen_get_or_emit_type_fmt(codegen, checker, concrete, pointer_form);
+    LLVMValueRef fmt_fn = codegen_get_or_emit_type_fmt(codegen, checker, concrete, pointer_form, pos);
     if (!fmt_fn) return NULL;
 
     LLVMValueRef fields[3] = { eq_fn, name_str, fmt_fn };
@@ -511,12 +517,13 @@ LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* 
 }
 
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
-                                      Type* iface, Type* concrete, int pointer_form) {
+                                      Type* iface, Type* concrete, int pointer_form,
+                                      Position pos) {
     if (!iface || iface->kind != TYPE_INTERFACE) return NULL;
     const char* cname = type_receiver_name(concrete);
     const char* iname = iface->data.interface.name ? iface->data.interface.name : "iface";
     if (!cname) {
-        codegen_error(codegen, (Position){0},
+        codegen_error(codegen, pos,
                       "internal: cannot name concrete type for interface vtable");
         return NULL;
     }
@@ -566,7 +573,7 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
     // #114 normalization), so codegen_get_or_emit_type_desc(concrete) would
     // wrongly synthesize the pointee comparator if pointer_form weren't
     // threaded through — it is.
-    LLVMValueRef desc = codegen_get_or_emit_type_desc(codegen, checker, concrete, pointer_form);
+    LLVMValueRef desc = codegen_get_or_emit_type_desc(codegen, checker, concrete, pointer_form, pos);
     if (!desc) { free(slots); return NULL; }
     // Slot 0 is the per-concrete-type descriptor pointer (was the eq fn before
     // the Task-1 refactor). A global's LLVM type is already `ptr` (opaque
@@ -576,7 +583,7 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
 
     size_t i = 0;
     for (InterfaceMethod* im = iface->data.interface.methods; im; im = im->next, i++) {
-        LLVMValueRef thunk = build_thunk(codegen, checker, concrete, cname, iname, im);
+        LLVMValueRef thunk = build_thunk(codegen, checker, concrete, cname, iname, im, pos);
         if (!thunk) { free(slots); return NULL; }
         slots[i + 1] = thunk;  // a function value is a ptr constant
     }
@@ -594,7 +601,8 @@ LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* check
 // Box a concrete value into an interface value { vtable, data }. `value` is the
 // loaded concrete LLVM value. Returns the interface struct value, or NULL.
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
-                                   Type* iface, Type* concrete, LLVMValueRef value) {
+                                   Type* iface, Type* concrete, LLVMValueRef value,
+                                   Position pos) {
     // A nil literal boxes to the ZERO interface value {NULL vtable, NULL data}
     // — the nil interface — NOT a heap box of a null. codegen_generate_null_
     // literal types a bare `nil` as *void (or TYPE_UNKNOWN); either would
@@ -632,7 +640,7 @@ LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
         concrete->data.pointer.pointee_type &&
         type_receiver_name(concrete->data.pointer.pointee_type)) {
         Type* pointee = concrete->data.pointer.pointee_type;
-        LLVMValueRef pvt = codegen_interface_vtable(codegen, checker, iface, pointee, /*pointer_form=*/1);
+        LLVMValueRef pvt = codegen_interface_vtable(codegen, checker, iface, pointee, /*pointer_form=*/1, pos);
         if (!pvt) return NULL;
         LLVMTypeRef pifacety = codegen_type_to_llvm(codegen, iface);
         if (!pifacety) return NULL;
@@ -642,7 +650,7 @@ LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
         return piv;
     }
 
-    LLVMValueRef vt = codegen_interface_vtable(codegen, checker, iface, concrete, /*pointer_form=*/0);
+    LLVMValueRef vt = codegen_interface_vtable(codegen, checker, iface, concrete, /*pointer_form=*/0, pos);
     if (!vt) return NULL;
 
     LLVMTypeRef llvm_T = codegen_type_to_llvm(codegen, concrete);
@@ -733,9 +741,16 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
 // Returns the i1 match value, or NULL if the vtable global couldn't be
 // resolved (should not happen for a type-checked assertion — the checker's
 // type_interface_satisfied gate already ruled out a non-implementing target).
+// `pos`: the assertion/case expression's own source position — see this
+// function's declaration in codegen.h for why it must be threaded through
+// (review finding on Arc 15 item l: this function cascades into
+// codegen_get_or_emit_type_desc/_fmt exactly like codegen_interface_box
+// does, so `target`'s %v formatter may be synthesized HERE first if this is
+// the first codegen site to ever request `target`'s vtable).
 LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* iface_type,
-                                            Type* target, LLVMValueRef* data_out) {
+                                            Type* target, LLVMValueRef* data_out,
+                                            Position pos) {
     if (!codegen || !iface_type || iface_type->kind != TYPE_INTERFACE || !target) return NULL;
 
     // Task 5 (replaces df41fb2's unwrap-to-pointee-and-use-value-form): a
@@ -759,8 +774,22 @@ LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker*
         vt_pointer_form = 1;
     }
 
+    // `pos` (review fix, Arc 15 item l): this vtable lookup cascades into
+    // codegen_get_or_emit_type_desc -> codegen_get_or_emit_type_fmt, which
+    // unconditionally synthesizes `vt_target`'s %v formatter (interface_
+    // codegen.c, codegen_get_or_emit_type_desc, above) as a side effect —
+    // NOT just a "cannot name concrete type" internal assert. If this
+    // assertion/case is the FIRST codegen site to ever request
+    // `vt_target`'s vtable (e.g. a struct type that is type-switched/
+    // asserted on but never directly boxed via codegen_interface_box), the
+    // formatter's cache entry is created HERE, so a real position must
+    // reach it. The vtable global itself is still expected to already
+    // exist for the common case (boxing is what put the runtime value in
+    // hand), but the cached descriptor/formatter is genuinely first-
+    // synthesized on this leg for that shape — hence threading `pos`
+    // rather than defaulting to zero.
     LLVMValueRef vt_want = codegen_interface_vtable(codegen, checker, iface_type, vt_target,
-                                                    vt_pointer_form);
+                                                    vt_pointer_form, pos);
     if (!vt_want) return NULL;
 
     LLVMValueRef vt_have = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "ta.vt");
@@ -875,9 +904,14 @@ size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Typ
 // hard internal failure (e.g. `target_iface`'s LLVM type can't be
 // resolved) — should not happen for a type-checked interface-target
 // assertion.
+// `pos`: the assertion/case expression's own source position — see
+// codegen_interface_assert_match's `pos` doc above (same rationale: the
+// per-candidate loop below calls codegen_get_or_emit_type_desc /
+// codegen_interface_vtable for each closed-world implementer, and either
+// call may be that implementer's FIRST descriptor/formatter synthesis).
 LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* target_iface,
-                                            LLVMValueRef* built_out) {
+                                            LLVMValueRef* built_out, Position pos) {
     if (!codegen || !checker || !target_iface || target_iface->kind != TYPE_INTERFACE ||
         !built_out) {
         return NULL;
@@ -968,8 +1002,19 @@ LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker*
             // descriptor matches at most one of the two forms, so trying both is
             // safe: exactly one `eq` (or neither, on a genuine miss) is true.
             for (int form = 0; form <= 1; form++) {
-                LLVMValueRef desc_T = codegen_get_or_emit_type_desc(codegen, checker, base, form);
-                LLVMValueRef vt_TI = codegen_interface_vtable(codegen, checker, target_iface, base, form);
+                // `pos` (review fix, Arc 15 item l): RTTI enumeration over
+                // already-declared implementer types, not a boxing call
+                // site — but codegen_get_or_emit_type_desc unconditionally
+                // synthesizes `base`'s %v formatter as a side effect
+                // (interface_codegen.c, codegen_get_or_emit_type_desc,
+                // above), so if `x.(target_iface)` / `case target_iface:`
+                // is the FIRST codegen site to ever reach `base` as an
+                // implementer candidate, that formatter (and its
+                // unsupported-field diagnostic, if `base` has one) is
+                // synthesized HERE, not at some later boxing site. Thread
+                // the real position through instead of defaulting to zero.
+                LLVMValueRef desc_T = codegen_get_or_emit_type_desc(codegen, checker, base, form, pos);
+                LLVMValueRef vt_TI = codegen_interface_vtable(codegen, checker, target_iface, base, form, pos);
                 if (!desc_T || !vt_TI) continue;
 
                 LLVMValueRef eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ, desc_have, desc_T, "itm.eq");
