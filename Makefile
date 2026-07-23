@@ -1,4 +1,11 @@
-CC = gcc
+# ccache: cache object compilations so unchanged translation units aren't
+# recompiled. The cache is content-addressed and lives in a per-user dir
+# (~/.cache/ccache by default), so it is SHARED across git worktrees on the
+# same machine — multiple parallel agents each get cache hits on TUs a sibling
+# already built. Degrades gracefully: if ccache isn't on PATH, CCACHE is empty
+# and CC/BLOCKS_CC are just the bare compilers. Override with `make CCACHE=`.
+CCACHE ?= $(shell command -v ccache 2>/dev/null)
+CC = $(CCACHE) gcc
 # _GNU_SOURCE is a project-wide feature-test macro: it exposes mkstemp,
 # pthread_rwlock_t, popen, etc. used across the runtime/proof/concurrency
 # sources. It was only reaching the main build (via LLVM_CFLAGS); the many
@@ -28,7 +35,7 @@ DEPFLAGS = -MMD -MP
 # src/concurrency/structured_concurrency_enhanced.c. Any test target that
 # compiles/links one of those must use these BLOCKS_* variables instead of
 # $(CC)/$(CFLAGS)/$(LDFLAGS) so it goes through clang -fblocks -lBlocksRuntime.
-BLOCKS_CC = clang
+BLOCKS_CC = $(CCACHE) clang
 BLOCKS_CFLAGS = $(CFLAGS) -fblocks
 BLOCKS_LDFLAGS = $(LDFLAGS) -lBlocksRuntime
 
