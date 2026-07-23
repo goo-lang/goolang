@@ -4173,7 +4173,7 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
         switch (tag_type->kind) {
             case TYPE_SLICE:    kind_word = "slice";    go_comparable = 0; break;
             case TYPE_MAP:      kind_word = "map";      go_comparable = 0; break;
-            case TYPE_FUNCTION: kind_word = "function";  go_comparable = 0; break;
+            case TYPE_FUNCTION: kind_word = "function"; go_comparable = 0; break;
             case TYPE_ARRAY:    kind_word = "array";    go_comparable = 1; article = "an"; break;
             case TYPE_CHANNEL:  kind_word = "channel";  go_comparable = 1; break;
             default: break;
