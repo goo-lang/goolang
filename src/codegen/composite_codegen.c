@@ -9,25 +9,57 @@
 // Split from expression_codegen.c (refactor, no behavior change).
 
 #if LLVM_AVAILABLE
-// P1-6: emit a goo_bounds_check(index, length, file, line) call. The runtime
-// fn panics if index >= length (negative indices SExt to a huge size_t and so
-// also fail), aborting before any out-of-range read/write. The bounds test is
-// inside the runtime fn, so no IR branching is emitted here.
+// arc-17: emit an INLINE `index >= length` compare + conditional branch to a
+// cold fail block that calls the noreturn goo_bounds_fail(index, length,
+// file, line), instead of an opaque unconditional call into
+// goo_bounds_check. Negative indices SExt to a huge unsigned value and so
+// also fail the UNSIGNED comparison below — identical semantics to the old
+// runtime-side `size_t index >= length` check (see goo_bounds_fail's
+// comment in runtime.c). The old shape put the compare inside a prebuilt
+// (non-LTO'd) archive, so no attribute set on the always-executed call
+// could tell LLVM's O2 pipeline the common case was branch-free; this
+// shape makes the branch visible to the Goo module's own optimizer, and
+// the callee attributes (noreturn/cold/nounwind, runtime_integration.c)
+// mark the rare edge as unlikely and side-effect-terminal.
+//
+// Splits the current block: the builder is left positioned in the new
+// "continue" block on return, so every call site below this point in the
+// caller's original block keeps working unchanged.
 void codegen_emit_bounds_check(CodeGenerator* codegen, LLVMValueRef index,
                                LLVMValueRef length, ASTNode* expr) {
-    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_bounds_check");
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_bounds_fail");
+    // Known footgun (arc-17 review): if goo_bounds_fail was never declared,
+    // indexing is silently UNGUARDED. codegen_declare_runtime_functions
+    // always declares it today; anyone changing that wiring must not rely
+    // on this best-effort return.
     if (!fn) return;  // no symbol: index unguarded (best-effort)
     LLVMTypeRef i64 = LLVMInt64TypeInContext(codegen->context);
     LLVMValueRef idx64 = index;
     unsigned iw = LLVMGetIntTypeWidth(LLVMTypeOf(index));
+    // Callers must pre-widen via codegen_widen_index (which picks ZExt vs
+    // SExt by the index's SIGNEDNESS); this fallback is defensive-only and
+    // sign-extends blindly — a raw unsigned narrow index passed here would
+    // be mis-extended. All current callers arrive already at i64.
     if (iw < 64)      idx64 = LLVMBuildSExt(codegen->builder, index, i64, "bc_idx");
     else if (iw > 64) idx64 = LLVMBuildTrunc(codegen->builder, index, i64, "bc_idx");
+
+    LLVMValueRef cond = LLVMBuildICmp(codegen->builder, LLVMIntUGE, idx64, length, "bc_cond");
+
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+    LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "bounds_fail");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "bounds_ok");
+    LLVMBuildCondBr(codegen->builder, cond, fail_bb, cont_bb);
+
+    LLVMPositionBuilderAtEnd(codegen->builder, fail_bb);
     LLVMValueRef file = LLVMBuildGlobalStringPtr(codegen->builder,
         expr->pos.filename ? expr->pos.filename : "<input>", "bc_file");
     LLVMValueRef line = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
                                      (unsigned long long)expr->pos.line, 0);
     LLVMValueRef args[4] = { idx64, length, file, line };
     LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 4, "");
+    LLVMBuildUnreachable(codegen->builder);
+
+    LLVMPositionBuilderAtEnd(codegen->builder, cont_bb);
 }
 
 // Widen an integer index to a 64-bit offset with the correct signedness. Go
@@ -222,18 +254,30 @@ ValueInfo* codegen_generate_index_expr(CodeGenerator* codegen, TypeChecker* chec
         case TYPE_STRING: {
             // Strings are like slices with byte elements
             element_type = type_checker_get_builtin(checker, TYPE_UINT8);
-            
-            // Extract the data pointer from string struct
+
+            // Extract the data pointer AND length from string struct — field
+            // 0 is data, field 1 is length (goo_string_t { char* data;
+            // size_t length; }), mirroring the TYPE_SLICE arm above.
             LLVMValueRef string_ptr;
+            LLVMValueRef string_len;
             if (base_val->is_lvalue) {
                 LLVMValueRef string_val = LLVMBuildLoad2(codegen->builder,
                                                         codegen_type_to_llvm(codegen, base_type),
                                                         base_val->llvm_value, "string_load");
                 string_ptr = LLVMBuildExtractValue(codegen->builder, string_val, 0, "string_ptr");
+                string_len = LLVMBuildExtractValue(codegen->builder, string_val, 1, "string_len");
             } else {
                 string_ptr = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 0, "string_ptr");
+                string_len = LLVMBuildExtractValue(codegen->builder, base_val->llvm_value, 1, "string_len");
             }
-            
+
+            // arc-17 soundness fix: this arm previously had NO bounds check
+            // at all (unlike its TYPE_ARRAY/TYPE_SLICE siblings above), so an
+            // out-of-range `s[i]` silently read past the string's backing
+            // buffer instead of aborting. Same inline check, same place in
+            // the pipeline (before the element GEP) as the slice arm.
+            codegen_emit_bounds_check(codegen, idx64, string_len, expr);
+
             // Index into the string data
             result = LLVMBuildGEP2(codegen->builder,
                                   LLVMInt8TypeInContext(codegen->context),
@@ -380,15 +424,37 @@ ValueInfo* codegen_generate_slice_index_expr(CodeGenerator* codegen, TypeChecker
         old_cap = LLVMBuildExtractValue(codegen->builder, base_struct, 2, "old_cap");
         max64 = old_cap;
     }
+    // arc-17: same inline-compare-and-branch treatment as
+    // codegen_emit_bounds_check above, specialized to the three-way OR'd
+    // slice-bounds test (low < 0 || high < low || high > max) instead of a
+    // single unsigned compare — see that function's comment for the
+    // rationale (opaque call into a prebuilt archive blocks optimization
+    // regardless of attributes; inlining the compare does not).
     {
-        LLVMValueRef bc_fn = LLVMGetNamedFunction(codegen->module, "goo_slice_bounds_check");
-        if (bc_fn) {
+        LLVMValueRef sbc_fn = LLVMGetNamedFunction(codegen->module, "goo_slice_bounds_fail");
+        if (sbc_fn) {
+            LLVMValueRef zero64 = LLVMConstInt(i64, 0, 0);
+            LLVMValueRef low_neg = LLVMBuildICmp(codegen->builder, LLVMIntSLT, low64, zero64, "sbc_low_neg");
+            LLVMValueRef high_lt_low = LLVMBuildICmp(codegen->builder, LLVMIntSLT, high64, low64, "sbc_high_lt_low");
+            LLVMValueRef high_gt_max = LLVMBuildICmp(codegen->builder, LLVMIntSGT, high64, max64, "sbc_high_gt_max");
+            LLVMValueRef or1 = LLVMBuildOr(codegen->builder, low_neg, high_lt_low, "sbc_or1");
+            LLVMValueRef cond = LLVMBuildOr(codegen->builder, or1, high_gt_max, "sbc_cond");
+
+            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
+            LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "slice_bounds_fail");
+            LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(codegen->context, cur_fn, "slice_bounds_ok");
+            LLVMBuildCondBr(codegen->builder, cond, fail_bb, cont_bb);
+
+            LLVMPositionBuilderAtEnd(codegen->builder, fail_bb);
             LLVMValueRef file = LLVMBuildGlobalStringPtr(codegen->builder,
                 expr->pos.filename ? expr->pos.filename : "<input>", "sbc_file");
             LLVMValueRef line = LLVMConstInt(LLVMInt32TypeInContext(codegen->context),
                                              (unsigned long long)expr->pos.line, 0);
             LLVMValueRef bc_args[5] = { low64, high64, max64, file, line };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bc_fn), bc_fn, bc_args, 5, "");
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(sbc_fn), sbc_fn, bc_args, 5, "");
+            LLVMBuildUnreachable(codegen->builder);
+
+            LLVMPositionBuilderAtEnd(codegen->builder, cont_bb);
         }
         // no symbol: bounds unguarded (best-effort), matching codegen_emit_bounds_check
     }

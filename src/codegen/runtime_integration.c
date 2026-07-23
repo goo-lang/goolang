@@ -45,6 +45,19 @@ static void add_runtime_function(CodeGenerator* codegen, const char* name,
     func->function = LLVMAddFunction(codegen->module, name, func_type);
 }
 
+// arc-17: apply a bare function-index enum attribute (no int/string value —
+// noreturn/cold/nounwind are all this shape) to a declared runtime function.
+// LLVM's C API has no convenience wrapper for "look up a well-known
+// attribute kind by name and slap it on a function" — this is that missing
+// helper, scoped to this file since it is the only caller (the runtime
+// fail-path declarations below). LLVMAttributeFunctionIndex is the
+// documented "apply to the function itself, not a param/return slot" index.
+static void add_fn_attr(LLVMContextRef ctx, LLVMValueRef fn, const char* kind_name) {
+    unsigned kind_id = LLVMGetEnumAttributeKindForName(kind_name, strlen(kind_name));
+    LLVMAttributeRef attr = LLVMCreateEnumAttribute(ctx, kind_id, 0);
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, attr);
+}
+
 LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
     if (!codegen) return NULL;
     
@@ -527,6 +540,8 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
 
     // Bounds checking
     // void goo_bounds_check(size_t index, size_t length, const char* file, int line)
+    // Kept declared for source/ABI compatibility (see runtime.h/runtime.c) —
+    // codegen no longer emits calls to it; see goo_bounds_fail below.
     {
         LLVMTypeRef params[] = { size_type, size_type, ptr_type, i32_type };
         add_runtime_function(codegen, "goo_bounds_check", void_type, params, 4);
@@ -534,13 +549,41 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
 
     // void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max,
     //                              const char* file, int line)
-    // F5 follow-up: bounds check for slice/substring EXPRESSIONS
-    // base[low:high], distinct from goo_bounds_check above (single-element
-    // index). low/high/max share the i64 size_type slot (both are LLVMInt64
-    // under the hood) — only the runtime-side C signature is signed.
+    // Same compatibility-only status as goo_bounds_check above; see
+    // goo_slice_bounds_fail below for what codegen actually calls now.
     {
         LLVMTypeRef params[] = { size_type, size_type, size_type, ptr_type, i32_type };
         add_runtime_function(codegen, "goo_slice_bounds_check", void_type, params, 5);
+    }
+
+    // arc-17: void goo_bounds_fail(size_t index, size_t length, const char*
+    // file, int line) — UNCONDITIONAL fail, noreturn. codegen_emit_bounds_check
+    // (composite_codegen.c) inlines the `index >= length` compare itself and
+    // calls this only on the cold failure edge, so it needs noreturn/cold/
+    // nounwind attributes here: the runtime is a prebuilt archive (no LTO),
+    // so these attributes are the only signal LLVM's O2 pipeline gets about
+    // this call's shape when compiling the Goo module.
+    {
+        LLVMTypeRef params[] = { size_type, size_type, ptr_type, i32_type };
+        add_runtime_function(codegen, "goo_bounds_fail", void_type, params, 4);
+        LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_bounds_fail");
+        add_fn_attr(codegen->context, fn, "noreturn");
+        add_fn_attr(codegen->context, fn, "cold");
+        add_fn_attr(codegen->context, fn, "nounwind");
+    }
+
+    // arc-17: void goo_slice_bounds_fail(int64_t low, int64_t high, int64_t
+    // max, const char* file, int line) — the slice-bounds sibling of
+    // goo_bounds_fail above; same UNCONDITIONAL-fail/noreturn/cold/nounwind
+    // shape, called from the inline OR-chain in
+    // codegen_generate_slice_index_expr.
+    {
+        LLVMTypeRef params[] = { size_type, size_type, size_type, ptr_type, i32_type };
+        add_runtime_function(codegen, "goo_slice_bounds_fail", void_type, params, 5);
+        LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_slice_bounds_fail");
+        add_fn_attr(codegen->context, fn, "noreturn");
+        add_fn_attr(codegen->context, fn, "cold");
+        add_fn_attr(codegen->context, fn, "nounwind");
     }
 
     // int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_out)
@@ -556,13 +599,7 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, ptr_type, i32_type };
         add_runtime_function(codegen, "goo_null_check", void_type, params, 3);
     }
-    
-    // int goo_check_bounds(size_t index, size_t length)
-    {
-        LLVMTypeRef params[] = { size_type, size_type };
-        add_runtime_function(codegen, "goo_check_bounds", i32_type, params, 2);
-    }
-    
+
     // WebAssembly-specific runtime functions
     if (codegen->is_wasm_target) {
         // JavaScript interop functions

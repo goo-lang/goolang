@@ -1010,28 +1010,50 @@ void goo_slice_append_bulk(goo_slice_t* dst, const void* src,
 }
 
 // Bounds and null checking
-
-void goo_bounds_check(size_t index, size_t length, const char* file, int line) {
-    if (index >= length) {
-        fprintf(stderr, "bounds check failed at %s:%d: index %zu >= length %zu\n",
-                file, line, index, length);
-        goo_panic("bounds check failed");
-    }
+//
+// arc-17: the unconditional-fail bodies below are what USED TO be inline in
+// goo_bounds_check/goo_slice_bounds_check's `if` blocks. Codegen now emits
+// the `index >= length` (resp. the three slice-bound comparisons) as an
+// inline icmp + cond-br directly in the caller's IR and only calls into the
+// runtime on the (cold, noreturn) failure edge — see
+// codegen_emit_bounds_check in src/codegen/composite_codegen.c for why: the
+// runtime is a prebuilt archive (no LTO), so no attribute set on a
+// conditionally-invoked opaque call can let LLVM treat the common case as
+// branch-free or hoist/eliminate provably-safe checks. Message formats are
+// BYTE-IDENTICAL to the pre-arc-17 text (golden probes pin them).
+void goo_bounds_fail(size_t index, size_t length, const char* file, int line) {
+    fprintf(stderr, "bounds check failed at %s:%d: index %zu >= length %zu\n",
+            file, line, index, length);
+    goo_panic("bounds check failed");
 }
 
 // F5 follow-up: bounds check for slice/substring EXPRESSIONS `base[low:high]`,
-// the sibling of goo_bounds_check (which guards single-element index reads/
+// the sibling of goo_bounds_fail (which guards single-element index reads/
 // writes). Go's rule: 0 <= low <= high <= max, where max is cap(base) for a
 // slice and len(base) for a string (strings have no cap). Signed int64_t
 // params (not size_t) because a negative low must compare as negative, not
 // wrap to a huge unsigned value — the caller widens via sign-extension so a
 // literal -1 arrives here as -1, and low < 0 catches it directly.
+void goo_slice_bounds_fail(int64_t low, int64_t high, int64_t max, const char* file, int line) {
+    fprintf(stderr,
+            "slice bounds out of range at %s:%d: [%lld:%lld] with max %lld\n",
+            file, line, (long long)low, (long long)high, (long long)max);
+    goo_panic("slice bounds out of range");
+}
+
+// Thin conditional wrappers kept for ABI/source compatibility (any
+// pre-arc-17-compiled object, or a caller outside codegen's own emitter,
+// still links and behaves identically) — codegen itself no longer emits
+// calls to these; see goo_bounds_fail/goo_slice_bounds_fail above.
+void goo_bounds_check(size_t index, size_t length, const char* file, int line) {
+    if (index >= length) {
+        goo_bounds_fail(index, length, file, line);
+    }
+}
+
 void goo_slice_bounds_check(int64_t low, int64_t high, int64_t max, const char* file, int line) {
     if (low < 0 || high < low || high > max) {
-        fprintf(stderr,
-                "slice bounds out of range at %s:%d: [%lld:%lld] with max %lld\n",
-                file, line, (long long)low, (long long)high, (long long)max);
-        goo_panic("slice bounds out of range");
+        goo_slice_bounds_fail(low, high, max, file, line);
     }
 }
 
