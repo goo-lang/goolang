@@ -1,0 +1,18 @@
+// partition_capture_kernelcall_reject (M2-B2 Task 5): M1 obligation 4 (a
+// Run body literal must not capture the Partitioned binding) must still
+// fire when the body also contains a perfectly legal package-kernel call
+// — pinning that StencilStep's introduction didn't loosen the ownership
+// pass's capture classification.
+package main
+
+import "lanes"
+
+func main() {
+	data := []float64{1.0, 2.0, 3.0, 4.0}
+	coeffs := []float64{0.25, 0.5, 0.25}
+	p := lanes.Partition(data, 2)
+	lanes.Run(p, 1, func(ctx *lanes.Lane) {
+		lanes.StencilStep(ctx, 1, coeffs)
+		_ = p
+	})
+}

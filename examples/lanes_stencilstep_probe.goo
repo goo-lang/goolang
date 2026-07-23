@@ -1,0 +1,67 @@
+// lanes_stencilstep_probe (P6 M2-B2 Task 2): differential — the
+// comptime-specialized kernel must be BIT-IDENTICAL to an M1-style
+// hand-written body computing the same 3-tap stencil in the same
+// accumulation order (k ascending), on the same input and lane count.
+// Two identical input arrays, one per implementation, 3 BSP rounds each.
+package main
+
+import "lanes"
+
+func main() {
+	a := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	b := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	coeffs := []float64{0.25, 0.5, 0.25}
+
+	// (a) M1-style manual body: publish/halo one cell per side, 3-tap
+	// compute into a per-lane scratch, copy back. Accumulation order is
+	// k = -1, 0, +1 — StencilStep must match it exactly.
+	pa := lanes.Partition(a, 4)
+	ra := lanes.Run(pa, 3, func(ctx *lanes.Lane) {
+		own := ctx.Own()
+		scratch := []float64{0.0, 0.0}
+		for {
+			ctx.Publish()
+			hl := ctx.HaloLeft()
+			hr := ctx.HaloRight()
+			for i := 0; i < len(own); i++ {
+				left := hl
+				if i > 0 {
+					left = own[i-1]
+				}
+				right := hr
+				if i < len(own)-1 {
+					right = own[i+1]
+				}
+				acc := 0.25 * left
+				acc = acc + 0.5*own[i]
+				acc = acc + 0.25*right
+				scratch[i] = acc
+			}
+			for i := 0; i < len(own); i++ {
+				own[i] = scratch[i]
+			}
+			if !ctx.Step() {
+				break
+			}
+		}
+	})
+
+	// (b) specialized kernel, radius comptime = 1.
+	pb := lanes.Partition(b, 4)
+	rb := lanes.Run(pb, 3, func(ctx *lanes.Lane) {
+		for {
+			lanes.StencilStep(ctx, 1, coeffs)
+			if !ctx.Step() {
+				break
+			}
+		}
+	})
+
+	same := true
+	for i := 0; i < 8; i++ {
+		if ra[i] != rb[i] {
+			same = false
+		}
+	}
+	println(same)
+}

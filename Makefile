@@ -1992,6 +1992,80 @@ lanes-monomorphize-ir-pin: $(COMPILER) $(RUNTIME_LIB)
 	  echo "  PASS call edge Partition(arrayB, 4) -> goo_pkg__lanes__Partition__n4"
 	@echo "lanes-monomorphize-ir-pin: PASS"
 
+# lanes-kernel-ir-pin (M2-B2 Task 4b): the specialized kernel instance must
+# exist AND show real specialization payoff at -O2 — proving the
+# comptime-fold actually unlocks optimization, not just that the mangling
+# plumbing produced a distinct symbol (that half is already pinned by
+# lanes-monomorphize-ir-pin, one level down the same package). Sibling of
+# lanes-monomorphize-ir-pin/comptime-generic-compose-ir-pin in every
+# respect: same IR-production recipe shape (--emit-llvm, rc-guarded,
+# build/-scoped), same "$$sym"?\( symbol-quoting-tolerant grep, same
+# awk '/^define .../,/^}/' function-body scoping this Makefile already
+# uses (comptime-generic-compose-ir-pin's alloca checks) rather than a
+# whole-module grep — a whole-module `x double>` on this probe's compiled
+# module matches 14 times in UNRELATED code and would silently false-pass
+# assertion 2 if left unscoped (measured; see docs/superpowers/sdd/
+# task-4-report.md's "Fix round" section).
+#
+# Three assertions. #1 and #3 are exactly the brief's contract; #2 is a
+# ONE-STEP downgrade taken per the brief's explicit fallback rule (spec
+# risk 3), not a silent weakening:
+#   1. the radius-2 instance symbol exists, exactly once:
+#      goo_pkg__lanes__StencilStep__n2 — proves Task 2's monomorphization.
+#   2. DOWNGRADED from "the -O2 body contains a double vector type" to
+#      "the -O2 body contains >=5 `fmul double`" (unroll evidence). The
+#      literal vector-type predicate was tried first (both before and
+#      after the M2-B2 T4b comptime-parameter fold) and FAILS either way,
+#      scoped to the function body: 0 matches. Root cause is NOT the
+#      comptime fold this target's sibling commit landed — it's
+#      `goo_bounds_check` calls surviving on every tap access
+#      (`declare void @goo_bounds_check(...)`, no readnone/nounwind/
+#      speculatable attributes), which LLVM must treat conservatively and
+#      which blocks SLP/loop vectorization outright regardless of how
+#      constant the trip count is. That is a documented, out-of-scope
+#      blocker (runtime/bounds-check codegen, not this task's remit — see
+#      the M2-B2 T4b brief). The fold DOES deliver strong, verifiable
+#      payoff short of vectorization: pre-fold, the specialized body had
+#      only 3 `fmul double`, one per tap loop, each still driven by a
+#      RUNTIME trip count (`%mul = shl i64 %1, 1`, %1 being the comptime
+#      param passed as an ordinary argument). Post-fold, the same body has
+#      16 `fmul double` — the interior and left-boundary tap loops are
+#      fully unrolled into straight-line code, and even the one boundary
+#      loop LLVM leaves as a genuine loop now branches on a literal trip
+#      count (`icmp eq i64 %postfix_inc325, 5`) instead of a runtime value.
+#      >=5 is the brief's literal downgrade threshold (the 5 taps of
+#      radius 2, unrolled) — 16 clears it with margin while staying a
+#      conservative, reproducible floor rather than pinning the exact
+#      count of an LLVM inlining/unrolling decision that could shift
+#      between LLVM versions.
+#   3. NO fast-math flags leaked in anywhere in the module ("fast" as a
+#      whole IR keyword would break the bit-identity contract the golden
+#      differentials pin) — whole-module is correct here (unlike #2):
+#      fast-math is a global miscompile risk regardless of which function
+#      it appears in, so there is no false-pass hazard in leaving this one
+#      unscoped.
+lanes-kernel-ir-pin: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== lanes-kernel-ir-pin: specialized instance, unroll evidence, no fast-math ==="
+	@"$(COMPILER)" --emit-llvm -O2 examples/lanes_stencilstep_r2_probe.goo -o build/lk_ir.ll >build/lk_ir.err 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then echo "lanes-kernel-ir-pin: FAIL (compile failed)"; cat build/lk_ir.err; exit 1; fi
+	@n=$$(grep -cE '^define[^{]*@"?goo_pkg__lanes__StencilStep__n2(\.[0-9]+)?"?\(' build/lk_ir.ll); \
+	  if [ "$$n" != "1" ]; then echo "lanes-kernel-ir-pin: FAIL (goo_pkg__lanes__StencilStep__n2 family: expected exactly 1 define, found $$n — a .N-suffixed duplicate means LLVM uniquified a double-emission)"; exit 1; fi; \
+	  echo "  PASS goo_pkg__lanes__StencilStep__n2 defined exactly once (family count, catches .N-uniquified duplicates)"
+	@awk '/^define void @"?goo_pkg__lanes__StencilStep__n2"?\(/,/^}/' build/lk_ir.ll > build/lk_n2_body.ll; \
+	  fmul=$$(grep -c "fmul double" build/lk_n2_body.ll); \
+	  if [ "$$fmul" -lt 5 ]; then \
+	    echo "lanes-kernel-ir-pin: FAIL (unroll evidence: expected >=5 'fmul double' in the specialized instance body, found $$fmul — the comptime-fold specialization payoff is not real for this kernel shape)"; \
+	    cat build/lk_n2_body.ll; exit 1; \
+	  fi; \
+	  echo "  PASS >=5 fmul double in the specialized instance body ($$fmul found — unroll evidence; downgraded from the vector-type predicate, see comment above)"
+	@if grep -qwE "fast|reassoc|nnan|ninf|nsz|arcp|afn|contract" build/lk_ir.ll; then \
+	    echo "lanes-kernel-ir-pin: FAIL (fast-math flags present in the module — would break the bit-identity contract the golden differentials pin)"; \
+	    grep -nwE "fast|reassoc|nnan|ninf|nsz|arcp|afn|contract" build/lk_ir.ll; exit 1; \
+	  fi; \
+	  echo "  PASS no fast-math flags (incl. individual reassoc/contract/... flags) anywhere in the module"
+	@echo "lanes-kernel-ir-pin: PASS"
+
 # spmd-bench-probe: SPMD harness sub-project, Task 3 — "the proof". Builds a
 # CPU-bound comptime-specialized kernel (`burn`: a tight LCG loop over a
 # comptime-fixed iteration count, deterministic and side-effect-free per
@@ -2350,6 +2424,150 @@ stencil-parallel-probe: $(COMPILER) $(RUNTIME_LIB)
 	  echo "stencil-parallel-probe: speedup gate PASS ($${speedup}x >= $${LANES_BENCH_ASSERT_SPEEDUP}x)"; \
 	fi; \
 	echo "stencil-parallel-probe: PASS (8-lane and serial compiled, ran, and produced bit-identical output)"
+
+# stencil-kernel-bench (M2-B2 Task 5): stencil-parallel-probe's sibling for
+# the comptime-specialized numeric kernel API (goostd/lanes.StencilStep)
+# rather than a hand-written BSP body -- same shape (parallel binary vs
+# serial reference, timed and diffed, opt-in speedup gate) but exercising
+# the M2 kernel API's real wall-clock payoff instead of M1's raw
+# goroutine-parallelism payoff. The parallel half is the checked-in
+# examples/lanes_kernel_bench.goo (8 lanes, 1<<20 cells, 100 BSP rounds via
+# lanes.StencilStep, radius 1); the serial half is generated inline into
+# build/ below, exactly like stencil-parallel-probe's serial variant,
+# because it exists only to be timed/diffed against, not as a golden.
+#
+# The serial reference is a plain full-array double-buffered sequential
+# stencil (own-cell + immediate neighbors, Dirichlet 0.0 at the true array
+# ends, scratch-then-copy each round) -- NOT a per-lane-tiled mimic. This
+# is deliberate and already-proven-equivalent: examples/lanes_stencilstep_r2_probe.goo
+# established that a naive whole-array sequential sweep with 0.0 edge
+# padding is bit-identical to the lane-tiled StencilStep computation,
+# because each lane's halo exchange carries exactly the true neighbor
+# cell's previous-round value -- there is no approximation at a tile
+# seam, so a full-array reference needs no tiling awareness at all. Same
+# per-tap accumulation order as StencilStep's own loop body (`acc := 0.0`,
+# then k-ascending `acc = acc + coeffs[k]*v`) to keep that equivalence
+# bit-exact rather than merely close.
+#
+# Correctness (compile + run + bit-identical output) is asserted
+# unconditionally, same as stencil-parallel-probe. Wall-clock and CPU
+# utilization are REPORTED only; LANES_BENCH_ASSERT_SPEEDUP is the same
+# opt-in gate as stencil-parallel-probe, off by default, never set by
+# verify-core. NOT wired into verify-core (deliberately -- see that
+# target's rationale, which applies identically here): a manual/local
+# target only, run with e.g.:
+#   make stencil-kernel-bench LANES_BENCH_ASSERT_SPEEDUP=2
+stencil-kernel-bench: $(COMPILER) $(RUNTIME_LIB)
+	@mkdir -p build
+	@echo "=== stencil-kernel-bench: goostd/lanes.StencilStep CPU-bound kernel proof (8-lane vs serial) ==="
+	@printf '%s\n' \
+		'package main' \
+		'' \
+		'import "fmt"' \
+		'' \
+		'func main() {' \
+		'n := 1 << 20' \
+		'data := make([]float64, n)' \
+		'i := 0' \
+		'for i < n {' \
+		'data[i] = 0.0' \
+		'i = i + 1' \
+		'}' \
+		'data[n/2] = 1.0' \
+		'coeffs := []float64{0.25, 0.5, 0.25}' \
+		'scratch := make([]float64, n)' \
+		'round := 0' \
+		'for round < 100 {' \
+		'i = 0' \
+		'for i < n {' \
+		'left := 0.0' \
+		'if i > 0 {' \
+		'left = data[i-1]' \
+		'}' \
+		'right := 0.0' \
+		'if i < n-1 {' \
+		'right = data[i+1]' \
+		'}' \
+		'acc := 0.0' \
+		'acc = acc + coeffs[0]*left' \
+		'acc = acc + coeffs[1]*data[i]' \
+		'acc = acc + coeffs[2]*right' \
+		'scratch[i] = acc' \
+		'i = i + 1' \
+		'}' \
+		'i = 0' \
+		'for i < n {' \
+		'data[i] = scratch[i]' \
+		'i = i + 1' \
+		'}' \
+		'round = round + 1' \
+		'}' \
+		'total := 0.0' \
+		'i = 0' \
+		'for i < n {' \
+		'total = total + data[i]' \
+		'i = i + 1' \
+		'}' \
+		'fmt.Println(total)' \
+		'}' \
+		> build/stencil_kernel_bench_serial.goo
+	@$(COMPILER) -o build/stencil_kernel_bench_8lane examples/lanes_kernel_bench.goo > build/stencil_kernel_bench_8lane.cerr 2>&1; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "stencil-kernel-bench: FAIL (8-lane compile rc=$$rc)"; cat build/stencil_kernel_bench_8lane.cerr; exit 1; fi
+	@$(COMPILER) -o build/stencil_kernel_bench_serial build/stencil_kernel_bench_serial.goo > build/stencil_kernel_bench_serial.cerr 2>&1; rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "stencil-kernel-bench: FAIL (serial compile rc=$$rc)"; cat build/stencil_kernel_bench_serial.cerr; exit 1; fi
+	@TIME_MODE=none; \
+	if [ -x /usr/bin/time ] && /usr/bin/time -v true >/dev/null 2>&1; then TIME_MODE=gnu; \
+	elif [ -x /usr/bin/time ] && /usr/bin/time -l true >/dev/null 2>&1; then TIME_MODE=bsd; \
+	fi; \
+	echo "stencil-kernel-bench: timing method = $$TIME_MODE (report-only, never a pass/fail threshold)"; \
+	t0=$$(date +%s.%N); \
+	if [ "$$TIME_MODE" = "gnu" ]; then \
+	  /usr/bin/time -v ./build/stencil_kernel_bench_8lane > build/stencil_kernel_bench_8lane.out 2> build/stencil_kernel_bench_8lane.time; rc=$$?; \
+	elif [ "$$TIME_MODE" = "bsd" ]; then \
+	  /usr/bin/time -l ./build/stencil_kernel_bench_8lane > build/stencil_kernel_bench_8lane.out 2> build/stencil_kernel_bench_8lane.time; rc=$$?; \
+	else \
+	  { time ./build/stencil_kernel_bench_8lane > build/stencil_kernel_bench_8lane.out; } 2> build/stencil_kernel_bench_8lane.time; rc=$$?; \
+	fi; \
+	t1=$$(date +%s.%N); \
+	if [ $$rc -ne 0 ]; then echo "stencil-kernel-bench: FAIL (8-lane run rc=$$rc)"; cat build/stencil_kernel_bench_8lane.time; exit 1; fi; \
+	wall_8lane=$$(awk -v a="$$t0" -v b="$$t1" 'BEGIN{printf "%.3f", b-a}'); \
+	t0=$$(date +%s.%N); \
+	if [ "$$TIME_MODE" = "gnu" ]; then \
+	  /usr/bin/time -v ./build/stencil_kernel_bench_serial > build/stencil_kernel_bench_serial.out 2> build/stencil_kernel_bench_serial.time; rc=$$?; \
+	elif [ "$$TIME_MODE" = "bsd" ]; then \
+	  /usr/bin/time -l ./build/stencil_kernel_bench_serial > build/stencil_kernel_bench_serial.out 2> build/stencil_kernel_bench_serial.time; rc=$$?; \
+	else \
+	  { time ./build/stencil_kernel_bench_serial > build/stencil_kernel_bench_serial.out; } 2> build/stencil_kernel_bench_serial.time; rc=$$?; \
+	fi; \
+	t1=$$(date +%s.%N); \
+	if [ $$rc -ne 0 ]; then echo "stencil-kernel-bench: FAIL (serial run rc=$$rc)"; cat build/stencil_kernel_bench_serial.time; exit 1; fi; \
+	wall_serial=$$(awk -v a="$$t0" -v b="$$t1" 'BEGIN{printf "%.3f", b-a}'); \
+	if ! diff -u build/stencil_kernel_bench_8lane.out build/stencil_kernel_bench_serial.out; then \
+	  echo "stencil-kernel-bench: FAIL (8-lane and serial outputs differ -- not deterministic)"; exit 1; \
+	fi; \
+	cpu_8lane=""; cpu_serial=""; \
+	if [ "$$TIME_MODE" = "gnu" ]; then \
+	  cpu_8lane=$$(grep -F "Percent of CPU this job got" build/stencil_kernel_bench_8lane.time | grep -oE '[0-9]+%'); \
+	  cpu_serial=$$(grep -F "Percent of CPU this job got" build/stencil_kernel_bench_serial.time | grep -oE '[0-9]+%'); \
+	elif [ "$$TIME_MODE" = "bsd" ]; then \
+	  cpu_8lane=$$(awk '{for(i=1;i<=NF;i++){if($$i=="real")r=$$(i-1); if($$i=="user")u=$$(i-1); if($$i=="sys")s=$$(i-1)}} END{if(r>0) printf "%.0f%%", (u+s)/r*100}' build/stencil_kernel_bench_8lane.time); \
+	  cpu_serial=$$(awk '{for(i=1;i<=NF;i++){if($$i=="real")r=$$(i-1); if($$i=="user")u=$$(i-1); if($$i=="sys")s=$$(i-1)}} END{if(r>0) printf "%.0f%%", (u+s)/r*100}' build/stencil_kernel_bench_serial.time); \
+	fi; \
+	[ -n "$$cpu_8lane" ] || cpu_8lane="n/a"; \
+	[ -n "$$cpu_serial" ] || cpu_serial="n/a"; \
+	echo "stencil-kernel-bench: REPORT 8-lane  wall=$${wall_8lane}s cpu=$$cpu_8lane"; \
+	echo "stencil-kernel-bench: REPORT serial  wall=$${wall_serial}s cpu=$$cpu_serial"; \
+	speedup=$$(awk -v s="$$wall_serial" -v p="$$wall_8lane" 'BEGIN{if (p>0) printf "%.2f", s/p; else print "n/a"}'); \
+	echo "stencil-kernel-bench: REPORT speedup (serial-wall / 8lane-wall) = $${speedup}x (informational only, never a pass/fail threshold)"; \
+	if [ -n "$$LANES_BENCH_ASSERT_SPEEDUP" ]; then \
+	  ok=$$(awk -v got="$$speedup" -v want="$$LANES_BENCH_ASSERT_SPEEDUP" 'BEGIN{print (got+0 >= want+0) ? 1 : 0}'); \
+	  if [ "$$ok" != "1" ]; then \
+	    echo "stencil-kernel-bench: FAIL (LANES_BENCH_ASSERT_SPEEDUP=$$LANES_BENCH_ASSERT_SPEEDUP not met: got $${speedup}x)"; \
+	    exit 1; \
+	  fi; \
+	  echo "stencil-kernel-bench: speedup gate PASS ($${speedup}x >= $${LANES_BENCH_ASSERT_SPEEDUP}x)"; \
+	fi; \
+	echo "stencil-kernel-bench: PASS (8-lane and serial compiled, ran, and produced bit-identical output)"
 
 # Task 3 (func-values): calling a nil function value must abort cleanly
 # (Go: "invalid memory address or nil pointer dereference"-class panic),
@@ -2887,6 +3105,7 @@ VERIFY_ALL_DEPS := \
     comptime-value-reject-matrix \
     comptime-generic-compose-ir-pin \
     lanes-monomorphize-ir-pin \
+    lanes-kernel-ir-pin \
     selectsend-reject-probe \
     globalcall-init-probe \
     floatint-reject-probe \
@@ -3994,7 +4213,7 @@ print-aggregate-probe: $(COMPILER) $(RUNTIME_LIB)
 
 # P0-5: end-to-end golden tests — compile+run real .goo programs, diff stdout.
 # The honest e2e signal (unlike `make test`, which never invokes bin/goo).
-.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin lanes-monomorphize-ir-pin spmd-bench-probe stencil-race-runbook-probe stencil-parallel-probe test-golden test-golden-o2 test-golden-reject
+.PHONY: blank-read-reject-probe const-index-reject-probe comptime-value-reject-probe comptime-value-reject-matrix comptime-generic-compose-ir-pin lanes-monomorphize-ir-pin lanes-kernel-ir-pin spmd-bench-probe stencil-race-runbook-probe stencil-parallel-probe stencil-kernel-bench test-golden test-golden-o2 test-golden-reject
 test-golden: $(COMPILER) $(RUNTIME_LIB)
 	@echo "=== test-golden: data-driven end-to-end golden suite ==="
 	@COMPILER="$(COMPILER)" bash scripts/run_golden.sh

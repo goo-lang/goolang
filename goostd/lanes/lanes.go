@@ -59,6 +59,28 @@ type Lane struct {
 	edgeL    bool
 	edgeR    bool
 	boundary float64
+
+	// M2-B2 (Task 1): deterministic-collective wiring. count is the total
+	// lane count (needed for the ID-order combine); partials[i] carries lane
+	// i's contribution to the combiner (lane 0); results[i] carries the
+	// combined value back to lane i (i >= 1; lane 0 keeps its own). All
+	// cap-1, wired by Run before any goroutine spawns, like the halo
+	// channels. Every lane holds the full slices, but lane i only ever
+	// sends on partials[i] / receives on results[i], and only lane 0 reads
+	// partials[*] / sends results[*].
+	count    int
+	partials []chan float64
+	results  []chan float64
+
+	// M2-B2 (Task 2): per-lane kernel buffers. scratch (width-sized) is
+	// wired by Run — v1 has no memory reclamation, so per-round make()
+	// inside a kernel would leak steps*width floats; one buffer per lane
+	// for the whole Run is the discipline. haloBufL/haloBufR are lazily
+	// sized by StencilStep on first call (radius isn't known to Run) —
+	// one allocation per lane lifetime, then reused every round.
+	scratch  []float64
+	haloBufL []float64
+	haloBufR []float64
 }
 
 // Partition splits arr into `count` equal-width tiles. count is a comptime
@@ -131,15 +153,31 @@ func Run(p Partitioned, steps int, body func(ctx *Lane)) []float64 {
 		leftward[i] = make(chan float64, 1)
 	}
 
+	// M2-B2 (Task 1): collective channels — one partial + one result slot
+	// per lane, cap 1 each. Sequential AllReduce calls stay correctly
+	// paired without extra synchronization because each channel is
+	// single-writer single-reader and FIFO: lane i's round-N+1 partial
+	// cannot be sent until its round-N result was received.
+	partials := make([]chan float64, p.count)
+	results := make([]chan float64, p.count)
+	for i := 0; i < p.count; i++ {
+		partials[i] = make(chan float64, 1)
+		results[i] = make(chan float64, 1)
+	}
+
 	for i := 0; i < p.count; i++ {
 		i := i // per-iteration rebind: capture THIS i, not the shared loop var
 		go func() {
 			l := Lane{
-				id:    i,
-				steps: steps,
-				own:   p.backing[i*p.width : (i+1)*p.width],
-				edgeL: i == 0,
-				edgeR: i == p.count-1,
+				id:       i,
+				steps:    steps,
+				own:      p.backing[i*p.width : (i+1)*p.width],
+				edgeL:    i == 0,
+				edgeR:    i == p.count-1,
+				count:    p.count,
+				partials: partials,
+				results:  results,
+				scratch:  make([]float64, p.width),
 			}
 			if !l.edgeR {
 				l.sendR = rightward[i]
@@ -242,4 +280,244 @@ func (l *Lane) HaloRight() float64 {
 func (l *Lane) Step() bool {
 	l.step = l.step + 1
 	return l.step < l.steps
+}
+
+// allReduce is the shared collective core: every lane contributes `local`;
+// the combined value is returned identically to every lane. Combination
+// happens in FIXED lane-ID order (lane 0's partial, then 1's, ...): lane 0
+// drains partials[0..count-1] in index order and broadcasts on
+// results[1..count-1]. ID order — never arrival order — is what makes the
+// result bit-identical across runs and schedules for a given lane count
+// (float addition is not associative, so this is load-bearing, not style).
+// Bit-identity across DIFFERENT lane counts is deliberately not promised:
+// a different tiling changes the rounding sequence.
+//
+// The call is also a barrier: no lane returns until lane 0 has combined
+// every contribution. Deadlock-freedom: every send targets a cap-1 channel
+// whose single buffered slot is empty at that point in the round (each
+// channel is used exactly once per collective, single-writer,
+// single-reader), so no send ever blocks on a peer that is itself blocked
+// sending — the same argument as Publish's cap-1 reasoning above.
+//
+// PROTOCOL RULE (documented, not enforced): collectives are whole-round
+// events. Every lane must call the same collective the same number of
+// times, in the same program position — all lanes or none, like the
+// Publish -> HaloLeft/HaloRight -> compute order.
+func (l *Lane) allReduce(local float64, useMax bool) float64 {
+	// Dialect adaptation (compiler codegen gap, not a language-spec issue):
+	// codegen_generate_index_expr (src/codegen/composite_codegen.c) is the
+	// READ-path index lowering and — unlike the WRITE-path in
+	// expression_codegen.c's codegen_emit_lvalue_address, which explicitly
+	// loads an lvalue index before widening it — never loads an lvalue
+	// index; it hands the raw field-address straight to
+	// codegen_widen_index, which then calls LLVMBuildSExt on a `ptr`, and
+	// LLVM's module verifier rejects that ("SExt only operates on
+	// integer"). `l.id` used directly as an index (`l.partials[l.id]`)
+	// triggers this because a struct-field selector always codegens as an
+	// lvalue (composite_codegen.c's codegen_generate_selector_expr).
+	// Binding it to a local first sidesteps the gap: a plain identifier's
+	// codegen path loads its value, so id below arrives as an rvalue.
+	// Confirmed general (not lanes-specific) with a one-field-struct minimal
+	// repro; no src/ change made — see task-1-report.md.
+	id := l.id
+	l.partials[id] <- local
+	if id == 0 {
+		acc := <-l.partials[0]
+		for i := 1; i < l.count; i++ {
+			v := <-l.partials[i]
+			if useMax {
+				if v > acc {
+					acc = v
+				}
+			} else {
+				acc = acc + v
+			}
+		}
+		for i := 1; i < l.count; i++ {
+			l.results[i] <- acc
+		}
+		return acc
+	}
+	r := <-l.results[id]
+	return r
+}
+
+// AllReduceSum returns the ID-order sum of every lane's `local`.
+func (l *Lane) AllReduceSum(local float64) float64 {
+	return l.allReduce(local, false)
+}
+
+// AllReduceMax returns the maximum of every lane's `local` (ID-order scan;
+// max is order-insensitive but the fixed order keeps one code path).
+func (l *Lane) AllReduceMax(local float64) float64 {
+	return l.allReduce(local, true)
+}
+
+// StencilStep runs ONE BSP round of a (2*radius+1)-tap stencil over the
+// lane's own tile: halo exchange of `radius` boundary cells per side, then
+// out[i] = sum_k coeffs[k] * in[i+k-radius] (k ascending — the fixed
+// accumulation order the bit-identity differentials pin), computed into the
+// per-lane scratch buffer and copied back. Callers drive the round loop
+// with ctx.Step(), exactly like a hand-written M1 body.
+//
+// radius is COMPTIME: each distinct radius monomorphizes its own instance
+// (goo_pkg__lanes__StencilStep__n<radius>) in which every loop bound below
+// is a constant — that is the entire specialization payoff (unrolled taps,
+// hoisted coefficient loads, vectorizable inner loop at -O2). A package
+// function, not a Lane method: comptime parameters are still walled on
+// methods (src/types/type_checker.c "not yet supported on methods").
+//
+// Halo protocol for radius >= 2: the M1 channels are cap-1 and carry one
+// float per send, so a radius-r exchange runs r sequential SUB-EXCHANGES.
+// Sub-exchange k ships each lane's k-th-from-edge cell (own[width-1-k]
+// rightward, own[k] leftward) and receives the neighbors' counterparts;
+// each sub-exchange is exactly M1's proven both-sends-then-both-receives
+// cap-1 pattern, so the per-step deadlock-freedom argument applies to each
+// k in turn (no lane starts sub-exchange k+1 before finishing k, because
+// its own receives for k gate it). haloBufL[k] holds the cell k+1 to the
+// left of own[0]; haloBufR[k] the cell k+1 to the right of own[width-1].
+// Edge sides fill from ctx.boundary (Dirichlet 0.0, M1-frozen).
+//
+// len(coeffs) must be exactly 2*radius+1; anything else is a programming
+// error and panics (explicit, never silent).
+//
+// Fix round (M2-B2 Task 4, boundary peel): the tap-accumulation sweep below
+// is split into three loops instead of one dispatching sweep over all of
+// `own`. Reason: with a single loop, every tap access carried the full
+// idx<0 / idx>=w halo-boundary dispatch, live inside the innermost loop for
+// every cell — including the vast interior majority where neither branch
+// can ever be taken. Splitting the sweep gives the interior loop
+// (radius <= i < w-radius) a tap body that is provably in-bounds by
+// construction — i-radius >= 0 and i+radius <= w-1 hold for every i in that
+// range — so the halo dispatch is dropped entirely there (not merely
+// never-taken), leaving a branch-free accumulation. The two boundary loops
+// (i < radius, and i >= max(radius, w-radius)) keep the original full
+// dispatch body unchanged, since only cells within `radius` of a tile edge
+// can ever actually read a halo buffer. The right loop's start is clamped
+// to max(radius, w-radius) rather than always starting at w-radius: when
+// radius <= w < 2*radius the tile is narrower than two radii, so a plain
+// w-radius start would fall short of radius and re-walk (double-compute)
+// cells the left loop already wrote; the clamp makes the two boundary loops
+// meet or abut with no gap and no overlap in that case (verified for
+// w == 2*radius and radius <= w < 2*radius). Each loop's accumulation is
+// textually identical to the original per-cell body (`acc := 0.0` then
+// k-ascending `acc = acc + coeffs[k]*v`) — no reassociation, no hoisting of
+// the coefficient multiply — so this is a pure control-flow restructuring,
+// not a numeric one: the golden/differential bit-identity contract is
+// unaffected.
+//
+// Measured result (-O2, goo_pkg__lanes__StencilStep__n2, see
+// task-4-report.md's fix-round IR evidence): the interior loop's dispatch
+// is confirmed gone in the IR, but none of the three tap loops unrolls or
+// vectorizes even so — each remains a genuine loop (3 total `fmul double`,
+// one per loop, zero vector types). Two independent blockers survive the
+// peel: (1) `goo_bounds_check` calls remain on every tap access (both
+// `own[...]` and `coeffs[k]`) with no readnone/speculatable attributes, and
+// (2) this specialized instance's radius is still passed as a runtime i64
+// parameter rather than folded to the literal 2 in the function body — so
+// even the interior loop's trip count is not a compile-time constant to
+// LLVM despite the symbol being per-radius-mangled. (2) is a codegen fact
+// about how comptime parameters lower today, not something a library-level
+// loop restructuring can address; branch removal alone was necessary but
+// not sufficient here.
+func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
+	if len(coeffs) != 2*radius+1 {
+		panic("lanes.StencilStep: len(coeffs) must equal 2*radius+1")
+	}
+	// A radius wider than the tile would need cells beyond the immediate
+	// neighbor's tile (the sub-exchange protocol only reaches one neighbor
+	// deep) and would index haloBufL/haloBufR out of bounds — reject
+	// explicitly rather than corrupt (T2 review, Minor 3).
+	if radius > len(ctx.own) {
+		panic("lanes.StencilStep: radius must not exceed the lane tile width")
+	}
+	if len(ctx.haloBufL) < radius {
+		ctx.haloBufL = make([]float64, radius)
+	}
+	if len(ctx.haloBufR) < radius {
+		ctx.haloBufR = make([]float64, radius)
+	}
+	own := ctx.own
+	w := len(own)
+
+	for k := 0; k < radius; k++ {
+		if !ctx.edgeR {
+			ctx.sendR <- own[w-1-k]
+		}
+		if !ctx.edgeL {
+			ctx.sendL <- own[k]
+		}
+		if ctx.edgeL {
+			ctx.haloBufL[k] = ctx.boundary
+		} else {
+			ctx.haloBufL[k] = <-ctx.recvL
+		}
+		if ctx.edgeR {
+			ctx.haloBufR[k] = ctx.boundary
+		} else {
+			ctx.haloBufR[k] = <-ctx.recvR
+		}
+	}
+
+	// Left boundary: only cells within `radius` of the left tile edge can
+	// ever read a halo buffer, so this keeps the full dispatch body.
+	for i := 0; i < radius; i++ {
+		acc := 0.0
+		for k := 0; k <= 2*radius; k++ {
+			idx := i + k - radius
+			v := 0.0
+			if idx < 0 {
+				v = ctx.haloBufL[(0-idx)-1]
+			} else {
+				if idx >= w {
+					v = ctx.haloBufR[idx-w]
+				} else {
+					v = own[idx]
+				}
+			}
+			acc = acc + coeffs[k]*v
+		}
+		ctx.scratch[i] = acc
+	}
+	// Interior: branch-free by construction. i-radius >= 0 and
+	// i+radius <= w-1 hold for every i in [radius, w-radius), so idx is
+	// always in [0, w) and no halo read is ever reachable — the dispatch
+	// is dropped, not merely never-taken.
+	for i := radius; i < w-radius; i++ {
+		acc := 0.0
+		for k := 0; k <= 2*radius; k++ {
+			acc = acc + coeffs[k]*own[i+k-radius]
+		}
+		ctx.scratch[i] = acc
+	}
+	// Right boundary: same full dispatch body as the left loop. Start is
+	// clamped to max(radius, w-radius) — not always w-radius — so that when
+	// radius <= w < 2*radius (tile narrower than two radii) this loop picks
+	// up exactly where the left loop left off instead of re-walking cells
+	// the left loop already computed.
+	start := w - radius
+	if start < radius {
+		start = radius
+	}
+	for i := start; i < w; i++ {
+		acc := 0.0
+		for k := 0; k <= 2*radius; k++ {
+			idx := i + k - radius
+			v := 0.0
+			if idx < 0 {
+				v = ctx.haloBufL[(0-idx)-1]
+			} else {
+				if idx >= w {
+					v = ctx.haloBufR[idx-w]
+				} else {
+					v = own[idx]
+				}
+			}
+			acc = acc + coeffs[k]*v
+		}
+		ctx.scratch[i] = acc
+	}
+	for i := 0; i < w; i++ {
+		own[i] = ctx.scratch[i]
+	}
 }

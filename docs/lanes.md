@@ -300,6 +300,254 @@ the concrete behavioral quirks discovered while building it:
   variable's value happens to be known — see the Comptime specialization
   section.
 
+## M2: numeric kernels & collectives
+
+M2-B2 adds three API surfaces on top of the frozen M1 `Partition`/`Run`/
+`*Lane` core: a comptime-specialized stencil kernel and two deterministic
+BSP collectives. Nothing above this section changed — `Partition`, `Run`,
+`Own`, `ID`, `Publish`, `HaloLeft`, `HaloRight`, and `Step` are exactly as
+documented above, and the four compile-time guarantees still apply
+unmodified to any `lanes.Run` body, M2 calls included (see the reject
+fixture discussion below). The normative design record for this milestone
+is `docs/superpowers/specs/2026-07-23-p6-lanes-m2-b2-design.md`.
+
+### The three new API surfaces
+
+```go
+func StencilStep(ctx *Lane, comptime radius int, coeffs []float64)
+
+func (l *Lane) AllReduceSum(local float64) float64
+func (l *Lane) AllReduceMax(local float64) float64
+```
+
+`StencilStep` runs one BSP round of a `(2*radius+1)`-tap stencil over the
+calling lane's own tile: it publishes and receives `radius` boundary cells
+per side, computes `out[i] = Σ coeffs[k] * in[i+k-radius]` (k ascending,
+into the lane's own scratch buffer), and copies the result back before
+returning. It is a package function, not a `Lane` method — comptime
+parameters are still walled on methods
+(`src/types/type_checker.c`, "not yet supported on methods"), so a method
+form was never on the table for this milestone. `radius` is `comptime`, so
+each distinct radius used in a program monomorphizes its own instance
+(`goo_pkg__lanes__StencilStep__n<radius>`); `coeffs` is a slice, not a
+`[2*radius+1]float64` array, because fixed-size arrays cannot cross a
+function signature boundary in this dialect. `len(coeffs)` must equal
+`2*radius+1` exactly, checked at entry and a panic (not a silent
+truncation/pad) on mismatch. A second explicit guard rejects `radius`
+wider than the lane's own tile width (`radius > len(ctx.own)`): the
+sub-exchange protocol below only reaches one neighbor tile deep, so a
+wider radius would need cells beyond what any single halo exchange can
+supply, and `StencilStep` panics rather than reading out of bounds.
+
+`AllReduceSum`/`AllReduceMax` are plain `*Lane` methods (no comptime
+parameter, so the method wall is irrelevant to them): every lane
+contributes its own `local` value, and every lane — including the
+contributing ones — receives back the identical combined result. `Sum`
+covers residual/L2-style norms; `Max` covers max-norm convergence checks
+like the Jacobi loop below. There is no user-supplied combiner in this
+milestone: a closure combiner would reopen the determinism argument
+per-user-supplied-function, so only these two fixed, order-pinned
+operations are exposed.
+
+### The determinism contract
+
+Both collectives combine per-lane partials in **fixed lane-ID order** —
+lane 0's contribution, then lane 1's, then lane 2's, and so on — never
+arrival order, regardless of which lane's goroutine happens to reach the
+call first. This is what `allReduce`'s doc comment in `lanes.go` calls
+load-bearing, not style: float addition is not associative, so a
+combination in arrival order would produce a different rounding sequence,
+and therefore a different bit pattern, than the fixed ID-order fold on the
+same inputs. What is promised: bit-identical results across repeated runs
+and across scheduler interleavings, for a **given** lane count. What is
+explicitly **not** promised: bit-identity across *different* lane counts —
+changing the lane count changes the tiling, which changes both the
+per-lane partial sums and the order they're folded in, so a different
+count is expected to (and, per the M2-B2 design doc, is understood to)
+land on a different rounding sequence even for numerically-equivalent
+input. Do not compare `AllReduceSum`/`AllReduceMax` output across two
+`Partition` calls with different `count` arguments and expect equality.
+
+### Collectives are whole-round events
+
+The protocol rule, documented rather than compiler-enforced (like M1's
+Publish → Halo → compute order): a collective call is a barrier exactly
+like `Step()`'s parking, so every lane must call the same collective the
+same number of times, in the same program position, every round — all
+lanes or none. Breaking this symmetry deadlocks the missing lane's peers,
+which block forever waiting on a partial/result that never arrives.
+
+The concrete failure mode this rules out is breaking out of a convergence
+loop *before* the round's collective call instead of after it — one lane
+deciding "I've converged, skip the `AllReduceMax` this round" while its
+neighbors still call it. The canonical shape, `examples/lanes_jacobi_probe.goo`,
+gets this right: each round calls `lanes.StencilStep`, computes this
+lane's local max delta, calls `ctx.AllReduceMax(local)` to learn the
+round's *global* delta, and only **after** that call checks the tolerance
+and `break`s:
+
+```go
+lanes.StencilStep(ctx, 1, coeffs)
+local := /* this lane's max |own[i] - before[i]| */
+delta := ctx.AllReduceMax(local)
+mine = mine + 1.0
+if delta < tol {
+	break
+}
+if !ctx.Step() {
+	break
+}
+```
+
+Every lane executes exactly the same sequence of collective calls up to
+and including the round that trips the tolerance check, because the break
+decision is made only after all lanes have already rendezvoused inside
+`AllReduceMax` for that round — the collective itself is unconditional per
+round, only the loop exit is conditional, and it is placed after the
+barrier that every lane already passed together.
+
+### The radius-r halo sub-exchange protocol
+
+M1's boundary channels are capacity-1 and carry one `float64` per send, so
+a `StencilStep` with `radius > 1` cannot exchange its whole halo in a
+single Publish/Halo round — it runs `radius` sequential **sub-exchanges**
+instead. Sub-exchange `k` (0-indexed) ships this lane's `k`-th-from-edge
+cell in each direction (`own[width-1-k]` rightward, `own[k]` leftward) and
+receives the corresponding cell from each neighbor, buffering the results
+into `haloBufL[k]`/`haloBufR[k]` (edge lanes fill from the fixed `0.0`
+Dirichlet boundary instead of reading a channel). Each sub-exchange is
+textually M1's proven both-sends-then-both-receives capacity-1 pattern —
+the same shape `Publish`/`HaloLeft`/`HaloRight` use for radius 1 — so the
+per-step deadlock-freedom argument documented under "The protocol" above
+(every channel single-writer/single-reader and drained every use, so a
+blocked send can never wait on a consumer that is itself waiting on that
+same send) applies independently to each `k`. No lane starts sub-exchange
+`k+1` before finishing sub-exchange `k`, because its own two receives for
+`k` are what let it proceed past `k` at all — so the deadlock-freedom
+argument composes across the `radius` sub-exchanges by straightforward
+induction on `k`, the same way M1's per-step argument composes across BSP
+rounds by induction on the round number.
+
+### Boundary peel: branch-free interior, dispatching boundary loops
+
+`StencilStep`'s tap-accumulation sweep is three loops, not one loop over
+the whole tile. The interior loop (`radius <= i < w-radius`, where `w` is
+the tile width) accumulates every tap with a plain `own[i+k-radius]` read
+and no bounds dispatch at all, because for every `i` in that range
+`i-radius >= 0` and `i+radius <= w-1` hold by construction — no cell the
+interior loop ever touches can fall into a halo buffer, so the dispatch
+isn't merely never-taken, it's structurally absent from that loop's body.
+The two boundary loops (`i < radius`, and `i >= max(radius, w-radius)`)
+keep the original per-cell dispatch (`idx < 0` → `haloBufL`, `idx >= w` →
+`haloBufR`, else `own[idx]`) unchanged, because only cells within `radius`
+of a tile edge can ever actually read a halo buffer. The right loop's
+start is clamped to `max(radius, w-radius)` rather than always `w-radius`
+so that when `radius <= w < 2*radius` (a tile narrower than two radii) the
+two boundary loops meet or abut exactly, with neither a gap nor a
+re-walked/double-computed cell. This is a pure control-flow restructuring
+— every loop's accumulation is textually identical to the original
+per-cell body, `acc := 0.0` then `k`-ascending `acc = acc + coeffs[k]*v` —
+so it changes nothing about the bit-identity contract the golden
+differentials pin. The payoff is unrolling: a branch-free, fixed-trip-count
+interior loop is what a comptime-fold optimizer pass can actually unroll
+(see Comptime fold below); a loop whose body still branches on a runtime
+condition on every iteration is a much harder unrolling target regardless
+of how constant its trip count is.
+
+### Buffer discipline
+
+Every kernel buffer `StencilStep` touches is per-lane and long-lived, never
+allocated inside the BSP round loop: `ctx.scratch` (tile-width-sized) is
+allocated once as the first action of each lane's goroutine, and reused for
+every round of that lane's whole lifetime. `ctx.haloBufL`/`ctx.haloBufR`
+are different: `Run` cannot size them, because it doesn't know `radius`
+(that's a `StencilStep` argument, not a `Run`/`Partition` parameter), so
+they are grown lazily — `StencilStep` allocates each the first time it
+observes `len(haloBuf) < radius`, and never shrinks or reallocates it
+again for a smaller subsequent radius call on the same lane. The reason
+this discipline matters, not just style: v1 Goo has no systematic memory
+reclamation (malloc with no GC and no ownership-based freeing — see this
+repo's CLAUDE.md memory-model note), so a per-round `make()` inside a
+kernel that runs `steps` rounds would leak `steps * width` `float64`s per
+lane over a long-running kernel. One allocation per buffer per lane for
+the entire `Run` call is the only discipline available without arena
+support in this kernel's hot path.
+
+### Comptime fold: what changed under the hood
+
+Prior to this milestone's Task 4b, a `comptime` parameter like
+`StencilStep`'s `radius` produced a distinctly-named, monomorphized
+function symbol per distinct value used in a program
+(`goo_pkg__lanes__StencilStep__n2`, etc.) — but *inside* that specialized
+body, `radius` still arrived as an ordinary runtime function argument, an
+`i64` value LLVM could not treat as a compile-time constant. Task 4b
+(`src/codegen/function_codegen.c`) changed that: a monomorphized instance's
+comptime parameter values are now folded directly into the instance's body
+as LLVM constants, not passed as runtime arguments. "Comptime-specialized"
+is therefore now literally true of the generated code, not just of the
+symbol name — every loop bound and tap-index computation derived from
+`radius` inside a specialized `StencilStep` instance is a compile-time
+constant to LLVM, which is what makes full unrolling (see below) possible
+in the first place. Measured before/after on the radius-2 instance: pre-fold
+the specialized body had exactly 3 `fmul double` (one multiply-accumulate
+site per tap loop, each still gated by a runtime trip count); post-fold the
+same body has 16 `fmul double` — the interior and left-boundary tap loops
+are fully unrolled into straight-line code, and even the one loop LLVM
+still leaves as a genuine loop now branches on a literal trip count
+(`icmp eq i64 %postfix_inc325, 5`) rather than a runtime value.
+
+### Honest vectorization status
+
+**Vectorization is not achieved, and this document does not claim SIMD.**
+The `lanes-kernel-ir-pin` Makefile gate compiles
+`examples/lanes_stencilstep_r2_probe.goo` at `-O2` and checks the
+specialized `goo_pkg__lanes__StencilStep__n2` body for **unroll evidence**
+— at least 5 `fmul double` instructions (16 measured) — rather than the
+originally-intended vector-type predicate (any `<N x double>` in the
+function body), because the vector-type predicate fails outright, both
+before and after the Task 4b comptime fold: 0 matches, scoped to the
+function body, either way. The fold did not cause this and cannot fix it:
+the root cause is that every tap access (`own[...]` and `coeffs[k]`) still
+carries a `goo_bounds_check` call, and that runtime function has no
+`readnone`/`speculatable` attributes on its declaration — LLVM must treat
+an opaque, possibly-side-effecting call conservatively on every loop
+iteration, which blocks SLP/loop vectorization regardless of how constant
+the trip count is. The honest summary: comptime specialization delivers
+full unrolling with compile-time-constant trip counts — a real, measured,
+IR-verified payoff — but not vectorization; closing that gap requires
+attributing `goo_bounds_check` (or an equivalent inlined/attributed bounds
+check) so LLVM can prove it side-effect-free and hoist it out of the
+vectorization-blocking path. That is out of scope for this milestone and
+is not something a library-level change to `goostd/lanes` can fix on its
+own.
+
+### Updated Limits (M2 additions)
+
+Everything in "Limits (non-goals)" above still holds unmodified for M1
+surfaces. M2 adds:
+
+- **Still no 2D (or higher-dimensional) partitions** — `StencilStep`
+  operates along the same single flat-array axis `Partition` does.
+- **Still no generic `[T]` kernels** — `StencilStep` is `float64`-only,
+  comptime-specialized on `radius` alone. A `Numeric`-constrained generic
+  kernel (`StencilStep[T Numeric]`) is a real follow-up candidate but
+  needs its own type-system design (instance-time operator checking); see
+  `docs/spmd-harness.md`'s Limits section for the same open item on the
+  SPMD side.
+- **No user-supplied reduction combiners** — only `AllReduceSum` and
+  `AllReduceMax` exist; a closure-combiner API is explicitly out of scope
+  (see The three new API surfaces above for why).
+- **No bit-identity across different lane counts** — see The determinism
+  contract above; this is a property of float non-associativity, not a
+  gap that could be closed by a smarter combine order.
+- **`boundary` is still fixed at `0.0`** for every edge lane's
+  missing-neighbor halo read, in `StencilStep`'s sub-exchanges exactly as
+  in M1's `HaloLeft`/`HaloRight` — no new setter was added.
+- **`radius` must not exceed the lane's own tile width** — enforced by an
+  explicit panic (`lanes.StencilStep: radius must not exceed the lane
+  tile width`) rather than silently reading out of bounds or wrapping;
+  see The three new API surfaces above.
+
 ## The race story
 
 There is **no automated data-race gate** wired into `verify-core` for

@@ -1449,14 +1449,24 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     if (func_decl->params && param_count > 0) {
         ASTNode* param = func_decl->params;
         int param_index = 0;
+        // M2-B2 (Task 4b, comptime specialization fold): which comptime
+        // parameter (0-based, declaration order) this iteration is looking
+        // at — same indexing discipline as the type-checker mirror loop
+        // above (matches CallExprNode.comptime_value_args' compact ordering,
+        // ast.h, and codegen->active_comptime_values' indexing, codegen.h),
+        // incremented once per AST_VAR_DECL param node regardless of
+        // param_name resolution, mirroring that loop's placement exactly.
+        size_t comptime_idx = 0;
 
         while (param && param_index < param_count) {
             const char* param_name = NULL;
             int param_is_captured = 0;
+            int param_is_comptime = 0;
             if (param->type == AST_VAR_DECL) {
                 VarDeclNode* pd = (VarDeclNode*)param;
                 if (pd->name_count > 0 && pd->names) param_name = pd->names[0];
                 param_is_captured = pd->is_captured;
+                param_is_comptime = pd->is_comptime_param;
             } else if (param->type == AST_IDENTIFIER) {
                 // Defensive: keep the old path working for any path that
                 // builds params as bare identifiers.
@@ -1464,6 +1474,40 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             }
             if (param_name) {
                 LLVMValueRef param_value = LLVMGetParam(function, param_index);
+
+                // M2-B2 (Task 4b): this monomorphized instance's own
+                // comptime parameter is still an ordinary runtime SSA value
+                // at this point (LLVMGetParam above) — the call-site ABI is
+                // deliberately unchanged (only the SYMBOL is specialized per
+                // value, not the signature; see codegen_generate_function_
+                // instance's doc comment). That means every loop bound /
+                // branch derived from this parameter reads a non-constant
+                // i64 as far as LLVM is concerned, so SCCP/loop-unroll/
+                // vectorize never see a compile-time trip count even though
+                // the *value* is fixed and known for this instance (it is
+                // literally baked into the mangled symbol, e.g. __n2).
+                // Substitute the value STORED into this parameter's own
+                // alloca with that known instance constant — the same
+                // codegen->active_comptime_values[comptime_idx] source the
+                // mirror-scope binding above already uses to constant-fold
+                // comptime array lengths. The incoming SSA argument is
+                // simply never stored, so from the first optimization pass
+                // onward this slot is a store-of-constant that SROA+SCCP
+                // propagate through the whole body at -O1+. Every call site
+                // that resolves to THIS mangled symbol passes exactly this
+                // literal value by construction (a comptime argument is
+                // rejected at type-check unless it folds to a compile-time
+                // constant, and mono_instantiate/comptime_instantiate mangle
+                // a distinct symbol per distinct value — see monomorphize.c)
+                // — so this substitution changes no computed value, only
+                // what LLVM can see at compile time. Does NOT touch the
+                // function's signature, LLVMGetParam count, or any call
+                // site: purely a body-local value substitution.
+                if (param_is_comptime && codegen->active_comptime_value_n > 0 &&
+                    comptime_idx < codegen->active_comptime_value_n) {
+                    int64_t v = codegen->active_comptime_values[comptime_idx];
+                    param_value = LLVMConstInt(param_types[param_index], (uint64_t)v, 1);
+                }
 
                 // Closures Task 2: a captured param's slot must outlive this
                 // call frame (a closure returned/stored may read it after
@@ -1481,6 +1525,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
 
                 param_index++;
             }
+            if (param_is_comptime) comptime_idx++;
             param = param->next;
         }
     }

@@ -1,0 +1,116 @@
+// lanes_jacobi_probe (P6 M2-B2 Task 3, capstone): the canonical scientific
+// loop — smooth until the max-norm step delta falls under a threshold.
+// Parallel: StencilStep + AllReduceMax convergence check each round.
+// Reference: sequential tiled mimic (same tiling, same ID-order max scan).
+// Must agree BIT-FOR-BIT on final values AND take the identical number of
+// iterations (the convergence decision itself is part of the contract —
+// a single ULP of drift would flip the iteration count).
+package main
+
+import "lanes"
+
+func main() {
+	n := 8
+	a := []float64{10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0}
+	r := []float64{10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0}
+	coeffs := []float64{0.25, 0.5, 0.25}
+	tol := 0.05
+	maxRounds := 64
+
+	// Sequential tiled reference (4 tiles of width 2).
+	prev := []float64{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+	refRounds := 0
+	for round := 0; round < maxRounds; round++ {
+		for i := 0; i < n; i++ {
+			prev[i] = r[i]
+		}
+		for i := 0; i < n; i++ {
+			left := 0.0
+			if i > 0 {
+				left = prev[i-1]
+			}
+			right := 0.0
+			if i < n-1 {
+				right = prev[i+1]
+			}
+			acc := 0.25 * left
+			acc = acc + 0.5*prev[i]
+			acc = acc + 0.25*right
+			r[i] = acc
+		}
+		// Per-tile max deltas (accumulated left-to-right inside each
+		// tile), combined in tile-ID order — mirrors AllReduceMax.
+		delta := 0.0
+		for t := 0; t < 4; t++ {
+			local := 0.0
+			for i := t * 2; i < (t+1)*2; i++ {
+				d := r[i] - prev[i]
+				if d < 0.0 {
+					d = 0.0 - d
+				}
+				if d > local {
+					local = d
+				}
+			}
+			if local > delta {
+				delta = local
+			}
+		}
+		refRounds = refRounds + 1
+		if delta < tol {
+			break
+		}
+	}
+
+	// Parallel version. rounds[] records each lane's loop count — all
+	// lanes must agree with each other AND with refRounds.
+	rounds := []float64{0.0, 0.0, 0.0, 0.0}
+	p := lanes.Partition(a, 4)
+	res := lanes.Run(p, maxRounds, func(ctx *lanes.Lane) {
+		own := ctx.Own()
+		mine := 0.0
+		before := []float64{0.0, 0.0}
+		for {
+			for i := 0; i < len(own); i++ {
+				before[i] = own[i]
+			}
+			lanes.StencilStep(ctx, 1, coeffs)
+			local := 0.0
+			for i := 0; i < len(own); i++ {
+				d := own[i] - before[i]
+				if d < 0.0 {
+					d = 0.0 - d
+				}
+				if d > local {
+					local = d
+				}
+			}
+			delta := ctx.AllReduceMax(local)
+			mine = mine + 1.0
+			if delta < tol {
+				break
+			}
+			if !ctx.Step() {
+				break
+			}
+		}
+		rounds[ctx.ID()] = mine
+	})
+
+	valsOK := true
+	for i := 0; i < n; i++ {
+		if res[i] != r[i] {
+			valsOK = false
+		}
+	}
+	roundsOK := true
+	for t := 0; t < 4; t++ {
+		if rounds[t] != rounds[0] {
+			roundsOK = false
+		}
+	}
+	println(valsOK)
+	println(roundsOK)
+	println(rounds[0] == float64(refRounds))
+	println(refRounds > 1)
+}

@@ -215,9 +215,20 @@ first cut)"); if the two ever disagree, the spec is the source of truth.
 - **Arithmetic on `T any` in template bodies is rejected.** Generic kernels
   are limited to data movement; numeric kernels drop `[T any]` and use
   comptime-only specialization instead. No in-body workaround exists (no
-  `Numeric` constraint; `T`→concrete conversion is rejected). Top-ranked
-  follow-up candidate: a built-in numeric constraint or instance-time
-  operator checking — a type-system design of its own, out of scope here.
+  `Numeric` constraint; `T`→concrete conversion is rejected). This
+  comptime-only, concrete-type specialization pattern is no longer just a
+  workaround sketch — it is now the SHIPPED pattern for a real numeric
+  kernel: `goostd/lanes.StencilStep(ctx *Lane, comptime radius int, coeffs
+  []float64)` (P6 M2-B2) is `float64`-only and specialized on `radius`
+  alone, and — as of that milestone's Task 4b — the comptime parameter's
+  value is folded into the specialized instance's body as an LLVM
+  constant, not merely passed as a runtime argument, which is what lets
+  the instance's loops fully unroll at `-O2`. See `docs/lanes.md`'s "M2:
+  numeric kernels & collectives" section for the full API, the comptime
+  fold, and its measured unrolling payoff. The `Numeric`-constraint /
+  instance-time-operator-checking follow-up remains open for *generic*
+  `[T]` numeric kernels — top-ranked follow-up candidate, a type-system
+  design of its own, out of scope here and in the M2-B2 milestone alike.
 - **`chan T` cannot infer from a concrete channel argument.** Workaround
   idioms: a concrete channel parameter, or the closure wrapper shown above.
   (Pre-existing; `unify_types` lacks `TYPE_CHANNEL`.)

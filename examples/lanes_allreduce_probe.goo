@@ -1,0 +1,82 @@
+// lanes_allreduce_probe (P6 M2-B2 Task 1): AllReduceSum/AllReduceMax are
+// deterministic BSP collectives — every lane contributes, every lane
+// receives the identical result, combined in fixed lane-ID order (never
+// arrival order), so the result is bit-identical across runs and
+// schedules for a given lane count. The reference below combines the
+// same per-tile partials in the same ID order sequentially; `==` must
+// therefore hold bit-for-bit, not just approximately.
+//
+// The data is deliberately NON-ASSOCIATIVE under float addition (mixed
+// magnitudes, none exactly representable): a combine in any order other
+// than the fixed ID-order fold would land on a different bit pattern, so
+// the `==` checks genuinely discriminate ID-order from arrival-order.
+// (The original all-representable dataset could not — review finding,
+// Task 1.)
+package main
+
+import "lanes"
+
+func main() {
+	data := []float64{0.1, 0.7, 0.2, 0.65, 1000.1, 0.001, 3.3, 0.077}
+	// Sequential reference: per-tile partials computed with the SAME
+	// left-to-right accumulation the lane body uses, combined with the
+	// SAME sequential fold shape allReduce uses (acc = partial0, then
+	// acc = acc + partial_i for i ascending) — the reference mirrors the
+	// implementation's exact expression tree, not a mathematically-equal
+	// rearrangement.
+	refSum := 0.0
+	refMax := 0.0
+	for t := 0; t < 4; t++ {
+		local := 0.0
+		big := data[t*2]
+		for i := t * 2; i < (t+1)*2; i++ {
+			local = local + data[i]
+			if data[i] > big {
+				big = data[i]
+			}
+		}
+		if t == 0 {
+			refSum = local
+			refMax = big
+		} else {
+			refSum = refSum + local
+			if big > refMax {
+				refMax = big
+			}
+		}
+	}
+
+	sums := []float64{0.0, 0.0, 0.0, 0.0}
+	maxes := []float64{0.0, 0.0, 0.0, 0.0}
+
+	p := lanes.Partition(data, 4)
+	lanes.Run(p, 1, func(ctx *lanes.Lane) {
+		own := ctx.Own()
+		local := 0.0
+		big := own[0]
+		for i := 0; i < len(own); i++ {
+			local = local + own[i]
+			if own[i] > big {
+				big = own[i]
+			}
+		}
+		s := ctx.AllReduceSum(local)
+		m := ctx.AllReduceMax(big)
+		sums[ctx.ID()] = s
+		maxes[ctx.ID()] = m
+	})
+
+	// Every lane must have received the identical, reference-equal result.
+	ok := true
+	for i := 0; i < 4; i++ {
+		if sums[i] != refSum {
+			ok = false
+		}
+		if maxes[i] != refMax {
+			ok = false
+		}
+	}
+	println(ok)
+	println(sums[0] == refSum)
+	println(maxes[3] == refMax)
+}
