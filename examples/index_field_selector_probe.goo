@@ -1,0 +1,50 @@
+package main
+
+import "fmt"
+
+// Arc 16: the read-path index codegen (codegen_generate_index_expr) widened
+// an index's ValueInfo straight to i64 with no is_lvalue check, so a bare
+// struct-field selector used as an index (`arr[s.id]`) fed a pointer
+// (the field's address) into LLVMBuildSExt -> "SExt only operates on
+// integer" module-verifier crash. The write path already loaded an lvalue
+// index before widening (expression_codegen.c's AST_INDEX_EXPR lvalue arm);
+// this probe pins the read path doing the same, plus a second independent
+// sink found during the arc's scope check: codegen_generate_slice_index_expr
+// widened `low`/`high` bounds the same unguarded way.
+
+type S struct{ id int }
+type Inner struct{ id int }
+type Outer struct{ inner Inner }
+
+func main() {
+	arr := []int{10, 20, 30, 40}
+	s := S{id: 1}
+
+	// Read-path index: arr[s.id] crashed before the fix (SExt on a
+	// pointer operand — the field address was never loaded).
+	fmt.Println(arr[s.id])
+
+	// Write path already loaded the lvalue index before widening; already
+	// worked pre-fix. Pinned here so the read-path fix can't regress it.
+	arr[s.id] = 99
+	fmt.Println(arr[0])
+	fmt.Println(arr[1])
+
+	// Nested selector: same missing-load site, a deeper lvalue chain
+	// (o.inner.id is still an address until loaded).
+	o := Outer{inner: Inner{id: 2}}
+	fmt.Println(arr[o.inner.id])
+
+	// Slice-expr bounds (`arr[low:high]`): a second, independent
+	// widen-without-load site inside codegen_generate_slice_index_expr.
+	// Exercise the low-bound arm...
+	subLow := arr[s.id:]
+	fmt.Println(subLow[0])
+	fmt.Println(subLow[1])
+	fmt.Println(subLow[2])
+
+	// ...and the high-bound arm, each as a bare selector.
+	subHigh := arr[:o.inner.id]
+	fmt.Println(subHigh[0])
+	fmt.Println(subHigh[1])
+}
