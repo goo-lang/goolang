@@ -447,6 +447,31 @@ static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, Type
 }
 #endif
 
+// Task C (explicit generic instantiation, f[T](...)): every generic/comptime
+// call-rewiring branch below extracts an IdentifierNode from call->function
+// to mangle the monomorphized instance symbol — historically always a bare
+// AST_IDENTIFIER (`f(...)`). An explicitly instantiated call's function is
+// instead an AST_INDEX_EXPR wrapping that same identifier (`f[int](...)`
+// parses as CallExpr(IndexExpr(f, int), args) — Go's own grammar shape, see
+// the checker-side dispatch in expression_checker.c for the full design).
+// This helper recognizes BOTH shapes so every mangling site below stays a
+// single mirrored guard change rather than a duplicated branch per shape.
+// Returns NULL for anything else (a genuine index expression, e.g. `arr[i]
+// ()` calling a function-slice element) — safe to call unconditionally:
+// `arr` there is never `is_generic`/never routed through call->type_arg_
+// count > 0 by the checker, so these call sites never even reach this
+// helper for that shape (each guard below is additionally conditioned on
+// call->type_arg_count > 0 or call->comptime_value_arg_count > 0).
+static IdentifierNode* codegen_call_ident_callee(ASTNode* func_node) {
+    if (!func_node) return NULL;
+    if (func_node->type == AST_IDENTIFIER) return (IdentifierNode*)func_node;
+    if (func_node->type == AST_INDEX_EXPR) {
+        ASTNode* base = ((IndexExprNode*)func_node)->expr;
+        if (base && base->type == AST_IDENTIFIER) return (IdentifierNode*)base;
+    }
+    return NULL;
+}
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -893,6 +918,43 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             value_info_free(key_arg);
             return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
         }
+        if (strcmp(func_name->name, "clear") == 0 && call->args) {
+            // clear(m) / clear(s) -> void (Go 1.21). Map: one
+            // goo_map_clear_sv pass (its own dedicated runtime routine,
+            // sibling to goo_map_delete_sv). Slice: memset the backing
+            // store over exactly `len` elements — NOT `cap`; Go leaves any
+            // extra capacity beyond len untouched — the header itself
+            // (data/len/cap) is never rewritten, so this is a value clear,
+            // not a truncation.
+            ValueInfo* arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!arg) return NULL;
+            LLVMValueRef raw = arg->llvm_value;
+            if (arg->is_lvalue && arg->goo_type) {
+                LLVMTypeRef at = codegen_type_to_llvm(codegen, arg->goo_type);
+                if (at) raw = LLVMBuildLoad2(codegen->builder, at, raw, "clear_load");
+            }
+            if (arg->goo_type && arg->goo_type->kind == TYPE_MAP) {
+                LLVMValueRef clear_fn = LLVMGetNamedFunction(codegen->module, "goo_map_clear_sv");
+                if (!clear_fn) {
+                    codegen_error(codegen, expr->pos, "clear: goo_map_clear_sv unavailable");
+                    value_info_free(arg);
+                    return NULL;
+                }
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(clear_fn), clear_fn, &raw, 1, "");
+                value_info_free(arg);
+                return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+            }
+            // TYPE_SLICE — the only other kind the checker admits.
+            LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, raw, 0, "clear_data");
+            LLVMValueRef len  = LLVMBuildExtractValue(codegen->builder, raw, 1, "clear_len");
+            LLVMTypeRef clear_elem_llvm = codegen_type_to_llvm(codegen, arg->goo_type->data.slice.element_type);
+            LLVMValueRef elem_size = LLVMSizeOf(clear_elem_llvm);
+            LLVMValueRef total_bytes = LLVMBuildMul(codegen->builder, len, elem_size, "clear_bytes");
+            LLVMValueRef zero_byte = LLVMConstInt(LLVMInt8TypeInContext(codegen->context), 0, 0);
+            LLVMBuildMemSet(codegen->builder, data, zero_byte, total_bytes, 1);
+            value_info_free(arg);
+            return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+        }
         if (strcmp(func_name->name, "cap") == 0 && call->args) {
             // cap(slice) — extract field 2 (capacity) from the 3-field slice
             // header. Mirrors len() but reads field 2 instead of field 1.
@@ -1063,6 +1125,98 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                                             copy_fn, args, 5, "copy_n");
             return value_info_new(NULL, n, type_checker_get_builtin(checker, TYPE_INT64));
         }
+        if ((strcmp(func_name->name, "min") == 0 || strcmp(func_name->name, "max") == 0) && call->args) {
+            // min(a, b, ...) / max(a, b, ...) -> a chain of compare+select
+            // folded left-to-right over the arguments, at the common type
+            // the checker already resolved (type_check_minmax_call in
+            // expression_checker.c stamped EVERY argument node to
+            // expr->node_type, adapting untyped-constant-rooted literals as
+            // needed — so every arg here already generates a value of the
+            // exact same LLVM type; no further coercion is needed).
+            int is_min = strcmp(func_name->name, "min") == 0;
+            Type* result_t = expr->node_type;
+            if (!result_t) {
+                codegen_error(codegen, expr->pos, "%s: missing resolved type", func_name->name);
+                return NULL;
+            }
+            LLVMTypeRef result_llvm = codegen_type_to_llvm(codegen, result_t);
+
+            ValueInfo* acc_v = codegen_generate_expression(codegen, checker, call->args);
+            if (!acc_v) return NULL;
+            LLVMValueRef acc = acc_v->llvm_value;
+            if (acc_v->is_lvalue) acc = LLVMBuildLoad2(codegen->builder, result_llvm, acc, "minmax_acc");
+            value_info_free(acc_v);
+
+            for (ASTNode* a = call->args->next; a; a = a->next) {
+                ValueInfo* v = codegen_generate_expression(codegen, checker, a);
+                if (!v) return NULL;
+                LLVMValueRef cur = v->llvm_value;
+                if (v->is_lvalue) cur = LLVMBuildLoad2(codegen->builder, result_llvm, cur, "minmax_arg");
+                value_info_free(v);
+
+                LLVMValueRef take_cur;
+                if (result_t->kind == TYPE_STRING) {
+                    // Lexicographic order via the same runtime comparator
+                    // `<`/`>` on strings already lowers through
+                    // (expression_codegen.c's codegen_string_cmp_to_i1) —
+                    // reimplemented inline here since that helper is
+                    // file-static in a different translation unit.
+                    LLVMValueRef cmp_fn = LLVMGetNamedFunction(codegen->module, "goo_string_cmp");
+                    if (!cmp_fn) {
+                        codegen_error(codegen, expr->pos, "%s: goo_string_cmp unavailable", func_name->name);
+                        return NULL;
+                    }
+                    LLVMValueRef cmp_args[2] = { cur, acc };
+                    LLVMValueRef cmp = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(cmp_fn),
+                                                      cmp_fn, cmp_args, 2, "minmax_strcmp");
+                    LLVMValueRef zero32 = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+                    take_cur = LLVMBuildICmp(codegen->builder, is_min ? LLVMIntSLT : LLVMIntSGT,
+                                             cmp, zero32, "minmax_take");
+                } else if (type_is_float(result_t)) {
+                    // Go: "if any argument is NaN, min/max returns NaN"
+                    // (pkg.go.dev/builtin#min) — propagated across the
+                    // WHOLE fold, not just the current pair: take_cur is
+                    // true when cur is NaN (adopt it, propagating), OR the
+                    // ordered comparison favors cur AND acc is NOT already
+                    // a propagated NaN (once acc is NaN it must stay NaN,
+                    // never overwritten by a later non-NaN cur — a plain
+                    // "ordered OR either-is-NaN" formula would wrongly let
+                    // a later finite cur clear an already-NaN acc).
+                    // Ordered fcmp (olt/ogt) is false for either operand
+                    // NaN, which is exactly the "not naturally comparable"
+                    // half this needs.
+                    //
+                    // Documented deviation (not exercised by the golden
+                    // probes): Go additionally treats negative zero as
+                    // smaller than positive zero for min (and the mirror
+                    // for max); IEEE ordered comparison treats -0.0 == 0.0,
+                    // so `min(-0.0, 0.0)` here may return either zero
+                    // rather than Go's guaranteed -0.0. A signbit-aware
+                    // tie-break would close this; out of scope alongside
+                    // the float/string constant-folding gap (see the task
+                    // report).
+                    LLVMRealPredicate pred = is_min ? LLVMRealOLT : LLVMRealOGT;
+                    LLVMValueRef ordered_take = LLVMBuildFCmp(codegen->builder, pred, cur, acc, "minmax_flt_cmp");
+                    LLVMValueRef cur_nan = LLVMBuildFCmp(codegen->builder, LLVMRealUNO, cur, cur, "minmax_cur_nan");
+                    LLVMValueRef acc_nan = LLVMBuildFCmp(codegen->builder, LLVMRealUNO, acc, acc, "minmax_acc_nan");
+                    LLVMValueRef acc_ok = LLVMBuildNot(codegen->builder, acc_nan, "minmax_acc_ok");
+                    LLVMValueRef ordered_and_acc_ok = LLVMBuildAnd(codegen->builder, ordered_take, acc_ok,
+                                                                   "minmax_ord_ok");
+                    take_cur = LLVMBuildOr(codegen->builder, cur_nan, ordered_and_acc_ok, "minmax_take");
+                } else {
+                    // Integer — signed vs. unsigned changes which icmp
+                    // predicate is correct (e.g. uint64 0xFFFF...FFFF is the
+                    // MAXIMUM, not -1).
+                    int is_signed = type_is_signed(result_t);
+                    LLVMIntPredicate pred = is_min
+                        ? (is_signed ? LLVMIntSLT : LLVMIntULT)
+                        : (is_signed ? LLVMIntSGT : LLVMIntUGT);
+                    take_cur = LLVMBuildICmp(codegen->builder, pred, cur, acc, "minmax_cmp");
+                }
+                acc = LLVMBuildSelect(codegen->builder, take_cur, cur, acc, "minmax_sel");
+            }
+            return value_info_new(NULL, acc, result_t);
+        }
         if (strcmp(func_name->name, "print") == 0) {
             return codegen_generate_print_call(codegen, checker, expr);
         }
@@ -1111,6 +1265,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         SelectorExprNode* sel = (SelectorExprNode*)call->function;
         if (sel->expr && sel->expr->type == AST_IDENTIFIER) {
             IdentifierNode* pkg = (IdentifierNode*)sel->expr;
+            // Task B (alias imports): every shim-dispatch strcmp below keys
+            // off the package's canonical import_path (resolved once here
+            // via type_checker_pkg_dispatch_name), not the use-site
+            // identifier text — so `import f "fmt"; f.Println(...)` matches
+            // the same "fmt" arms as an unaliased `fmt.Println(...)`.
+            // codegen_generate_pkg_selector_call just below is deliberately
+            // NOT switched to this: it looks up a SOURCE package's mangled
+            // `goo_pkg__<name>__<sel>` symbol, keyed by the package's own
+            // declared name (not its import path — those differ for a
+            // nested import like "unicode/utf8" -> "utf8"), a distinct
+            // identity from the shim table's canonical-import-path key.
+            const char* dispatch_pkg = type_checker_pkg_dispatch_name(checker, pkg->name);
             // stdlib Phase 0 (Task 5): a call into a source-compiled package
             // (exports emitted as goo_pkg__<pkg>__<name>) routes here FIRST. If
             // no such symbol exists we fall through to the hardcoded stdlib shim
@@ -1121,49 +1287,49 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     codegen, checker, expr, pkg->name, sel->selector, &handled);
                 if (handled) return pv;
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Println") == 0) {
                 // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
                 return codegen_generate_println_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Print") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Print") == 0) {
                 return codegen_generate_fmt_print_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Printf") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Printf") == 0) {
                 return codegen_generate_printf_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
                 return codegen_generate_sprintf_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprint") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Sprint") == 0) {
                 return codegen_generate_fmt_sprint_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintln") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Sprintln") == 0) {
                 return codegen_generate_fmt_sprintln_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
+            if (strcmp(dispatch_pkg, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
                 return codegen_generate_errorf_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "Exit") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_exit", TYPE_VOID, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "Getenv") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "Getenv") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_os_getenv", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "WriteFile") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "WriteFile") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_write_file", TYPE_INT32, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadByte") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "ReadByte") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_read_byte", TYPE_INT32, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "FileSize") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "FileSize") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_file_size", TYPE_INT32, 0);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadFile") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "ReadFile") == 0) {
                 if (!call->args) {
                     codegen_error(codegen, expr->pos, "os.ReadFile: expected one string argument");
                     return NULL;
@@ -1171,47 +1337,47 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 return codegen_generate_string_result_call(codegen, checker, expr,
                                                             "goo_os_read_file", call->args);
             }
-            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadLine") == 0) {
+            if (strcmp(dispatch_pkg, "os") == 0 && strcmp(sel->selector, "ReadLine") == 0) {
                 return codegen_generate_string_result_call(codegen, checker, expr,
                                                             "goo_os_read_line", NULL);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_sqrt", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Pow") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Pow") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_pow", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Abs") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Abs") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_abs", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Min") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Min") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_min", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Max") == 0) {
+            if (strcmp(dispatch_pkg, "math") == 0 && strcmp(sel->selector, "Max") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_math_max", TYPE_FLOAT64, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Contains") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "Contains") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_contains", TYPE_BOOL, 1);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "ToUpper") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "ToUpper") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_to_upper", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "ToLower") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "ToLower") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_to_lower", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "TrimSpace") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "TrimSpace") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_strings_trim_space", TYPE_STRING, 0);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Split") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "Split") == 0) {
                 // void goo_strings_split(goo_slice_t* out, const char* s, const char* sep)
                 // The []string result returns through an out-pointer: a 3-field
                 // slice can't cross the C ABI by value from hand-emitted IR.
@@ -1233,7 +1399,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef slice_val = LLVMBuildLoad2(codegen->builder, slice_llvm, out, "split_slice");
                 return value_info_new(NULL, slice_val, ret_type);
             }
-            if (strcmp(pkg->name, "strconv") == 0 && strcmp(sel->selector, "Itoa") == 0) {
+            if (strcmp(dispatch_pkg, "strconv") == 0 && strcmp(sel->selector, "Itoa") == 0) {
                 // strconv.Itoa(int) -> string via goo_int_to_string(int64_t)
                 // SExt the int arg to i64 since goo_int_to_string takes int64_t.
                 LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_int_to_string");
@@ -1247,10 +1413,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 value_info_free(a);
                 return value_info_new(NULL, res, type_checker_get_builtin(checker, TYPE_STRING));
             }
-            if (strcmp(pkg->name, "strconv") == 0 && strcmp(sel->selector, "Atoi") == 0) {
+            if (strcmp(dispatch_pkg, "strconv") == 0 && strcmp(sel->selector, "Atoi") == 0) {
                 return codegen_generate_atoi_call(codegen, checker, expr);
             }
-            if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "New") == 0) {
+            if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "New") == 0) {
                 // errors.New(string) -> error. Box the message into a heap goo_error and
                 // store its pointer (as i8*) in the nullable error handle.
                 if (!call->args) {
@@ -1280,7 +1446,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 err_val = LLVMBuildInsertValue(codegen->builder, err_val, handle, 1, "en.ptr");
                 return value_info_new(NULL, err_val, err_type);
             }
-            if (strcmp(pkg->name, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
+            if (strcmp(dispatch_pkg, "errors") == 0 && strcmp(sel->selector, "Unwrap") == 0) {
                 // errors.Unwrap(error) -> error: read goo_error.cause via the runtime
                 // helper, rebuild the nullable {is_null = cause==null, ptr = cause}.
                 if (!call->args) {
@@ -1311,7 +1477,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 uw_err_val = LLVMBuildInsertValue(codegen->builder, uw_err_val, cause, 1, "uw.ptr");
                 return value_info_new(NULL, uw_err_val, uw_err_type);
             }
-            if (strcmp(pkg->name, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
+            if (strcmp(dispatch_pkg, "strings") == 0 && strcmp(sel->selector, "Join") == 0) {
                 // goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep)
                 // Spill the []string value to a slot and pass its address — a
                 // 3-field slice can't cross the C ABI by value from hand-emitted IR.
@@ -1342,7 +1508,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // method-call intercept further below (that's for t.UnixNano()
             // only). Declare-on-first-use, same lazy pattern as every other
             // runtime call this function emits.
-            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Sleep") == 0) {
+            if (strcmp(dispatch_pkg, "time") == 0 && strcmp(sel->selector, "Sleep") == 0) {
                 // Duration IS int64 nanoseconds (Go parity), so the argument
                 // needs only the usual lvalue-load, no conversion.
                 LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_sleep_ns");
@@ -1368,7 +1534,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, sleep_args, 1, "");
                 return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
             }
-            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
+            if (strcmp(dispatch_pkg, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
                 // goo_time_unix_ns() int64 -> wrap into the single-field
                 // Time struct {i64 _nanos}. expr->node_type is already the
                 // checker-resolved Time struct type (the package-export
@@ -1857,9 +2023,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     // for a given call, so `func_val` is unambiguous going into the fallback
     // below.
     ValueInfo* func_val = NULL;
+    IdentifierNode* gid_base = codegen_call_ident_callee(call->function);
     if (call->type_arg_count > 0 && call->comptime_value_arg_count > 0 &&
-        call->function->type == AST_IDENTIFIER) {
-        IdentifierNode* gid = (IdentifierNode*)call->function;
+        gid_base) {
+        IdentifierNode* gid = gid_base;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return NULL;
         // Same substitution discipline as the generic-only branch below:
@@ -1894,8 +2061,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             func_val = value_info_new(gid->name, inst, concrete_sig);
         }
         free(concrete_args);
-    } else if (call->type_arg_count > 0 && call->function->type == AST_IDENTIFIER) {
-        IdentifierNode* gid = (IdentifierNode*)call->function;
+    } else if (call->type_arg_count > 0 && gid_base) {
+        IdentifierNode* gid = gid_base;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return NULL;
         for (size_t i = 0; i < call->type_arg_count; i++) {

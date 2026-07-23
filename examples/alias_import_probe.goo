@@ -1,0 +1,76 @@
+// Task B (spec-conformance, pkg_alias_import): golden pin for shim-package
+// alias imports (import <alias> "<path>"). Exercises every shim dispatch
+// family the fix touches, each under an alias, alongside one UNALIASED
+// import (os) to prove aliased and bare imports coexist in the same
+// program without cross-talk:
+//   - fmt (f):      the checker's stdlib_package_lookup / shim_signature_
+//                    is_known_call arity gate, and codegen's ~29-arm call
+//                    dispatch chain (call_codegen.c).
+//   - math (mt):    a package VALUE member (Pi) via composite_codegen.c's
+//                    intercept, plus an ordinary shim call (Sqrt).
+//   - sync (sy):    method-style dispatch on a shim type with NO
+//                    goo_pkg__sync__ symbol (Mutex.Lock/Unlock) — a
+//                    different codegen path (codegen_generate_sync_method_
+//                    call), gated on Package.import_path already before
+//                    this task (P4.7); confirmed still correct under alias.
+//   - time (tm):    same "receiver-owner-package" method dispatch family
+//                    as sync (Now/Sleep), also pre-existing-correct.
+//   - errors (er):  errors.New, whose returned error's .Error() method is
+//                    exercised (a second, unrelated dispatch: the error
+//                    interface's built-in method, not package-qualified).
+//   - os (bare):    deliberately UNALIASED, proving the fix doesn't
+//                    require every import in a program to be aliased.
+//
+// Vendored/GOOROOT source packages (strings, strconv, ...) are NOT
+// exercised here — aliasing one of them (e.g. `import s "strings"`)
+// currently fails to compile at all ("Undefined variable 's'"): source
+// packages are a separate, pre-existing, documented gap (see include/
+// lane_ownership.h's IMPORT-ALIAS SUBTLETY note and this task's report),
+// out of this fixture's scope by design.
+package main
+
+import f "fmt"
+import "fmt"
+import g "fmt"
+import mt "math"
+import sy "sync"
+import tm "time"
+import er "errors"
+import "os"
+
+type Counter struct {
+	mu sy.Mutex
+	n  int
+}
+
+func (c *Counter) Inc() {
+	c.mu.Lock()
+	c.n = c.n + 1
+	c.mu.Unlock()
+}
+
+func main() {
+	f.Println("hello from aliased fmt")
+	// T-B review pin: the SAME shim package imported bare, and under a
+	// second alias, in one file — three independent markers, one canonical
+	// path, no cross-talk. (Go itself allows this; a same-ALIAS collision
+	// is the separate, still-open duplicate-import gap in the report.)
+	fmt.Println("bare fmt coexists")
+	g.Println("second alias coexists")
+	f.Println(int(mt.Sqrt(16.0)))
+	f.Println(mt.Pi)
+
+	c := &Counter{}
+	c.Inc()
+	c.Inc()
+	f.Println(c.n)
+
+	start := tm.Now()
+	_ = start
+	tm.Sleep(1)
+
+	err := er.New("boom")
+	f.Println(err.Error())
+
+	f.Println(os.Getenv("GOO_ALIAS_PROBE_UNSET_VAR_X123") == "")
+}

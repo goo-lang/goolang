@@ -46,13 +46,13 @@ builtin_core	run	works	Builtins	len/cap/make/new/append/delete
 builtin_copy	run	works	Builtins	copy(dst, src) returns count
 builtin_panic_exit	run	works	Builtins	nil-map write panics, exit 2 (Go parity)
 builtin_recover	reject	rejected	Builtins	P3.5 decision: clean 'not supported in v1' diagnostic
-builtin_minmax	reject	absent	Builtins	min/max (Go 1.21) missing
-builtin_clear	reject	absent	Builtins	clear (Go 1.21) missing
+builtin_minmax	run	works	Builtins	min/max (Go 1.21) — ordered-type builtins; int/float NaN-propagating compare+select or string goo_string_cmp chain
+builtin_clear	run	works	Builtins	clear (Go 1.21) — map: removes every entry; slice: zeroes elements up to len (len/cap unchanged)
 generic_func_infer	run	works	Generics	[T any] func, inference-only monomorphization (Tier A)
-generic_explicit_inst	reject	absent	Generics	f[int](...) explicit instantiation unsupported; poor diagnostic
+generic_explicit_inst	run	works	Generics	f[int](...) explicit instantiation (single type param); Task C
 generic_constraint_union	reject	absent	Generics	int|float64 constraint (P2.10, deferred post-v1)
 generic_type	reject	absent	Generics	generic type declarations unsupported
-pkg_alias_import	reject	absent	Packages	shim-package alias import (import f "fmt") unresolved; known gap
+pkg_alias_import	run	works	Packages	shim-package alias import (import f "fmt") resolves via Package.import_path, not use-site identifier text (Task B)
 pkg_init_func	reject	rejected	Packages	v1 decision: init functions cleanly rejected (previously compiled but SILENTLY never ran); real init support is post-v1
 err_interface_bridge	run	works	Errors	(T, error) bridged to !T catch; e.Error() works
 div_named_result_defer	run	divergent	Statements	deferred mutation of named result not returned (Go: 6, Goo: 5); documented in 02-LANGUAGE-SPECIFICATION

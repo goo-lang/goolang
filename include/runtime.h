@@ -296,6 +296,9 @@ struct GooMapEntrySV* goo_map_iter_init_sv(GooMapSV* m);
 // Deletes the entry for key k, if present. Backs delete(m, k). Does not
 // free k: the map never owns key storage (see goo_map_set_sv above).
 void goo_map_delete_sv(GooMapSV* m, int64_t k);
+// Removes every entry (no-op on a NULL/empty map). Backs clear(m) (Go
+// 1.21). Same key-ownership contract as goo_map_delete_sv.
+void goo_map_clear_sv(GooMapSV* m);
 
 // Slice operations
 // Zero-initialized backing store for make([]T, n[, cap]). Returns a bare

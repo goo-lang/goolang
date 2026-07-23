@@ -1,7 +1,7 @@
 # Go Spec Conformance Matrix
 
-**Snapshot:** 2026-07-11, post-v1.0.0 — **80% conformance**
-(38 works / 47 tested constructs, excluding 3 deliberate rejections).
+**Snapshot:** 2026-07-23, post-v1.0.0 — **89% conformance**
+(42 works / 47 tested constructs, excluding 3 deliberate rejections).
 
 **Method.** One tiny fixture per Go-spec construct under `tests/spec/`,
 statuses determined **empirically** (compiled and run against `bin/goo`,
@@ -39,10 +39,10 @@ percentage moves only with evidence.
 | Declarations | 6 | – | – | – | grouped var, const+iota, short var, named types, tuple assign, blank ident |
 | Types | 8 | – | – | 1 | arrays, slices, maps, struct embedding, pointers, closures, interfaces, channels; **absent:** complex |
 | Expressions | 6 | – | – | 1 | keyed/elided composites, type assertions, method values, conversions, shift/div/mod, user variadics; **absent:** method expressions |
-| Statements | 10 | 1 | – | – | if-init, for (3 forms), range (slices, string→**runes**, channels), switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select; **divergent:** named-result defer |
-| Builtins | 3 | – | 1 | 2 | len/cap/make/new/append/delete, copy, panic (exit 2); **rejected:** recover (clean v1 diagnostic); **absent:** min/max, clear |
-| Generics | 1 | – | – | 3 | `[T any]` inference-only funcs; **absent:** explicit instantiation, union constraints (P2.10), generic types |
-| Packages | – | – | 1 | 1 | **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran); **absent:** shim-package alias imports |
+| Statements | 9 | 1 | – | – | if-init, for (3 forms), range (slices, string→**runes**, channels), switch-init + type switch, fallthrough, labels/goto, defer-in-loop, go+select; **divergent:** named-result defer |
+| Builtins | 5 | – | 1 | – | len/cap/make/new/append/delete, copy, panic (exit 2), min/max (Go 1.21, NaN-propagating), clear (Go 1.21, map+slice); **rejected:** recover (clean v1 diagnostic) |
+| Generics | 2 | – | – | 2 | `[T any]` inference-only funcs; explicit instantiation `f[T](...)` (single type param — Task C); **absent:** union constraints (P2.10), generic types |
+| Packages | 1 | – | 1 | – | shim-package alias imports (`import f "fmt"`, Task B); **rejected:** `init()` — clean diagnostic since the post-v1.0.0 fix (previously compiled but silently never ran) |
 | Errors | 1 | – | – | – | (T, error) ↔ !T bridging, e.Error() |
 | System | – | – | 1 | – | **rejected:** unsafe (v1 Non-goal) |
 

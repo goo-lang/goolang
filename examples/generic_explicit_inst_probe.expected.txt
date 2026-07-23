@@ -1,0 +1,15 @@
+7
+7
+3.5
+10
+10
+42
+hi
+300
+defer-stack-begin
+defer-stack-end
+constTwo
+constOne
+defer-explicit 99
+loop 1
+loop 0

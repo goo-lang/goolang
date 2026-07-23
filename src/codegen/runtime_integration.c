@@ -474,6 +474,12 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         LLVMTypeRef params[] = { ptr_type, LLVMInt64TypeInContext(codegen->context) };
         add_runtime_function(codegen, "goo_map_delete_sv", void_type, params, 2);
     }
+    // void goo_map_clear_sv(GooMapSV*) — removes every entry. Backs
+    // clear(m) (Go 1.21).
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_map_clear_sv", void_type, params, 1);
+    }
 
     // Slice operations.
     // void* goo_slice_alloc(int64_t count, int64_t elem_size) — zeroed

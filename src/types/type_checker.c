@@ -174,6 +174,19 @@ Package* type_checker_find_package(TypeChecker* checker, const char* import_path
     return NULL;
 }
 
+// See types.h doc comment. Single choke point: every shim-dispatch strcmp
+// site (checker AND codegen) resolves its package identity through here
+// instead of comparing the use-site identifier text directly, so `import f
+// "fmt"` dispatches identically to a bare `import "fmt"`.
+const char* type_checker_pkg_dispatch_name(TypeChecker* checker, const char* ident_name) {
+    if (!checker || !ident_name) return ident_name;
+    Variable* marker = type_checker_lookup_variable(checker, ident_name);
+    if (marker && marker->package && marker->package->import_path) {
+        return marker->package->import_path;
+    }
+    return ident_name;
+}
+
 // Create a package namespace and push it onto the registry. Strings are copied
 // (str_dup); the exports scope starts empty and is filled by the caller via
 // package_export_filter once the package body has been checked.
@@ -447,6 +460,44 @@ void type_checker_add_builtin_functions(TypeChecker* checker) {
         copy_var->is_builtin = 1;
         copy_var->is_initialized = 1;
         scope_add_variable(checker->current_scope, copy_var);
+    }
+
+    // clear(m) / clear(s) -> void (Go 1.21). Map: removes every entry;
+    // slice: zeroes every element up to len (len/cap unchanged). Real
+    // checking (map-or-slice kind gate) lives in the dedicated arm in
+    // type_check_call_expr, mirroring close/delete; registered here
+    // (void-returning stub, predeclared) so the bare identifier resolves
+    // rather than tripping "Undefined variable 'clear'".
+    Type* clear_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    Variable* clear_var = variable_new("clear", clear_type, (Position){0, 0, 0, "builtin"});
+    if (clear_var) {
+        clear_var->is_builtin = 1;
+        clear_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, clear_var);
+    }
+
+    // min(a, b, ...) / max(a, b, ...) -> the smallest/largest argument (Go
+    // 1.21). Variadic, 1+ args; the real signature — and result type,
+    // which depends on the arguments the way append's does — is
+    // special-cased in the dedicated arm in type_check_call_expr. Marked
+    // variadic (like panic) so the stub signature itself is never
+    // consulted; registered so the bare identifier resolves rather than
+    // tripping "Undefined variable 'min'"/'max'.
+    Type* min_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    min_type->data.function.is_variadic = 1;
+    Variable* min_var = variable_new("min", min_type, (Position){0, 0, 0, "builtin"});
+    if (min_var) {
+        min_var->is_builtin = 1;
+        min_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, min_var);
+    }
+    Type* max_type = type_function(NULL, 0, checker->builtin_types[TYPE_VOID]);
+    max_type->data.function.is_variadic = 1;
+    Variable* max_var = variable_new("max", max_type, (Position){0, 0, 0, "builtin"});
+    if (max_var) {
+        max_var->is_builtin = 1;
+        max_var->is_initialized = 1;
+        scope_add_variable(checker->current_scope, max_var);
     }
 
     // error(msg) -> !T: constructs the error case of the enclosing function's

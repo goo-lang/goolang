@@ -2822,9 +2822,19 @@ static int type_check_capture_comptime_arg(TypeChecker* checker,
     return 1;
 }
 
-static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
-                                      CallExprNode* call, Variable* callee_var,
-                                      const char* callee_name) {
+// Task C (explicit generic instantiation, f[T](...)): shared core behind
+// BOTH type_check_generic_call (inference-only, `f(7, 8)`) and
+// type_check_generic_call_explicit (`f[int](7, 8)`) below. `preseeded_
+// bindings`, when non-NULL, is a caller-allocated `n`-slot array with one or
+// more slots already bound (explicit instantiation's single type argument)
+// — this function takes OWNERSHIP of it exactly as it already owns a
+// freshly calloc'd array on the inference-only path (frees it on every
+// error return, hands it off to call->type_args on success). Passing NULL
+// reproduces type_check_generic_call's pre-Task-C behavior byte-for-byte.
+static Type* type_check_generic_call_core(TypeChecker* checker, ASTNode* expr,
+                                           CallExprNode* call, Variable* callee_var,
+                                           const char* callee_name,
+                                           Type** preseeded_bindings) {
     // Comptime+generic composition (sub-project 2): honor the same
     // first-visit contract type_check_call_expr enforces before dispatching
     // here (its own comptime_first_check/entry-reset, above the callee-kind
@@ -2849,6 +2859,13 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
         type_error(checker, expr->pos,
                    "%s is marked generic but has no function signature",
                    callee_name);
+        // Fix round (T-C review, Finding 1): ownership of preseeded_bindings
+        // (the explicit-instantiation caller's calloc'd array — see the
+        // function's own doc comment) doesn't transfer to the local
+        // `bindings` variable until below; an early return before that point
+        // must free the caller's array itself or it leaks (e.g.
+        // `first[int](1)` with a defensive-only trip of this branch).
+        free(preseeded_bindings);
         return NULL;
     }
     size_t n = callee_var->type_param_count;
@@ -2861,10 +2878,23 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
         type_error(checker, expr->pos,
                    "wrong number of arguments to %s: expected %zu, got %zu",
                    callee_name, pc, argc);
+        // Fix round (T-C review, Finding 1): same pre-ownership leak as
+        // above — this is the ordinarily-reachable trip, e.g.
+        // `first[int](1)` where first expects 2 args.
+        free(preseeded_bindings);
         return NULL;
     }
 
-    Type** bindings = calloc(n ? n : 1, sizeof(Type*));
+    // Task C: an explicit-instantiation caller already allocated `bindings`
+    // with the bracketed type argument bound in (see the doc comment above)
+    // — reuse it instead of calloc'ing a fresh all-NULL array. `explicit_
+    // inst` also gates the widening-adaptation step in the per-argument
+    // loop below: it must fire ONLY for a binding that came from an
+    // explicit type argument, never for one an earlier argument's own
+    // checked type already inferred (see that step's doc comment for why).
+    int explicit_inst = (preseeded_bindings != NULL);
+    Type** bindings = explicit_inst ? preseeded_bindings
+                                     : calloc(n ? n : 1, sizeof(Type*));
     if (!bindings) return NULL;
 
     size_t k = 0;
@@ -2952,6 +2982,41 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
 
         if (pt && pt->kind == TYPE_PARAM) {
             int idx = pt->data.type_param.index;
+            // Task C — explicit-instantiation widening: `f[float64](7)`
+            // pre-binds T=float64 (idx 0) before this loop ever runs, but
+            // the literal `7` was just checked (type_check_expression
+            // above) at ITS OWN default type, int64 — inference alone never
+            // needs this step (a binding there always came FROM an earlier
+            // argument's own checked type, so a later mismatch is always a
+            // genuine conflict), but an explicit binding is independent of
+            // every argument and legitimately wider than an untyped
+            // literal's default width/kind. Adapt the literal node in
+            // place — the SAME is_untyped_int_rooted/adapt_untyped_int_
+            // operand pair the ordinary fixed-arity call-arg loop uses
+            // further down this file (type_check_call_expr) for a
+            // non-generic parameter — so `at` reflects the adapted type
+            // before the conflict check below runs. A non-literal argument
+            // (a variable, a call result, ...) is never int-rooted and
+            // falls through unchanged, keeping the ordinary
+            // conflicting-types rejection for a genuine mismatch
+            // (`f[int]("hello")`).
+            if (explicit_inst && idx >= 0 && (size_t)idx < n && bindings[idx] &&
+                !type_equals(bindings[idx], at)) {
+                Type* bt = bindings[idx];
+                if (type_is_integer(bt) && is_untyped_int_rooted(a, 0)) {
+                    if (!adapt_untyped_int_operand(checker, a, bt, 0, 1)) {
+                        free(bindings);
+                        return NULL;
+                    }
+                    at = bt;
+                } else if (type_is_float(bt) && is_untyped_int_rooted(a, 1)) {
+                    if (!adapt_untyped_int_operand(checker, a, bt, 0, 1)) {
+                        free(bindings);
+                        return NULL;
+                    }
+                    at = bt;
+                }
+            }
             if (idx >= 0 && (size_t)idx < n && bindings[idx] &&
                 !type_equals(bindings[idx], at)) {
                 type_error(checker, expr->pos,
@@ -3082,6 +3147,251 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
     return result;
 }
 
+// Function generics Task 6 (unchanged wrapper — see the shared-core doc
+// comment above): ordinary inference-only call site, `f(7, 8)`. No
+// pre-seeded bindings; every type parameter is inferred from the arguments.
+static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
+                                      CallExprNode* call, Variable* callee_var,
+                                      const char* callee_name) {
+    return type_check_generic_call_core(checker, expr, call, callee_var,
+                                         callee_name, NULL);
+}
+
+// Task C: explicit instantiation `f[T](...)` — single type parameter only.
+// The grammar's index_expr holds exactly one bracketed expression (`f[int,
+// string](...)` does not parse — a pre-existing grammar limit, out of this
+// task's scope; the caller's own gate never reaches here for it), which is
+// why explicit instantiation is restricted to a generic callee declaring
+// exactly one type parameter (checked below).
+//
+// `type_arg_node` is the bracketed AST node — resolved as a TYPE via
+// type_from_ast, NOT type_check_expression, which would evaluate it as a
+// VALUE and reject a bare type name like `int` with "Undefined variable
+// 'int'" (the exact diagnostic this task replaces). The caller
+// (type_check_call_expr) only reaches this function once its own
+// disambiguation gate has already confirmed callee_var->is_generic, so a
+// genuine index expression (`arr[i]()`) never routes through here — see
+// that call site's doc comment for the full safety argument.
+//
+// Reuses every other line of type_check_generic_call_core's machinery —
+// per-argument checking (including the widening adaptation gated on
+// explicit_inst there), Tier-B constraint enforcement, monomorphizer
+// recording, and result substitution — completely unchanged.
+static Type* type_check_generic_call_explicit(TypeChecker* checker, ASTNode* expr,
+                                               CallExprNode* call, Variable* callee_var,
+                                               const char* callee_name,
+                                               ASTNode* type_arg_node) {
+    if (callee_var->type_param_count != 1) {
+        type_error(checker, expr->pos,
+                   "%s declares %zu type parameters; explicit instantiation "
+                   "with a single bracketed type argument is only supported "
+                   "for single-type-parameter generic functions",
+                   callee_name, callee_var->type_param_count);
+        return NULL;
+    }
+
+    Type* explicit_type = type_from_ast(checker, type_arg_node);
+    if (!explicit_type) return NULL; // type_from_ast already reported the error
+
+    Type** bindings = calloc(1, sizeof(Type*));
+    if (!bindings) return NULL;
+    bindings[0] = explicit_type;
+
+    return type_check_generic_call_core(checker, expr, call, callee_var,
+                                         callee_name, bindings);
+}
+
+// min(a, b, ...) / max(a, b, ...) -> the smallest/largest argument (Go
+// 1.21). At least one argument required; every argument must be of an
+// "ordered" type — Go restricts min/max to types supporting `<` (v1 has no
+// user-defined ordered types beyond the three basic kinds, so: integer,
+// float, or string). The result type follows the SAME untyped-constant
+// rules as a chain of binary comparisons (type_check_binary_expr, above):
+// an untyped-constant-rooted argument (bare literal, unary -/+/^ through
+// to one, or a {+,-,*} subtree of those — is_untyped_int_rooted /
+// is_untyped_float_rooted) adapts to the single concrete (non-rooted) type
+// present among the OTHER arguments; two different concrete types is a
+// hard reject ("mismatched types"), the same rule `int8var + int16var`
+// gets. Reuses type_check_binary_expr's own adapters rather than inventing
+// a separate constraint system, per the task design.
+//
+// Two passes, not a left-to-right fold: a fold only re-adapts the MOST
+// RECENTLY visited node against a newly discovered concrete type, leaving
+// earlier already-folded literal nodes stamped at a stale width — e.g.
+// `min(1, 2, int32var)` would leave `1` stamped int64 while `2` and
+// int32var end up int32, an LLVM width mismatch codegen cannot recover
+// from. Pass 1 determines the target type without mutating any node; pass
+// 2 adapts (or rejects) every node against that now-known-correct target.
+//
+// Documented deviation from full Go constant semantics (see the task
+// report): Go treats an all-constant min/max call as itself a constant,
+// usable anywhere a constant expression is required, with EXACT
+// (arbitrary-precision) arithmetic. Goo folds the INTEGER case (see
+// goo_fold_const_int/goo_fold_const_int_ctx's AST_CALL_EXPR arm in
+// expression_helpers.c) so `[min(2,3)]int` and `var x int8 = min(1, 2)`
+// both work like a genuine constant, including overflow rejection — this
+// is the case the task's representability gates cover and must not
+// silently diverge on. FLOAT and STRING constant-folding are NOT
+// implemented (no goo_fold_const_float/string equivalent exists in this
+// checker); an all-constant `min("a", "b")` or `min(1.0, 2.0)` still
+// type-checks and runs correctly, just as an ordinary RUNTIME comparison
+// chain rather than a compile-time constant — it cannot be used where Go
+// requires a genuine constant (an array length, a case label, etc.).
+static Type* type_check_minmax_call(TypeChecker* checker, ASTNode* expr,
+                                     CallExprNode* call, const char* name) {
+    if (!call->args) {
+        type_error(checker, expr->pos, "%s expects at least one argument", name);
+        return NULL;
+    }
+
+    size_t n = 0;
+    for (ASTNode* a = call->args; a; a = a->next) n++;
+    ASTNode** nodes = malloc(n * sizeof(ASTNode*));
+    Type** types = malloc(n * sizeof(Type*));
+    if (!nodes || !types) {
+        free(nodes); free(types);
+        type_error(checker, expr->pos, "out of memory checking %s call", name);
+        return NULL;
+    }
+
+    size_t i = 0;
+    for (ASTNode* a = call->args; a; a = a->next, i++) {
+        Type* t = type_check_expression(checker, a);
+        if (!t) { free(nodes); free(types); return NULL; }
+        if (type_is_poison(t)) {
+            // P2.8 cascade suppression, matching close()'s identical guard.
+            free(nodes); free(types);
+            expr->node_type = t;
+            return t;
+        }
+        nodes[i] = a;
+        types[i] = t;
+    }
+
+    // Pass 1: classify every argument and settle on the target type,
+    // WITHOUT mutating any node yet (see the fold-order bug this avoids,
+    // in the doc comment above).
+    int any_string = 0, any_numeric = 0, any_rooted_float = 0;
+    Type* concrete_float = NULL; // the single non-rooted float type seen, if any
+    Type* concrete_int = NULL;   // the single non-rooted integer type seen, if any
+    for (i = 0; i < n; i++) {
+        Type* t = types[i];
+        if (t->kind == TYPE_STRING) { any_string = 1; continue; }
+        if (type_is_float(t)) {
+            any_numeric = 1;
+            if (is_untyped_float_rooted(nodes[i])) {
+                any_rooted_float = 1;
+            } else if (concrete_float && concrete_float->kind != t->kind) {
+                type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                           name, type_to_string(concrete_float), type_to_string(t));
+                free(nodes); free(types);
+                return NULL;
+            } else if (!concrete_float) {
+                concrete_float = t;
+            }
+            continue;
+        }
+        if (type_is_integer(t)) {
+            any_numeric = 1;
+            if (!is_untyped_int_rooted(nodes[i], 0)) {
+                if (concrete_int && concrete_int->kind != t->kind) {
+                    type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                               name, type_to_string(concrete_int), type_to_string(t));
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                if (!concrete_int) concrete_int = t;
+            }
+            continue;
+        }
+        type_error(checker, expr->pos,
+                   "%s: argument of type %s is not ordered (integer, float, or string required)",
+                   name, type_to_string(t));
+        free(nodes); free(types);
+        return NULL;
+    }
+
+    if (any_string && any_numeric) {
+        type_error(checker, expr->pos, "%s: cannot mix string and numeric arguments", name);
+        free(nodes); free(types);
+        return NULL;
+    }
+
+    Type* target;
+    if (any_string) {
+        target = checker->builtin_types[TYPE_STRING];
+    } else if (concrete_float) {
+        // A concrete (non-rooted) INT argument can never adapt to a float
+        // target — no implicit int->float conversion for a typed value,
+        // same rule type_check_binary_expr's cross-kind block enforces.
+        // Caught explicitly here rather than left to pass 2, whose
+        // per-node adapt only knows how to reject a ROOTED mismatch.
+        if (concrete_int) {
+            type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                       name, type_to_string(concrete_int), type_to_string(concrete_float));
+            free(nodes); free(types);
+            return NULL;
+        }
+        target = concrete_float;
+    } else if (concrete_int) {
+        target = concrete_int;
+    } else {
+        // Every numeric argument is untyped-constant-rooted (e.g. `min(1,
+        // 2)`, `max(1.0, 2.0)`, or a mix like `min(1, 2.5)`) — Go's default
+        // type for an untyped constant: float64 if ANY argument is
+        // float-family (kind promotion, matching is_untyped_float_rooted's
+        // own binop leg), else int (int64 here).
+        target = any_rooted_float ? checker->builtin_types[TYPE_FLOAT64]
+                                   : checker->builtin_types[TYPE_INT64];
+    }
+
+    // Pass 2: adapt every rooted node to `target` (or reject a genuine,
+    // non-adaptable mismatch pass 1's classification didn't already catch
+    // — e.g. a shift-rooted int meeting a float target, which is rooted
+    // under is_untyped_int_rooted(_, 0) but NOT under the stricter
+    // for_float_context=1 shape type_check_binary_expr's own cross-kind
+    // block requires).
+    for (i = 0; i < n; i++) {
+        Type* t = types[i];
+        ASTNode* node = nodes[i];
+        if (t->kind == TYPE_STRING || t->kind == target->kind) continue;
+
+        if (type_is_float(target)) {
+            if (type_is_float(t) && is_untyped_float_rooted(node)) {
+                if (!adapt_untyped_float_operand(checker, node, target, 0)) {
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                continue;
+            }
+            if (type_is_integer(t) && is_untyped_int_rooted(node, 1)) {
+                if (!adapt_untyped_int_operand(checker, node, target, 0, 1)) {
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                continue;
+            }
+        } else if (type_is_integer(target)) {
+            if (type_is_integer(t) && is_untyped_int_rooted(node, 0)) {
+                if (!adapt_untyped_int_operand(checker, node, target, 0, 1)) {
+                    free(nodes); free(types);
+                    return NULL;
+                }
+                continue;
+            }
+        }
+        type_error(checker, expr->pos, "%s: mismatched types %s and %s",
+                   name, type_to_string(t), type_to_string(target));
+        free(nodes); free(types);
+        return NULL;
+    }
+
+    free(nodes);
+    free(types);
+    expr->node_type = target;
+    return target;
+}
+
 // Comptime value params (fix round 2's I2 guard; promoted in fix round 4):
 // the comptime-param-reference walk now lives in expression_helpers.c as
 // goo_expr_references_comptime_param — type_from_ast (type_checker.c)
@@ -3128,6 +3438,55 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         free(call->comptime_value_args);
         call->comptime_value_args = NULL;
         call->comptime_value_arg_count = 0;
+    }
+
+    // Task C: explicit generic instantiation `f[T](...)` parses as
+    // CallExpr(IndexExpr(f, T), args) — Go's own grammar shape, unchanged
+    // here (no parser work; see the goo-grammar tripwire). Recognize it
+    // BEFORE the ordinary callee check further down (`func_type =
+    // type_check_expression(checker, call->function)`), which would
+    // otherwise recurse into type_check_index_expr and type-check the
+    // bracketed TYPE as a VALUE expression — a bare type name like `int`
+    // has no Variable binding, so that path failed with "Undefined
+    // variable 'int'" (the manifest-documented gap this task closes).
+    //
+    // Disambiguation safety: this block fires only when the index base
+    // identifier resolves to a Variable that is a FUNCTION — an ordinary
+    // index expression `arr[i]()` (calling an element of a function-slice)
+    // can never satisfy that, since `arr` there is a TYPE_SLICE/TYPE_ARRAY/
+    // TYPE_MAP Variable, not TYPE_FUNCTION — so this is a purely syntactic
+    // dispatch with zero risk of misclassifying real indexing.
+    // type_from_ast (inside type_check_generic_call_explicit) is only ever
+    // invoked once this gate has already confirmed the base names a
+    // function, so a genuine index expression never reaches it and never
+    // risks a spurious "Unknown type" diagnostic on its index operand.
+    if (call->function && call->function->type == AST_INDEX_EXPR) {
+        IndexExprNode* idx_expr = (IndexExprNode*)call->function;
+        if (idx_expr->expr && idx_expr->expr->type == AST_IDENTIFIER) {
+            IdentifierNode* base_ident = (IdentifierNode*)idx_expr->expr;
+            Variable* base_var = type_checker_lookup_variable(checker, base_ident->name);
+            if (base_var && base_var->is_generic) {
+                return type_check_generic_call_explicit(checker, expr, call,
+                                                         base_var, base_ident->name,
+                                                         idx_expr->index);
+            }
+            // A NON-generic function indexed (`notGeneric[int](...)`): Go's
+            // own grammar shape again, but there is no generic
+            // instantiation to perform. Reject cleanly here, with a single
+            // diagnostic regardless of what the bracketed content happens
+            // to be — rather than falling through to the ordinary
+            // index-expr path, which gives an inconsistent diagnostic
+            // depending on the bracket's content (a bare type name like
+            // `int` fails as "Undefined variable"; a real in-scope value
+            // fails later as "Cannot index type function(...)").
+            if (base_var && base_var->type && base_var->type->kind == TYPE_FUNCTION) {
+                type_error(checker, expr->pos,
+                           "%s is not generic; it cannot be explicitly "
+                           "instantiated with a type argument",
+                           base_ident->name);
+                return NULL;
+            }
+        }
     }
 
     // A type in call-argument position (map_type/slice_type/chan_type — the
@@ -3613,6 +3972,43 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = checker->builtin_types[TYPE_VOID];
             return checker->builtin_types[TYPE_VOID];
         }
+        // clear(m) / clear(s) -> void (Go 1.21). Map: removes every entry
+        // (equivalent to deleting every key, but codegen lowers it to one
+        // dedicated goo_map_clear_sv pass instead of an entry-by-entry
+        // delete loop). Slice: zeroes every element up to len — len and
+        // cap are UNCHANGED (this is not a truncation; codegen memsets the
+        // backing store, it never touches the header). Exactly one
+        // argument, which must be a map or slice — anything else would
+        // hand codegen a value with neither a GooMapSV* nor a {ptr,len,cap}
+        // header to clear.
+        if (strcmp(func_ident->name, "clear") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "clear expects exactly one argument (map or slice)");
+                return NULL;
+            }
+            Type* arg_t = type_check_expression(checker, call->args);
+            if (!arg_t) return NULL;
+            // P2.8 cascade suppression, matching close()'s identical guard.
+            if (type_is_poison(arg_t)) return arg_t;
+            if (arg_t->kind != TYPE_MAP && arg_t->kind != TYPE_SLICE) {
+                type_error(checker, expr->pos,
+                           "clear: argument must be a map or slice, got %s", type_to_string(arg_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_VOID];
+            return checker->builtin_types[TYPE_VOID];
+        }
+        // min(a, b, ...) / max(a, b, ...) -> the smallest/largest argument
+        // (Go 1.21). Real checking (arity, ordered-type gate, untyped-
+        // constant adaptation) lives in the shared type_check_minmax_call
+        // helper above (name-parameterized — the two builtins differ only
+        // in which comparison codegen emits, never in their TYPE rule).
+        if (strcmp(func_ident->name, "min") == 0) {
+            return type_check_minmax_call(checker, expr, call, "min");
+        }
+        if (strcmp(func_ident->name, "max") == 0) {
+            return type_check_minmax_call(checker, expr, call, "max");
+        }
         // error(msg) -> !T. Constructs the error case of the enclosing function's
         // return type. The argument must be a string; the call is only valid inside
         // a function whose return type is an error union (!T).
@@ -3841,8 +4237,13 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 // before flipping check_signature on; no re-lookup of the
                 // Type itself, and no Variable to record as checked_callee
                 // (shim functions never have comptime params to walk).
+                // Task B (alias imports): dispatch on the resolved package's
+                // canonical import_path, matching type_check_selector_expr —
+                // see that call site's comment.
+                const char* dispatch_pkg = (pkg_marker && pkg_marker->package && pkg_marker->package->import_path)
+                    ? pkg_marker->package->import_path : pkg_ident->name;
                 if (!check_signature &&
-                    shim_signature_is_known_call(pkg_ident->name, sel->selector)) {
+                    shim_signature_is_known_call(dispatch_pkg, sel->selector)) {
                     check_signature = 1;
                     recv_offset = 0;
                     callee_name = sel->selector;
@@ -4574,7 +4975,17 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
             }
         }
 
-        Type* fn_type = stdlib_package_lookup(checker, pkg_ident->name, selector->selector);
+        // Task B (alias imports): dispatch on the package's canonical
+        // import_path (pkg_marker->package), not the use-site identifier —
+        // `f.Println` after `import f "fmt"` must resolve exactly like
+        // `fmt.Println`. pkg_marker was already resolved just above; a
+        // shim package's marker always carries a Package* (seeded by
+        // seed_imported_stdlib_markers), so this only falls back to the
+        // raw identifier for a non-package selector base (already handled
+        // by the TYPE_PACKAGE guard) or a defensive NULL.
+        const char* dispatch_pkg = (pkg_marker && pkg_marker->package && pkg_marker->package->import_path)
+            ? pkg_marker->package->import_path : pkg_ident->name;
+        Type* fn_type = stdlib_package_lookup(checker, dispatch_pkg, selector->selector);
         if (fn_type) {
             expr->node_type = fn_type;
             return fn_type;

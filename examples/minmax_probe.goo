@@ -1,0 +1,66 @@
+// minmax_probe: min/max builtins (Go 1.21) — richer coverage than the
+// spec-conformance fixture (tests/spec/builtin_minmax.goo), which only
+// pins the two-int-literal shape. This probe pins:
+//   - 3+ args (not just 2)
+//   - mixed-width int adaptation (a typed int8/int32 variable meeting an
+//     untyped literal — the literal adapts to the variable's width)
+//   - float (untyped-default float64, and a typed float32 variable meeting
+//     an untyped literal)
+//   - string (lexicographic order via goo_string_cmp)
+//   - the single-argument identity case
+//   - NaN propagation (Go: "if any argument is NaN, min/max returns NaN")
+package main
+
+import "fmt"
+
+func main() {
+	// Plain int, 3 args.
+	fmt.Println(min(3, 1, 2))
+	fmt.Println(max(3, 1, 2))
+
+	// Mixed width: the untyped literal adapts to the typed operand's width.
+	var a int8 = 5
+	fmt.Println(min(a, 10))
+	fmt.Println(max(a, 10))
+
+	var b int32 = -7
+	fmt.Println(min(b, 100, -50))
+	fmt.Println(max(b, 100, -50))
+
+	// Two-pass regression pin (Task A review): the concrete-typed variable
+	// appears LAST, so a naive left-to-right fold would have already typed
+	// the untyped literals (as int) before discovering the int32 target —
+	// the two-pass checker re-stamps every node to int32 after pass 1
+	// resolves the common type. A fold rewrite that loses this prints a
+	// width/type error or wrong value here.
+	fmt.Println(min(200, 300, b))
+	fmt.Println(max(200, 300, b))
+
+	// Float (untyped-default float64).
+	fmt.Println(min(3.5, 1.25))
+	fmt.Println(max(3.5, 1.25))
+
+	// Typed float32 variable meeting an untyped literal.
+	var f32 float32 = 2.5
+	fmt.Println(min(f32, 9.0))
+	fmt.Println(max(f32, 9.0))
+
+	// String (lexicographic).
+	fmt.Println(min("banana", "apple", "cherry"))
+	fmt.Println(max("banana", "apple", "cherry"))
+
+	// Single argument: identity.
+	fmt.Println(min(42))
+	fmt.Println(max(42))
+
+	// NaN propagation: comparing a NaN result to itself is false (NaN is
+	// never equal to anything, including another NaN) — the cleanest
+	// portable way to assert "this value is NaN" without depending on the
+	// runtime's float formatting.
+	zero := 0.0
+	nan := zero / zero
+	minNan := min(nan, 1.0)
+	maxNan := max(1.0, nan)
+	fmt.Println(minNan == minNan)
+	fmt.Println(maxNan == maxNan)
+}

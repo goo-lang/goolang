@@ -2084,6 +2084,26 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 #endif
 }
 
+// Task C (explicit generic instantiation, f[T](...)): per-file static copy
+// of call_codegen.c's identically-named/identically-bodied helper (this
+// codebase's own convention for a small cross-TU-duplicated helper — see
+// e.g. str_dup's doc comment in monomorphize.c; no header declares a shared
+// non-static version). Recognizes a call's function node as either a bare
+// AST_IDENTIFIER (`f(...)`) or an AST_INDEX_EXPR wrapping one (`f[int]
+// (...)`, Go's own grammar shape for explicit instantiation — see the
+// checker-side dispatch in expression_checker.c), so the go/defer call-
+// rewiring branches below stay mirrored guard changes rather than
+// duplicated branches per shape. Returns NULL for anything else.
+static IdentifierNode* codegen_call_ident_callee(ASTNode* func_node) {
+    if (!func_node) return NULL;
+    if (func_node->type == AST_IDENTIFIER) return (IdentifierNode*)func_node;
+    if (func_node->type == AST_INDEX_EXPR) {
+        ASTNode* base = ((IndexExprNode*)func_node)->expr;
+        if (base && base->type == AST_IDENTIFIER) return (IdentifierNode*)base;
+    }
+    return NULL;
+}
+
 int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, stmt->pos, "LLVM support not available for go statements");
@@ -2155,9 +2175,10 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     // guaranteed non-NULL by the AST_CALL_EXPR check above, but each branch
     // still guards it defensively like the pre-existing comptime-only arm did.
     ValueInfo* func_val = NULL;
+    IdentifierNode* gid_base = codegen_call_ident_callee(call->function);
     if (call->type_arg_count > 0 && call->comptime_value_arg_count > 0 &&
-        call->function && call->function->type == AST_IDENTIFIER) {
-        IdentifierNode* gid = (IdentifierNode*)call->function;
+        gid_base) {
+        IdentifierNode* gid = gid_base;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return 0;
         for (size_t i = 0; i < call->type_arg_count; i++) {
@@ -2177,9 +2198,8 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
             func_val = value_info_new(gid->name, inst, concrete_sig);
         }
         free(concrete_args);
-    } else if (call->type_arg_count > 0 && call->function &&
-               call->function->type == AST_IDENTIFIER) {
-        IdentifierNode* gid = (IdentifierNode*)call->function;
+    } else if (call->type_arg_count > 0 && gid_base) {
+        IdentifierNode* gid = gid_base;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return 0;
         for (size_t i = 0; i < call->type_arg_count; i++) {
@@ -2702,14 +2722,35 @@ static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker
         ASTNode* base = ((SelectorExprNode*)call->function)->expr;
         if (base && base->node_type && base->node_type->kind != TYPE_PACKAGE)
             recv_base = base;
-    } else if (call->function && call->function->type == AST_IDENTIFIER) {
-        // Identifier callee: a NAMED top-level function is not in codegen's
-        // value table (it lives in the type-checker's function registry and
-        // resolves to a module-global symbol from any function — safe to
-        // re-emit in the thunk). A value-table hit whose type is a function
-        // is a func-typed local/param — a value that must be snapshotted.
-        ValueInfo* cv = codegen_lookup_value(codegen,
-                                             ((IdentifierNode*)call->function)->name);
+    } else if (call->function &&
+               (call->function->type == AST_IDENTIFIER ||
+                (call->type_arg_count > 0 && codegen_call_ident_callee(call->function)))) {
+        // Identifier callee (bare `f(...)`, or Task C's explicit-
+        // instantiation `f[int](...)`). The `call->type_arg_count > 0`
+        // guard on the IndexExpr leg is load-bearing, not redundant: an
+        // ORDINARY index expression callee (`arr[i]()`, calling a
+        // function-slice element) is also IndexExpr-wrapping-an-identifier
+        // shaped, and MUST still fall to the function-typed-expression arm
+        // below to be snapshotted by VALUE (`arr` is a local whose slot
+        // does not exist inside the thunk — re-emitting it there unsnapshotted
+        // is exactly the "instruction in another function" ICE the CALLEE
+        // SNAPSHOT doc block above warns about) — only a checker-validated
+        // explicit generic instantiation ever sets call->type_arg_count > 0
+        // this way, and codegen_call_ident_callee unwraps straight to the
+        // base identifier without evaluating anything.
+        //
+        // A NAMED top-level function is not in codegen's value table (it
+        // lives in the type-checker's function registry and resolves to a
+        // module-global symbol from any function — safe to re-emit in the
+        // thunk, including the explicit-instantiation shape, which
+        // call_codegen's own mirrored dispatch resolves identically to a
+        // bare call). A value-table hit whose type is a function is a
+        // func-typed local/param — a value that must be snapshotted; a
+        // generic function is never such a local (is_generic is set only
+        // for a top-level FuncDecl, declare_function_signature), so this
+        // lookup always misses for an explicit-instantiation callee.
+        IdentifierNode* ident = codegen_call_ident_callee(call->function);
+        ValueInfo* cv = codegen_lookup_value(codegen, ident->name);
         if (cv && cv->goo_type && cv->goo_type->kind == TYPE_FUNCTION)
             callee_expr = call->function;
     } else if (call->function && call->function->node_type &&

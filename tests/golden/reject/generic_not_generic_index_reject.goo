@@ -1,0 +1,19 @@
+// Explicit-instantiation syntax (Task C) applied to a NON-generic function:
+// `notGeneric[int](...)` parses the same as a genuine explicit instantiation
+// (CallExpr(IndexExpr(notGeneric, int), args)), but notGeneric declares no
+// type parameters at all. The checker's disambiguation gate
+// (type_check_call_expr, expression_checker.c) resolves the index base to a
+// TYPE_FUNCTION Variable that is NOT is_generic and rejects cleanly with a
+// single positioned diagnostic, rather than falling through to the ordinary
+// index-expr path (which would fail inconsistently depending on the
+// bracket's content: "Undefined variable 'int'" for a bare type name, or a
+// late "Cannot index type function(...)" for an in-scope value).
+package main
+
+func notGeneric(a int) int {
+	return a
+}
+
+func main() {
+	_ = notGeneric[int](7)
+}

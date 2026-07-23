@@ -943,6 +943,20 @@ void package_export_filter(Scope* pkg_scope, Scope* exports, struct Package* own
 Variable* type_checker_seed_package_marker(TypeChecker* checker,
                                            const char* name, Package* package);
 
+// Task B (alias imports): the single choke point for resolving a package-
+// qualified selector's dispatch key. `ident_name` is the SOURCE-LEVEL text
+// used at the use site (e.g. "f" in `f.Println(...)` after `import f
+// "fmt"`) — resolve it to the package marker's canonical import_path
+// (Package->import_path, set once from the import declaration and immune
+// to whatever alias spelling the call site uses) so shim-table lookups
+// (stdlib_package_lookup, shim_signature_*, and every codegen `pkg->name`
+// strcmp against a hardcoded shim name) key off the package's REAL identity
+// instead of the alias. Falls back to `ident_name` unchanged when no
+// marker/package is found (non-package identifiers, or a lookup miss) —
+// every unaliased call site is a no-op through here, since import_path ==
+// the bare name in that case anyway.
+const char* type_checker_pkg_dispatch_name(TypeChecker* checker, const char* ident_name);
+
 // Scope management
 Scope* scope_new(Scope* parent);
 void scope_free(Scope* scope);

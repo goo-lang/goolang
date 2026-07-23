@@ -1,0 +1,16 @@
+// Explicit generic instantiation (Task C) vs. an incompatible argument:
+// `first[int](...)` pre-binds T=int64, so a string argument is a genuine
+// type mismatch — Go itself rejects this the same way (an explicit type
+// argument that a later argument isn't assignable to). Must be a clean,
+// positioned rejection naming both types, not the pre-fix "Undefined
+// variable 'int'" diagnostic (the bug this task closes) and not an LLVM
+// verifier crash.
+package main
+
+func first[T any](a T, b T) T {
+	return a
+}
+
+func main() {
+	_ = first[int]("hello", "world")
+}
