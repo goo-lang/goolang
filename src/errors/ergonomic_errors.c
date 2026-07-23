@@ -30,7 +30,7 @@ ErgoErrorConfig ergo_default_config = {
 
 // Create new ergonomic error context
 ErgoErrorContext* ergo_error_context_new(void) {
-    ErgoErrorContext* ctx = calloc(1, sizeof(ErgoErrorContext));
+    ErgoErrorContext* ctx = xcalloc(1, sizeof(ErgoErrorContext));
     if (!ctx) return NULL;
     
     ctx->base_context = error_context_new();
@@ -88,7 +88,7 @@ ErrorContextFrame* ergo_push_context_frame(ErgoErrorContext* ctx,
         return NULL;
     }
     
-    ErrorContextFrame* frame = calloc(1, sizeof(ErrorContextFrame));
+    ErrorContextFrame* frame = xcalloc(1, sizeof(ErrorContextFrame));
     if (!frame) return NULL;
     
     frame->function_name = function_name ? strdup(function_name) : NULL;
@@ -249,7 +249,7 @@ void ergo_add_stack_trace_to_error(Error* error, const ErgoErrorContext* ctx) {
                 frame->operation_description ? frame->operation_description : "unknown operation");
         
         if (strlen(stack_trace) + strlen(frame_info) < sizeof(stack_trace) - 1) {
-            strcat(stack_trace, frame_info);
+            strncat(stack_trace, frame_info, sizeof(stack_trace) - strlen(stack_trace) - 1);
         }
         
         frame = frame->parent;
@@ -263,7 +263,7 @@ void ergo_add_stack_trace_to_error(Error* error, const ErgoErrorContext* ctx) {
 
 // Error collector implementation
 ErrorCollector* error_collector_new(ErgoErrorContext* ctx) {
-    ErrorCollector* collector = calloc(1, sizeof(ErrorCollector));
+    ErrorCollector* collector = xcalloc(1, sizeof(ErrorCollector));
     if (!collector) return NULL;
     
     collector->ctx = ctx;
@@ -333,7 +333,7 @@ bool error_collector_try(ErrorCollector* collector, Error* error) {
     }
     
     // Clone the error
-    Error* cloned_error = malloc(sizeof(Error));
+    Error* cloned_error = xmalloc(sizeof(Error));
     if (!cloned_error) return false;
     
     *cloned_error = *error;
@@ -369,7 +369,7 @@ Error* error_collector_finish(ErrorCollector* collector) {
     }
     
     // Multiple errors, create an aggregated error
-    Error* aggregated = malloc(sizeof(Error));
+    Error* aggregated = xmalloc(sizeof(Error));
     if (!aggregated) return NULL;
     
     aggregated->code = ERROR_INTERNAL; // Use generic code for aggregated errors
@@ -418,7 +418,7 @@ Error* error_collector_finish(ErrorCollector* collector) {
 StructuredError* structured_error_new(StructuredErrorType type, 
                                      const char* domain,
                                      const char* component) {
-    StructuredError* error = calloc(1, sizeof(StructuredError));
+    StructuredError* error = xcalloc(1, sizeof(StructuredError));
     if (!error) return NULL;
     
     error->base.code = (ErrorCode)type;
@@ -500,7 +500,7 @@ void structured_error_set_help(StructuredError* error,
 
 // Error transformer implementation
 ErrorTransformer* error_transformer_new(void) {
-    ErrorTransformer* transformer = calloc(1, sizeof(ErrorTransformer));
+    ErrorTransformer* transformer = xcalloc(1, sizeof(ErrorTransformer));
     if (!transformer) return NULL;
     
     transformer->auto_transform_enabled = true;

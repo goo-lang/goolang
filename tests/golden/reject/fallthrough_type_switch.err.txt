@@ -1,0 +1,1 @@
+fallthrough statement is not permitted in a type switch

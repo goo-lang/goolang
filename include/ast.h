@@ -3,6 +3,7 @@
 
 #include "token.h"
 #include <stddef.h>
+#include <stdint.h>
 
 // Forward declarations
 typedef struct ASTNode ASTNode;
@@ -170,6 +171,41 @@ typedef enum {
     AST_TYPE_SWITCH,
     AST_TYPE_CASE,
 
+    // arena { ... } block statement (bump-allocated scope), Task 5.
+    // Tail-appended per the M10 convention above (Makefile has no header
+    // deps). Mirrors AST_UNSAFE_STMT's shape (a wrapped body block).
+    AST_ARENA_BLOCK,
+
+    // gofmt-syntax-b Task 1 (P1.5): labeled statements + `break label` /
+    // `continue label`. Three DISTINCT node types — AST_BREAK_LABEL_STMT and
+    // AST_CONTINUE_LABEL_STMT are NOT the existing bare AST_BREAK_STMT/
+    // AST_CONTINUE_STMT with a label field bolted on: every bare-break/
+    // continue alloc site builds a plain ASTNode (ast_break_stmt_new /
+    // ast_continue_stmt_new — #167 R3 rider, P2.9/T3), so casting one of
+    // those to a derived struct with a trailing `char* label` would be an
+    // out-of-bounds read on every existing call site (the same
+    // ast_node_copy failure class documented in the skill's memory notes).
+    // Tail-appended per the M10 convention above (Makefile has no header
+    // deps).
+    AST_LABEL_STMT,          // `L: stmt`
+    AST_BREAK_LABEL_STMT,    // `break L`
+    AST_CONTINUE_LABEL_STMT, // `continue L`
+
+    // gofmt-syntax-b Task 2 (P1.6): `goto label`. Tail-appended per the M10
+    // convention above (Makefile has no header deps).
+    AST_GOTO_STMT,
+
+    // gofmt-syntax-b Task 3 (P1.7): `fallthrough`. A bare marker node, no
+    // extra fields — same shape as AST_BREAK_STMT/AST_CONTINUE_STMT (built
+    // via ast_fallthrough_stmt_new — #167 R3 rider, P2.9/T3 — no
+    // ast_node_free case needed since there is nothing to free beyond the
+    // base node). Placement legality (final statement of a non-last
+    // expression-switch clause; illegal in a type switch, select, or
+    // outside any switch) is entirely semantic — see
+    // type_check_switch_like_body's doc comment, type_checker.c. Tail-
+    // appended per the M10 convention above (Makefile has no header deps).
+    AST_FALLTHROUGH_STMT,
+
     AST_NODE_COUNT
 } ASTNodeType;
 
@@ -297,6 +333,10 @@ typedef struct {
     // Non-owning alias: the receiver is spliced as the head of `params`,
     // so it is freed via the params chain — do not free it separately.
     struct ASTNode* receiver;
+    // Generic type parameters (`func F[T, U any](...)`). NULL for ordinary
+    // functions. Linked list of VarDeclNode: names[] = a type-param group's
+    // names, type = the constraint (Tier A: always `any`). Owned by this node.
+    struct ASTNode* type_params;
 } FuncDeclNode;
 
 // Variable declaration
@@ -336,6 +376,12 @@ typedef struct {
     // (src/types/embedding.c) keys off this flag. Appended at the STRUCT TAIL
     // per the no-header-deps convention above.
     int is_embedded;
+    // Comptime-value-specialized functions: set on a parameter written
+    // `comptime name type`. The argument bound to it at a call must be a
+    // compile-time constant; the function is monomorphized per distinct value
+    // (the value is substituted as a literal in the specialized body). Appended
+    // at the STRUCT TAIL per the no-header-deps convention above.
+    int is_comptime_param;
 } VarDeclNode;
 
 // Constant declaration
@@ -432,6 +478,23 @@ typedef struct {
     ASTNode base;
     struct ASTNode* comm;       // Communication operation (send/recv)
     struct ASTNode* body;       // Case body
+    // gofmt-syntax-b Task 4 (P1.10): select value-binding cases (`case v :=
+    // <-ch:` / `case v = <-ch:`). NULL/0 for every pre-existing case shape
+    // (plain comm, default) — tail-appended, so audit EVERY
+    // ast_select_case_new call site to leave these at their zero value
+    // unless it's actually building a binding case (malloc-garbage hazard
+    // per the goo-grammar skill).
+    char* bind_name;            // bound identifier's name, or NULL = no bind
+    // 1 = `:=` (declare a new variable, scoped to the case body)
+    // 0 = `=` (assign into an existing, already-declared variable)
+    // -1 = `v, ok := <-ch` (comma-ok binding) — grammar-accepted so the
+    //      diagnostic can be a specific, positioned "requires close()"
+    //      message instead of a generic parse error; ALWAYS rejected in
+    //      type_check_select_stmt (close() is unsupported in v1, P3.1) and
+    //      never reaches codegen. bind_name is NULL for this sentinel (the
+    //      first identifier is freed, unused — the case is rejected either
+    //      way, so nothing downstream needs its name).
+    int is_declare;
 } SelectCaseNode;
 
 // Switch statement (Go-style expression switch)
@@ -459,6 +522,12 @@ typedef struct {
     ASTNode base;
     struct ASTNode* body;       // Block statement containing unsafe operations
 } UnsafeStmtNode;
+
+// Arena region statement (bump-allocated scope)
+typedef struct {
+    ASTNode base;
+    struct ASTNode* body;   // Block statement whose allocations use the arena
+} ArenaBlockNode;
 
 // Inline assembly statement
 typedef struct {
@@ -518,6 +587,36 @@ typedef struct {
     struct ASTNode* args;       // Argument list
     int has_spread;             // final arg is `expr...` (Go spread); malloc'd
                                 // call sites must zero it — see parser arms
+    // Function generics Task 6: the concrete type-arg tuple inferred for this
+    // call site when `function` resolves to a generic Variable (is_generic).
+    // Set by type_check_generic_call (expression_checker.c) alongside the
+    // call's substituted result type; NULL/0 for every non-generic call.
+    // type_args[i] is the concrete Type bound to the callee's type-param
+    // index i — owned by the type checker/interning system (same model as
+    // node_type below), NOT by this node; only the array itself is freed
+    // here. Codegen's monomorphizer (Task 9/10) reads these directly off the
+    // call node to select/emit the right instantiation. malloc'd call sites
+    // (the parser arms building CallExprNode directly) must zero both.
+    struct Type** type_args;
+    size_t type_arg_count;
+    // Comptime-value-specialized calls: the compile-time int value bound to
+    // each comptime parameter at THIS call site, in parameter order (0 for
+    // non-comptime positions is not stored — index by comptime-param slot).
+    // Set by the type checker (Task 2/3), read by the monomorphizer.
+    // Tail-appended, no-header-deps convention.
+    //
+    // Invariant (fix round 3): zeroed at construction — every parser.y
+    // call_expr arm NULLs both, exactly like type_args above — and owned
+    // by the type checker thereafter: type_check_call_expr's FIRST visit
+    // to the node (discriminated via base.node_type, NULL until the first
+    // successful check stamps it) captures the values; every re-visit
+    // (codegen re-invokes the checker on the same node — method-call
+    // return-type recomputation, defer re-emission) leaves them untouched,
+    // so once captured they are stable for the node's lifetime. No code
+    // other than type_check_call_expr may write them. Freed exactly once,
+    // in ast_node_free's AST_CALL_EXPR case.
+    int64_t* comptime_value_args;
+    size_t   comptime_value_arg_count;
 } CallExprNode;
 
 // Index expression
@@ -561,6 +660,12 @@ typedef struct {
 typedef struct {
     ASTNode base;
     char* name;
+    // P4.2/B1: package qualifier for `pkg.Type` (NULL for an unqualified
+    // type name). Tail-appended per the no-header-deps convention (see
+    // .claude/skills/goo-grammar/references/workarounds.md #8). Every mint
+    // site (parser.y's type_name arms, the embedded-field helper,
+    // ast_type_clone) must initialize/clone this explicitly.
+    char* package;
 } BasicTypeNode;
 
 // Array type
@@ -1208,12 +1313,52 @@ typedef struct {
     struct ASTNode* body;    // Statement list for this clause
 } TypeCaseNode;
 
+// gofmt-syntax-b Task 1 (P1.5): `name: stmt`. `stmt` may be any statement;
+// when it is a for/switch/select/type-switch, codegen tags that construct's
+// pushed break-scope frame with `name` (via CodeGenerator.pending_label) so
+// a labeled break/continue elsewhere in the function can target it
+// specifically. A label on any OTHER statement is legal Go (a goto target,
+// not wired until Task 2) — codegen just emits `stmt` normally.
+typedef struct {
+    ASTNode base;
+    char* name;
+    struct ASTNode* stmt;
+} LabelStmtNode;
+
+// `break label` — see AST_BREAK_LABEL_STMT's enum-site comment for why this
+// is a separate node type from the bare AST_BREAK_STMT, not a shared struct.
+typedef struct {
+    ASTNode base;
+    char* label;
+} BreakLabelStmtNode;
+
+// `continue label` — sibling of BreakLabelStmtNode above.
+typedef struct {
+    ASTNode base;
+    char* label;
+} ContinueLabelStmtNode;
+
+// gofmt-syntax-b Task 2 (P1.6): `goto label`. A separate node type from the
+// break/continue-label siblings above (not a reused shape) purely because it
+// has no bare/unlabeled counterpart to be confused with — `goto` always
+// takes an operand — but kept structurally identical (base + label) so it
+// reads as the fourth member of the same family.
+typedef struct {
+    ASTNode base;
+    char* label;
+} GotoStmtNode;
+
 // =============================================================================
 // Function declarations for AST manipulation
 // =============================================================================
-ASTNode* ast_node_new(ASTNodeType type, Position pos);
+// ast_node_new is now static to src/ast/ast.c (#167 R3 rider, P2.9/T3): every
+// caller outside ast.c has a typed constructor instead (ast_break_stmt_new /
+// ast_continue_stmt_new / ast_fallthrough_stmt_new below cover the last three
+// bare-ASTNode call sites, in parser.y). No public declaration remains.
 void ast_node_free(ASTNode* node);
-ASTNode* ast_node_copy(const ASTNode* node);
+// ast_node_copy was deleted (under-allocated derived structs — a latent
+// heap overflow; see clone_const_value's doc comment in parser_actions.h
+// and ast_type_clone below for the typed-constructor replacement pattern).
 // Deep-clone a type-expression AST node (see ast.c). Returns NULL for type
 // kinds the grouped-name expansion path does not duplicate.
 ASTNode* ast_type_clone(const ASTNode* node);
@@ -1264,6 +1409,25 @@ TypeCaseNode* ast_type_case_new(ASTNode* types, ASTNode* body, Position pos);
 DeferStmtNode* ast_defer_stmt_new(ASTNode* call, Position pos);
 UnsafeStmtNode* ast_unsafe_stmt_new(ASTNode* body, Position pos);
 AsmStmtNode* ast_asm_stmt_new(const char* assembly_code, Position pos);
+ArenaBlockNode* ast_arena_block_new(ASTNode* body, Position pos);
+// gofmt-syntax-b Task 1 (P1.5): label statement + labeled break/continue
+// constructors. `name`/`label` are copied (str_dup'd internally); callers
+// keep ownership of their own copy.
+LabelStmtNode* ast_label_stmt_new(const char* name, ASTNode* stmt, Position pos);
+BreakLabelStmtNode* ast_break_label_stmt_new(const char* label, Position pos);
+ContinueLabelStmtNode* ast_continue_label_stmt_new(const char* label, Position pos);
+// gofmt-syntax-b Task 2 (P1.6): goto statement constructor. `label` is
+// copied (str_dup'd internally); caller keeps ownership of its own copy.
+GotoStmtNode* ast_goto_stmt_new(const char* label, Position pos);
+// #167 R3 rider (P2.9/T3): typed constructors for the three bare-marker
+// node types (no derived struct, no extra fields beyond the base ASTNode —
+// see AST_FALLTHROUGH_STMT's doc comment above) that were still built via
+// the now-private ast_node_new directly in parser.y. One constructor per
+// type so each parser.y call site names the node it builds, matching every
+// other statement constructor in this header.
+ASTNode* ast_break_stmt_new(Position pos);
+ASTNode* ast_continue_stmt_new(Position pos);
+ASTNode* ast_fallthrough_stmt_new(Position pos);
 
 // Goo extension constructors
 ErrorUnionTypeNode* ast_error_union_type_new(ASTNode* value_type, Position pos);

@@ -1,10 +1,35 @@
 #include "codegen.h"
+#include "block_escape.h"
+#include "param_escape.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <errno.h>
+
+// P4.3 (packages-B): the single source of truth for the `goo_pkg__<pkg>__
+// <base>` mangling scheme, taking the package NAME directly rather than
+// reading it off checker->current_package. codegen_package_symbol_name
+// (below) covers the DEFINITION side, where the current package being
+// codegen'd IS the owner. Cross-package method CALL/VALUE sites need the
+// opposite direction: codegen'ing main (current_package == NULL) but
+// calling a method whose RECEIVER type is owned by some OTHER, already-
+// compiled package (type_receiver_owner_package, types.h) — this variant
+// lets those call sites build the exact same symbol from that package's own
+// name. Returns NULL if either argument is NULL/empty; malloc'd, caller frees.
+char* codegen_pkg_mangled_symbol(const char* pkg_name, const char* base) {
+    if (!pkg_name || !pkg_name[0] || !base) return NULL;
+    size_t need = strlen("goo_pkg__") + strlen(pkg_name) + strlen("__")
+                + strlen(base) + 1;
+    char* out = malloc(need);
+    if (!out) return NULL;
+    snprintf(out, need, "goo_pkg__%s__%s", pkg_name, base);
+    return out;
+}
 
 // stdlib Phase 0 (Task 4): compute the LLVM symbol name for a top-level symbol
 // emitted while codegenning a non-main package. For the main package
@@ -21,13 +46,7 @@ char* codegen_package_symbol_name(TypeChecker* checker, const char* base) {
                  || !checker->current_package->name || !base) {
         return NULL;
     }
-    const char* pkg = checker->current_package->name;
-    size_t need = strlen("goo_pkg__") + strlen(pkg) + strlen("__")
-                + strlen(base) + 1;
-    char* out = malloc(need);
-    if (!out) return NULL;
-    snprintf(out, need, "goo_pkg__%s__%s", pkg, base);
-    return out;
+    return codegen_pkg_mangled_symbol(checker->current_package->name, base);
 }
 
 // Code generator initialization and cleanup
@@ -48,7 +67,7 @@ static int codegen_configure_wasm_target(CodeGenerator* codegen) {
 
 CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
 #if LLVM_AVAILABLE
-    CodeGenerator* codegen = malloc(sizeof(CodeGenerator));
+    CodeGenerator* codegen = xmalloc(sizeof(CodeGenerator));
     if (!codegen) return NULL;
     
     // Initialize LLVM core
@@ -88,7 +107,31 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->uncmpeq_fn = NULL;
 
     // Loop-context stack (break/continue targets) starts empty.
-    codegen->loop_depth = 0;
+    codegen->cfctx.loop_depth = 0;
+
+    // gofmt-syntax-b Task 1: no label pending a push yet. loop_label/
+    // loop_is_loop need no init — every slot < loop_depth is written before
+    // it is ever read (set at push time, same convention as
+    // loop_break_bb/loop_continue_bb above, which also start uninitialized).
+    codegen->cfctx.pending_label = NULL;
+
+    // gofmt-syntax-b Task 2: no goto labels registered yet (per-function
+    // reset happens in codegen_enter_function, since — unlike loop_depth —
+    // this table isn't push/pop self-balancing within a function).
+    codegen->cfctx.goto_label_count = 0;
+
+    // gofmt-syntax-b Task 3: fallthrough-target stack starts empty — push/
+    // pop self-balances within codegen_generate_switch_stmt, same
+    // convention as loop_depth above.
+    codegen->cfctx.fallthrough_depth = 0;
+
+    // Arena-regions Task 3: arena stack starts empty — codegen_emit_alloc
+    // stays on the goo_alloc path until Task 6's `arena{}` lowering pushes.
+    codegen->arena_depth = 0;
+    // Arena-regions Task 7c: no analysis result until codegen_generate_
+    // program runs param_escape_analyze/block_escape_analyze over the
+    // program it's about to emit.
+    codegen->block_escape = NULL;
 
     // Error reporting
     codegen->current_file = NULL;
@@ -99,7 +142,14 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->target_triple = NULL;
     codegen->target_cpu = NULL;
     codegen->target_features = NULL;
-    
+
+    // P3.10: driver overwrites this from -O right after codegen_new.
+    codegen->opt_level = 0;
+
+    // P3.11: driver overwrites these from -l/--link right after codegen_new.
+    codegen->link_libs = NULL;
+    codegen->link_lib_count = 0;
+
     // WebAssembly configuration
     codegen->wasm_configured = 0;
     codegen->is_wasm_target = 0;
@@ -109,6 +159,24 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     codegen->deferred_global_inits = NULL;
     codegen->deferred_global_init_count = 0;
     codegen->deferred_global_init_capacity = 0;
+
+    // Function-generics Task 8: substitution environment — unset (NULL/0)
+    // until Task 9/10 populate it around a monomorphized instantiation's
+    // codegen. NULL here makes codegen_resolve_type identity and TYPE_PARAM
+    // unreachable in codegen_type_to_llvm on the non-generic path.
+    codegen->active_subst = NULL;
+    codegen->active_subst_n = 0;
+
+    // Function-generics Task 9: no override until codegen_generate_function_
+    // instance installs one around a single instantiation's stamping.
+    codegen->symbol_override = NULL;
+
+    // Comptime value params Task 3: no active comptime instance until
+    // codegen_generate_comptime_function_instance installs one around a
+    // single instantiation's stamping (monomorphize.c) — mirrors
+    // active_subst/active_subst_n just above, one axis over.
+    codegen->active_comptime_values = NULL;
+    codegen->active_comptime_value_n = 0;
 
     // Declare runtime functions
     codegen_declare_runtime_functions(codegen);
@@ -122,7 +190,7 @@ CodeGenerator* codegen_new(const char* module_name __attribute__((unused))) {
     
     return codegen;
 #else
-    CodeGenerator* codegen = malloc(sizeof(CodeGenerator));
+    CodeGenerator* codegen = xmalloc(sizeof(CodeGenerator));
     if (!codegen) return NULL;
     
     codegen->error_message = strdup("LLVM support not available in this build");
@@ -183,6 +251,13 @@ void codegen_free(CodeGenerator* codegen) {
     free(codegen->target_triple);
     free(codegen->target_cpu);
     free(codegen->target_features);
+
+    // Arena-regions Task 7c: free the block-escape analysis result computed
+    // at codegen_generate_program entry (borrowed AST-node pointers inside
+    // it are not owned, so this frees only the result's own storage).
+    if (codegen->block_escape) {
+        block_escape_result_free(codegen->block_escape);
+    }
 #else
     free(codegen->error_message);
     free(codegen->current_file);
@@ -260,7 +335,27 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         codegen_error(codegen, program->pos, "Expected program node");
         return 0;
     }
-    
+
+    // Arena-regions Task 7c: run the param-escape (7a) and block-escape (7b)
+    // analyses over the SAME `program` AST codegen is about to emit from, so
+    // every alloc-site ASTNode* pointer codegen_emit_alloc later passes to
+    // codegen_arena_eligible matches a decision recorded here by identity.
+    // codegen_generate_program may run once per package (main pass plus one
+    // pass per imported package into this same module) — the re-entry guard
+    // frees any prior result before overwriting so repeat calls don't leak.
+    // Analysis is an optimization, not a correctness precondition: if either
+    // step returns NULL (allocation failure), leave block_escape NULL and
+    // CONTINUE — codegen_arena_eligible then treats every site as escaping
+    // (heap), which is the same fail-safe default this gate already has for
+    // every unclassified site. Do NOT abort codegen on analysis failure.
+    if (codegen->block_escape) {
+        block_escape_result_free(codegen->block_escape);
+        codegen->block_escape = NULL;
+    }
+    ParamEscapeResult* pe = param_escape_analyze(program);
+    codegen->block_escape = block_escape_analyze(program, pe); // does NOT retain pe
+    param_escape_result_free(pe);
+
     // Initialize target
     if (!codegen_initialize_target(codegen)) {
         codegen_error(codegen, program->pos, "Failed to initialize target");
@@ -314,6 +409,31 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
         LLVMAddFunction(codegen->module, "goo.global_init", fn_ty);
     }
 
+    // Function-generics Task 9: stamp every recorded generic instantiation's
+    // specialized function BEFORE the body-emitting declaration loop below.
+    // Ordering is load-bearing, not cosmetic: main's body is emitted INSIDE
+    // that loop, and (once Task 10 rewires call sites) will call a mangled
+    // instance symbol like `Id__int64` — that symbol must already exist in
+    // the module by the time main's body is generated, exactly like the
+    // plain-function predeclare pass above exists so a call to a
+    // later-defined function resolves. Running the pass here, right after
+    // that predeclare pass, also means an instance body that itself calls an
+    // ordinary concrete function finds that callee's prototype already in
+    // place.
+    //
+    // MAIN PACKAGE ONLY: checker->instantiations accumulates across every
+    // package + main pass sharing this one TypeChecker (compile_resolved_
+    // packages, goo.c) — by the time main's codegen_generate_program call
+    // reaches here, every package has already been type-checked (and
+    // codegen'd), so the full instantiation list is already present. Gating
+    // on is_main_pass, mirroring the goo.global_init prototype gate just
+    // above, runs the worklist exactly once instead of once per package (the
+    // LLVMGetNamedFunction dedup inside codegen_monomorphize would make a
+    // repeat harmless, but there is no reason to redo the work).
+    if (is_main_pass && !codegen_monomorphize(codegen, checker)) {
+        return 0;
+    }
+
     // Generate declarations
     if (prog->decls) {
         ASTNode* decl = prog->decls;
@@ -337,11 +457,42 @@ int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     return codegen->error_count == 0;
 }
 
+// Comptime value params Task 3: does this (non-method) function declaration
+// carry any `comptime` parameter? Scoped to plain functions only — a
+// comptime-param METHOD is intentionally left on the ordinary single-
+// emission codegen path for now (its `n` stays an actual runtime parameter,
+// same as before this task): Part B's call-rewiring (call_codegen.c) only
+// rewrites a bare identifier call site today, so skipping a method's bare
+// emission here without a matching call-site rewrite would leave any
+// `obj.M(4)` call resolving to nothing. Not a regression — comptime-param
+// methods already worked exactly this way (single emission, runtime `n`)
+// before this task; this only changes PLAIN functions. See
+// monomorphize.c's comptime worklist doc comment for the same scoping.
+static int func_decl_has_comptime_param(FuncDeclNode* fd) {
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (((VarDeclNode*)p)->is_comptime_param) return 1;
+    }
+    return 0;
+}
+
 int codegen_generate_declaration(CodeGenerator* codegen, TypeChecker* checker, ASTNode* decl) {
     if (!codegen || !checker || !decl) return 0;
-    
+
     switch (decl->type) {
         case AST_FUNC_DECL:
+            // Function generics Task 4: a generic function template
+            // (type_params != NULL) is never emitted directly — it is
+            // monomorphized per concrete instantiation (M3). Skip here.
+            if (((FuncDeclNode*)decl)->type_params) return 1;
+            // Comptime value params Task 3: likewise, a plain (non-method)
+            // function with a `comptime` parameter is monomorphized per
+            // distinct value tuple (codegen_monomorphize's comptime
+            // worklist, monomorphize.c) rather than emitted once under its
+            // bare name. See func_decl_has_comptime_param's doc comment for
+            // why methods are excluded from this skip.
+            if (!((FuncDeclNode*)decl)->receiver &&
+                func_decl_has_comptime_param((FuncDeclNode*)decl)) return 1;
             return codegen_generate_function_decl(codegen, checker, decl);
         case AST_VAR_DECL:
             return codegen_generate_var_decl(codegen, checker, decl);
@@ -395,7 +546,7 @@ void codegen_warning(CodeGenerator* codegen, Position pos, const char* format, .
 
 // Value management
 ValueInfo* value_info_new(const char* name, LLVMValueRef llvm_value, Type* goo_type) {
-    ValueInfo* info = malloc(sizeof(ValueInfo));
+    ValueInfo* info = xmalloc(sizeof(ValueInfo));
     if (!info) return NULL;
     
     info->name = name ? strdup(name) : NULL;
@@ -451,7 +602,7 @@ int codegen_add_value(CodeGenerator* codegen, ValueInfo* info) {
 
 // Function management  
 FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* goo_type) {
-    FunctionInfo* info = malloc(sizeof(FunctionInfo));
+    FunctionInfo* info = xmalloc(sizeof(FunctionInfo));
     if (!info) return NULL;
     
     info->name = name ? strdup(name) : NULL;
@@ -473,6 +624,9 @@ FunctionInfo* function_info_new(const char* name, LLVMValueRef function, Type* g
     info->deferred_calls = NULL;
     info->deferred_count = 0;
     info->deferred_capacity = 0;
+
+    info->defer_stack_mode = 0;
+    info->defer_frame = NULL;
 
     return info;
 }
@@ -511,7 +665,22 @@ int codegen_enter_function(CodeGenerator* codegen, FunctionInfo* func_info) {
     codegen->current_function_info = func_info;
     // Capture the current value table position — anything added past
     // this point belongs to this function and gets cleared on exit.
-    codegen->value_table_function_start = codegen->value_table_size;
+    // Codegen hardening R2a: the mark is read via vscope_enter, but kept in
+    // this field (not a local) because codegen_generate_func_lit's nested-
+    // emission save/restore needs to snapshot/restore it across a nested
+    // codegen_enter_function/codegen_exit_function pair — see
+    // include/value_scope.h.
+    codegen->value_table_function_start = vscope_enter(codegen);
+
+    // gofmt-syntax-b Task 2: this function's goto-label table starts empty
+    // — the previous function's labels/blocks must not leak in (blocks are
+    // created once and never popped, unlike the loop stack, so this reset
+    // has to be explicit; see ControlFlowContext's doc comment,
+    // codegen_cfctx.h). Codegen hardening R1: cfctx_reset is exactly
+    // `cfctx->goto_label_count = 0` — same effect as before, named so a
+    // future per-function-reset addition to ControlFlowContext has one
+    // call site to extend instead of a field write to remember to add here.
+    cfctx_reset(&codegen->cfctx);
 
     return 1;
 }
@@ -524,9 +693,7 @@ void codegen_exit_function(CodeGenerator* codegen) {
     // Per-info free isn't done here because value_info_free's call
     // pattern in this codebase is inconsistent — the entries stay
     // logically dead and will be overwritten by future adds.
-    if (codegen->value_table_size > codegen->value_table_function_start) {
-        codegen->value_table_size = codegen->value_table_function_start;
-    }
+    vscope_exit(codegen, codegen->value_table_function_start);
 
     codegen->current_function = NULL;
     codegen->current_function_info = NULL;
@@ -564,12 +731,9 @@ LLVMValueRef codegen_map_value_to_slot(CodeGenerator* codegen, LLVMValueRef valu
         // Boxes leak on overwrite/delete by decision (no GC yet; same as
         // closure envs and interface boxes).
         LLVMTypeRef vt = codegen_type_to_llvm(codegen, value_type);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!vt || !alloc_fn) return NULL;
+        if (!vt) return NULL;
         LLVMValueRef size = LLVMSizeOf(vt);
-        LLVMValueRef box = LLVMBuildCall2(codegen->builder,
-                                          LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "map_box");
+        LLVMValueRef box = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
         LLVMBuildStore(codegen->builder, value, box);
         return LLVMBuildPtrToInt(codegen->builder, box, i64, "map_slot");
     }
@@ -675,6 +839,91 @@ static LLVMValueRef codegen_get_or_declare_strcmp(CodeGenerator* codegen) {
     LLVMTypeRef params[2] = { i8p, i8p };
     LLVMTypeRef fnty = LLVMFunctionType(i32, params, 2, 0);
     return LLVMAddFunction(codegen->module, "strcmp", fnty);
+}
+
+// Single funnel point for every heap allocation the compiler emits: new(T),
+// &StructLiteral{}, slice-literal backing, closure environments,
+// escape/capture-promoted locals, map value/key boxing, interface boxing, and
+// go-statement argument boxing all used to inline their own copy of "get or
+// declare goo_alloc, LLVMBuildCall2, use the raw pointer" — nine near-identical
+// copies of the same idiom (see git history pre-dating this helper for the
+// scattered originals). Consolidated here so a later arena-region task has
+// exactly ONE place to branch `kind` on instead of nine.
+//
+// Arena-regions Task 3: push `arena` onto codegen->arena_stack. Silently
+// drops the push past the fixed depth (matches the loop-context stack's
+// depth-32 cap style above) rather than growing — arena nesting this deep
+// is not an expected real-world shape. Nothing calls this yet; Task 6's
+// `arena{}` block lowering is the first caller.
+void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena) {
+    if (!codegen) return;
+    size_t cap = sizeof(codegen->arena_stack) / sizeof(codegen->arena_stack[0]);
+    if ((size_t)codegen->arena_depth >= cap) return;
+    // Record the loop nesting at push time so a break/continue can free only
+    // the arenas pushed inside the loop it exits (see arena_loop_depth's doc).
+    codegen->arena_loop_depth[codegen->arena_depth] = codegen->cfctx.loop_depth;
+    codegen->arena_stack[codegen->arena_depth++] = arena;
+}
+
+// Arena-regions Task 3: pop the innermost active arena. No-op when already
+// empty.
+void codegen_arena_pop(CodeGenerator* codegen) {
+    if (!codegen || codegen->arena_depth <= 0) return;
+    codegen->arena_depth--;
+}
+
+// Arena-regions Task 3: the innermost active arena's SSA pointer, or NULL
+// when no `arena{}` block is currently active. codegen_emit_alloc uses this
+// to decide whether to route to goo_arena_alloc or goo_alloc.
+LLVMValueRef codegen_arena_current(CodeGenerator* codegen) {
+    if (!codegen || codegen->arena_depth <= 0) return NULL;
+    return codegen->arena_stack[codegen->arena_depth - 1];
+}
+
+// Arena-regions Task 7c: the testable seam. True iff an allocation for
+// `alloc_site` should be routed to the active arena — an arena must be on
+// the stack, `kind` must be the (only, today) arena-eligible kind, AND the
+// site must not be classified as escaping its enclosing arena block.
+// block_escape_site_escapes returns true on a NULL/unknown site, so a NULL
+// alloc_site (every call site 7c does not yet classify) or a site outside
+// any arena block falls through to false here -> codegen_emit_alloc's heap
+// path, unchanged. Touches only arena_stack/arena_depth/block_escape, never
+// the builder/module, so it is safe to call on a lightweight CodeGenerator
+// built without codegen_new (see arena_routing_test.c).
+bool codegen_arena_eligible(CodeGenerator* codegen, ASTNode* alloc_site, AllocKind kind) {
+    return codegen_arena_current(codegen) != NULL
+        && kind == ALLOC_KIND_DEFAULT
+        && !block_escape_site_escapes(codegen ? codegen->block_escape : NULL, alloc_site);
+}
+
+// `alloc_site` (7c) is the AST node this allocation originates from; NULL
+// for any call site block_escape.c does not yet classify — always falls
+// through to heap via codegen_arena_eligible's NULL-site miss contract.
+// With an empty arena stack (true for every program until Task 6 ships
+// `arena{}` syntax) this is byte-identical to the pre-arena goo_alloc-only
+// path (verified by the unchanged golden suite).
+LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind, ASTNode* alloc_site) {
+    if (!codegen || !size) return NULL;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_type = LLVMInt64TypeInContext(ctx);
+
+    LLVMValueRef current_arena = codegen_arena_current(codegen);
+    if (codegen_arena_eligible(codegen, alloc_site, kind)) {
+        LLVMTypeRef arena_params[] = { ptr_type, size_type };
+        LLVMTypeRef arena_alloc_ty = LLVMFunctionType(ptr_type, arena_params, 2, 0);
+        LLVMValueRef arena_alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_alloc");
+        if (!arena_alloc_fn) {
+            arena_alloc_fn = LLVMAddFunction(codegen->module, "goo_arena_alloc", arena_alloc_ty);
+        }
+        LLVMValueRef args[] = { current_arena, size };
+        return LLVMBuildCall2(codegen->builder, arena_alloc_ty, arena_alloc_fn, args, 2, "arena_alloc");
+    }
+
+    LLVMTypeRef alloc_ty = LLVMFunctionType(ptr_type, &size_type, 1, 0);
+    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
+    if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
+    return LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1, "alloc");
 }
 
 // Struct-typed map keys (Task 2): synthesize (or return the cached) per-field
@@ -856,12 +1105,21 @@ LLVMValueRef codegen_get_or_emit_struct_key_eq(CodeGenerator* codegen, TypeCheck
 //     equal to itself, matching Go/IEEE-754 — not a bug).
 //   - string: inttoptr each word to the `{i8*,i64}` string aggregate, load,
 //     extractvalue the char* (field 0), strcmp == 0.
-//   - struct: delegates STRAIGHT to codegen_get_or_emit_struct_key_eq (#129)
-//     — its i32(i64,i64)-over-ptr-to-heap-copy signature already matches a
-//     struct concrete's boxing exactly; not re-synthesized, and NOT cached
-//     in typeeq_cache_keys/vals (structeq_cache_keys/vals already memoizes
-//     it, so a second lookup here would just be a wasted linear scan ahead
-//     of the one structeq_cache already does).
+//   - struct (all fields comparator-safe): delegates STRAIGHT to
+//     codegen_get_or_emit_struct_key_eq (#129) — its i32(i64,i64)-over-ptr-
+//     to-heap-copy signature already matches a struct concrete's boxing
+//     exactly; not re-synthesized, and NOT cached in typeeq_cache_keys/vals
+//     (structeq_cache_keys/vals already memoizes it, so a second lookup here
+//     would just be a wasted linear scan ahead of the one structeq_cache
+//     already does).
+//   - struct with a slice/map/func/interface/array field (NON-comparable in
+//     Go): falls through to the uncomparable-panic stub below (arc3 Task 2).
+//     struct_key_eq cannot lower `==` over an aggregate field, and the eq_fn
+//     is baked into the descriptor eagerly at BOXING time — so delegating
+//     unconditionally crashed the verifier the moment such a struct was boxed
+//     into `any`, even without any comparison. Routing to the stub keeps
+//     boxing legal and defers the error to a runtime panic on an actual
+//     interface `==` (Go-faithful for a dynamic `any` operand).
 //   - slice/map/func (uncomparable dynamic types, reachable through
 //     `map[any]V` once a later task admits interface map keys): the single
 //     shared `i32 @goo.uncmpeq(i64,i64)` stub — calls
@@ -882,9 +1140,21 @@ LLVMValueRef codegen_get_or_emit_type_eq(CodeGenerator* codegen, TypeChecker* ch
                                          Type* concrete) {
     if (!codegen || !concrete) return NULL;
 
-    // Struct concretes delegate directly — no synthesis, no typeeq_cache
-    // entry (see comment above).
-    if (concrete->kind == TYPE_STRUCT) {
+    // Struct concretes: a struct whose fields are ALL comparator-safe gets
+    // its real per-field value comparator (no synthesis here, no typeeq_cache
+    // entry — see comment above). A struct with a slice/map/func/interface/
+    // array field is NON-comparable in Go: boxing it into `any` is legal, but
+    // codegen_get_or_emit_struct_key_eq would emit an illegal `icmp eq` over
+    // that aggregate field (a verifier crash at BOXING time — the eq_fn is
+    // baked eagerly into the type descriptor whether or not the value is ever
+    // compared). Route those to the shared uncomparable-panic stub instead
+    // (fall through to the !scalar_kind branch below): boxing then succeeds,
+    // and only an actual interface `==` on the boxed value panics at runtime
+    // ("comparing uncomparable ..."), which is Go-faithful — Go likewise
+    // defers the error to a runtime panic when the static type is `any`. The
+    // static-type case (both operands the concrete struct type) is walled
+    // earlier with a positioned diagnostic in type_check_comparison_op.
+    if (concrete->kind == TYPE_STRUCT && type_struct_fields_comparable(concrete)) {
         return codegen_get_or_emit_struct_key_eq(codegen, checker, concrete);
     }
 
@@ -1052,7 +1322,7 @@ int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
         if (!llvm_t) return 0;
         raw = LLVMBuildLoad2(codegen->builder, llvm_t, raw, "mapkey_concrete_load");
     }
-    LLVMValueRef boxed = codegen_interface_box(codegen, checker, key_type, key_val->goo_type, raw);
+    LLVMValueRef boxed = codegen_interface_box(codegen, checker, key_type, key_val->goo_type, raw, pos);
     if (!boxed) {
         codegen_error(codegen, pos, "failed to box map key into interface key type");
         return 0;
@@ -1109,11 +1379,9 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         // literals and identifiers both yield rvalues here; the is_lvalue
         // load above already ran for lvalue key expressions).
         LLVMTypeRef sty = codegen_type_to_llvm(codegen, kt);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!sty || !alloc_fn) return NULL;
+        if (!sty) return NULL;
         LLVMValueRef size = LLVMSizeOf(sty);
-        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "skey_mem");
+        LLVMValueRef mem = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "skey_slot");
     }
@@ -1132,13 +1400,29 @@ LLVMValueRef codegen_map_key_to_slot(CodeGenerator* codegen, TypeChecker* checke
         // goo_iface_key_eq (not pointer identity) provides — the slot only
         // needs to carry an address the comparator can dereference.
         LLVMTypeRef ifty = codegen_type_to_llvm(codegen, kt);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!ifty || !alloc_fn) return NULL;
+        if (!ifty) return NULL;
         LLVMValueRef size = LLVMSizeOf(ifty);
-        LLVMValueRef mem = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                          alloc_fn, &size, 1, "ikey_mem");
+        LLVMValueRef mem = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
         LLVMBuildStore(codegen->builder, raw, mem);
         return LLVMBuildPtrToInt(codegen->builder, mem, i64, "ikey_slot");
+    }
+    // Arc 9 (i) rider: truncate an integer key into the DECLARED key
+    // domain before packing. The checker deliberately admits a wider
+    // plain variable as a key (the v1 narrowing-laxness wall), and lax
+    // narrowing means truncation everywhere else — so `m[k]` with k
+    // int64 = 261 on a map[int8]int must hit key 5, not store a raw 261
+    // that coexists with 5 (a silent map[int64]). Trunc-then-widen: the
+    // coerce narrows raw to kt's width (no-op when already exact), and
+    // the slot packer below re-widens to i64 by kt's signedness. This is
+    // the single key funnel, so set/get/comma-ok/literal-init/delete all
+    // agree.
+    if (kt && type_is_integer(kt)) {
+        LLVMTypeRef llvm_kt = codegen_type_to_llvm(codegen, kt);
+        if (llvm_kt) {
+            int src_signed = key_val->goo_type
+                             ? type_is_signed(key_val->goo_type) : 1;
+            raw = codegen_coerce_to_type(codegen, raw, src_signed, llvm_kt);
+        }
     }
     return codegen_map_value_to_slot(codegen, raw, kt);
 }
@@ -1335,6 +1619,26 @@ static const char* goo_runtime_archive_path(void) {
     return buf;
 }
 
+// Join an argv vector with spaces for a human-readable link-failure message
+// ONLY — the real link invocation below never goes through a shell (that's
+// the whole point of fork+execvp over system()), so this has no
+// quoting/injection exposure; it exists purely to keep the diagnostic as
+// informative as the old system()-command string was. Returns NULL on
+// allocation failure (caller degrades to a generic message).
+static char* codegen_join_argv(char* const argv[]) {
+    size_t len = 0;
+    for (int i = 0; argv[i]; i++) len += strlen(argv[i]) + 1;
+    if (len == 0) return NULL;
+    char* out = malloc(len);
+    if (!out) return NULL;
+    out[0] = '\0';
+    for (int i = 0; argv[i]; i++) {
+        strcat(out, argv[i]);
+        if (argv[i + 1]) strcat(out, " ");
+    }
+    return out;
+}
+
 int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
 #if LLVM_AVAILABLE
     if (!codegen || !filename) return 0;
@@ -1367,10 +1671,16 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         // Create target machine
         const char* cpu = codegen->target_cpu ? codegen->target_cpu : "generic";
         const char* features = codegen->target_features ? codegen->target_features : "";
-        
+
+        // P3.10: -O0 (opt_level==0, the default) keeps LLVMCodeGenLevelDefault
+        // exactly as before — the byte-identical contract. Only -O3 asks
+        // the backend's own codegen for Aggressive; -O1/-O2 stay Default
+        // (codegen_optimize's new-PM IR pipeline does the real work there).
+        LLVMCodeGenOptLevel cg_opt_level = (codegen->opt_level >= 3)
+            ? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelDefault;
         codegen->target_machine = LLVMCreateTargetMachine(
             target, target_triple, cpu, features,
-            LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault
+            cg_opt_level, LLVMRelocDefault, LLVMCodeModelDefault
         );
         
         if (!codegen->target_machine) {
@@ -1398,9 +1708,32 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         return 0;
     }
     sprintf(object_filename, "%s.o", filename);
-    
+
+    // Defensive backstop, not a live gate today: the verify at this
+    // function's entry already rejects any verifier-visible IR, and nothing
+    // mutates the module between there and here (target-machine setup only
+    // stamps a data layout), so this second check can only fire if a future
+    // refactor removes/reorders the entry check or adds IR mutation in
+    // between. Know its limits either way: LLVMVerifyModule accepts some
+    // shapes that still crash SelectionDAG — the error-union-of-nullable
+    // (!?T) module SIGILLs in llvm::EVT::getExtendedSizeInBits despite
+    // verifying clean. That class is closed upstream by the type checker's
+    // !?T rejection, not here.
+    char* verify_error_message = NULL;
+    if (LLVMVerifyModule(codegen->module, LLVMReturnStatusAction, &verify_error_message)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "internal compiler error: generated invalid IR (please report): %s",
+                     verify_error_message);
+        LLVMDisposeMessage(verify_error_message);
+        free(object_filename);
+        return 0;
+    }
+    if (verify_error_message) {
+        LLVMDisposeMessage(verify_error_message);
+    }
+
     char* error_message = NULL;
-    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module, 
+    if (LLVMTargetMachineEmitToFile(codegen->target_machine, codegen->module,
                                    object_filename, LLVMObjectFile, &error_message)) {
         codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Failed to emit object file: %s", error_message);
         LLVMDisposeMessage(error_message);
@@ -1408,45 +1741,22 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         return 0;
     }
     
-    // Link object file to create executable
-    // Use system linker (ld on Unix, link.exe on Windows)
+    // Link object file to create executable.
+    //
+    // fork()+execvp() on an argv vector instead of system(link_command):
+    // system() shells the whole command through /bin/sh, which (a) forced a
+    // fixed 2048-byte buffer here and (b) word-splits any unquoted path
+    // component — an output path containing a space silently broke (e.g.
+    // `-o "build/dir with space/hello"` linked into three garbage argv
+    // words). execvp takes argv entries directly: no shell, no buffer
+    // limit, no quoting to get right. (P3.11)
+#ifdef _WIN32
+    // No POSIX fork()/execvp() on Windows, and Windows is out of the v1 test
+    // surface (no CI runs it) — keep the original shell-based path here.
     char link_command[2048];
-    
-#ifdef __APPLE__
-    // macOS linking with runtime library using clang
-    char* target_triple = codegen->target_triple;
-    if (!target_triple) {
-        target_triple = LLVMGetDefaultTargetTriple();
-    }
-    snprintf(link_command, sizeof(link_command),
-             "clang -target %s -o %s %s %s -lm -lpthread",
-             target_triple, filename, object_filename, goo_runtime_archive_path());
-    if (!codegen->target_triple) {
-        LLVMDisposeMessage(target_triple);
-    }
-#elif defined(__linux__)
-    // Linux linking with runtime library using gcc. -lm/-lpthread must follow
-    // the archive (the runtime uses libm and pthreads); newer binutils enforces
-    // this ordering and otherwise fails with undefined references.
-    // -no-pie: the LLVM backend emits non-PIC objects (R_X86_64_32S relocs),
-    // but distros like Ubuntu default gcc to -pie, which rejects them with
-    // "relocation ... can not be used when making a PIE object". Force a
-    // non-PIE link to match the object model.
-    snprintf(link_command, sizeof(link_command),
-             "gcc -no-pie -o %s %s %s -lm -lpthread",
-             filename, object_filename, goo_runtime_archive_path());
-#elif defined(_WIN32)
-    // Windows linking with runtime library
     snprintf(link_command, sizeof(link_command),
              "link.exe /OUT:%s %s %s /ENTRY:main /SUBSYSTEM:CONSOLE",
              filename, object_filename, goo_runtime_archive_path());
-#else
-    // Generic Unix linking with runtime library using gcc (see -no-pie note above)
-    snprintf(link_command, sizeof(link_command),
-             "gcc -no-pie -o %s %s %s -lm -lpthread",
-             filename, object_filename, goo_runtime_archive_path());
-#endif
-    
     int link_result = system(link_command);
     if (link_result != 0) {
         codegen_error(codegen, (Position){0, 0, 0, "codegen"},
@@ -1455,20 +1765,256 @@ int codegen_emit_executable(CodeGenerator* codegen, const char* filename) {
         free(object_filename);
         return 0;
     }
-    
+#else
+#ifdef __APPLE__
+    const char* linker_name = "clang";
+#else
+    const char* linker_name = "gcc"; // Linux and generic Unix
+#endif
+
+#ifdef __APPLE__
+    char* link_triple = codegen->target_triple;
+    int owns_link_triple = 0;
+    if (!link_triple) {
+        link_triple = LLVMGetDefaultTargetTriple();
+        owns_link_triple = 1;
+    }
+#endif
+
+    // argv layout: <linker> [-target <triple> | -no-pie] -o <exe> <obj>
+    // <archive> [-l<userlib>]* -lm -lpthread NULL. 9 fixed non-NULL slots
+    // covers the larger (__APPLE__) branch with room to spare on Linux;
+    // + one slot per user lib + the NULL terminator.
+    size_t fixed_slots = 9;
+    size_t max_argv = fixed_slots + (size_t)codegen->link_lib_count + 1;
+    char** argv = malloc(max_argv * sizeof(char*));
+    char** lib_flags = codegen->link_lib_count
+        ? calloc((size_t)codegen->link_lib_count, sizeof(char*))
+        : NULL;
+    if (!argv || (codegen->link_lib_count && !lib_flags)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Memory allocation failed");
+        free(argv);
+        free(lib_flags);
+#ifdef __APPLE__
+        if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+        remove(object_filename);
+        free(object_filename);
+        return 0;
+    }
+
+    size_t argn = 0;
+    argv[argn++] = (char*)linker_name;
+#ifdef __APPLE__
+    argv[argn++] = "-target";
+    argv[argn++] = link_triple;
+#else
+    // -no-pie: see the ordering/relocation comment preserved below.
+    argv[argn++] = "-no-pie";
+#endif
+    argv[argn++] = "-o";
+    argv[argn++] = (char*)filename;
+    argv[argn++] = object_filename;
+    argv[argn++] = (char*)goo_runtime_archive_path();
+
+    // User-requested libs (-l flags collected by the driver) land AFTER the
+    // runtime archive and BEFORE -lm/-lpthread: user libs may depend on
+    // nothing of ours, and this preserves the archive-before-defaults
+    // ordering the -lm/-lpthread comment below documents (newer binutils
+    // enforces it).
+    int lib_alloc_failed = 0;
+    for (size_t i = 0; i < codegen->link_lib_count; i++) {
+        size_t need = strlen("-l") + strlen(codegen->link_libs[i]) + 1;
+        lib_flags[i] = malloc(need);
+        if (!lib_flags[i]) { lib_alloc_failed = 1; break; }
+        snprintf(lib_flags[i], need, "-l%s", codegen->link_libs[i]);
+        argv[argn++] = lib_flags[i];
+    }
+    if (lib_alloc_failed) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"}, "Memory allocation failed");
+        for (size_t i = 0; i < codegen->link_lib_count; i++) free(lib_flags[i]);
+        free(lib_flags);
+        free(argv);
+#ifdef __APPLE__
+        if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+        remove(object_filename);
+        free(object_filename);
+        return 0;
+    }
+
+    // -lm/-lpthread must follow the archive (the runtime uses libm and
+    // pthreads); newer binutils enforces this ordering and otherwise fails
+    // with undefined references.
+    argv[argn++] = "-lm";
+    argv[argn++] = "-lpthread";
+    argv[argn] = NULL;
+
+    pid_t link_pid = fork();
+    if (link_pid < 0) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Failed to fork for linking: %s", strerror(errno));
+        for (size_t i = 0; i < codegen->link_lib_count; i++) free(lib_flags[i]);
+        free(lib_flags);
+        free(argv);
+#ifdef __APPLE__
+        if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+        remove(object_filename);
+        free(object_filename);
+        return 0;
+    }
+
+    if (link_pid == 0) {
+        // Child: replace this process image with the linker. -no-pie: the
+        // LLVM backend emits non-PIC objects (R_X86_64_32S relocs), but
+        // distros like Ubuntu default gcc to -pie, which rejects them with
+        // "relocation ... can not be used when making a PIE object". execvp
+        // only returns on failure (e.g. linker not on PATH).
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    int link_status = 0;
+    int link_failed;
+    pid_t waited;
+    // EINTR retry: a caught signal interrupting waitpid must not be
+    // misread as a failed link.
+    do {
+        waited = waitpid(link_pid, &link_status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        link_failed = 1;
+    } else {
+        link_failed = !(WIFEXITED(link_status) && WEXITSTATUS(link_status) == 0);
+    }
+
+    if (link_failed) {
+        char* joined = codegen_join_argv(argv);
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Linking failed with command: %s", joined ? joined : "(link command)");
+        free(joined);
+    }
+
+    for (size_t i = 0; i < codegen->link_lib_count; i++) free(lib_flags[i]);
+    free(lib_flags);
+    free(argv);
+#ifdef __APPLE__
+    if (owns_link_triple) LLVMDisposeMessage(link_triple);
+#endif
+
+    if (link_failed) {
+        remove(object_filename);   // don't leave a stray object behind
+        free(object_filename);
+        return 0;
+    }
+#endif // _WIN32 / POSIX
+
     // Clean up object file
     remove(object_filename);
     free(object_filename);
-    
+
     return 1;
 #else
     return 0;
 #endif
 }
 
-int codegen_optimize(CodeGenerator* codegen __attribute__((unused)), int level __attribute__((unused))) {
-    // TODO: Implement optimization passes
+int codegen_optimize(CodeGenerator* codegen, int level) {
+#if LLVM_AVAILABLE
+    if (!codegen) return 0;
+    // O0 is the byte-identical contract: skip entirely, no IR mutation,
+    // no target machine built. Every fixture compiled without -O must see
+    // exactly the same IR as before this function existed.
+    if (level <= 0) return 1;
+
+    // LLVMRunPasses needs a target machine (TTI-aware passes, e.g.
+    // vectorization, consult it). codegen_emit_executable builds one
+    // lazily using this exact triple/cpu/features recipe, but that runs
+    // AFTER codegen_optimize (driver calls this before either emit path)
+    // — so codegen->target_machine isn't available yet here. Build a
+    // scratch one, use it only for the pass run, and dispose it; don't
+    // restructure emit to share state for what is a one-shot compile-time
+    // cost.
+    char* error_message = NULL;
+    char* target_triple = codegen->target_triple;
+    int owns_triple = 0;
+    if (!target_triple) {
+        target_triple = LLVMGetDefaultTargetTriple();
+        owns_triple = 1;
+    }
+
+    LLVMTargetRef target;
+    if (LLVMGetTargetFromTriple(target_triple, &target, &error_message)) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Failed to get target for optimization: %s", error_message);
+        LLVMDisposeMessage(error_message);
+        if (owns_triple) LLVMDisposeMessage(target_triple);
+        return 0;
+    }
+
+    const char* cpu = codegen->target_cpu ? codegen->target_cpu : "generic";
+    const char* features = codegen->target_features ? codegen->target_features : "";
+    // Only O3 asks the backend's own codegen for Aggressive; O1/O2 stay at
+    // Default (the new-PM IR pipeline below is what does the real
+    // optimization work at those levels — this mirrors the identical
+    // mapping applied to the "real" target machine in
+    // codegen_emit_executable).
+    LLVMCodeGenOptLevel cg_level = (level >= 3) ? LLVMCodeGenLevelAggressive
+                                                 : LLVMCodeGenLevelDefault;
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+        target, target_triple, cpu, features,
+        cg_level, LLVMRelocDefault, LLVMCodeModelDefault);
+    if (owns_triple) LLVMDisposeMessage(target_triple);
+
+    if (!tm) {
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Failed to create target machine for optimization");
+        return 0;
+    }
+
+    // The module has no datalayout yet — codegen_emit_executable is the only
+    // other place that sets one, and it now runs AFTER this function. Without
+    // it, layout-sensitive folds (e.g. InstCombine collapsing a struct GEP to
+    // a raw byte offset) size and place fields using LLVM's generic default
+    // alignment (i64 ABI-aligned to 4 bytes) instead of this target's real
+    // x86-64 layout (i64 aligned to 8) — the GEP then freezes in the WRONG
+    // (smaller) offset for any field after a narrower one (e.g. `int` after
+    // `bool`), while the struct's actual in-memory layout at runtime still
+    // follows the real target's rules. That mismatch is a silent
+    // misaligned-read miscompile, not a missed optimization: confirmed by
+    // reading back an unrelated pad byte as the value's low word (observed
+    // as `value * 2^32` on affected fixtures). Set it from the same scratch
+    // target machine before any pass runs so folds agree with reality.
+    LLVMTargetDataRef opt_target_data = LLVMCreateTargetDataLayout(tm);
+    char* opt_data_layout = LLVMCopyStringRepOfTargetData(opt_target_data);
+    LLVMSetDataLayout(codegen->module, opt_data_layout);
+    LLVMDisposeMessage(opt_data_layout);
+    LLVMDisposeTargetData(opt_target_data);
+
+    const char* pipeline = "default<O1>";
+    if (level == 2) pipeline = "default<O2>";
+    else if (level >= 3) pipeline = "default<O3>";
+
+    LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef err = LLVMRunPasses(codegen->module, pipeline, tm, opts);
+    LLVMDisposePassBuilderOptions(opts);
+    LLVMDisposeTargetMachine(tm);
+
+    if (err) {
+        char* msg = LLVMGetErrorMessage(err);
+        codegen_error(codegen, (Position){0, 0, 0, "codegen"},
+                     "Optimization passes failed: %s", msg);
+        LLVMDisposeErrorMessage(msg);
+        return 0;
+    }
+
     return 1;
+#else
+    (void)codegen;
+    (void)level;
+    return 1;
+#endif
 }
 
 int codegen_verify_module(CodeGenerator* codegen __attribute__((unused))) {

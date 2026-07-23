@@ -1,0 +1,27 @@
+// select_closed_probe (P3.1 rider): a select receive case on a CLOSED
+// channel must fire immediately with the element zero value, exactly as
+// in Go — buffered values are drained first (the 42), then the closed
+// channel keeps the case ready forever (the 0). Before this fix,
+// goo_select's poll saw goo_chan_try_recv return not-ready for a
+// closed+drained channel and busy-spun forever — unreachable before
+// close() shipped, a user-visible hang after.
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 2)
+	ch <- 42
+	close(ch)
+
+	select {
+	case v := <-ch:
+		fmt.Println(v)
+	}
+
+	select {
+	case v := <-ch:
+		fmt.Println(v)
+	}
+	fmt.Println("done")
+}

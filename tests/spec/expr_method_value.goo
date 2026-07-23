@@ -1,0 +1,20 @@
+// Spec: Expressions / Method values — receiver-bound function value
+package main
+
+import "fmt"
+
+type Counter struct {
+	n int
+}
+
+func (c *Counter) Inc() {
+	c.n = c.n + 1
+}
+
+func main() {
+	c := Counter{}
+	inc := c.Inc
+	inc()
+	inc()
+	fmt.Println(c.n)
+}

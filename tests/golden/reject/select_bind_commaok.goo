@@ -1,0 +1,17 @@
+// P1.10 reject: `case v, ok := <-ch:` — comma-ok select binding. v1 scope
+// cut (reworded after close() shipped in P3.1): the remaining gap is
+// plumbing per-case ok status through goo_select_case_t and the select
+// lowering — rider R1 in the P3 sub-A design doc. Grammar-accepted (so
+// the diagnostic can be specific and positioned) but rejected in the
+// type checker, which points at the workaround: a comma-ok receive
+// outside select.
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	ch <- 1
+	select {
+	case v, ok := <-ch:
+		println(v, ok)
+	}
+}

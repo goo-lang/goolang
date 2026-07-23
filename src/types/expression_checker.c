@@ -1,5 +1,6 @@
 #include "types.h"
 #include "embedding.h"
+#include "shim_signatures.h"  // P4.1: declarative stdlib-shim call signatures
 #include "comptime.h"  // comptime_context_lookup_func: order-independent func registry
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,8 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
 static int is_untyped_float_rooted(ASTNode* n);
 static int adapt_untyped_float_operand(TypeChecker* checker, ASTNode* n, Type* target,
                                         int negated);
+// Comptime value params (fix round 4): goo_expr_references_comptime_param
+// now lives in expression_helpers.c, declared in types.h.
 // Task 3b: the composite-value adaptation helper (defined below, near
 // type_check_struct_literal, its original #101 sink) is now ALSO the
 // element-value hook for slice literals (check_slice_elements), array
@@ -143,7 +146,21 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
 
     size_t param_count = 0;
     for (ASTNode* p = lit->params; p; p = p->next) {
-        if (p->type == AST_VAR_DECL) param_count++;
+        if (p->type != AST_VAR_DECL) continue;
+        // Comptime-value params gap-fix: a comptime parameter demands a
+        // concrete callee Variable with a func_decl_node (Task 2's
+        // type_check_call_expr walks that back-reference to find
+        // is_comptime_param) — a func literal is called through its
+        // expression's Type alone, never resolving to such a Variable, so
+        // the check silently never fires and `comptime n` behaves as a
+        // plain runtime int. Reject it here, at the literal's own
+        // signature-build time.
+        if (((VarDeclNode*)p)->is_comptime_param) {
+            type_error(checker, p->pos,
+                "comptime parameters are only supported on named functions");
+            return NULL;
+        }
+        param_count++;
     }
 
     Type** param_types = NULL;
@@ -184,16 +201,27 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     scope_push(checker);
     checker->current_scope->is_function_boundary = 1;
 
+    // Codegen-hardening R1-TC: snapshot the WHOLE per-function scratch
+    // struct (active_type_params, literal_stack, label registry, goto-label
+    // registry, arena-nesting chain) in one assignment before this
+    // literal's own body-check mutates any of it — mirrors cfctx_save's
+    // role for codegen (function_codegen.c's codegen_generate_func_lit).
+    // Captured BEFORE the literal-stack push just below, so tc_fctx_restore
+    // at the end both restores the label/goto/arena namespaces AND pops
+    // this literal's own stack entry in the same single assignment — no
+    // separate literal_stack_len-restore line needed.
+    TcFunctionContext saved_tcfctx;
+    tc_fctx_save(&saved_tcfctx, &checker->tc_fctx);
+
     // Push this literal onto the checker's literal stack so
     // type_check_identifier can relay a transitive capture through every
-    // currently-open literal (types.h's TypeChecker.literal_stack doc
-    // comment). Saved slot index, not just a decrement on pop, so hitting
-    // GOO_CLOSURE_MAX_NESTING degrades gracefully (push silently skipped;
-    // pop still balances) instead of desyncing the stack.
-    size_t lit_stack_slot = checker->literal_stack_len;
-    if (lit_stack_slot < GOO_CLOSURE_MAX_NESTING) {
-        checker->literal_stack[lit_stack_slot] = expr;
-        checker->literal_stack_len++;
+    // currently-open literal (types.h's TcFunctionContext.literal_stack doc
+    // comment). Degrades gracefully at GOO_CLOSURE_MAX_NESTING (push
+    // silently skipped) instead of desyncing the stack — tc_fctx_restore
+    // above still balances it either way.
+    if (checker->tc_fctx.literal_stack_len < GOO_CLOSURE_MAX_NESTING) {
+        checker->tc_fctx.literal_stack[checker->tc_fctx.literal_stack_len] = expr;
+        checker->tc_fctx.literal_stack_len++;
     }
 
     // Track the return type so a `return` inside the literal's body checks
@@ -202,6 +230,31 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
     // save/restore of this exact field, type_checker.c).
     Type* saved_return_type = checker->current_return_type;
     checker->current_return_type = return_type;
+
+    // Codegen-hardening R1-TC: a func literal gets its own label AND
+    // goto-label namespace, same rationale as type_check_function_decl's
+    // own tc_fctx_reset (type_checker.c) — a label/goto inside the closure
+    // must not collide with (or be visible to) the enclosing function's.
+    // Unlike that boundary, arena_chain_depth ALSO needs an explicit reset
+    // here (a closure's own arena-nesting path must be measured from ITS
+    // OWN body, not offset by however many `arena{}` blocks happen to
+    // lexically enclose the literal in the outer function) — inlined the
+    // same way ControlFlowContext.loop_depth gets an extra explicit reset
+    // in codegen_generate_func_lit beyond cfctx_reset's own minimal scope.
+    tc_fctx_reset(&checker->tc_fctx);
+    checker->tc_fctx.arena_chain_depth = 0;
+    if (lit->body) {
+        type_check_collect_goto_labels(checker, lit->body);
+    }
+
+    // gofmt-syntax-b Task 3: same independent-namespace save/restore as
+    // the label/goto-label registries just above — `fallthrough` cannot
+    // cross a func-literal boundary even when the literal is lexically
+    // written inside a switch case's body (Go: the literal is its own
+    // function). Kept outside TcFunctionContext (see that struct's own doc
+    // comment, types.h).
+    FallthroughContext saved_fallthrough_ctx = checker->fallthrough_ctx;
+    checker->fallthrough_ctx = FALLTHROUGH_CTX_NONE;
 
     if (lit->params) {
         for (ASTNode* p = lit->params; p; p = p->next) {
@@ -233,8 +286,20 @@ static Type* type_check_func_lit(TypeChecker* checker, ASTNode* expr) {
         ok = type_check_statement(checker, lit->body);
     }
 
+    // P2.4: missing-return analysis — same rule and rationale as
+    // type_check_function_decl's identical check (type_checker.c), applied
+    // to a func literal's own declared return type/body instead of an
+    // enclosing named function's.
+    if (ok && lit->body && return_type && return_type->kind != TYPE_VOID) {
+        if (!stmt_is_terminating(lit->body)) {
+            type_error(checker, lit->body->pos, "missing return");
+            ok = 0;
+        }
+    }
+
+    checker->fallthrough_ctx = saved_fallthrough_ctx;
+    tc_fctx_restore(&checker->tc_fctx, &saved_tcfctx);
     checker->current_return_type = saved_return_type;
-    checker->literal_stack_len = lit_stack_slot;
     scope_pop(checker);
     checker->current_scope = enclosing_scope;
 
@@ -303,12 +368,28 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                     if (!check_interface_assign(checker, kt, want_key, k->pos)) {
                         return NULL;
                     }
-                } else if (!type_compatible(kt, want_key)) {
-                    type_error(checker, k->pos,
-                               "Map literal key %zu type '%s' is not compatible "
-                               "with declared key type '%s'",
-                               ki, type_to_string(kt), type_to_string(want_key));
-                    return NULL;
+                } else {
+                    // Arc 9 (i): keys take the SAME adaptation + range gate
+                    // as values (adapt_field_init_value below) — an untyped
+                    // `300` IS type_compatible with int8, so without this
+                    // pass `map[int8]int{300: 1}` was accepted and the raw
+                    // folded key (i64 300) reached the runtime: the map
+                    // silently behaved as map[int64] (m[44] missed, m[300]
+                    // hit), violating the declared key domain. Const-ident
+                    // keys are judged by the shared core inside the adapter
+                    // (arc 7). In-range keys are unaffected: codegen widens
+                    // a narrow key to the runtime's i64 by its signedness,
+                    // which equals the raw folded value for every
+                    // representable key.
+                    kt = adapt_field_init_value(checker, k, want_key, kt);
+                    if (!kt) return NULL;
+                    if (!type_compatible(kt, want_key)) {
+                        type_error(checker, k->pos,
+                                   "Map literal key %zu type '%s' is not compatible "
+                                   "with declared key type '%s'",
+                                   ki, type_to_string(kt), type_to_string(want_key));
+                        return NULL;
+                    }
                 }
             }
             size_t vi = 0;
@@ -329,10 +410,10 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 if (!vt) return NULL;
                 // Task 3b: same element adaptation + range check as the
                 // slice/array sinks — `map[string]int8{"a": 300}` rejects
-                // instead of silently truncating. Keys are checked above via
-                // type_compatible only (no adapt_field_init_value narrowing
-                // pass) — a wrong-width key literal is a compatibility
-                // mismatch, not a truncation to catch.
+                // instead of silently truncating. Keys take the same pass
+                // above (arc 9) — the old "a wrong-width key literal is a
+                // compatibility mismatch" rationale was false for untyped
+                // literals, which are compatible with every integer width.
                 vt = adapt_field_init_value(checker, v, want_val, vt);
                 if (!vt) return NULL;
                 // An interface-typed map value accepts any concrete
@@ -436,6 +517,27 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                            "array literal: length must be a constant expression");
                 return NULL;
             }
+            // Fix round 3 (minor 3): negative length — same clean rejection
+            // as type_from_ast's AST_ARRAY_TYPE case (a wrapped size_t hung
+            // the compiler downstream).
+            if ((int64_t)n < 0) {
+                type_error(checker, expr->pos,
+                           "array length must be non-negative");
+                return NULL;
+            }
+            // Fix round 3 (minor 1): when the length derives from a comptime
+            // parameter (`[n]int{1, 2}` inside a comptime function's
+            // TEMPLATE body), `n` here is Step 3's PLACEHOLDER — validating
+            // the element count against it produced a placeholder-derived
+            // rejection ("index 1 out of bounds for length 1") for a length
+            // the user never wrote. Defer count-vs-length validation to
+            // instance time: codegen's re-derivation
+            // (codegen_generate_array_lit, composite_codegen.c) sizes the
+            // instance's array from the REAL value, and its const fast path
+            // zero-fills/places elements against that real length. Element
+            // TYPE checking below is unaffected — only the index bound is
+            // skipped for comptime-length literals.
+            int comptime_len = goo_expr_references_comptime_param(checker, at->length);
             // Elements may be keyed (`index: value`, a sparse Go table like
             // utf8 acceptRanges) or bare. A keyed element places its value at
             // the const index; an unkeyed element continues at previous + 1
@@ -458,7 +560,7 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 } else {
                     cur += 1;
                 }
-                if (cur < 0 || (uint64_t)cur >= n) {
+                if (cur < 0 || (!comptime_len && (uint64_t)cur >= n)) {
                     type_error(checker, e->pos,
                                "array literal: index %lld out of bounds for "
                                "length %llu",
@@ -490,6 +592,13 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
                 }
             }
             Type* arr = type_array(want, (size_t)n);
+            // Fix round 4: mark a comptime-length literal's type so
+            // const-INDEX validation (type_check_index_expr) defers to
+            // instance time too, exactly like the count-vs-length deferral
+            // above — the flag rides the Type to every consumer. Round 6
+            // (M-r5c): the shared marker also rewrites the display name so
+            // diagnostics never show the placeholder length.
+            if (arr && comptime_len) type_array_mark_comptime(arr, at->length);
             expr->node_type = arr;
             return arr;
         }
@@ -565,6 +674,13 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
             const char* method = NULL;
             const char* reason = NULL;
             if (!type_interface_satisfied(checker, operand_type, target_type, &method, &reason)) {
+                // Fix 2: the "comptime" sentinel gets the dedicated one-place
+                // diagnostic — see report_comptime_method_not_satisfied's doc
+                // comment (every type_interface_satisfied caller does this).
+                if (reason && strcmp(reason, "comptime") == 0) {
+                    report_comptime_method_not_satisfied(checker, expr->pos, method);
+                    return NULL;
+                }
                 const char* iname = operand_type->data.interface.name
                                          ? operand_type->data.interface.name : "interface";
                 const char* cname = type_receiver_name(target_type);
@@ -624,6 +740,19 @@ Type* type_check_expression(TypeChecker* checker, ASTNode* expr) {
 // sites; the semantics (including the #100 float->int asymmetry and the
 // task-3 range check) are identical for all four.
 static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* field_type, Type* vt) {
+    // Fix 2 (comptime-param functions are not first-class values): this is
+    // the one sink every composite-literal value routes through (struct
+    // field, slice element, array element, map value — see the Task 3b note
+    // above), so the "cannot store a comptime-param function in a composite"
+    // rule lives here instead of four copies at the call sites. Checked
+    // BEFORE the numeric early-return below — a function type is never
+    // numeric, so it would otherwise sail through untouched. NULL signals
+    // rejection (error already emitted), exactly like the range-check
+    // rejections below; every caller already propagates NULL.
+    if (!reject_comptime_function_value(checker, v, vt, v->pos,
+                                        "stored in a composite literal")) {
+        return NULL;
+    }
     if (!field_type || !type_is_numeric(field_type)) return vt;
     if (type_is_float(field_type)) {
         if (is_untyped_float_rooted(v)) {
@@ -646,6 +775,20 @@ static Type* adapt_field_init_value(TypeChecker* checker, ASTNode* v, Type* fiel
             if (!adapt_untyped_int_operand(checker, v, field_type, 0, 1)) return NULL;
             return field_type;
         }
+        // Arc 7 (n): a CONST IDENTIFIER is not a literal leaf, so ident-
+        // bearing constant slot values (`S{x: a}`, `[]int8{a}`, `[2]int8{a,
+        // 1}`, map values — every composite slot routes through here, Task
+        // 3b) skipped the rooted adapter above and codegen's width coercion
+        // truncated the store. Judge the FOLDED value via the shared core
+        // (check_const_int_expr_fits — same admission and disjointness
+        // argument as the arc-5 var-decl leg: is_untyped_int_rooted admits
+        // no identifier leaf, so literal shapes keep the per-literal
+        // adapter semantics bit-for-bit). Fit (1) falls through returning
+        // `vt` unchanged — the caller's type_compatible laxness accepts and
+        // codegen's coercion is exact for a representable value. Not-
+        // applicable (0) — plain variables, comptime-param-tainted — stays
+        // on the v1 laxness path unchanged.
+        if (check_const_int_expr_fits(checker, v, field_type) < 0) return NULL;
     }
     return vt;
 }
@@ -855,7 +998,7 @@ Type* type_check_struct_literal(TypeChecker* checker, ASTNode* expr) {
 // scope walk. `depth` is the number of function/literal boundaries the walk
 // crossed to reach `var`'s declaring scope — exactly the count of
 // currently-open literals (innermost first, i.e. the TOP `depth` entries of
-// checker->literal_stack) that must ALSO carry this name through their own
+// checker->tc_fctx.literal_stack) that must ALSO carry this name through their own
 // env, per the transitive-capture rule: an inner literal's env is populated
 // correctly, but each INTERMEDIATE literal between the reference and the
 // declaration must relay the slot pointer inward through its own env too
@@ -912,9 +1055,9 @@ static int type_checker_record_capture(TypeChecker* checker, Variable* var,
     var->is_captured = 1;
     ((VarDeclNode*)var->decl_node)->is_captured = 1;
 
-    if (depth > (int)checker->literal_stack_len) depth = (int)checker->literal_stack_len;
-    for (int i = (int)checker->literal_stack_len - depth; i < (int)checker->literal_stack_len; i++) {
-        FuncLitNode* lit = (FuncLitNode*)checker->literal_stack[i];
+    if (depth > (int)checker->tc_fctx.literal_stack_len) depth = (int)checker->tc_fctx.literal_stack_len;
+    for (int i = (int)checker->tc_fctx.literal_stack_len - depth; i < (int)checker->tc_fctx.literal_stack_len; i++) {
+        FuncLitNode* lit = (FuncLitNode*)checker->tc_fctx.literal_stack[i];
         int already = 0;
         for (size_t j = 0; j < lit->captured_count; j++) {
             if (strcmp(lit->captured_names[j], name) == 0) { already = 1; break; }
@@ -1456,8 +1599,8 @@ static int check_conversion_operand_range(TypeChecker* checker, ASTNode* n,
 // fit (the type_error was already emitted); every recursive call and every
 // external caller must check this return and propagate failure rather than
 // treat the tree as fully adapted.
-static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* target,
-                                      int negated, int checkable) {
+static int adapt_untyped_int_rec(TypeChecker* checker, ASTNode* n, Type* target,
+                                 int negated, int checkable) {
     if (!n) return 1;
     if (n->type == AST_LITERAL && ((LiteralNode*)n)->literal_type == TOKEN_INT) {
         if (checkable &&
@@ -1472,7 +1615,7 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
             // Sign flips for a range check ONLY at unary MINUS — PLUS and
             // BIT_XOR (below) never change a literal's effective magnitude
             // the way MINUS does.
-            if (!adapt_untyped_int_operand(checker, u->operand, target, !negated, checkable))
+            if (!adapt_untyped_int_rec(checker, u->operand, target, !negated, checkable))
                 return 0;
             n->node_type = target;
         } else if (u->operator == TOKEN_PLUS || u->operator == TOKEN_BIT_XOR) {
@@ -1482,7 +1625,7 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
             // task-3 deviation note. The stamping side effect is unchanged
             // for `^`, matching pre-task-3 behavior exactly.
             int child_checkable = checkable && (u->operator != TOKEN_BIT_XOR);
-            if (!adapt_untyped_int_operand(checker, u->operand, target, negated, child_checkable))
+            if (!adapt_untyped_int_rec(checker, u->operand, target, negated, child_checkable))
                 return 0;
             n->node_type = target;
         }
@@ -1490,7 +1633,7 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
     if (n->type == AST_BINARY_EXPR) {
         BinaryExprNode* b = (BinaryExprNode*)n;
         if (b->operator == TOKEN_LSHIFT || b->operator == TOKEN_RSHIFT) {
-            if (!adapt_untyped_int_operand(checker, b->left, target, negated, checkable)) // shift type = left type
+            if (!adapt_untyped_int_rec(checker, b->left, target, negated, checkable)) // shift type = left type
                 return 0;
             n->node_type = target;
         } else if (b->operator == TOKEN_PLUS || b->operator == TOKEN_MINUS ||
@@ -1498,18 +1641,62 @@ static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* tar
                    b->operator == TOKEN_MODULO) {
             // Each side keeps ITS OWN negated/checkable state — a binary
             // MINUS does not flip either operand's sign for range-check
-            // purposes (only a unary MINUS wrapping a leaf does that); this
-            // is exactly the per-literal (no constant-folding) design that
-            // lets `100 + 100` into int8 through uncaught (each 100
-            // individually fits) — see the task-3 deviation note.
-            if (!adapt_untyped_int_operand(checker, b->left, target, negated, checkable))
+            // purposes (only a unary MINUS wrapping a leaf does that). The
+            // per-leaf checks alone let `100 + 100` into int8 through
+            // uncaught (each 100 individually fits) — the WHOLE-expression
+            // folded value is judged once, at the top-level entry in the
+            // adapt_untyped_int_operand wrapper below (arc 13).
+            if (!adapt_untyped_int_rec(checker, b->left, target, negated, checkable))
                 return 0;
-            if (!adapt_untyped_int_operand(checker, b->right, target, negated, checkable)) // binop result = operand type
+            if (!adapt_untyped_int_rec(checker, b->right, target, negated, checkable)) // binop result = operand type
                 return 0;
             n->node_type = target;
         }
     }
     return 1;
+}
+
+// Arc 13 (s): entry wrapper — fold-then-check the WHOLE compound against
+// the target ONCE, then run the per-leaf adaptation. Each leaf of
+// `100 + 100` individually fits int8, so the leaf checks alone silently
+// truncated the folded 200 at every adapter sink (var decls, assignments,
+// call args, composite slots, arc-9 map keys). Top-level only — judging
+// interior nodes would false-reject `(100 + 100) - 100` (= 100, fits) on
+// its inner subtree. Judged only when UNAMBIGUOUS: a negated caller
+// context (the fold here is of the unnegated subtree — the wrong value
+// to judge) or a fold in the modular window [2^63, 2^64) (where `0 - 1`
+// and `1 << 63` are indistinguishable post-fold) skips the check and
+// keeps the per-leaf laxness — so every newly rejected value is genuinely
+// unrepresentable and no Go-legal shape gains a false reject. The
+// returns/chan-send/const-decl gates judge the window via the
+// negated-shape heuristic instead (their documented `0 - 1` deviation);
+// this sink family deliberately stays lax there. goo_fold_const_int is
+// the context-free folder: rooted shapes have no identifier leaves, and
+// it returns 0 on anything it can't fold (e.g. division by zero),
+// falling back to the per-leaf pass unchanged.
+static int adapt_untyped_int_operand(TypeChecker* checker, ASTNode* n, Type* target,
+                                      int negated, int checkable) {
+    // Peel leading unary `+` (identity — never changes the value) so
+    // `+(100 + 100)` reaches the same whole-fold gate as the bare
+    // compound (arc-13 review find). `-` stays behind the negated logic
+    // and `^` is the documented task-3 exclusion — neither is peeled.
+    ASTNode* top = n;
+    while (top && top->type == AST_UNARY_EXPR &&
+           ((UnaryExprNode*)top)->operator == TOKEN_PLUS) {
+        top = ((UnaryExprNode*)top)->operand;
+    }
+    if (top && top->type == AST_BINARY_EXPR && checkable && !negated &&
+        type_is_integer(target)) {
+        uint64_t folded;
+        if (goo_fold_const_int(top, &folded) &&
+            folded <= (uint64_t)INT64_MAX &&
+            !int_const_fits_expected(folded, target, 0, 0)) {
+            type_error(checker, top->pos, "constant %lld overflows %s",
+                       (long long)(int64_t)folded, type_to_string(target));
+            return 0;
+        }
+    }
+    return adapt_untyped_int_rec(checker, n, target, negated, checkable);
 }
 
 // Float analogue of is_untyped_int_rooted: is `n` an untyped-float-constant-
@@ -1668,8 +1855,104 @@ int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* decla
             return adapt_untyped_int_operand(checker, value, target, 0, 1);
         return 1;
     }
-    if (type_is_integer(target) && is_untyped_int_rooted(value, 0))
-        return adapt_untyped_int_operand(checker, value, target, 0, 1);
+    if (type_is_integer(target)) {
+        if (is_untyped_int_rooted(value, 0))
+            return adapt_untyped_int_operand(checker, value, target, 0, 1);
+        // Arc 5 (h) sibling: a CONST IDENTIFIER is not a literal leaf, so
+        // ident-bearing constant initializers (`const a = 300; var v int8 =
+        // a`, or `a + 1`) skipped the per-literal adapter above entirely and
+        // codegen's width-coerce step truncated the store (printed 44).
+        // Judge the FOLDED value via the shared core (check_const_int_expr_
+        // fits — same admission as the arc-4 chan-send gate and the arc-5
+        // const-decl gate). The two branches are DISJOINT: is_untyped_int_
+        // rooted admits no identifier leaf, so every pure-literal shape
+        // keeps the adapter's semantics bit-for-bit (arc 13 closed the old
+        // `100 + 100`-into-int8 per-leaf deviation with the whole-fold
+        // wrapper) — only shapes the
+        // adapter never handled gain a check. Not-applicable (0) — plain
+        // variables, calls, comptime-param-tainted — stays accepted
+        // unchanged (the v1 any-int laxness for non-constants).
+        if (check_const_int_expr_fits(checker, value, target) < 0)
+            return 0;
+    }
+    return 1;
+}
+
+// Arc 14 (f) bridge for type_checker.c's type_check_switch_stmt: a float-
+// literal case expression compared against an INTEGER switch tag (`switch n
+// { case 2.5: }`, n an int) had no adapter — the checker fell through to
+// type_check_comparison_op, which accepts a float-vs-int comparison, and
+// codegen_generate_switch_stmt's fallback LLVMBuildICmp(IntEQ) then took a
+// float operand, crashing the LLVM verifier instead of reporting a clean
+// diagnostic. Go's rule for a float CONSTANT meeting an integer context is
+// the conversion rule (`int(2.5)`'s rule): magnitude must fit AND the value
+// must be integral — reuse check_conversion_operand_range (the exact check
+// a conversion already gets) instead of duplicating it, then stamp the case
+// subtree to the tag's width so codegen emits an integer constant in place
+// of a float one.
+//
+// Tri-state, mirroring check_const_int_expr_fits's contract (this file's
+// other cross-TU bridge with the same "does this gate even apply" question):
+// 0 when `case_expr` is not float-rooted (gate doesn't apply — caller falls
+// back to its ordinary type_check_comparison_op path so a genuine kind
+// mismatch like a string case still rejects there); 1 when it is float-
+// rooted and fits (stamped); -1 when it is float-rooted but rejected (a
+// positioned diagnostic was already emitted by check_conversion_operand_
+// range, e.g. "constant 2.5 truncated to integer").
+//
+// Declared non-static and NOT forward-declared at the top of this file —
+// same convention as adapt_var_decl_initializer just above: one external
+// caller, in type_checker.c, which forward-declares its own `extern`
+// prototype rather than a header change.
+int adapt_switch_case_float_into_int(TypeChecker* checker, ASTNode* case_expr,
+                                      Type* tag_type) {
+    if (!case_expr || !tag_type || !is_untyped_float_rooted(case_expr)) return 0;
+    if (!check_conversion_operand_range(checker, case_expr, tag_type, 0))
+        return -1; // overflow or truncation — diagnostic already emitted
+    stamp_int_const_expr_type(case_expr, tag_type);
+    return 1;
+}
+
+// Arc 14 (g) bridge for type_checker.c's type_check_return_stmt: an untyped
+// FLOAT-literal return value narrowing into (or widening to) a differently-
+// sized float return type had no adapter — float_const_coerce (type_
+// checker.c) only covers an untyped INT constant meeting a float target, so
+// `return 3.9` from a `func() float32` defaulted to float64, failed the
+// width check, and landed in the numeric-mismatch reject block: a Go-legal
+// program (constant conversion with rounding) falsely rejected. Mirrors
+// adapt_var_decl_initializer's float leg above, but for a return
+// statement's single value expression instead of a var-decl initializer —
+// same adapt_untyped_float_operand call, which range-checks (so `return
+// 1e40` from a float32 function still rejects, "overflows float32") and
+// recursively stamps the whole float-rooted subtree (so a mixed `return 1 +
+// 0.5` computes at the target width, not just a leaf literal).
+//
+// Tri-state, same contract as adapt_switch_case_float_into_int just above:
+// 0 when `value` is not float-rooted (gate doesn't apply — caller keeps its
+// ordinary width-mismatch path); 1 when it is and range-checks clean
+// (stamped to `expected`); -1 when it is float-rooted but out of range
+// (diagnostic already emitted).
+int adapt_return_float_literal(TypeChecker* checker, ASTNode* value, Type* expected) {
+    if (!value || !expected || !type_is_float(expected) || !is_untyped_float_rooted(value))
+        return 0;
+    return adapt_untyped_float_operand(checker, value, expected, 0) ? 1 : -1;
+}
+
+// Go rejects a CONSTANT negative shift count at compile time ("invalid
+// negative shift count"); a runtime-value count panics instead (codegen's
+// shneg guard). Returns 0 (and reports) iff the count folds to a constant
+// that is negative when read as signed. Reading the folded uint64 as int64
+// also catches counts >= 2^63 — Go rejects those too (as "shift count too
+// large"); collapsing both onto this one diagnostic is deliberate v1 scope.
+static int check_const_shift_count(TypeChecker* checker, ASTNode* count_expr,
+                                   Position pos) {
+    uint64_t folded;
+    if (goo_fold_const_int_ctx(checker, count_expr, &folded) &&
+        (int64_t)folded < 0) {
+        type_error(checker, pos, "invalid negative shift count: %lld",
+                   (long long)(int64_t)folded);
+        return 0;
+    }
     return 1;
 }
 
@@ -1709,6 +1992,19 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
     Type* right_type = type_check_expression(checker, binary->right);
 
     if (!left_type || !right_type) return NULL;
+
+    // P2.8 T4.2 (cascade suppression): an operand bound to a previously
+    // failed declaration (see register_declared_names_after_failure) must
+    // not spawn a SECOND diagnostic here — propagate the poison silently,
+    // before any operator-specific check below gets a chance to reject it
+    // (e.g. "Arithmetic operation requires numeric operands"). Single choke
+    // point: type_check_arithmetic_op has exactly one caller, right here, so
+    // guarding this entry covers every binary operator uniformly.
+    if (type_is_poison(left_type) || type_is_poison(right_type)) {
+        Type* poison = type_is_poison(left_type) ? left_type : right_type;
+        expr->node_type = poison;
+        return poison;
+    }
 
     // Narrow integer-literal adaptation for binary ops: if exactly one operand
     // is an untyped integer literal and the other is a differently-sized integer,
@@ -1916,8 +2212,22 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_AND_NOT:   // &^  (bit-clear: a & ~b)
         case TOKEN_BIT_OR:
         case TOKEN_BIT_XOR:
+            result_type = type_check_bitwise_op(checker, left_type, right_type, binary->operator, expr->pos);
+            break;
+
+        // Shift operators: same bitwise checks as above, plus a compile-time
+        // reject on a constant-folded negative count (Go: "invalid negative
+        // shift count") — scoped to ONLY these two cases, not the shared
+        // bitwise body above, since `binary->right` means "shift count" here
+        // but "ordinary RHS operand" for &/&^/|/^ (a negative-when-signed
+        // fold there, e.g. an all-ones mask constant, is not a shift count
+        // and must not be rejected as one).
         case TOKEN_LSHIFT:
         case TOKEN_RSHIFT:
+            if (!check_const_shift_count(checker, binary->right, expr->pos)) {
+                result_type = NULL;
+                break;
+            }
             result_type = type_check_bitwise_op(checker, left_type, right_type, binary->operator, expr->pos);
             break;
             
@@ -1937,12 +2247,50 @@ Type* type_check_binary_expr(TypeChecker* checker, ASTNode* expr) {
         case TOKEN_XOR_ASSIGN:
         case TOKEN_LSHIFT_ASSIGN:
         case TOKEN_RSHIFT_ASSIGN:
-            result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, expr->pos);
+            if ((binary->operator == TOKEN_LSHIFT_ASSIGN || binary->operator == TOKEN_RSHIFT_ASSIGN) &&
+                !check_const_shift_count(checker, binary->right, expr->pos)) {
+                result_type = NULL;
+                break;
+            }
+            // Arc 7 (n): const-IDENT-bearing constant RHS representability.
+            // The pre-switch literal adaptation range-checks literal-rooted
+            // RHS shapes (`v = 300` into int8 rejects there), but a const
+            // identifier is not rooted, so `v = a` / `v = a + 100` /
+            // `s.x = a` fell through to type_check_assignment_op's any-int
+            // laxness and codegen truncated the store. Judge the FOLDED
+            // value against the assignment target via the shared core
+            // (check_const_int_expr_fits) — left_type is the field/element
+            // type for selector/index targets, so those are covered by the
+            // same call. Compound arithmetic assigns convert the constant
+            // to the target's type first (Go semantics), so the same rule
+            // applies; SHIFT-assigns are excluded — their RHS is a shift
+            // COUNT (validated above), not a value converting to the
+            // target's type. The rooted guard keeps literal shapes on the
+            // pre-switch adapter's path (disjoint, bit-for-bit unchanged).
+            if (binary->operator != TOKEN_LSHIFT_ASSIGN &&
+                binary->operator != TOKEN_RSHIFT_ASSIGN &&
+                !is_untyped_int_rooted(binary->right, 0) &&
+                check_const_int_expr_fits(checker, binary->right, left_type) < 0) {
+                result_type = NULL;
+                break;
+            }
+            result_type = type_check_assignment_op(checker, binary->left, left_type, right_type, binary->right, expr->pos);
             break;
             
         // Channel send operator
         case TOKEN_ARROW:  // ch <- value
-            result_type = type_check_channel_send_op(checker, left_type, right_type, expr->pos);
+            // Fix 2 (comptime-param functions are not first-class values):
+            // `ch <- fill` transports fill's VALUE to a receiver with no
+            // func_decl_node to check a later call against — the same alias
+            // bypass as assignment. type_check_channel_send_op sees only
+            // TYPES, so the expression-carrying gate lives here (the
+            // select-statement send comm has its own sibling gate in
+            // type_check_select_stmt).
+            if (!reject_comptime_function_value(checker, binary->right, right_type,
+                                                expr->pos, "sent on a channel")) {
+                return NULL;
+            }
+            result_type = type_check_channel_send_op(checker, left_type, right_type, binary->right, expr->pos);
             break;
             
         default:
@@ -1965,11 +2313,24 @@ Type* type_check_unary_expr(TypeChecker* checker, ASTNode* expr) {
     
     UnaryExprNode* unary = (UnaryExprNode*)expr;
     Type* operand_type = type_check_expression(checker, unary->operand);
-    
+
     if (!operand_type) return NULL;
-    
+
+    // P2.8 FIX F1 (cascade-suppression completeness): an operand bound to a
+    // previously failed declaration (see register_declared_names_after_
+    // failure) must not spawn a SECOND diagnostic here — propagate the
+    // poison silently, before any operator-specific check below gets a
+    // chance to reject it (numeric, boolean, integer, dereference, ...).
+    // Single choke point, mirroring type_check_binary_expr's guard: every
+    // unary operator's operand check lives in the switch below, so guarding
+    // this one entry covers all of them uniformly.
+    if (type_is_poison(operand_type)) {
+        expr->node_type = operand_type;
+        return operand_type;
+    }
+
     Type* result_type = NULL;
-    
+
     switch (unary->operator) {
         case TOKEN_MINUS:
         case TOKEN_PLUS:
@@ -2223,10 +2584,551 @@ static int slice_or_string_assignable(Type* src_t, Type* dst_t) {
            || (byte_dst && src_t->kind == TYPE_STRING);
 }
 
+// Function generics Task 6: fully handles a call whose callee is a generic
+// Variable (callee_var->is_generic), replacing the ordinary fixed-arity path
+// in type_check_call_expr below for this call entirely — arity is checked
+// against the generic signature's own param_count, every argument is
+// type-checked here, and the substituted return type becomes the call's
+// node_type. Callers must `return` this function's result directly rather
+// than falling through, since the normal check_signature/param_types loop
+// has no notion of TYPE_PARAM.
+//
+// Inference walks each (declared param type, checked arg type) pair through
+// unify_types, which structurally matches the (possibly TYPE_PARAM-bearing)
+// param against the concrete arg and writes newly-inferred bindings — Tier A
+// scope only recurses through TYPE_SLICE/TYPE_POINTER/TYPE_FUNCTION (see its
+// doc comment in types.c). A bare TYPE_PARAM parameter already bound to a
+// DIFFERENT concrete type is unify_types' most common failure mode, so it is
+// special-cased here (pre-checking bindings[idx] before calling unify_types)
+// to produce a "conflicting types" diagnostic naming both types, rather than
+// unify_types' generic 0 return folding into the same message as an
+// unrelated structural mismatch (e.g. []int against *int).
+// Tier B: find the bound (constraint interface) for type-param index `idx` by
+// locating a TYPE_PARAM with that index anywhere in a generic signature's
+// param types. Every type param appears in a parameter (Tier A invariant), so
+// this finds it. Returns the constraint Type* (a TYPE_INTERFACE), or NULL.
+static Type* generic_param_constraint(Type* t, int idx) {
+    if (!t) return NULL;
+    switch (t->kind) {
+        case TYPE_PARAM:
+            return t->data.type_param.index == idx ? t->data.type_param.constraint : NULL;
+        case TYPE_SLICE:   return generic_param_constraint(t->data.slice.element_type, idx);
+        case TYPE_POINTER: return generic_param_constraint(t->data.pointer.pointee_type, idx);
+        case TYPE_FUNCTION: {
+            for (size_t i = 0; i < t->data.function.param_count; i++) {
+                Type* c = generic_param_constraint(t->data.function.param_types[i], idx);
+                if (c) return c;
+            }
+            return generic_param_constraint(t->data.function.return_type, idx);
+        }
+        default: return NULL;
+    }
+}
+
+// Tier B transitive-bound support: does the abstract constraint interface
+// `have_iface` (a type parameter's OWN bound) structurally cover every
+// method required by `want_iface` (the callee's bound)? Used when a
+// generic call's inferred binding is itself an abstract TYPE_PARAM — e.g.
+// `Inner(x)` called from inside `Outer`'s body, where `x`'s type is
+// `Outer`'s own type parameter `T`, not a concrete type yet. There is no
+// concrete method table to consult in that case (type_interface_satisfied
+// looks up mangled "Concrete__method" names and would always report
+// "missing" for an abstract T), so satisfaction is checked by comparing
+// method names between the two interfaces instead. Name match is
+// sufficient for Tier B. A NULL/non-interface `have_iface` (a bare `any`
+// type parameter, i.e. no constraint) covers only an empty `want_iface`.
+// True if two interface-method function types have identical signatures.
+// Both carry NO receiver (unlike a registered concrete method, whose params[0]
+// is the receiver — see type_interface_satisfied), so params line up directly.
+// A missing return type and TYPE_VOID are treated as equivalent.
+static int iface_method_sig_equals(Type* have_fn, Type* want_fn) {
+    if (!have_fn || have_fn->kind != TYPE_FUNCTION ||
+        !want_fn || want_fn->kind != TYPE_FUNCTION) return 0;
+    if (have_fn->data.function.param_count != want_fn->data.function.param_count)
+        return 0;
+    for (size_t k = 0; k < want_fn->data.function.param_count; k++) {
+        if (!type_equals(have_fn->data.function.param_types[k],
+                         want_fn->data.function.param_types[k]))
+            return 0;
+    }
+    Type* hr = have_fn->data.function.return_type;
+    Type* wr = want_fn->data.function.return_type;
+    int h_void = !hr || hr->kind == TYPE_VOID;
+    int w_void = !wr || wr->kind == TYPE_VOID;
+    if (h_void != w_void) return 0;
+    if (!h_void && !type_equals(hr, wr)) return 0;
+    return 1;
+}
+
+static int interface_covers(Type* have_iface, Type* want_iface) {
+    if (!want_iface || want_iface->kind != TYPE_INTERFACE) return 0;
+    if (want_iface->data.interface.method_count == 0) return 1;
+    if (!have_iface || have_iface->kind != TYPE_INTERFACE) return 0;
+    for (InterfaceMethod* wm = want_iface->data.interface.methods; wm; wm = wm->next) {
+        int found = 0;
+        for (InterfaceMethod* hm = have_iface->data.interface.methods; hm; hm = hm->next) {
+            // A name match is not enough: the signatures must be identical, or a
+            // caller-side bound could smuggle in a same-named method with a
+            // different arity/type and miscompile at the concrete call site.
+            if (hm->name && wm->name && strcmp(hm->name, wm->name) == 0 &&
+                iface_method_sig_equals(hm->type, wm->type)) { found = 1; break; }
+        }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+// Fix round 7 (I-r6): does `t` contain a TYPE_PARAM anywhere in its
+// structure? Checker-side sibling of the monomorphizer's static
+// args_contain_typeparam (monomorphize.c) — same Tier-A shapes unify_types
+// recurses, plus arrays/nullables for completeness. Used by
+// type_check_generic_call to detect a parameter position that would BIND a
+// type parameter from an argument (as opposed to a fully concrete position).
+// Non-static (declared in types.h): sub-project 2 reuses it from
+// type_checker.c's declare_function_signature for the `comptime n T`
+// declaration wall — see that call site's comment for why.
+int type_contains_type_param(const Type* t) {
+    if (!t) return 0;
+    switch (t->kind) {
+        case TYPE_PARAM:
+            return 1;
+        case TYPE_SLICE:
+            return type_contains_type_param(t->data.slice.element_type);
+        case TYPE_POINTER:
+            return type_contains_type_param(t->data.pointer.pointee_type);
+        case TYPE_ARRAY:
+            return type_contains_type_param(t->data.array.element_type);
+        case TYPE_NULLABLE:
+            return type_contains_type_param(t->data.nullable.base_type);
+        case TYPE_FUNCTION: {
+            for (size_t i = 0; i < t->data.function.param_count; i++) {
+                if (type_contains_type_param(t->data.function.param_types[i]))
+                    return 1;
+            }
+            return type_contains_type_param(t->data.function.return_type);
+        }
+        default:
+            return 0;
+    }
+}
+
+// Comptime value params Task 2: the VarDeclNode at parameter position `idx`
+// in a FuncDeclNode's parameter list (skipping any non-VarDeclNode entries —
+// none are expected today, but declare_function_signature's own param_types
+// build loop applies the same guard). idx is 0-based over parameters only,
+// matching func_type->data.function.param_types[idx] indexing. Returns NULL
+// past the end of the list (e.g. a trailing variadic-packed argument beyond
+// the fixed prefix, which has no per-argument VarDeclNode of its own).
+//
+// Moved above type_check_generic_call (sub-project 2): the generic-call loop
+// now needs this same lookup to detect a comptime position, so it must be
+// defined before its first use rather than only before type_check_call_expr's
+// fixed-arity loop further down.
+static VarDeclNode* func_decl_param_at(FuncDeclNode* fd, size_t idx) {
+    if (!fd) return NULL;
+    size_t i = 0;
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (i == idx) return (VarDeclNode*)p;
+        i++;
+    }
+    return NULL;
+}
+
+// Comptime value params Task 3 (sub-project 2: shared across
+// type_check_call_expr's fixed-arity loop AND type_check_generic_call's
+// generic loop — the "3rd near-copy avoided" the composition map calls out).
+// Validates that `arg` is a compile-time-constant int via the same two-tier
+// fold (goo_fold_const_int_ctx, then the comptime engine) sub-project 1
+// established, and appends the resolved value to call->comptime_value_args,
+// growing by one. `param_vd` is the comptime parameter's own VarDeclNode
+// (used only for its name, in diagnostics). Preconditions the CALLER must
+// establish before invoking this (not re-checked here): comptime_first_check
+// holds for `call`'s CallExprNode, and param_vd->is_comptime_param is set —
+// this helper trusts both and unconditionally attempts the capture.
+//
+// Returns 1 with the value appended on success. On failure it emits the
+// diagnostic itself AND resets call->comptime_value_args/_arg_count to the
+// clean (NULL,0) state (matching the entry-reset every re-visit would
+// otherwise perform, without waiting for one) before returning 0 — every
+// caller must treat 0 as "a type error was already reported; propagate
+// NULL/failure up the stack without emitting a second diagnostic."
+static int type_check_capture_comptime_arg(TypeChecker* checker,
+                                            CallExprNode* call, ASTNode* arg,
+                                            VarDeclNode* param_vd) {
+    // Tier 1 — the checker-aware const folder, which resolves scope-
+    // registered constants (`const K = 3`, package-level consts, `comptime
+    // const M int = 2+2`) via each Variable's cached const_int_value; the
+    // comptime ENGINE alone (tier 2) has no view of checker-scope constants.
+    // Guarded by goo_expr_references_comptime_param: inside a comptime
+    // template body the folder would resolve the enclosing comptime PARAM to
+    // its placeholder — such an argument skips the fold and falls to the
+    // engine, which rejects it (transitive comptime forwarding is a
+    // documented restriction).
+    // Tier 2 — the comptime engine, for everything the folder doesn't handle
+    // (e.g. comptime block results). A runtime variable fails both tiers ->
+    // clean rejection.
+    int64_t comptime_arg_value = 0;
+    int resolved = 0;
+    uint64_t folded = 0;
+    if (!goo_expr_references_comptime_param(checker, arg) &&
+        goo_fold_const_int_ctx(checker, arg, &folded)) {
+        comptime_arg_value = (int64_t)folded;
+        resolved = 1;
+    }
+    if (!resolved) {
+        ComptimeContext* raw_ctx = checker->comptime_type_ctx
+            ? checker->comptime_type_ctx->comptime_ctx : NULL;
+        ComptimeResult* res = raw_ctx
+            ? comptime_eval_expression(raw_ctx, arg) : NULL;
+        int ok = res && res->value && !res->error &&
+                 res->value->type == COMPTIME_VALUE_INT;
+        if (!ok) {
+            if (res) comptime_result_free(res);
+            type_error(checker, arg->pos,
+                "argument to comptime parameter '%s' must be a compile-time constant",
+                param_vd->names[0]);
+            // Error-path hygiene: drop any values captured for EARLIER
+            // comptime args of this same failing call so the node leaves
+            // this function in the clean (NULL,0) state at the point of
+            // failure (the entry-gate free would also catch it on a
+            // re-visit; this just doesn't wait for one).
+            free(call->comptime_value_args);
+            call->comptime_value_args = NULL;
+            call->comptime_value_arg_count = 0;
+            return 0;
+        }
+        comptime_arg_value = res->value->int_value;
+        comptime_result_free(res);
+    }
+    // Capture the resolved int for the monomorphizer, in parameter order
+    // (ast.h's field doc comment) — a compact grow-by-one.
+    int64_t* grown = realloc(call->comptime_value_args,
+        (call->comptime_value_arg_count + 1) * sizeof(int64_t));
+    if (!grown) {
+        type_error(checker, arg->pos,
+            "out of memory recording comptime argument '%s'",
+            param_vd->names[0]);
+        // Error-path hygiene: same clean-state teardown as the rejection
+        // path above (realloc failure leaves the old allocation valid —
+        // free it, don't leak it).
+        free(call->comptime_value_args);
+        call->comptime_value_args = NULL;
+        call->comptime_value_arg_count = 0;
+        return 0;
+    }
+    call->comptime_value_args = grown;
+    call->comptime_value_args[call->comptime_value_arg_count++] = comptime_arg_value;
+    return 1;
+}
+
+static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
+                                      CallExprNode* call, Variable* callee_var,
+                                      const char* callee_name) {
+    // Comptime+generic composition (sub-project 2): honor the same
+    // first-visit contract type_check_call_expr enforces before dispatching
+    // here (its own comptime_first_check/entry-reset, above the callee-kind
+    // dispatch that forwards to this function) — codegen re-invokes
+    // type_check_call_expr on the same CallExprNode (call_codegen.c), which
+    // re-dispatches here for a generic callee every time. The caller's own
+    // entry-reset already runs before every dispatch into this function (so
+    // call->comptime_value_args is already (NULL,0) by the time a true
+    // first visit reaches here), but recomputing the flag locally keeps the
+    // per-arg capture loop below self-contained: it gates the capture
+    // helper call directly on this function's own local reasoning rather
+    // than trusting a value computed two stack frames away.
+    int comptime_first_check = (expr->node_type == NULL);
+    if (comptime_first_check) {
+        free(call->comptime_value_args);
+        call->comptime_value_args = NULL;
+        call->comptime_value_arg_count = 0;
+    }
+
+    Type* gsig = callee_var->type;
+    if (!gsig || gsig->kind != TYPE_FUNCTION) {
+        type_error(checker, expr->pos,
+                   "%s is marked generic but has no function signature",
+                   callee_name);
+        return NULL;
+    }
+    size_t n = callee_var->type_param_count;
+    size_t pc = gsig->data.function.param_count;
+
+    size_t argc = 0;
+    for (ASTNode* a = call->args; a; a = a->next) argc++;
+
+    if (argc != pc) {
+        type_error(checker, expr->pos,
+                   "wrong number of arguments to %s: expected %zu, got %zu",
+                   callee_name, pc, argc);
+        return NULL;
+    }
+
+    Type** bindings = calloc(n ? n : 1, sizeof(Type*));
+    if (!bindings) return NULL;
+
+    size_t k = 0;
+    for (ASTNode* a = call->args; a; a = a->next, k++) {
+        Type* at = type_check_expression(checker, a);
+        if (!at) { free(bindings); return NULL; }
+
+        // Fix 2 (comptime-param functions are not first-class values): a
+        // generic call bypasses type_check_call_expr's argument loop entirely
+        // (this function is its replacement for generic callees), so it needs
+        // its own copy of that loop's gate — `Apply(fill, 5)` into
+        // `func Apply[T any](f func(int, int) int, x T)` captured fill's
+        // VALUE into a func-typed parameter with zero diagnostics.
+        if (!reject_comptime_function_value(checker, a, at, a->pos,
+                                            "passed as an argument")) {
+            free(bindings);
+            return NULL;
+        }
+
+        Type* pt = gsig->data.function.param_types[k];
+
+        // Comptime+generic composition (sub-project 2): a position whose
+        // declared param is_comptime_param never binds a type parameter —
+        // the declaration wall in declare_function_signature (`comptime n T`
+        // rejected) guarantees `pt` here is always a plain concrete type for
+        // a comptime position, never a bare/contained TYPE_PARAM. It
+        // validates as that concrete type and captures its value via the
+        // same helper type_check_call_expr's fixed-arity loop uses
+        // (type_check_capture_comptime_arg), then is EXCLUDED from
+        // unify_types entirely — unify_types would otherwise fall to its
+        // `type_equals` default-case comparison of `pt` against `at` (the
+        // argument's own static type, e.g. an untyped-literal's default
+        // width), and a spurious kind/width mismatch there would surface as
+        // "cannot infer type arguments", the wrong diagnostic for this
+        // position; the capture helper's own "must be a compile-time
+        // constant" is the correct rejection here instead. Gated on
+        // comptime_first_check exactly like the non-generic loop: a
+        // codegen-phase re-invocation must not re-capture (or re-evaluate,
+        // which can even false-fail against defer's rewritten argument
+        // nodes) values already captured on the first pass.
+        VarDeclNode* param_vd = (callee_var->func_decl_node &&
+                callee_var->func_decl_node->type == AST_FUNC_DECL)
+            ? func_decl_param_at((FuncDeclNode*)callee_var->func_decl_node, k)
+            : NULL;
+        if (param_vd && param_vd->is_comptime_param) {
+            if (comptime_first_check &&
+                !type_check_capture_comptime_arg(checker, call, a, param_vd)) {
+                free(bindings);
+                return NULL;
+            }
+            continue;
+        }
+
+        // Fix round 7 (I-r6): a comptime-length array VALUE meeting the
+        // generic axis. Two cases, split by whether this parameter position
+        // binds a type parameter:
+        // - BINDS one (`Id(a)` with a: [n]int into `x T`, or any pt shape
+        //   containing a TYPE_PARAM): reject at template time. The generic
+        //   instance would otherwise be stamped against the TEMPLATE's
+        //   placeholder-length Type (the recorded binding) while the call
+        //   site passes the instance-real array — the mismatch failed
+        //   closed, but only at the LLVM verifier ("Call parameter type
+        //   does not match function signature"), violating the
+        //   clean-diagnostics bar. Per-value re-binding of generic
+        //   instances is the composition follow-up (design doc,
+        //   Scope/YAGNI).
+        // - CONCRETE array position (`g(1, a)` into `arr [4]int`): the
+        //   wave-6 length deferral applies — element types must match now,
+        //   unify is skipped (it compares the placeholder length), and the
+        //   call codegen's argument loop enforces the instance-real length
+        //   (instance-named rejection on a genuine mismatch).
+        if (goo_type_contains_comptime_array(at)) {
+            if (type_contains_type_param(pt)) {
+                type_error(checker, a->pos,
+                    "comptime-length array cannot bind a generic type parameter (not yet supported)");
+                free(bindings);
+                return NULL;
+            }
+            if (pt && pt->kind == TYPE_ARRAY && at->kind == TYPE_ARRAY &&
+                type_equals(pt->data.array.element_type,
+                            at->data.array.element_type)) {
+                continue; // length deferred to instance time (call codegen)
+            }
+        }
+
+        if (pt && pt->kind == TYPE_PARAM) {
+            int idx = pt->data.type_param.index;
+            if (idx >= 0 && (size_t)idx < n && bindings[idx] &&
+                !type_equals(bindings[idx], at)) {
+                type_error(checker, expr->pos,
+                           "cannot infer %s: conflicting types %s and %s",
+                           pt->data.type_param.name ? pt->data.type_param.name : "type parameter",
+                           type_to_string(bindings[idx]), type_to_string(at));
+                free(bindings);
+                return NULL;
+            }
+        }
+        if (!unify_types(pt, at, bindings, n)) {
+            type_error(checker, expr->pos,
+                       "cannot infer type arguments for %s: argument %zu (%s) does not match",
+                       callee_name, k + 1, type_to_string(at));
+            free(bindings);
+            return NULL;
+        }
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        if (!bindings[i]) {
+            type_error(checker, expr->pos,
+                       "cannot infer type parameter %zu of %s", i, callee_name);
+            free(bindings);
+            return NULL;
+        }
+    }
+
+    // Tier B: enforce interface-constraint bounds — each inferred concrete type
+    // must satisfy its type param's bound. `any` / 0-method bounds are
+    // satisfied by everything, so skip them.
+    for (size_t i = 0; i < n; i++) {
+        Type* bound = NULL;
+        for (size_t p = 0; p < pc && !bound; p++)
+            bound = generic_param_constraint(gsig->data.function.param_types[p], (int)i);
+        if (bound && bound->kind == TYPE_INTERFACE &&
+            bound->data.interface.method_count > 0) {
+            if (bindings[i] && bindings[i]->kind == TYPE_PARAM) {
+                // Transitive case: the inferred binding is itself an
+                // abstract type parameter (e.g. calling Inner(x) from
+                // inside Outer's body, where x : Outer's own T). Check that
+                // T's own constraint structurally covers `bound` instead of
+                // running the concrete-only type_interface_satisfied,
+                // which would always report "missing" against an abstract
+                // receiver name.
+                Type* have = bindings[i]->data.type_param.constraint;
+                if (!interface_covers(have, bound)) {
+                    const char* pname = bindings[i]->data.type_param.name;
+                    const char* hname = (have && have->kind == TYPE_INTERFACE &&
+                                          have->data.interface.name)
+                                             ? have->data.interface.name : "any";
+                    type_error(checker, expr->pos,
+                        "type parameter %s (constraint %s) does not satisfy %s",
+                        pname ? pname : "T", hname,
+                        bound->data.interface.name ? bound->data.interface.name : "interface");
+                    free(bindings);
+                    return NULL;
+                }
+            } else {
+                const char* method = NULL; const char* reason = NULL;
+                if (!type_interface_satisfied(checker, bound, bindings[i], &method, &reason)) {
+                    // Fix 2: the "comptime" sentinel gets the dedicated
+                    // one-place diagnostic — see
+                    // report_comptime_method_not_satisfied's doc comment
+                    // (every type_interface_satisfied caller does this).
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, expr->pos, method);
+                        free(bindings);
+                        return NULL;
+                    }
+                    const char* cn = type_receiver_name(bindings[i]);
+                    type_error(checker, expr->pos,
+                        "%s does not implement %s (%s method %s)",
+                        cn ? cn : type_to_string(bindings[i]),
+                        bound->data.interface.name ? bound->data.interface.name : "interface",
+                        reason ? reason : "missing", method ? method : "?");
+                    free(bindings);
+                    return NULL;
+                }
+            }
+        }
+    }
+
+    // Record the instantiation for the monomorphizer (Task 9). The recorder
+    // gets its OWN copy of the bindings array rather than aliasing the one
+    // handed to call->type_args below — the checker's instantiation list
+    // (freed by type_checker_free) and this call node (freed by
+    // ast_node_free) each then own an independent allocation, so neither
+    // teardown path has to reason about which runs first or double-frees a
+    // shared pointer.
+    Type** rec_args = n ? malloc(n * sizeof(Type*)) : NULL;
+    if (n && !rec_args) { free(bindings); return NULL; }
+    if (rec_args) memcpy(rec_args, bindings, n * sizeof(Type*));
+
+    // Comptime+generic composition (sub-project 2): copy this call's
+    // captured comptime values (0/NULL for a generic-only function — the
+    // per-arg loop above only grows call->comptime_value_arg_count for a
+    // genuinely comptime position) into the same independent-copy
+    // discipline rec_args uses just above, so the seed's second payload is
+    // torn down by type_checker_free without ever aliasing back to this
+    // CallExprNode's own comptime_value_args (ast_node_free's teardown).
+    // Correct on a re-invocation too: call->comptime_value_args retains the
+    // FIRST pass's captured values across a codegen re-check (the capture
+    // loop above only re-runs the helper when comptime_first_check holds),
+    // so this copy reads the right data whether this is a first visit or a
+    // re-visit — matching call->type_args/bindings' own unconditional
+    // rebuild-every-call pattern just above.
+    int64_t* rec_comptime = call->comptime_value_arg_count
+        ? malloc(call->comptime_value_arg_count * sizeof(int64_t)) : NULL;
+    if (call->comptime_value_arg_count && !rec_comptime) {
+        free(bindings);
+        free(rec_args);
+        return NULL;
+    }
+    if (rec_comptime) {
+        memcpy(rec_comptime, call->comptime_value_args,
+               call->comptime_value_arg_count * sizeof(int64_t));
+    }
+    type_check_record_instantiation(checker, callee_var, rec_args, n,
+                                     rec_comptime, call->comptime_value_arg_count,
+                                     expr);
+
+    call->type_args = bindings;
+    call->type_arg_count = n;
+
+    Type* result = type_substitute(gsig->data.function.return_type, bindings, n);
+    expr->node_type = result;
+    return result;
+}
+
+// Comptime value params (fix round 2's I2 guard; promoted in fix round 4):
+// the comptime-param-reference walk now lives in expression_helpers.c as
+// goo_expr_references_comptime_param — type_from_ast (type_checker.c)
+// became its third consumer for comptime_length stamping. At the
+// comptime-argument capture site below, it guards the const-folding fast
+// path: goo_fold_const_int_ctx resolves ANY Variable with
+// has_const_int_value — which inside a comptime function's TEMPLATE body
+// includes the comptime param itself, bound to a PLACEHOLDER (see
+// type_check_function_decl's is_comptime_param binding). Folding
+// `helper(n, seed)`'s `n` there would silently record the placeholder as
+// the instance value — a miscompile — where the design instead makes
+// transitive comptime forwarding a documented restriction (design doc,
+// Scope/YAGNI): such an argument must fall through to the comptime engine,
+// which cannot resolve the param and rejects with the standard
+// "must be a compile-time constant" diagnostic.
+
 Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
 
     CallExprNode* call = (CallExprNode*)expr;
+
+    // Comptime value params: comptime_value_args/comptime_value_arg_count
+    // are zeroed at every parser.y CallExprNode construction site (fix
+    // round 3 — see ast.h's field doc comment for the ownership contract),
+    // and this function owns them thereafter. It is NOT called exactly
+    // once per call node: codegen re-invokes it on the same CallExprNode
+    // (call_codegen.c's method-call return-type recomputation and defer
+    // re-emission paths), and recapturing there would clobber the values
+    // captured on the first pass with a re-evaluation against whatever
+    // scope codegen currently has mirrored (fix round 1, finding 4).
+    // `expr->node_type` is the first-visit discriminator: reliably NULL at
+    // parse time (every construction site zeroes base.node_type) and set
+    // at the end of this function's successful main path — so node_type !=
+    // NULL means the values were already captured by an earlier full check
+    // and the capture/record sites below (gated on this same flag) must
+    // leave them untouched.
+    int comptime_first_check = (expr->node_type == NULL);
+    if (comptime_first_check) {
+        // Fields are zeroed from birth, so this free is unconditionally
+        // safe: a true first visit frees NULL (no-op); a re-attempt after
+        // a FAILED first check (node_type still NULL) frees that attempt's
+        // partial capture instead of orphaning it (closes fix round 2's
+        // residual transient leak completely).
+        free(call->comptime_value_args);
+        call->comptime_value_args = NULL;
+        call->comptime_value_arg_count = 0;
+    }
 
     // A type in call-argument position (map_type/slice_type/chan_type — the
     // grammar alternative added for `make(...)`) only means something when
@@ -2522,6 +3424,23 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             }
             Type* elem_t = type_check_expression(checker, call->args->next);
             if (!elem_t) return NULL;
+            // Fix 2 (comptime-param functions are not first-class values):
+            // append is special-cased ABOVE the generic argument loop (it
+            // returns early), so the loop's per-argument gate never sees its
+            // element — `append(s, fill)` stored fill into a slice with zero
+            // diagnostics. The slice argument (arg 1) and a spread source
+            // (`append(s, s2...)`) need no gate: both must be TYPE_SLICE
+            // (rejected above otherwise), and a slice ELEMENT type is built
+            // by type_from_ast from a type annotation, which never carries
+            // has_comptime_params — only a named function's own declared
+            // signature Type does, and every way of getting one INTO a slice
+            // is gated (composite literal, this element path, index-assign
+            // via the assignment gate).
+            if (!reject_comptime_function_value(checker, call->args->next, elem_t,
+                                                call->args->next->pos,
+                                                "passed as an argument")) {
+                return NULL;
+            }
             // The element must be assignable to the slice's element type:
             // codegen sizes the copy from the slice element type, so a
             // mismatch (e.g. append([]int, "s")) would otherwise miscompile.
@@ -2608,6 +3527,40 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             expr->node_type = checker->builtin_types[TYPE_INT64]; // Go: cap -> int (64-bit)
             return checker->builtin_types[TYPE_INT64];
         }
+        // close(ch) -> void (P3.1). Statement-only builtin (no result value,
+        // like delete/panic below); codegen lowers it to goo_chan_close.
+        // Exactly one argument, which must be a channel — anything else
+        // would hand codegen a non-pointer value to pass to goo_chan_close,
+        // which unconditionally dereferences it.
+        if (strcmp(func_ident->name, "close") == 0) {
+            if (!call->args || call->args->next) {
+                type_error(checker, expr->pos, "close expects exactly one argument (channel)");
+                return NULL;
+            }
+            Type* chan_t = type_check_expression(checker, call->args);
+            if (!chan_t) return NULL;
+            // P2.8 cascade suppression: a poisoned argument already carries
+            // its diagnostic; don't stringify it into a second one here.
+            if (type_is_poison(chan_t)) return chan_t;
+            if (chan_t->kind != TYPE_CHANNEL) {
+                type_error(checker, expr->pos,
+                           "close: argument must be a channel, got %s", type_to_string(chan_t));
+                return NULL;
+            }
+            expr->node_type = checker->builtin_types[TYPE_VOID];
+            return checker->builtin_types[TYPE_VOID];
+        }
+        // recover() — rejected in v1 (P3.5, user decision 2026-07-10:
+        // minimum scope). The builtin is registered in scope purely so the
+        // call reaches THIS message instead of "Undefined variable
+        // 'recover'". Returning NULL routes `r := recover()` through the
+        // failed-declaration path, which poisons r (P2.8) — no cascade.
+        if (strcmp(func_ident->name, "recover") == 0) {
+            type_error(checker, expr->pos,
+                       "recover() is not supported in v1; panics terminate the program "
+                       "(use !T error unions for recoverable errors)");
+            return NULL;
+        }
         // delete(m, k) -> void. Removes key k from map m (no-op if absent).
         // Exactly two args: the first must be a map, the second assignable
         // to its key type (any admitted key kind — see the AST_MAP_TYPE
@@ -2633,11 +3586,29 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 if (!check_interface_assign(checker, key_t, map_t->data.map.key_type, expr->pos)) {
                     return NULL;
                 }
-            } else if (!type_compatible(key_t, map_t->data.map.key_type)) {
-                type_error(checker, expr->pos,
-                           "delete: cannot use %s as key of %s",
-                           type_to_string(key_t), type_to_string(map_t));
-                return NULL;
+            } else {
+                // Arc 9 (i): constant keys gate against the declared key
+                // width, same as the index-key choke point — an ungated
+                // `delete(m, 300)` on map[int8]int passed the raw folded
+                // i64 to the runtime and silently no-opped forever.
+                Type* want_key = map_t->data.map.key_type;
+                if (type_is_integer(want_key)) {
+                    if (is_untyped_int_rooted(call->args->next, 0)) {
+                        if (!adapt_untyped_int_operand(checker, call->args->next,
+                                                       want_key, 0, 1))
+                            return NULL;
+                        key_t = want_key;
+                    } else if (check_const_int_expr_fits(checker, call->args->next,
+                                                         want_key) < 0) {
+                        return NULL;
+                    }
+                }
+                if (!type_compatible(key_t, want_key)) {
+                    type_error(checker, expr->pos,
+                               "delete: cannot use %s as key of %s",
+                               type_to_string(key_t), type_to_string(map_t));
+                    return NULL;
+                }
             }
             expr->node_type = checker->builtin_types[TYPE_VOID];
             return checker->builtin_types[TYPE_VOID];
@@ -2676,8 +3647,24 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         }
     }
 
-    // Check function expression
+    // Check function expression.
+    //
+    // P3.6 (method values): if the callee is a selector expression, tell
+    // type_check_selector_expr that ITS result feeds this call directly —
+    // it must keep splicing the receiver into params[0] (the existing wire
+    // format the recv_offset arity/arg-type logic below this point depends
+    // on, unchanged). Every OTHER selector — a value position like
+    // `f := c.get`, a function argument, a struct field initializer — never
+    // sets this flag and gets the receiver-STRIPPED type instead (see
+    // type_check_selector_expr's method-lookup arm). Cleared right after so
+    // it doesn't leak into unrelated selector checks later in this
+    // function's own argument loop (each argument is independently
+    // call-position-neutral: an argument that is itself a method selector
+    // in non-call position, e.g. `f(c.get)`, must also be stripped).
+    int selector_callee = call->function && call->function->type == AST_SELECTOR_EXPR;
+    if (selector_callee) checker->selector_call_position = 1;
     Type* func_type = type_check_expression(checker, call->function);
+    if (selector_callee) checker->selector_call_position = 0;
     if (!func_type) return NULL;
 
     // error.Error() -> string (Phase 6 Task 3). `e.Error` resolves (via the
@@ -2700,6 +3687,11 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     }
 
     if (func_type->kind != TYPE_FUNCTION) {
+        // P2.8 cascade suppression: a poisoned callee (bound by a failed
+        // declaration, e.g. the rejected `f := i.m` interface method value)
+        // already carries its diagnostic — propagate silently instead of
+        // stringifying "<poisoned>" into a second one.
+        if (type_is_poison(func_type)) return func_type;
         type_error(checker, expr->pos,
                   "Cannot call non-function type %s", type_to_string(func_type));
         return NULL;
@@ -2734,13 +3726,35 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     int check_signature = 0;
     size_t recv_offset = 0;
     const char* callee_name = NULL;
+    // Comptime value params Task 2: the resolved callee Variable, captured
+    // whenever check_signature is set below (identifier, struct-method, or
+    // source-package-function call), so the per-argument loop can walk its
+    // func_decl_node (FuncDeclNode) to find each parameter's
+    // is_comptime_param flag. Stays NULL for interface-method calls (no
+    // concrete Variable to resolve to) — comptime params on an interface
+    // method are simply not checked here.
+    Variable* checked_callee = NULL;
     if (call->function && call->function->type == AST_IDENTIFIER
         && !skip_variadic_builtin) {
         IdentifierNode* callee_ident = (IdentifierNode*)call->function;
         Variable* callee = type_checker_lookup_variable(checker, callee_ident->name);
+        // Function generics Task 6: a call through a generic Variable is
+        // handled ENTIRELY by type_check_generic_call — arity, per-argument
+        // type-checking, inference, and the result type all happen there,
+        // bypassing the fixed-arity check_signature/param_types path below
+        // (which knows nothing about TYPE_PARAM and would either false-reject
+        // every call or, worse, silently pass one through with the wrong
+        // result type). Must come before the `!callee->is_builtin` arm below:
+        // a generic function is never is_builtin, but is also not meant to
+        // fall into the ordinary check_signature path.
+        if (callee && callee->is_generic) {
+            return type_check_generic_call(checker, expr, call, callee,
+                                            callee_ident->name);
+        }
         if (callee && !callee->is_builtin) {
             check_signature = 1;
             callee_name = callee_ident->name;
+            checked_callee = callee;
         }
     } else if (call->function && call->function->type == AST_SELECTOR_EXPR
                && !skip_variadic_builtin) {
@@ -2763,13 +3777,18 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 const char* tn = type_receiver_name(st);
                 if (tn) {
                     char* mangled = type_method_mangled_name(tn, sel->selector);
+                    // P4.3: st may be a package-owned receiver type whose
+                    // method Variable only lives in that package's exports
+                    // scope (see type_checker_lookup_method's doc comment).
                     Variable* m = mangled
-                        ? type_checker_lookup_variable(checker, mangled) : NULL;
+                        ? type_checker_lookup_method(checker, st, sel->selector, mangled)
+                        : NULL;
                     free(mangled);
                     if (m && m->type == func_type && !m->is_builtin) {
                         check_signature = 1;
                         recv_offset = 1;
                         callee_name = sel->selector;
+                        checked_callee = m;
                     }
                 }
             } else if (st->kind == TYPE_INTERFACE) {
@@ -2810,7 +3829,23 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                         check_signature = 1;
                         recv_offset = 0;
                         callee_name = sel->selector;
+                        checked_callee = exp;
                     }
+                }
+                // P4.1: no source export matched (true for every shim symbol —
+                // the seeded shim Package carries an empty exports scope, per
+                // the comment above) — fall back to the declarative shim
+                // table. shim_signature_lookup already built func_type's real
+                // param list (see stdlib_package_lookup), so this only needs
+                // to confirm (package, name) names a known shim CALLABLE
+                // before flipping check_signature on; no re-lookup of the
+                // Type itself, and no Variable to record as checked_callee
+                // (shim functions never have comptime params to walk).
+                if (!check_signature &&
+                    shim_signature_is_known_call(pkg_ident->name, sel->selector)) {
+                    check_signature = 1;
+                    recv_offset = 0;
+                    callee_name = sel->selector;
                 }
             }
         }
@@ -2867,6 +3902,68 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
     while (arg) {
         Type* arg_type = type_check_expression(checker, arg);
         if (!arg_type) return NULL;
+
+        // P2.8 FIX F1 (cascade-suppression completeness): an argument bound
+        // to a previously failed declaration (see
+        // register_declared_names_after_failure) must not spawn a SECOND
+        // diagnostic here. Mirrors the return-statement guard's placement
+        // (type_checker.c) and the binary-op choke point's (this file,
+        // type_check_binary_expr) — skip every check below for this
+        // argument (comptime-function-value, comptime-param capture, and
+        // the type-compatibility comparisons that stringify arg_type) and
+        // move on to the next one.
+        if (type_is_poison(arg_type)) {
+            arg_count++;
+            arg = arg->next;
+            continue;
+        }
+
+        // Fix 2 (comptime-param functions are not first-class values):
+        // `takesFunc(fill)` would capture fill's VALUE into takesFunc's
+        // func-typed parameter — a Variable with no func_decl_node on the
+        // other side, the same bypass the var-decl/assignment/return guards
+        // close, for the argument-passing channel. `arg` here is a VALUE
+        // argument, never the callee itself (call->function is checked
+        // separately, above this loop), so this cannot false-reject a direct
+        // call's callee.
+        if (!reject_comptime_function_value(checker, arg, arg_type, arg->pos,
+                                            "passed as an argument")) {
+            return NULL;
+        }
+
+        // Comptime value params Task 2: a `comptime name T` parameter demands
+        // a compile-time-constant argument — evaluate it through the
+        // comptime engine and require an int result. Independent of (and
+        // checked before) the type-compatibility logic below: this is a
+        // constness requirement, not a type mismatch, so it gets its own
+        // diagnostic rather than falling through to "cannot use T as U".
+        // Only reachable when checked_callee's real FuncDeclNode is known
+        // (identifier/struct-method/source-package calls); an interface
+        // method call has no concrete Variable to resolve is_comptime_param
+        // from and is not checked here.
+        //
+        // Fix round 1 (finding 4): gated on comptime_first_check — on a
+        // codegen-phase RE-invocation of this function over the same node,
+        // the values were already validated and captured by the first pass;
+        // re-appending would duplicate them, and re-EVALUATING can even
+        // false-fail (defer's re-emission path rewrites argument nodes to
+        // synthetic identifiers the comptime engine can't evaluate).
+        if (comptime_first_check &&
+            checked_callee && checked_callee->func_decl_node &&
+            checked_callee->func_decl_node->type == AST_FUNC_DECL) {
+            VarDeclNode* param_vd = func_decl_param_at(
+                (FuncDeclNode*)checked_callee->func_decl_node, arg_count + recv_offset);
+            if (param_vd && param_vd->is_comptime_param) {
+                // Extracted (sub-project 2) into type_check_capture_comptime_arg,
+                // shared with type_check_generic_call's per-arg loop — see its
+                // doc comment above for the two-tier fold and the ownership/
+                // error-path contract. Behavior here is unchanged: on failure
+                // the helper has already emitted the diagnostic and reset
+                // call->comptime_value_args to (NULL,0).
+                if (!type_check_capture_comptime_arg(checker, call, arg, param_vd))
+                    return NULL;
+            }
+        }
 
         // Argument type compatibility: position-named so the diagnostic
         // points at the offending argument rather than the LLVM verifier.
@@ -2942,6 +4039,23 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                 is_untyped_int_rooted(arg, 0)) { // for_float_context=0: integer param, shifts and /,% stay valid
                 if (!adapt_untyped_int_operand(checker, arg, param_type, 0, 1)) return NULL;
                 arg_type = param_type;
+            } else if (arg && param_type && type_is_float(param_type) &&
+                       is_untyped_int_rooted(arg, 1)) {
+                // P4.1 finding (latent gap, not a shim-table error): this call-arg
+                // path never adapted an untyped INT literal to a FLOAT parameter —
+                // only the int-target branch above existed. It was never exercised
+                // before shim signatures existed because check_signature never fired
+                // for a package call (math.Sqrt/Pow/...), so `math.Pow(2, 10)`'s
+                // literals stayed int64 and only codegen's separate SIToFP coercion
+                // (codegen_generate_stdlib_call) made it work. Once math.Pow's real
+                // float64 params are checked here, the SAME literals would otherwise
+                // hit the numeric-width mismatch below ("cannot use int64 as
+                // float64") for code that already compiled correctly. Mirrors the
+                // for_float_context=1 adaptation struct fields/binary exprs already
+                // do (see is_untyped_int_rooted's doc comment, which documents this
+                // call-arg site as float-adapting even though, until now, it wasn't).
+                if (!adapt_untyped_int_operand(checker, arg, param_type, 0, 1)) return NULL;
+                arg_type = param_type;
             }
 
             // type_compatible() no longer permits ANY numeric->numeric pair —
@@ -2962,24 +4076,73 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             if (param_type && type_is_numeric(arg_type) && type_is_numeric(param_type)) {
                 int same_kind  = (type_is_float(arg_type) == type_is_float(param_type));
                 int same_width = (type_size(arg_type) == type_size(param_type));
-                if (!same_kind || !same_width) {
-                    type_error(checker, arg->pos,
-                               "argument %zu: cannot use %s as %s",
-                               arg_count + 1,
-                               type_to_string(arg_type), type_to_string(param_type));
-                    return NULL;
+                // Arc 10 (o) rider: a SAME-width, differently-SIGNED pair
+                // (uint64 const into an int64 param) slid past this guard
+                // untouched and bit-reinterpreted — enter the gate for the
+                // sign mismatch too, so a foldable constant is judged by
+                // the shared core; a non-constant (fit == 0) sign-only
+                // mismatch keeps the pre-existing acceptance (the plain-var
+                // laxness wall) rather than becoming a new rejection.
+                int sign_differs = type_is_integer(arg_type) &&
+                                   type_is_integer(param_type) &&
+                                   type_is_signed(arg_type) !=
+                                       type_is_signed(param_type);
+                if (!same_kind || !same_width || sign_differs) {
+                    // Arc 10 (o): a const-IDENT-bearing constant argument is
+                    // representable, not a width mismatch — `f(K)` with
+                    // K = 5 into an int8 parameter must be accepted (Go),
+                    // and K = 300 must reject as overflow, not as "cannot
+                    // use int64 as int8". Literal-rooted shapes never reach
+                    // here (adapted above, so same_kind/same_width hold);
+                    // this leg sees only ident-bearing constants and
+                    // non-constants. Fit (1): accept — call_codegen's arg
+                    // loop (T4) coerces the value to the declared parameter
+                    // width, exact for a representable constant. Reject
+                    // (-1): the shared core already emitted the overflow
+                    // diagnostic. Not applicable (0): plain variables keep
+                    // this clean width mismatch.
+                    int fit = type_is_integer(param_type)
+                              ? check_const_int_expr_fits(checker, arg, param_type)
+                              : 0;
+                    if (fit < 0) return NULL;
+                    if (fit > 0) {
+                        arg_type = param_type;
+                    } else if (!same_kind || !same_width) {
+                        type_error(checker, arg->pos,
+                                   "argument %zu: cannot use %s as %s",
+                                   arg_count + 1,
+                                   type_to_string(arg_type), type_to_string(param_type));
+                        return NULL;
+                    }
+                    // fit == 0 with same kind and width (sign-only
+                    // mismatch, non-constant): pre-existing acceptance.
                 }
             }
 
             // Interface parameter (P4-3/P4-5): a concrete implementer may be
             // passed where an interface is expected. Check satisfaction here so
             // `f(Sq{})` into `func f(s Shape)` is accepted; codegen boxes it.
+            //
+            // F3 fix: this call-arg site duplicates check_interface_assign's
+            // logic inline (to keep the "argument %zu:" message prefix)
+            // rather than calling it, so it needs its own copy of the same
+            // bare-nil short-circuit: `take(nil)` must not be routed into
+            // type_interface_satisfied as if nil were a concrete type.
             if (param_type && param_type->kind == TYPE_INTERFACE &&
+                arg_type && arg_type->kind == TYPE_UNKNOWN) {
+                // accepted: nil is Go's sixth nilable kind for interfaces —
+                // codegen_interface_box already boxes a TYPE_UNKNOWN concrete
+                // to the zero {NULL,NULL} interface value.
+            } else if (param_type && param_type->kind == TYPE_INTERFACE &&
                 arg_type && arg_type->kind != TYPE_INTERFACE) {
                 const char* method = NULL;
                 const char* reason = NULL;
                 if (!type_interface_satisfied(checker, param_type, arg_type,
                                               &method, &reason)) {
+                    if (reason && strcmp(reason, "comptime") == 0) {
+                        report_comptime_method_not_satisfied(checker, arg->pos, method);
+                        return NULL;
+                    }
                     const char* iname = param_type->data.interface.name
                                             ? param_type->data.interface.name : "interface";
                     const char* cname = type_receiver_name(arg_type);
@@ -2990,11 +4153,30 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                     return NULL;
                 }
             } else if (param_type && !type_compatible(arg_type, param_type)) {
-                type_error(checker, arg->pos,
-                           "argument %zu: cannot use %s as %s",
-                           arg_count + 1,
-                           type_to_string(arg_type), type_to_string(param_type));
-                return NULL;
+                // Fix round 6 (M-r5a): a comptime-length array ARGUMENT
+                // (`sum4(a)` with a: [n]int into a [4]int param) — the
+                // template-time length here is the placeholder, so the
+                // length comparison is meaningless until instance time.
+                // Same deferral as assignment (type_check_assignment_op,
+                // fix round 5): element types must still match now; the
+                // call codegen's argument loop enforces the real
+                // per-instance lengths (instance-named rejection on a
+                // genuine mismatch). Ordinary array arguments reject here
+                // exactly as before.
+                int comptime_len_deferred =
+                    arg_type && arg_type->kind == TYPE_ARRAY &&
+                    param_type->kind == TYPE_ARRAY &&
+                    (arg_type->data.array.comptime_length ||
+                     param_type->data.array.comptime_length) &&
+                    type_equals(arg_type->data.array.element_type,
+                                param_type->data.array.element_type);
+                if (!comptime_len_deferred) {
+                    type_error(checker, arg->pos,
+                               "argument %zu: cannot use %s as %s",
+                               arg_count + 1,
+                               type_to_string(arg_type), type_to_string(param_type));
+                    return NULL;
+                }
             }
         }
 
@@ -3011,9 +4193,15 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
             // The variadic param itself (declared's last slot) has no fixed
             // arity — zero or more trailing args pack into it (`sum()` is
             // valid: an empty slice). Only the FIXED prefix before it is
-            // required; declared >= 1 always holds here because a variadic
-            // signature always carries at least the slice param itself.
-            size_t min_args = declared - 1;
+            // required. declared >= 1 normally holds (a variadic signature
+            // carries at least the slice param), but the shim table's
+            // zero-fixed-param variadic rows (fmt.Println family) encode
+            // param_types=NULL/param_count=0 and rely on the
+            // skip_variadic_builtin path never reaching here — an implicit
+            // coupling (P4.1 review). Guard the subtraction so a future
+            // table row that breaks that coupling degrades to min_args=0
+            // instead of a size_t underflow that requires SIZE_MAX args.
+            size_t min_args = declared > 0 ? declared - 1 : 0;
             if (arg_count < min_args) {
                 type_error(checker, expr->pos,
                            "call to %s: not enough arguments (have %zu, want at least %zu)",
@@ -3026,6 +4214,56 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
                        callee_name, arg_count, declared);
             return NULL;
         }
+    }
+
+    // Comptime value params Task 3: record this call site as a
+    // monomorphization seed once every argument (including each comptime
+    // one, above) has validated — mirrors type_check_record_instantiation's
+    // generic-axis recording (type_check_generic_call) but keyed on int64_t
+    // comptime VALUES instead of concrete Types. Two callee shapes reach here
+    // with comptime values: a plain identifier callee (a local comptime-param
+    // function) and — since the P6 M1 wall lift — a package-function SELECTOR
+    // (`pkg.Fill(4, ...)`), whose checked_callee is the surviving export copy.
+    // A struct-method selector never does (declare_function_signature rejects
+    // comptime params on methods), and an interface-method call has a NULL
+    // checked_callee — so gating on checked_callee alone (rather than the
+    // callee's AST shape) is exact. Gated on comptime_first_check so a
+    // codegen-phase re-invocation doesn't append duplicate seeds after the
+    // monomorphizer already ran (see the entry-reset comment at the top of
+    // this function).
+    if (comptime_first_check &&
+        call->comptime_value_arg_count > 0 && call->function && checked_callee) {
+        // P6 M1 (comptime-wall lift, front (b)): reject a SAME-package INTERNAL
+        // comptime call. Its bare-name callee is the package's own inner-scope
+        // Variable (owner_pkg NULL), which scope_pop frees right after the
+        // package is codegen'd — before the main-pass monomorphizer consumes
+        // the seed, a use-after-free. A cross-package `pkg.Fill(...)` call
+        // instead binds the surviving EXPORT COPY (owner_pkg set); a top-level
+        // (main) call runs with current_package == NULL. Only the intersection
+        // (inside a package body AND callee has no owning package) is the
+        // dangling case — rejected precisely here rather than by banning every
+        // package-level comptime declaration.
+        if (checker->current_package && !checked_callee->owner_pkg) {
+            type_error(checker, expr->pos,
+                "comptime call to '%s' from within a package is not yet supported",
+                callee_name ? callee_name : "?");
+            return NULL;
+        }
+        int64_t* rec_values = malloc(call->comptime_value_arg_count * sizeof(int64_t));
+        if (!rec_values) {
+            // Fix round 1 (finding 5): a silent skip here would surface much
+            // later as an undefined-symbol failure at the (never-stamped)
+            // instance's call site — fail loudly at the point of the actual
+            // problem instead, mirroring the capture-site realloc error above.
+            type_error(checker, expr->pos,
+                "out of memory recording comptime instantiation of '%s'",
+                callee_name ? callee_name : "?");
+            return NULL;
+        }
+        memcpy(rec_values, call->comptime_value_args,
+               call->comptime_value_arg_count * sizeof(int64_t));
+        type_check_record_comptime_instantiation(checker, checked_callee,
+            rec_values, call->comptime_value_arg_count, expr);
     }
 
     expr->node_type = func_type->data.function.return_type;
@@ -3071,7 +4309,18 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
                                "array index %lld must not be negative", (long long)ci);
                     return NULL;
                 }
-                if (ci >= (uint64_t)expr_type->data.array.length) {
+                // Fix round 4: a comptime-length array's `length` here is
+                // the TEMPLATE placeholder — validating a const index
+                // against it falsely rejected `buf[3]` on `[n]int` with
+                // "out of bounds [0:1]", a bound the user never wrote.
+                // Defer the upper-bound check to instance time (the codegen
+                // index paths re-check against the instance's re-derived
+                // REAL length and hard-fail a genuine violation); ordinary
+                // arrays (comptime_length == 0) keep this check unchanged.
+                // The negative-index rejection above stays unconditional —
+                // invalid at every instance.
+                if (!expr_type->data.array.comptime_length &&
+                    ci >= (uint64_t)expr_type->data.array.length) {
                     type_error(checker, index->index->pos,
                                "array index %llu out of bounds [0:%zu]",
                                (unsigned long long)ci, expr_type->data.array.length);
@@ -3100,12 +4349,37 @@ Type* type_check_index_expr(TypeChecker* checker, ASTNode* expr) {
                 if (!check_interface_assign(checker, index_type, want_key, index->index->pos)) {
                     return NULL;
                 }
-            } else if (!type_compatible(index_type, want_key)) {
-                type_error(checker, index->index->pos,
-                          "Map key type mismatch: expected %s, got %s",
-                          type_to_string(want_key),
-                          type_to_string(index_type));
-                return NULL;
+            } else {
+                // Arc 9 (i): gate constant keys against the declared key
+                // width — `m[300]` (read, write, or comma-ok; this arm is
+                // the single choke point for all three) on a map[int8]int
+                // must reject like Go instead of passing the raw folded
+                // i64 to the runtime, where it can never equal any key
+                // that is genuinely in the int8 domain. Literal-rooted
+                // shapes adapt (stamping the key to the declared width —
+                // codegen widens it back by signedness, exactly); const
+                // identifiers are judged by the shared representability
+                // core. Non-constant keys keep the plain compatibility
+                // check — a typed narrow variable is in-domain by
+                // construction.
+                if (type_is_integer(want_key)) {
+                    if (is_untyped_int_rooted(index->index, 0)) {
+                        if (!adapt_untyped_int_operand(checker, index->index,
+                                                       want_key, 0, 1))
+                            return NULL;
+                        index_type = want_key;
+                    } else if (check_const_int_expr_fits(checker, index->index,
+                                                         want_key) < 0) {
+                        return NULL;
+                    }
+                }
+                if (!type_compatible(index_type, want_key)) {
+                    type_error(checker, index->index->pos,
+                              "Map key type mismatch: expected %s, got %s",
+                              type_to_string(want_key),
+                              type_to_string(index_type));
+                    return NULL;
+                }
             }
             element_type = expr_type->data.map.value_type;
             break;
@@ -3174,48 +4448,20 @@ Type* type_check_slice_index_expr(TypeChecker* checker, ASTNode* expr) {
     }
 }
 
-// stdlib_package_lookup returns a function Type for a (package, name) pair
-// drawn from the four hardcoded stdlib packages. Returns NULL if the pair
-// isn't known. This is a deliberate shortcut for M7-stdlib-expansion: the
-// type checker doesn't yet load stdlib/*.goo files, so we hand it the
-// minimum surface needed to type-check fmt.Println etc.
+// stdlib_package_lookup returns a Type for a (package, name) pair drawn from
+// the stdlib shim surface. Returns NULL if the pair isn't known. Package
+// VALUE members (not calls) are handled inline here, exactly as before —
+// they carry no type_function wrapper and are outside shim_signatures.c's
+// table (see that file's doc comment). Every CALLABLE member is now built
+// from the declarative table (P4.1) via shim_signature_lookup, which
+// supplies REAL parameter lists instead of the old param-less
+// `type_function(NULL, 0, ret)` stubs — see shim_signatures.h for the full
+// design and shim_signature_is_known_call for the call-checker hook this
+// enables.
 static Type* stdlib_package_lookup(TypeChecker* checker,
                                    const char* package,
                                    const char* name) {
     if (!checker || !package || !name) return NULL;
-    Type* void_t = type_checker_get_builtin(checker, TYPE_VOID);
-
-    // fmt.Println(string) -> void  (one-arg-only stub; full variadic comes later)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Println") == 0) {
-        return type_function(NULL, 0, void_t);
-    }
-
-    // fmt.Printf(format string, args...) -> void  (compile-time format walker)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Printf") == 0) {
-        return type_function(NULL, 0, void_t);
-    }
-
-    // fmt.Sprintf(format string, args...) -> string  (compile-time format builder)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Sprintf") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // fmt.Errorf(format string, args...) -> error  (Sprintf + box)
-    if (strcmp(package, "fmt") == 0 && strcmp(name, "Errorf") == 0) {
-        return type_function(NULL, 0, type_checker_error_type(checker));
-    }
-
-    // os.Exit(int) -> void
-    if (strcmp(package, "os") == 0 && strcmp(name, "Exit") == 0) {
-        return type_function(NULL, 0, void_t);
-    }
-
-    // os.Getenv(string) -> string
-    if (strcmp(package, "os") == 0 && strcmp(name, "Getenv") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
 
     // os.Args -> []string. A package VALUE member, not a call — mirrors
     // math.Pi below (no type_function wrapper). Real argv is captured
@@ -3227,90 +4473,13 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
         return type_slice(string_t);
     }
 
-    // File I/O (M1): scalar signatures, all returning int (bytes written /
-    // byte value / size, or a negative value on error).
-    //   os.WriteFile(path string, data string) -> int
-    //   os.ReadByte(path string, offset int)   -> int
-    //   os.FileSize(path string)               -> int
-    if (strcmp(package, "os") == 0 &&
-        (strcmp(name, "WriteFile") == 0 || strcmp(name, "ReadByte") == 0 ||
-         strcmp(name, "FileSize") == 0)) {
-        Type* int_t = type_checker_get_builtin(checker, TYPE_INT32);
-        return type_function(NULL, 0, int_t);
-    }
-
     // math.Pi -> float64. A package VALUE member, not a call — the
     // returned type is the value's type, no type_function wrapper.
     if (strcmp(package, "math") == 0 && strcmp(name, "Pi") == 0) {
         return type_checker_get_builtin(checker, TYPE_FLOAT64);
     }
 
-    // math.Sqrt/Pow/Abs/Min/Max(float64...) -> float64
-    if (strcmp(package, "math") == 0 &&
-        (strcmp(name, "Sqrt") == 0 || strcmp(name, "Pow") == 0 ||
-         strcmp(name, "Abs") == 0 || strcmp(name, "Min") == 0 ||
-         strcmp(name, "Max") == 0)) {
-        Type* float_t = type_checker_get_builtin(checker, TYPE_FLOAT64);
-        return type_function(NULL, 0, float_t);
-    }
-
-    // strings.Contains(string, string) -> bool
-    if (strcmp(package, "strings") == 0 && strcmp(name, "Contains") == 0) {
-        Type* bool_t = type_checker_get_builtin(checker, TYPE_BOOL);
-        return type_function(NULL, 0, bool_t);
-    }
-
-    // strings.ToUpper/ToLower/TrimSpace(string) -> string
-    if (strcmp(package, "strings") == 0 &&
-        (strcmp(name, "ToUpper") == 0 || strcmp(name, "ToLower") == 0 ||
-         strcmp(name, "TrimSpace") == 0)) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // strings.Split(string, string) -> []string
-    if (strcmp(package, "strings") == 0 && strcmp(name, "Split") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, type_slice(string_t));
-    }
-
-    // strings.Join([]string, string) -> string
-    if (strcmp(package, "strings") == 0 && strcmp(name, "Join") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // strconv.Itoa(int) -> string
-    if (strcmp(package, "strconv") == 0 && strcmp(name, "Itoa") == 0) {
-        Type* string_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, string_t);
-    }
-
-    // strconv.Atoi(string) -> !int  (error union: success=int, error=string).
-    // The value arm is the language's `int`, which is now int64 (Go: int is
-    // 64-bit here). The bridge binds `n` from this value type, and `n` then
-    // round-trips through an `int`-typed slot (e.g. `func parse(s) (int, error)`);
-    // both are int64, so the tuple slot matches.
-    if (strcmp(package, "strconv") == 0 && strcmp(name, "Atoi") == 0) {
-        Type* int_t = type_checker_get_builtin(checker, TYPE_INT64);
-        Type* err_t = type_checker_get_builtin(checker, TYPE_STRING);
-        return type_function(NULL, 0, type_error_union(int_t, err_t));
-    }
-
-    // errors.New(string) -> error  (?*int8 — the nullable error type)
-    // For v1, the returned error is a non-nil marker; message storage is
-    // deferred to Phase 6 (.Error() method / runtime error struct).
-    if (strcmp(package, "errors") == 0 && strcmp(name, "New") == 0) {
-        Type* err_t = type_checker_error_type(checker);
-        return type_function(NULL, 0, err_t);
-    }
-
-    // errors.Unwrap(error) -> error  (returns the wrapped cause, or nil)
-    if (strcmp(package, "errors") == 0 && strcmp(name, "Unwrap") == 0) {
-        return type_function(NULL, 0, type_checker_error_type(checker));
-    }
-
-    return NULL;
+    return shim_signature_lookup(checker, package, name);
 }
 
 // Struct embedding desugar: rewrite `o.X` into `(o.Hop1.Hop2).X` in place, so
@@ -3319,7 +4488,7 @@ static Type* stdlib_package_lookup(TypeChecker* checker,
 // is DEFINED as this sugar — the rewrite is the spec, executed.
 static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position pos) {
     for (size_t i = 0; i < r->len; i++) {
-        SelectorExprNode* s = (SelectorExprNode*)malloc(sizeof(SelectorExprNode));
+        SelectorExprNode* s = (SelectorExprNode*)xmalloc(sizeof(SelectorExprNode));
         s->base.type = AST_SELECTOR_EXPR;
         s->base.pos = pos;
         s->base.node_type = NULL;
@@ -3331,13 +4500,57 @@ static ASTNode* embed_wrap_base(ASTNode* base, const EmbedResult* r, Position po
     return base;
 }
 
+// P3.6 (method values): build the func type a method selector yields in
+// VALUE position — the same signature `method_type` carries, minus the
+// spliced receiver at params[0] (`type_check_function_decl` puts it there
+// for every method; see the call comment above). type_function COPIES the
+// param_types it's given (types.c), so handing it a pointer into the middle
+// of method_type's OWN array is safe — the result owns an independent copy,
+// and is_variadic is copied across explicitly since type_function always
+// zero-initializes it fresh.
+static Type* type_strip_receiver(Type* method_type) {
+    size_t recv_count = method_type->data.function.param_count;
+    if (recv_count == 0) return NULL;  // invariant violation: every method has a receiver
+    size_t stripped_count = recv_count - 1;
+    Type** stripped_params = stripped_count > 0
+        ? &method_type->data.function.param_types[1] : NULL;
+    Type* stripped = type_function(stripped_params, stripped_count,
+                                   method_type->data.function.return_type);
+    if (stripped) stripped->data.function.is_variadic = method_type->data.function.is_variadic;
+    return stripped;
+}
+
 Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_SELECTOR_EXPR) return NULL;
 
     SelectorExprNode* selector = (SelectorExprNode*)expr;
 
+    // P3.6 (method values): capture-and-clear the call-position flag the
+    // caller (type_check_call_expr) set for us, immediately. Cleared before
+    // the recursive base-expression check just below (selector->expr —
+    // e.g. `c` in `c.get` — is never itself a call callee) so that check
+    // can't inherit it; restored around the embedding re-invocation further
+    // down (this function calling itself after embed_wrap_base rewrites the
+    // AST), which resolves this SAME logical selector post-rewrite and must
+    // see the original call-position verdict again.
+    int is_call_callee = checker->selector_call_position;
+    checker->selector_call_position = 0;
+
     Type* expr_type = type_check_expression(checker, selector->expr);
     if (!expr_type) return NULL;
+
+    // P2.8 FIX F1 (cascade-suppression completeness): a poisoned base
+    // expression (bound to a previously failed declaration — see
+    // register_declared_names_after_failure) must not spawn a SECOND
+    // diagnostic here. Single choke point, mirroring type_check_binary_
+    // expr's guard: every struct/package/interface resolution below falls
+    // through to "Selector on non-struct, non-package type" on a mismatch,
+    // so guarding this one entry (e.g. a poisoned composite-literal
+    // variable's `.field` access) covers all of them uniformly.
+    if (type_is_poison(expr_type)) {
+        expr->node_type = expr_type;
+        return expr_type;
+    }
 
     // Package member access: when the left side is an imported package
     // identifier, resolve the selector against the stdlib symbol table.
@@ -3395,18 +4608,74 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
         const char* tn = type_receiver_name(struct_type);
         if (tn) {
             char* mangled = type_method_mangled_name(tn, selector->selector);
-            Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+            // P4.3: struct_type may be a package-owned receiver type (e.g.
+            // shapes.Point) — its method Variable only lives in that
+            // package's exports scope, never in main's own scope chain (the
+            // package's body scope is torn down right after codegen; see
+            // type_checker_lookup_method's doc comment).
+            Variable* m = mangled
+                ? type_checker_lookup_method(checker, struct_type, selector->selector, mangled)
+                : NULL;
             free(mangled);
             if (m && m->type && m->type->kind == TYPE_FUNCTION) {
-                expr->node_type = m->type;
-                return m->type;
+                if (is_call_callee) {
+                    // Existing method-CALL path, byte-for-byte unchanged:
+                    // the receiver stays spliced as params[0] — see
+                    // type_check_call_expr's recv_offset logic just above
+                    // this function in the file.
+                    expr->node_type = m->type;
+                    return m->type;
+                }
+                // P4.7 (sync shim): reached only when !is_call_callee (the
+                // is_call_callee branch above always returns). sync.Mutex /
+                // sync.WaitGroup methods lower directly to goo_sync_*
+                // runtime wrappers keyed off the CALL SITE's receiver
+                // expression (call_codegen.c) — there is no goo_pkg__sync__
+                // symbol for a bound thunk to close over (sync has no Goo
+                // source body; see is_stdlib_shim_import). Reject method
+                // VALUES here, mirroring the interface method-value scope
+                // cut above, rather than let this reach codegen and either
+                // crash or bind the wrong thing. Rejection (not a thunk
+                // that also calls the wrapper) is the v1 choice — sync
+                // method values are rare in practice and the thunk path
+                // would need its own lazy-init-aware codegen with no reuse
+                // from the direct-call path built for B3.
+                {
+                    Package* owner = type_receiver_owner_package(struct_type);
+                    // import_path, not ->name: ->name is the call-site
+                    // identifier (`import s "sync"` sets it to "s"), which
+                    // would silently miss this check under an alias.
+                    // import_path is the canonical path, alias-independent.
+                    if (owner && owner->import_path && strcmp(owner->import_path, "sync") == 0) {
+                        type_error(checker, expr->pos,
+                                   "method values on sync.%s are not supported in v1 "
+                                   "(call %s directly)",
+                                   tn, selector->selector);
+                        return NULL;
+                    }
+                }
+                // P3.6: value position (`f := c.get`, a callback argument, a
+                // struct field initializer, ...) — yield the receiver-
+                // STRIPPED signature (params[1..]) so `f` type-checks and
+                // calls as a plain 0-or-more-arg func value. The receiver
+                // itself is bound into the func value's env cell at codegen
+                // time (composite_codegen.c's method arm); nothing here
+                // allocates or copies — this is a pure type-level view.
+                Type* stripped = type_strip_receiver(m->type);
+                if (!stripped) return NULL;
+                expr->node_type = stripped;
+                return stripped;
             }
         }
         EmbedResult er = embedding_resolve(checker, struct_type, selector->selector);
         if (er.kind == EMBED_FIELD || er.kind == EMBED_METHOD) {
             selector->expr = embed_wrap_base(selector->expr, &er, expr->pos);
             // Re-resolve: each inserted hop is a real (embedded) field, and
-            // the leaf is now a direct member of its owner.
+            // the leaf is now a direct member of its owner. Restore the
+            // call-position verdict captured at entry — this recursive call
+            // resolves the SAME logical selector (post-rewrite), so it must
+            // see it again, not the cleared default.
+            checker->selector_call_position = is_call_callee;
             return type_check_selector_expr(checker, expr);
         }
         if (er.kind == EMBED_AMBIGUOUS) {
@@ -3426,6 +4695,19 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
     if (expr_type->kind == TYPE_INTERFACE) {
         for (InterfaceMethod* im = expr_type->data.interface.methods; im; im = im->next) {
             if (im->name && strcmp(im->name, selector->selector) == 0) {
+                // P3.6 follow-up (sub-B review): interface METHOD VALUES
+                // (`f := i.m`) are a v1 scope cut — binding needs vtable
+                // dispatch through the bound thunk, which doesn't exist.
+                // Reject HERE with an accurate positioned message; without
+                // this the value passes typecheck and dies at codegen with
+                // a misleading "Selector can only be applied to struct
+                // types" attributed to the wrong line.
+                if (!is_call_callee) {
+                    type_error(checker, expr->pos,
+                               "method values on interface types are not supported in v1 "
+                               "(call the method directly, or bind from the concrete type)");
+                    return NULL;
+                }
                 expr->node_type = im->type;
                 return im->type;
             }
@@ -3451,14 +4733,55 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
 
     // Named non-struct type (e.g. `type IntSlice []int`) method call: resolve
     // `Name__selector` exactly like the struct method path above (1199-1208).
+    // P3.6: same call-vs-value fork as that path too — a named-int method in
+    // value position (`f := n.double`) yields the receiver-stripped
+    // signature, while a call callee keeps the spliced receiver for
+    // type_check_call_expr's recv_offset logic. Only a BARE named type
+    // reaches this arm: a pointer-to-named base (`p.double`, p *MyInt)
+    // carries name "*MyInt" (type_pointer), mangles to a symbol that never
+    // exists, and falls through to the rejection below — a pre-existing
+    // limitation of the method-CALL path (verified 2026-07-10), unchanged
+    // here, so the method-VALUE surface exactly tracks the callable surface.
     if (expr_type->name) {
         char* mangled = type_method_mangled_name(expr_type->name, selector->selector);
-        Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        // P4.3: same package-owned-receiver fallback as the struct arm above.
+        Variable* m = mangled
+            ? type_checker_lookup_method(checker, expr_type, selector->selector, mangled)
+            : NULL;
         free(mangled);
         if (m && m->type && m->type->kind == TYPE_FUNCTION) {
-            expr->node_type = m->type;
-            return m->type;
+            if (is_call_callee) {
+                expr->node_type = m->type;
+                return m->type;
+            }
+            Type* stripped = type_strip_receiver(m->type);
+            if (!stripped) return NULL;
+            expr->node_type = stripped;
+            return stripped;
         }
+    }
+
+    // Function generics Tier B: a method call on a bounded type parameter.
+    // `x.M()` where x : TYPE_PARAM resolves M against the bound interface's
+    // method set (the checker sees the abstract T; monomorphization later
+    // dispatches to the concrete type's M). An `any` (0-method) bound has no
+    // methods, so an attempted method call correctly reaches the reject below.
+    if (expr_type->kind == TYPE_PARAM &&
+        expr_type->data.type_param.constraint &&
+        expr_type->data.type_param.constraint->kind == TYPE_INTERFACE) {
+        Type* bound = expr_type->data.type_param.constraint;
+        for (InterfaceMethod* im = bound->data.interface.methods; im; im = im->next) {
+            if (im->name && strcmp(im->name, selector->selector) == 0) {
+                expr->node_type = im->type;
+                return im->type;
+            }
+        }
+        type_error(checker, expr->pos,
+                   "type parameter %s (constraint %s) has no method '%s'",
+                   expr_type->data.type_param.name ? expr_type->data.type_param.name : "T",
+                   bound->data.interface.name ? bound->data.interface.name : "interface",
+                   selector->selector);
+        return NULL;
     }
 
     type_error(checker, expr->pos, "Selector on non-struct, non-package type");
@@ -3467,14 +4790,21 @@ Type* type_check_selector_expr(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_TRY_EXPR) return NULL;
-    
+
     TryExprNode* try_expr = (TryExprNode*)expr;
-    
+
     Type* expr_type = type_check_expression(checker, try_expr->expr);
     if (!expr_type) return NULL;
-    
-    // Expression must be an error union
-    if (!type_is_error_union(expr_type)) {
+
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c) for why this is a structural (not flag-based)
+    // check. Everything below keys off `is_tuple` to run the identical
+    // control flow the !T path already established.
+    int is_tuple = type_is_error_result_tuple(expr_type);
+
+    // Expression must be an error union OR a (T, error) tuple
+    if (!is_tuple && !type_is_error_union(expr_type)) {
         type_error(checker, expr->pos,
                   "try can only be used with error union types, got %s",
                   type_to_string(expr_type));
@@ -3482,15 +4812,30 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
     }
 
     // `try` propagates the error out of the ENCLOSING function on the error
-    // path, so that function must itself return an error union (!T). Rejecting
-    // this here keeps the codegen propagation path (LLVMBuildRet operand) total
-    // — before this check a `try` in a non-!T function silently emitted
-    // `unreachable` (garbage IR, no diagnostic).
+    // path, so that function must itself return an error union (!T) —
+    // regardless of whether the OPERAND is a !T or a (T,error) tuple. A
+    // (T,error)-returning enclosing function is a distinct, out-of-scope
+    // shape (design doc's Out of scope list): v1 `try` only propagates OUT
+    // of !T-returning functions. Rejecting this here keeps the codegen
+    // propagation path (LLVMBuildRet operand) total — before this check a
+    // `try` in a non-!T function silently emitted `unreachable` (garbage
+    // IR, no diagnostic).
     Type* enclosing = checker->current_return_type;
     if (!enclosing || !type_is_error_union(enclosing)) {
         type_error(checker, expr->pos,
-                  "try can only be used inside a function that returns an error union (!T)");
+                  "try requires the enclosing function to return an error union (!T)");
         return NULL;
+    }
+
+    if (is_tuple) {
+        // The tuple's error field is always the boxed `error` interface
+        // (type_is_error_result_tuple guarantees field 1 satisfies
+        // type_is_error) — there is no distinct declared error ARM type to
+        // compare against the enclosing union's, unlike the !T branch below.
+        // try extracts the value type from field 0.
+        Type* value_type = expr_type->data.struct_type.fields[0].type;
+        expr->node_type = value_type;
+        return value_type;
     }
 
     // Error-union-ness of the enclosing function is NECESSARY. The VALUE types
@@ -3522,20 +4867,27 @@ Type* type_check_try_expr(TypeChecker* checker, ASTNode* expr) {
 
 Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
     if (!checker || !expr || expr->type != AST_CATCH_EXPR) return NULL;
-    
+
     CatchExprNode* catch_expr = (CatchExprNode*)expr;
-    
+
     Type* expr_type = type_check_expression(checker, catch_expr->expr);
     if (!expr_type) return NULL;
-    
-    // Expression must be an error union
-    if (!type_is_error_union(expr_type)) {
+
+    // P2.6 (T2): a user-declared (T, error) result tuple is accepted
+    // alongside a genuine !T error union — see type_is_error_result_tuple's
+    // doc comment (types.c). Unlike try, catch has no enclosing-function
+    // requirement: it handles the tuple locally, so the tuple path is a
+    // pure sibling of the !T path from here on.
+    int is_tuple = type_is_error_result_tuple(expr_type);
+
+    // Expression must be an error union OR a (T, error) tuple
+    if (!is_tuple && !type_is_error_union(expr_type)) {
         type_error(checker, expr->pos,
                   "catch can only be used with error union types, got %s",
                   type_to_string(expr_type));
         return NULL;
     }
-    
+
     // Type-check the catch body as a STATEMENT (the grammar always produces a
     // block: `expression CATCH identifier block`). Calling type_check_expression
     // on an AST_BLOCK_STMT hits the default "Unknown expression type" error.
@@ -3543,11 +4895,17 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         scope_push(checker);
 
         // Add error variable to scope so the catch body can reference it.
+        //
+        // P2-7: bind the same `error` interface type the n,err destructure
+        // path binds (type_checker.c:1969's type_checker_error_type call),
+        // not the union's raw error arm (which defaults to plain
+        // TYPE_STRING and has no method set — e.Error() failed with
+        // "Selector on non-struct, non-package type"). This is unconditional
+        // regardless of the union's declared error arm, mirroring the
+        // destructure path exactly; codegen degrades a non-string arm
+        // identically (function_codegen.c:1705-1734 / error_union_codegen.c).
         if (catch_expr->error_var) {
-            Type* error_type = expr_type->data.error_union.error_type;
-            if (!error_type) {
-                error_type = type_checker_get_builtin(checker, TYPE_STRING);
-            }
+            Type* error_type = type_checker_error_type(checker);
 
             Variable* error_var = variable_new(catch_expr->error_var, error_type, expr->pos);
             if (error_var) {
@@ -3560,8 +4918,11 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
         scope_pop(checker);
     }
 
-    // The type of a catch expression is the value type of the error union.
-    Type* value_type = expr_type->data.error_union.value_type;
+    // The type of a catch expression is the value type of the error union,
+    // or field 0 for a (T,error) tuple.
+    Type* value_type = is_tuple
+        ? expr_type->data.struct_type.fields[0].type
+        : expr_type->data.error_union.value_type;
 
     // P2-1: a value-producing handler (one whose final statement is an
     // expression) recovers with that expression's value on the error path, so
@@ -3584,23 +4945,40 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr) {
 }
 
 // Channel operation type checking
-Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, Position pos) {
+Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, ASTNode* value_expr, Position pos) {
     if (!checker || !channel_type || !value_type) return NULL;
-    
+
     // Left operand must be a channel
     if (channel_type->kind != TYPE_CHANNEL) {
         type_error(checker, pos, "Cannot send to non-channel type %s", type_to_string(channel_type));
         return NULL;
     }
-    
-    // Check if value type is compatible with channel element type
+
     Type* element_type = channel_type->data.channel.element_type;
+
+    // Task 1 (chan-send representability, arc 3; const-identifier extension,
+    // arc 4 item (j)): a compile-time integer constant — literal shape OR an
+    // expression over cached const identifiers — sent into an integer-element
+    // channel of a DIFFERENT kind (`ch <- 300`, `const k = 300; ch <- k` into
+    // chan int8) used to fall straight through to the blanket type_compatible
+    // check below, which treats any two integer kinds as compatible — so
+    // codegen materialized the constant at its own width and the runtime
+    // silently truncated on receive (300 -> 44). Gate through the shared
+    // representability helper (chan_send_const_int_gate, type_checker.c —
+    // see its doc comment for the case classes and the negated/bare_literal
+    // reconstruction). Same-kind sends and non-constant values need no gate —
+    // they flow through type_compatible below unchanged.
+    int gate = chan_send_const_int_gate(checker, value_expr, value_type, element_type);
+    if (gate < 0) return NULL;
+    if (gate > 0) return type_checker_get_builtin(checker, TYPE_VOID);
+
+    // Check if value type is compatible with channel element type
     if (!type_compatible(value_type, element_type)) {
-        type_error(checker, pos, "Cannot send %s to channel of %s", 
+        type_error(checker, pos, "Cannot send %s to channel of %s",
                   type_to_string(value_type), type_to_string(element_type));
         return NULL;
     }
-    
+
     // Channel send operation returns void
     return type_checker_get_builtin(checker, TYPE_VOID);
 }

@@ -1,0 +1,115 @@
+// nullable_eq_probe (T3, P2.5): tag-aware nullable equality — comparing two
+// ?T values is true iff both are nil or both are non-nil with equal
+// payloads; comparing a plain T against a ?T (either operand order) is true
+// iff the ?T is non-nil and its payload equals T; != is the negation. Goo
+// has no non-nullable-optional Go equivalent, so this program has no Go
+// counterpart — expected output is derived BY HAND from the design doc's
+// semantics (docs/superpowers/specs/2026-07-09-p2-typesystem-b-design.md,
+// section T3): ?a==?b <=> (both nil) || (neither nil && payload(a)==
+// payload(b)); t==?b <=> !nil(b) && t==payload(b), symmetric for ?a==t.
+//
+// The widened-literal case (w == 100 / 100 == w below) exercises the width
+// adaptation codegen must perform when comparing a ?int32 payload (LLVM
+// i32) against a bare int literal (LLVM i64 by default): the payload is
+// sign-extended to i64 before the icmp, mirroring the sign-extension
+// precedent codegen_create_nullable_with_value already applies when
+// wrapping a narrow literal into a wide nullable slot (nullable_width_probe).
+package main
+
+import "fmt"
+
+func main() {
+	var na ?int = nil
+	var nb ?int = nil
+	var va ?int = 7
+	var vb ?int = 7
+	var vc ?int = 8
+
+	// ?T == ?T: both nil.
+	if na == nb {
+		fmt.Println("PASS: nil == nil")
+	} else {
+		fmt.Println("FAIL: nil == nil")
+	}
+
+	// ?T == ?T: one nil, one value (both operand orders).
+	if va == na {
+		fmt.Println("FAIL: value == nil")
+	} else {
+		fmt.Println("PASS: value == nil")
+	}
+	if na == va {
+		fmt.Println("FAIL: nil == value")
+	} else {
+		fmt.Println("PASS: nil == value")
+	}
+
+	// ?T == ?T: both non-nil, equal payloads.
+	if va == vb {
+		fmt.Println("PASS: value == value (equal)")
+	} else {
+		fmt.Println("FAIL: value == value (equal)")
+	}
+
+	// ?T == ?T: both non-nil, unequal payloads.
+	if va == vc {
+		fmt.Println("FAIL: value == value (unequal)")
+	} else {
+		fmt.Println("PASS: value == value (unequal)")
+	}
+
+	// Mixed operand order: T == ?T.
+	if 7 == va {
+		fmt.Println("PASS: T == ?T (equal)")
+	} else {
+		fmt.Println("FAIL: T == ?T (equal)")
+	}
+	if 9 == va {
+		fmt.Println("FAIL: T == ?T (unequal)")
+	} else {
+		fmt.Println("PASS: T == ?T (unequal)")
+	}
+
+	// Mixed operand order: ?T == T.
+	if va == 7 {
+		fmt.Println("PASS: ?T == T (equal)")
+	} else {
+		fmt.Println("FAIL: ?T == T (equal)")
+	}
+	if na == 7 {
+		fmt.Println("FAIL: ?T(nil) == T")
+	} else {
+		fmt.Println("PASS: ?T(nil) == T")
+	}
+
+	// !=
+	if va != vc {
+		fmt.Println("PASS: != on unequal ?T")
+	} else {
+		fmt.Println("FAIL: != on unequal ?T")
+	}
+	if va != vb {
+		fmt.Println("FAIL: != on equal ?T")
+	} else {
+		fmt.Println("PASS: != on equal ?T")
+	}
+	if 7 != na {
+		fmt.Println("PASS: != mixed order")
+	} else {
+		fmt.Println("FAIL: != mixed order")
+	}
+
+	// Widened-literal case: ?int32 payload compared against a wider (i64
+	// default) bare int literal, both operand orders.
+	var w ?int32 = 100
+	if w == 100 {
+		fmt.Println("PASS: widened-literal ?int32 == T")
+	} else {
+		fmt.Println("FAIL: widened-literal ?int32 == T")
+	}
+	if 100 == w {
+		fmt.Println("PASS: widened-literal T == ?int32")
+	} else {
+		fmt.Println("FAIL: widened-literal T == ?int32")
+	}
+}

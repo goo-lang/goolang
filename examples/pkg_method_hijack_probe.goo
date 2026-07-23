@@ -1,0 +1,39 @@
+// pkg_method_hijack_probe (P4.3 review fix, CRITICAL): main declares its OWN
+// `Point` type with methods named IDENTICALLY to shapes.Point's (Scale, Sum)
+// but with DIFFERENT bodies (add vs multiply; subtract vs add). Method calls
+// on a shapes.Point receiver must dispatch to the PACKAGE's methods and
+// calls on main's own Point to MAIN's — the pre-fix lookup resolved the
+// bare mangled name ("Point__Scale") first, so main's same-named method
+// silently hijacked cross-package dispatch (printed 13 14 instead of 30 40,
+// exit 0). Expected output verified via `go run` on the equivalent
+// two-package Go module (scratchpad hijack/).
+package main
+
+import "fmt"
+import "shapes"
+
+type Point struct {
+	X int
+	Y int
+}
+
+func (p *Point) Scale(f int) {
+	p.X = p.X + f
+	p.Y = p.Y + f
+}
+
+func (p Point) Sum() int {
+	return p.X - p.Y
+}
+
+func main() {
+	sp := shapes.NewPoint(3, 4)
+	sp.Scale(10) // must run shapes' Scale (multiply), not main's (add)
+	fmt.Println(sp.X, sp.Y)
+	fmt.Println(sp.Sum()) // must run shapes' Sum (add), not main's (subtract)
+
+	mp := Point{X: 3, Y: 4}
+	mp.Scale(10) // must run MAIN's Scale (add)
+	fmt.Println(mp.X, mp.Y)
+	fmt.Println(mp.Sum()) // must run MAIN's Sum (subtract)
+}

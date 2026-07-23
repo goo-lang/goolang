@@ -1,0 +1,23 @@
+// Correctness arc 5 (h), accept side: REPRESENTABLE typed const decls (and
+// var-from-const-ident inits) must keep compiling and hold their exact
+// value through both materialization paths — package-level (checker
+// Variable survives into codegen, emitted at declared width) and local
+// (fallback width) — plus the boundary values of the declared types.
+package main
+
+const pkg8 int8 = -128
+
+func main() {
+	const k int8 = 127
+	println(k)
+	const u uint8 = 255
+	println(u)
+	const n int16 = -300
+	println(n)
+	println(pkg8)
+	const a = 100
+	var v int8 = a
+	println(v)
+	const big uint64 = 18446744073709551615
+	println(big)
+}

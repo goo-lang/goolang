@@ -1,0 +1,16 @@
+// Correctness arc 5 (h): a TYPED const decl whose folded RHS is not
+// representable in the declared type must reject at compile time (Go:
+// "constant 300 overflows int8"). Before this fix the decl had NO
+// representability gate at all — type_compatible's any-int laxness accepted
+// it, and the two codegen materialization paths then disagreed: a LOCAL
+// const emitted at the fold's default width (println printed 300, the
+// declared int8 ignored entirely) while a PACKAGE const wrapped to the
+// declared width (44). var decls already rejected this exact shape
+// (adapt_untyped_int_operand's literal range check) — const decls were the
+// asymmetric hole.
+package main
+
+func main() {
+	const k int8 = 300
+	println(k)
+}

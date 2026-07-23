@@ -1,0 +1,18 @@
+// Spec: Statements / Switch — fallthrough
+package main
+
+import "fmt"
+
+func main() {
+	n := 0
+	switch 1 {
+	case 1:
+		n = n + 1
+		fallthrough
+	case 2:
+		n = n + 10
+	case 3:
+		n = n + 100
+	}
+	fmt.Println(n)
+}

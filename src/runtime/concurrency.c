@@ -154,10 +154,16 @@ void goo_scheduler_wait(void) {
     // A goroutine that has been pthread_cond_signal'd but hasn't yet returned from
     // cond_wait to call goo_sched_block_end is still counted as blocked, making
     // (blocked_goroutines == num_goroutines) transiently true for a live program.
-    // A real wakeup resolves in microseconds — far shorter than 0.5ms — so it
-    // cannot survive even one subsequent poll.  A genuine deadlock holds forever
-    // and will hit the streak threshold.  Three consecutive ~0.5ms polls ≈ 1.5ms
-    // of unbroken all-parked state is false-positive-free in practice.
+    // A real wakeup usually resolves in microseconds, but under genuine OS-thread
+    // contention (4 workers, thousands of rapid batches — fanin-stress) a woken
+    // thread can sit unscheduled well past 1.5ms, so the original 3-poll streak
+    // produced rare FALSE deadlock aborts (~1-in-3 across 8000 batches; predicted
+    // by the 2026-07-10 P3 review, observed blocking a pre-push verify). 100
+    // consecutive ~0.5ms polls ≈ 50ms of unbroken all-parked state: still an
+    // instant abort on a human scale for a genuinely deadlocked C test, but far
+    // beyond any plausible scheduler delay. This loop only serves C stress tests
+    // now — generated code stopped emitting goo_scheduler_wait at P3.3 — so the
+    // threshold trades nothing user-visible.
     int asleep_streak = 0;
 
     for (;;) {
@@ -183,8 +189,9 @@ void goo_scheduler_wait(void) {
             asleep_streak = 0;
         }
 
-        // Three consecutive snapshots of all-parked state confirms a deadlock.
-        if (asleep_streak >= 3) {
+        // 100 consecutive snapshots (~50ms) of all-parked state confirms a
+        // deadlock — see the threshold rationale above.
+        if (asleep_streak >= 100) {
             goo_deadlock_abort();
         }
         if (done || stopped) {

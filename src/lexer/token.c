@@ -55,6 +55,7 @@ static const char* token_strings[] = {
     [TOKEN_TRY] = "TRY",
     [TOKEN_CATCH] = "CATCH",
     [TOKEN_UNSAFE] = "UNSAFE",
+    [TOKEN_ARENA] = "ARENA",
     [TOKEN_ASM] = "ASM",
     [TOKEN_EXTERN] = "EXTERN",
     [TOKEN_FROM] = "FROM",
@@ -207,6 +208,7 @@ static const KeywordEntry keywords[] = {
     {"try", TOKEN_TRY},
     {"catch", TOKEN_CATCH},
     {"unsafe", TOKEN_UNSAFE},
+    {"arena", TOKEN_ARENA},
     {"asm", TOKEN_ASM},
     {"extern", TOKEN_EXTERN},
     {"msg_from", TOKEN_FROM},
@@ -251,7 +253,7 @@ const char* token_type_string(TokenType type) {
 }
 
 Token* token_new(TokenType type, const char* literal, size_t length, Position pos) {
-    Token* token = malloc(sizeof(Token));
+    Token* token = xmalloc(sizeof(Token));
     if (!token) return NULL;
     
     token->type = type;

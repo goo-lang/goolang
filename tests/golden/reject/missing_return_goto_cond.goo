@@ -1,0 +1,20 @@
+// P2.4 reject (goto strict-mode fallback, conditional variant): only the
+// x <= 0 path reaches `return 42`; x > 0 jumps to `skip:` and falls off
+// the end. The mid-block `return 42` terminates unconditionally AS A
+// STATEMENT, so the relaxed any-statement rule would wrongly accept the
+// body — strict last-statement mode (active because the function contains
+// a goto) correctly demands the final statement terminate.
+package main
+
+func f(x int) int {
+	if x > 0 {
+		goto skip
+	}
+	return 42
+skip:
+	x = x + 1
+}
+
+func main() {
+	println(f(5))
+}

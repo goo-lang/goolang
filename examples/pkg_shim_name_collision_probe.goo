@@ -1,0 +1,16 @@
+// (p rider) shim-name collision probe: a USER source package named
+// `math` imported via the explicit "./math" spelling must resolve
+// through its real exports scope — before the fix the hardcoded shim
+// intercept matched on the bare name string and emitted LLVMConstReal
+// pi into the int64 sink (printed pi's bit pattern, a silent
+// checker/codegen divergence). The general exports-backed const leg now
+// runs FIRST; genuine shim packages carry no cached integer exports and
+// fall through to their intercepts unchanged.
+package main
+
+import "./math"
+
+func main() {
+	var v int64 = math.Pi
+	println(v)
+}

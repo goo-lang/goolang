@@ -1,0 +1,13 @@
+// Spec: Type parameters / Generic type declaration
+package main
+
+import "fmt"
+
+type Box[T any] struct {
+	v T
+}
+
+func main() {
+	b := Box[int]{v: 42}
+	fmt.Println(b.v)
+}

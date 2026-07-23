@@ -1,0 +1,33 @@
+// arena-embedded-escape probe (Task 6, the subtle soundness case): `tmp`
+// itself is never returned or stored directly — it is embedded as a FIELD
+// of `&Box{P: tmp}`, and that composite's address is what's returned. 7b's
+// expr_taint unions a composite's field taints into the composite's own
+// taint (see src/types/block_escape.c's AST_UNARY_EXPR/is_addr_of_composite
+// case), so returning `&Box{P: tmp}` marks BOTH the `&Box{...}` site AND
+// `tmp`'s `new(int)` site escaping -> both are routed to the heap by 7c,
+// not the arena. After f returns (and its arena block's fall-through free
+// has already run), main reads *b.P — proving the embedded allocation
+// was genuinely promoted to the heap, not left dangling in the freed
+// arena. If this were unsound (tmp left in the arena), this deref would be
+// a use-after-free caught by the valgrind gate.
+package main
+
+import "fmt"
+
+type Box struct {
+	P *int
+}
+
+func f() *Box {
+	arena {
+		tmp := new(int)
+		*tmp = 9
+		b := &Box{P: tmp}
+		return b
+	}
+}
+
+func main() {
+	b := f()
+	fmt.Println(*b.P)
+}

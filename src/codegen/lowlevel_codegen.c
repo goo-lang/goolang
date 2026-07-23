@@ -16,7 +16,26 @@ ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* ch
     // Generate channel and value expressions
     ValueInfo* channel_val = codegen_generate_expression(codegen, checker, binary->left);
     if (!channel_val) return NULL;
-    
+
+    // Auto-load an lvalue channel operand (task #9): a struct-field or
+    // index selector (`b.ch <- v`, `chans[i] <- v`) returns the channel's
+    // storage ADDRESS, not the channel pointer VALUE — the same shape a
+    // struct field ordinarily returns for any type. An identifier channel
+    // (`ch <- v`) is already auto-loaded to a value by
+    // codegen_generate_identifier (is_lvalue=0) and is unaffected. Without
+    // this load, goo_chan_send received the field's address where it
+    // expects the goo_channel_t* stored there, so it locked/read through
+    // whatever garbage happened to follow that address on the stack —
+    // observed as a hang inside goo_mutex_lock, not a clean crash.
+    if (channel_val->is_lvalue && channel_val->goo_type) {
+        LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+        if (ct) {
+            channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                      channel_val->llvm_value, "chan_send_load");
+            channel_val->is_lvalue = 0;
+        }
+    }
+
     ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
     if (!value_val) return NULL;
 
@@ -98,7 +117,7 @@ ValueInfo* codegen_generate_channel_send(CodeGenerator* codegen, TypeChecker* ch
     LLVMValueRef result = LLVMBuildCall2(codegen->builder, send_func_type, send_func, args, 2, "send_result");
     
     // Create result value info
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = result;
     result_info->goo_type = type_checker_get_builtin(checker, TYPE_INT32);  // Returns int (success/failure)
@@ -122,7 +141,18 @@ ValueInfo* codegen_generate_channel_recv(CodeGenerator* codegen, TypeChecker* ch
     // Generate channel expression
     ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
     if (!channel_val) return NULL;
-    
+
+    // Auto-load an lvalue channel operand — see the identical guard (and
+    // its full rationale) in codegen_generate_channel_send above (task #9).
+    if (channel_val->is_lvalue && channel_val->goo_type) {
+        LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+        if (ct) {
+            channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                      channel_val->llvm_value, "chan_recv_load");
+            channel_val->is_lvalue = 0;
+        }
+    }
+
     LLVMContextRef ctx = codegen->context;
     // Derive the receive element type from the channel's goo_type (Task 2).
     // Falls back to i32 if the channel value has no type annotation.
@@ -162,7 +192,7 @@ ValueInfo* codegen_generate_channel_recv(CodeGenerator* codegen, TypeChecker* ch
     LLVMValueRef received_value = LLVMBuildLoad2(codegen->builder, element_type, result_alloca, "received_value");
     
     // Create result value info
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = received_value;
     result_info->goo_type = elem_goo
@@ -210,7 +240,7 @@ ValueInfo* codegen_generate_ptr_arithmetic(CodeGenerator* codegen, TypeChecker* 
                                         &offset_val->llvm_value, 1,
                                         "ptr_arith");
     
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = result;
     result_info->goo_type = ptr_val->goo_type; // Same type as input pointer
@@ -247,7 +277,7 @@ ValueInfo* codegen_generate_ptr_deref(CodeGenerator* codegen, TypeChecker* check
                                          ptr_val->llvm_value,
                                          "ptr_deref");
     
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = result;
     result_info->goo_type = NULL; // TODO: Determine pointee type
@@ -284,7 +314,7 @@ ValueInfo* codegen_generate_addr_of(CodeGenerator* codegen, TypeChecker* checker
     }
     
     // The address is the LLVM value itself (since lvalues store addresses)
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = operand_val->llvm_value;
     result_info->goo_type = NULL; // TODO: Create pointer type
@@ -351,7 +381,7 @@ ValueInfo* codegen_generate_port_io(CodeGenerator* codegen, TypeChecker* checker
         value_info_free(value_val);
     }
     
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = result;
     result_info->goo_type = NULL; // TODO: Set appropriate type
@@ -412,7 +442,7 @@ ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* che
         value_info_free(value_val);
     }
     
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = result;
     result_info->goo_type = NULL; // TODO: Set appropriate type

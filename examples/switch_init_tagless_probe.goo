@@ -1,0 +1,40 @@
+// switch_init_tagless_probe: `switch init; { case cond: ... }` — the
+// tagless (switch-true) form combined with an init statement. Task 2 added
+// init arms for the tagged and type-switch guard forms only; this pins the
+// tagless-with-init arm (Fix C). Init var is visible in every case body
+// (including default), matching switch-with-tag's init scoping. Multiple
+// boolean cases plus default, middle case selected (proves case-matching
+// still works, not just first/last) and default is NOT reached. Expected
+// output produced by `go run` on the equivalent Go program (see below).
+//
+// Equivalent Go program:
+//   package main
+//   import "fmt"
+//   func main() {
+//   	switch x := 5; {
+//   	case x < 0:
+//   		fmt.Println("negative")
+//   	case x == 0:
+//   		fmt.Println("zero")
+//   	case x < 10:
+//   		fmt.Println("small", x*2)
+//   	default:
+//   		fmt.Println("large")
+//   	}
+//   }
+package main
+
+import "fmt"
+
+func main() {
+	switch x := 5; {
+	case x < 0:
+		fmt.Println("negative")
+	case x == 0:
+		fmt.Println("zero")
+	case x < 10:
+		fmt.Println("small", x*2)
+	default:
+		fmt.Println("large")
+	}
+}

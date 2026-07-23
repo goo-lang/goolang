@@ -45,7 +45,10 @@ typedef struct Parser {
 
 // Lexer functions
 Lexer* lexer_create(const char* input) {
-    Lexer* lexer = malloc(sizeof(Lexer));
+    Lexer* lexer = xmalloc(sizeof(Lexer));
+    if (!lexer) {
+        return NULL;
+    }
     lexer->input = input;
     lexer->position = 0;
     lexer->line = 1;
@@ -93,6 +96,9 @@ char* lexer_read_string(Lexer* lexer) {
     
     size_t length = lexer->position - start;
     char* result = malloc(length + 1);
+    if (!result) {
+        return NULL; // allocation sized by untrusted goo.mod input; don't write through NULL
+    }
     strncpy(result, lexer->input + start, length);
     result[length] = '\0';
     
@@ -114,6 +120,9 @@ char* lexer_read_identifier(Lexer* lexer) {
     
     size_t length = lexer->position - start;
     char* result = malloc(length + 1);
+    if (!result) {
+        return NULL; // allocation sized by untrusted goo.mod input; don't write through NULL
+    }
     strncpy(result, lexer->input + start, length);
     result[length] = '\0';
     
@@ -129,6 +138,9 @@ char* lexer_read_comment(Lexer* lexer) {
     
     size_t length = lexer->position - start;
     char* result = malloc(length + 1);
+    if (!result) {
+        return NULL; // allocation sized by untrusted goo.mod input; don't write through NULL
+    }
     strncpy(result, lexer->input + start, length);
     result[length] = '\0';
     
@@ -213,8 +225,15 @@ Token lexer_next_token(Lexer* lexer) {
 
 // Parser functions
 Parser* parser_create(const char* input) {
-    Parser* parser = malloc(sizeof(Parser));
+    Parser* parser = xmalloc(sizeof(Parser));
+    if (!parser) {
+        return NULL;
+    }
     parser->lexer = lexer_create(input);
+    if (!parser->lexer) {
+        free(parser);
+        return NULL;
+    }
     parser->error_message = NULL;
     
     // Initialize tokens
@@ -248,7 +267,10 @@ bool parser_expect(Parser* parser, TokenType expected) {
     // Set error message
     free(parser->error_message);
     parser->error_message = malloc(256);
-    snprintf(parser->error_message, 256, 
+    if (!parser->error_message) {
+        return false;
+    }
+    snprintf(parser->error_message, 256,
             "Expected token type %d, got %d at line %zu", 
             expected, parser->current_token.type, parser->current_token.line);
     return false;
@@ -288,8 +310,12 @@ char** parser_parse_string_array(Parser* parser, size_t* count) {
     // Count elements first
     size_t capacity = 4;
     char** array = malloc(capacity * sizeof(char*));
-    
-    while (parser->current_token.type != TOKEN_RBRACKET && 
+    if (!array) {
+        *count = 0;
+        return NULL;
+    }
+
+    while (parser->current_token.type != TOKEN_RBRACKET &&
            parser->current_token.type != TOKEN_EOF) {
         
         char* value = parser_parse_string_value(parser);
@@ -297,9 +323,21 @@ char** parser_parse_string_array(Parser* parser, size_t* count) {
         
         if (*count >= capacity) {
             capacity *= 2;
-            array = realloc(array, capacity * sizeof(char*));
+            char** grown = realloc(array, capacity * sizeof(char*));
+            if (!grown) {
+                // realloc failed: free what we hold (incl. the just-parsed value)
+                // and the original block, rather than leak it and write through NULL.
+                free(value);
+                for (size_t i = 0; i < *count; i++) {
+                    free(array[i]);
+                }
+                free(array);
+                *count = 0;
+                return NULL;
+            }
+            array = grown;
         }
-        
+
         array[*count] = value;
         (*count)++;
         
@@ -458,7 +496,7 @@ GooMod* goo_mod_parse_string(const char* content) {
     Parser* parser = parser_create(content);
     if (!parser) return NULL;
     
-    GooMod* gmod = calloc(1, sizeof(GooMod));
+    GooMod* gmod = xcalloc(1, sizeof(GooMod));
     if (!gmod) {
         parser_free(parser);
         return NULL;

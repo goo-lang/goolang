@@ -1,0 +1,13 @@
+// Correctness arc 7 (n): compound assignment (`v += a`) converts the
+// constant to the target's type first (Go semantics), so representability
+// applies exactly as for plain assignment. Shift-assigns (`v <<= a`) are
+// deliberately EXCLUDED from the gate — their RHS is a shift count, not a
+// value converting to the target type.
+package main
+
+func main() {
+	const a = 300
+	var v int8 = 1
+	v += a
+	println(v)
+}

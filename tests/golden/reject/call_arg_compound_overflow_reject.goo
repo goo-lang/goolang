@@ -1,0 +1,11 @@
+// Correctness arc 13 (s): compound literal constant at the call-arg sink
+// — f(100 + 100) into an int8 parameter silently truncated to -56.
+package main
+
+func f(x int8) int8 {
+	return x
+}
+
+func main() {
+	f(100 + 100)
+}

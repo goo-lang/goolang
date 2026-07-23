@@ -1,0 +1,11 @@
+// Spec: Statements / Defer — LIFO order, defer in loop
+package main
+
+import "fmt"
+
+func main() {
+	for i := 0; i < 3; i++ {
+		defer fmt.Println(i)
+	}
+	fmt.Println("end")
+}

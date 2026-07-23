@@ -1,0 +1,44 @@
+// goto_probe (P1.6): `goto label` — a backward goto loop (jumping to a
+// label declared EARLIER in the source, driving iteration without a `for`)
+// printing 0, 1, 2, plus a forward goto (jumping to a label declared LATER
+// in the source — a forward reference, legal in Go, the reason the type
+// checker's goto pre-pass exists) that skips an intervening `println` call
+// entirely (dead code after an unconditional goto, verifying the
+// terminated-block skip in codegen_generate_block_stmt does not crash).
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the
+// VALUE below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func main() {
+//   	i := 0
+//   Loop:
+//   	if i < 3 {
+//   		println(i)
+//   		i++
+//   		goto Loop
+//   	}
+//
+//   	goto Skip
+//   	println(999)
+//   Skip:
+//   	println(42)
+//   }
+// `go run` stderr: "0\n1\n2\n42\n"
+package main
+
+func main() {
+	i := 0
+Loop:
+	if i < 3 {
+		println(i)
+		i++
+		goto Loop
+	}
+
+	goto Skip
+	println(999)
+Skip:
+	println(42)
+}

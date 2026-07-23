@@ -1,0 +1,23 @@
+// time_sleep_probe (P4.6 roadmap acceptance): time.Now().UnixNano() /
+// time.Sleep(Duration) / Time.UnixNano() end to end, plus Duration constant
+// arithmetic (time.Second/Millisecond/Nanosecond). The raw elapsed delta is
+// inherently nondeterministic (wall-clock jitter across machines/CI), so
+// this prints only the boolean OUTCOME of the >= 50ms assertion, never the
+// delta itself.
+package main
+
+import "fmt"
+import "time"
+
+func main() {
+	t0 := time.Now().UnixNano()
+	time.Sleep(50 * time.Millisecond)
+	t1 := time.Now().UnixNano()
+	elapsed := t1 - t0
+	fmt.Println(elapsed >= 50000000)
+
+	// Duration constant arithmetic: 1000 * time.Millisecond == time.Second,
+	// and time.Nanosecond is exactly 1.
+	fmt.Println(1000*time.Millisecond == time.Second)
+	fmt.Println(time.Nanosecond == 1)
+}

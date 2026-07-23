@@ -1,0 +1,13 @@
+// Correctness arc 10 (o rider): const-identifier values in a multi-assign
+// gate via the same shared-core call as literal shapes.
+package main
+
+const K = 300
+
+func main() {
+	var x int8 = 0
+	var y int8 = 0
+	x, y = 6, K
+	println(x)
+	println(y)
+}

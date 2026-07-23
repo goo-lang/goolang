@@ -5,60 +5,27 @@
 #include "ast.h"
 #include "token.h"
 #include "lexer.h"
+#include "parser/parser_actions.h"
 
 // External lexer interface
 extern int yylex(void);
 extern void yyerror(const char* msg);
 extern Lexer* current_lexer;
 
-// Global AST root
-ASTNode* ast_root = NULL;
-
-// Helper functions
-static Position get_current_position(void);
-static TokenType bison_token_to_token_type(int bison_token);
-
-// F4 grouped-const desugaring (definitions after the second %%):
-//   clone_const_value — correct deep-copy of a const-expr node (NOT
-//                       ast_node_copy, which under-allocates derived structs)
-//   substitute_iota   — replace the identifier `iota` with its ordinal literal
-//   const_spec_new    — build one ConstDeclNode for a grouped-const spec
-//   desugar_const_group — turn the spec chain into ordinary single const decls
-static ASTNode* clone_const_value(const ASTNode* n);
-// Go grouped-name shorthand `(x, y int)` == `(x int, y int)` for a parsed
-// parameter/result list (see definition). Shared by func params and results.
-static void reinterpret_grouped_names(ASTNode* list);
-static void substitute_iota(ASTNode** slot, long idx);
-static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value);
-static ASTNode* desugar_const_group(ASTNode* spec_chain);
-
-// F6: build a 2-target/2-value MultiAssignNode (`a,b := v1,v2` / `a,b = v1,v2`).
-static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
-                                   ASTNode* v1, ASTNode* v2, int is_short_decl);
-/* `a, b = f()` — tuple assignment to two existing lvalues from a SINGLE
-   multi-return call. Builds a MultiAssignNode with two targets and one value
-   (chain length 1, count 2); the type checker and codegen detect the
-   values<targets shape and destructure the call's result struct fields. */
-static ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call);
-static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs);
-/* Build a StructLiteralNode from an owned type-name string (or NULL for an
-   elided composite literal `{...}` whose type is inferred from context) and a
-   struct_lit_inits chain. Extracts the field-name piggyback each
-   struct_lit_init stashed on its node_type slot. Shared by the `struct_lit`
-   rule and the elided-composite element rule. */
-static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits);
-
-/* Shared by the map_lit arms (with and without trailing comma).
-   Extracts the parallel values list that map_entry_list stashes on the
-   keys head's node_type side-channel (cleared so type_check/codegen
-   never see it). */
-static ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries);
+// ast_root, g_func_signature_params/result (globals) and every semantic-
+// action helper below except make_embedded_field/make_grouped_field (kept
+// here — used only from the struct_field rule) now live in
+// src/parser/parser_actions.c; see include/parser/parser_actions.h for their
+// declarations, which this file includes above.
 
 // Struct embedding: build the VarDeclNode for an anonymous field `Name` /
-// `*Name`. The field is stored under the type's own name (Go's rule), with
-// is_embedded set; the type node matches what type_name / pointer_type
-// reductions would have built.
-static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
+// `*Name` / `pkg.Name` / `*pkg.Name` (review parity: qualified embeds). The
+// field is stored under the type's UNQUALIFIED name (Go's rule — `sync.
+// Mutex` embeds as field `Mutex`), with is_embedded set; the type node
+// matches what type_name / pointer_type reductions would have built,
+// including the B1 package qualifier when `pkg_node` is non-NULL.
+static ASTNode* make_embedded_field(ASTNode* pkg_node, ASTNode* ident_node,
+                                    int is_pointer) {
     IdentifierNode* ident = (IdentifierNode*)ident_node;
     VarDeclNode* field = ast_var_decl_new(get_current_position());
     field->names = malloc(sizeof(char*));
@@ -70,6 +37,9 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     basic->base.node_type = NULL;
     basic->base.next = NULL;
     basic->name = strdup(ident->name);
+    basic->package = pkg_node
+        ? strdup(((IdentifierNode*)pkg_node)->name)
+        : NULL;
     ASTNode* ty = (ASTNode*)basic;
     if (is_pointer) {
         PointerTypeNode* ptr = (PointerTypeNode*)malloc(sizeof(PointerTypeNode));
@@ -83,6 +53,7 @@ static ASTNode* make_embedded_field(ASTNode* ident_node, int is_pointer) {
     field->type = ty;
     field->values = NULL;
     field->is_embedded = 1;
+    if (pkg_node) ast_node_free(pkg_node);
     ast_node_free(ident_node);
     return (ASTNode*)field;
 }
@@ -110,20 +81,6 @@ static ASTNode* make_grouped_field(ASTNode* first, ASTNode* tail, ASTNode* type)
     return (ASTNode*)field;
 }
 
-// func_signature's own $$ collapses params and result into a single
-// ASTNode* that can't tell "params only" (case: `(int)`) apart from
-// "result only" (case: `() int`), and its "both" case (`(int) int`)
-// outright drops the result (see the TODO on that action) — every existing
-// caller of func_signature only ever read $$ as a params chain, so fixing
-// that would ripple into all of them. func_type is the one caller that
-// genuinely needs both pieces (it builds a FuncTypeNode), so func_signature
-// additionally stashes them here, immediately consumed and cleared by
-// func_type's action right after — safe because func_signature always
-// reduces immediately before the func_type rule that contains it, and
-// nested func types fully resolve (stash set, then consumed) before the
-// enclosing func_signature's own action runs.
-static ASTNode* g_func_signature_params = NULL;
-static ASTNode* g_func_signature_result = NULL;
 %}
 
 // Union type for semantic values
@@ -165,14 +122,14 @@ static ASTNode* g_func_signature_result = NULL;
 %token TRUE FALSE NIL
 
 // Goo Extension Keywords
-%token COMPTIME CONCEPT PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM
+%token COMPTIME CONCEPT PUB SUB REQ REP PUSH PULL TRY CATCH UNSAFE ASM ARENA
 %token EXTERN FROM VOLATILE INLINE NO_STD
 %token PARALLEL REDUCE BARRIER ATOMIC THREAD_LOCAL
 %token OWNED BORROWED SHARED LET MATCH
-%token KERNEL DEVICE HOST GLOBAL SHARED_MEM CONSTANT LOCAL
-
-// WebAssembly Keywords
-%token WASM EXPORT MEMORY TABLE START ELEM DATA
+// P5.10: the GPU (KERNEL DEVICE HOST GLOBAL SHARED_MEM CONSTANT LOCAL) and
+// WebAssembly (WASM EXPORT MEMORY TABLE START ELEM DATA) token declarations
+// were deleted along with their unreachable productions — lexer_bridge.c
+// never mapped any of them, so no token stream could contain them.
 
 // Operators and punctuation
 %token PLUS MINUS MULTIPLY DIVIDE MODULO
@@ -187,6 +144,7 @@ static ASTNode* g_func_signature_result = NULL;
 
 // Goo Extension Operators
 %token BANG QUESTION TRY_OP CATCH_OP DEREF
+%token FAT_ARROW  // =>  (value-yielding catch fallback: `f() catch => -1`, P2.9)
 
 // Delimiters
 %token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
@@ -219,16 +177,17 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> opt_import_decl_list opt_top_level_decl_list
 %type <node> top_level_decl_list top_level_decl
 %type <node> declaration func_decl var_decl const_decl type_decl concept_decl short_var_decl extern_decl
-%type <node> const_spec const_spec_list
+%type <node> const_spec_t const_spec_last const_spec_list_t const_spec_list
+%type <node> var_spec var_spec_list var_member
 %type <node> concept_body concept_requirement_list concept_requirement type_param_list type_param
 %type <node> func_signature func_params func_param func_result
-%type <node> statement_list statement block simple_stmt
-%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt
+%type <node> statement_list stmt_seq statement final_stmt block simple_stmt
+%type <node> if_stmt for_stmt return_stmt break_stmt continue_stmt goto_stmt fallthrough_stmt
 %type <node> go_stmt select_stmt defer_stmt select_case_list select_case
 %type <node> switch_stmt case_clause_list case_clause
 %type <node> type_case_list type_case_clause type_list
 %type <guard> type_switch_guard
-%type <node> unsafe_stmt asm_stmt parallel_for_stmt
+%type <node> unsafe_stmt asm_stmt parallel_for_stmt arena_stmt
 %type <node> parallel_reduce_expr barrier_call atomic_expr thread_local_decl
 %type <node> expression primary_expr unary_expr postfix_expr binary_expr
 %type <node> call_expr index_expr selector_expr
@@ -237,7 +196,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> func_type pointer_type reference_type unsafe_ptr_type
 %type <node> struct_type struct_field_list struct_field field_name_tail
 %type <node> enum_type enum_variant_list enum_variant
-%type <node> interface_type interface_method_list interface_method
+%type <node> interface_type interface_method_list interface_member interface_method
 %type <node> slice_lit
 %type <node> map_lit map_entry_list map_entry
 %type <node> struct_lit struct_lit_inits struct_lit_init
@@ -250,10 +209,7 @@ static ASTNode* g_func_signature_result = NULL;
 %type <node> comptime_block ownership_qualifier if_let_stmt
 %type <node> attribute attribute_list volatile_expr
 %type <node> match_expr match_case_list match_case pattern guard_condition
-%type <node> kernel_decl kernel_launch gpu_memory_alloc gpu_memory_copy gpu_sync gpu_intrinsic
-%type <node> wasm_export wasm_import wasm_memory wasm_table wasm_global wasm_start
-%type <node> js_interop dom_access
-%type <token> chan_pattern gpu_memory_qualifier wasm_value_type
+%type <token> chan_pattern
 
 // Operator precedence (lowest to highest)
 %left COMMA
@@ -312,8 +268,19 @@ opt_top_level_decl_list:
     | top_level_decl_list { $$ = $1; }
     ;
 
+// P5.10: generalized rule-1 ASI (lexer.c) terminates every value-ending
+// line with a SEMICOLON, so each newline-separated construct below gains a
+// member-attached trailing-SEMICOLON arm (the house pattern — see the
+// var_member note further down for why list-level SEMICOLON arms were
+// rejected: they conflict on "more list vs trailing terminator").
 package_clause:
     PACKAGE identifier {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        PackageDeclNode* pkg = ast_package_decl_new(ident->name, ident->base.pos);
+        ast_node_free($2);
+        $$ = (ASTNode*)pkg;
+    }
+    | PACKAGE identifier SEMICOLON {
         IdentifierNode* ident = (IdentifierNode*)$2;
         PackageDeclNode* pkg = ast_package_decl_new(ident->name, ident->base.pos);
         ast_node_free($2);
@@ -338,6 +305,9 @@ import_decl:
     | IMPORT LPAREN import_spec_list RPAREN {
         $$ = $3;
     }
+    | IMPORT LPAREN import_spec_list RPAREN SEMICOLON {
+        $$ = $3;
+    }
     ;
 
 import_spec_list:
@@ -356,7 +326,19 @@ import_spec:
         free($1.data);
         $$ = (ASTNode*)imp;
     }
+    | STRING_LITERAL SEMICOLON {
+        ImportSpecNode* imp = ast_import_spec_new($1.data, NULL, get_current_position());
+        free($1.data);
+        $$ = (ASTNode*)imp;
+    }
     | identifier STRING_LITERAL {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        ImportSpecNode* imp = ast_import_spec_new($2.data, ident->name, ident->base.pos);
+        ast_node_free($1);
+        free($2.data);
+        $$ = (ASTNode*)imp;
+    }
+    | identifier STRING_LITERAL SEMICOLON {
         IdentifierNode* ident = (IdentifierNode*)$1;
         ImportSpecNode* imp = ast_import_spec_new($2.data, ident->name, ident->base.pos);
         ast_node_free($1);
@@ -375,17 +357,22 @@ top_level_decl_list:
     }
     ;
 
+// P5.10: the kernel_decl and wasm_* alternatives were deleted here. Their
+// bison tokens (KERNEL, MEMORY, TABLE, START, EXPORT, ...) were never
+// mapped by lexer_bridge.c, so every one of those arms was unreachable
+// dead grammar — and wasm_memory's `MEMORY expression expression` (two
+// ADJACENT expressions) was the sole source of the six 42-conflict
+// reduce/reduce families (unary +,-,*,&,^,<- vs expression) that made up
+// 252 of the baseline's 256 R/R conflicts. gpu_kernel's hard parse reject
+// is pinned by gpu-kernel-reject-probe; real GPU/WASM grammar returns with
+// their post-v1 phases (docs/2026-07-08-v1-roadmap.md Phases 6-7).
 top_level_decl:
     declaration { $$ = $1; }
+    | declaration SEMICOLON { $$ = $1; }
     | func_decl { $$ = $1; }
+    | func_decl SEMICOLON { $$ = $1; }
     | concept_decl { $$ = $1; }
-    | kernel_decl { $$ = $1; }
-    | wasm_export { $$ = $1; }
-    | wasm_import { $$ = $1; }
-    | wasm_memory { $$ = $1; }
-    | wasm_table { $$ = $1; }
-    | wasm_global { $$ = $1; }
-    | wasm_start { $$ = $1; }
+    | concept_decl SEMICOLON { $$ = $1; }
     ;
 
 
@@ -437,6 +424,52 @@ func_decl:
         reinterpret_grouped_names($4); // Go grouped params `(x, y int)`
         func->params = $4;
         func->return_type = $6;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        func->body = $8;
+        func->params = NULL;
+        func->return_type = NULL;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN func_params RPAREN block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        reinterpret_grouped_names($7);
+        func->params = $7;
+        func->body = $9;
+        func->return_type = NULL;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN RPAREN func_result block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        func->body = $9;
+        func->params = NULL;
+        func->return_type = $8;
+        ast_node_free($2);
+        $$ = (ASTNode*)func;
+    }
+    | FUNC identifier LBRACKET func_params RBRACKET LPAREN func_params RPAREN func_result block {
+        IdentifierNode* ident = (IdentifierNode*)$2;
+        FuncDeclNode* func = ast_func_decl_new(ident->name, ident->base.pos);
+        reinterpret_grouped_names($4);
+        func->type_params = $4;
+        reinterpret_grouped_names($7);
+        func->params = $7;
+        func->body = $10;
+        func->return_type = $9;
         ast_node_free($2);
         $$ = (ASTNode*)func;
     }
@@ -593,24 +626,11 @@ func_params:
 func_param:
     identifier type {
         // Create a variable declaration node for the parameter
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = malloc(sizeof(char*));
-        param->names[0] = strdup(ident->name);
-        param->name_count = 1;
-        param->type = $2;
-        param->values = NULL; // Parameters don't have initial values
-        ast_node_free($1);
-        $$ = (ASTNode*)param;
+        $$ = func_param_new($1, $2, 0, 0);
     }
     | type {
         // Anonymous parameter - create a var decl with no name
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = NULL;
-        param->name_count = 0;
-        param->type = $1;
-        param->values = NULL;
-        $$ = (ASTNode*)param;
+        $$ = func_param_new(NULL, $1, 0, 0);
     }
     | identifier ELLIPSIS type {
         // Task 2: variadic parameter `name ...T`. `type` stores the ELEMENT
@@ -621,29 +641,18 @@ func_param:
         // that's a semantic (not grammatical) constraint, enforced at
         // signature-build time so `func f(a ...int, b int)` gets a clean
         // rejection instead of silently misparsing.
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = malloc(sizeof(char*));
-        param->names[0] = strdup(ident->name);
-        param->name_count = 1;
-        param->type = $3;
-        param->is_variadic_param = 1;
-        param->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)param;
+        $$ = func_param_new($1, $3, 1, 0);
     }
     | ELLIPSIS type {
         // Anonymous variadic parameter `...T` (Go allows an unnamed variadic
         // param, matching the unnamed `type` alternative above). Included
         // for symmetry since it added no grammar conflicts (verified via
         // the bison conflict-count gate).
-        VarDeclNode* param = ast_var_decl_new(get_current_position());
-        param->names = NULL;
-        param->name_count = 0;
-        param->type = $2;
-        param->is_variadic_param = 1;
-        param->values = NULL;
-        $$ = (ASTNode*)param;
+        $$ = func_param_new(NULL, $2, 1, 0);
+    }
+    | COMPTIME identifier type {
+        // Comptime value parameter `comptime name type`.
+        $$ = func_param_new($2, $3, 0, 1);
     }
     ;
 
@@ -670,55 +679,14 @@ func_result:
         //    a scalar return ABI — the common Go form `func f() (err error)`
         //    must be a scalar, not a 1-field struct — while still binding the
         //    name; a >=2-field tuple keeps the multi-return struct ABI.
-        ASTNode* list = $2;
-        // Grouped named results: Go's `(x, y int)` shorthand. Shared with the
-        // parameter path via reinterpret_grouped_names (see its definition).
-        reinterpret_grouped_names(list);
-        size_t count = 0; int any_named = 0;
-        for (ASTNode* p = list; p; p = p->next) {
-            count++;
-            VarDeclNode* vd = (VarDeclNode*)p;
-            if (vd->name_count > 0 && vd->names && vd->names[0]) any_named = 1;
-        }
-        if (count == 1 && !any_named) {
-            VarDeclNode* only = (VarDeclNode*)list;
-            ASTNode* t = only->type;
-            only->type = NULL;     // hand the type to $$ before freeing the wrapper
-            ast_node_free(list);   // frees the lone wrapper VarDecl, not the type
-            $$ = t;
-        } else {
-            size_t idx = 0;
-            for (ASTNode* p = list; p; p = p->next, idx++) {
-                VarDeclNode* vd = (VarDeclNode*)p;
-                if (vd->name_count == 0 || !vd->names) {
-                    char buf[16]; snprintf(buf, sizeof(buf), "_%zu", idx);
-                    vd->names = malloc(sizeof(char*));
-                    vd->names[0] = strdup(buf); vd->name_count = 1;
-                }
-            }
-            StructTypeNode* st = (StructTypeNode*)malloc(sizeof(StructTypeNode));
-            st->base.type = AST_STRUCT_TYPE;
-            st->base.pos = get_current_position();
-            st->base.node_type = NULL;
-            st->base.next = NULL;
-            st->fields = list;
-            st->is_result_tuple = 1;   // parser-synthesized result list
-            $$ = (ASTNode*)st;
-        }
+        $$ = func_result_from_params($2);
     }
     ;
 
 // Variable declaration
 var_decl:
     VAR identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->type = $3;
-        ast_node_free($2);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_1($2, $3, NULL);
     }
     // Multi-name, no-initializer form: `var a, b int`. Explicit productions
     // (2-name and 3-name), NOT a general list nonterminal — mirrors the
@@ -732,99 +700,44 @@ var_decl:
     // with names) beyond this task's allowed file set — see decl-surface
     // breadth task-1 report for the follow-up.
     | VAR identifier COMMA identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* i1 = (IdentifierNode*)$2;
-        IdentifierNode* i2 = (IdentifierNode*)$4;
-        var->names = malloc(sizeof(char*) * 2);
-        var->names[0] = strdup(i1->name);
-        var->names[1] = strdup(i2->name);
-        var->name_count = 2;
-        var->type = $5;
-        ast_node_free($2);
-        ast_node_free($4);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_2($2, $4, $5);
     }
     | VAR identifier COMMA identifier COMMA identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* i1 = (IdentifierNode*)$2;
-        IdentifierNode* i2 = (IdentifierNode*)$4;
-        IdentifierNode* i3 = (IdentifierNode*)$6;
-        var->names = malloc(sizeof(char*) * 3);
-        var->names[0] = strdup(i1->name);
-        var->names[1] = strdup(i2->name);
-        var->names[2] = strdup(i3->name);
-        var->name_count = 3;
-        var->type = $7;
-        ast_node_free($2);
-        ast_node_free($4);
-        ast_node_free($6);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_3($2, $4, $6, $7);
     }
     | VAR identifier ASSIGN expression {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->values = $4;
-        ast_node_free($2);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_1($2, NULL, $4);
     }
     | VAR identifier type ASSIGN expression {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->type = $3;
-        var->values = $5;
-        ast_node_free($2);
-        $$ = (ASTNode*)var;
+        $$ = var_decl_new_1($2, $3, $5);
     }
     // Goo extension: ownership qualifiers
     | ownership_qualifier VAR identifier type {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->type = $4;
-        // TODO: Set ownership from $1
-        ast_node_free($3);
-        $$ = (ASTNode*)var;
+        // TODO: Set ownership from $1 (not yet wired to VarDeclNode.ownership)
+        $$ = var_decl_new_1($3, $4, NULL);
+    }
+    // P1.2: grouped var block. Desugar into a chain of ordinary single
+    // VarDeclNodes (one per spec), same splice mechanism as CONST's grouped
+    // block above. Package-scope groups reuse the same `declaration` path a
+    // single top-level `var` already goes through, so they inherit that
+    // path's existing constant-initializer-only constraint unchanged
+    // (non-constant package-scope globals are P3.7, out of scope here).
+    | VAR LPAREN var_spec_list RPAREN {
+        $$ = desugar_var_group($3);
     }
     ;
 
 // Short variable declaration
 short_var_decl:
     identifier SHORT_ASSIGN expression {
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        var->names = malloc(sizeof(char*));
-        var->names[0] = strdup(ident->name);
-        var->name_count = 1;
-        var->values = $3;
-        var->is_short_decl = 1;
-        ast_node_free($1);
-        $$ = (ASTNode*)var;
+        $$ = short_var_decl_new_1($1, $3);
     }
     | identifier COMMA identifier SHORT_ASSIGN expression {
         // Multi-LHS short var decl `a, b := expr`. Destructuring is
         // resolved at codegen time: the RHS must produce a TYPE_STRUCT
         // with at least 2 fields, and a/b are bound to its fields 0
         // and 1 respectively.
-        VarDeclNode* var = ast_var_decl_new(get_current_position());
-        IdentifierNode* i1 = (IdentifierNode*)$1;
-        IdentifierNode* i2 = (IdentifierNode*)$3;
-        var->names = malloc(sizeof(char*) * 2);
-        var->names[0] = strdup(i1->name);
-        var->names[1] = strdup(i2->name);
-        var->name_count = 2;
-        var->values = $5;
-        var->is_short_decl = 1;
-        ast_node_free($1);
-        ast_node_free($3);
-        $$ = (ASTNode*)var;
+        $$ = short_var_decl_new_2($1, $3, $5);
     }
     // F6: `a, b := v1, v2` — two independent RHS values (not a destructure).
     // The COLON-free trailing `COMMA expression` after the first value is what
@@ -837,62 +750,17 @@ short_var_decl:
 // Constant declaration
 const_decl:
     CONST identifier type ASSIGN expression {
-        ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
-        const_node->base.type = AST_CONST_DECL;
-        const_node->base.pos = get_current_position();
-        const_node->base.node_type = NULL;
-        const_node->base.next = NULL;
-        
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        const_node->names = malloc(sizeof(char*));
-        const_node->names[0] = strdup(ident->name);
-        const_node->name_count = 1;
-        const_node->type = $3;
-        const_node->values = $5;
-        const_node->is_comptime = 0;
-        
-        ast_node_free($2);
-        $$ = (ASTNode*)const_node;
+        $$ = const_decl_new($2, $3, $5, 0);
     }
     | CONST identifier ASSIGN expression {
         // Untyped single const: `const n = 64`. The type is inferred from the
         // initializer by type_check_const_decl (type == NULL), exactly as the
         // grouped-const desugaring already relies on. Real Go source (and
         // math/bits especially) uses untyped consts pervasively.
-        ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
-        const_node->base.type = AST_CONST_DECL;
-        const_node->base.pos = get_current_position();
-        const_node->base.node_type = NULL;
-        const_node->base.next = NULL;
-
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        const_node->names = malloc(sizeof(char*));
-        const_node->names[0] = strdup(ident->name);
-        const_node->name_count = 1;
-        const_node->type = NULL;   // inferred from the initializer
-        const_node->values = $4;
-        const_node->is_comptime = 0;
-
-        ast_node_free($2);
-        $$ = (ASTNode*)const_node;
+        $$ = const_decl_new($2, NULL, $4, 0);
     }
     | COMPTIME CONST identifier type ASSIGN expression {
-        ConstDeclNode* const_node = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
-        const_node->base.type = AST_CONST_DECL;
-        const_node->base.pos = get_current_position();
-        const_node->base.node_type = NULL;
-        const_node->base.next = NULL;
-        
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        const_node->names = malloc(sizeof(char*));
-        const_node->names[0] = strdup(ident->name);
-        const_node->name_count = 1;
-        const_node->type = $4;
-        const_node->values = $6;
-        const_node->is_comptime = 1;
-        
-        ast_node_free($3);
-        $$ = (ASTNode*)const_node;
+        $$ = const_decl_new($3, $4, $6, 1);
     }
     | CONST LPAREN const_spec_list RPAREN {
         // F4: grouped const block. Desugar into a chain of ordinary single
@@ -904,25 +772,133 @@ const_decl:
     }
     ;
 
-// F4: one spec inside a grouped const block. Untyped only (a typed spec
-// `NAME TYPE = expr` would create an `identifier type` vs bare-`identifier`
-// shift/reduce conflict — out of scope, see the F4 plan). A bare `NAME`
-// (no `= expr`) repeats the previous spec's value with iota incremented;
-// it is carried as values==NULL and filled in by desugar_const_group.
-const_spec:
-    identifier ASSIGN expression {
-        $$ = const_spec_new($1, $3);
+// Arc 6 (m): one spec inside a grouped const block — bare `NAME` (repeats
+// the previous spec's value with iota incremented; carried as values==NULL
+// and filled in by desugar_const_group), untyped `NAME = expr`, or typed
+// `NAME TYPE = expr`. F4 shipped this untyped-only, fearing an `identifier
+// type` vs bare-`identifier` shift/reduce conflict — and in F4's FLAT
+// juxtaposed list that conflict is real: a bare spec could reduce on the
+// next spec's leading IDENT, which is also exactly the misparse that made
+// `y int16 = 300` read as bare `y` plus a constant NAMED `int16`, silently
+// SHIFTING every later value in the group across names. The split below
+// dissolves both the conflict and the misparse structurally: every
+// non-final spec must carry its terminator ON THE SPEC (const_spec_t —
+// explicit `;` or the P5.10 generalized rule-1 ASI's, which fires inside
+// const groups like everywhere else; the house member-attached-SEMICOLON
+// pattern, workarounds.md §4), and only the FINAL spec (const_spec_last,
+// no terminator — ASI's `)` leniency exception) may omit it. A bare
+// spec's reduce therefore only ever happens on `;` or `)` lookahead,
+// never on IDENT — an IDENT after a spec name can only be its TYPE.
+// Same-line juxtaposition without `;` (`const ( x y = 2 )`) accordingly
+// parses as a typed spec, no longer as two shifted specs; Go rejects that
+// spelling outright, so no legitimate program changes meaning.
+const_spec_t:
+    identifier SEMICOLON {
+        $$ = const_spec_new($1, NULL, NULL);
     }
-    | identifier {
-        $$ = const_spec_new($1, NULL);
+    | identifier ASSIGN expression SEMICOLON {
+        $$ = const_spec_new($1, NULL, $3);
+    }
+    | identifier type ASSIGN expression SEMICOLON {
+        $$ = const_spec_new($1, $2, $4);
     }
     ;
 
-const_spec_list:
-    const_spec {
+const_spec_last:
+    identifier {
+        $$ = const_spec_new($1, NULL, NULL);
+    }
+    | identifier ASSIGN expression {
+        $$ = const_spec_new($1, NULL, $3);
+    }
+    | identifier type ASSIGN expression {
+        $$ = const_spec_new($1, $2, $4);
+    }
+    ;
+
+const_spec_list_t:
+    const_spec_t {
         $$ = $1;
     }
-    | const_spec_list const_spec {
+    | const_spec_list_t const_spec_t {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+// A group is 1+ specs: all-terminated (trailing `;` before `)`), or a
+// terminated run followed by one unterminated final spec, or a single
+// unterminated spec.
+const_spec_list:
+    const_spec_last {
+        $$ = $1;
+    }
+    | const_spec_list_t {
+        $$ = $1;
+    }
+    | const_spec_list_t const_spec_last {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    ;
+
+// P1.2: one spec inside a grouped var block. UNLIKE const_spec_list/
+// import_spec_list's plain juxtaposition, var_spec_list is NOT newline-blind:
+// a var_spec's `type` can be a result-less func_type, and func_result's FIRST
+// set starts with an identifier — so bare juxtaposition lets a result-less
+// `f func(int)` absorb the NEXT spec's name as its own return type (the
+// newline-blind func-result hazard, workarounds.md §6; e.g. `var (\n f
+// func(int)\n g = 2\n)` misparses as one spec `f func(int) g = 2`). This is
+// the exact absorption class the interface-body fix (parser.y interface_type/
+// interface_member) neutralizes for method specs; var groups get the same
+// fix, mirrored: while lexically inside a `var ( ... )` group, the lexer
+// (lexer.c asi_ctx, keyed off '(' this time rather than '{') inserts a ';'
+// after a newline that follows a value-ending token, and var_member below
+// wraps var_spec with an optional trailing SEMICOLON so each spec terminates
+// at its own line instead of extending into the next. A list-level
+// `var_spec_list SEMICOLON var_spec` + trailing-SEMICOLON pair was not tried
+// here for the same reason it was rejected for interface_member: it would
+// need to disambiguate "more list to come" from "trailing terminator" on the
+// same lookahead, which is exactly the shape that produced a genuine
+// shift/reduce conflict there.
+//
+// UNLIKE const_spec, there is deliberately NO bare `identifier`-alone arm:
+// const's bare spec means "repeat the previous value" (iota inheritance,
+// see desugar_const_group); var has no such semantics; a Go var spec must
+// carry a type and/or an initializer. Omitting that arm means `var (x)`
+// (bare name, no type, no value) is already a grammar-level syntax error —
+// nothing extra to reject downstream.
+var_spec:
+    identifier type {
+        // `NAME TYPE`, no initializer: values stays NULL, exactly the same
+        // representation single `var z int` already uses (ast_var_decl_new
+        // zero-inits `values`) — the existing zero-value codegen/typecheck
+        // path for a typed-no-initializer var handles this unchanged.
+        $$ = var_spec_new($1, $2, NULL);
+    }
+    | identifier ASSIGN expression {
+        $$ = var_spec_new($1, NULL, $3);
+    }
+    | identifier type ASSIGN expression {
+        $$ = var_spec_new($1, $2, $4);
+    }
+    ;
+
+// Wraps a var_spec with an optional trailing ';' — explicit or ASI-inserted
+// (lexer.c asi_ctx, var-group-scoped ASI mirroring interface_member/
+// interface_method). SEMICOLON attaches to the MEMBER, not a list-level
+// separator arm — see the var_spec_list comment above and interface_member's
+// for why the list-level form was rejected (a genuine shift/reduce conflict).
+var_member:
+    var_spec { $$ = $1; }
+    | var_spec SEMICOLON { $$ = $1; }
+    ;
+
+var_spec_list:
+    var_member {
+        $$ = $1;
+    }
+    | var_spec_list var_member {
         ast_add_child($1, $2);
         $$ = $1;
     }
@@ -1063,41 +1039,123 @@ block:
     }
     ;
 
+// P5.10: statement lists are Go-shaped — every statement in a list is
+// SEMICOLON-terminated EXCEPT that the final statement before the list's
+// terminator (RBRACE / CASE / DEFAULT) may omit it (Go spec "Semicolons"
+// rule 2, encoded in the grammar exactly as go/parser does). Together with
+// the lexer's generalized rule-1 ASI (lexer.c: insert at a newline after a
+// value-ending token unless the next char is ')' or '}'), this kills the
+// six 42-conflict reduce/reduce families: a bare expression statement can
+// now only be FINAL, FOLLOW(final_stmt) contains no expression-starting
+// tokens, so `expression: unary_expr` never competes with a unary-operator
+// statement start again. See references/conflict-ledger.md (P5.10 entry).
 statement_list:
+    stmt_seq {
+        $$ = $1;
+    }
+    | stmt_seq final_stmt {
+        ast_add_child($1, $2);
+        $$ = $1;
+    }
+    | final_stmt {
+        $$ = $1;
+    }
+    ;
+
+stmt_seq:
     statement {
         $$ = $1;
     }
-    | statement_list statement {
+    | stmt_seq statement {
         ast_add_child($1, $2);
         $$ = $1;
     }
     ;
 
+// Terminated statements — legal anywhere in a list. Every arm consumes its
+// SEMICOLON (explicit in source, or lexer-ASI-inserted at the newline).
 statement:
     simple_stmt SEMICOLON { $$ = $1; }
-    | simple_stmt { $$ = $1; }  // Allow statements without semicolon
+    | if_stmt SEMICOLON { $$ = $1; }
+    | if_let_stmt SEMICOLON { $$ = $1; }
+    | for_stmt SEMICOLON { $$ = $1; }
+    | return_stmt SEMICOLON { $$ = $1; }
+    | break_stmt SEMICOLON { $$ = $1; }
+    | continue_stmt SEMICOLON { $$ = $1; }
+    | goto_stmt SEMICOLON { $$ = $1; }
+    | fallthrough_stmt SEMICOLON { $$ = $1; }
+    | go_stmt SEMICOLON { $$ = $1; }
+    | defer_stmt SEMICOLON { $$ = $1; }
+    | select_stmt SEMICOLON { $$ = $1; }
+    | switch_stmt SEMICOLON { $$ = $1; }
+    | block SEMICOLON { $$ = $1; }
+    | comptime_block SEMICOLON { $$ = $1; }  // Goo extension
+    | unsafe_stmt SEMICOLON { $$ = $1; }     // Goo extension
+    | arena_stmt SEMICOLON { $$ = $1; }      // Goo extension
+    | asm_stmt SEMICOLON { $$ = $1; }        // Goo extension
+    | parallel_for_stmt SEMICOLON { $$ = $1; } // Goo extension
+    // `L: stmt` — labeled TERMINATED statement (the inner statement carries
+    // the terminator). Labels are function-scoped in Go (not block-scoped),
+    // so duplicate detection lives in the type checker, not here.
+    | identifier COLON statement {
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    // Explicit empty-labeled statement `done: ;` — the SEMICOLON must be
+    // consumed here or it dangles (there is no bare-SEMICOLON statement).
+    | identifier COLON SEMICOLON {
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    ;
+
+// Unterminated (bare) statements — legal ONLY as the last statement of a
+// list, i.e. immediately before RBRACE/CASE/DEFAULT. This is what keeps
+// single-line blocks (`if x { y() }`) and last-statement-before-`}` shapes
+// (the lexer never inserts before '}' ) parsing exactly as before P5.10.
+final_stmt:
+    simple_stmt { $$ = $1; }
     | if_stmt { $$ = $1; }
     | if_let_stmt { $$ = $1; }
     | for_stmt { $$ = $1; }
-    | return_stmt SEMICOLON { $$ = $1; }
-    | return_stmt { $$ = $1; }  // Allow return without semicolon
-    | break_stmt SEMICOLON { $$ = $1; }
-    | break_stmt { $$ = $1; }  // Allow break without semicolon
-    | continue_stmt SEMICOLON { $$ = $1; }
-    | continue_stmt { $$ = $1; }  // Allow continue without semicolon
-    | go_stmt SEMICOLON { $$ = $1; }
-    | go_stmt { $$ = $1; }  // Allow go without semicolon
-    | defer_stmt SEMICOLON { $$ = $1; }
-    | defer_stmt { $$ = $1; }  // Allow defer without semicolon
+    | return_stmt { $$ = $1; }
+    | break_stmt { $$ = $1; }
+    | continue_stmt { $$ = $1; }
+    | goto_stmt { $$ = $1; }
+    | fallthrough_stmt { $$ = $1; }
+    | go_stmt { $$ = $1; }
+    | defer_stmt { $$ = $1; }
     | select_stmt { $$ = $1; }
     | switch_stmt { $$ = $1; }
     | block { $$ = $1; }
     | comptime_block { $$ = $1; }  // Goo extension
     | unsafe_stmt { $$ = $1; }     // Goo extension
-    | asm_stmt SEMICOLON { $$ = $1; } // Goo extension
+    | arena_stmt { $$ = $1; }      // Goo extension
     | asm_stmt { $$ = $1; }        // Goo extension
     | parallel_for_stmt { $$ = $1; } // Goo extension
+    // `L: stmt` where stmt is itself final: `for { ... L: y() }`.
+    | identifier COLON final_stmt {
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, $3, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
+    // Fix 5a's bare `done:` label with an implicit empty target — by
+    // construction this only ever reduced at list-final position (lookahead
+    // RBRACE/CASE/DEFAULT via $default), so it lives here now; the wrapped
+    // stmt is NULL and every consumer treats that as a no-op fall-through.
+    | identifier COLON {
+        IdentifierNode* lid = (IdentifierNode*)$1;
+        LabelStmtNode* label_node = ast_label_stmt_new(lid->name, NULL, get_current_position());
+        ast_node_free($1);
+        $$ = (ASTNode*)label_node;
+    }
     ;
+
 
 simple_stmt:
     expression {
@@ -1375,15 +1433,62 @@ return_stmt:
 
 break_stmt:
     BREAK {
-        ASTNode* break_node = ast_node_new(AST_BREAK_STMT, get_current_position());
-        $$ = break_node;
+        $$ = ast_break_stmt_new(get_current_position());
+    }
+    | BREAK identifier {
+        // `break L` — a distinct node from bare BREAK (see AST_BREAK_LABEL_STMT's
+        // enum-site comment); codegen resolves L by walking the break-scope
+        // stack, not the innermost frame.
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        BreakLabelStmtNode* node = ast_break_label_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
     }
     ;
 
 continue_stmt:
     CONTINUE {
-        ASTNode* continue_node = ast_node_new(AST_CONTINUE_STMT, get_current_position());
-        $$ = continue_node;
+        $$ = ast_continue_stmt_new(get_current_position());
+    }
+    | CONTINUE identifier {
+        // `continue L` — sibling of `break L` above.
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        ContinueLabelStmtNode* node = ast_continue_label_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
+    }
+    ;
+
+goto_stmt:
+    GOTO identifier {
+        // gofmt-syntax-b Task 2 (P1.6): `goto L`. Unlike break_stmt/
+        // continue_stmt above, GOTO has no bare (label-less) alternative —
+        // the operand is mandatory — so this single arm carries no
+        // competing reduce and is expected to add zero grammar-conflict
+        // delta (verified by the tripwire, not assumed).
+        IdentifierNode* lid = (IdentifierNode*)$2;
+        GotoStmtNode* node = ast_goto_stmt_new(lid->name, get_current_position());
+        ast_node_free($2);
+        $$ = (ASTNode*)node;
+    }
+    ;
+
+fallthrough_stmt:
+    FALLTHROUGH {
+        // gofmt-syntax-b Task 3 (P1.7): `fallthrough` — a bare marker
+        // statement (AST_FALLTHROUGH_STMT), no operand ever, unlike every
+        // other member of this keyword-statement family except bare
+        // BREAK/CONTINUE. FALLTHROUGH is already one of lexer.c's
+        // unconditional keyword-terminator ASI tokens (same "Part 1"
+        // group as RETURN/BREAK/CONTINUE — see the ledger's gofmt-syntax-b
+        // Task 1 entry), so this single-token arm is expected to add zero
+        // grammar-conflict delta: there is no competing reduce for the
+        // tripwire to newly conflict against (verified, not assumed).
+        // Placement legality (final statement of a non-last
+        // expression-switch clause; illegal in a type switch, select, or
+        // outside any switch) is entirely a type-check-time concern — see
+        // type_check_switch_like_body's doc comment, type_checker.c.
+        $$ = ast_fallthrough_stmt_new(get_current_position());
     }
     ;
 
@@ -1437,6 +1542,50 @@ select_case:
         SelectCaseNode* case_node = ast_select_case_new($2, $4, get_current_position());
         $$ = (ASTNode*)case_node;
     }
+    // gofmt-syntax-b Task 4 (P1.10): `case v := <-ch:` — value-binding
+    // receive. The grammar accepts any `expression` after `:=` (same shape
+    // as the plain-comm arm above, kept zero-new-surface) rather than
+    // encoding `ARROW expression` here; receive-ness is validated
+    // SEMANTICALLY in type_check_select_stmt ("select case must be a
+    // receive operation"), where the diagnostic can name the actual problem
+    // instead of a generic parse error. `identifier` is freed right after
+    // its name is copied out — `ast_select_case_new` already defaults
+    // bind_name/is_declare to NULL/0, so every OTHER call site (plain comm,
+    // default, and the comma-ok arm below) is unaffected by this new field.
+    | CASE identifier SHORT_ASSIGN expression COLON statement_list {
+        IdentifierNode* bid = (IdentifierNode*)$2;
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        case_node->bind_name = strdup(bid->name);
+        case_node->is_declare = 1;
+        ast_node_free($2);
+        $$ = (ASTNode*)case_node;
+    }
+    // `case v = <-ch:` — bind into an EXISTING, already-declared variable
+    // (checked in the type checker: must exist in an enclosing scope and be
+    // assignment-compatible with the channel's element type).
+    | CASE identifier ASSIGN expression COLON statement_list {
+        IdentifierNode* bid = (IdentifierNode*)$2;
+        SelectCaseNode* case_node = ast_select_case_new($4, $6, get_current_position());
+        case_node->bind_name = strdup(bid->name);
+        case_node->is_declare = 0;
+        ast_node_free($2);
+        $$ = (ASTNode*)case_node;
+    }
+    // `case v, ok := <-ch:` — comma-ok binding. v1 scope cut: `ok` is
+    // meaningless without close() (P3.1: hardcoding it true would be a
+    // silent lie), so this shape is grammar-accepted only so the type
+    // checker can reject it with a specific, positioned "requires close()"
+    // diagnostic instead of a bare "syntax error" — see the is_declare = -1
+    // sentinel documented on SelectCaseNode in ast.h. Neither identifier's
+    // name is kept (both freed here): the case is rejected either way, so
+    // nothing downstream needs them.
+    | CASE identifier COMMA identifier SHORT_ASSIGN expression COLON statement_list {
+        SelectCaseNode* case_node = ast_select_case_new($6, $8, get_current_position());
+        case_node->is_declare = -1;
+        ast_node_free($2);
+        ast_node_free($4);
+        $$ = (ASTNode*)case_node;
+    }
     | DEFAULT COLON statement_list {
         SelectCaseNode* case_node = ast_select_case_new(NULL, $3, get_current_position());
         $$ = (ASTNode*)case_node;
@@ -1488,6 +1637,74 @@ switch_stmt:
     | SWITCH type_switch_guard LBRACE type_case_list RBRACE {
         TypeSwitchNode* tsw = ast_type_switch_new($2.bind_name, $2.expr, $4, get_current_position());
         $$ = (ASTNode*)tsw;
+    }
+    // `switch init; tag { }` — the idiomatic Go guard form (e.g.
+    // `switch x := 2; x { case 2: ... }`). Desugared to a wrapping block
+    // `{ init; switch tag {...} }`, mirroring IF's init arm (parser.y:1270)
+    // and FOR's C-style init clause: the init var's scope is naturally
+    // bounded to the wrapper block (out of scope after the switch, matching
+    // Go), with zero AST/codegen changes to SwitchStmtNode.
+    | SWITCH simple_stmt SEMICOLON expression LBRACE_BODY case_clause_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new($4, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON expression LBRACE case_clause_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new($4, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    // `switch init; { }` — the tagless (switch-true) form combined with an
+    // init statement (e.g. `switch x := 5; { case x < 10: ... }`). Fix C:
+    // Task 2 added init arms for the tagged and type-switch forms only,
+    // leaving this one out; mirrors the tagged-init arms above exactly the
+    // same way the bare tagless arm (parser.y:1604) mirrors the bare tagged
+    // arm (parser.y:1595) — synthesize a `true` tag, then reuse the same
+    // init-wrapper desugar (scope bounded to the wrapper block). No new
+    // conflict surface: `expression` cannot start with LBRACE/LBRACE_BODY
+    // (see composite_value's comment at parser.y:2809), so the token
+    // immediately after SEMICOLON already decides between this arm and the
+    // expression-tag arms above with one token of lookahead — the same
+    // disjointness the bare tagged/tagless pair already relies on.
+    | SWITCH simple_stmt SEMICOLON LBRACE_BODY case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new(t, $5, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON LBRACE case_clause_list RBRACE {
+        ASTNode* t = (ASTNode*)ast_literal_new(TOKEN_TRUE, "true", get_current_position());
+        ASTNode* switch_node = (ASTNode*)ast_switch_stmt_new(t, $5, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    // `switch init; [v :=] x.(type) { }` — same init-guard shape for the
+    // type-switch form. Reuses type_switch_guard unmodified (no new
+    // type-switch surface — spec open point 3): the bind form
+    // `identifier SHORT_ASSIGN primary_expr DOT LPAREN TYPE RPAREN` already
+    // parses at base without init (Task 3, type-assertions branch), so this
+    // mirrors the same init-wrapper desugar onto it.
+    | SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE_BODY type_case_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_type_switch_new($4.bind_name, $4.expr, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
+    }
+    | SWITCH simple_stmt SEMICOLON type_switch_guard LBRACE type_case_list RBRACE {
+        ASTNode* switch_node = (ASTNode*)ast_type_switch_new($4.bind_name, $4.expr, $6, get_current_position());
+        BlockStmtNode* wrapper = ast_block_stmt_new(get_current_position());
+        wrapper->statements = $2;
+        ast_add_child($2, switch_node);
+        $$ = (ASTNode*)wrapper;
     }
     ;
 
@@ -1850,26 +2067,25 @@ primary_expr:
 
 call_expr:
     primary_expr LPAREN RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = NULL;
-        call->has_spread = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, NULL, 0);
     }
     | primary_expr LPAREN expression_list RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
+    }
+    // Task 4 (trailing comma in call args): gofmt's canonical multi-line
+    // call shape (`f(\n    a,\n    b,\n)`) needs this arm — after a COMMA,
+    // RPAREN can immediately follow. LR(1)-clean by the same argument as
+    // the composite-literal COMMA-before-RBRACE arms (workarounds.md §5):
+    // after `expression_list COMMA`, lookahead RPAREN reduces here, any
+    // expression-starting token instead shifts into one more element via
+    // expression_list's own COMMA-chaining production. Deliberately NOT
+    // folded into expression_list itself — that nonterminal is shared with
+    // non-call contexts (return, tuple assignment) where a trailing comma
+    // must stay illegal (spec open point 2). This arm also covers method
+    // calls for free: `obj.Method(a, b,)` reaches here because
+    // selector_expr reduces to primary_expr before LPAREN is seen.
+    | primary_expr LPAREN expression_list COMMA RPAREN {
+        $$ = call_expr_new($1, $3, 0);
     }
     // Task 3 (spread `f(s...)`): identical construction to the plain-arg arm
     // immediately above; only has_spread differs. Spread is grammatically
@@ -1881,18 +2097,12 @@ call_expr:
     // interprets this flag; codegen's variadic pack builder (call_codegen.c)
     // reads it to bypass the per-element pack and pass the operand's slice
     // value straight through (Go aliasing semantics). Bison tripwire: this
-    // arm must leave the conflict count at EXACTLY 81 shift/reduce + 256
-    // reduce/reduce (verified empirically before commit).
+    // arm must leave the conflict count unchanged — the exact expected count
+    // is tracked in scripts/grammar-tripwire.sh (EXPECTED_SR/EXPECTED_RR),
+    // the single source of truth; see .claude/skills/goo-grammar/ for the
+    // procedure and references/conflict-ledger.md for the baseline history.
     | primary_expr LPAREN expression_list ELLIPSIS RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 1;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 1);
     }
     // `make(map[K]V)` / `make([]T, n)`: a type in call-argument position.
     // NOTE: the first tokens here are NOT disjoint from expression's first
@@ -1911,23 +2121,17 @@ call_expr:
     // `make` itself stays an ordinary identifier (not a keyword); the type
     // checker rejects any other callee applied to a type argument.
     | primary_expr LPAREN type_call_arg RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
-        call->args = $3;
-        call->has_spread = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
+    }
+    // Task 4: trailing comma after make()'s sole type argument, e.g.
+    // `make(\n    map[string]int,\n)`. `make` is an ordinary call target
+    // (not a keyword) so it gets the same gofmt-shape tolerance as any
+    // other call; real Go's own Arguments grammar allows this too
+    // (verified with `go run` on `make(map[string]int,)`).
+    | primary_expr LPAREN type_call_arg COMMA RPAREN {
+        $$ = call_expr_new($1, $3, 0);
     }
     | primary_expr LPAREN type_call_arg COMMA expression_list RPAREN {
-        CallExprNode* call = (CallExprNode*)malloc(sizeof(CallExprNode));
-        call->base.type = AST_CALL_EXPR;
-        call->base.pos = get_current_position();
-        call->base.node_type = NULL;
-        call->base.next = NULL;
-        call->function = $1;
         // The type node leads the argument list; splice the rest of
         // expression_list after it (mirrors expression_list's own
         // left-to-right chaining via ast_add_child/->next).
@@ -1936,9 +2140,14 @@ call_expr:
         // assignment does not drop a pre-existing tail — no ast_add_child
         // walk is needed.
         $3->next = $5;
-        call->args = $3;
-        call->has_spread = 0;
-        $$ = (ASTNode*)call;
+        $$ = call_expr_new($1, $3, 0);
+    }
+    // Task 4: trailing comma after make()'s two-arg form, e.g.
+    // `make(\n    []int,\n    3,\n)`. Same splice as the arm above, plus
+    // the trailing COMMA before RPAREN.
+    | primary_expr LPAREN type_call_arg COMMA expression_list COMMA RPAREN {
+        $3->next = $5;
+        $$ = call_expr_new($1, $3, 0);
     }
     ;
 
@@ -1959,79 +2168,31 @@ type_call_arg:
 
 index_expr:
     primary_expr LBRACKET expression RBRACKET {
-        IndexExprNode* index = (IndexExprNode*)malloc(sizeof(IndexExprNode));
-        index->base.type = AST_INDEX_EXPR;
-        index->base.pos = get_current_position();
-        index->base.node_type = NULL;
-        index->base.next = NULL;
-        index->expr = $1;
-        index->index = $3;
-        $$ = (ASTNode*)index;
+        $$ = index_expr_new($1, $3);
     }
     // F5: slice/substring expression `expr[low:high]`. The COLON after the
     // first bound distinguishes it from plain indexing on one lookahead token
     // (RBRACKET vs COLON). Both bounds required in v1.
     | primary_expr LBRACKET expression COLON expression RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = $3;
-        slice->high = $5;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, $3, $5);
     }
     /* Open-ended slices: `s[low:]` (high defaults to len), `s[:high]` (low
        defaults to 0), `s[:]` (whole). A NULL low/high is filled in by codegen.
        Common in Go, e.g. strings.HasSuffix's `s[len(s)-n:]`. */
     | primary_expr LBRACKET expression COLON RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = $3;
-        slice->high = NULL;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, $3, NULL);
     }
     | primary_expr LBRACKET COLON expression RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = NULL;
-        slice->high = $4;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, NULL, $4);
     }
     | primary_expr LBRACKET COLON RBRACKET {
-        SliceIndexExprNode* slice = (SliceIndexExprNode*)malloc(sizeof(SliceIndexExprNode));
-        slice->base.type = AST_SLICE_INDEX_EXPR;
-        slice->base.pos = get_current_position();
-        slice->base.node_type = NULL;
-        slice->base.next = NULL;
-        slice->expr = $1;
-        slice->low = NULL;
-        slice->high = NULL;
-        $$ = (ASTNode*)slice;
+        $$ = slice_index_expr_new($1, NULL, NULL);
     }
     ;
 
 selector_expr:
     primary_expr DOT identifier {
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        SelectorExprNode* selector = (SelectorExprNode*)malloc(sizeof(SelectorExprNode));
-        selector->base.type = AST_SELECTOR_EXPR;
-        selector->base.pos = get_current_position();
-        selector->base.node_type = NULL;
-        selector->base.next = NULL;
-        selector->expr = $1;
-        selector->selector = strdup(ident->name);
-        ast_node_free($3);
-        $$ = (ASTNode*)selector;
+        $$ = selector_expr_new($1, $3);
     }
     // Type assertions branch, Task 1: `x.(T)` type assertion. DOT identifier
     // (field/method selector, above) vs DOT LPAREN (type assertion, here) is
@@ -2040,14 +2201,7 @@ selector_expr:
     // here; that's assignment-context-driven at typecheck/codegen (Task 2),
     // exactly like the comma-ok map read.
     | primary_expr DOT LPAREN type RPAREN {
-        TypeAssertNode* ta = (TypeAssertNode*)malloc(sizeof(TypeAssertNode));
-        ta->base.type = AST_TYPE_ASSERT;
-        ta->base.pos = get_current_position();
-        ta->base.node_type = NULL;
-        ta->base.next = NULL;
-        ta->expr = $1;
-        ta->asserted_type = $4;
-        $$ = (ASTNode*)ta;
+        $$ = type_assert_expr_new($1, $4);
     }
     ;
 
@@ -2125,7 +2279,17 @@ enum_variant:
         $$ = (ASTNode*)ast_enum_variant_new(ident->name, $3, get_current_position());
         ast_node_free($1);
     }
+    | identifier LBRACE struct_field_list RBRACE SEMICOLON {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        $$ = (ASTNode*)ast_enum_variant_new(ident->name, $3, get_current_position());
+        ast_node_free($1);
+    }
     | identifier LBRACE RBRACE {
+        IdentifierNode* ident = (IdentifierNode*)$1;
+        $$ = (ASTNode*)ast_enum_variant_new(ident->name, NULL, get_current_position());
+        ast_node_free($1);
+    }
+    | identifier LBRACE RBRACE SEMICOLON {
         IdentifierNode* ident = (IdentifierNode*)$1;
         $$ = (ASTNode*)ast_enum_variant_new(ident->name, NULL, get_current_position());
         ast_node_free($1);
@@ -2147,11 +2311,34 @@ interface_type:
     ;
 
 interface_method_list:
-    interface_method { $$ = $1; }
-    | interface_method_list interface_method {
+    interface_member { $$ = $1; }
+    | interface_method_list interface_member {
         ast_add_child($1, $2);
         $$ = $1;
     }
+    ;
+
+// Wraps an interface_method with an optional trailing ';' — explicit or
+// ASI-inserted (lexer.c asi_ctx, interface-body-scoped ASI mirroring the
+// struct-body pilot). Needed because bare juxtaposition alone is ambiguous
+// after a void method: `Inc()` followed by an identifier is grammatically
+// valid as BOTH `Inc`'s own func_result (a named return type) AND the next
+// method's name, and bison's shift-wins default silently picks the former
+// (workarounds.md §6), absorbing the next method's name into this one's
+// signature. A ';' sits outside func_result's FIRST set, so it disambiguates
+// for free (clean reduce, zero new conflicts). This mirrors struct_field's
+// own per-field trailing-SEMICOLON arms (parser.y struct_field, ~2295) —
+// SEMICOLON attached to the MEMBER, not a list-level separator arm. A
+// list-level `interface_method_list SEMICOLON interface_method` +
+// `interface_method_list SEMICOLON` (trailing) pair was tried first and
+// empirically produces a genuine LALR shift/reduce conflict (+1, verified
+// via bison -Wcounterexamples: "interface_method_list SEMICOLON •" on
+// IDENTIFIER lookahead can't distinguish "more list to come" from "trailing
+// terminator" without merging lookahead sets across the two rules) — not
+// adopted.
+interface_member:
+    interface_method { $$ = $1; }
+    | interface_method SEMICOLON { $$ = $1; }
     ;
 
 // A method signature: `Name`, `Name() ret`, `Name(params)`, `Name(params) ret`.
@@ -2217,51 +2404,19 @@ struct_field:
         // Reuse VarDeclNode for fields — same shape as a function
         // parameter. type_from_ast for AST_STRUCT_TYPE will walk
         // this chain and build the Type's struct_type.fields[].
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $2;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $2);
     }
     | identifier COLON type {
         // Colon-separated field syntax: `name: type` (Goo extension).
         // Used in enum variant bodies: `Circle{radius: int}`.
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $3;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $3);
     }
     | identifier type SEMICOLON {
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $2;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $2);
     }
     | identifier COLON type SEMICOLON {
         // Colon-separated field with semicolon terminator.
-        IdentifierNode* ident = (IdentifierNode*)$1;
-        VarDeclNode* field = ast_var_decl_new(get_current_position());
-        field->names = malloc(sizeof(char*));
-        field->names[0] = strdup(ident->name);
-        field->name_count = 1;
-        field->type = $3;
-        field->values = NULL;
-        ast_node_free($1);
-        $$ = (ASTNode*)field;
+        $$ = struct_field_new($1, $3);
     }
     | identifier field_name_tail type {
         // Grouped field `X, Y, Z T` — the leading `identifier` then a
@@ -2279,11 +2434,23 @@ struct_field:
     | identifier SEMICOLON {
         // Embedded (anonymous) field `Base;` — the ';' is explicit in
         // one-liners and ASI-inserted at newlines inside struct bodies.
-        $$ = make_embedded_field($1, 0);
+        $$ = make_embedded_field(NULL, $1, 0);
     }
     | MULTIPLY identifier SEMICOLON {
         // Embedded pointer field `*Base;`.
-        $$ = make_embedded_field($2, 1);
+        $$ = make_embedded_field(NULL, $2, 1);
+    }
+    | identifier DOT identifier SEMICOLON {
+        // Qualified embedded field `pkg.Type;` (review parity, packages-B).
+        // Disambiguation from `name pkg.Type` (a NAMED field with a
+        // qualified type, via the `identifier type` arm above) is one-token:
+        // DOT directly after the FIRST identifier can only start this arm —
+        // no type may begin with DOT. Mirrors B1's type_name qualified arm.
+        $$ = make_embedded_field($1, $3, 0);
+    }
+    | MULTIPLY identifier DOT identifier SEMICOLON {
+        // Qualified embedded pointer field `*pkg.Type;`.
+        $$ = make_embedded_field($2, $4, 1);
     }
     ;
 
@@ -2327,17 +2494,7 @@ struct_lit:
         ast_node_free($1);
     }
     | identifier LBRACE RBRACE {
-        IdentifierNode* type_ident = (IdentifierNode*)$1;
-        StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
-        lit->base.type = AST_STRUCT_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->type_name = strdup(type_ident->name);
-        ast_node_free($1);
-        lit->is_keyed = 0;
-        lit->field_values = NULL;
-        lit->field_names = NULL;
-        lit->field_count = 0;
-        $$ = (ASTNode*)lit;
+        $$ = struct_lit_empty_new($1);
     }
     ;
 
@@ -2360,10 +2517,7 @@ struct_lit_init:
            node_type slot (same parse-time piggyback map_entry_list uses
            for its values chain); struct_lit's reducer moves it into
            field_names[] and clears the slot before type-check runs. */
-        IdentifierNode* key = (IdentifierNode*)$1;
-        $$ = $3;
-        $$->node_type = (Type*)strdup(key->name);
-        ast_node_free($1);
+        $$ = struct_lit_init_keyed($1, $3);
     }
     ;
 
@@ -2374,14 +2528,7 @@ map_entry_list:
         // (the values-chain head is stashed on the keys-list-head's
         // node_type field so we can recover both from one stack
         // value).
-        ASTNode* keys_head = $1;
-        ASTNode* values_head = (ASTNode*)keys_head->node_type;
-        ASTNode* new_key = $3;
-        ASTNode* new_val = (ASTNode*)new_key->node_type;
-        new_key->node_type = NULL;
-        ast_add_child(keys_head, new_key);
-        ast_add_child(values_head, new_val);
-        $$ = keys_head;
+        $$ = map_entry_list_append($1, $3);
     }
     ;
 
@@ -2397,9 +2544,7 @@ map_entry:
         // via composite_value's LBRACE arms) that []T{...}/[N]T{...} element
         // elision already uses; the concrete type is resolved from the map's
         // value type V at typecheck.
-        ASTNode* k = $1;
-        k->node_type = (Type*)$3;
-        $$ = k;
+        $$ = map_entry_new($1, $3);
     }
     ;
 
@@ -2410,24 +2555,10 @@ slice_lit:
         // (goolang doesn't parse `arr[i:j]` today). The expression
         // list head is stored in `elements` via the same struct
         // layout (SliceLitNode shares ASTNode base).
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $2;
-        lit->elem_type = NULL;  // native untyped form: element type inferred
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new($2, NULL);
     }
     | LBRACKET RBRACKET {
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = NULL;
-        lit->elem_type = NULL;  // native empty form: element type inferred
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new(NULL, NULL);
     }
     | slice_type LBRACE composite_elem_list RBRACE {
         // Go-standard typed slice composite literal: `[]int{1, 2, 3}`.
@@ -2435,75 +2566,33 @@ slice_lit:
         // node so the type checker validates each element against the
         // declared element type T (rather than inferring T from the first
         // element) and stamps the literal with the declared slice type. (P3-1)
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->elem_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new($3, $1);
     }
     | slice_type LBRACE composite_elem_list COMMA RBRACE {
         // Trailing comma in a typed slice literal: `[]int{1, 2, 3,}`.
         // gofmt emits a trailing comma on every multi-line slice literal,
         // so this is required to parse real vendored Go source. Mirrors the
         // array-literal trailing-comma rule below.
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->elem_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new($3, $1);
     }
     | slice_type LBRACE RBRACE {
         // Empty typed slice literal: `[]int{}`. The declared element type
         // ($1) is stored so the checker stamps the correct slice type
         // (e.g. []string{} is []string, not the int32 default). (P3-1)
-        SliceLitNode* lit = (SliceLitNode*)malloc(sizeof(SliceLitNode));
-        lit->base.type = AST_SLICE_EXPR;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = NULL;
-        lit->elem_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = slice_lit_new(NULL, $1);
     }
     /* Array composite literal `[N]T{e...}`. Mirrors the slice-literal rules but
        stores the full array_type ($1, an AST_ARRAY_TYPE carrying N + T). */
     | array_type LBRACE composite_elem_list RBRACE {
-        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
-        lit->base.type = AST_ARRAY_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->array_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = array_lit_new($3, $1);
     }
     /* Trailing comma: Go allows (and gofmt adds) a trailing comma in a
        composite literal, e.g. the multi-line deBruijn tables `[32]byte{0, 1,}`. */
     | array_type LBRACE composite_elem_list COMMA RBRACE {
-        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
-        lit->base.type = AST_ARRAY_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = $3;
-        lit->array_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = array_lit_new($3, $1);
     }
     | array_type LBRACE RBRACE {
-        ArrayLitNode* lit = (ArrayLitNode*)malloc(sizeof(ArrayLitNode));
-        lit->base.type = AST_ARRAY_LITERAL;
-        lit->base.pos = get_current_position();
-        lit->base.node_type = NULL;
-        lit->base.next = NULL;
-        lit->elements = NULL;
-        lit->array_type = $1;
-        $$ = (ASTNode*)lit;
+        $$ = array_lit_new(NULL, $1);
     }
     ;
 
@@ -2552,10 +2641,31 @@ type_name:
         basic->base.pos = get_current_position();
         basic->base.node_type = NULL;
         basic->base.next = NULL;
-        
+
         IdentifierNode* ident = (IdentifierNode*)$1;
         basic->name = strdup(ident->name);
+        basic->package = NULL;
         ast_node_free($1);
+        $$ = (ASTNode*)basic;
+    }
+    // P4.2/B1: qualified type name `pkg.Type` (var/param/return/field/elem
+    // positions only — NOT composite literals, see the LBRACE_BODY scope
+    // cut in the goo-grammar skill / P4 sub-B design doc rider B4).
+    // Grammar-only: the checker (type_from_ast's AST_BASIC_TYPE arm)
+    // resolves `package` against the imported package's exports scope.
+    | identifier DOT identifier {
+        BasicTypeNode* basic = (BasicTypeNode*)malloc(sizeof(BasicTypeNode));
+        basic->base.type = AST_BASIC_TYPE;
+        basic->base.pos = get_current_position();
+        basic->base.node_type = NULL;
+        basic->base.next = NULL;
+
+        IdentifierNode* pkg_ident = (IdentifierNode*)$1;
+        IdentifierNode* name_ident = (IdentifierNode*)$3;
+        basic->package = strdup(pkg_ident->name);
+        basic->name = strdup(name_ident->name);
+        ast_node_free($1);
+        ast_node_free($3);
         $$ = (ASTNode*)basic;
     }
     ;
@@ -2707,6 +2817,27 @@ catch_expr:
         ast_node_free($3);
         $$ = (ASTNode*)catch_node;
     }
+    // P2.9 (T3): `f() catch => -1` — the value-yielding fallback form. No
+    // bound error variable; the fallback `expression` on the right is the
+    // handler's recovery value. Desugars to the SAME CatchExprNode the block
+    // form above builds (error_var NULL, catch_body a synthetic one-
+    // statement block wrapping the fallback expression), so the existing
+    // value-producing catch machinery (type_check_catch_expr's trailing-expr
+    // check, generate_catch_body_value's PHI merge) runs unchanged — see
+    // catch_expr_arrow_new's doc comment (parser_actions.c).
+    | expression CATCH FAT_ARROW expression %prec CATCH {
+        // %prec CATCH: without this, bison assigns the rule the precedence
+        // of its LAST terminal (FAT_ARROW, which has none declared) instead
+        // of inheriting CATCH's %right low precedence the sibling arm above
+        // gets implicitly (CATCH is its only terminal). Losing that
+        // precedence reopened dozens of shift/reduce ambiguities over how
+        // far the trailing `expression` extends (verified: omitting this
+        // pushed the tripwire from 121 to 142 S/R) — restoring it returns
+        // the arm to the exact same low-precedence right-associative
+        // resolution as `expression CATCH identifier block`.
+        CatchExprNode* catch_node = catch_expr_arrow_new($1, $4);
+        $$ = (ASTNode*)catch_node;
+    }
     ;
 
 comptime_block:
@@ -2720,6 +2851,13 @@ unsafe_stmt:
     UNSAFE block {
         UnsafeStmtNode* unsafe_node = ast_unsafe_stmt_new($2, get_current_position());
         $$ = (ASTNode*)unsafe_node;
+    }
+    ;
+
+arena_stmt:
+    ARENA block {
+        ArenaBlockNode* arena_node = ast_arena_block_new($2, get_current_position());
+        $$ = (ASTNode*)arena_node;
     }
     ;
 
@@ -2918,132 +3056,6 @@ literal:
     }
     ;
 
-// GPU Programming Support
-
-// Kernel function declaration
-kernel_decl:
-    KERNEL identifier func_signature block {
-        IdentifierNode* ident = (IdentifierNode*)$2;
-        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $3, NULL, $4, GPU_TARGET_NVPTX, get_current_position());
-        ast_node_free($2);
-        $$ = (ASTNode*)kernel;
-    }
-    | DEVICE KERNEL identifier func_signature block {
-        IdentifierNode* ident = (IdentifierNode*)$3;
-        KernelDeclNode* kernel = ast_kernel_decl_new(ident->name, $4, NULL, $5, GPU_TARGET_NVPTX, get_current_position());
-        ast_node_free($3);
-        $$ = (ASTNode*)kernel;
-    }
-    ;
-
-// Kernel launch expression  
-kernel_launch:
-    identifier LT LT LT expression COMMA expression GT GT GT LPAREN RPAREN {
-        // vectorAdd<<<gridSize, blockSize>>>()
-        IdentifierNode* kernel_name = (IdentifierNode*)$1;
-        KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, NULL, get_current_position());
-        $$ = (ASTNode*)launch;
-    }
-    | identifier LT LT LT expression COMMA expression GT GT GT LPAREN expression_list RPAREN {
-        // vectorAdd<<<gridSize, blockSize>>>(args)
-        IdentifierNode* kernel_name = (IdentifierNode*)$1;
-        KernelLaunchNode* launch = ast_kernel_launch_new($1, $5, $7, $12, get_current_position());
-        $$ = (ASTNode*)launch;
-    }
-    ;
-
-// GPU memory allocation
-gpu_memory_alloc:
-    identifier DOT identifier LBRACKET type RBRACKET LPAREN expression RPAREN {
-        // cuda.Malloc[float32](size)
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Malloc") == 0) {
-            GPUMemoryAllocNode* alloc = ast_gpu_memory_alloc_new($8, $5, GPU_MEMORY_GLOBAL, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)alloc;
-        } else {
-            yyerror("Unknown GPU memory allocation function");
-            $$ = NULL;
-        }
-    }
-    ;
-
-// GPU memory copy
-gpu_memory_copy:
-    identifier DOT identifier LPAREN expression COMMA expression COMMA expression COMMA identifier RPAREN {
-        // cuda.Memcpy(dest, src, size, direction)
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        IdentifierNode* direction = (IdentifierNode*)$11;
-        
-        int dir = 0; // Default to HostToDevice
-        if (strcmp(direction->name, "HostToDevice") == 0) dir = 0;
-        else if (strcmp(direction->name, "DeviceToHost") == 0) dir = 1;
-        else if (strcmp(direction->name, "DeviceToDevice") == 0) dir = 2;
-        
-        if (strcmp(package->name, "cuda") == 0 && strcmp(func->name, "Memcpy") == 0) {
-            GPUMemoryCopyNode* copy = ast_gpu_memory_copy_new($5, $7, $9, dir, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            ast_node_free($11);
-            $$ = (ASTNode*)copy;
-        } else {
-            yyerror("Unknown GPU memory copy function");
-            $$ = NULL;
-        }
-    }
-    ;
-
-// GPU synchronization
-gpu_sync:
-    identifier DOT identifier LPAREN RPAREN {
-        // cuda.DeviceSync()
-        IdentifierNode* package = (IdentifierNode*)$1;
-        IdentifierNode* func = (IdentifierNode*)$3;
-        
-        int sync_type = 0; // DeviceSync
-        if (strcmp(func->name, "DeviceSync") == 0) sync_type = 0;
-        else if (strcmp(func->name, "StreamSync") == 0) sync_type = 1;
-        
-        if (strcmp(package->name, "cuda") == 0) {
-            GPUSyncNode* sync = ast_gpu_sync_new(sync_type, NULL, NULL, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)sync;
-        } else {
-            yyerror("Unknown GPU sync function");
-            $$ = NULL;
-        }
-    }
-    ;
-
-// GPU intrinsic functions
-gpu_intrinsic:
-    identifier DOT identifier {
-        // blockIdx.x, threadIdx.y, etc.
-        IdentifierNode* object = (IdentifierNode*)$1;
-        IdentifierNode* member = (IdentifierNode*)$3;
-        
-        char intrinsic_name[64];
-        snprintf(intrinsic_name, sizeof(intrinsic_name), "%s.%s", object->name, member->name);
-        
-        GPUIntrinsicNode* intrinsic = ast_gpu_intrinsic_new(intrinsic_name, NULL, GPU_CONTEXT_KERNEL, get_current_position());
-        ast_node_free($1);
-        ast_node_free($3);
-        $$ = (ASTNode*)intrinsic;
-    }
-    ;
-
-// GPU memory qualifiers
-gpu_memory_qualifier:
-    GLOBAL { $$ = (int)GPU_MEMORY_GLOBAL; }
-    | SHARED_MEM { $$ = (int)GPU_MEMORY_SHARED; }
-    | CONSTANT { $$ = (int)GPU_MEMORY_CONSTANT; }
-    | LOCAL { $$ = (int)GPU_MEMORY_LOCAL; }
-    ;
-
 // Pattern matching
 match_expr:
     MATCH expression LBRACE match_case_list RBRACE {
@@ -3137,467 +3149,10 @@ guard_condition:
     }
     ;
 
-// WebAssembly Support
-
-wasm_export:
-    EXPORT STRING_LITERAL identifier {
-        // export "functionName" myFunction
-        IdentifierNode* item = (IdentifierNode*)$3;
-        WasmExportNode* export_node = ast_wasm_export_new($2.data, $3, "func", get_current_position());
-        free($2.data);
-        $$ = (ASTNode*)export_node;
-    }
-    ;
-
-wasm_import:
-    IMPORT STRING_LITERAL STRING_LITERAL identifier {
-        // import "module" "function" localName
-        IdentifierNode* local = (IdentifierNode*)$4;
-        WasmImportNode* import_node = ast_wasm_import_new($2.data, $3.data, local->name, "func", NULL, get_current_position());
-        free($2.data);
-        free($3.data);
-        ast_node_free($4);
-        $$ = (ASTNode*)import_node;
-    }
-    ;
-
-wasm_memory:
-    MEMORY expression {
-        // memory 1 (1 page = 64KB)
-        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, NULL, 0, get_current_position());
-        $$ = (ASTNode*)memory_node;
-    }
-    | MEMORY expression expression {
-        // memory 1 16 (min 1 page, max 16 pages)
-        WasmMemoryNode* memory_node = ast_wasm_memory_new($2, $3, 0, get_current_position());
-        $$ = (ASTNode*)memory_node;
-    }
-    ;
-
-wasm_table:
-    TABLE expression wasm_value_type {
-        // table 10 funcref
-        WasmTableNode* table_node = ast_wasm_table_new((WasmValueType)$3, $2, NULL, get_current_position());
-        $$ = (ASTNode*)table_node;
-    }
-    ;
-
-wasm_global:
-    GLOBAL identifier wasm_value_type expression {
-        // global myGlobal i32 42
-        IdentifierNode* name = (IdentifierNode*)$2;
-        WasmGlobalNode* global_node = ast_wasm_global_new(name->name, (WasmValueType)$3, 0, $4, get_current_position());
-        ast_node_free($2);
-        $$ = (ASTNode*)global_node;
-    }
-    ;
-
-wasm_start:
-    START identifier {
-        // start main
-        WasmStartNode* start_node = ast_wasm_start_new($2, get_current_position());
-        $$ = (ASTNode*)start_node;
-    }
-    ;
-
-js_interop:
-    identifier DOT identifier LPAREN expression_list RPAREN {
-        // console.log(args) - JavaScript interop call
-        IdentifierNode* obj = (IdentifierNode*)$1;
-        IdentifierNode* method = (IdentifierNode*)$3;
-        
-        if (strcmp(obj->name, "console") == 0 || strcmp(obj->name, "window") == 0 || 
-            strcmp(obj->name, "document") == 0) {
-            JSInteropNode* js_node = ast_js_interop_new(JS_INTEROP_CALL, obj->name, method->name, $5, WASM_ENV_BROWSER, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)js_node;
-        } else {
-            // Regular selector expression
-            yyerror("Unknown JavaScript object");
-            $$ = NULL;
-        }
-    }
-    ;
-
-dom_access:
-    identifier DOT identifier {
-        // document.body - DOM property access
-        IdentifierNode* api = (IdentifierNode*)$1;
-        IdentifierNode* prop = (IdentifierNode*)$3;
-        
-        if (strcmp(api->name, "document") == 0 || strcmp(api->name, "window") == 0) {
-            DOMAccessNode* dom_node = ast_dom_access_new(api->name, prop->name, NULL, 1, get_current_position());
-            ast_node_free($1);
-            ast_node_free($3);
-            $$ = (ASTNode*)dom_node;
-        } else {
-            yyerror("Unknown DOM API");
-            $$ = NULL;
-        }
-    }
-    ;
-
-wasm_value_type:
-    identifier {
-        // i32, i64, f32, f64, funcref, externref
-        IdentifierNode* type_name = (IdentifierNode*)$1;
-        if (strcmp(type_name->name, "i32") == 0) {
-            $$ = (int)WASM_TYPE_I32;
-        } else if (strcmp(type_name->name, "i64") == 0) {
-            $$ = (int)WASM_TYPE_I64;
-        } else if (strcmp(type_name->name, "f32") == 0) {
-            $$ = (int)WASM_TYPE_F32;
-        } else if (strcmp(type_name->name, "f64") == 0) {
-            $$ = (int)WASM_TYPE_F64;
-        } else if (strcmp(type_name->name, "funcref") == 0) {
-            $$ = (int)WASM_TYPE_FUNCREF;
-        } else if (strcmp(type_name->name, "externref") == 0) {
-            $$ = (int)WASM_TYPE_EXTERNREF;
-        } else {
-            yyerror("Unknown WebAssembly value type");
-            $$ = (int)WASM_TYPE_I32; // Default
-        }
-        ast_node_free($1);
-    }
-    ;
 
 %%
 
-// Error reporting function
-void yyerror(const char* msg) {
-    if (current_lexer) {
-        fprintf(stderr, "Parse error at %s:%d:%d: %s\n",
-                current_lexer->filename ? current_lexer->filename : "<stdin>",
-                current_lexer->pos.line,
-                current_lexer->pos.column,
-                msg);
-    } else {
-        fprintf(stderr, "Parse error: %s\n", msg);
-    }
-}
-
-// Go grouped-name shorthand `(x, y int)` == `(x int, y int)`, applied to a
-// parsed parameter or result list. The func_param machinery has no comma-
-// shared-type rule, so a leading `x` (no type of its own) parses as an
-// ANONYMOUS entry whose `type` is the bare type-name `x`. Reinterpret each such
-// entry as a NAME borrowing the type of the next explicitly-typed named entry
-// to its right — matching Go's `IdentifierList Type` group. Only runs when the
-// list already has a truly-named entry, so a genuinely anonymous list
-// `(int, int)` is left untouched. Each borrowed type is DEEP-CLONED so every
-// VarDecl owns its own node (AST teardown frees each ->type once). Action-only
-// (grammar unchanged), so the parser conflict count is unaffected.
-static void reinterpret_grouped_names(ASTNode* list) {
-    int grp_has_named = 0;
-    for (ASTNode* p = list; p; p = p->next) {
-        VarDeclNode* vd = (VarDeclNode*)p;
-        if (vd->name_count > 0 && vd->names && vd->names[0]) { grp_has_named = 1; break; }
-    }
-    if (!grp_has_named) return;
-    for (ASTNode* p = list; p; p = p->next) {
-        VarDeclNode* vd = (VarDeclNode*)p;
-        if (vd->name_count > 0) continue;              // already a name
-        if (!vd->type || vd->type->type != AST_BASIC_TYPE) continue; // not a bare-name candidate
-        ASTNode* shared = NULL;                        // the group's declared type
-        for (ASTNode* q = p->next; q; q = q->next) {
-            VarDeclNode* qd = (VarDeclNode*)q;
-            if (qd->name_count > 0 && qd->type) { shared = qd->type; break; }
-        }
-        if (!shared) continue;                         // no group type to the right
-        ASTNode* cloned = ast_type_clone(shared);
-        if (!cloned) continue;                         // unclonable shared type: leave as-is
-        BasicTypeNode* bt = (BasicTypeNode*)vd->type;  // misparsed type-name == the intended name
-        vd->names = (char**)malloc(sizeof(char*));
-        vd->names[0] = strdup(bt->name);
-        vd->name_count = 1;
-        ast_node_free(vd->type);                       // drop the misparsed bare type-name
-        vd->type = cloned;
-    }
-}
-
-// F4: correct deep-copy of a constant-expression node. Deliberately NOT
-// ast_node_copy(): that helper allocates only sizeof(ASTNode) and then writes
-// derived-struct fields past the allocation (a latent heap overflow), so it
-// cannot be used to clone Literal/Identifier/Binary/Unary nodes. Here we use
-// the real constructors, which allocate the correct struct size. Covers the
-// const-expr surface F4 supports; anything else (calls, selectors, indexing)
-// returns NULL — a bare spec repeating such a value is left without an
-// initializer and rejected downstream with the normal clean error.
-static ASTNode* clone_const_value(const ASTNode* n) {
-    if (!n) return NULL;
-    switch (n->type) {
-        case AST_IDENTIFIER: {
-            IdentifierNode* src = (IdentifierNode*)n;
-            return (ASTNode*)ast_identifier_new(src->name, n->pos);
-        }
-        case AST_LITERAL: {
-            LiteralNode* src = (LiteralNode*)n;
-            // Preserve the exact byte length so a repeated const string spec
-            // keeps embedded NULs (ast_literal_new's str_dup would truncate).
-            if (src->literal_type == TOKEN_STRING)
-                return (ASTNode*)ast_string_literal_new(src->value, src->length, n->pos);
-            return (ASTNode*)ast_literal_new(src->literal_type, src->value, n->pos);
-        }
-        case AST_BINARY_EXPR: {
-            BinaryExprNode* src = (BinaryExprNode*)n;
-            ASTNode* l = clone_const_value(src->left);
-            ASTNode* r = clone_const_value(src->right);
-            return (ASTNode*)ast_binary_expr_new(l, src->operator, r, n->pos);
-        }
-        case AST_UNARY_EXPR: {
-            UnaryExprNode* src = (UnaryExprNode*)n;
-            ASTNode* operand = clone_const_value(src->operand);
-            return (ASTNode*)ast_unary_expr_new(src->operator, operand, n->pos);
-        }
-        default:
-            return NULL;
-    }
-}
-
-// F4: replace the identifier `iota` with an integer literal equal to `idx`,
-// recursively, inside a const spec's value expression. Handles the constant-
-// expression surface that iota appears in — a bare `iota`, and `iota` nested
-// in binary/unary expressions (e.g. `iota * 2`, `-iota`; and `1 << iota` once
-// bitwise operators land — a separate gap). Parenthesised exprs need no case:
-// `( e )` reduces to `e` directly (no wrapper node). `iota` buried in a
-// call/index/selector is left untouched and will surface as an ordinary
-// "undefined variable 'iota'" error — acceptable for v1 (those forms are
-// vanishingly rare in real const blocks).
-static void substitute_iota(ASTNode** slot, long idx) {
-    if (!slot || !*slot) return;
-    ASTNode* n = *slot;
-
-    if (n->type == AST_IDENTIFIER) {
-        IdentifierNode* id = (IdentifierNode*)n;
-        if (id->name && strcmp(id->name, "iota") == 0) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%ld", idx);
-            ASTNode* lit = (ASTNode*)ast_literal_new(TOKEN_INT, buf, n->pos);
-            lit->next = n->next;   // preserve sibling chain (NULL in expr context)
-            n->next = NULL;        // detach so the free below doesn't recurse
-            ast_node_free(n);
-            *slot = lit;
-        }
-        return;
-    }
-
-    switch (n->type) {
-        case AST_BINARY_EXPR: {
-            BinaryExprNode* b = (BinaryExprNode*)n;
-            substitute_iota(&b->left, idx);
-            substitute_iota(&b->right, idx);
-            break;
-        }
-        case AST_UNARY_EXPR: {
-            UnaryExprNode* u = (UnaryExprNode*)n;
-            substitute_iota(&u->operand, idx);
-            break;
-        }
-        default:
-            break;
-    }
-}
-
-// F4: build one ConstDeclNode for a grouped-const spec. `value` may be NULL
-// for a bare spec (filled in later by desugar_const_group). Mirrors the
-// single-const construction in the const_decl rule.
-static ASTNode* const_spec_new(ASTNode* name_ident, ASTNode* value) {
-    ConstDeclNode* c = (ConstDeclNode*)malloc(sizeof(ConstDeclNode));
-    c->base.type = AST_CONST_DECL;
-    c->base.pos = get_current_position();
-    c->base.node_type = NULL;
-    c->base.next = NULL;
-
-    IdentifierNode* ident = (IdentifierNode*)name_ident;
-    c->names = malloc(sizeof(char*));
-    c->names[0] = strdup(ident->name);
-    c->name_count = 1;
-    c->type = NULL;
-    c->values = value;
-    c->is_comptime = 0;
-
-    ast_node_free(name_ident);
-    return (ASTNode*)c;
-}
-
-// F4: turn a chain of grouped-const specs into a chain of ordinary single
-// const decls. Walks the specs in order, tracking the iota ordinal and the
-// pristine (pre-substitution) value template for bare-spec repetition, then
-// substitutes iota into each spec's value. A leading bare spec (no prior
-// value) keeps values==NULL and is rejected downstream as a const without an
-// initializer — the same clean error the single-const path already gives.
-static ASTNode* desugar_const_group(ASTNode* spec_chain) {
-    ASTNode* template = NULL;  // owned pristine (pre-iota) clone of last value
-    long idx = 0;
-
-    for (ASTNode* n = spec_chain; n; n = n->next) {
-        ConstDeclNode* c = (ConstDeclNode*)n;
-
-        if (c->values == NULL) {
-            // Bare spec: repeat the previous value with this spec's iota.
-            if (template) {
-                c->values = clone_const_value(template);
-            }
-        } else {
-            // Fresh value: snapshot it (pre-iota) so following bare specs
-            // repeat THIS expression with their own iota, then substitute
-            // into the spec's own value in place.
-            if (template) ast_node_free(template);
-            template = clone_const_value(c->values);
-        }
-
-        if (c->values) {
-            substitute_iota(&c->values, idx);
-        }
-        idx++;
-    }
-
-    if (template) ast_node_free(template);
-    return spec_chain;
-}
-
-// F6: build a 2-target/2-value MultiAssignNode. Targets and values are each
-// chained via ->next (t1->t2, v1->v2). For `:=` the targets are new names;
-// for `=` they are existing lvalues. Simultaneous-eval semantics are enforced
-// in codegen, not here.
-static ASTNode* multi_assign_2_new(ASTNode* t1, ASTNode* t2,
-                                   ASTNode* v1, ASTNode* v2, int is_short_decl) {
-    MultiAssignNode* ma = (MultiAssignNode*)malloc(sizeof(MultiAssignNode));
-    ma->base.type = AST_MULTI_ASSIGN;
-    ma->base.pos = get_current_position();
-    ma->base.node_type = NULL;
-    ma->base.next = NULL;
-
-    t1->next = t2;
-    t2->next = NULL;
-    v1->next = v2;
-    v2->next = NULL;
-
-    ma->targets = t1;
-    ma->values = v1;
-    ma->count = 2;
-    ma->is_short_decl = is_short_decl;
-    return (ASTNode*)ma;
-}
-
-static ASTNode* multi_assign_call_new(ASTNode* t1, ASTNode* t2, ASTNode* call) {
-    MultiAssignNode* ma = (MultiAssignNode*)malloc(sizeof(MultiAssignNode));
-    ma->base.type = AST_MULTI_ASSIGN;
-    ma->base.pos = get_current_position();
-    ma->base.node_type = NULL;
-    ma->base.next = NULL;
-
-    t1->next = t2;
-    t2->next = NULL;
-    call->next = NULL;      /* single value; codegen destructures its fields */
-
-    ma->targets = t1;
-    ma->values = call;
-    ma->count = 2;
-    ma->is_short_decl = 0;
-    return (ASTNode*)ma;
-}
-
-// Build a compound-assignment statement (`x += e`, `x &= e`, ...). The compound
-// operator token (TOKEN_PLUS_ASSIGN etc.) is kept on the BinaryExprNode and
-// lowered in codegen to load-op-store — this avoids duplicating the LHS AST
-// (there is no safe deep-copy: ast_node_copy under-allocates). Wrapped in an
-// ExprStmt to match the plain-assignment shape.
-static ASTNode* compound_assign_stmt(ASTNode* lhs, TokenType op, ASTNode* rhs) {
-    BinaryExprNode* binary = ast_binary_expr_new(lhs, op, rhs, get_current_position());
-    ExprStmtNode* es = (ExprStmtNode*)malloc(sizeof(ExprStmtNode));
-    es->base.type = AST_EXPR_STMT;
-    es->base.pos = get_current_position();
-    es->base.node_type = NULL;
-    es->base.next = NULL;
-    es->expr = (ASTNode*)binary;
-    return (ASTNode*)es;
-}
-
-static ASTNode* struct_literal_new(char* type_name_owned, ASTNode* inits) {
-    StructLiteralNode* lit = (StructLiteralNode*)calloc(1, sizeof(StructLiteralNode));
-    lit->base.type = AST_STRUCT_LITERAL;
-    lit->base.pos = get_current_position();
-    lit->type_name = type_name_owned;  /* NULL => elided (type inferred) */
-    lit->field_values = inits;
-    lit->field_count = 0;
-    for (ASTNode* a = inits; a; a = a->next) lit->field_count++;
-    /* Recover the field names struct_lit_init stashed on each init's node_type
-       slot. NULL entry = positional init. is_keyed = any name present. */
-    lit->is_keyed = 0;
-    lit->field_names = NULL;
-    if (lit->field_count > 0) {
-        lit->field_names = (char**)calloc(lit->field_count, sizeof(char*));
-        size_t i = 0;
-        for (ASTNode* a = inits; a; a = a->next, i++) {
-            lit->field_names[i] = (char*)a->node_type;
-            a->node_type = NULL;
-            if (lit->field_names[i]) lit->is_keyed = 1;
-        }
-        if (!lit->is_keyed) {
-            free(lit->field_names);
-            lit->field_names = NULL;
-        }
-    }
-    return (ASTNode*)lit;
-}
-
-static ASTNode* map_literal_new(ASTNode* map_type_node, ASTNode* entries) {
-    MapLitNode* lit = (MapLitNode*)malloc(sizeof(MapLitNode));
-    lit->base.type = AST_PAREN_EXPR;
-    lit->base.pos = get_current_position();
-    lit->base.node_type = NULL;
-    lit->base.next = NULL;
-    lit->map_type = map_type_node;
-    if (entries) {
-        lit->keys = entries;
-        lit->values = (ASTNode*)((ASTNode*)entries)->node_type;
-        ((ASTNode*)entries)->node_type = NULL;
-    } else {
-        lit->keys = NULL;
-        lit->values = NULL;
-    }
-    return (ASTNode*)lit;
-}
-
-// Helper function to get current position
-static Position get_current_position(void) {
-    Position pos = {1, 1, 0, "<unknown>"};
-    if (current_lexer) {
-        pos = current_lexer->pos;
-    }
-    return pos;
-}
-
-// Convert Bison tokens to TokenType enum values
-static TokenType bison_token_to_token_type(int bison_token) {
-    switch (bison_token) {
-        case PLUS: return TOKEN_PLUS;
-        case MINUS: return TOKEN_MINUS;
-        case MULTIPLY: return TOKEN_MULTIPLY;
-        case DIVIDE: return TOKEN_DIVIDE;
-        case MODULO: return TOKEN_MODULO;
-        case ASSIGN: return TOKEN_ASSIGN;
-        case SHORT_ASSIGN: return TOKEN_SHORT_ASSIGN;
-        case EQ: return TOKEN_EQ;
-        case NE: return TOKEN_NE;
-        case LT: return TOKEN_LT;
-        case LE: return TOKEN_LE;
-        case GT: return TOKEN_GT;
-        case GE: return TOKEN_GE;
-        case AND: return TOKEN_AND;
-        case OR: return TOKEN_OR;
-        case NOT: return TOKEN_NOT;
-        case BIT_AND: return TOKEN_BIT_AND;
-        case AND_NOT: return TOKEN_AND_NOT;
-        case BIT_OR: return TOKEN_BIT_OR;
-        case BIT_XOR: return TOKEN_BIT_XOR;
-        case BIT_NOT: return TOKEN_BIT_NOT;
-        case LSHIFT: return TOKEN_LSHIFT;
-        case RSHIFT: return TOKEN_RSHIFT;
-        case ARROW: return TOKEN_ARROW;
-        case INCREMENT: return TOKEN_INCREMENT;
-        case DECREMENT: return TOKEN_DECREMENT;
-        default: return TOKEN_UNKNOWN;
-    }
-}
+// yyerror's definition now lives in src/parser/parser_errors.c (see
+// include/parser/parser_errors.h for its declaration); the `extern void
+// yyerror(const char* msg);` in this file's prologue is what parser.tab.c's
+// generated yyparse() links against.

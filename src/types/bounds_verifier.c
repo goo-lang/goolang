@@ -11,7 +11,7 @@
 // =============================================================================
 
 BoundsVerifier* bounds_verifier_new(TypeChecker* type_checker) {
-    BoundsVerifier* verifier = malloc(sizeof(BoundsVerifier));
+    BoundsVerifier* verifier = xmalloc(sizeof(BoundsVerifier));
     if (!verifier) return NULL;
     
     memset(verifier, 0, sizeof(BoundsVerifier));
@@ -61,7 +61,7 @@ void bounds_verifier_free(BoundsVerifier* verifier) {
 }
 
 VerificationContext* verification_context_new(TypeChecker* type_checker) {
-    VerificationContext* context = malloc(sizeof(VerificationContext));
+    VerificationContext* context = xmalloc(sizeof(VerificationContext));
     if (!context) return NULL;
     
     memset(context, 0, sizeof(VerificationContext));
@@ -146,7 +146,7 @@ void bounds_verifier_enable_feature(BoundsVerifier* verifier, const char* featur
 // =============================================================================
 
 SymbolicExpression* symbolic_expression_new(SymbolicExpressionType type) {
-    SymbolicExpression* expr = malloc(sizeof(SymbolicExpression));
+    SymbolicExpression* expr = xmalloc(sizeof(SymbolicExpression));
     if (!expr) return NULL;
     
     memset(expr, 0, sizeof(SymbolicExpression));
@@ -392,7 +392,7 @@ char* symbolic_expression_to_string(const SymbolicExpression* expr) {
 // =============================================================================
 
 BoundsConstraint* bounds_constraint_new(ConstraintType type) {
-    BoundsConstraint* constraint = malloc(sizeof(BoundsConstraint));
+    BoundsConstraint* constraint = xmalloc(sizeof(BoundsConstraint));
     if (!constraint) return NULL;
     
     memset(constraint, 0, sizeof(BoundsConstraint));
@@ -519,7 +519,7 @@ char* bounds_constraint_to_string(const BoundsConstraint* constraint) {
 // =============================================================================
 
 BoundsProof* bounds_proof_new(ASTNode* target_node) {
-    BoundsProof* proof = malloc(sizeof(BoundsProof));
+    BoundsProof* proof = xmalloc(sizeof(BoundsProof));
     if (!proof) return NULL;
     
     memset(proof, 0, sizeof(BoundsProof));
@@ -613,7 +613,7 @@ BoundsProof* verify_array_access(BoundsVerifier* verifier, ASTNode* array_access
         proof->status = determine_proof_status(verifier->context, safety_constraint);
         
         // Add constraint to proof
-        proof->conclusions = malloc(sizeof(BoundsConstraint*));
+        proof->conclusions = xmalloc(sizeof(BoundsConstraint*));
         proof->conclusions[0] = safety_constraint;
         proof->conclusion_count = 1;
         

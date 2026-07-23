@@ -1,0 +1,23 @@
+// os_readline_probe: os.ReadLine() -> !string stdin line-read shim (P4.8).
+// A cat-like loop: read lines until the error (EOF) path, echoing each with
+// a "line: " prefix, then print the total count. Deliberately NOT a golden
+// fixture (no sibling .expected.txt in this directory) — run_golden.sh has
+// no way to pipe stdin into a fixture, so this is driven by the dedicated
+// `readline-probe` Makefile target instead, which feeds stdin via file
+// redirection.
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+	count := 0
+	for {
+		line := os.ReadLine() catch e {
+			break
+		}
+		fmt.Println("line: " + line)
+		count = count + 1
+	}
+	fmt.Println(count)
+}

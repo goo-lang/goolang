@@ -1,0 +1,9 @@
+fmt.Println ok
+fmt.Printf 7
+4
+true
+99
+42
+boom
+boom
+2

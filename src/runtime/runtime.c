@@ -40,35 +40,52 @@ void goo_exit(int code) {
 
 // Memory management
 
+// Definition of the shared zero-size-allocation sentinel declared in
+// runtime.h (see the comment there). A single static byte: its address is
+// what's shared, never its contents, so it never needs writing or reading.
+unsigned char goo_zerobase;
+
 void* goo_alloc(size_t size) {
     if (size == 0) {
-        return NULL;
+        return &goo_zerobase;
     }
-    
+
     void* ptr = malloc(size);
     if (!ptr) {
         goo_panic("Out of memory");
     }
-    
+
     return ptr;
 }
 
 void* goo_realloc(void* ptr, size_t size) {
+    // The sentinel was never handed to malloc(), so it must never be handed
+    // to realloc() either — that would be undefined behavior. Growing
+    // "from" it is really just a fresh allocation: by construction, every
+    // zero-size allocation has nothing to preserve.
+    if (ptr == &goo_zerobase) {
+        ptr = NULL;
+    }
+
     if (size == 0) {
         goo_free(ptr);
         return NULL;
     }
-    
+
     void* new_ptr = realloc(ptr, size);
     if (!new_ptr) {
         goo_panic("Out of memory");
     }
-    
+
     return new_ptr;
 }
 
 void goo_free(void* ptr) {
-    if (ptr) {
+    // The sentinel is a static byte, not a heap allocation — freeing it
+    // would be undefined behavior. Every zero-size allocation aliases it,
+    // so this is reached routinely (e.g. releasing an empty slice literal's
+    // backing "allocation") and must be a silent no-op, not a bug.
+    if (ptr && ptr != &goo_zerobase) {
         free(ptr);
     }
 }
@@ -100,10 +117,36 @@ int32_t goo_utf8_decode(const char* data, int64_t len, int64_t i, int32_t* rune_
     return (int32_t)n;
 }
 
+// Go-conformant default: an unrecovered panic prints to stderr and exits
+// with status 2 (no core dump). GOO_PANIC_ABORT=1 restores the old abort()
+// behavior — SIGABRT + core dump — as a debugging escape hatch so a panic
+// can still be caught live in a debugger or produce a core for postmortem
+// analysis.
+//
+// The env var is read exactly once, via a constructor that runs before
+// main() (same pattern as the self-registering test fixtures in
+// test_framework.h) rather than a check on every goo_panic call. A
+// repeated getenv() per panic would be harmless — panics are by
+// definition not a hot path — but it would also make g_panic_abort racy
+// under concurrent goroutines calling goo_panic on separate OS threads
+// (this runtime is multithreaded; see concurrency.c). Resolving it once,
+// before any thread exists, sidesteps that entirely rather than relying on
+// the race being benign.
+static int g_panic_abort = 0;
+
+__attribute__((constructor))
+static void goo_panic_init_abort_flag(void) {
+    const char* env = getenv("GOO_PANIC_ABORT");
+    g_panic_abort = (env != NULL && strcmp(env, "1") == 0);
+}
+
 void goo_panic(const char* message) {
     fprintf(stderr, "panic: %s\n", message ? message : "unknown error");
     fflush(stderr);
-    abort();
+    if (g_panic_abort) {
+        abort();
+    }
+    exit(2);
 }
 
 goo_error_t* goo_new_error(const char* message) {
@@ -708,7 +751,13 @@ GooMapSV* goo_map_new_sv(int32_t key_kind, GooKeyEqFn key_eq) {
 }
 
 void goo_map_set_sv(GooMapSV* m, int64_t k, int64_t v) {
-    if (!m) return;
+    // Go parity (P3.9, user-decided): writing to a nil map panics — unlike
+    // every read-shaped op below (get/get_ok/len/delete/iter), which stay
+    // NULL-tolerant and zero-value/no-op on purpose. Compound assign
+    // (m[k]+=1) routes get-then-set, so this single guard covers both direct
+    // and compound writes without touching codegen. Message is Go's exact
+    // wording (see nil_map_write_abort_probe).
+    if (!m) goo_panic("assignment to entry in nil map");
     GooMapEntrySV* e = (GooMapEntrySV*)m->head;
     while (e) {
         if (goo_map_key_eq(m, e->key, k)) { e->value = v; return; }

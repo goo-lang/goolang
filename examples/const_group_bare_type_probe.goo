@@ -1,0 +1,37 @@
+// (q) bare-spec type-inheritance probe: a bare spec repeats the previous
+// spec's expression AND type (Go) — b/c here are int8 (usable at an
+// int8 sink), q stays untyped (previous spec untyped), y is uint8 251
+// (in range, ZExt-correct).
+package main
+
+import "fmt"
+
+func f8(x int8) int8 {
+	return x
+}
+
+func main() {
+	const (
+		a int8 = 5 + iota
+		b
+		c
+	)
+	fmt.Println(a)
+	fmt.Println(b)
+	fmt.Println(c)
+	fmt.Println(f8(b))
+
+	const (
+		p = 10 + iota
+		q
+	)
+	fmt.Println(p)
+	fmt.Println(q)
+
+	const (
+		x uint8 = 250 + iota
+		y
+	)
+	fmt.Println(x)
+	fmt.Println(y)
+}

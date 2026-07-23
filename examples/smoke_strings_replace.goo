@@ -1,0 +1,42 @@
+// smoke_strings_replace: P4.11 coverage-drift-catch fixture for
+// strings.Replace(s, old, new string, n int) string — the vendored (P4.9)
+// function ReplaceAll wraps but that no existing golden fixture exercised
+// DIRECTLY (strings_vendored_probe.goo only calls ReplaceAll, which pins
+// Replace's n=-1 arm but never a bounded n). Table-driven, one small
+// per-case loop (see strings_vendored_probe.goo's structure-note doc
+// comment for why: a large single main() was observed to corrupt output
+// for an unrelated vendored function during P4.9 development).
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+type replaceCase struct {
+	s, old, new string
+	n           int
+	want        string
+}
+
+func main() {
+	cases := []replaceCase{
+		{"oink oink oink", "oink", "moo", 2, "moo moo oink"}, // bounded n < match count
+		{"oink oink oink", "oink", "moo", -1, "moo moo moo"}, // n < 0: unlimited
+		{"oink oink oink", "oink", "moo", 0, "oink oink oink"}, // n == 0: no-op, avoid-allocation path
+		{"hello", "z", "Z", -1, "hello"},                     // no match
+	}
+	for i, c := range cases {
+		s := c.s
+		old := c.old
+		new := c.new
+		n := c.n
+		want := c.want
+		got := strings.Replace(s, old, new, n)
+		if got == want {
+			fmt.Println("PASS Replace", i)
+		} else {
+			fmt.Println("FAIL Replace", i, got)
+		}
+	}
+}

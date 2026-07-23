@@ -1,0 +1,15 @@
+// switch_init_tagless_scope: the tagless-switch-with-init var's scope is the
+// switch statement (desugared to a wrapping block, same as the tagged
+// switch-init form) — it must NOT be visible after the switch. Mirrors
+// switch_init_scope.goo's shape for the tagless arm (Fix C).
+package main
+
+import "fmt"
+
+func main() {
+	switch x := 1; {
+	case x > 0:
+		_ = x
+	}
+	fmt.Println(x)
+}

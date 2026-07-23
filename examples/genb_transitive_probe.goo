@@ -1,0 +1,8 @@
+package main
+import "fmt"
+type Labeler interface { Label() int }
+type C struct { n int }
+func (c C) Label() int { return c.n + 1 }
+func Inner[T Labeler](x T) int { return x.Label() }
+func Outer[T Labeler](x T) int { return Inner(x) + 1 }
+func main() { fmt.Println(Outer(C{n: 41})) }

@@ -1,0 +1,25 @@
+// Arena leg Task 7a' activation probe: fmt.Println(node) with node a
+// pointer-to-struct now type-checks/lowers (fmt struct/pointer-to-struct
+// formatting task), so this is the first compilable program that actually
+// exercises the non-retaining whitelist (goo_callee_is_non_retaining,
+// nonretaining.c) end-to-end — node is allocated inside the arena block,
+// passed only to the whitelisted fmt.Println (which does not retain it),
+// so block-escape (7b) keeps it block-local and 7c routes its allocation to
+// goo_arena_alloc instead of promoting it to the heap. Verify via
+// `bin/goo --emit-llvm` that node's `&Node{}` allocation calls
+// goo_arena_alloc, not goo_alloc.
+package main
+
+import "fmt"
+
+type Node struct {
+	v int
+}
+
+func main() {
+	arena {
+		node := &Node{v: 42}
+		fmt.Println(node)
+	}
+	fmt.Println("after")
+}

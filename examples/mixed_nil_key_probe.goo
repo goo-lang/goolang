@@ -1,0 +1,32 @@
+// mixed_nil_key_probe (P2.2 option A, T3 characterization): the recon
+// report's open gap was "a bare `nil` literal in map INDEX position
+// (`m[nil]`) has no expected-type hint at that call site, so it falls back
+// to a generic `*void` concrete value instead of a true nil-interface,
+// mismatching the VARIABLE form (`var k any; m[k]`, pinned by
+// map_iface_key_nil.goo)". Characterized on this branch (2026-07-09,
+// post-T2): does NOT reproduce — `m[k]` and `m[nil]` already resolve to the
+// SAME key (both the nil interface value), matching Go exactly. Locked in
+// here as a permanent regression pin rather than left as a TODO.
+// go-run-verified byte-for-byte against an equivalent .go program using the
+// same shape.
+package main
+
+import "fmt"
+
+func main() {
+	m := map[any]int{}
+	var k any
+	m[k] = 1
+	m[nil] = 2
+	fmt.Println(len(m))
+
+	m2 := map[any]int{}
+	m2[nil] = 5
+	var k2 any
+	fmt.Println(m2[k2])
+	v, ok := m2[nil]
+	fmt.Println(v, ok)
+	m2[k2] = 9
+	fmt.Println(m2[nil])
+	fmt.Println(len(m2))
+}

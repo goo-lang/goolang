@@ -1,0 +1,24 @@
+// defer_loop_method_probe (P3.4): a method-receiver defer inside a loop
+// snapshots the VALUE receiver at defer-time on every iteration (Go
+// semantics), the same way the static path's defer_method_probe.goo does for
+// a single lexical defer — here each of the three iterations must capture
+// its OWN copy of the receiver, not share one mutated-in-place struct.
+package main
+
+import "fmt"
+
+type Counter struct {
+    n int
+}
+
+func (c Counter) show() {
+    fmt.Println("counter", c.n)
+}
+
+func main() {
+    c := Counter{0}
+    for i := 0; i < 3; i++ {
+        c.n = i
+        defer c.show()
+    }
+}

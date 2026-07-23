@@ -1,0 +1,38 @@
+// (p) cross-package const probe: `pkg.K` selector consts resolve through
+// the package's exports scope (folded value carried on the export copy),
+// so they materialize at codegen, adapt into narrower sinks when
+// representable, and feed every representability gate. Expected output
+// generated from the equivalent Go module program (Go spells the local
+// import "probe/constpkg"; Goo uses "./constpkg" — values identical).
+package main
+
+import (
+	"fmt"
+	"./constpkg"
+	"unicode/utf8"
+)
+
+func f8(x int8) int8 {
+	return x
+}
+
+func g8() int8 {
+	return constpkg.Small
+}
+
+func main() {
+	fmt.Println(constpkg.Small)
+	fmt.Println(constpkg.Neg)
+	fmt.Println(constpkg.Typed)
+	var b int64 = constpkg.Big
+	fmt.Println(b)
+	var v int8 = constpkg.Small
+	fmt.Println(v)
+	fmt.Println(f8(constpkg.Small))
+	fmt.Println(g8())
+	var n int8 = constpkg.Neg
+	fmt.Println(n)
+	m := map[int8]int{constpkg.Small: 9}
+	fmt.Println(m[constpkg.Small])
+	fmt.Println(utf8.RuneError)
+}

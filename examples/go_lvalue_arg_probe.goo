@@ -1,3 +1,13 @@
+// go_lvalue_arg_probe (M8b): a goroutine argument is evaluated and
+// captured BY VALUE at the `go` statement — the later p.V = 9 mutation
+// must not be visible to the spawned call, so this prints 7, not 9.
+//
+// The done-channel handshake exists only to keep the goroutine's output
+// observable under Go-parity main-exit semantics (P3.3: main returning
+// abandons goroutines; the original fire-and-forget form of this probe
+// relied on the former M8 implicit wait-all join). The capture happens at
+// spawn time either way, so the handshake does not weaken what this probe
+// pins.
 package main
 
 import "fmt"
@@ -6,12 +16,15 @@ type T struct {
 	V int
 }
 
-func show(n int) {
+func show(n int, done chan int) {
 	fmt.Println(n)
+	done <- 1
 }
 
 func main() {
 	p := &T{V: 7}
-	go show(p.V)
+	done := make(chan int, 1)
+	go show(p.V, done)
 	p.V = 9
+	<-done
 }

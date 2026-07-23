@@ -1,0 +1,18 @@
+// fmt_struct_func_field_reject (Arc 15 item l — positioned diagnostics on the
+// boxed-fmt codegen leg): sibling of fmt_struct_map_field_reject.goo with a
+// func-typed field instead of a map-typed one — same unsupported-kind %v
+// arm, same boxed-leg trigger (interface boxing eagerly synthesizes the
+// concrete type's %v formatter at the box site, before any Println call
+// runs). See that fixture's header comment for the full mechanism.
+package main
+
+import "fmt"
+
+type WithFunc struct {
+	F func()
+}
+
+func main() {
+	var x any = WithFunc{F: func() {}}
+	fmt.Println(x)
+}

@@ -1,0 +1,14 @@
+// P1.4 switch-with-init: the init var's scope is the switch statement
+// (desugared to a wrapping block, mirroring IF's init arm) — it must NOT be
+// visible after the switch. Mirrors if-init-scope-reject-probe's shape.
+package main
+
+import "fmt"
+
+func main() {
+	switch x := 1; x {
+	case 1:
+		_ = x
+	}
+	fmt.Println(x)
+}

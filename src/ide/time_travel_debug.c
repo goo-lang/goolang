@@ -44,7 +44,7 @@ static char* str_dup_safe(const char* str) {
 // =============================================================================
 
 DebugState* debug_state_new(void) {
-    DebugState* state = calloc(1, sizeof(DebugState));
+    DebugState* state = xcalloc(1, sizeof(DebugState));
     if (!state) return NULL;
     
     state->timeline = debug_timeline_new(1000); // Default: keep last 1000 snapshots
@@ -85,7 +85,7 @@ void debug_state_free(DebugState* state) {
 // =============================================================================
 
 DebugTimeline* debug_timeline_new(size_t max_snapshots) {
-    DebugTimeline* timeline = calloc(1, sizeof(DebugTimeline));
+    DebugTimeline* timeline = xcalloc(1, sizeof(DebugTimeline));
     if (!timeline) return NULL;
     
     timeline->max_snapshots = max_snapshots;
@@ -128,7 +128,7 @@ DebugSnapshot* debug_snapshot_create(DebugState* state, DebugEventType event_typ
                                      const char* description) {
     if (!state) return NULL;
     
-    DebugSnapshot* snapshot = calloc(1, sizeof(DebugSnapshot));
+    DebugSnapshot* snapshot = xcalloc(1, sizeof(DebugSnapshot));
     if (!snapshot) return NULL;
     
     snapshot->timestamp = get_current_timestamp();
@@ -221,7 +221,7 @@ DebugVariable* debug_variable_create(const char* name, Type* type,
                                      const void* value, size_t value_size) {
     if (!name) return NULL;
     
-    DebugVariable* var = calloc(1, sizeof(DebugVariable));
+    DebugVariable* var = xcalloc(1, sizeof(DebugVariable));
     if (!var) return NULL;
     
     var->name = str_dup_safe(name);
@@ -267,7 +267,7 @@ void debug_variable_list_free(DebugVariable* vars) {
 
 DebugStackFrame* debug_stack_frame_create(const char* function_name, 
                                           SourceLocation location) {
-    DebugStackFrame* frame = calloc(1, sizeof(DebugStackFrame));
+    DebugStackFrame* frame = xcalloc(1, sizeof(DebugStackFrame));
     if (!frame) return NULL;
     
     frame->function_name = str_dup_safe(function_name);

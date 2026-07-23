@@ -1,0 +1,12 @@
+package main
+
+// P4.2/B1: an exported package-level VALUE (a var/const, not a type
+// declaration) used in type position must be rejected cleanly instead of
+// silently typechecking as the value's own type (Version's type is int —
+// `var v shapes.Version` must NOT quietly become `var v int`).
+
+import "shapes"
+
+func main() {
+	var v shapes.Version
+}

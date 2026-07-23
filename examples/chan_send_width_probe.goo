@@ -1,0 +1,62 @@
+// chan_send_width_probe: Task 1 (chan-send representability, correctness-
+// followups arc 3) accept-side companion to sibling_return_width_probe.goo
+// (return_stmt) and switch_case_overflow_narrow_tag_reject.goo (switch tag)
+// — the same Go untyped-constant representability rule, exercised through
+// `ch <- <lit>` / `<-ch` instead of `return`/`case`. An untyped constant
+// sent to a channel narrower than its own int64 default must still
+// round-trip through the channel and print correctly at every width,
+// PROVIDED it's representable there; one step past any of these boundaries
+// (300, -129, -1 into uint8) is a compile-time "constant N overflows T"
+// rejection instead — covered by tests/golden/reject/chan_send_overflow_reject.goo
+// and chan_send_negative_unsigned_reject.goo, not here.
+//
+// boundaryU64max pins the same conjunction-reachability case
+// sibling_return_width_probe.goo's boundaryU64max does: goo_fold_const_int
+// folds 64-bit MODULARLY, so `18446744073709551615` (MaxUint64) folds
+// bit-identical to `-1` — int_const_fits_expected's uint64 arm must tell
+// them apart via the `negated` AST-shape conjunction (sval<0 && negated),
+// not the fold's sign alone, or this would wrongly reject.
+package main
+
+import "fmt"
+
+func main() {
+	ci8 := make_chan(int8, 1)
+	ci8 <- 127 // int8 upper boundary (INT8_MAX)
+	fmt.Println(<-ci8)
+	ci8 <- -128 // int8 lower boundary (INT8_MIN)
+	fmt.Println(<-ci8)
+
+	cu8 := make_chan(uint8, 1)
+	cu8 <- 255 // uint8 upper boundary (UINT8_MAX)
+	fmt.Println(<-cu8)
+
+	ci16 := make_chan(int16, 1)
+	ci16 <- 32767 // int16 upper boundary (INT16_MAX)
+	fmt.Println(<-ci16)
+	ci16 <- -32768 // int16 lower boundary (INT16_MIN)
+	fmt.Println(<-ci16)
+
+	cu16 := make_chan(uint16, 1)
+	cu16 <- 65535 // uint16 upper boundary (UINT16_MAX)
+	fmt.Println(<-cu16)
+
+	ci32 := make_chan(int32, 1)
+	ci32 <- 2147483647 // int32 upper boundary (INT32_MAX)
+	fmt.Println(<-ci32)
+
+	cu32 := make_chan(uint32, 1)
+	cu32 <- 4294967295 // uint32 upper boundary (UINT32_MAX)
+	fmt.Println(<-cu32)
+
+	cu64 := make_chan(uint64, 1)
+	cu64 <- 18446744073709551615 // MaxUint64: conjunction reachability
+	fmt.Println(<-cu64)
+
+	// chan int is TYPE_INT64, the literal's own default kind — same-kind
+	// bypass, no representability gate consulted (mirrors switch_stmt's
+	// `tag_type->kind == e_type->kind` fast path).
+	ci := make_chan(int, 1)
+	ci <- 333333333333
+	fmt.Println(<-ci)
+}

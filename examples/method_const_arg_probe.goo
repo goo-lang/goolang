@@ -1,0 +1,29 @@
+package main
+
+import "fmt"
+
+// (o rider) method const-arg probe: the method-call arg path has its own
+// codegen loop with no width coercion — accepting `b.Set(K)` at the
+// checker without coercing there turned a false-reject into an LLVM
+// verifier failure ("Call parameter type does not match function
+// signature"). The loop now coerces each integer arg to the callee's
+// declared LLVM parameter width, mirroring the plain user-call loop (T4).
+type B struct {
+	v int8
+}
+
+func (b *B) Set(x int8) {
+	b.v = x
+}
+
+func (b B) Get() int8 {
+	return b.v
+}
+
+const K = 5
+
+func main() {
+	b := B{v: 0}
+	b.Set(K)
+	fmt.Println(b.Get())
+}

@@ -1,0 +1,24 @@
+// Correctness arc 4 (j), accept side: REPRESENTABLE const-identifier sends
+// must keep compiling and arrive value-exact. codegen_generate_channel_send
+// already coerces every send value to the channel's element width
+// (codegen_coerce_to_type), and truncation of a representable value is
+// exact — so the checker-side gate rejects only what cannot fit, and this
+// fixture pins that the accept path still narrows correctly (including a
+// negative const into a signed element, which rides on the arc-4 T1 decl
+// typing fix). Same-kind sends (int64 const into chan int64) bypass the
+// gate entirely.
+package main
+
+func main() {
+	const k = 100
+	const n = -5
+	ch := make_chan(int8, 2)
+	ch <- k
+	ch <- n
+	println(<-ch)
+	println(<-ch)
+	const big = 1 << 40
+	ch64 := make_chan(int64, 1)
+	ch64 <- big
+	println(<-ch64)
+}

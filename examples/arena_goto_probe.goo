@@ -1,0 +1,95 @@
+// arena_goto_probe (arena-goto fix, 2026-07-09): a `goto` that exits one or
+// more `arena{}` blocks must free every arena it exits, not just fall
+// silently past them — codegen_emit_arena_frees_to_depth
+// (statement_codegen.c), driven by the target label's arena-nesting depth
+// recorded by the type checker (type_check_collect_goto_labels /
+// AST_GOTO_STMT's arena-chain check, type_checker.c). Two shapes in one
+// probe:
+//   1. A loop where each iteration enters a SINGLE arena and `goto`s past
+//      its end (not a fall-through) to a label back inside the loop body —
+//      the arena must be freed on every iteration, and the values computed
+//      inside it must still be correct.
+//   2. A `goto` exiting TWO nested arena blocks in a single jump — proves
+//      the free walks every frame between the goto and its target
+//      (innermost first), not just the immediately-enclosing one.
+//
+// This is a VALUES-correctness golden fixture only. It is deliberately NOT
+// wired into the Makefile's arena-rss-probe (RSS-delta) or arena-valgrind-
+// probe (UAF/double-free) gates: the escape-analysis walkers in
+// block_escape.c have no AST_GOTO_STMT/AST_LABEL_STMT case, so ANY function
+// containing a goto or label conservatively routes every arena allocation
+// in it to the heap (the "genuinely unhandled statement kind" default in
+// mark_all_escapes) — confirmed empirically: with or without `arena{}`
+// wrapping this exact probe's allocations, peak RSS is the same (~405MB for
+// a 200k-iteration variant), because both variants take the goo_alloc heap
+// path regardless of the arena-free fix. Wiring an RSS/valgrind gate on a
+// goto-containing arena probe today would measure that unrelated,
+// pre-existing gap instead of this fix, so it is left as a documented
+// follow-up rather than force-fit here.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; `arena { ... }` replaced with a plain `{ ... }` — Go has no
+// arena keyword, and the block-scoping goto cares about is identical either
+// way). Equivalent Go:
+//   package main
+//   import "fmt"
+//   func main() {
+//   	total := 0
+//   	i := 0
+//   	for i < 5 {
+//   		{
+//   			v := new(int)
+//   			*v = i * i
+//   			total = total + *v
+//   			i = i + 1
+//   			goto Next
+//   		}
+//   	Next:
+//   		i = i
+//   	}
+//   	{
+//   		v := new(int)
+//   		*v = 10
+//   		{
+//   			w := new(int)
+//   			*w = 20
+//   			total = total + *v + *w
+//   			goto Done
+//   		}
+//   	}
+//   Done:
+//   	fmt.Println(total)
+//   }
+// `go run` stdout: "60\n"
+package main
+
+import "fmt"
+
+func main() {
+	total := 0
+	i := 0
+	for i < 5 {
+		arena {
+			v := new(int)
+			*v = i * i
+			total = total + *v
+			i = i + 1
+			goto Next
+		}
+	Next:
+		i = i
+	}
+
+	arena {
+		v := new(int)
+		*v = 10
+		arena {
+			w := new(int)
+			*w = 20
+			total = total + *v + *w
+			goto Done
+		}
+	}
+Done:
+	fmt.Println(total)
+}

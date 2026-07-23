@@ -227,6 +227,7 @@ static int map_token_to_bison(TokenType type) {
         case TOKEN_TRY: return TRY;
         case TOKEN_CATCH: return CATCH;
         case TOKEN_UNSAFE: return UNSAFE;
+        case TOKEN_ARENA: return ARENA;
         case TOKEN_OWNED: return OWNED;
         case TOKEN_BORROWED: return BORROWED;
         case TOKEN_SHARED: return SHARED;
@@ -265,6 +266,7 @@ static int map_token_to_bison(TokenType type) {
         
         case TOKEN_BIT_AND: return BIT_AND;
         case TOKEN_AND_NOT: return AND_NOT;
+        case TOKEN_FAT_ARROW: return FAT_ARROW;
         case TOKEN_BIT_OR: return BIT_OR;
         case TOKEN_BIT_XOR: return BIT_XOR;
         case TOKEN_BIT_NOT: return BIT_NOT;

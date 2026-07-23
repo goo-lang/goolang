@@ -1,0 +1,17 @@
+// Task 1 (chan-send representability, correctness-followups arc 3): an
+// untyped-constant sent to a channel whose element type is narrower than
+// the constant's own default (int64) must be REJECTED at compile time, not
+// silently truncated on receive — the same Go representability rule
+// type_check_return_stmt and type_check_switch_stmt already enforce (see
+// int_const_fits_expected). Before this fix, `ch <- 300` into `chan int8`
+// compiled and the receiver printed 44 (300 mod 256, reinterpreted as an
+// i8): type_compatible treats any two integer kinds as compatible, so
+// codegen materialized the constant at its own default width with no
+// narrowing conversion.
+package main
+
+func main() {
+	ch := make_chan(int8, 1)
+	ch <- 300
+	println(<-ch)
+}

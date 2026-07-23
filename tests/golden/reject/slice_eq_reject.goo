@@ -1,0 +1,13 @@
+// slice_eq_reject (F2): a slice is comparable to nil ONLY, never to another
+// slice — Go: "invalid operation: s1 == s2 (slice can only be compared to
+// nil)". Two non-nil, identically-typed slices used to slip past the type
+// checker (type_equals treats same-element-type slices as compatible) and
+// die in codegen with a generic "Failed to generate binary operation"
+// instead of a positioned, Go-shaped diagnostic.
+package main
+
+func main() {
+	s1 := []int{1, 2}
+	s2 := []int{1, 2}
+	_ = s1 == s2
+}

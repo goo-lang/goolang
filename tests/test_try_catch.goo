@@ -1,11 +1,44 @@
+// test_try_catch: replaces the dead-syntax `catch |err| { ... }` form
+// (never implemented — Goo's actual catch binds the error variable as a
+// bare identifier, `catch e { ... }`, no pipes) with the working syntax.
+// See examples/erru_try_probe.goo and examples/tuple_try_probe.goo for the
+// live patterns this mirrors: `try` inside a !T function propagates a real
+// error out of the enclosing function; `catch e { ... }` at the call site
+// binds the error to `e` and recovers.
 package main
 
-func testTry() {
-    result := try someErrorFunction()
+import "fmt"
+
+func mightFail(bad bool) !int {
+	if bad {
+		return error("boom")
+	}
+	return 20
 }
 
-func testCatch() {
-    result := someErrorFunction() catch |err| {
-        return 0
-    }
+func testTry(bad bool) !int {
+	result := try mightFail(bad)
+	return result + 1
+}
+
+func testCatch(bad bool) int {
+	result := mightFail(bad) catch e {
+		fmt.Println("caught:", e.Error())
+		return 0
+	}
+	return result
+}
+
+func main() {
+	ok := testTry(false) catch e {
+		fmt.Println("unexpected:", e)
+	}
+	fmt.Println("try ok:", ok)
+
+	testTry(true) catch e {
+		fmt.Println("try caught:", e)
+	}
+
+	fmt.Println("catch ok:", testCatch(false))
+	fmt.Println("catch recovered:", testCatch(true))
 }

@@ -57,7 +57,7 @@ bool register_derive_macros(MacroRegistry* registry) {
 DeriveMacroContext* create_derive_context(ASTNode* struct_node, DeriveMacroType type) {
     if (!struct_node) return NULL;
     
-    DeriveMacroContext* ctx = (DeriveMacroContext*)calloc(1, sizeof(DeriveMacroContext));
+    DeriveMacroContext* ctx = (DeriveMacroContext*)xcalloc(1, sizeof(DeriveMacroContext));
     if (!ctx) return NULL;
     
     ctx->target_struct = struct_node;
@@ -157,7 +157,7 @@ const char* derive_type_to_string(DeriveMacroType type) {
 DeriveResult* derive_debug(DeriveMacroContext* ctx) {
     if (!ctx) return NULL;
     
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (!result) return NULL;
     
     // Get struct name (simplified)
@@ -211,7 +211,7 @@ DeriveResult* derive_debug(DeriveMacroContext* ctx) {
 DeriveResult* derive_clone(DeriveMacroContext* ctx) {
     if (!ctx) return NULL;
     
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (!result) return NULL;
     
     const char* struct_name = "User";
@@ -252,7 +252,7 @@ DeriveResult* derive_clone(DeriveMacroContext* ctx) {
 DeriveResult* derive_partial_eq(DeriveMacroContext* ctx) {
     if (!ctx) return NULL;
     
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (!result) return NULL;
     
     const char* struct_name = "User";
@@ -299,7 +299,7 @@ DeriveResult* derive_partial_eq(DeriveMacroContext* ctx) {
 DeriveResult* derive_hash(DeriveMacroContext* ctx) {
     if (!ctx) return NULL;
     
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (!result) return NULL;
     
     const char* struct_name = "User";
@@ -344,7 +344,7 @@ DeriveResult* derive_hash(DeriveMacroContext* ctx) {
 DeriveResult* derive_default(DeriveMacroContext* ctx) {
     if (!ctx) return NULL;
     
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (!result) return NULL;
     
     const char* struct_name = "User";
@@ -389,7 +389,7 @@ DeriveResult* derive_copy(DeriveMacroContext* ctx) {
 
 DeriveResult* derive_eq(DeriveMacroContext* ctx) {
     // Eq requires PartialEq, just generate empty impl
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
         result->function_code = strdup("// Eq automatically implemented (requires PartialEq)\n");
         result->success = true;
@@ -398,7 +398,7 @@ DeriveResult* derive_eq(DeriveMacroContext* ctx) {
 }
 
 DeriveResult* derive_partial_ord(DeriveMacroContext* ctx) {
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
         result->function_code = strdup("// PartialOrd implementation would go here\n");
         result->success = true;
@@ -407,7 +407,7 @@ DeriveResult* derive_partial_ord(DeriveMacroContext* ctx) {
 }
 
 DeriveResult* derive_ord(DeriveMacroContext* ctx) {
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
         result->function_code = strdup("// Ord implementation would go here\n");
         result->success = true;
@@ -416,7 +416,7 @@ DeriveResult* derive_ord(DeriveMacroContext* ctx) {
 }
 
 DeriveResult* derive_serialize(DeriveMacroContext* ctx) {
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
         result->function_code = strdup("// Serialize implementation would go here\n");
         result->success = true;
@@ -425,7 +425,7 @@ DeriveResult* derive_serialize(DeriveMacroContext* ctx) {
 }
 
 DeriveResult* derive_deserialize(DeriveMacroContext* ctx) {
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
         result->function_code = strdup("// Deserialize implementation would go here\n");
         result->success = true;
@@ -434,7 +434,7 @@ DeriveResult* derive_deserialize(DeriveMacroContext* ctx) {
 }
 
 DeriveResult* derive_display(DeriveMacroContext* ctx) {
-    DeriveResult* result = (DeriveResult*)calloc(1, sizeof(DeriveResult));
+    DeriveResult* result = (DeriveResult*)xcalloc(1, sizeof(DeriveResult));
     if (result) {
         result->function_code = strdup("// Display implementation would go here\n");
         result->success = true;

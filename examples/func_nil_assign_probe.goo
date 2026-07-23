@@ -1,0 +1,30 @@
+// func_nil_assign_probe (P2.2 option A, T2): function-VALUE nil ASSIGNMENT
+// specifically — func nil comparison and zero-value were already correct
+// (funcval_nilcmp, funcnil_abort); this locks in the previously-missing
+// fifth kind: `f = nil` reassignment after f held a real function, and a
+// nil funcval propagating through a plain variable-to-variable assignment.
+// go-run-verified byte-for-byte against an equivalent .go program using the
+// same shape.
+package main
+
+import "fmt"
+
+func triple(x int) int {
+	return x * 3
+}
+
+func main() {
+	var f func(int) int
+	f = triple
+	fmt.Println(f(5))
+	f = nil
+	if f == nil {
+		fmt.Println("PASS: func reassigned to nil")
+	}
+
+	var g func(int) int
+	g = f
+	if g == nil {
+		fmt.Println("PASS: nil funcval propagates through assignment")
+	}
+}

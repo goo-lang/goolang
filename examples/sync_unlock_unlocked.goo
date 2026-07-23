@@ -1,0 +1,13 @@
+// sync-unlock-unlocked-probe: Unlock() of a Mutex that was never locked
+// panics with Go's own message ("sync: unlock of unlocked mutex"), exit 2
+// — parity finding from the B3 design doc's flagged risk (goo_mutex_unlock
+// itself silently no-ops on an unlocked mutex; the panic is added in the
+// goo_sync_mutex_unlock wrapper, src/runtime/sync_shim.c).
+package main
+
+import "sync"
+
+func main() {
+	var mu sync.Mutex
+	mu.Unlock()
+}

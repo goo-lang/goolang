@@ -1,0 +1,45 @@
+// tuple_try_probe (P2.6/T2): `try` accepts a user-declared (T, error) return
+// — the generic result-tuple shape `func f(...) (T, error)` produces —
+// alongside a !T error union. Success path: try extracts field 0 (the
+// value) and execution continues unwrapped, same as the !T path. Error
+// path: try propagates field 1 (already the boxed `error` interface — no
+// re-boxing needed to READ it) out of the enclosing !T function, converting
+// it into that function's own error-union arm; the caller's catch then
+// binds the (unchanged) message via the existing !T catch machinery (T1).
+//
+// classic() is an ordinary Go (int, error) function (valid Go); outer() and
+// main's catch are Goo-only. Expected output hand-derived per the design
+// doc's semantics: try only reads/propagates the tuple's error — it never
+// re-boxes the message, so it survives the round trip unchanged.
+package main
+
+import (
+	"errors"
+	"fmt"
+)
+
+func classic(bad bool) (int, error) {
+	if bad {
+		return 0, errors.New("boom")
+	}
+	return 41, nil
+}
+
+func outer(bad bool) !int {
+	v := try classic(bad)
+	return v + 1
+}
+
+func main() {
+	// success path: try unwraps 41, outer returns 42; catch passes it through.
+	s := outer(false) catch e {
+		fmt.Println("unexpected:", e)
+	}
+	fmt.Println("ok:", s)
+
+	// error path: try propagates classic's error out of outer as outer's own
+	// !int error; main's catch fires and e.Error() reads the original message.
+	outer(true) catch e {
+		fmt.Println("caught:", e.Error())
+	}
+}

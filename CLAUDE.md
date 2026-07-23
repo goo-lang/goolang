@@ -4,11 +4,18 @@ This file contains information about the project structure, tooling, and common 
 
 ## Project Overview
 
-This is the Goo programming language compiler project - a Go-compatible language with additional features like error unions, nullable types, ownership tracking, and advanced type systems.
+This is the Goo programming language compiler project - a Go-compatible language with additional features like error unions (`!T`), nullable types (`?T`), comptime metaprogramming, and opt-in arena memory regions.
 
 ## Task Management
 
 This project uses `task-master` CLI for task management and project coordination.
+
+**Status disclaimer (P5.9):** task-master statuses are historical planning
+state, NOT the v1 definition of done. The 2026-07-08 audit found tasks
+marked `done` whose own test files fail to parse (#12 pattern matching,
+#14 GPU, #15 WASM). The v1 DoD is the roadmap's exit gates: a claim counts
+only if a probe in `make verify-core` passes on it
+(docs/2026-07-08-v1-roadmap.md).
 
 ### Task Master Commands
 
@@ -68,11 +75,40 @@ This project uses `task-master` CLI for task management and project coordination
 This project uses a Makefile for building:
 
 - `make lexer` - Build the main compiler
-- `make test` - Run tests
+- `make test` - Run tests (in-process unit suite + `test-cli` CLI discipline suite)
 - `make clean` - Clean build artifacts
 - `make test-reference` - Run reference manager tests
-- `make test-interface` - Run interface system tests
 - `make test-flow` - Run flow analysis tests
+- `make test-golden` / `make test-golden-o2` - Golden fixture suites (-O0/-O2).
+  Parallel since P5.8: `GOLDEN_JOBS=<n>` overrides the default of nproc.
+- `make verify-core` - Full probe net, no CompCert required. Authoritative
+  ccomp-free gate; safe for pre-push on any machine.
+- `make verify` - `verify-core` plus the CompCert bootstrap pilot
+  (`v2-bootstrap-pilot`); requires an opam CompCert switch.
+
+Note: `bin/goo` links only the reachable set (`GOO_OBJS`, P5.6). The full
+`OBJS` list feeds the standalone test targets that exercise unlinked
+frameworks (constraint inference, concept generics, HKT, flow, reference
+manager) — those frameworks are NOT part of the shipped compiler.
+
+## Stdlib model
+
+Two layers, both gated by `scripts/check_stdlib_coverage.sh` in verify-core:
+
+- **C shim packages** (`fmt`, `os`, `time`, `sync`, ...): declarative
+  signature table in `src/types/shim_signatures.c`, implementations in the
+  runtime archive (`src/runtime/`).
+- **Vendored source packages** (`strings`, `strconv`, `unicode/utf8`, ...):
+  real Goo/Go source under `goostd/`, resolved via GOOROOT (bare import =
+  GOOROOT-then-local; `./name` = source-dir only).
+
+## Memory model (v1 limitation)
+
+v1 heap allocations are malloc with NO systematic reclamation — no GC, no
+ownership-based freeing. Opt-in `arena { ... }` regions (with escape
+analysis auto-promoting escapers) are the only bulk-free mechanism. This is
+a documented v1 limitation; GC/ownership reclamation is post-v1
+(docs/2026-07-08-v1-roadmap.md Post-v1).
 
 ## Project Structure
 
@@ -90,24 +126,24 @@ This project uses a Makefile for building:
 - `examples/` - Example Goo programs
 - `.taskmaster/` - Task management files
 
-## Key Features Implemented
+## Key Features (verified — every item is probe-gated in make verify-core)
 
-- **Enhanced Interface System** (Task #22) including:
-  - Automatic constraint inference
-  - Concept-based generics
-  - Higher-kinded types
-  - Type-level programming
-  - Protocol-oriented programming
-- **Error unions** with `!` syntax
-- **Nullable types** with `?` syntax
-- **Ownership tracking** and move semantics
-- **Channel operations** for concurrency
-- **LLVM-based code generation**
+- **Go-compatible core**: functions/methods/interfaces (method-set
+  enforcement), structs + embedding (incl. qualified `sync.Mutex`),
+  packages (shim + vendored + local), goroutines/channels/select/close,
+  defer (incl. in-loop), switch/type-switch, slices/maps/strings, os.Args,
+  Go-parity nil and exit semantics.
+- **Error unions** `!T` with `try`/`catch` (incl. value-yielding `catch =>`)
+- **Nullable types** `?T` with `if let` / nil comparison
+- **Comptime** blocks/values and inference-only monomorphized generics
+- **Arena regions** `arena { ... }` with escape-analysis auto-promotion
+- **LLVM-based code generation** with real -O1/2/3 pipelines (differential
+  gate proves -O2 IR differs and behavior matches)
 
-## Recent Completed Tasks
-
-- Task #22.4 - Type-Level Programming Capabilities
-- Task #22.5 - Protocol-Oriented Programming System
+The Task #22-era type-system frameworks (constraint inference, concept
+generics, HKT, type-level programming, protocol-oriented programming) are
+NOT in `bin/goo` (unlinked in P5.6, kept only behind standalone test
+targets) — do not describe them as shipped features.
 
 ## Configuration Files
 
@@ -119,9 +155,10 @@ This project uses a Makefile for building:
 
 - Any change to `src/parser/parser.y`, `src/parser/lexer_bridge.c`, or lexer token
   emission: use the **goo-grammar** skill (`.claude/skills/goo-grammar/`). Minimum bar
-  even without the skill: `./scripts/grammar-tripwire.sh` must PASS (81 S/R + 256 R/R
-  exact) before AND after the change; any delta is stop-the-line (see the skill's
-  conflict-ledger for the justified-delta procedure).
+  even without the skill: `./scripts/grammar-tripwire.sh` must PASS (the exact counts
+  recorded in `scripts/grammar-tripwire.sh`'s `EXPECTED_SR`/`EXPECTED_RR`) before AND
+  after the change; any delta is stop-the-line (see the skill's conflict-ledger for
+  the justified-delta procedure and the current baseline number).
 
 ## Language Standard
 

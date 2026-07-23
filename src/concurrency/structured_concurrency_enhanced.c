@@ -64,7 +64,7 @@ ConcurrentBlockConfig concurrent_block_config_fail_fast(void) {
 
 // Structured scheduler implementation
 StructuredScheduler* structured_scheduler_create(AsyncRuntime* runtime) {
-    StructuredScheduler* scheduler = calloc(1, sizeof(StructuredScheduler));
+    StructuredScheduler* scheduler = xcalloc(1, sizeof(StructuredScheduler));
     if (!scheduler) return NULL;
     
     scheduler->id = generate_id();
@@ -181,7 +181,7 @@ ConcurrentExpression* concurrent_expression_create(const char* name,
     
     if (!function) return NULL;
     
-    ConcurrentExpression* expr = calloc(1, sizeof(ConcurrentExpression));
+    ConcurrentExpression* expr = xcalloc(1, sizeof(ConcurrentExpression));
     if (!expr) return NULL;
     
     expr->id = generate_id();
@@ -204,7 +204,7 @@ ConcurrentExpression* concurrent_expression_create(const char* name,
     }
     
     // Create a transparent function wrapper
-    expr->function = malloc(sizeof(TransparentFunction));
+    expr->function = xmalloc(sizeof(TransparentFunction));
     if (!expr->function) {
         free(expr->arguments);
         free(expr);
@@ -237,7 +237,7 @@ Result_void_ptr concurrent_expression_add_dependency(ConcurrentExpression* expr,
     
     // Reallocate dependencies array if needed
     if (expr->dependency_count == 0) {
-        expr->dependencies = malloc(sizeof(ConcurrentExpression*));
+        expr->dependencies = xmalloc(sizeof(ConcurrentExpression*));
     } else {
         expr->dependencies = realloc(expr->dependencies, 
             (expr->dependency_count + 1) * sizeof(ConcurrentExpression*));
@@ -281,7 +281,7 @@ void concurrent_expression_destroy(ConcurrentExpression* expr) {
 
 // Concurrent block implementation
 ConcurrentBlock* concurrent_block_create(const char* name, ConcurrentBlockConfig config) {
-    ConcurrentBlock* block = calloc(1, sizeof(ConcurrentBlock));
+    ConcurrentBlock* block = xcalloc(1, sizeof(ConcurrentBlock));
     if (!block) return NULL;
     
     block->id = generate_id();
@@ -814,7 +814,7 @@ void concurrent_block_destroy(ConcurrentBlock* block) {
 
 // Timeout decorator implementation
 TimeoutDecorator* timeout_decorator_create(uint64_t timeout_ms, TransparentFunction* function) {
-    TimeoutDecorator* decorator = calloc(1, sizeof(TimeoutDecorator));
+    TimeoutDecorator* decorator = xcalloc(1, sizeof(TimeoutDecorator));
     if (!decorator) return NULL;
     
     decorator->timeout_ms = timeout_ms;
@@ -868,7 +868,7 @@ Result_void_ptr timeout_decorator_execute(TimeoutDecorator* decorator, void* arg
 RetryDecorator* retry_decorator_create(size_t max_attempts, uint64_t base_delay_ms, 
     TransparentFunction* function) {
     
-    RetryDecorator* decorator = calloc(1, sizeof(RetryDecorator));
+    RetryDecorator* decorator = xcalloc(1, sizeof(RetryDecorator));
     if (!decorator) return NULL;
     
     decorator->max_attempts = max_attempts;
@@ -947,7 +947,7 @@ Result_void_ptr retry_decorator_execute(RetryDecorator* decorator, void* args, s
 ConcurrentResource* concurrent_resource_create(void* resource, void (*cleanup_fn)(void*)) {
     if (!resource || !cleanup_fn) return NULL;
     
-    ConcurrentResource* concurrent_resource = malloc(sizeof(ConcurrentResource));
+    ConcurrentResource* concurrent_resource = xmalloc(sizeof(ConcurrentResource));
     if (!concurrent_resource) return NULL;
     
     concurrent_resource->resource = resource;
@@ -1053,7 +1053,7 @@ Result_void_ptr concurrent_for_each(void** items, size_t item_count, size_t item
     
     // Create expressions for each item
     for (size_t i = 0; i < item_count; i++) {
-        ForEachArgs* args = malloc(sizeof(ForEachArgs));
+        ForEachArgs* args = xmalloc(sizeof(ForEachArgs));
         if (!args) {
             concurrent_block_destroy(block);
             return ERR_PTR(error_create(ERROR_OUT_OF_MEMORY, "Failed to allocate args"));

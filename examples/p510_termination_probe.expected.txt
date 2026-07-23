@@ -1,0 +1,7 @@
+112
+16
+pos
+nonpos
+1
+deferred
+7

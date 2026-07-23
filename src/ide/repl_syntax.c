@@ -45,7 +45,7 @@ static const int GOO_OPERATORS_COUNT = sizeof(GOO_OPERATORS) / sizeof(GOO_OPERAT
 // Initialize syntax highlighting system
 bool repl_syntax_init(void) {
     // Initialize configuration
-    g_syntax_config = malloc(sizeof(SyntaxConfig));
+    g_syntax_config = xmalloc(sizeof(SyntaxConfig));
     if (!g_syntax_config) return false;
     
     g_syntax_config->enable_syntax_highlighting = true;
@@ -88,7 +88,7 @@ void repl_syntax_cleanup(void) {
 
 // Detect terminal capabilities
 TerminalCapabilities* repl_detect_terminal_capabilities(void) {
-    TerminalCapabilities* caps = malloc(sizeof(TerminalCapabilities));
+    TerminalCapabilities* caps = xmalloc(sizeof(TerminalCapabilities));
     if (!caps) return NULL;
     
     // Check if stdout is a terminal
@@ -111,7 +111,7 @@ TerminalCapabilities* repl_detect_terminal_capabilities(void) {
 
 // Get default theme
 SyntaxTheme* repl_get_default_theme(void) {
-    SyntaxTheme* theme = malloc(sizeof(SyntaxTheme));
+    SyntaxTheme* theme = xmalloc(sizeof(SyntaxTheme));
     if (!theme) return NULL;
     
     theme->keyword_color = ANSI_BLUE ANSI_BOLD;
@@ -133,7 +133,7 @@ SyntaxTheme* repl_get_default_theme(void) {
 
 // Get dark theme
 SyntaxTheme* repl_get_dark_theme(void) {
-    SyntaxTheme* theme = malloc(sizeof(SyntaxTheme));
+    SyntaxTheme* theme = xmalloc(sizeof(SyntaxTheme));
     if (!theme) return NULL;
     
     theme->keyword_color = ANSI_BRIGHT_BLUE;
@@ -155,7 +155,7 @@ SyntaxTheme* repl_get_dark_theme(void) {
 
 // Get light theme
 SyntaxTheme* repl_get_light_theme(void) {
-    SyntaxTheme* theme = malloc(sizeof(SyntaxTheme));
+    SyntaxTheme* theme = xmalloc(sizeof(SyntaxTheme));
     if (!theme) return NULL;
     
     theme->keyword_color = ANSI_BLUE;
@@ -385,6 +385,9 @@ char* repl_highlight_line(const char* line, const SyntaxTheme* theme) {
             
             size_t word_len = p - start;
             char* word = malloc(word_len + 1);
+            if (!word) {
+                continue;
+            }
             strncpy(word, start, word_len);
             word[word_len] = '\0';
             
@@ -430,7 +433,7 @@ char* repl_highlight_line(const char* line, const SyntaxTheme* theme) {
 
 // Analyze completion context
 CompletionContext* repl_analyze_completion_context(const char* line, int cursor_pos) {
-    CompletionContext* context = malloc(sizeof(CompletionContext));
+    CompletionContext* context = xmalloc(sizeof(CompletionContext));
     if (!context) return NULL;
     
     context->line = strdup(line);

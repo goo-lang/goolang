@@ -31,7 +31,13 @@ static const char* ast_node_type_strings[] = {
     [AST_DEFAULT_CLAUSE] = "DefaultClause",
     [AST_UNSAFE_STMT] = "UnsafeStmt",
     [AST_ASM_STMT] = "AsmStmt",
-    
+    [AST_ARENA_BLOCK] = "ArenaBlock",
+    [AST_LABEL_STMT] = "LabelStmt",
+    [AST_BREAK_LABEL_STMT] = "BreakLabelStmt",
+    [AST_CONTINUE_LABEL_STMT] = "ContinueLabelStmt",
+    [AST_GOTO_STMT] = "GotoStmt",
+    [AST_FALLTHROUGH_STMT] = "FallthroughStmt",
+
     [AST_IDENTIFIER] = "Identifier",
     [AST_LITERAL] = "Literal",
     [AST_BINARY_EXPR] = "BinaryExpr",
@@ -102,20 +108,21 @@ static const char* ast_node_type_strings[] = {
     [AST_DOM_ACCESS] = "DOMAccess",
 };
 
-// Helper function to duplicate strings
-static char* str_dup(const char* str) {
-    if (!str) return NULL;
-    size_t len = strlen(str);
-    char* dup = malloc(len + 1);
-    if (dup) {
-        strcpy(dup, str);
-    }
-    return dup;
-}
-
-// Base AST node creation
-ASTNode* ast_node_new(ASTNodeType type, Position pos) {
-    ASTNode* node = malloc(sizeof(ASTNode));
+// Base AST node creation. Static (#167 R3 rider, P2.9/T3): every caller
+// outside this file used to build a plain ASTNode for one of three bare-
+// marker statement types (AST_BREAK_STMT/AST_CONTINUE_STMT/
+// AST_FALLTHROUGH_STMT in parser.y) and now goes through the typed
+// ast_break_stmt_new/ast_continue_stmt_new/ast_fallthrough_stmt_new
+// constructors (ast_constructors.c) instead — see include/ast.h's function-
+// declarations comment for why there is no public declaration left to call
+// this from another translation unit. That leaves this file with no
+// internal caller either (ast.c never called its own generic constructor),
+// so the compiler flags it "defined but not used" — expected, not a bug:
+// the rider's brief was privatize-in-place, not delete, and the codebase
+// tolerates pre-existing unused-parameter/-variable warnings elsewhere
+// (no -Werror gate).
+static ASTNode* ast_node_new(ASTNodeType type, Position pos) {
+    ASTNode* node = xmalloc(sizeof(ASTNode));
     if (!node) return NULL;
     
     node->type = type;
@@ -157,6 +164,7 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(func->return_type);
             ast_node_free(func->body);
             ast_node_free(func->annotations);
+            ast_node_free(func->type_params);
             break;
         }
         case AST_FUNC_LIT: {
@@ -282,6 +290,43 @@ void ast_node_free(ASTNode* node) {
         case AST_UNSAFE_STMT: {
             UnsafeStmtNode* unsafe_stmt = (UnsafeStmtNode*)node;
             ast_node_free(unsafe_stmt->body);
+            break;
+        }
+        case AST_ARENA_BLOCK: {
+            ArenaBlockNode* arena_blk = (ArenaBlockNode*)node;
+            ast_node_free(arena_blk->body);
+            break;
+        }
+        case AST_LABEL_STMT: {
+            LabelStmtNode* label = (LabelStmtNode*)node;
+            free(label->name);
+            ast_node_free(label->stmt);
+            break;
+        }
+        case AST_BREAK_LABEL_STMT: {
+            BreakLabelStmtNode* brk = (BreakLabelStmtNode*)node;
+            free(brk->label);
+            break;
+        }
+        case AST_CONTINUE_LABEL_STMT: {
+            ContinueLabelStmtNode* cont = (ContinueLabelStmtNode*)node;
+            free(cont->label);
+            break;
+        }
+        case AST_GOTO_STMT: {
+            GotoStmtNode* got = (GotoStmtNode*)node;
+            free(got->label);
+            break;
+        }
+        case AST_SELECT_CASE: {
+            // gofmt-syntax-b Task 4: only the NEW bind_name string is freed
+            // here — comm/body are pre-existing fields that this switch has
+            // never recursed into (AST_SELECT_STMT/AST_SELECT_CASE both fall
+            // to `default:` below and leak their subtrees; a pre-existing
+            // gap, not introduced or fixed by this task, left alone to avoid
+            // scope creep).
+            SelectCaseNode* sel_case = (SelectCaseNode*)node;
+            free(sel_case->bind_name);
             break;
         }
         case AST_ASM_STMT: {
@@ -545,6 +590,23 @@ void ast_node_free(ASTNode* node) {
             ast_node_free(dom_access->args);
             break;
         }
+        case AST_CALL_EXPR: {
+            // Function generics Task 6: type_args is a freshly calloc'd array
+            // uniquely owned by this node (unlike ->function/->args, which
+            // this switch has never had a case for — those AST subtrees are
+            // simply not walked here). Its ELEMENTS are Type* pointers owned
+            // by the type checker/interning system, same ownership model as
+            // node->node_type just below (never freed via ast_node_free) —
+            // only the array itself is freed here, not the Types it points to.
+            CallExprNode* call = (CallExprNode*)node;
+            free(call->type_args);
+            // Comptime value params Task 3: comptime_value_args is a plain
+            // int64_t buffer wholly owned by this node (unlike type_args'
+            // ELEMENTS, which alias the type checker's Type objects) — free
+            // it outright, no ownership caveat needed.
+            free(call->comptime_value_args);
+            break;
+        }
         case AST_SWITCH_STMT: {
             SwitchStmtNode* sw = (SwitchStmtNode*)node;
             ast_node_free(sw->tag);
@@ -555,6 +617,15 @@ void ast_node_free(ASTNode* node) {
             CaseClauseNode* clause = (CaseClauseNode*)node;
             ast_node_free(clause->exprs);
             ast_node_free(clause->body);
+            break;
+        }
+        // P4.2/B1: previously missing entirely (a pre-existing leak of
+        // ->name); added alongside the new ->package field so both strdup'd
+        // strings are freed together.
+        case AST_BASIC_TYPE: {
+            BasicTypeNode* basic = (BasicTypeNode*)node;
+            free(basic->name);
+            free(basic->package);
             break;
         }
         // Add more cases as needed
@@ -586,21 +657,26 @@ ASTNode* ast_type_clone(const ASTNode* node) {
     switch (node->type) {
         case AST_BASIC_TYPE: {
             const BasicTypeNode* s = (const BasicTypeNode*)node;
-            BasicTypeNode* c = (BasicTypeNode*)calloc(1, sizeof(BasicTypeNode));
+            BasicTypeNode* c = (BasicTypeNode*)xcalloc(1, sizeof(BasicTypeNode));
             c->base.type = AST_BASIC_TYPE; c->base.pos = node->pos;
             c->name = s->name ? strdup(s->name) : NULL;
+            // P4.2/B1: clone the package qualifier too, so a cloned qualified
+            // type name (e.g. a grouped named result `(x, y shapes.Point)`,
+            // via reinterpret_grouped_names) keeps its `pkg.Type` identity
+            // instead of silently degrading to an unqualified lookup.
+            c->package = s->package ? strdup(s->package) : NULL;
             return (ASTNode*)c;
         }
         case AST_SLICE_TYPE: {
             const SliceTypeNode* s = (const SliceTypeNode*)node;
-            SliceTypeNode* c = (SliceTypeNode*)calloc(1, sizeof(SliceTypeNode));
+            SliceTypeNode* c = (SliceTypeNode*)xcalloc(1, sizeof(SliceTypeNode));
             c->base.type = AST_SLICE_TYPE; c->base.pos = node->pos;
             c->element_type = ast_type_clone(s->element_type);
             return (ASTNode*)c;
         }
         case AST_MAP_TYPE: {
             const MapTypeNode* s = (const MapTypeNode*)node;
-            MapTypeNode* c = (MapTypeNode*)calloc(1, sizeof(MapTypeNode));
+            MapTypeNode* c = (MapTypeNode*)xcalloc(1, sizeof(MapTypeNode));
             c->base.type = AST_MAP_TYPE; c->base.pos = node->pos;
             c->key_type = ast_type_clone(s->key_type);
             c->value_type = ast_type_clone(s->value_type);
@@ -608,7 +684,7 @@ ASTNode* ast_type_clone(const ASTNode* node) {
         }
         case AST_CHAN_TYPE: {
             const ChanTypeNode* s = (const ChanTypeNode*)node;
-            ChanTypeNode* c = (ChanTypeNode*)calloc(1, sizeof(ChanTypeNode));
+            ChanTypeNode* c = (ChanTypeNode*)xcalloc(1, sizeof(ChanTypeNode));
             c->base.type = AST_CHAN_TYPE; c->base.pos = node->pos;
             c->element_type = ast_type_clone(s->element_type);
             c->pattern = s->pattern;
@@ -617,14 +693,14 @@ ASTNode* ast_type_clone(const ASTNode* node) {
         }
         case AST_POINTER_TYPE: {
             const PointerTypeNode* s = (const PointerTypeNode*)node;
-            PointerTypeNode* c = (PointerTypeNode*)calloc(1, sizeof(PointerTypeNode));
+            PointerTypeNode* c = (PointerTypeNode*)xcalloc(1, sizeof(PointerTypeNode));
             c->base.type = AST_POINTER_TYPE; c->base.pos = node->pos;
             c->element_type = ast_type_clone(s->element_type);
             return (ASTNode*)c;
         }
         case AST_REFERENCE_TYPE: {
             const ReferenceTypeNode* s = (const ReferenceTypeNode*)node;
-            ReferenceTypeNode* c = (ReferenceTypeNode*)calloc(1, sizeof(ReferenceTypeNode));
+            ReferenceTypeNode* c = (ReferenceTypeNode*)xcalloc(1, sizeof(ReferenceTypeNode));
             c->base.type = AST_REFERENCE_TYPE; c->base.pos = node->pos;
             c->element_type = ast_type_clone(s->element_type);
             c->is_mutable = s->is_mutable;
@@ -632,21 +708,21 @@ ASTNode* ast_type_clone(const ASTNode* node) {
         }
         case AST_UNSAFE_PTR_TYPE: {
             const UnsafePtrTypeNode* s = (const UnsafePtrTypeNode*)node;
-            UnsafePtrTypeNode* c = (UnsafePtrTypeNode*)calloc(1, sizeof(UnsafePtrTypeNode));
+            UnsafePtrTypeNode* c = (UnsafePtrTypeNode*)xcalloc(1, sizeof(UnsafePtrTypeNode));
             c->base.type = AST_UNSAFE_PTR_TYPE; c->base.pos = node->pos;
             c->element_type = ast_type_clone(s->element_type);
             return (ASTNode*)c;
         }
         case AST_NULLABLE_TYPE: {
             const NullableTypeNode* s = (const NullableTypeNode*)node;
-            NullableTypeNode* c = (NullableTypeNode*)calloc(1, sizeof(NullableTypeNode));
+            NullableTypeNode* c = (NullableTypeNode*)xcalloc(1, sizeof(NullableTypeNode));
             c->base.type = AST_NULLABLE_TYPE; c->base.pos = node->pos;
             c->base_type = ast_type_clone(s->base_type);
             return (ASTNode*)c;
         }
         case AST_ERROR_UNION_TYPE: {
             const ErrorUnionTypeNode* s = (const ErrorUnionTypeNode*)node;
-            ErrorUnionTypeNode* c = (ErrorUnionTypeNode*)calloc(1, sizeof(ErrorUnionTypeNode));
+            ErrorUnionTypeNode* c = (ErrorUnionTypeNode*)xcalloc(1, sizeof(ErrorUnionTypeNode));
             c->base.type = AST_ERROR_UNION_TYPE; c->base.pos = node->pos;
             c->value_type = ast_type_clone(s->value_type);
             c->error_type = ast_type_clone(s->error_type);
@@ -760,44 +836,11 @@ void ast_print(const ASTNode* node, int indent) {
     }
 }
 
-// Deep copy an AST node
-ASTNode* ast_node_copy(const ASTNode* node) {
-    if (!node) return NULL;
-    
-    // Create new node of same type
-    ASTNode* copy = ast_node_new(node->type, ((ASTNode*)node)->pos);
-    if (!copy) return NULL;
-    
-    // Copy common fields
-    copy->next = ast_node_copy(node->next);
-    
-    // Copy type-specific data (simplified for now)
-    switch (node->type) {
-        case AST_IDENTIFIER:
-            ((IdentifierNode*)copy)->name = str_dup(((IdentifierNode*)node)->name);
-            break;
-            
-        case AST_LITERAL:
-            ((LiteralNode*)copy)->literal_type = ((LiteralNode*)node)->literal_type;
-            ((LiteralNode*)copy)->value = str_dup(((LiteralNode*)node)->value);
-            break;
-            
-        case AST_BINARY_EXPR:
-            ((BinaryExprNode*)copy)->left = ast_node_copy(((BinaryExprNode*)node)->left);
-            ((BinaryExprNode*)copy)->operator = ((BinaryExprNode*)node)->operator;
-            ((BinaryExprNode*)copy)->right = ast_node_copy(((BinaryExprNode*)node)->right);
-            break;
-            
-        case AST_UNARY_EXPR:
-            ((UnaryExprNode*)copy)->operator = ((UnaryExprNode*)node)->operator;
-            ((UnaryExprNode*)copy)->operand = ast_node_copy(((UnaryExprNode*)node)->operand);
-            break;
-            
-        // Add more cases as needed
-        default:
-            // For complex nodes, just copy the base structure
-            break;
-    }
-    
-    return copy;
-}
+// ast_node_copy was deleted: it allocated only sizeof(ASTNode) and then wrote
+// derived-struct fields (e.g. BinaryExprNode::left/right) past that
+// allocation — a latent heap overflow for any node kind with fields beyond
+// the base. Its sole caller (src/advanced_macro_system.c, dead code — see
+// that file's substitute_template_ast) has been neutralized. Real deep-copy
+// needs to go through typed constructors instead (see ast_type_clone below
+// and clone_const_value in parser_actions.c), which allocate the correct
+// derived-struct size per node kind.

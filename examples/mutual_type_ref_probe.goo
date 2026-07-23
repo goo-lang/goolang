@@ -1,0 +1,56 @@
+// mutual_type_ref_probe (P2.3, T1): true mutual recursion between two
+// struct types — A <-> B, each holding a pointer back to the other — tested
+// in BOTH declaration orders so resolution can't be relying on incidental
+// scope-position luck:
+//   Pair 1 (A, B): A declared first, A holds *B, B holds *A.
+//   Pair 2 (Z, Y): Z declared first this time (Z plays B's "holds a pointer
+//   back" textual role), Y declared second (Y plays A's role) — the two
+//   type names that reference each other are the same shape as pair 1 with
+//   which-one-comes-first flipped.
+// Both pairs build a 2-node mutual cycle and traverse it (field reads
+// through the mutual pointers), proving each pointer resolved to the real
+// (non-shell) struct layout regardless of declaration order.
+// go-run-verified byte-for-byte against an equivalent .go program (mutual
+// type references within a file are valid Go).
+package main
+
+import "fmt"
+
+type A struct {
+	name string
+	b    *B
+}
+
+type B struct {
+	name string
+	a    *A
+}
+
+type Z struct {
+	name string
+	y    *Y
+}
+
+type Y struct {
+	name string
+	z    *Z
+}
+
+func walkAB() {
+	a := &A{name: "a1"}
+	b := &B{name: "b1", a: a}
+	a.b = b
+	fmt.Println(a.name, a.b.name, b.a.name)
+}
+
+func walkYZ() {
+	z := &Z{name: "z1"}
+	y := &Y{name: "y1", z: z}
+	z.y = y
+	fmt.Println(z.name, z.y.name, y.z.name)
+}
+
+func main() {
+	walkAB()
+	walkYZ()
+}

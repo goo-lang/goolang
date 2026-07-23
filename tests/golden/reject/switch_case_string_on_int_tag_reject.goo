@@ -1,0 +1,22 @@
+// correctness-burndown arc 2, task 2 (B3 sibling wall): a switch is
+// definitionally a chain of `tag == case` equality tests, so a case
+// expression whose KIND doesn't match the tag's (a string case against an
+// int tag) must reject cleanly at type-check time — before this fix
+// type_check_switch_stmt never related a case expression's type to the
+// tag's at all, so this reached codegen's switch lowering and crashed the
+// LLVM verifier with a raw, unpositioned "Module verification failed"
+// (`icmp eq i64 %n, {ptr,i64} ...`) instead of a clean diagnostic.
+package main
+
+func classify(n int) string {
+	switch n {
+	case "x":
+		return "bad"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	println(classify(1))
+}

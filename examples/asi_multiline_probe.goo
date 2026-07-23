@@ -1,0 +1,21 @@
+package main
+
+import "fmt"
+
+func add(a int, b int, c int) int { return a + b + c }
+
+// Multi-line call-argument lists and composite literals end their continued
+// lines with `,` / `{` / `(` (none value-ending), so ASI must not split them.
+func main() {
+	xs := []int{
+		10,
+		20,
+		30,
+	}
+	n := add(
+		xs[0],
+		xs[1],
+		xs[2]
+	)
+	fmt.Println(n)
+}

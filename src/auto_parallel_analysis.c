@@ -188,7 +188,7 @@ LoopInfo* analyze_loop(AutoParallelContext* ctx, ASTNode* loop_node) {
     }
     
     // Allocate loop info
-    LoopInfo* loop_info = (LoopInfo*)calloc(1, sizeof(LoopInfo));
+    LoopInfo* loop_info = (LoopInfo*)xcalloc(1, sizeof(LoopInfo));
     if (!loop_info) {
         return NULL;
     }
@@ -310,7 +310,7 @@ int estimate_parallelization_benefit(const LoopInfo* loop_info, ParallelStrategy
 
 // Context management
 AutoParallelContext* auto_parallel_context_new(void) {
-    AutoParallelContext* ctx = (AutoParallelContext*)calloc(1, sizeof(AutoParallelContext));
+    AutoParallelContext* ctx = (AutoParallelContext*)xcalloc(1, sizeof(AutoParallelContext));
     if (!ctx) {
         return NULL;
     }

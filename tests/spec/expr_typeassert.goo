@@ -1,0 +1,21 @@
+// Spec: Expressions / Type assertions — comma-ok on concrete type
+package main
+
+import "fmt"
+
+type Animal interface {
+	Sound() string
+}
+
+type Dog struct{}
+
+func (d Dog) Sound() string {
+	return "woof"
+}
+
+func main() {
+	var a Animal = Dog{}
+	d, ok := a.(Dog)
+	fmt.Println(ok)
+	fmt.Println(d.Sound())
+}

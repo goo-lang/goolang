@@ -302,6 +302,47 @@ ComptimeResult* comptime_intrinsic_struct_fields(ComptimeContext* ctx, ComptimeV
 }
 
 // String formatting for code generation
+// The one-argument @format path feeds a user-supplied format string straight to
+// snprintf. Because that string comes from the program being compiled, an
+// unvalidated one is a compile-time format-string vulnerability (CWE-134): %n is
+// an arbitrary-write primitive, extra specifiers read past the single vararg, and
+// a type-mismatched specifier (e.g. %s against an integer) dereferences the
+// argument as the wrong type. Validate that the format carries exactly one
+// conversion, that it is not %n, and that its type class matches the argument.
+// %% is a literal, not a conversion. (The zero- and multi-argument paths copy the
+// format verbatim and never reach snprintf, so they need no check.)
+typedef enum { FMT_ARG_INT, FMT_ARG_STR } FmtArgClass;
+
+static bool comptime_format_one_arg_safe(const char* fmt, FmtArgClass cls) {
+    size_t conversions = 0;
+    for (size_t i = 0; fmt[i]; i++) {
+        if (fmt[i] != '%') {
+            continue;
+        }
+        i++;
+        if (fmt[i] == '%') { // literal %%
+            continue;
+        }
+        // Skip flags, width, precision, and length modifiers to the conversion char.
+        while (fmt[i] && strchr("-+ #0'123456789.hljztLqI*", fmt[i])) {
+            i++;
+        }
+        char c = fmt[i];
+        if (c == '\0' || c == 'n') { // truncated specifier, or the %n write primitive
+            return false;
+        }
+        if (++conversions > 1) { // more specifiers than the single argument
+            return false;
+        }
+        bool matches = (cls == FMT_ARG_INT) ? (strchr("diouxXc", c) != NULL)
+                                            : (c == 's');
+        if (!matches) {
+            return false;
+        }
+    }
+    return true;
+}
+
 ComptimeResult* comptime_intrinsic_format(ComptimeContext* ctx, ComptimeValue* format_str, ComptimeValue** args, size_t arg_count) {
     if (!ctx || !format_str || format_str->type != COMPTIME_VALUE_STRING) {
         return comptime_result_new(NULL, comptime_error_new("@format requires a format string", (Position){0}), NULL);
@@ -319,6 +360,13 @@ ComptimeResult* comptime_intrinsic_format(ComptimeContext* ctx, ComptimeValue* f
     if (arg_count == 0) {
         strcpy(result, fmt);
     } else if (arg_count == 1) {
+        FmtArgClass cls = (args[0]->type == COMPTIME_VALUE_INT) ? FMT_ARG_INT : FMT_ARG_STR;
+        if (!comptime_format_one_arg_safe(fmt, cls)) {
+            free(result);
+            return comptime_result_new(NULL, comptime_error_new(
+                "@format: unsafe or unsupported format string (expected a single %-specifier matching the argument type; %n and extra specifiers are rejected)",
+                (Position){0}), NULL);
+        }
         if (args[0]->type == COMPTIME_VALUE_INT) {
             snprintf(result, result_size, fmt, args[0]->int_value);
         } else if (args[0]->type == COMPTIME_VALUE_STRING) {
@@ -399,7 +447,7 @@ ComptimeResult* comptime_eval_function_call_advanced(ComptimeContext* ctx, ASTNo
 
 // Code generation pipeline integration
 CodeGenPipeline* comptime_codegen_pipeline_new(void) {
-    CodeGenPipeline* pipeline = malloc(sizeof(CodeGenPipeline));
+    CodeGenPipeline* pipeline = xmalloc(sizeof(CodeGenPipeline));
     if (!pipeline) return NULL;
     
     pipeline->generated_functions = NULL;

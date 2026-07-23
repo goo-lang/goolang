@@ -180,7 +180,7 @@ static void* task_worker_thread(void* arg) {
 
 // Task scope management
 TaskScope* task_scope_create(TaskScopeConfig config, const char* name) {
-    TaskScope* scope = calloc(1, sizeof(TaskScope));
+    TaskScope* scope = xcalloc(1, sizeof(TaskScope));
     if (!scope) return NULL;
     
     scope->id = generate_unique_id();
@@ -288,7 +288,7 @@ TaskScope* task_scope_create(TaskScopeConfig config, const char* name) {
 
 Result_void_ptr task_scope_start(TaskScope* scope) {
     if (!scope) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -325,7 +325,7 @@ Result_void_ptr task_scope_start(TaskScope* scope) {
             scope->is_active = false;
             pthread_mutex_unlock(&scope->scope_mutex);
             
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_INTERNAL,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -346,7 +346,7 @@ Result_void_ptr task_scope_start(TaskScope* scope) {
 
 Result_void_ptr task_scope_shutdown(TaskScope* scope, uint64_t timeout_ms) {
     if (!scope) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -461,7 +461,7 @@ void task_scope_destroy(TaskScope* scope) {
 ConcurrentTask* task_create(TaskScope* scope, TaskFunction function, void* args, size_t args_size, const char* name) {
     if (!scope || !function) return NULL;
     
-    ConcurrentTask* task = calloc(1, sizeof(ConcurrentTask));
+    ConcurrentTask* task = xcalloc(1, sizeof(ConcurrentTask));
     if (!task) return NULL;
     
     task->id = generate_unique_id();
@@ -518,7 +518,7 @@ ConcurrentTask* task_create(TaskScope* scope, TaskFunction function, void* args,
 
 Result_void_ptr task_submit(ConcurrentTask* task) {
     if (!task || !task->context.scope) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -539,7 +539,7 @@ Result_void_ptr task_submit(ConcurrentTask* task) {
     if (scope->queue_size >= scope->queue_capacity) {
         pthread_mutex_unlock(&scope->scope_mutex);
         
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
@@ -574,7 +574,7 @@ Result_void_ptr task_submit(ConcurrentTask* task) {
 
 Result_void_ptr task_wait(ConcurrentTask* task, uint64_t timeout_ms) {
     if (!task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -637,7 +637,7 @@ Result_void_ptr task_wait(ConcurrentTask* task, uint64_t timeout_ms) {
     pthread_mutex_unlock(&task->task_mutex);
     
     if (wait_result == ETIMEDOUT) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INTERNAL,
             .severity = ERROR_SEVERITY_ERROR,
@@ -661,7 +661,7 @@ Result_void_ptr task_wait(ConcurrentTask* task, uint64_t timeout_ms) {
 
 Result_void_ptr task_cancel(ConcurrentTask* task, CancellationStrategy strategy) {
     if (!task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -725,7 +725,7 @@ void task_destroy(ConcurrentTask* task) {
 TaskGroup* task_group_create(TaskScope* scope, const char* name) {
     if (!scope) return NULL;
     
-    TaskGroup* group = calloc(1, sizeof(TaskGroup));
+    TaskGroup* group = xcalloc(1, sizeof(TaskGroup));
     if (!group) return NULL;
     
     group->id = generate_unique_id();
@@ -764,7 +764,7 @@ TaskGroup* task_group_create(TaskScope* scope, const char* name) {
 
 Result_void_ptr task_group_add_task(TaskGroup* group, ConcurrentTask* task) {
     if (!group || !task) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -801,7 +801,7 @@ Result_void_ptr task_group_add_task(TaskGroup* group, ConcurrentTask* task) {
 
 Result_void_ptr task_group_wait_all(TaskGroup* group, uint64_t timeout_ms) {
     if (!group) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -876,7 +876,7 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
                                        ParallelForFunction function, void* context) {
     // Comprehensive input validation
     if (!scope || !function) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -901,7 +901,7 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
     // Prevent integer overflow in calculations
     size_t total_items = config.end_index - config.start_index;
     if (total_items > SIZE_MAX / 2) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -930,7 +930,7 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
     
     // Limit concurrent tasks for safety
     if (max_tasks > 1000) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_WARNING,
@@ -946,7 +946,7 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
     // Allocate with bounds checking
     ParallelForTaskArgs* all_args = malloc(max_tasks * sizeof(ParallelForTaskArgs));
     if (!all_args) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -963,7 +963,7 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
     ConcurrentTask** tasks = malloc(max_tasks * sizeof(ConcurrentTask*));
     if (!tasks) {
         free(all_args);
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1026,7 +1026,7 @@ Result_void_ptr task_scope_parallel_for(TaskScope* scope, ParallelForConfig conf
             free(all_args);
             free(tasks);
             
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -1120,7 +1120,7 @@ void task_scope_reset_stats(TaskScope* scope) {
 
 // Cancellation token operations
 CancellationToken* cancellation_token_create(void) {
-    CancellationToken* token = calloc(1, sizeof(CancellationToken));
+    CancellationToken* token = xcalloc(1, sizeof(CancellationToken));
     if (!token) return NULL;
     
     atomic_init(&token->is_cancelled, false);
@@ -1226,7 +1226,7 @@ void cancellation_token_destroy(CancellationToken* token) {
 // Task dependency implementation
 Result_void_ptr task_add_dependency(ConcurrentTask* task, ConcurrentTask* dependency, bool required, bool wait_completion) {
     if (!task || !dependency) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1240,9 +1240,9 @@ Result_void_ptr task_add_dependency(ConcurrentTask* task, ConcurrentTask* depend
     }
     
     // Create new dependency
-    TaskDependency* dep = malloc(sizeof(TaskDependency));
+    TaskDependency* dep = xmalloc(sizeof(TaskDependency));
     if (!dep) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1271,7 +1271,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
                                      MapFunction map_fn, ReduceFunction reduce_fn,
                                      void** result, size_t* result_size) {
     if (!scope || !map_fn || !reduce_fn || !result || !result_size) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1293,7 +1293,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
     // Map phase
     TaskGroup* map_group = task_group_create(scope, "map_phase");
     if (!map_group) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1313,7 +1313,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
         free(map_results);
         free(map_result_sizes);
         task_group_destroy(map_group);
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1354,7 +1354,7 @@ Result_void_ptr task_scope_map_reduce(TaskScope* scope, MapReduceConfig config,
         free(map_results);
         free(map_result_sizes);
         task_group_destroy(map_group);
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1415,7 +1415,7 @@ Pipeline* pipeline_create(TaskScope* scope, const char* name, TaskFunction* stag
         return NULL;
     }
     
-    Pipeline* pipeline = malloc(sizeof(Pipeline));
+    Pipeline* pipeline = xmalloc(sizeof(Pipeline));
     if (!pipeline) return NULL;
     
     pipeline->id = generate_unique_id();
@@ -1470,7 +1470,7 @@ Pipeline* pipeline_create(TaskScope* scope, const char* name, TaskFunction* stag
 
 Result_void_ptr pipeline_start(Pipeline* pipeline) {
     if (!pipeline) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1487,7 +1487,7 @@ Result_void_ptr pipeline_start(Pipeline* pipeline) {
     
     if (pipeline->is_running) {
         pthread_mutex_unlock(&pipeline->pipeline_mutex);
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1512,7 +1512,7 @@ Result_void_ptr pipeline_start(Pipeline* pipeline) {
                 free(pipeline->output_buffers[j]);
             }
             pthread_mutex_unlock(&pipeline->pipeline_mutex);
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -1536,7 +1536,7 @@ Result_void_ptr pipeline_start(Pipeline* pipeline) {
 
 Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_size) {
     if (!pipeline || !item) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1550,7 +1550,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
     }
     
     if (!pipeline->is_running) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OPERATION_FAILED,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1569,7 +1569,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
     size_t pos = atomic_fetch_add(&pipeline->buffer_positions[0], 1);
     
     if (pos >= pipeline->buffer_sizes[0]) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_BUFFER_OVERFLOW,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1585,7 +1585,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
     // Copy the item
     input_buffer[pos] = malloc(item_size);
     if (!input_buffer[pos]) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1605,7 +1605,7 @@ Result_void_ptr pipeline_push_input(Pipeline* pipeline, void* item, size_t item_
 
 Result_void_ptr pipeline_pop_output(Pipeline* pipeline, void** item, size_t* item_size, uint64_t timeout_ms) {
     if (!pipeline || !item || !item_size) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -1628,7 +1628,7 @@ Result_void_ptr pipeline_pop_output(Pipeline* pipeline, void** item, size_t* ite
 
 Result_void_ptr pipeline_shutdown(Pipeline* pipeline) {
     if (!pipeline) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,

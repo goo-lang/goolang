@@ -1,0 +1,19 @@
+// Spec: Types / Function types — closures capture variables
+package main
+
+import "fmt"
+
+func counter() func() int {
+	n := 0
+	return func() int {
+		n = n + 1
+		return n
+	}
+}
+
+func main() {
+	c := counter()
+	c()
+	c()
+	fmt.Println(c())
+}

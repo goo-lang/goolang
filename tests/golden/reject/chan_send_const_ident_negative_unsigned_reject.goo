@@ -1,0 +1,13 @@
+// Correctness arc 4 (j), negative arm: a negative const identifier into an
+// unsigned-element channel must reject (Go: -5 is not representable in
+// uint8). Before the fix this printed 251. Depends on the arc-4 T1 decl fix:
+// the const's own int64 typing is what lets the gate reconstruct
+// "genuinely negative" for int_const_fits_expected's unsigned arms.
+package main
+
+func main() {
+	const k = -5
+	ch := make_chan(uint8, 1)
+	ch <- k
+	println(<-ch)
+}

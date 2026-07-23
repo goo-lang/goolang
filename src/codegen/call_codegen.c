@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "embedding.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -13,19 +14,57 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
                                                TypeKind return_kind, int unused_extra);
 static ValueInfo* codegen_generate_printf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_fmt_sprintln_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_errorf_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+static ValueInfo* codegen_generate_string_result_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                       ASTNode* expr, const char* runtime_symbol,
+                                                       ASTNode* path_arg);
 
 #if LLVM_AVAILABLE
 // Given a loaded `error` value {i1 is_null, i8* handle}, produce the goo_string
 // to display: "<nil>" when null, else goo_error_message(handle). Shared by
 // fmt.Println's error case and the %v verb (defined below, near fmt_emit_segments).
 static LLVMValueRef codegen_error_display_string(CodeGenerator* codegen, LLVMValueRef err_loaded, Position pos);
+
+// fmt.Println value formatter (struct/pointer-to-struct formatting task):
+// recursive per-value dispatch, extracted from the Println arg loop so
+// TYPE_STRUCT and pointer-to-struct can recurse into it. See its definition
+// (near codegen_generate_println_call) for the full contract.
+static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
+                                   LLVMValueRef val, Type* ty, int depth, Position pos);
+
+// fmt.Sprintf %v value formatter: the string-building counterpart to
+// codegen_emit_fmt_value above. Same recursive dispatch/shape (struct,
+// pointer-to-struct, depth cap) but CONCATENATES into a goo_string
+// accumulator (via goo_string_concat) instead of calling goo_print. See its
+// definition (right after codegen_emit_fmt_value) for the full contract.
+static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeChecker* checker,
+                                                    LLVMValueRef acc, LLVMValueRef val,
+                                                    Type* ty, int depth, Position pos);
 #endif
 
 // Defined in expression_codegen.c: storage address of an addressable
 // expression (no load). Used here for pointer-receiver auto-address-of (P2-3).
 ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+
+#if LLVM_AVAILABLE
+// P4.7 (packages-B, B3): lower a sync.Mutex / sync.WaitGroup method call
+// directly to the goo_sync_* runtime wrappers (src/runtime/sync_shim.c) —
+// see its definition (below codegen_generate_call_expr) for the full
+// rationale.
+static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type);
+
+// P4.6 (packages-C, C1): lower a time.Time method call (UnixNano is the only
+// one) directly to a field extract — see its definition (below
+// codegen_generate_sync_method_call) for the full rationale.
+static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type);
+#endif
 
 #if LLVM_AVAILABLE
 // Materialize a call argument as a C string pointer (char*): evaluate it,
@@ -63,6 +102,7 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
                                                      const char* sel_name,
                                                      int* handled) {
     *handled = 0;
+    CallExprNode* call = (CallExprNode*)expr;
     size_t n = strlen("goo_pkg__") + strlen(pkg_name) + strlen("__")
              + strlen(sel_name) + 1;
     char* sym = malloc(n);
@@ -70,10 +110,33 @@ static ValueInfo* codegen_generate_pkg_selector_call(CodeGenerator* codegen,
     snprintf(sym, n, "goo_pkg__%s__%s", pkg_name, sel_name);
     LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, sym);
     free(sym);
+
+    // P6 M1 (comptime-wall lift): a comptime-param package function has NO
+    // bare `goo_pkg__<pkg>__<sel>` body in the module — the template is never
+    // emitted directly (codegen.c skips it), only per-value monomorphized
+    // INSTANCES are, under `goo_pkg__<pkg>__<sel>__n<v>...`
+    // (comptime_instantiate, monomorphize.c). Rewire `cpkg.Fill(4, 10)` to its
+    // instance symbol here — the SAME construction the emitter used, so the two
+    // sites always agree. The comptime parameter stays a real ABI argument on
+    // the instance (see fill__n4's (i64,i64) signature), so the arg loop below
+    // passes every actual unchanged; only the callee SYMBOL differs. Runs
+    // before main's body is emitted since codegen_monomorphize completes at the
+    // top of the main-pass codegen_generate_program (codegen.c).
+    if (!fn && call->comptime_value_arg_count > 0) {
+        char* base = codegen_pkg_mangled_symbol(pkg_name, sel_name);
+        char* inst_sym = base
+            ? codegen_mangle_comptime_instance(base, call->comptime_value_args,
+                                               call->comptime_value_arg_count)
+            : NULL;
+        free(base);
+        if (inst_sym) {
+            fn = LLVMGetNamedFunction(codegen->module, inst_sym);
+            free(inst_sym);
+        }
+    }
     if (!fn) return NULL;  // not a real package symbol → shim fallback
 
     *handled = 1;
-    CallExprNode* call = (CallExprNode*)expr;
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
     LLVMValueRef* args = argc ? malloc(sizeof(LLVMValueRef) * argc) : NULL;
@@ -242,6 +305,148 @@ static void codegen_emit_funcnil_check(CodeGenerator* codegen, LLVMValueRef fn_p
 }
 #endif
 
+#if LLVM_AVAILABLE
+// P4.7 (packages-B, B3): compute the "slot" argument (void**, bitcast) a
+// goo_sync_* wrapper expects — the ADDRESS of the receiver's single opaque-
+// pointer field, which for a one-field struct at offset 0 is simply the
+// struct's own address. Every sync method has a pointer receiver (Go
+// convention: all sync primitives mutate shared state), so this always
+// either auto-addresses a value receiver or passes a pointer value through,
+// mirroring the general ptr_recv logic a few hundred lines below but
+// specialized (no embedding/promotion possible — Mutex/WaitGroup have no
+// fields a user program can see, let alone embed).
+static LLVMValueRef codegen_sync_receiver_slot(CodeGenerator* codegen, TypeChecker* checker,
+                                                ASTNode* recv_expr, Type* recv_type, Position pos) {
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+    int recv_is_ptr_value = recv_type && recv_type->kind == TYPE_POINTER;
+
+    if (!recv_is_ptr_value) {
+        // Auto-address-of: `mu.Lock()` on an addressable `sync.Mutex` value
+        // is `(&mu).Lock()`, same as any other pointer-receiver call.
+        ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, recv_expr);
+        if (!addr || !addr->is_lvalue) {
+            codegen_error(codegen, pos,
+                          "cannot call sync method on non-addressable value");
+            return NULL;
+        }
+        return LLVMBuildBitCast(codegen->builder, addr->llvm_value, void_ptr_type, "sync.slot");
+    }
+
+    // Receiver expression is already *Mutex/*WaitGroup-typed: an identifier
+    // auto-loads to the pointer value; a selector/index lvalue yields the
+    // field's storage ADDRESS and needs one load to reach the pointer
+    // itself (same rule codegen_generate_channel_send applies to a
+    // struct-field channel operand — see lowlevel_codegen.c).
+    ValueInfo* pv = codegen_generate_expression(codegen, checker, recv_expr);
+    if (!pv) return NULL;
+    LLVMValueRef ptr = pv->llvm_value;
+    if (pv->is_lvalue && pv->goo_type) {
+        LLVMTypeRef pt = codegen_type_to_llvm(codegen, pv->goo_type);
+        if (pt) ptr = LLVMBuildLoad2(codegen->builder, pt, ptr, "sync.recv_load");
+    }
+    value_info_free(pv);
+    return LLVMBuildBitCast(codegen->builder, ptr, void_ptr_type, "sync.slot");
+}
+
+static ValueInfo* codegen_generate_sync_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type) {
+    const char* tn = type_receiver_name(recv_type);
+    if (!tn) {
+        codegen_error(codegen, expr->pos, "internal: cannot resolve sync receiver type name");
+        return NULL;
+    }
+
+    const char* runtime_fn = NULL;
+    int has_delta = 0;
+    if (strcmp(tn, "Mutex") == 0) {
+        if (strcmp(msel->selector, "Lock") == 0) runtime_fn = "goo_sync_mutex_lock";
+        else if (strcmp(msel->selector, "Unlock") == 0) runtime_fn = "goo_sync_mutex_unlock";
+    } else if (strcmp(tn, "WaitGroup") == 0) {
+        if (strcmp(msel->selector, "Add") == 0) { runtime_fn = "goo_sync_wg_add"; has_delta = 1; }
+        else if (strcmp(msel->selector, "Done") == 0) runtime_fn = "goo_sync_wg_done";
+        else if (strcmp(msel->selector, "Wait") == 0) runtime_fn = "goo_sync_wg_wait";
+    }
+    if (!runtime_fn) {
+        codegen_error(codegen, expr->pos, "internal: unknown sync method '%s' on %s",
+                      msel->selector, tn);
+        return NULL;
+    }
+
+    LLVMValueRef slot = codegen_sync_receiver_slot(codegen, checker, msel->expr, recv_type, expr->pos);
+    if (!slot) return NULL;
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef void_type = LLVMVoidTypeInContext(ctx);
+
+    LLVMTypeRef param_types[2];
+    unsigned param_count = 1;
+    param_types[0] = void_ptr_type;  // void** slot, passed as an opaque i8*
+    if (has_delta) {
+        param_types[1] = LLVMInt64TypeInContext(ctx);
+        param_count = 2;
+    }
+    LLVMTypeRef fn_type = LLVMFunctionType(void_type, param_types, param_count, 0);
+
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, runtime_fn);
+    if (!fn) fn = LLVMAddFunction(codegen->module, runtime_fn, fn_type);
+
+    LLVMValueRef args[2];
+    args[0] = slot;
+    if (has_delta) {
+        if (!call->args) {
+            codegen_error(codegen, expr->pos, "internal: WaitGroup.Add missing delta argument");
+            return NULL;
+        }
+        ValueInfo* dv = codegen_generate_expression(codegen, checker, call->args);
+        if (!dv) return NULL;
+        LLVMValueRef delta = dv->llvm_value;
+        if (dv->is_lvalue && dv->goo_type) {
+            LLVMTypeRef dt = codegen_type_to_llvm(codegen, dv->goo_type);
+            if (dt) delta = LLVMBuildLoad2(codegen->builder, dt, delta, "wg.delta_load");
+        }
+        int src_signed = dv->goo_type ? type_is_signed(dv->goo_type) : 1;
+        delta = codegen_coerce_to_type(codegen, delta, src_signed, LLVMInt64TypeInContext(ctx));
+        args[1] = delta;
+        value_info_free(dv);
+    }
+
+    LLVMBuildCall2(codegen->builder, fn_type, fn, args, param_count, "");
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+}
+
+// P4.6 (packages-C, C1): time.Time's only method. UnixNano is a VALUE
+// receiver (Go: `func (t Time) UnixNano() int64`) — unlike every sync
+// method (always a pointer receiver mutating shared state), Time is an
+// immutable value type, so this is a plain field EXTRACT: no runtime call,
+// no addressability requirement (a call-result rvalue like
+// `time.Now().UnixNano()` works with no address to take).
+static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                     ASTNode* expr, CallExprNode* call,
+                                                     SelectorExprNode* msel, Type* recv_type) {
+    (void)call;
+    const char* tn = type_receiver_name(recv_type);
+    if (!tn || strcmp(tn, "Time") != 0 || strcmp(msel->selector, "UnixNano") != 0) {
+        codegen_error(codegen, expr->pos, "internal: unknown time method '%s' on %s",
+                      msel->selector, tn ? tn : "?");
+        return NULL;
+    }
+
+    ValueInfo* rv = codegen_generate_expression(codegen, checker, msel->expr);
+    if (!rv) return NULL;
+    LLVMValueRef recv_val = rv->llvm_value;
+    if (rv->is_lvalue && rv->goo_type) {
+        LLVMTypeRef rt = codegen_type_to_llvm(codegen, rv->goo_type);
+        if (rt) recv_val = LLVMBuildLoad2(codegen->builder, rt, recv_val, "time.recv");
+    }
+    value_info_free(rv);
+
+    LLVMValueRef nanos = LLVMBuildExtractValue(codegen->builder, recv_val, 0, "time.unixnano");
+    return value_info_new(NULL, nanos, type_checker_get_builtin(checker, TYPE_INT64));
+}
+#endif
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -400,15 +605,9 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 codegen_error(codegen, expr->pos, "new: missing resolved pointer type");
                 return NULL;
             }
-            LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-            if (!alloc_fn) {
-                codegen_error(codegen, expr->pos, "new: goo_alloc unavailable");
-                return NULL;
-            }
             LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, ptr_type->data.pointer.pointee_type);
             LLVMValueRef size = LLVMSizeOf(elem_llvm);
-            LLVMValueRef p = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(alloc_fn),
-                                            alloc_fn, &size, 1, "new");
+            LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, expr);
             return value_info_new(NULL, p, ptr_type);
         }
         if (strcmp(func_name->name, "make") == 0) {
@@ -621,6 +820,40 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, raw, 1, "len");
             value_info_free(arg);
             return value_info_new(NULL, len64, type_checker_get_builtin(checker, TYPE_INT64));
+        }
+        if (strcmp(func_name->name, "close") == 0 && call->args) {
+            // close(ch) -> goo_chan_close(ptr) (P3.1). An IDENTIFIER channel
+            // operand's own expression codegen already yields the runtime
+            // pointer value (codegen_generate_identifier auto-loads an
+            // lvalue) — but a struct-field or index channel operand
+            // (`close(b.ch)`) returns the field's storage ADDRESS instead
+            // (is_lvalue=1), same as any other field. Task #9: load through
+            // it here, mirroring the identical guard
+            // codegen_generate_channel_recv/send apply to their own channel
+            // argument (lowlevel_codegen.c) — this call site was the one
+            // spot that still assumed "no extra load needed".
+            ValueInfo* chan_arg = codegen_generate_expression(codegen, checker, call->args);
+            if (!chan_arg) return NULL;
+            if (chan_arg->is_lvalue && chan_arg->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, chan_arg->goo_type);
+                if (ct) {
+                    chan_arg->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                          chan_arg->llvm_value, "chan_close_load");
+                    chan_arg->is_lvalue = 0;
+                }
+            }
+            LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMTypeRef close_param_types[] = { void_ptr_type };
+            LLVMTypeRef close_func_type = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context),
+                                                            close_param_types, 1, 0);
+            LLVMValueRef close_fn = LLVMGetNamedFunction(codegen->module, "goo_chan_close");
+            if (!close_fn) {
+                close_fn = LLVMAddFunction(codegen->module, "goo_chan_close", close_func_type);
+            }
+            LLVMValueRef close_arg = chan_arg->llvm_value;
+            LLVMBuildCall2(codegen->builder, close_func_type, close_fn, &close_arg, 1, "");
+            value_info_free(chan_arg);
+            return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
         }
         if (strcmp(func_name->name, "delete") == 0 && call->args && call->args->next) {
             // delete(m, k) — unlink the entry for k from m via
@@ -892,11 +1125,20 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 // fmt.Println(arg) ≡ println(arg) for now (single-arg subset).
                 return codegen_generate_println_call(codegen, checker, expr);
             }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Print") == 0) {
+                return codegen_generate_fmt_print_call(codegen, checker, expr);
+            }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Printf") == 0) {
                 return codegen_generate_printf_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintf") == 0) {
                 return codegen_generate_sprintf_call(codegen, checker, expr);
+            }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprint") == 0) {
+                return codegen_generate_fmt_sprint_call(codegen, checker, expr);
+            }
+            if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Sprintln") == 0) {
+                return codegen_generate_fmt_sprintln_call(codegen, checker, expr);
             }
             if (strcmp(pkg->name, "fmt") == 0 && strcmp(sel->selector, "Errorf") == 0) {
                 return codegen_generate_errorf_call(codegen, checker, expr);
@@ -920,6 +1162,18 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "FileSize") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
                                                     "goo_sys_file_size", TYPE_INT32, 0);
+            }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadFile") == 0) {
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "os.ReadFile: expected one string argument");
+                    return NULL;
+                }
+                return codegen_generate_string_result_call(codegen, checker, expr,
+                                                            "goo_os_read_file", call->args);
+            }
+            if (strcmp(pkg->name, "os") == 0 && strcmp(sel->selector, "ReadLine") == 0) {
+                return codegen_generate_string_result_call(codegen, checker, expr,
+                                                            "goo_os_read_line", NULL);
             }
             if (strcmp(pkg->name, "math") == 0 && strcmp(sel->selector, "Sqrt") == 0) {
                 return codegen_generate_stdlib_call(codegen, checker, expr,
@@ -1082,9 +1336,66 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 LLVMValueRef result = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, args, 2, "join");
                 return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
             }
+            // P4.6 (packages-C, C1): time.Sleep(Duration) / time.Now() Time —
+            // plain package-level function calls (no receiver), so they
+            // belong in this if-chain alongside fmt/os/math/strings, NOT the
+            // method-call intercept further below (that's for t.UnixNano()
+            // only). Declare-on-first-use, same lazy pattern as every other
+            // runtime call this function emits.
+            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Sleep") == 0) {
+                // Duration IS int64 nanoseconds (Go parity), so the argument
+                // needs only the usual lvalue-load, no conversion.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_sleep_ns");
+                if (!fn) {
+                    LLVMTypeRef params[] = { LLVMInt64TypeInContext(codegen->context) };
+                    LLVMTypeRef fn_type = LLVMFunctionType(
+                        LLVMVoidTypeInContext(codegen->context), params, 1, 0);
+                    fn = LLVMAddFunction(codegen->module, "goo_time_sleep_ns", fn_type);
+                }
+                if (!call->args) {
+                    codegen_error(codegen, expr->pos, "time.Sleep: expected a Duration argument");
+                    return NULL;
+                }
+                ValueInfo* dv = codegen_generate_expression(codegen, checker, call->args);
+                if (!dv) return NULL;
+                LLVMValueRef d = dv->llvm_value;
+                if (dv->is_lvalue && dv->goo_type) {
+                    LLVMTypeRef dt = codegen_type_to_llvm(codegen, dv->goo_type);
+                    if (dt) d = LLVMBuildLoad2(codegen->builder, dt, d, "sleep.d_load");
+                }
+                value_info_free(dv);
+                LLVMValueRef sleep_args[] = { d };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, sleep_args, 1, "");
+                return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+            }
+            if (strcmp(pkg->name, "time") == 0 && strcmp(sel->selector, "Now") == 0) {
+                // goo_time_unix_ns() int64 -> wrap into the single-field
+                // Time struct {i64 _nanos}. expr->node_type is already the
+                // checker-resolved Time struct type (the package-export
+                // lookup stamped it) — reuse it rather than re-deriving,
+                // mirroring os.Args's use of expr->node_type above.
+                LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, "goo_time_unix_ns");
+                if (!fn) {
+                    LLVMTypeRef fn_type = LLVMFunctionType(
+                        LLVMInt64TypeInContext(codegen->context), NULL, 0, 0);
+                    fn = LLVMAddFunction(codegen->module, "goo_time_unix_ns", fn_type);
+                }
+                LLVMValueRef nanos = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn),
+                                                    fn, NULL, 0, "time.now_ns");
+                Type* time_type = expr->node_type;
+                if (!time_type) {
+                    codegen_error(codegen, expr->pos, "internal: time.Now missing resolved Time type");
+                    return NULL;
+                }
+                LLVMTypeRef time_llvm = codegen_type_to_llvm(codegen, time_type);
+                if (!time_llvm) return NULL;
+                LLVMValueRef time_val = LLVMGetUndef(time_llvm);
+                time_val = LLVMBuildInsertValue(codegen->builder, time_val, nanos, 0, "time.now_val");
+                return value_info_new(NULL, time_val, time_type);
+            }
         }
     }
-    
+
     // Method call: `recv.method(args)` where recv is a (pointer-to-)struct
     // value. Lowered to a direct call to the mangled function "T__method"
     // with the receiver prepended as the first argument. Non-method
@@ -1171,9 +1482,134 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             return r;
         }
 
+        // Function generics Tier B: if the receiver's static type is a type
+        // parameter, resolve it through the active monomorphization subst env
+        // so `T.M()` dispatches to the concrete `C__M` (not the never-emitted
+        // `T__M`). Identity on the non-generic path (active_subst is NULL).
+        recv_type = (Type*)codegen_resolve_type(codegen, recv_type);
+
+        // P4.7 (packages-B, B3): sync.Mutex / sync.WaitGroup methods have no
+        // goo_pkg__sync__ symbol to resolve — sync has no Goo source body
+        // (is_stdlib_shim_import), so the generic mangled-symbol lookup and
+        // its P4.3 package-prefix retry below would both miss and this call
+        // would misdiagnose through the embedding-promotion fallback as "no
+        // such method". Intercept before any of that.
+        {
+            Package* sync_owner = type_receiver_owner_package(recv_type);
+            // import_path, not ->name: ->name is the call-site identifier
+            // (`import s "sync"` sets it to "s"), which would silently miss
+            // this check under an alias. import_path is the canonical
+            // path, alias-independent (mirrors the checker-side guard in
+            // expression_checker.c's method-value rejection).
+            if (sync_owner && sync_owner->import_path && strcmp(sync_owner->import_path, "sync") == 0) {
+                return codegen_generate_sync_method_call(codegen, checker, expr, call, msel, recv_type);
+            }
+        }
+
+        // P4.6 (packages-C, C1): time.Time methods (UnixNano) have no
+        // goo_pkg__time__ symbol either, for the same reason sync's don't —
+        // "time" is a bespoke shim package (is_stdlib_shim_import), never
+        // source-compiled. Intercept before the generic owner-routed path
+        // for the same reason as the sync block just above.
+        {
+            Package* time_owner = type_receiver_owner_package(recv_type);
+            if (time_owner && time_owner->import_path && strcmp(time_owner->import_path, "time") == 0) {
+                return codegen_generate_time_method_call(codegen, checker, expr, call, msel, recv_type);
+            }
+        }
+
         const char* tn = type_receiver_name(recv_type);
         char* mangled = tn ? type_method_mangled_name(tn, msel->selector) : NULL;
-        LLVMValueRef fn = mangled ? LLVMGetNamedFunction(codegen->module, mangled) : NULL;
+
+        // P4.3 (packages-B, review-fix CRITICAL): the emitted symbol is
+        // decided by the receiver type's OWNER, never by whichever module
+        // symbol happens to exist under the bare name. A package-owned
+        // receiver (e.g. shapes.Point) resolves the goo_pkg__<pkg>__
+        // prefixed symbol ONLY — the DEFINITION side always emits package
+        // methods under that prefix (function_codegen.c), for intra- and
+        // cross-package callers alike — while a main-owned receiver
+        // (owner NULL) resolves the bare symbol ONLY. The pre-fix
+        // bare-first-with-prefix-retry order let a same-named MAIN method
+        // (`func (p *Point) Scale` on main's own Point) silently hijack
+        // cross-package dispatch: pointer receivers ran the wrong body,
+        // value receivers died in the LLVM verifier — see
+        // pkg_method_hijack_probe. `mangled` itself stays the BARE "T__m"
+        // string throughout — it doubles as the checker-Variable lookup
+        // key further down (never prefixed; type_checker_lookup_method
+        // applies the same owner-routing there). `method_owner_type`
+        // tracks which type's owner applies to that lookup — recv_type
+        // here, or the embedded owner below.
+        Type* method_owner_type = recv_type;
+        LLVMValueRef fn = NULL;
+        if (mangled) {
+            Package* owner_pkg = type_receiver_owner_package(recv_type);
+            if (owner_pkg) {
+                char* pkg_sym = codegen_pkg_mangled_symbol(owner_pkg->name, mangled);
+                if (pkg_sym) {
+                    fn = LLVMGetNamedFunction(codegen->module, pkg_sym);
+                    free(pkg_sym);
+                }
+            } else {
+                fn = LLVMGetNamedFunction(codegen->module, mangled);
+            }
+        }
+
+        // Function generics Tier B: a bound method PROMOTED through an
+        // embedded field (e.g. `Wrap` embeds `Base`, which declares
+        // `Label`) has no direct `Wrap__Label` symbol — methods are only
+        // ever emitted under their DECLARING type's mangled name. The
+        // ordinary (non-generic) call path never hits this: the type
+        // checker rewrites a promoted call's receiver expression to the
+        // owning embedded field at type-check time (embed_wrap_base,
+        // expression_checker.c's struct-selector path), so by codegen
+        // recv_type is already the owner. A bounded T's method call is
+        // checked differently — type_check_selector_expr's TYPE_PARAM
+        // branch resolves directly against the interface bound with no AST
+        // rewrite (expression_checker.c ~3628) — so after substitution the
+        // receiver here is still the OUTER struct. Fall back to the same
+        // embedding-resolve BFS the interface-thunk codegen already uses
+        // (interface_codegen.c's build_thunk) to find the owning type, and
+        // remember the hop path in `promo` so the receiver-address
+        // construction below can walk it with GEPs (mirroring build_thunk's
+        // own hop-walking loop) instead of the ordinary single-level
+        // receiver logic.
+        EmbedResult promo;
+        memset(&promo, 0, sizeof(promo));
+        if (!fn && recv_type && recv_type->kind == TYPE_STRUCT) {
+            EmbedResult er = embedding_resolve(checker, recv_type, msel->selector);
+            if (er.kind == EMBED_METHOD) {
+                const char* otn = type_receiver_name(er.owner);
+                char* omangled = otn ? type_method_mangled_name(otn, msel->selector) : NULL;
+                // P4.3 (review-fix CRITICAL): same owner-routed symbol
+                // choice as the direct (non-embedded) lookup above — a
+                // method promoted from a package-owned embedded field
+                // (e.g. `Wrap` embeds shapes.Point) resolves the prefixed
+                // symbol ONLY, a main-owned one the bare symbol ONLY.
+                LLVMValueRef ofn = NULL;
+                if (omangled) {
+                    Package* oowner_pkg = type_receiver_owner_package(er.owner);
+                    if (oowner_pkg) {
+                        char* opkg_sym = codegen_pkg_mangled_symbol(oowner_pkg->name, omangled);
+                        if (opkg_sym) {
+                            ofn = LLVMGetNamedFunction(codegen->module, opkg_sym);
+                            free(opkg_sym);
+                        }
+                    } else {
+                        ofn = LLVMGetNamedFunction(codegen->module, omangled);
+                    }
+                }
+                if (ofn) {
+                    free(mangled);
+                    mangled = omangled;
+                    fn = ofn;
+                    promo = er;
+                    method_owner_type = er.owner;
+                } else {
+                    free(omangled);
+                }
+            }
+        }
+
         if (fn) {
             // Receiver kind comes from the method's registered type: a pointer
             // receiver (`func (c *T) m()`) takes params[0] as a pointer. For an
@@ -1182,7 +1618,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             // address, not a loaded struct value (which would mismatch the
             // signature and fail LLVM verification). When the receiver
             // expression is already a pointer, pass it through unchanged.
-            Variable* mvar = type_checker_lookup_variable(checker, mangled);
+            // P4.3: mangled is bare; fall back to method_owner_type's
+            // package exports if it isn't visible in main's own scope.
+            Variable* mvar = type_checker_lookup_method(checker, method_owner_type,
+                                                         msel->selector, mangled);
             Type* recv_param = (mvar && mvar->type && mvar->type->kind == TYPE_FUNCTION
                                 && mvar->type->data.function.param_count > 0)
                 ? mvar->type->data.function.param_types[0] : NULL;
@@ -1205,7 +1644,65 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             }
 
             LLVMValueRef recv_arg = NULL;
-            if (ptr_recv && !recv_is_ptr_value) {
+            if (promo.kind == EMBED_METHOD) {
+                // Promoted-through-embedding receiver: address the outer
+                // struct, then GEP through each hop field (mirrors
+                // build_thunk's hop-walking loop in interface_codegen.c),
+                // following pointer indirection when a hop field is itself
+                // an embedded pointer, landing on the owner's address. Then
+                // pointer receivers take that address directly; value
+                // receivers load through it.
+                ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, msel->expr);
+                if (!addr || !addr->is_lvalue) {
+                    codegen_error(codegen, expr->pos,
+                        "cannot call promoted method '%s' on non-addressable value",
+                        msel->selector);
+                    free(mangled);
+                    return NULL;
+                }
+                // Identifier lvalues alias the value table; do not free addr
+                // (mirrors the `&x` address-of path below and in
+                // expression_codegen.c).
+                LLVMValueRef recv_ptr = addr->llvm_value;
+                Type* cur = recv_type;
+                for (size_t h = 0; h < promo.len; h++) {
+                    unsigned fidx = 0;
+                    int found = 0;
+                    for (size_t fi = 0; fi < cur->data.struct_type.field_count; fi++) {
+                        if (strcmp(cur->data.struct_type.fields[fi].name, promo.path[h]) == 0) {
+                            fidx = (unsigned)fi;
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        codegen_error(codegen, expr->pos,
+                            "internal: embedding hop '%s' not found resolving promoted method '%s'",
+                            promo.path[h], msel->selector);
+                        free(mangled);
+                        return NULL;
+                    }
+                    LLVMTypeRef cur_llvm = codegen_get_struct_type(codegen, cur);
+                    recv_ptr = LLVMBuildStructGEP2(codegen->builder, cur_llvm, recv_ptr, fidx, "embed.hop");
+                    Type* ft = cur->data.struct_type.fields[fidx].type;
+                    if (ft->kind == TYPE_POINTER) {
+                        recv_ptr = LLVMBuildLoad2(codegen->builder,
+                            LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0),
+                            recv_ptr, "embed.load");
+                        cur = ft->data.pointer.pointee_type;
+                    } else {
+                        cur = ft;
+                    }
+                }
+                if (ptr_recv) {
+                    recv_arg = recv_ptr;
+                } else {
+                    LLVMTypeRef owner_llvm = codegen_type_to_llvm(codegen, cur);
+                    recv_arg = owner_llvm
+                        ? LLVMBuildLoad2(codegen->builder, owner_llvm, recv_ptr, "recv_load")
+                        : recv_ptr;
+                }
+            } else if (ptr_recv && !recv_is_ptr_value) {
                 // Auto-address-of: the receiver must be an addressable lvalue.
                 ValueInfo* addr = codegen_emit_lvalue_address(codegen, checker, msel->expr);
                 if (!addr || !addr->is_lvalue) {
@@ -1274,14 +1771,36 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             LLVMValueRef* margs = malloc(sizeof(LLVMValueRef) * margc);
             if (!margs) { free(mangled); return NULL; }
             margs[0] = recv_arg;
+            // Arc 10 (o): coerce each numeric argument to the callee's
+            // declared LLVM parameter width, mirroring the plain user-call
+            // arg loop (T4) — this path had NO coercion, so a checker-
+            // admitted representable constant (`b.Set(K)`, K = 5, int8
+            // param) arrived as a raw i64 and failed LLVM verification.
+            // Param types come from the method's own signature; the shared
+            // helper no-ops on matching/non-numeric kinds.
+            LLVMTypeRef mfn_ty = LLVMGlobalGetValueType(fn);
+            unsigned mfn_params = LLVMCountParamTypes(mfn_ty);
+            LLVMTypeRef* mparam_tys = NULL;
+            if (mfn_params > 0) {
+                mparam_tys = malloc(sizeof(LLVMTypeRef) * mfn_params);
+                if (mparam_tys) LLVMGetParamTypes(mfn_ty, mparam_tys);
+            }
             int ok = 1;
             size_t i = 1;
             for (ASTNode* a = call->args; a; a = a->next, i++) {
                 ValueInfo* av = codegen_generate_expression(codegen, checker, a);
                 if (!av) { ok = 0; break; }
-                margs[i] = av->llvm_value;
+                LLVMValueRef v = av->llvm_value;
+                if (mparam_tys && i < mfn_params) {
+                    int src_signed = av->goo_type
+                                     ? type_is_signed(av->goo_type) : 1;
+                    v = codegen_coerce_to_type(codegen, v, src_signed,
+                                               mparam_tys[i]);
+                }
+                margs[i] = v;
                 value_info_free(av);
             }
+            free(mparam_tys);
             if (!ok) { free(margs); free(mangled); return NULL; }
             LLVMValueRef result = LLVMBuildCall2(codegen->builder,
                 LLVMGlobalGetValueType(fn), fn, margs, (unsigned)margc, "");
@@ -1292,12 +1811,151 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
         free(mangled);
     }
 
-    // Resolve the callee. See codegen_resolve_callee's comment: a bare
-    // identifier not shadowed by a local variable/parameter resolves to the
-    // BARE LLVM global function (the unconditionally-unchanged direct-call
-    // path); anything else evaluates through the ordinary expression path
-    // and may yield the universal `{ fn_ptr, env_ptr }` function-VALUE pair.
-    ValueInfo* func_val = codegen_resolve_callee(codegen, checker, call->function);
+    // Function-generics Task 10 (Part B — call rewiring): a generic call
+    // site (call->type_arg_count > 0, stamped by type_check_generic_call in
+    // expression_checker.c only when the callee resolves to a generic
+    // Variable) must dispatch to its MONOMORPHIZED INSTANCE symbol, never
+    // the template's own bare name — codegen_generate_declaration
+    // (codegen.c) skips emitting the generic template itself (Task 4), so
+    // e.g. `Id` was never registered in this module; only instances like
+    // `Id__int64` were, by codegen_monomorphize's worklist (Part A,
+    // monomorphize.c) which ran to completion BEFORE any function body
+    // (including this one) was emitted. This takes precedence over the
+    // ordinary bare-name resolution below.
+    //
+    // type_substitute resolves each call->type_args[i] through
+    // codegen->active_subst/active_subst_n: identity when this call site is
+    // itself concrete (e.g. a call inside main — active_subst is NULL,
+    // active_subst_n is 0, so the TYPE_PARAM case's bounds check never
+    // fires and every arg is returned unchanged), or a full recursive
+    // rewrite (TYPE_PARAM -> the enclosing instance's concrete binding, and
+    // composite shapes like TYPE_SLICE/TYPE_POINTER/TYPE_FUNCTION rewritten
+    // element-wise) when this call is being emitted INSIDE a generic body
+    // that codegen_generate_function_instance is currently stamping (Part
+    // A's nested-call discovery always pre-stamps that nested callee before
+    // this body is ever emitted, so the instance looked up below is
+    // guaranteed to already exist — this path only looks it up, it never
+    // stamps). This MUST be the same recursive substitution Part A's
+    // mono_instantiate uses to stamp the nested instance's mangled name
+    // (monomorphize.c) — the single-level codegen_resolve_type only
+    // rewrites a bare top-level TYPE_PARAM, so a composite type-arg like
+    // `[]T` would keep its unbound element (`[]T` instead of `[]int`) and
+    // mangle to a symbol Part A never stamped.
+    // Comptime+generic composition (sub-project 2, Task 3): a call site can
+    // carry BOTH axes at once (call->type_arg_count > 0 AND
+    // call->comptime_value_arg_count > 0), e.g. `kernel[int64](4, arr)` where
+    // `kernel` is declared `func kernel[T](comptime n int, arr [n]T)`. That
+    // combined instance was stamped by the monomorphizer under
+    // codegen_mangle_combined_instance's name (types first, then `__n<v>`
+    // segments — monomorphize.c), NOT under either single-axis mangling, so
+    // it must be looked up FIRST, before either single-axis branch below gets
+    // a chance to mangle-and-miss (a per-type-only or per-value-only lookup
+    // against a combined symbol always fails, which is exactly the
+    // `Undefined identifier` regression this three-way replaces). This is a
+    // genuine three-way dispatch (if / else-if / else-if): combined, then
+    // generic-only, then comptime-only — never more than one branch can fire
+    // for a given call, so `func_val` is unambiguous going into the fallback
+    // below.
+    ValueInfo* func_val = NULL;
+    if (call->type_arg_count > 0 && call->comptime_value_arg_count > 0 &&
+        call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return NULL;
+        // Same substitution discipline as the generic-only branch below:
+        // when this call site sits inside an enclosing generic instance
+        // currently being stamped, its own type_args are still expressed in
+        // terms of the ENCLOSING instance's type params and must be resolved
+        // through codegen->active_subst before mangling, or the lookup below
+        // targets a symbol Part A (monomorphize.c) never stamped.
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
+        }
+        char* sym = codegen_mangle_combined_instance(gid->name, concrete_args,
+            call->type_arg_count, call->comptime_value_args,
+            call->comptime_value_arg_count);
+        LLVMValueRef inst = sym ? LLVMGetNamedFunction(codegen->module, sym) : NULL;
+        free(sym);
+        if (inst) {
+            // Mirror the generic-only branch's substituted-signature
+            // discipline: downstream nullable-wrap / interface-box /
+            // numeric-width-coercion logic needs the concrete
+            // (post-type-substitution) parameter/return types the emitted
+            // LLVM function actually has, not the template's TYPE_PARAM-
+            // bearing signature. The comptime axis never changes the
+            // callee's TYPE (only which literal a `comptime` param resolves
+            // to inside the body), so only the type args need substituting
+            // here — exactly like the generic-only branch.
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    } else if (call->type_arg_count > 0 && call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return NULL;
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
+        }
+        char* sym = codegen_mangle_instance(gid->name, concrete_args, call->type_arg_count);
+        LLVMValueRef inst = LLVMGetNamedFunction(codegen->module, sym);
+        free(sym);
+        if (inst) {
+            // The instance's REAL (post-substitution) signature — downstream
+            // nullable-wrap / interface-box / numeric-width-coercion logic
+            // below needs the concrete parameter/return types the emitted
+            // LLVM function actually has, not the template's own
+            // TYPE_PARAM-bearing signature.
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    } else if (call->comptime_value_arg_count > 0 &&
+               call->function->type == AST_IDENTIFIER) {
+        // Comptime value params Task 3 (call rewiring): a comptime call site
+        // (call->comptime_value_arg_count > 0, stamped by type_check_call_expr
+        // in expression_checker.c only for a plain identifier callee — see that
+        // function's recording-site doc comment) must dispatch to its
+        // MONOMORPHIZED INSTANCE symbol, never the template's own bare name:
+        // codegen_generate_declaration (codegen.c) skips emitting a plain
+        // comptime-param function's template directly, so e.g. `fill` is never
+        // registered in this module under its bare name — only instances like
+        // `fill__n4` are, by codegen_monomorphize's comptime worklist
+        // (monomorphize.c), which runs to completion BEFORE any function body
+        // (including this one) is emitted. Mirrors the generic-call rewiring
+        // above, one axis over: no type_substitute needed here, since a
+        // comptime value doesn't change the callee's TYPE (only which literal
+        // `n` resolves to inside its body) — the signature is just the plain
+        // Variable's own type, unchanged. Reached only when the combined
+        // branch above did NOT fire (call->type_arg_count == 0 here), by
+        // construction of this if/else-if/else-if chain.
+        IdentifierNode* cid = (IdentifierNode*)call->function;
+        char* sym = codegen_mangle_comptime_instance(cid->name,
+            call->comptime_value_args, call->comptime_value_arg_count);
+        LLVMValueRef inst = sym ? LLVMGetNamedFunction(codegen->module, sym) : NULL;
+        free(sym);
+        if (inst) {
+            Variable* cvar = type_checker_lookup_variable(checker, cid->name);
+            func_val = value_info_new(cid->name, inst, cvar ? cvar->type : NULL);
+        }
+    }
+
+    if (!func_val) {
+        // See codegen_resolve_callee's comment: a bare identifier not
+        // shadowed by a local variable/parameter resolves to the BARE LLVM
+        // global function (the unconditionally-unchanged direct-call path);
+        // anything else evaluates through the ordinary expression path and
+        // may yield the universal `{ fn_ptr, env_ptr }` function-VALUE pair.
+        func_val = codegen_resolve_callee(codegen, checker, call->function);
+    }
     if (!func_val) return NULL;
 
     // The callee's declared parameter types drive nullable auto-wrapping:
@@ -1349,10 +2007,13 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                 param_type = func_goo_type->data.function.param_types[i];
             }
 
-            if (param_type && param_type->kind == TYPE_NULLABLE &&
+            if (param_type &&
+                (param_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(param_type)) &&
                 arg->type == AST_LITERAL &&
                 ((LiteralNode*)arg)->literal_type == TOKEN_NIL) {
-                // nil literal → build the param's null-nullable directly.
+                // nil literal → build the param's null-nullable (?T) or bare
+                // zero value (P2.2 option A: pointer/slice/map/chan/func)
+                // directly, using the param's declared type as context.
                 ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, param_type);
                 if (!nil_val) {
                     free(args);
@@ -1367,6 +2028,32 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
 
             ValueInfo* arg_val = codegen_generate_expression(codegen, checker, arg);
             if (!arg_val) {
+                free(args);
+                value_info_free(func_val);
+                return NULL;
+            }
+
+            // Fix round 6 (M-r5a): instance-time enforcement of the
+            // array-length compatibility the checker DEFERRED for a
+            // comptime-length array argument (type_check_call_expr's
+            // comptime_len_deferred). arg_val->goo_type is the instance's
+            // re-derived REAL type, so a genuine mismatch at THIS instance
+            // is a clean, instance-named compile failure instead of an
+            // invalid-IR pass of a differently-sized aggregate. Gated on
+            // the comptime_length flag (either side) — ordinary mismatched
+            // array arguments never reach codegen.
+            if (param_type && arg_val->goo_type &&
+                param_type->kind == TYPE_ARRAY &&
+                arg_val->goo_type->kind == TYPE_ARRAY &&
+                (param_type->data.array.comptime_length ||
+                 arg_val->goo_type->data.array.comptime_length) &&
+                param_type->data.array.length != arg_val->goo_type->data.array.length) {
+                codegen_error(codegen, arg->pos,
+                    "cannot pass [%zu]-length array to [%zu]-length array parameter in comptime instance '%s'",
+                    arg_val->goo_type->data.array.length,
+                    param_type->data.array.length,
+                    codegen->symbol_override ? codegen->symbol_override : "?");
+                value_info_free(arg_val);
                 free(args);
                 value_info_free(func_val);
                 return NULL;
@@ -1403,7 +2090,7 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
                     }
                 }
                 LLVMValueRef boxed = codegen_interface_box(codegen, checker, param_type,
-                                                           arg_val->goo_type, arg_val->llvm_value);
+                                                           arg_val->goo_type, arg_val->llvm_value, arg->pos);
                 if (!boxed) { value_info_free(arg_val); free(args); value_info_free(func_val); return NULL; }
                 arg_val->llvm_value = boxed;
                 arg_val->goo_type = param_type;
@@ -1683,6 +2370,20 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
         ValueInfo* size_val = codegen_generate_expression(codegen, checker, size_arg);
         if (!size_val) return NULL;
 
+        // Load through the address first when the capacity is an lvalue
+        // (e.g. a struct-field selector `p.count`) — otherwise the pointer
+        // itself reaches the ZExt below and fails verification. Mirrors the
+        // load-if-lvalue idiom the make(slice) length/capacity path uses.
+        if (size_val->is_lvalue && size_val->goo_type) {
+            LLVMTypeRef st = codegen_type_to_llvm(codegen, size_val->goo_type);
+            if (st) {
+                size_val->llvm_value = LLVMBuildLoad2(codegen->builder, st,
+                                                      size_val->llvm_value,
+                                                      "make_chan_cap_load");
+                size_val->is_lvalue = 0;
+            }
+        }
+
         // Convert to size_t if needed
         buffer_size = size_val->llvm_value;
         if (LLVMTypeOf(buffer_size) != i64) {
@@ -1707,7 +2408,7 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
     LLVMValueRef channel = LLVMBuildCall2(codegen->builder, make_chan_func_type, make_chan_func, args, 2, "new_channel");
 
     // Create result value info
-    ValueInfo* result_info = malloc(sizeof(ValueInfo));
+    ValueInfo* result_info = xmalloc(sizeof(ValueInfo));
     result_info->name = NULL;
     result_info->llvm_value = channel;
     result_info->goo_type = expr->node_type;  // resolved TYPE_CHANNEL from type checker (Task 2 uses this)
@@ -1807,6 +2508,96 @@ static ValueInfo* codegen_generate_atoi_call(CodeGenerator* codegen, TypeChecker
     // Merge block: PHI the two !int union values.
     codegen_set_insert_point(codegen, merge_block);
     LLVMValueRef phi = LLVMBuildPhi(codegen->builder, union_llvm, "atoi_result");
+    LLVMAddIncoming(phi, &succ, &success_exit, 1);
+    LLVMAddIncoming(phi, &errv, &error_exit, 1);
+
+    return value_info_new(NULL, phi, result_type);
+#endif
+}
+
+// os.ReadFile(string) -> !string / os.ReadLine() -> !string (P4.8).
+// Both runtime functions (goo_os_read_file, goo_os_read_line) share the
+// SAME ok-flag + goo_string_t* out-param shape as goo_string_to_int above
+// (see codegen_generate_atoi_call) — an i32 ok return plus one out-param
+// that the callee fills with EITHER the success value OR the error message,
+// so both branches below load the same out_ptr rather than needing two
+// separate value sources (Atoi's error branch instead builds a compile-time
+// literal, since strconv's error text never depends on runtime state; P4.8's
+// errors do — "os.ReadFile <path>: <strerror>" — so the message has to come
+// from the runtime call itself). Shared between the two P4.8 call sites
+// (rather than one bespoke function per site, Atoi-style) because they are
+// otherwise IDENTICAL beyond the runtime symbol name and the presence of a
+// path argument; path_arg is NULL for ReadLine (no arguments), non-NULL for
+// ReadFile's single string argument.
+static ValueInfo* codegen_generate_string_result_call(CodeGenerator* codegen, TypeChecker* checker,
+                                                       ASTNode* expr, const char* runtime_symbol,
+                                                       ASTNode* path_arg) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available for %s", runtime_symbol);
+    return NULL;
+#else
+    if (!codegen || !checker || !expr) return NULL;
+
+    // The !string result type is in expr->node_type (set by shim_signature_lookup
+    // via SHIM_RET_STRING_RESULT).
+    Type* result_type = expr->node_type;
+    if (!result_type || !type_is_error_union(result_type)) {
+        codegen_error(codegen, expr->pos, "%s: no !string type context", runtime_symbol);
+        return NULL;
+    }
+    LLVMTypeRef union_llvm = codegen_type_to_llvm(codegen, result_type);
+    if (!union_llvm) return NULL;
+
+    LLVMValueRef fn = LLVMGetNamedFunction(codegen->module, runtime_symbol);
+    if (!fn) {
+        codegen_error(codegen, expr->pos, "%s not found in module", runtime_symbol);
+        return NULL;
+    }
+
+    // alloca goo_string_t out — receives EITHER the success value or the
+    // error message, decided by the ok flag below.
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+    LLVMValueRef out_ptr = codegen_create_entry_alloca(codegen, string_llvm, "str_result_out");
+
+    LLVMValueRef ok;
+    if (path_arg) {
+        LLVMValueRef path_ptr = codegen_arg_as_cstr(codegen, checker, path_arg);
+        if (!path_ptr) return NULL;
+        LLVMValueRef call_args[] = { path_ptr, out_ptr };
+        ok = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, call_args, 2, "str_result_ok");
+    } else {
+        LLVMValueRef call_args[] = { out_ptr };
+        ok = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fn), fn, call_args, 1, "str_result_ok");
+    }
+
+    // Branch on ok != 0.
+    LLVMValueRef zero_i32 = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
+    LLVMValueRef cond = LLVMBuildICmp(codegen->builder, LLVMIntNE, ok, zero_i32, "str_result_cond");
+
+    LLVMBasicBlockRef success_block = codegen_create_block(codegen, "str_result.success");
+    LLVMBasicBlockRef error_block   = codegen_create_block(codegen, "str_result.error");
+    LLVMBasicBlockRef merge_block   = codegen_create_block(codegen, "str_result.merge");
+    LLVMBuildCondBr(codegen->builder, cond, success_block, error_block);
+
+    // Success block: load *out (the success content), wrap in !string success union.
+    codegen_set_insert_point(codegen, success_block);
+    LLVMValueRef success_str = LLVMBuildLoad2(codegen->builder, string_llvm, out_ptr, "str_result_val");
+    Type* value_type = result_type->data.error_union.value_type;
+    LLVMValueRef succ = codegen_create_error_union_success(codegen, union_llvm, success_str, value_type);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef success_exit = LLVMGetInsertBlock(codegen->builder);
+
+    // Error block: load *out (the error message the SAME runtime call wrote
+    // on the ok=0 path), wrap in !string error union.
+    codegen_set_insert_point(codegen, error_block);
+    LLVMValueRef error_str = LLVMBuildLoad2(codegen->builder, string_llvm, out_ptr, "str_result_err");
+    LLVMValueRef errv = codegen_create_error_union_error(codegen, union_llvm, error_str);
+    LLVMBuildBr(codegen->builder, merge_block);
+    LLVMBasicBlockRef error_exit = LLVMGetInsertBlock(codegen->builder);
+
+    // Merge block: PHI the two !string union values.
+    codegen_set_insert_point(codegen, merge_block);
+    LLVMValueRef phi = LLVMBuildPhi(codegen->builder, union_llvm, "str_result");
     LLVMAddIncoming(phi, &succ, &success_exit, 1);
     LLVMAddIncoming(phi, &errv, &error_exit, 1);
 
@@ -1930,6 +2721,680 @@ static ValueInfo* codegen_generate_stdlib_call(CodeGenerator* codegen, TypeCheck
 #endif
 }
 
+#if LLVM_AVAILABLE
+// codegen_emit_fmt_value: recursive fmt.Println value formatter (struct /
+// pointer-to-struct formatting task). Emits the no-newline print call(s) for
+// ONE already-loaded value `val` of goo type `ty`. Moved verbatim from the
+// Println arg loop's inline per-kind dispatch (string/int/uint/bool/float/
+// error/interface — byte-identical behavior), plus two new recursive cases:
+//
+//   - TYPE_STRUCT: "{" field0 " " field1 ... "}" (Go-style struct format),
+//     each field value extracted with LLVMBuildExtractValue and recursed on.
+//   - TYPE_POINTER to TYPE_STRUCT: a nil check (icmp eq null, branch to a
+//     nil/nonnil block, both joining a cont block — no phi needed, this is
+//     print side effects only) — nil prints "<nil>", non-nil prints "&" then
+//     loads the struct and recurses on the pointee at depth+1.
+//   - TYPE_SLICE (P3.8): "[" e0 " " e1 ... "]", an IR loop over the
+//     RUNTIME-dynamic length extracted from the {ptr,len,cap} aggregate,
+//     each element GEP'd and recursed on at depth+1.
+//   - TYPE_ARRAY (P3.8): same "[...]" shape as TYPE_SLICE, but unrolled
+//     like the struct arm (compile-time-known length, no address needed).
+//
+// `depth` starts at 0 for a top-level Println argument. depth > 6 prints
+// "..." and stops WITHOUT recursing further: this formatter recurses over
+// TYPES at codegen time (there is no runtime value to bottom out on, only
+// the static type shape), so a self-referential struct
+// (`type Node struct { v int; next *Node }`) would otherwise send the
+// compiler into unbounded recursion emitting IR forever — this cap is
+// required for the compiler to terminate on such a type, not merely a
+// nicety for deeply-nested output.
+//
+// Pointer-to-non-struct (e.g. *int), maps, and functions stay out of scope
+// (existing clean codegen_error) — Go prints raw addresses for those, which
+// is non-deterministic and not needed here.
+//
+// Returns 1 on success, 0 after emitting a source-located codegen_error.
+static int codegen_emit_fmt_value(CodeGenerator* codegen, TypeChecker* checker,
+                                   LLVMValueRef val, Type* ty, int depth, Position pos) {
+    (void)checker;
+    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
+    if (!print_func) {
+        codegen_error(codegen, pos, "goo_print function not found in module");
+        return 0;
+    }
+
+    // Recursion cap (REQUIRED, see doc comment above): a self-referential
+    // struct type recurses over TYPES at codegen time, not over a bounded
+    // runtime value, so without this the compiler itself would never
+    // terminate on `type Node struct { next *Node }`.
+    if (depth > 6) {
+        LLVMValueRef dots = LLVMBuildGlobalStringPtr(codegen->builder, "...", "fmt_depth_cap");
+        LLVMValueRef dargs[] = { dots };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, dargs, 1, "");
+        return 1;
+    }
+
+    TypeKind kind = (ty ? ty->kind : TYPE_VOID);
+
+    // error (Phase 6 Task 4): tagged nullable, not one of fmt's primitive
+    // kinds, so it must be special-cased before the kind switch below (it
+    // would otherwise fall into the "unsupported argument type" error).
+    // Print "<nil>" when null, else the boxed message — same nil-guard/
+    // extract/goo_error_message shape as .Error() (Task 3, ~line 495).
+    if (type_is_error(ty)) {
+        LLVMValueRef to_print = codegen_error_display_string(codegen, val, pos);
+        if (!to_print) return 0;
+
+        LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+        if (!str_fn) {
+            codegen_error(codegen, pos, "goo_print_string not found in module");
+            return 0;
+        }
+        LLVMValueRef pargs[] = { to_print };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                      str_fn, pargs, 1, "");
+    } else if (kind == TYPE_STRING) {
+        // Pass the whole goo_string struct to the length-aware printer.
+        // Extracting just the data ptr and calling goo_print (strlen) is
+        // wrong for a substring (F5): a shared-buffer slice like
+        // "hello"[1:3] has no '\0' after "el", so strlen would read past
+        // the logical length. goo_print_string honours the length field.
+        LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+        if (!str_fn) {
+            codegen_error(codegen, pos, "goo_print_string not found in module");
+            return 0;
+        }
+        LLVMValueRef args[] = { val };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
+                      str_fn, args, 1, "");
+    } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
+        LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_print_int");
+        LLVMValueRef widened = LLVMBuildSExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "sext");
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
+                      int_fn, args, 1, "");
+    } else if (kind == TYPE_UINT8 || kind == TYPE_UINT16 || kind == TYPE_UINT32 || kind == TYPE_UINT64) {
+        // Unsigned: zero-extend (not sign-extend) to u64 and use the unsigned
+        // printer so large values print correctly (uint64 above INT64_MAX
+        // would show negative through goo_print_int).
+        LLVMValueRef uint_fn = LLVMGetNamedFunction(codegen->module, "goo_print_uint");
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "zext");
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(uint_fn),
+                      uint_fn, args, 1, "");
+    } else if (kind == TYPE_BOOL) {
+        LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_print_bool");
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt32TypeInContext(codegen->context), "zext");
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
+                      bool_fn, args, 1, "");
+    } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
+        LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_print_float");
+        LLVMValueRef widened = (kind == TYPE_FLOAT32)
+            ? LLVMBuildFPExt(codegen->builder, val,
+                             LLVMDoubleTypeInContext(codegen->context), "fpext")
+            : val;
+        LLVMValueRef args[] = { widened };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
+                      float_fn, args, 1, "");
+    } else if (kind == TYPE_INTERFACE) {
+        // Print an interface value by its dynamic type: {vtable,data} ->
+        // goo_iface_format (runtime helper: nil vtable -> "<nil>", else
+        // vtable[0]=desc, desc.fmt_fn(data)) -> goo_print_string.
+        LLVMValueRef ival = val;   // {ptr vtable, ptr data}
+        LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, ival, 0, "ifvt");
+        LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, ival, 1, "ifdata");
+
+        LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
+        if (!fmtcall) {
+            codegen_error(codegen, pos, "goo_iface_format not found");
+            return 0;
+        }
+        LLVMValueRef fargs[] = { vtab, data };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
+                                        fmtcall, fargs, 2, "ifstr");
+
+        LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
+        if (!str_fn) {
+            codegen_error(codegen, pos, "goo_print_string not found in module");
+            return 0;
+        }
+        LLVMValueRef pargs[] = { s };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn), str_fn, pargs, 1, "");
+    } else if (kind == TYPE_STRUCT) {
+        // "{" field0 " " field1 ... "}" — Go-style struct formatting.
+        LLVMValueRef brace_open = LLVMBuildGlobalStringPtr(codegen->builder, "{", "fmt_struct_open");
+        LLVMValueRef oargs[] = { brace_open };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, oargs, 1, "");
+
+        size_t fcount = ty->data.struct_type.field_count;
+        StructField* fields = ty->data.struct_type.fields;
+        for (size_t i = 0; i < fcount; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_struct_sp");
+                LLVMValueRef spargs[] = { sp };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                              print_func, spargs, 1, "");
+            }
+            LLVMValueRef fv = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_struct_field");
+            if (!codegen_emit_fmt_value(codegen, checker, fv, fields[i].type, depth + 1, pos)) {
+                return 0;
+            }
+        }
+
+        LLVMValueRef brace_close = LLVMBuildGlobalStringPtr(codegen->builder, "}", "fmt_struct_close");
+        LLVMValueRef cargs[] = { brace_close };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, cargs, 1, "");
+    } else if (kind == TYPE_POINTER && ty->data.pointer.pointee_type &&
+               ty->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+        // Pointer-to-struct: nil check -> "<nil>", else "&" + the pointee
+        // struct's own formatting (no phi — both arms just emit print side
+        // effects and fall through to a shared continuation block).
+        LLVMValueRef null_ptr = LLVMConstNull(LLVMTypeOf(val));
+        LLVMValueRef is_null = LLVMBuildICmp(codegen->builder, LLVMIntEQ, val, null_ptr, "fmt_ptr_isnull");
+        LLVMBasicBlockRef nil_bb    = codegen_create_block(codegen, "fmt.nil");
+        LLVMBasicBlockRef nonnil_bb = codegen_create_block(codegen, "fmt.nonnil");
+        LLVMBasicBlockRef cont_bb   = codegen_create_block(codegen, "fmt.cont");
+        LLVMBuildCondBr(codegen->builder, is_null, nil_bb, nonnil_bb);
+
+        codegen_set_insert_point(codegen, nil_bb);
+        LLVMValueRef nil_str = LLVMBuildGlobalStringPtr(codegen->builder, "<nil>", "fmt_ptr_nilstr");
+        LLVMValueRef nargs[] = { nil_str };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, nargs, 1, "");
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, nonnil_bb);
+        LLVMValueRef amp = LLVMBuildGlobalStringPtr(codegen->builder, "&", "fmt_ptr_amp");
+        LLVMValueRef aargs[] = { amp };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, aargs, 1, "");
+
+        Type* pointee = ty->data.pointer.pointee_type;
+        LLVMTypeRef struct_llvm = codegen_type_to_llvm(codegen, pointee);
+        if (!struct_llvm) {
+            codegen_error(codegen, pos, "fmt.Println: cannot lower pointee struct type");
+            return 0;
+        }
+        LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, struct_llvm, val, "fmt_ptr_load");
+        if (!codegen_emit_fmt_value(codegen, checker, loaded, pointee, depth + 1, pos)) {
+            return 0;
+        }
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, cont_bb);
+    } else if (kind == TYPE_SLICE) {
+        // "[" e0 " " e1 ... "]" — Go's %v slice shape. Length is a RUNTIME
+        // value (extracted from the {ptr,len,cap} aggregate), unlike a
+        // struct's compile-time field count, so — unlike the struct/array
+        // arms — this needs a real IR loop (cond/body/post blocks) rather
+        // than an unrolled C loop. []byte recurses into the TYPE_UINT8 arm
+        // above and so prints as NUMBERS ("[104 105]"), matching Go's %v
+        // (only %s strings a []byte) — no special-casing needed here.
+        LLVMValueRef bracket_open = LLVMBuildGlobalStringPtr(codegen->builder, "[", "fmt_slice_open");
+        LLVMValueRef boargs[] = { bracket_open };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, boargs, 1, "");
+
+        Type* elem_type = ty->data.slice.element_type;
+        LLVMTypeRef llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        if (!llvm_elem) {
+            codegen_error(codegen, pos, "fmt.Println: cannot lower slice element type");
+            return 0;
+        }
+        LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, val, 0, "fmt_slice_data");
+        LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, val, 1, "fmt_slice_len");
+
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+        LLVMValueRef idx_alloca = codegen_create_entry_alloca(codegen, i32, "fmt_slice_i");
+        LLVMBuildStore(codegen->builder, LLVMConstInt(i32, 0, 0), idx_alloca);
+
+        LLVMBasicBlockRef cond_bb = codegen_create_block(codegen, "fmt.slice.cond");
+        LLVMBasicBlockRef body_bb = codegen_create_block(codegen, "fmt.slice.body");
+        LLVMBasicBlockRef post_bb = codegen_create_block(codegen, "fmt.slice.post");
+        LLVMBasicBlockRef exit_bb = codegen_create_block(codegen, "fmt.slice.exit");
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, cond_bb);
+        LLVMValueRef i_loaded = LLVMBuildLoad2(codegen->builder, i32, idx_alloca, "fmt_slice_i_ld");
+        LLVMValueRef i64w = LLVMBuildSExt(codegen->builder, i_loaded,
+                                          LLVMInt64TypeInContext(codegen->context), "fmt_slice_i64");
+        LLVMValueRef loop_cond = LLVMBuildICmp(codegen->builder, LLVMIntSLT, i64w, len64, "fmt_slice_cond");
+        LLVMBuildCondBr(codegen->builder, loop_cond, body_bb, exit_bb);
+
+        codegen_set_insert_point(codegen, body_bb);
+        // Separator: a runtime SELECT between "" (first element) and " "
+        // (all others) rather than a branch on i==0 — just a choice of
+        // which literal to print, so it doesn't need its own block.
+        LLVMValueRef is_first = LLVMBuildICmp(codegen->builder, LLVMIntEQ, i_loaded,
+                                              LLVMConstInt(i32, 0, 0), "fmt_slice_first");
+        LLVMValueRef sep_space = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_slice_sp");
+        LLVMValueRef sep_empty = LLVMBuildGlobalStringPtr(codegen->builder, "", "fmt_slice_nosp");
+        LLVMValueRef sep = LLVMBuildSelect(codegen->builder, is_first, sep_empty, sep_space, "fmt_slice_sep");
+        LLVMValueRef separgs[] = { sep };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, separgs, 1, "");
+
+        LLVMValueRef indices[] = { i_loaded };
+        LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem, data_ptr, indices, 1, "fmt_slice_elem_ptr");
+        LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "fmt_slice_elem");
+        if (!codegen_emit_fmt_value(codegen, checker, elem_val, elem_type, depth + 1, pos)) {
+            return 0;
+        }
+        LLVMBuildBr(codegen->builder, post_bb);
+
+        codegen_set_insert_point(codegen, post_bb);
+        LLVMValueRef i_next = LLVMBuildAdd(codegen->builder, i_loaded, LLVMConstInt(i32, 1, 0), "fmt_slice_inc");
+        LLVMBuildStore(codegen->builder, i_next, idx_alloca);
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, exit_bb);
+        LLVMValueRef bracket_close = LLVMBuildGlobalStringPtr(codegen->builder, "]", "fmt_slice_close");
+        LLVMValueRef bcargs[] = { bracket_close };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, bcargs, 1, "");
+    } else if (kind == TYPE_ARRAY) {
+        // Static length (known at compile time): unrolled exactly like the
+        // struct arm above rather than an IR loop. `val` here is already a
+        // loaded raw [N x T] LLVM aggregate value — every call site
+        // auto-loads an lvalue before reaching this helper (see e.g.
+        // Println's arg-load block) — not an address, so extractvalue at
+        // each constant index is both simpler and correct (LLVM arrays
+        // support extractvalue the same as structs).
+        LLVMValueRef bracket_open = LLVMBuildGlobalStringPtr(codegen->builder, "[", "fmt_array_open");
+        LLVMValueRef boargs[] = { bracket_open };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, boargs, 1, "");
+
+        size_t n = ty->data.array.length;
+        Type* elem_type = ty->data.array.element_type;
+        for (size_t i = 0; i < n; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_array_sp");
+                LLVMValueRef spargs[] = { sp };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                              print_func, spargs, 1, "");
+            }
+            LLVMValueRef ev = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_array_elem");
+            if (!codegen_emit_fmt_value(codegen, checker, ev, elem_type, depth + 1, pos)) {
+                return 0;
+            }
+        }
+
+        LLVMValueRef bracket_close = LLVMBuildGlobalStringPtr(codegen->builder, "]", "fmt_array_close");
+        LLVMValueRef bcargs[] = { bracket_close };
+        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                      print_func, bcargs, 1, "");
+    } else {
+        // P0-3: an unsupported argument type is a clean source-located
+        // codegen error, not a type-mismatched goo_print call that only
+        // surfaces (as invalid IR) at the LLVM verifier.
+        codegen_error(codegen, pos,
+                      "fmt.Println: unsupported argument type (only string, integer, "
+                      "bool, float, struct, pointer-to-struct, slice, and array "
+                      "are supported in v1)");
+        return 0;
+    }
+
+    return 1;
+}
+
+// fmt_sprintf_lit: build a literal goo_string_t {data, len} from a C string
+// constant. Used by codegen_build_fmt_value_string for the punctuation it
+// concatenates around struct/pointer values ("{", "}", "&", " ", "<nil>",
+// "..."). Mirrors the literal-chunk construction fmt_emit_segments does for
+// each literal format-string chunk (~line 2589-2598 below).
+static LLVMValueRef fmt_sprintf_lit(CodeGenerator* codegen, LLVMTypeRef string_llvm, const char* s) {
+    LLVMValueRef ptr = LLVMBuildGlobalStringPtr(codegen->builder, s, "sp_lit");
+    LLVMValueRef len = LLVMConstInt(LLVMInt64TypeInContext(codegen->context), strlen(s), 0);
+    LLVMValueRef str = LLVMGetUndef(string_llvm);
+    str = LLVMBuildInsertValue(codegen->builder, str, ptr, 0, "sp_lit_ptr");
+    str = LLVMBuildInsertValue(codegen->builder, str, len, 1, "sp_lit_len");
+    return str;
+}
+
+// codegen_build_fmt_value_string: fmt.Sprintf %v value formatter (struct /
+// pointer-to-struct formatting task). String-building counterpart to
+// codegen_emit_fmt_value directly above: identical recursive per-kind
+// dispatch (error/string/int/uint/bool/float/interface/struct/pointer-to-
+// struct) and the same depth>6 termination cap (required for the same
+// reason — a self-referential struct type recurses over TYPES at codegen
+// time, not a bounded runtime value, so without the cap the compiler itself
+// would never terminate on `type Node struct { next *Node }`). The
+// difference: instead of calling goo_print for side effects, each case
+// concatenates its piece onto a goo_string accumulator via
+// goo_string_concat and returns the new accumulator.
+//
+// This is also why pointer-to-struct needs a phi where codegen_emit_fmt_value
+// didn't: printing has no data dependency between the nil/non-nil arms (both
+// just emit side-effecting print calls and fall through to a shared
+// continuation block), but building a STRING value does — the result differs
+// per arm, so the cont block must phi the two arms' produced accumulators.
+//
+// Returns the new accumulator goo_string, or NULL after emitting a
+// source-located codegen_error.
+static LLVMValueRef codegen_build_fmt_value_string(CodeGenerator* codegen, TypeChecker* checker,
+                                                    LLVMValueRef acc, LLVMValueRef val,
+                                                    Type* ty, int depth, Position pos) {
+    (void)checker;
+    LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+    if (!concat_fn) {
+        codegen_error(codegen, pos, "goo_string_concat function not found in module");
+        return NULL;
+    }
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+
+    // Recursion cap (REQUIRED, see codegen_emit_fmt_value's doc comment
+    // above for why): mirrors that cap exactly so Sprintf agrees with
+    // Println/Printf on where a deeply-nested/self-referential type gets
+    // truncated.
+    if (depth > 6) {
+        LLVMValueRef dots = fmt_sprintf_lit(codegen, string_llvm, "...");
+        LLVMValueRef cargs[] = { acc, dots };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    }
+
+    TypeKind kind = (ty ? ty->kind : TYPE_VOID);
+
+    if (type_is_error(ty)) {
+        LLVMValueRef disp = codegen_error_display_string(codegen, val, pos);
+        if (!disp) return NULL;
+        LLVMValueRef cargs[] = { acc, disp };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_STRING) {
+        LLVMValueRef cargs[] = { acc, val };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
+        LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_int_to_string");
+        if (!int_fn) { codegen_error(codegen, pos, "goo_int_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = LLVMBuildSExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "sext");
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
+                                        int_fn, sargs, 1, "sp_int");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_UINT8 || kind == TYPE_UINT16 || kind == TYPE_UINT32 || kind == TYPE_UINT64) {
+        LLVMValueRef uint_fn = LLVMGetNamedFunction(codegen->module, "goo_uint_to_string");
+        if (!uint_fn) { codegen_error(codegen, pos, "goo_uint_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt64TypeInContext(codegen->context), "zext");
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(uint_fn),
+                                        uint_fn, sargs, 1, "sp_uint");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_BOOL) {
+        LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_bool_to_string");
+        if (!bool_fn) { codegen_error(codegen, pos, "goo_bool_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = LLVMBuildZExt(codegen->builder, val,
+                                             LLVMInt32TypeInContext(codegen->context), "zext");
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
+                                        bool_fn, sargs, 1, "sp_bool");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
+        LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_float_to_string");
+        if (!float_fn) { codegen_error(codegen, pos, "goo_float_to_string not found in module"); return NULL; }
+        LLVMValueRef widened = (kind == TYPE_FLOAT32)
+            ? LLVMBuildFPExt(codegen->builder, val,
+                             LLVMDoubleTypeInContext(codegen->context), "fpext")
+            : val;
+        LLVMValueRef sargs[] = { widened };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
+                                        float_fn, sargs, 1, "sp_float");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_INTERFACE) {
+        LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, val, 0, "ifvt");
+        LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, val, 1, "ifdata");
+        LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
+        if (!fmtcall) { codegen_error(codegen, pos, "goo_iface_format not found"); return NULL; }
+        LLVMValueRef fargs[] = { vtab, data };
+        LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
+                                        fmtcall, fargs, 2, "ifstr");
+        LLVMValueRef cargs[] = { acc, s };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs, 2, "sp_acc");
+    } else if (kind == TYPE_STRUCT) {
+        // "{" field0 " " field1 ... "}" — Go-style struct formatting,
+        // threaded through the accumulator (same shape as
+        // codegen_emit_fmt_value's TYPE_STRUCT case, but concatenating
+        // instead of printing).
+        LLVMValueRef brace_open = fmt_sprintf_lit(codegen, string_llvm, "{");
+        LLVMValueRef oargs[] = { acc, brace_open };
+        acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                             concat_fn, oargs, 2, "sp_acc");
+
+        size_t fcount = ty->data.struct_type.field_count;
+        StructField* fields = ty->data.struct_type.fields;
+        for (size_t i = 0; i < fcount; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+                LLVMValueRef spargs[] = { acc, sp };
+                acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                     concat_fn, spargs, 2, "sp_acc");
+            }
+            LLVMValueRef fv = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "fmt_struct_field");
+            acc = codegen_build_fmt_value_string(codegen, checker, acc, fv, fields[i].type, depth + 1, pos);
+            if (!acc) return NULL;
+        }
+
+        LLVMValueRef brace_close = fmt_sprintf_lit(codegen, string_llvm, "}");
+        LLVMValueRef cargs2[] = { acc, brace_close };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs2, 2, "sp_acc");
+    } else if (kind == TYPE_POINTER && ty->data.pointer.pointee_type &&
+               ty->data.pointer.pointee_type->kind == TYPE_STRUCT) {
+        // Pointer-to-struct: nil check -> "<nil>", else "&" + the pointee
+        // struct's own formatting. Unlike codegen_emit_fmt_value's twin
+        // case, the two arms here produce DIFFERENT VALUES (not just side
+        // effects), so the cont block needs a phi over the two arms'
+        // accumulators.
+        LLVMValueRef null_ptr = LLVMConstNull(LLVMTypeOf(val));
+        LLVMValueRef is_null = LLVMBuildICmp(codegen->builder, LLVMIntEQ, val, null_ptr, "fmt_ptr_isnull");
+        LLVMBasicBlockRef nil_bb    = codegen_create_block(codegen, "spfmt.nil");
+        LLVMBasicBlockRef nonnil_bb = codegen_create_block(codegen, "spfmt.nonnil");
+        LLVMBasicBlockRef cont_bb   = codegen_create_block(codegen, "spfmt.cont");
+        LLVMBuildCondBr(codegen->builder, is_null, nil_bb, nonnil_bb);
+
+        codegen_set_insert_point(codegen, nil_bb);
+        LLVMValueRef nil_lit = fmt_sprintf_lit(codegen, string_llvm, "<nil>");
+        LLVMValueRef nargs[] = { acc, nil_lit };
+        LLVMValueRef acc_nil = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                              concat_fn, nargs, 2, "sp_acc_nil");
+        // Capture the block we're actually leaving from — flushing the
+        // chunk above can't branch, so this is still nil_bb here, but we
+        // capture it the same way as the non-nil arm below for symmetry
+        // and so a future edit that adds control flow to this arm can't
+        // silently invalidate the phi's incoming block.
+        LLVMBasicBlockRef nil_end = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, nonnil_bb);
+        LLVMValueRef amp_lit = fmt_sprintf_lit(codegen, string_llvm, "&");
+        LLVMValueRef aargs[] = { acc, amp_lit };
+        LLVMValueRef acc1 = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                           concat_fn, aargs, 2, "sp_acc_amp");
+
+        Type* pointee = ty->data.pointer.pointee_type;
+        LLVMTypeRef struct_llvm = codegen_type_to_llvm(codegen, pointee);
+        if (!struct_llvm) {
+            codegen_error(codegen, pos, "fmt.Sprintf: cannot lower pointee struct type");
+            return NULL;
+        }
+        LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, struct_llvm, val, "fmt_ptr_load");
+        LLVMValueRef acc_nn = codegen_build_fmt_value_string(codegen, checker, acc1, loaded,
+                                                              pointee, depth + 1, pos);
+        if (!acc_nn) return NULL;
+        // Captured AFTER the recursive call, NOT nonnil_bb: recursing into
+        // a nested struct/pointer field can itself append basic blocks
+        // (e.g. a nested pointer field runs this same nil-check), so the
+        // block the builder is actually in now is the true predecessor for
+        // the phi below — using nonnil_bb here would build a phi with a
+        // stale/wrong incoming block and fail the LLVM verifier.
+        LLVMBasicBlockRef nn_end = LLVMGetInsertBlock(codegen->builder);
+        LLVMBuildBr(codegen->builder, cont_bb);
+
+        codegen_set_insert_point(codegen, cont_bb);
+        LLVMValueRef phi = LLVMBuildPhi(codegen->builder, string_llvm, "sp_ptr_phi");
+        LLVMValueRef incoming_vals[]   = { acc_nil, acc_nn };
+        LLVMBasicBlockRef incoming_blocks[] = { nil_end, nn_end };
+        LLVMAddIncoming(phi, incoming_vals, incoming_blocks, 2);
+        return phi;
+    } else if (kind == TYPE_SLICE) {
+        // Same shape as codegen_emit_fmt_value's TYPE_SLICE arm (dynamic
+        // runtime length -> a real IR loop, not the struct arm's unrolled
+        // C loop), but threading a STRING ACCUMULATOR instead of printing.
+        // The accumulator is carried through the loop via an alloca +
+        // load/store (matching this file's index-variable convention,
+        // e.g. the range loop's idx_alloca) rather than a loop-carried
+        // phi: the recursive call below can itself open new basic blocks
+        // (a nested slice/struct/pointer element), which would leave a
+        // phi's incoming-block bookkeeping stale — exactly the failure
+        // mode the pointer-to-struct arm's nn_end comment above warns
+        // about. A store-then-branch from "wherever the recursive call
+        // left the builder" sidesteps that class of bug entirely.
+        LLVMValueRef bracket_open = fmt_sprintf_lit(codegen, string_llvm, "[");
+        LLVMValueRef boargs[] = { acc, bracket_open };
+        acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                             concat_fn, boargs, 2, "sp_acc");
+
+        Type* elem_type = ty->data.slice.element_type;
+        LLVMTypeRef llvm_elem = elem_type ? codegen_type_to_llvm(codegen, elem_type) : NULL;
+        if (!llvm_elem) {
+            codegen_error(codegen, pos, "fmt.Sprintf: cannot lower slice element type");
+            return NULL;
+        }
+        LLVMValueRef data_ptr = LLVMBuildExtractValue(codegen->builder, val, 0, "sp_slice_data");
+        LLVMValueRef len64 = LLVMBuildExtractValue(codegen->builder, val, 1, "sp_slice_len");
+
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(codegen->context);
+        LLVMValueRef idx_alloca = codegen_create_entry_alloca(codegen, i32, "sp_slice_i");
+        LLVMBuildStore(codegen->builder, LLVMConstInt(i32, 0, 0), idx_alloca);
+        LLVMValueRef acc_alloca = codegen_create_entry_alloca(codegen, string_llvm, "sp_slice_acc");
+        LLVMBuildStore(codegen->builder, acc, acc_alloca);
+
+        LLVMBasicBlockRef cond_bb = codegen_create_block(codegen, "spfmt.slice.cond");
+        LLVMBasicBlockRef body_bb = codegen_create_block(codegen, "spfmt.slice.body");
+        LLVMBasicBlockRef post_bb = codegen_create_block(codegen, "spfmt.slice.post");
+        LLVMBasicBlockRef exit_bb = codegen_create_block(codegen, "spfmt.slice.exit");
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, cond_bb);
+        LLVMValueRef i_loaded = LLVMBuildLoad2(codegen->builder, i32, idx_alloca, "sp_slice_i_ld");
+        LLVMValueRef i64w = LLVMBuildSExt(codegen->builder, i_loaded,
+                                          LLVMInt64TypeInContext(codegen->context), "sp_slice_i64");
+        LLVMValueRef loop_cond = LLVMBuildICmp(codegen->builder, LLVMIntSLT, i64w, len64, "sp_slice_cond");
+        LLVMBuildCondBr(codegen->builder, loop_cond, body_bb, exit_bb);
+
+        codegen_set_insert_point(codegen, body_bb);
+        LLVMValueRef is_first = LLVMBuildICmp(codegen->builder, LLVMIntEQ, i_loaded,
+                                              LLVMConstInt(i32, 0, 0), "sp_slice_first");
+        LLVMValueRef sep_space = fmt_sprintf_lit(codegen, string_llvm, " ");
+        LLVMValueRef sep_empty = fmt_sprintf_lit(codegen, string_llvm, "");
+        LLVMValueRef sep = LLVMBuildSelect(codegen->builder, is_first, sep_empty, sep_space, "sp_slice_sep");
+        LLVMValueRef cur = LLVMBuildLoad2(codegen->builder, string_llvm, acc_alloca, "sp_slice_acc_ld");
+        LLVMValueRef separgs[] = { cur, sep };
+        LLVMValueRef with_sep = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                               concat_fn, separgs, 2, "sp_slice_acc_sep");
+
+        LLVMValueRef indices[] = { i_loaded };
+        LLVMValueRef elem_ptr = LLVMBuildGEP2(codegen->builder, llvm_elem, data_ptr, indices, 1, "sp_slice_elem_ptr");
+        LLVMValueRef elem_val = LLVMBuildLoad2(codegen->builder, llvm_elem, elem_ptr, "sp_slice_elem");
+        LLVMValueRef with_elem = codegen_build_fmt_value_string(codegen, checker, with_sep, elem_val,
+                                                                 elem_type, depth + 1, pos);
+        if (!with_elem) return NULL;
+        LLVMBuildStore(codegen->builder, with_elem, acc_alloca);
+        LLVMBuildBr(codegen->builder, post_bb);
+
+        codegen_set_insert_point(codegen, post_bb);
+        LLVMValueRef i_next = LLVMBuildAdd(codegen->builder, i_loaded, LLVMConstInt(i32, 1, 0), "sp_slice_inc");
+        LLVMBuildStore(codegen->builder, i_next, idx_alloca);
+        LLVMBuildBr(codegen->builder, cond_bb);
+
+        codegen_set_insert_point(codegen, exit_bb);
+        LLVMValueRef acc_final = LLVMBuildLoad2(codegen->builder, string_llvm, acc_alloca, "sp_slice_acc_final");
+        LLVMValueRef bracket_close = fmt_sprintf_lit(codegen, string_llvm, "]");
+        LLVMValueRef bcargs[] = { acc_final, bracket_close };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, bcargs, 2, "sp_acc");
+    } else if (kind == TYPE_ARRAY) {
+        // Static length: unrolled exactly like the struct arm above (same
+        // reasoning as codegen_emit_fmt_value's TYPE_ARRAY arm — `val` is
+        // already a loaded [N x T] aggregate, not an address).
+        LLVMValueRef bracket_open = fmt_sprintf_lit(codegen, string_llvm, "[");
+        LLVMValueRef boargs[] = { acc, bracket_open };
+        acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                             concat_fn, boargs, 2, "sp_acc");
+
+        size_t n = ty->data.array.length;
+        Type* elem_type = ty->data.array.element_type;
+        for (size_t i = 0; i < n; i++) {
+            if (i > 0) {
+                LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+                LLVMValueRef spargs[] = { acc, sp };
+                acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                                     concat_fn, spargs, 2, "sp_acc");
+            }
+            LLVMValueRef ev = LLVMBuildExtractValue(codegen->builder, val, (unsigned)i, "sp_array_elem");
+            acc = codegen_build_fmt_value_string(codegen, checker, acc, ev, elem_type, depth + 1, pos);
+            if (!acc) return NULL;
+        }
+
+        LLVMValueRef bracket_close = fmt_sprintf_lit(codegen, string_llvm, "]");
+        LLVMValueRef cargs2[] = { acc, bracket_close };
+        return LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn),
+                              concat_fn, cargs2, 2, "sp_acc");
+    } else {
+        codegen_error(codegen, pos,
+                      "fmt.Sprintf: %%v: unsupported argument type (only string, integer, "
+                      "bool, float, struct, pointer-to-struct, slice, and array "
+                      "are supported in v1)");
+        return NULL;
+    }
+}
+
+// codegen_fmt_value_to_string: public one-shot entry point onto
+// codegen_build_fmt_value_string (above) for callers outside this file.
+// Declared in codegen.h. Currently the only cross-file caller is the
+// boxed-`any` %v formatter (codegen_get_or_emit_type_fmt, interface_codegen.c,
+// Task 3 / B5 aggregate-fmt fix): rather than re-implementing struct
+// formatting a second time for the boxed path, it loads the concrete struct
+// out of the interface's heap-boxed `data` and routes it through the EXACT
+// SAME recursive struct/pointer-to-struct/slice/array %v machinery
+// fmt.Sprintf's own %v verb already uses below (line ~4203) — byte-identical
+// output to the unboxed concrete print of the same value follows for free,
+// since it is the same code emitting it.
+//
+// Seeds an empty accumulator (mirrors every top-level call site's own
+// `fmt_sprintf_lit(..., "")`-then-concat start, e.g. codegen_generate_
+// sprintf_call below) and threads `val`/`ty` through unchanged. Returns the
+// resulting goo_string, or NULL after codegen_build_fmt_value_string (or the
+// TYPE_STRING lookup here) has already emitted a source-located codegen_error.
+LLVMValueRef codegen_fmt_value_to_string(CodeGenerator* codegen, TypeChecker* checker,
+                                         LLVMValueRef val, Type* ty, Position pos) {
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+    if (!string_llvm) return NULL;
+    LLVMValueRef acc0 = fmt_sprintf_lit(codegen, string_llvm, "");
+    return codegen_build_fmt_value_string(codegen, checker, acc0, val, ty, 0, pos);
+}
+#endif
+
 ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -1981,107 +3446,12 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
             }
         }
 
-        TypeKind kind = (arg_val->goo_type ? arg_val->goo_type->kind : TYPE_VOID);
-
-        // error (Phase 6 Task 4): tagged nullable, not one of fmt's primitive
-        // kinds, so it must be special-cased before the kind switch below (it
-        // would otherwise fall into the "unsupported argument type" error).
-        // Print "<nil>" when null, else the boxed message — same nil-guard/
-        // extract/goo_error_message shape as .Error() (Task 3, ~line 495).
-        if (type_is_error(arg_val->goo_type)) {
-            LLVMValueRef to_print = codegen_error_display_string(codegen, arg_val->llvm_value, a->pos);
-            if (!to_print) { value_info_free(arg_val); return NULL; }
-
-            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
-            if (!str_fn) {
-                codegen_error(codegen, a->pos, "goo_print_string not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef pargs[] = { to_print };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
-                          str_fn, pargs, 1, "");
-        } else if (kind == TYPE_STRING) {
-            // Pass the whole goo_string struct to the length-aware printer.
-            // Extracting just the data ptr and calling goo_print (strlen) is
-            // wrong for a substring (F5): a shared-buffer slice like
-            // "hello"[1:3] has no '\0' after "el", so strlen would read past
-            // the logical length. goo_print_string honours the length field.
-            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
-            if (!str_fn) {
-                codegen_error(codegen, a->pos, "goo_print_string not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef args[] = { arg_val->llvm_value };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn),
-                          str_fn, args, 1, "");
-        } else if (kind == TYPE_INT8 || kind == TYPE_INT16 || kind == TYPE_INT32 || kind == TYPE_INT64) {
-            LLVMValueRef int_fn = LLVMGetNamedFunction(codegen->module, "goo_print_int");
-            LLVMValueRef widened = LLVMBuildSExt(codegen->builder, arg_val->llvm_value,
-                                                 LLVMInt64TypeInContext(codegen->context), "sext");
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(int_fn),
-                          int_fn, args, 1, "");
-        } else if (kind == TYPE_UINT8 || kind == TYPE_UINT16 || kind == TYPE_UINT32 || kind == TYPE_UINT64) {
-            // Unsigned: zero-extend (not sign-extend) to u64 and use the unsigned
-            // printer so large values print correctly (uint64 above INT64_MAX
-            // would show negative through goo_print_int).
-            LLVMValueRef uint_fn = LLVMGetNamedFunction(codegen->module, "goo_print_uint");
-            LLVMValueRef widened = LLVMBuildZExt(codegen->builder, arg_val->llvm_value,
-                                                 LLVMInt64TypeInContext(codegen->context), "zext");
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(uint_fn),
-                          uint_fn, args, 1, "");
-        } else if (kind == TYPE_BOOL) {
-            LLVMValueRef bool_fn = LLVMGetNamedFunction(codegen->module, "goo_print_bool");
-            LLVMValueRef widened = LLVMBuildZExt(codegen->builder, arg_val->llvm_value,
-                                                 LLVMInt32TypeInContext(codegen->context), "zext");
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(bool_fn),
-                          bool_fn, args, 1, "");
-        } else if (kind == TYPE_FLOAT32 || kind == TYPE_FLOAT64) {
-            LLVMValueRef float_fn = LLVMGetNamedFunction(codegen->module, "goo_print_float");
-            LLVMValueRef widened = (kind == TYPE_FLOAT32)
-                ? LLVMBuildFPExt(codegen->builder, arg_val->llvm_value,
-                                 LLVMDoubleTypeInContext(codegen->context), "fpext")
-                : arg_val->llvm_value;
-            LLVMValueRef args[] = { widened };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(float_fn),
-                          float_fn, args, 1, "");
-        } else if (kind == TYPE_INTERFACE) {
-            // Print an interface value by its dynamic type: {vtable,data} ->
-            // goo_iface_format (runtime helper: nil vtable -> "<nil>", else
-            // vtable[0]=desc, desc.fmt_fn(data)) -> goo_print_string.
-            LLVMValueRef ival = arg_val->llvm_value;   // {ptr vtable, ptr data}
-            LLVMValueRef vtab = LLVMBuildExtractValue(codegen->builder, ival, 0, "ifvt");
-            LLVMValueRef data = LLVMBuildExtractValue(codegen->builder, ival, 1, "ifdata");
-
-            LLVMValueRef fmtcall = LLVMGetNamedFunction(codegen->module, "goo_iface_format");
-            if (!fmtcall) {
-                codegen_error(codegen, a->pos, "goo_iface_format not found");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef fargs[] = { vtab, data };
-            LLVMValueRef s = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(fmtcall),
-                                            fmtcall, fargs, 2, "ifstr");
-
-            LLVMValueRef str_fn = LLVMGetNamedFunction(codegen->module, "goo_print_string");
-            if (!str_fn) {
-                codegen_error(codegen, a->pos, "goo_print_string not found in module");
-                value_info_free(arg_val);
-                return NULL;
-            }
-            LLVMValueRef pargs[] = { s };
-            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(str_fn), str_fn, pargs, 1, "");
-        } else {
-            // P0-3: an unsupported argument type is a clean source-located
-            // codegen error, not a type-mismatched goo_print call that only
-            // surfaces (as invalid IR) at the LLVM verifier.
-            codegen_error(codegen, a->pos,
-                          "fmt.Println: unsupported argument type (only string, integer, "
-                          "bool, and float are supported in v1)");
+        // Type-dispatched value formatting (scalar/string/bool/float/error/
+        // interface, plus struct and pointer-to-struct) lives in the
+        // recursive codegen_emit_fmt_value helper — depth 0 for a top-level
+        // Println argument.
+        if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
+                                     arg_val->goo_type, 0, a->pos)) {
             value_info_free(arg_val);
             return NULL;
         }
@@ -2106,7 +3476,7 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
     }
     
     // Return void value
-    ValueInfo* result = malloc(sizeof(ValueInfo));
+    ValueInfo* result = xmalloc(sizeof(ValueInfo));
     result->name = NULL;
     result->llvm_value = NULL;
     result->goo_type = type_checker_get_builtin(checker, TYPE_VOID);
@@ -2118,53 +3488,105 @@ ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* ch
 #endif
 }
 
+// fmt.Print: variadic, no trailing newline. Go's rule: a space is written
+// between two adjacent operands iff NEITHER is a string. Each operand is
+// formatted by the shared recursive helper codegen_emit_fmt_value (same as
+// Println/Printf %v), so structs, pointers-to-struct, and every scalar kind
+// format identically here.
+ValueInfo* codegen_generate_fmt_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+
+    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
+    if (!print_func) {
+        codegen_error(codegen, expr->pos, "goo_print function not found in module");
+        return NULL;
+    }
+
+    int first = 1;
+    int prev_is_string = 0;
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
+        if (!arg_val) {
+            codegen_error(codegen, expr->pos, "Failed to generate argument for fmt.Print");
+            return NULL;
+        }
+        // Load through an lvalue (field/index selectors arrive as an address).
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at,
+                                                     arg_val->llvm_value, "fmt_print_arg");
+                arg_val->is_lvalue = 0;
+            }
+        }
+        int is_string = arg_val->goo_type && arg_val->goo_type->kind == TYPE_STRING;
+        // Separator: a space between two adjacent operands only when NEITHER is
+        // a string (Go's fmt.Print rule — distinct from Println's always-space).
+        if (!first && !prev_is_string && !is_string) {
+            LLVMValueRef sp = LLVMBuildGlobalStringPtr(codegen->builder, " ", "fmt_print_sep");
+            LLVMValueRef spargs[] = { sp };
+            LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func),
+                          print_func, spargs, 1, "");
+        }
+        if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
+                                    arg_val->goo_type, 0, a->pos)) {
+            value_info_free(arg_val);
+            return NULL;
+        }
+        prev_is_string = is_string;
+        first = 0;
+        value_info_free(arg_val);
+    }
+    // fmt.Print writes no trailing newline.
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
+#endif
+}
+
 ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
     return NULL;
 #else
     if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
-    
+
     CallExprNode* call = (CallExprNode*)expr;
-    
-    // Get the goo_print function from the module
-    LLVMValueRef print_func = LLVMGetNamedFunction(codegen->module, "goo_print");
-    if (!print_func) {
-        codegen_error(codegen, expr->pos, "goo_print function not found in module");
-        return NULL;
-    }
-    
-    // Handle arguments similar to println
-    if (!call->args) {
-        // print() with no arguments - do nothing
-        LLVMValueRef empty_str = LLVMConstString("", 0, 0);
-        LLVMValueRef args[] = { empty_str };
-        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func), 
-                      print_func, args, 1, "");
-    } else {
-        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, call->args);
+
+    // Go's builtin `print`: variadic, NO separators between operands and NO
+    // trailing newline (the builtin `println` — codegen_generate_println_call —
+    // is the spaces+newline variant). Each operand is formatted by the shared
+    // recursive helper codegen_emit_fmt_value, so scalars, structs, and
+    // pointers-to-struct all work. The previous stub took only the first
+    // argument and passed its raw value straight to goo_print (which takes a
+    // char*), producing invalid IR for every non-char* argument — including a
+    // plain string, whose value is a goo_string struct, not a char*.
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
         if (!arg_val) {
             codegen_error(codegen, expr->pos, "Failed to generate argument for print");
             return NULL;
         }
-        
-        LLVMValueRef args[] = { arg_val->llvm_value };
-        LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(print_func), 
-                      print_func, args, 1, "");
-        
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) {
+                arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at,
+                                                     arg_val->llvm_value, "print_arg");
+                arg_val->is_lvalue = 0;
+            }
+        }
+        if (!codegen_emit_fmt_value(codegen, checker, arg_val->llvm_value,
+                                    arg_val->goo_type, 0, a->pos)) {
+            value_info_free(arg_val);
+            return NULL;
+        }
         value_info_free(arg_val);
     }
 
-    // Return void value
-    ValueInfo* result = malloc(sizeof(ValueInfo));
-    result->name = NULL;
-    result->llvm_value = NULL;
-    result->goo_type = type_checker_get_builtin(checker, TYPE_VOID);
-    result->is_lvalue = 0;
-    result->is_moved = 0;
-    result->is_initialized = 1;
-
-    return result;
+    return value_info_new(NULL, NULL, type_checker_get_builtin(checker, TYPE_VOID));
 #endif
 }
 
@@ -2623,13 +4045,40 @@ static int fmt_emit_segments(CodeGenerator* c, TypeChecker* tc,
                                          LLVMGlobalGetValueType(concat_fn),
                                          concat_fn, cargs, 2, "sp_acc");
                 }
+            } else if (kind == TYPE_STRUCT ||
+                       (kind == TYPE_POINTER && arg_val->goo_type &&
+                        arg_val->goo_type->data.pointer.pointee_type &&
+                        arg_val->goo_type->data.pointer.pointee_type->kind == TYPE_STRUCT) ||
+                       kind == TYPE_SLICE || kind == TYPE_ARRAY) {
+                // %v of a struct / pointer-to-struct / slice / array. Printf
+                // mode reuses the recursive print-based formatter shared
+                // with fmt.Println (codegen_emit_fmt_value -> {f0 f1} /
+                // &{...} / [e0 e1]). Sprintf mode uses the string-building
+                // counterpart (codegen_build_fmt_value_string) since that
+                // helper PRINTS rather than accumulating a goo_string.
+                if (sprintf_mode) {
+                    acc = codegen_build_fmt_value_string(c, tc, acc, arg_val->llvm_value,
+                                                          arg_val->goo_type, 0, arg_cursor->pos);
+                    if (!acc) {
+                        value_info_free(arg_val);
+                        ok = 0;
+                        break;
+                    }
+                } else if (!codegen_emit_fmt_value(c, tc, arg_val->llvm_value,
+                                            arg_val->goo_type, 0, arg_cursor->pos)) {
+                    value_info_free(arg_val);
+                    ok = 0;
+                    break;
+                }
             } else {
                 codegen_error(c, arg_cursor->pos,
                               sprintf_mode
                               ? "fmt.Sprintf: %%v: unsupported argument type "
-                                "(only string, integer, bool, float supported in v1)"
+                                "(only string, integer, bool, float, struct, "
+                                "pointer-to-struct, slice, array supported in v1)"
                               : "fmt.Printf: %%v: unsupported argument type "
-                                "(only string, integer, bool, float supported in v1)");
+                                "(only string, integer, bool, float, struct, "
+                                "pointer-to-struct, slice, array supported in v1)");
                 value_info_free(arg_val);
                 ok = 0;
                 break;
@@ -2763,6 +4212,87 @@ static ValueInfo* codegen_generate_sprintf_call(CodeGenerator* codegen,
     }
 
     return value_info_new(NULL, result, type_checker_get_builtin(checker, TYPE_STRING));
+#endif
+}
+
+// fmt.Sprint(args...) -> string. The string-returning counterpart to fmt.Print:
+// operands are formatted via the string-building helper
+// codegen_build_fmt_value_string (scalars, structs, pointers-to-struct), with
+// Go's Sprint spacing rule — a space is inserted between two adjacent operands
+// only when NEITHER is a string — and no trailing newline.
+static ValueInfo* codegen_generate_fmt_sprint_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+
+    LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+    if (!concat_fn) { codegen_error(codegen, expr->pos, "goo_string_concat not found in module"); return NULL; }
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+
+    LLVMValueRef acc = fmt_sprintf_lit(codegen, string_llvm, "");  // empty goo_string
+    int first = 1, prev_is_string = 0;
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
+        if (!arg_val) { codegen_error(codegen, expr->pos, "Failed to generate argument for fmt.Sprint"); return NULL; }
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) { arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "sprint_arg"); arg_val->is_lvalue = 0; }
+        }
+        int is_string = arg_val->goo_type && arg_val->goo_type->kind == TYPE_STRING;
+        if (!first && !prev_is_string && !is_string) {
+            LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+            LLVMValueRef ca[] = { acc, sp };
+            acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprint_sep");
+        }
+        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos);
+        if (!acc) { value_info_free(arg_val); return NULL; }
+        prev_is_string = is_string; first = 0;
+        value_info_free(arg_val);
+    }
+    return value_info_new(NULL, acc, type_checker_get_builtin(checker, TYPE_STRING));
+#endif
+}
+
+// fmt.Sprintln(args...) -> string. The string-returning counterpart to
+// fmt.Println: operands are ALWAYS space-separated with a trailing newline.
+static ValueInfo* codegen_generate_fmt_sprintln_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, expr->pos, "LLVM support not available");
+    return NULL;
+#else
+    if (!codegen || !checker || !expr || expr->type != AST_CALL_EXPR) return NULL;
+    CallExprNode* call = (CallExprNode*)expr;
+
+    LLVMValueRef concat_fn = LLVMGetNamedFunction(codegen->module, "goo_string_concat");
+    if (!concat_fn) { codegen_error(codegen, expr->pos, "goo_string_concat not found in module"); return NULL; }
+    LLVMTypeRef string_llvm = codegen_get_basic_type(codegen, TYPE_STRING);
+
+    LLVMValueRef acc = fmt_sprintf_lit(codegen, string_llvm, "");
+    int first = 1;
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* arg_val = codegen_generate_expression(codegen, checker, a);
+        if (!arg_val) { codegen_error(codegen, expr->pos, "Failed to generate argument for fmt.Sprintln"); return NULL; }
+        if (arg_val->is_lvalue && arg_val->goo_type) {
+            LLVMTypeRef at = codegen_type_to_llvm(codegen, arg_val->goo_type);
+            if (at) { arg_val->llvm_value = LLVMBuildLoad2(codegen->builder, at, arg_val->llvm_value, "sprintln_arg"); arg_val->is_lvalue = 0; }
+        }
+        if (!first) {
+            LLVMValueRef sp = fmt_sprintf_lit(codegen, string_llvm, " ");
+            LLVMValueRef ca[] = { acc, sp };
+            acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprintln_sep");
+        }
+        acc = codegen_build_fmt_value_string(codegen, checker, acc, arg_val->llvm_value, arg_val->goo_type, 0, a->pos);
+        if (!acc) { value_info_free(arg_val); return NULL; }
+        first = 0;
+        value_info_free(arg_val);
+    }
+    LLVMValueRef nl = fmt_sprintf_lit(codegen, string_llvm, "\n");
+    LLVMValueRef ca[] = { acc, nl };
+    acc = LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(concat_fn), concat_fn, ca, 2, "sprintln_nl");
+    return value_info_new(NULL, acc, type_checker_get_builtin(checker, TYPE_STRING));
 #endif
 }
 

@@ -1,0 +1,66 @@
+// iface_multimethod_probe: gofmt-syntax Task 1 — a multi-method interface
+// whose FIRST method is void (`Inc()`, no return type) parses past the
+// second method spec instead of the second method's name being absorbed as
+// the first method's func_result (the newline-blind func-result hazard,
+// workarounds.md §6). Exercises the fix through dynamic dispatch (not just
+// parse): a pointer-receiver implementer is boxed into the interface and
+// both methods are called through it.
+//
+// Expected output produced by `go run` on the equivalent Go program:
+//
+//   package main
+//
+//   import "fmt"
+//
+//   type Counter interface {
+//   	Inc()
+//   	Get() int
+//   }
+//
+//   type Widget struct {
+//   	n int
+//   }
+//
+//   func (w *Widget) Inc() {
+//   	w.n = w.n + 1
+//   }
+//
+//   func (w *Widget) Get() int {
+//   	return w.n
+//   }
+//
+//   func main() {
+//   	var c Counter = &Widget{n: 0}
+//   	c.Inc()
+//   	c.Inc()
+//   	c.Inc()
+//   	fmt.Println(c.Get())
+//   }
+package main
+
+import "fmt"
+
+type Counter interface {
+	Inc()
+	Get() int
+}
+
+type Widget struct {
+	n int
+}
+
+func (w *Widget) Inc() {
+	w.n = w.n + 1
+}
+
+func (w *Widget) Get() int {
+	return w.n
+}
+
+func main() {
+	var c Counter = &Widget{n: 0}
+	c.Inc()
+	c.Inc()
+	c.Inc()
+	fmt.Println(c.Get())
+}

@@ -465,7 +465,38 @@ void test_reflection_intrinsics(void) {
     comptime_value_free(format_str);
     comptime_value_free(name);
     comptime_value_free(count);
-    
+
+    // @format hardening (CWE-134): the single-argument path must reject a %n
+    // write primitive and a type-mismatched specifier, and must still accept a
+    // well-formed one-specifier format.
+    ComptimeValue* n_fmt = comptime_value_from_string("%n");
+    ComptimeValue* n_arg = comptime_value_from_int(1);
+    ComptimeValue* n_args[] = {n_arg};
+    ComptimeResult* n_res = comptime_intrinsic_format(ctx, n_fmt, n_args, 1);
+    assert(n_res != NULL && n_res->error != NULL); // %n rejected
+    comptime_result_free(n_res);
+    comptime_value_free(n_fmt);
+    comptime_value_free(n_arg);
+
+    ComptimeValue* mism_fmt = comptime_value_from_string("%s"); // %s with an int arg
+    ComptimeValue* mism_arg = comptime_value_from_int(7);
+    ComptimeValue* mism_args[] = {mism_arg};
+    ComptimeResult* mism_res = comptime_intrinsic_format(ctx, mism_fmt, mism_args, 1);
+    assert(mism_res != NULL && mism_res->error != NULL); // type mismatch rejected
+    comptime_result_free(mism_res);
+    comptime_value_free(mism_fmt);
+    comptime_value_free(mism_arg);
+
+    ComptimeValue* ok_fmt = comptime_value_from_string("n=%d");
+    ComptimeValue* ok_arg = comptime_value_from_int(42);
+    ComptimeValue* ok_args[] = {ok_arg};
+    ComptimeResult* ok_res = comptime_intrinsic_format(ctx, ok_fmt, ok_args, 1);
+    assert(ok_res != NULL && ok_res->error == NULL); // well-formed accepted
+    assert(strcmp(ok_res->value->string_value, "n=42") == 0);
+    comptime_result_free(ok_res);
+    comptime_value_free(ok_fmt);
+    comptime_value_free(ok_arg);
+
     comptime_context_free(ctx);
     
     printf("✓ Reflection intrinsics tests passed!\n");

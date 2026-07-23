@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "comptime.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -17,34 +18,23 @@ void type_checker_declare_synthetic(TypeChecker* checker, const char* name, Type
 
 
 #if LLVM_AVAILABLE
-// Loop-context stack: break/continue target blocks for the innermost loop.
-// Pushed on entry to a for-loop body, popped on exit. break branches to the
-// top break block, continue to the top continue block.
-static int codegen_push_loop(CodeGenerator* cg, LLVMBasicBlockRef brk, LLVMBasicBlockRef cont) {
-    if (cg->loop_depth >= 32) return 0;       // too deep — caller emits codegen_error
-    cg->loop_break_bb[cg->loop_depth] = brk;
-    cg->loop_continue_bb[cg->loop_depth] = cont;
-    cg->loop_depth++;
-    return 1;
-}
-static void codegen_pop_loop(CodeGenerator* cg) { if (cg->loop_depth > 0) cg->loop_depth--; }
+// Loop-context stack (break/continue targets, labeled break/continue, goto
+// labels): pushed on entry to a for-loop/switch/select body, popped on
+// exit. Codegen hardening R1 moved this state off CodeGenerator into
+// codegen->cfctx (ControlFlowContext, codegen_cfctx.h) and the push/pop/
+// find/get-or-create logic that used to live here as file-static helpers
+// (codegen_push_loop/codegen_pop_loop/codegen_push_break_scope/codegen_
+// get_or_create_label_block) into src/codegen/cfctx.c as cfctx_push_loop/
+// cfctx_pop/cfctx_push_break_scope/cfctx_get_or_create_goto_block — see
+// that file and codegen_cfctx.h for the full API and field-by-field detail.
 
-// Push a break-only scope for switch/select clause bodies. In Go/Goo a `break`
-// inside a switch or select terminates that construct (not the enclosing loop),
-// while `continue` is NOT bound by switch/select and must thread through to the
-// nearest enclosing loop. We model this by reusing the loop-context stack:
-// `break` targets `brk` (the construct's merge/end block) and `continue`
-// inherits the enclosing loop's continue target (NULL when there is no
-// enclosing loop, which makes `continue` here a clean "continue outside loop").
-static int codegen_push_break_scope(CodeGenerator* cg, LLVMBasicBlockRef brk) {
-    if (cg->loop_depth >= 32) return 0;       // too deep — caller emits codegen_error
-    LLVMBasicBlockRef inherited_continue =
-        cg->loop_depth > 0 ? cg->loop_continue_bb[cg->loop_depth - 1] : NULL;
-    cg->loop_break_bb[cg->loop_depth] = brk;
-    cg->loop_continue_bb[cg->loop_depth] = inherited_continue;
-    cg->loop_depth++;
-    return 1;
-}
+// Arena-regions early-exit free: defined below, used by the break/continue
+// arms of codegen_generate_statement above its definition.
+static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth);
+
+// arena-goto fix: defined below, used by the AST_GOTO_STMT arm of
+// codegen_generate_statement above its definition.
+static void codegen_emit_arena_frees_to_depth(CodeGenerator* codegen, int target_arena_depth);
 
 // --- defer codegen state -------------------------------------------------
 // Per-defer LLVM state that the header's FunctionInfo cannot carry (it only
@@ -69,6 +59,19 @@ typedef struct {
     LLVMValueRef* arg_slots;     // entry-block alloca per snapshotted argument
     Type**        arg_types;     // goo type of each snapshot (for the exit load)
     char**        arg_names;     // synthetic identifier names bound at exit
+    // Destructive-splice fix: the synthetic identifier(s) built at defer-time
+    // to stand in for the original call arguments / method receiver. These
+    // are NOT linked into the shared template AST here — codegen_emit_
+    // deferred_calls splices them into the call node ONLY for the duration of
+    // a single emission and restores the originals immediately after (see
+    // that function). Ownership: both fields are allocated once per defer
+    // statement (via ast_identifier_new) and owned by this DeferCodegenInfo;
+    // freed in defer_info_reset. They are never attached to the permanent
+    // template AST, so nothing else can reach or double-free them, and the
+    // ORIGINAL argument/receiver nodes are untouched — still owned by the
+    // template AST exactly as the parser built it.
+    ASTNode*      args_synth_head; // synthetic chain standing in for call->args (NULL if no args)
+    ASTNode*      recv_synth;      // synthetic identifier standing in for the method receiver (NULL if none)
 } DeferCodegenInfo;
 
 static DeferCodegenInfo* g_defer_info = NULL;
@@ -83,6 +86,14 @@ static void defer_info_reset(FunctionInfo* owner) {
         free(g_defer_info[i].arg_names);
         free(g_defer_info[i].arg_slots);
         free(g_defer_info[i].arg_types);
+        // Free the synthetic identifier nodes built for this defer's transient
+        // AST splice (see codegen_emit_deferred_calls and the struct comment
+        // above). They are only ever linked into the call node for the
+        // duration of a single emission and unlinked immediately after, so by
+        // the time we get here nothing references them — this is their sole
+        // owner and sole free site.
+        ast_node_free(g_defer_info[i].args_synth_head);
+        ast_node_free(g_defer_info[i].recv_synth);
     }
     g_defer_info_count = 0;
     g_defer_info_owner = owner;
@@ -145,6 +156,42 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             }
             LLVMValueRef field = LLVMBuildExtractValue(codegen->builder,
                                                        rhs->llvm_value, (unsigned)i, "destr");
+            // Coerce the field to the target's width before storing (same
+            // rule as the two-value pass-2 store below): an int-returning
+            // f() spread into narrower targets otherwise stores 8 bytes
+            // over each narrow alloca and corrupts the stack. Per-field
+            // signedness comes from the multi-return's TYPE_STRUCT payload
+            // (mirrors the `:=` destructure in function_codegen.c).
+            Type* field_goo = (rhs->goo_type &&
+                               rhs->goo_type->kind == TYPE_STRUCT &&
+                               i < rhs->goo_type->data.struct_type.field_count)
+                              ? rhs->goo_type->data.struct_type.fields[i].type
+                              : NULL;
+            // Box a concrete returned field into an interface-typed target's
+            // {vtable, data} value (mirrors the two-value pass-2 store
+            // below). Without the box the raw struct is stored over the
+            // interface slot and the vtable reads as stack garbage.
+            if (target->goo_type && target->goo_type->kind == TYPE_INTERFACE &&
+                field_goo && field_goo->kind != TYPE_INTERFACE) {
+                LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                           target->goo_type,
+                                                           field_goo, field, t->pos);
+                if (!boxed) {
+                    codegen_error(codegen, t->pos,
+                                  "failed to box value into interface on destructure");
+                    value_info_free(rhs);
+                    return 0;
+                }
+                field = boxed;
+            }
+            if (target->goo_type) {
+                LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+                if (tt) {
+                    field = codegen_coerce_to_type(codegen, field,
+                                                   field_goo ? type_is_signed(field_goo) : 1,
+                                                   tt);
+                }
+            }
             LLVMBuildStore(codegen->builder, field, target->llvm_value);
         }
         value_info_free(rhs);
@@ -199,7 +246,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
             ValueInfo* vi = value_info_new(nm, slot, rtypes[i]);
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
             // Mirror the var-decl path: keep the checker scope populated so
             // later codegen re-checks of `nm` resolve (ignore dup failures).
             Variable* tv = variable_new(nm, rtypes[i], t->pos);
@@ -228,13 +275,27 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                 rtypes[i] && rtypes[i]->kind != TYPE_INTERFACE) {
                 LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                            target->goo_type,
-                                                           rtypes[i], rvals[i]);
+                                                           rtypes[i], rvals[i], t->pos);
                 if (!boxed) {
                     codegen_error(codegen, t->pos,
                                   "failed to box value into interface on assignment");
                     return 0;
                 }
                 sval = boxed;
+            }
+            // Coerce a mismatched-width RHS to the target's width before
+            // storing (mirrors the single-assign TOKEN_ASSIGN arm). An
+            // untyped-int rvalue is an i64; storing it raw into an i8/i16/i32
+            // slot writes 8 bytes over a narrower alloca — clobbering
+            // adjacent locals and the epilogue (correct prints, then
+            // SIGSEGV/garbage). The shared helper no-ops on kinds it doesn't
+            // handle (aggregates, pointers, matching types).
+            if (target->goo_type && rtypes[i]) {
+                LLVMTypeRef tt = codegen_type_to_llvm(codegen, target->goo_type);
+                if (tt) {
+                    sval = codegen_coerce_to_type(codegen, sval,
+                                                  type_is_signed(rtypes[i]), tt);
+                }
             }
             // Do NOT free `target`: for an identifier it aliases the live
             // value-table entry (freeing it would undefine the variable).
@@ -308,7 +369,7 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
                 LLVMBuildStore(codegen->builder, val, alloca_v);
                 ValueInfo* vi = value_info_new(il->var_name, alloca_v, inner_type);
                 vi->is_lvalue = 1; vi->is_initialized = 1;
-                codegen_add_value(codegen, vi);
+                vscope_add(codegen, vi);
                 {
                     Variable* tv = variable_new(il->var_name, inner_type, stmt->pos);
                     if (tv) { tv->is_initialized = 1; scope_add_variable(checker->current_scope, tv); }
@@ -339,6 +400,39 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             value_info_free(nv);
             return then_ok && else_ok;
         }
+        case AST_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: `L: stmt`. Stash the name in
+            // pending_label so a wrapped for/switch/select/type-switch's OWN
+            // push (cfctx_push_loop/cfctx_push_break_scope) tags its
+            // frame with it; then generate the wrapped statement normally.
+            // Any OTHER statement shape (not itself a construct that
+            // pushes) just leaves pending_label unconsumed — cleared
+            // unconditionally below so it can never leak onto some later,
+            // unrelated sibling statement's push.
+            //
+            // gofmt-syntax-b Task 2 (P1.6): every label also gets (or
+            // reuses) a real LLVMBasicBlockRef via
+            // cfctx_get_or_create_goto_block, so any `goto` in the
+            // function — forward or backward — has a branch target. LLVM
+            // blocks have no implicit fallthrough, so if the current block
+            // hasn't already terminated (this label directly follows an
+            // ordinary statement, not a goto/return/break), link it in
+            // with an explicit `br` before moving the insertion point.
+            LabelStmtNode* label = (LabelStmtNode*)stmt;
+            LLVMBasicBlockRef label_bb = cfctx_get_or_create_goto_block(codegen, label->name);
+            if (!label_bb) {
+                codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
+                return 0;
+            }
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+                LLVMBuildBr(codegen->builder, label_bb);
+            }
+            codegen_set_insert_point(codegen, label_bb);
+            codegen->cfctx.pending_label = label->name;
+            int ok = label->stmt ? codegen_generate_statement(codegen, checker, label->stmt) : 1;
+            codegen->cfctx.pending_label = NULL;
+            return ok;
+        }
         case AST_FOR_STMT:
             return codegen_generate_for_stmt(codegen, checker, stmt);
         case AST_RETURN_STMT:
@@ -357,9 +451,15 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
             return codegen_generate_unsafe_stmt(codegen, checker, stmt);
         case AST_ASM_STMT:
             return codegen_generate_asm_stmt(codegen, checker, stmt);
+        case AST_ARENA_BLOCK:
+            return codegen_generate_arena_stmt(codegen, checker, stmt);
         case AST_BREAK_STMT:
-            if (codegen->loop_depth == 0) { codegen_error(codegen, stmt->pos, "break outside loop"); return 0; }
-            LLVMBuildBr(codegen->builder, codegen->loop_break_bb[codegen->loop_depth - 1]);
+            if (codegen->cfctx.loop_depth == 0) { codegen_error(codegen, stmt->pos, "break outside loop"); return 0; }
+            // Free the arenas pushed INSIDE the loop we are breaking out of
+            // (arena_loop_depth >= this loop's depth), before the branch — an
+            // enclosing-loop arena (shallower depth) is left alive.
+            codegen_emit_arena_frees(codegen, codegen->cfctx.loop_depth);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[codegen->cfctx.loop_depth - 1]);
             // Subsequent statements in this block are unreachable; start a fresh
             // block so later codegen has a valid (dead) insertion point.
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
@@ -367,12 +467,133 @@ int codegen_generate_statement(CodeGenerator* codegen, TypeChecker* checker, AST
         case AST_CONTINUE_STMT:
             // A NULL continue target means the innermost scope is a break-only
             // switch/select with no enclosing loop — `continue` is illegal there.
-            if (codegen->loop_depth == 0 ||
-                codegen->loop_continue_bb[codegen->loop_depth - 1] == NULL) {
+            if (codegen->cfctx.loop_depth == 0 ||
+                codegen->cfctx.loop_continue_bb[codegen->cfctx.loop_depth - 1] == NULL) {
                 codegen_error(codegen, stmt->pos, "continue outside loop"); return 0;
             }
-            LLVMBuildBr(codegen->builder, codegen->loop_continue_bb[codegen->loop_depth - 1]);
+            // Free the arenas pushed inside this loop iteration before jumping
+            // to the loop post/condition; the next iteration re-creates them.
+            codegen_emit_arena_frees(codegen, codegen->cfctx.loop_depth);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_continue_bb[codegen->cfctx.loop_depth - 1]);
             codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
+            return 1;
+        case AST_BREAK_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: `break L` — walk the break-scope stack
+            // top-down (innermost first, matching Go's "nearest enclosing
+            // labeled statement" rule) for a frame tagged with L. Unlike
+            // bare `break`, a labeled break may match ANY frame kind (loop
+            // OR switch/select/type-switch) at ANY depth, not just the
+            // innermost — cfctx_find_label (codegen_cfctx.h) is that walk.
+            BreakLabelStmtNode* bl = (BreakLabelStmtNode*)stmt;
+            int target = cfctx_find_label(&codegen->cfctx, bl->label);
+            if (target < 0) {
+                codegen_error(codegen, stmt->pos, "label '%s' not defined or not enclosing", bl->label);
+                return 0;
+            }
+            // Free every arena pushed at or inside the target frame — same
+            // formula as bare `break` (which passes loop_depth, i.e. the
+            // target-plus-one for the innermost frame); generalized to
+            // target+1 for an arbitrary enclosing frame.
+            codegen_emit_arena_frees(codegen, target + 1);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_break_bb[target]);
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.break"));
+            return 1;
+        }
+        case AST_CONTINUE_LABEL_STMT: {
+            // gofmt-syntax-b Task 1: `continue L` — same stack walk as
+            // `break L`, but restricted to loop_is_loop==1 frames: Go only
+            // lets `continue` target an enclosing FOR, never a switch/
+            // select even if that construct happens to carry the label —
+            // cfctx_find_loop_label (codegen_cfctx.h) is that restricted walk.
+            ContinueLabelStmtNode* cl = (ContinueLabelStmtNode*)stmt;
+            int target = cfctx_find_loop_label(&codegen->cfctx, cl->label);
+            if (target < 0) {
+                codegen_error(codegen, stmt->pos, "label '%s' not defined or not enclosing", cl->label);
+                return 0;
+            }
+            codegen_emit_arena_frees(codegen, target + 1);
+            LLVMBuildBr(codegen->builder, codegen->cfctx.loop_continue_bb[target]);
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.continue"));
+            return 1;
+        }
+        case AST_GOTO_STMT: {
+            // gofmt-syntax-b Task 2 (P1.6): `goto L`. The type checker has
+            // already proven L is declared somewhere in this function
+            // (positioned "undefined label" error otherwise, well before
+            // codegen runs) — get or (for a goto that lexically precedes
+            // its label, i.e. a backward jump) create L's block and branch
+            // to it unconditionally.
+            //
+            // arena-goto fix: free every arena this goto EXITS before the
+            // branch, exactly like break/continue above. Unlike those,
+            // goto has no loop-depth relationship to its target at all —
+            // only arena LEXICAL nesting matters — so the free count comes
+            // from the target label's arena-nesting depth, computed at
+            // type-check time (type_check_statement's AST_GOTO_STMT case,
+            // type_checker.c) and looked up here by name from the SAME
+            // checker->tc_fctx.goto_label_names table that case walks. The checker
+            // has already proven that depth's arena-chain is a prefix of
+            // this goto's own (else it rejected the program with "goto
+            // into arena block is not supported" before codegen ever
+            // ran), so every arena from that depth up to the goto's
+            // current codegen->arena_depth is safe to free and none of
+            // them are shared with the label's continuation.
+            GotoStmtNode* got = (GotoStmtNode*)stmt;
+            int target_arena_depth = 0;
+            if (checker && got->label) {
+                for (size_t i = 0; i < checker->tc_fctx.goto_label_count; i++) {
+                    if (checker->tc_fctx.goto_label_names[i] &&
+                        strcmp(checker->tc_fctx.goto_label_names[i], got->label) == 0) {
+                        target_arena_depth = (int)checker->tc_fctx.goto_label_arena_depth[i];
+                        break;
+                    }
+                }
+            }
+            codegen_emit_arena_frees_to_depth(codegen, target_arena_depth);
+            LLVMBasicBlockRef target = cfctx_get_or_create_goto_block(codegen, got->label);
+            if (!target) {
+                codegen_error(codegen, stmt->pos, "too many labels in one function (max 64)");
+                return 0;
+            }
+            LLVMBuildBr(codegen->builder, target);
+            // Fresh dead-code continuation block, SAME pattern as break/
+            // continue above — NOT the block-level terminated-block skip
+            // this task's own design note initially assumed. Probed and
+            // rejected: `codegen_generate_block_stmt`'s guard does not
+            // merely skip the dead statements after a goto, it `break`s
+            // the whole statement-list loop, so any LABEL textually
+            // following the goto in the same block (the ordinary forward-
+            // goto shape, e.g. `goto Skip; ...; Skip: ...`) would never get
+            // positioned at all — an unreachable, unterminated orphan
+            // block, an LLVM verifier failure. Giving the dead tail its own
+            // insertion point lets that later AST_LABEL_STMT run normally
+            // and correctly reuse/position the real target block.
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.goto"));
+            return 1;
+        }
+        case AST_FALLTHROUGH_STMT:
+            // gofmt-syntax-b Task 3 (P1.7): `fallthrough` — br to the
+            // CURRENT case body's fallthrough target, pushed by
+            // codegen_generate_switch_stmt (statement_codegen.c) around
+            // each clause body's emission; top of stack is always the
+            // innermost/currently-emitting case body. The type checker
+            // (type_check_switch_like_body) has already proven this is
+            // legal — final statement of a non-last expression-switch
+            // clause — before codegen ever runs; the guards below are
+            // defensive only (mirrors cfctx_push_loop's "too deep"
+            // convention, codegen_cfctx.h).
+            if (codegen->cfctx.fallthrough_depth == 0 ||
+                codegen->cfctx.fallthrough_target_bb[codegen->cfctx.fallthrough_depth - 1] == NULL) {
+                codegen_error(codegen, stmt->pos, "fallthrough has no target");
+                return 0;
+            }
+            LLVMBuildBr(codegen->builder,
+                        codegen->cfctx.fallthrough_target_bb[codegen->cfctx.fallthrough_depth - 1]);
+            // Same dead-code-continuation pattern as break/continue/goto
+            // above — fallthrough is a terminator, so subsequent (illegal,
+            // per the type checker) statements in this clause body still
+            // get a valid, if dead, insertion point.
+            codegen_set_insert_point(codegen, codegen_create_block(codegen, "after.fallthrough"));
             return 1;
         case AST_COMPTIME_BLOCK: {
             // M11-block-dispatch: `comptime { ... }` blocks produce no
@@ -405,7 +626,7 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // Mirrors the match-arm teardown in composite_codegen.c. We reset the size
     // without freeing the truncated ValueInfo* (matching existing behavior;
     // the leak is a separate follow-up).
-    size_t pre_block_vt_size = codegen->value_table_size;
+    size_t pre_block_vt_size = vscope_enter(codegen);
 
     ASTNode* current = block->statements;
     while (current) {
@@ -421,7 +642,7 @@ int codegen_generate_block_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     }
 
     // Restore on the normal-end and early-break paths.
-    codegen->value_table_size = pre_block_vt_size;
+    vscope_exit(codegen, pre_block_vt_size);
     return 1;
 #endif
 }
@@ -544,6 +765,23 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     // P1-4: a string tag can't be compared with icmp ({ptr,i64} is an invalid
     // ICmp operand); each case is matched with goo_string_eq instead.
     int tag_is_string = tag_vi->goo_type && tag_vi->goo_type->kind == TYPE_STRING;
+    // Correctness-followups arc 3, task 3 (found during implementation, not
+    // pre-existing scope): a float tag ALSO can't be compared with icmp —
+    // LLVM's ICmp requires integer/pointer operands, so `switch f { case
+    // 2.5: }` (f float64, case a SAME-KIND float — already type-checked as
+    // comparable before this task touched anything) crashed the verifier
+    // ("Invalid operand types for ICmp instruction") on every path, not just
+    // the untyped-int-constant-case shape this task's checker fix newly
+    // accepts. Confirmed via a same-kind float/float probe at this arc's
+    // HEAD, pre-dating any change in this commit — a pre-existing, never-
+    // triggered gap (no float-tag switch golden existed). Without this fix,
+    // the checker fix above would turn the untyped-int-into-float-tag case
+    // from a clean reject back into a verifier crash — the exact regression
+    // class this arc's Global Constraints forbid ("no LLVM verifier text may
+    // reach users"). Matched with LLVMBuildFCmp/LLVMRealOEQ, the same pair
+    // used for `==` on float operands elsewhere in codegen (see
+    // expression_codegen.c's binary-expr float arm).
+    int tag_is_float = tag_vi->goo_type && type_is_float(tag_vi->goo_type);
     value_info_free(tag_vi);
 
     LLVMBasicBlockRef merge_block = codegen_create_block(codegen, "switch.merge");
@@ -586,6 +824,10 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                                                   fn, args, 2, "switch.streq");
                 LLVMValueRef z = LLVMConstInt(LLVMInt32TypeInContext(codegen->context), 0, 0);
                 cmp = LLVMBuildICmp(codegen->builder, LLVMIntNE, eqi, z, "switch.cmp");
+            } else if (tag_is_float) {
+                // See tag_is_float's doc comment above: ICmp is invalid on
+                // floating-point operands, so a float tag needs FCmp.
+                cmp = LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, tag_val, ev_rv, "switch.cmp");
             } else {
                 cmp = LLVMBuildICmp(codegen->builder, LLVMIntEQ, tag_val, ev_rv, "switch.cmp");
             }
@@ -600,25 +842,48 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     // `break` inside a case must terminate the SWITCH (Go semantics), not the
     // enclosing loop. Push a break-only scope targeting merge_block; `continue`
     // still threads through to the enclosing loop (or errors if none).
-    if (!codegen_push_break_scope(codegen, merge_block)) {
+    if (!cfctx_push_break_scope(&codegen->cfctx, merge_block)) {
         codegen_error(codegen, stmt->pos, "switch nested too deeply for break handling");
         free(body_blocks);
         return 0;
     }
 
-    // Emit clause bodies. No implicit fallthrough: each body ends at merge.
+    // Emit clause bodies. No implicit fallthrough: each body ends at merge
+    // unless it ends in an explicit `fallthrough` statement.
     i = 0;
     for (ASTNode* c = sw->cases; c; c = c->next, i++) {
         CaseClauseNode* clause = (CaseClauseNode*)c;
         codegen_set_insert_point(codegen, body_blocks[i]);
-        for (ASTNode* s = clause->body; s; s = s->next) {
-            if (!codegen_generate_statement(codegen, checker, s)) { codegen_pop_loop(codegen); free(body_blocks); return 0; }
+        // gofmt-syntax-b Task 3 (P1.7): push THIS body's fallthrough
+        // target — the NEXT clause's body block in SOURCE ORDER (the
+        // default clause participates in source order per the Go spec,
+        // exactly like body_blocks[] itself above), or NULL for the
+        // switch's last clause. NULL is a defensive fallback only: the
+        // type checker (type_check_switch_like_body) has already rejected
+        // `fallthrough` in the last clause before codegen ever runs.
+        if (codegen->cfctx.fallthrough_depth >= 32) {
+            codegen_error(codegen, stmt->pos, "switch nested too deeply for fallthrough handling");
+            cfctx_pop(&codegen->cfctx);
+            free(body_blocks);
+            return 0;
         }
+        codegen->cfctx.fallthrough_target_bb[codegen->cfctx.fallthrough_depth] =
+            (i + 1 < clause_count) ? body_blocks[i + 1] : NULL;
+        codegen->cfctx.fallthrough_depth++;
+        for (ASTNode* s = clause->body; s; s = s->next) {
+            if (!codegen_generate_statement(codegen, checker, s)) {
+                codegen->cfctx.fallthrough_depth--;
+                cfctx_pop(&codegen->cfctx);
+                free(body_blocks);
+                return 0;
+            }
+        }
+        codegen->cfctx.fallthrough_depth--;
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
             LLVMBuildBr(codegen->builder, merge_block);
         }
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
 
     codegen_set_insert_point(codegen, merge_block);
     free(body_blocks);
@@ -757,7 +1022,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                     // single_concrete check).
                     LLVMValueRef built = NULL;
                     match = codegen_interface_target_match(codegen, checker, iface_val,
-                                                           case_type, &built);
+                                                           case_type, &built, t->pos);
                     if (!match) {
                         codegen_error(codegen, t->pos,
                             "internal: cannot build type switch interface-target match");
@@ -770,7 +1035,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                     }
                 } else {
                     match = codegen_interface_assert_match(codegen, checker, iface_val,
-                                                           iface_type, case_type, NULL);
+                                                           iface_type, case_type, NULL, t->pos);
                     if (!match) {
                         codegen_error(codegen, t->pos, "internal: cannot build type switch vtable compare");
                         free(body_blocks);
@@ -789,7 +1054,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
 
     // `break` inside a case must terminate the SWITCH (Go semantics), matching
     // the plain switch's break-scope convention above.
-    if (!codegen_push_break_scope(codegen, merge_block)) {
+    if (!cfctx_push_break_scope(&codegen->cfctx, merge_block)) {
         codegen_error(codegen, stmt->pos, "type switch nested too deeply for break handling");
         free(body_blocks);
         free(built_vals);
@@ -834,7 +1099,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
             if (!bind_llvm) {
                 codegen_error(codegen, c->pos, "internal: cannot lower type switch bind type");
                 scope_pop(checker);
-                codegen_pop_loop(codegen);
+                cfctx_pop(&codegen->cfctx);
                 free(body_blocks);
                 free(built_vals);
                 return 0;
@@ -846,7 +1111,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                     codegen_error(codegen, c->pos,
                         "internal: missing built interface-target value for type switch case");
                     scope_pop(checker);
-                    codegen_pop_loop(codegen);
+                    cfctx_pop(&codegen->cfctx);
                     free(body_blocks);
                     free(built_vals);
                     return 0;
@@ -856,7 +1121,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                 if (!bound_val) {
                     codegen_error(codegen, c->pos, "internal: cannot unbox type switch case value");
                     scope_pop(checker);
-                    codegen_pop_loop(codegen);
+                    cfctx_pop(&codegen->cfctx);
                     free(body_blocks);
                     free(built_vals);
                     return 0;
@@ -870,7 +1135,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
             if (vi) {
                 vi->is_lvalue = 1;
                 vi->is_initialized = 1;
-                codegen_add_value(codegen, vi);
+                vscope_add(codegen, vi);
             }
             Variable* cv = variable_new(vname, bind_type, c->pos);
             if (cv) {
@@ -882,7 +1147,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
         for (ASTNode* s = clause->body; s; s = s->next) {
             if (!codegen_generate_statement(codegen, checker, s)) {
                 scope_pop(checker);
-                codegen_pop_loop(codegen);
+                cfctx_pop(&codegen->cfctx);
                 free(body_blocks);
                 free(built_vals);
                 return 0;
@@ -893,7 +1158,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
         }
         scope_pop(checker);
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
 
     codegen_set_insert_point(codegen, merge_block);
     free(body_blocks);
@@ -994,14 +1259,14 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         ValueInfo* kv = value_info_new(for_stmt->key_name, key_alloca, key_type);
         kv->is_lvalue = 1;
         kv->is_initialized = 1;
-        codegen_add_value(codegen, kv);
+        vscope_add(codegen, kv);
     }
     if (for_stmt->value_name) {
         val_alloca = codegen_alloc_local(codegen, val_llvm, for_stmt->value_name);
         ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, value_type);
         vv->is_lvalue = 1;
         vv->is_initialized = 1;
-        codegen_add_value(codegen, vv);
+        vscope_add(codegen, vv);
     }
 
     // Mirror loop vars to type-checker scope (parallels the slice/array/
@@ -1051,7 +1316,7 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
         LLVMBuildStore(codegen->builder, v, val_alloca);
     }
 
-    if (!codegen_push_loop(codegen, rexit, rpost)) {
+    if (!cfctx_push_loop(&codegen->cfctx, rexit, rpost)) {
         codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
         scope_pop(checker);
         return 0;
@@ -1060,12 +1325,133 @@ static int codegen_generate_map_range_loop(CodeGenerator* codegen, TypeChecker* 
     if (for_stmt->body) {
         body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
         LLVMBuildBr(codegen->builder, rpost);
 
     // post: nothing to advance — goo_map_iter_next_sv already advanced the
     // cursor in place during the cond call. Just loop back.
+    codegen_set_insert_point(codegen, rpost);
+    LLVMBuildBr(codegen->builder, rcond);
+
+    codegen_set_insert_point(codegen, rexit);
+    scope_pop(checker);
+    return body_ok;
+}
+
+// Range-over-channel codegen (P3.2): repeatedly calls goo_chan_recv; a 0
+// status (closed+drained — P3.1's zero-value contract memsets the
+// out-buffer on that terminal call, so the loop never sees stack garbage)
+// is the loop-exit condition, mirroring how Go's compiler lowers `for v :=
+// range ch`. Diverges from the slice/array/string skeleton for the same
+// reason maps do (see codegen_generate_map_range_loop just above): a
+// channel lowers to a bare opaque pointer (type_mapping.c TYPE_CHANNEL),
+// not a {ptr,len} aggregate, and there is no length to index against —
+// trying a receive and checking its status IS the only way to know the
+// loop is done.
+//
+// Grammar quirk: the single-var form `for v := range ch` parses `v` into
+// ForStmtNode.key_name (the slice/array/string index slot — the grammar
+// predates channel range and has no dedicated production for it). There is
+// no index for a channel, so key_name is reinterpreted here as the
+// received element. The two-variable form is rejected in the type checker
+// before codegen ever runs (type_check_for_stmt's TYPE_CHANNEL arm), so
+// value_name is always NULL by the time this function is reached.
+//
+// `chan_ptr` is the already-evaluated (and auto-loaded, if the range
+// expression was an lvalue) channel pointer; `chan_type` is its Goo Type
+// (TYPE_CHANNEL), carrying element_type. Returns 0 and leaves an error on
+// codegen->diagnostics via codegen_error on failure, else the body's
+// success flag — same convention as the map/slice/array/string arms.
+static int codegen_generate_channel_range_loop(CodeGenerator* codegen, TypeChecker* checker,
+                                                ForStmtNode* for_stmt, ASTNode* stmt,
+                                                LLVMValueRef chan_ptr, Type* chan_type) {
+    Type* elem_type = chan_type->data.channel.element_type;
+    if (!elem_type) {
+        codegen_error(codegen, stmt->pos, "range over channel: missing element type");
+        return 0;
+    }
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMTypeRef elem_llvm = codegen_type_to_llvm(codegen, elem_type);
+    if (!elem_llvm) {
+        codegen_error(codegen, stmt->pos, "range over channel: unresolvable element type");
+        return 0;
+    }
+
+    // Declare-if-needed, matching function_codegen.c's comma-ok receive
+    // (~:2000-2005) — the pattern this brief points at. Each of the three
+    // goo_chan_recv call sites (single-value receive in lowlevel_codegen.c,
+    // comma-ok in function_codegen.c, this loop) declares independently
+    // rather than sharing a central table, same trade-off
+    // codegen_generate_map_range_loop makes for goo_map_iter_next_sv above.
+    LLVMTypeRef recv_param_types[] = { void_ptr_type, void_ptr_type };
+    LLVMTypeRef recv_func_type = LLVMFunctionType(i32, recv_param_types, 2, 0);
+    LLVMValueRef recv_func = LLVMGetNamedFunction(codegen->module, "goo_chan_recv");
+    if (!recv_func) {
+        recv_func = LLVMAddFunction(codegen->module, "goo_chan_recv", recv_func_type);
+    }
+
+    // Element slot: allocated ONCE outside the loop and reused every
+    // iteration — goo_chan_recv writes into it by pointer each call.
+    LLVMValueRef elem_alloca = codegen_alloc_local(codegen, elem_llvm,
+                                                   for_stmt->key_name ? for_stmt->key_name : "range_cv");
+    if (for_stmt->key_name) {
+        ValueInfo* vv = value_info_new(for_stmt->key_name, elem_alloca, elem_type);
+        vv->is_lvalue = 1;
+        vv->is_initialized = 1;
+        vscope_add(codegen, vv);
+    }
+
+    // Mirror the loop var to type-checker scope (parallels the map/slice/
+    // array/string arms).
+    scope_push(checker);
+    if (for_stmt->key_name) {
+        Variable* vvar = variable_new(for_stmt->key_name, elem_type, stmt->pos);
+        if (vvar) { vvar->is_initialized = 1; scope_add_variable(checker->current_scope, vvar); }
+    }
+
+    LLVMBasicBlockRef rcond = codegen_create_block(codegen, "chanrange.cond");
+    LLVMBasicBlockRef rbody = codegen_create_block(codegen, "chanrange.body");
+    LLVMBasicBlockRef rpost = codegen_create_block(codegen, "chanrange.post");
+    LLVMBasicBlockRef rexit = codegen_create_block(codegen, "chanrange.exit");
+
+    LLVMBuildBr(codegen->builder, rcond);
+
+    // cond: goo_chan_recv(ch, &elem_slot) — blocks while the channel is open
+    // and empty (correct Go semantics; the deadlock detector handles a
+    // producer that never sends/closes), returns 1 with the received value
+    // in elem_slot, or 0 (closed+drained, elem_slot zeroed by the runtime's
+    // P3.1 contract) which is the loop-exit condition.
+    codegen_set_insert_point(codegen, rcond);
+    LLVMValueRef elem_ptr = LLVMBuildBitCast(codegen->builder, elem_alloca, void_ptr_type, "chanrange_elem_ptr");
+    LLVMValueRef recv_args[2] = { chan_ptr, elem_ptr };
+    LLVMValueRef status = LLVMBuildCall2(codegen->builder, recv_func_type, recv_func,
+                                         recv_args, 2, "chanrange_status");
+    LLVMValueRef cond_v = LLVMBuildICmp(codegen->builder, LLVMIntNE, status,
+                                        LLVMConstInt(i32, 0, 0), "chanrange_cond");
+    LLVMBuildCondBr(codegen->builder, cond_v, rbody, rexit);
+
+    // body: elem_alloca already holds the received value (loaded by
+    // goo_chan_recv itself, out-parameter style) — just run the loop body.
+    codegen_set_insert_point(codegen, rbody);
+    if (!cfctx_push_loop(&codegen->cfctx, rexit, rpost)) {
+        codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
+        scope_pop(checker);
+        return 0;
+    }
+    int body_ok = 1;
+    if (for_stmt->body) {
+        body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
+    }
+    cfctx_pop(&codegen->cfctx);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+        LLVMBuildBr(codegen->builder, rpost);
+
+    // post: nothing to advance — the next cond-block recv call does the
+    // work (parallels the map arm's cursor-advances-in-the-cond-call note).
     codegen_set_insert_point(codegen, rpost);
     LLVMBuildBr(codegen->builder, rcond);
 
@@ -1110,6 +1496,16 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (range_val->goo_type && range_val->goo_type->kind == TYPE_MAP) {
             int ok = codegen_generate_map_range_loop(codegen, checker, for_stmt, stmt,
                                                       raw, range_val->goo_type);
+            value_info_free(range_val);
+            return ok;
+        }
+
+        // Channel range diverges immediately too — `raw` here is the
+        // channel's opaque pointer (already auto-loaded above, same as the
+        // map case), not a {ptr,len} aggregate.
+        if (range_val->goo_type && range_val->goo_type->kind == TYPE_CHANNEL) {
+            int ok = codegen_generate_channel_range_loop(codegen, checker, for_stmt, stmt,
+                                                          raw, range_val->goo_type);
             value_info_free(range_val);
             return ok;
         }
@@ -1173,7 +1569,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
                                           type_checker_get_builtin(checker, TYPE_INT32));
             kv->is_lvalue = 1;
             kv->is_initialized = 1;
-            codegen_add_value(codegen, kv);
+            vscope_add(codegen, kv);
         }
 
         // Allocate value var (per-iteration). Mirrored to type-check
@@ -1184,7 +1580,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             ValueInfo* vv = value_info_new(for_stmt->value_name, val_alloca, elem_type);
             vv->is_lvalue = 1;
             vv->is_initialized = 1;
-            codegen_add_value(codegen, vv);
+            vscope_add(codegen, vv);
         }
 
         // Rune-aware string range (Go semantics): each iteration decodes the
@@ -1253,7 +1649,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
             LLVMBuildStore(codegen->builder, elem_val, val_alloca);
         }
         // break exits to rexit; continue jumps to rpost (the increment block).
-        if (!codegen_push_loop(codegen, rexit, rpost)) {
+        if (!cfctx_push_loop(&codegen->cfctx, rexit, rpost)) {
             codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
             scope_pop(checker);
             value_info_free(range_val);
@@ -1263,7 +1659,7 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
         if (for_stmt->body) {
             body_ok = codegen_generate_statement(codegen, checker, for_stmt->body);
         }
-        codegen_pop_loop(codegen);
+        cfctx_pop(&codegen->cfctx);
         // Only branch to the post block if the body didn't already terminate
         // (e.g. a bare `return` as the loop body's last statement) — otherwise
         // we'd emit a second terminator and produce invalid IR.
@@ -1334,17 +1730,17 @@ int codegen_generate_for_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTN
     // blocks. continue targets post_block so the increment runs before the
     // condition is re-tested.
     codegen_set_insert_point(codegen, body_block);
-    if (!codegen_push_loop(codegen, exit_block, post_block)) {
+    if (!cfctx_push_loop(&codegen->cfctx, exit_block, post_block)) {
         codegen_error(codegen, stmt->pos, "loop nesting too deep (max 32)");
         return 0;
     }
     if (for_stmt->body) {
         if (!codegen_generate_statement(codegen, checker, for_stmt->body)) {
-            codegen_pop_loop(codegen);
+            cfctx_pop(&codegen->cfctx);
             return 0;
         }
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
     // Skip the post-block branch if the body already terminated (e.g. a bare
     // `return` last statement) to avoid a second terminator / invalid IR.
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
@@ -1409,7 +1805,8 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                                     i < function_return_type->data.struct_type.field_count)
                                    ? function_return_type->data.struct_type.fields[i].type : NULL;
 
-                if (field_type && field_type->kind == TYPE_NULLABLE &&
+                if (field_type &&
+                    (field_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(field_type)) &&
                     v->type == AST_LITERAL &&
                     ((LiteralNode*)v)->literal_type == TOKEN_NIL) {
                     ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, field_type);
@@ -1442,7 +1839,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                     vv->goo_type && vv->goo_type->kind != TYPE_INTERFACE) {
                     LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                                field_type,
-                                                               vv->goo_type, raw);
+                                                               vv->goo_type, raw, v->pos);
                     if (!boxed) {
                         codegen_error(codegen, v->pos,
                                       "failed to box concrete return value into interface");
@@ -1467,14 +1864,19 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         }
 
 
-        // Nullable nil-return intercept: `return nil` inside a `?T` function.
-        // Without this, codegen_generate_null_literal produces a void* null
-        // pointer (no expected-type context), which mismatches the `{i1, T}`
-        // nullable return type and fails module verification. Intercept here,
-        // generate the correct {is_null=1, zero_value} struct, and return it
+        // Nil-return intercept: `return nil` inside a `?T` function, OR
+        // (P2.2 option A) a function whose return type is a bare pointer/
+        // slice/map/channel/function. Without this, codegen_generate_
+        // null_literal produces a void* null pointer (no expected-type
+        // context), which mismatches the `{i1, T}` nullable return type (or
+        // a slice/func's aggregate return type) and fails module
+        // verification. Intercept here, generate the correct
+        // {is_null=1, zero_value} struct (or bare zero value), and return it
         // directly — same pattern as var_decl's `var b ?T = nil` fix.
 #if LLVM_AVAILABLE
-        if (function_return_type && function_return_type->kind == TYPE_NULLABLE &&
+        if (function_return_type &&
+            (function_return_type->kind == TYPE_NULLABLE ||
+             type_is_nilable_ref_kind(function_return_type)) &&
             return_stmt->values->type == AST_LITERAL &&
             ((LiteralNode*)return_stmt->values)->literal_type == TOKEN_NIL) {
             ValueInfo* nil_vi = codegen_generate_null_literal(codegen, checker, function_return_type);
@@ -1547,14 +1949,23 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         if (function_return_type && function_return_type->kind == TYPE_INTERFACE &&
             return_value->goo_type && return_value->goo_type->kind != TYPE_INTERFACE) {
             LLVMValueRef boxed = codegen_interface_box(codegen, checker, function_return_type,
-                                                       return_value->goo_type, final_return_value);
+                                                       return_value->goo_type, final_return_value,
+                                                       return_stmt->values->pos);
             if (!boxed) { value_info_free(return_value); return 0; }
             final_return_value = boxed;
         }
 
-        // Integer widening: widen the return value to match the function's
-        // declared LLVM return type (e.g. `return 0` as i32 from an i64
-        // function). Mirrors the same SExt guard in var_decl.
+        // Integer width coercion: match the return value to the function's
+        // declared LLVM return type. Widening (`return 0` as i32 from an i64
+        // function) always applies. Narrowing (`return 1` from an int8
+        // function) is only reachable for an untyped integer CONSTANT that
+        // the checker has already confirmed is representable at the target
+        // width (Go representability rule) — a non-constant narrowing return,
+        // or a constant that doesn't fit, is rejected before codegen (see the
+        // int_const_coerce gate and its int_const_fits_expected range check in
+        // type_check_return_stmt) — so here we rebuild the constant at the
+        // target width rather than emit a Trunc on a runtime value. Mirrors
+        // var_decl's narrowing/widening const path.
         {
             LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(codegen->builder));
             LLVMTypeRef fn_ret = LLVMGetReturnType(LLVMGlobalGetValueType(cur_fn));
@@ -1563,9 +1974,37 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                 LLVMGetTypeKind(fn_ret) == LLVMIntegerTypeKind) {
                 unsigned from_bits = LLVMGetIntTypeWidth(val_ty);
                 unsigned to_bits   = LLVMGetIntTypeWidth(fn_ret);
-                if (from_bits < to_bits)
-                    final_return_value = LLVMBuildSExt(codegen->builder, final_return_value,
-                                                       fn_ret, "ret_sext");
+                if (from_bits < to_bits) {
+                    // Arc 10 (o): extend by the VALUE's own signedness — an
+                    // unconditional SExt turned a uint8 const 200 returned
+                    // from an int16 function into -56. Mirrors the
+                    // narrowing arm's convention below (default signed when
+                    // no goo_type is attached).
+                    int widen_sext = return_value->goo_type
+                                   ? type_is_signed(return_value->goo_type) : 1;
+                    final_return_value = widen_sext
+                        ? LLVMBuildSExt(codegen->builder, final_return_value,
+                                        fn_ret, "ret_sext")
+                        : LLVMBuildZExt(codegen->builder, final_return_value,
+                                        fn_ret, "ret_zext");
+                } else if (from_bits > to_bits && LLVMIsConstant(final_return_value)) {
+                    int use_sext = return_value->goo_type
+                                 ? type_is_signed(return_value->goo_type) : 1;
+                    unsigned long long raw = use_sext
+                        ? (unsigned long long)LLVMConstIntGetSExtValue(final_return_value)
+                        : LLVMConstIntGetZExtValue(final_return_value);
+                    final_return_value = LLVMConstInt(fn_ret, raw, use_sext);
+                } else if (from_bits > to_bits) {
+                    // Arc 10 (o): a checker-admitted narrowing return that
+                    // did NOT materialize as an LLVM constant — a const
+                    // identifier codegen resolves through its slot load.
+                    // The checker's shared-core gate only admits values
+                    // representable at the target width, so the Trunc is
+                    // exact; every other narrowing shape is still rejected
+                    // before codegen.
+                    final_return_value = LLVMBuildTrunc(codegen->builder, final_return_value,
+                                                        fn_ret, "ret_trunc");
+                }
             }
         }
 
@@ -1703,6 +2142,88 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 
     CallExprNode* call = (CallExprNode*)go_stmt->call;
 
+    // Comptime+generic composition (sub-project 2, Task 3): `go` targets a
+    // monomorphized instance's mangled symbol exactly like an ordinary call
+    // site (codegen_generate_call_expr, call_codegen.c) — a template is
+    // never emitted under its bare name for ANY axis that specializes it, so
+    // codegen_resolve_callee below would misreport "Undefined identifier".
+    // This mirrors call_codegen's three-way (combined / generic-only /
+    // comptime-only) byte-for-byte, one call-site type over: the generic-only
+    // case is NEW here (pre-existing gap — `go GenericFn(...)` previously had
+    // no rewiring at all, only the comptime-only case below existed), added
+    // as required substrate for the combined case. `call->function` is
+    // guaranteed non-NULL by the AST_CALL_EXPR check above, but each branch
+    // still guards it defensively like the pre-existing comptime-only arm did.
+    ValueInfo* func_val = NULL;
+    if (call->type_arg_count > 0 && call->comptime_value_arg_count > 0 &&
+        call->function && call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return 0;
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
+        }
+        char* sym = codegen_mangle_combined_instance(gid->name, concrete_args,
+            call->type_arg_count, call->comptime_value_args,
+            call->comptime_value_arg_count);
+        LLVMValueRef inst = sym ? LLVMGetNamedFunction(codegen->module, sym) : NULL;
+        free(sym);
+        if (inst) {
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    } else if (call->type_arg_count > 0 && call->function &&
+               call->function->type == AST_IDENTIFIER) {
+        IdentifierNode* gid = (IdentifierNode*)call->function;
+        Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
+        if (!concrete_args) return 0;
+        for (size_t i = 0; i < call->type_arg_count; i++) {
+            concrete_args[i] = type_substitute(call->type_args[i],
+                codegen->active_subst, codegen->active_subst_n);
+        }
+        char* sym = codegen_mangle_instance(gid->name, concrete_args, call->type_arg_count);
+        LLVMValueRef inst = LLVMGetNamedFunction(codegen->module, sym);
+        free(sym);
+        if (inst) {
+            Variable* gvar = type_checker_lookup_variable(checker, gid->name);
+            Type* concrete_sig = gvar
+                ? type_substitute(gvar->type, concrete_args, call->type_arg_count)
+                : NULL;
+            func_val = value_info_new(gid->name, inst, concrete_sig);
+        }
+        free(concrete_args);
+    } else if (call->comptime_value_arg_count > 0 && call->function &&
+               call->function->type == AST_IDENTIFIER) {
+        // Comptime value params Task 3 (fix round 2): `go fill(4, 10)` must
+        // dispatch to the monomorphized instance symbol (`fill__n4`), never the
+        // bare name — a plain comptime-param function's template is never
+        // emitted under its bare name, so codegen_resolve_callee below would
+        // fail with a misleading "Undefined identifier 'fill'". The go
+        // statement's call was type-checked (type_check_go_stmt), so
+        // comptime_value_args is established and captured per ast.h's
+        // invariant. The instance value is a real LLVM function
+        // (LLVMIsAFunction holds), so the arg-boxing/thunk path below handles
+        // it like any other direct top-level callee — the comptime argument
+        // stays an ordinary boxed parameter at the call boundary (it is a
+        // constant only INSIDE the specialized body). Reached only when the
+        // combined branch above did NOT fire (call->type_arg_count == 0
+        // here), by construction of this if/else-if/else-if chain.
+        IdentifierNode* cid = (IdentifierNode*)call->function;
+        char* csym = codegen_mangle_comptime_instance(cid->name,
+            call->comptime_value_args, call->comptime_value_arg_count);
+        LLVMValueRef inst = csym ? LLVMGetNamedFunction(codegen->module, csym) : NULL;
+        free(csym);
+        if (inst) {
+            Variable* cvar = type_checker_lookup_variable(checker, cid->name);
+            func_val = value_info_new(cid->name, inst, cvar ? cvar->type : NULL);
+        }
+    }
+
     // Resolve the target function value and its type. Task 2 (universal
     // fat-pointer function values): MUST go through codegen_resolve_callee
     // (call_codegen.c), NOT codegen_generate_expression directly. A bare
@@ -1715,7 +2236,9 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     // one shape it supports; anything else still yields a function VALUE
     // and is still cleanly rejected by the LLVMIsAFunction check (pre-Task-2
     // this could crash instead — see the Task 2 report's crash-site #1).
-    ValueInfo* func_val = codegen_resolve_callee(codegen, checker, call->function);
+    if (!func_val) {
+        func_val = codegen_resolve_callee(codegen, checker, call->function);
+    }
     if (!func_val) return 0;
     LLVMValueRef callee = func_val->llvm_value;
 
@@ -1811,8 +2334,6 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     }
     LLVMTypeRef callee_ty = LLVMGlobalGetValueType(callee);
 
-    LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx);
-
     // Count + evaluate the call arguments (in the caller's block).
     size_t arg_count = 0;
     for (ASTNode* a = call->args; a; a = a->next) arg_count++;
@@ -1855,12 +2376,8 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
     if (arg_count > 0) {
         box_struct = LLVMStructTypeInContext(ctx, arg_types, (unsigned)arg_count, 0);
 
-        LLVMTypeRef alloc_ty = LLVMFunctionType(void_ptr_type, &i64_type, 1, 0);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
-
         LLVMValueRef box_size = LLVMSizeOf(box_struct);  // i64 target-size constant
-        boxed = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &box_size, 1, "go_box");
+        boxed = codegen_emit_alloc(codegen, box_size, ALLOC_KIND_DEFAULT, NULL);
 
         for (size_t i = 0; i < arg_count; i++) {
             LLVMValueRef field = LLVMBuildStructGEP2(codegen->builder, box_struct, boxed,
@@ -1924,23 +2441,127 @@ int codegen_generate_go_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNo
 #endif
 }
 
+// Arena-regions early-exit free (Task 6 follow-up): emit goo_arena_free for
+// every arena currently on codegen->arena_stack, innermost first. Called on
+// every function-exit path (from codegen_emit_deferred_calls) so a `return`
+// OUT of one or more arena blocks reclaims their arenas instead of leaking
+// them — the fall-through free in codegen_generate_arena_stmt only fires when
+// control reaches the physical end of the block, which a `return` jumps past.
+//
+// Soundness: this does NOT modify arena_depth (the arena_stmt that pushed each
+// arena still owns its pop). Multiple return sites each emit their own free of
+// the same arena SSA, but only one return executes per run, and the
+// terminated-block guard in codegen_generate_arena_stmt skips the fall-through
+// free once a return has terminated the block — so no path frees an arena
+// twice. `break`/`continue` do NOT reach here (they are loop exits, not
+// function exits) and still leak their arenas — safe, a documented follow-up.
+// Emit goo_arena_free for every active arena whose push-time loop_depth is
+// >= min_loop_depth, innermost first. `return` passes min_loop_depth 0 to free
+// ALL active arenas (it exits the whole function); `break`/`continue` pass the
+// current codegen->cfctx.loop_depth to free only the arenas pushed INSIDE the loop
+// they exit, never an enclosing-loop arena the loop keeps using. Does NOT
+// modify arena_depth/arena_loop_depth — the arena_stmt still owns each pop, and
+// the terminated-block guard in codegen_generate_arena_stmt keeps any exit path
+// from also taking the fall-through free (so no arena is freed twice).
+static void codegen_emit_arena_frees(CodeGenerator* codegen, int min_loop_depth) {
+#if LLVM_AVAILABLE
+    if (!codegen || codegen->arena_depth <= 0) return;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef free_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_free");
+    if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_arena_free", free_fn_ty);
+    for (int i = codegen->arena_depth - 1; i >= 0; i--) {
+        if (codegen->arena_loop_depth[i] < min_loop_depth) continue;
+        LLVMValueRef arena = codegen->arena_stack[i];
+        if (arena) LLVMBuildCall2(codegen->builder, free_fn_ty, free_fn, &arena, 1, "");
+    }
+#else
+    (void)codegen; (void)min_loop_depth;
+#endif
+}
+
+// arena-goto fix ("goto out of an arena{} block skips goo_arena_free"):
+// emit goo_arena_free for every arena at codegen->arena_stack index
+// target_arena_depth..arena_depth-1 (innermost first) — i.e. every arena
+// pushed AFTER the goto's target label's own arena-nesting depth. Unlike
+// codegen_emit_arena_frees above (loop-depth-keyed, for break/continue's
+// "which loop am I exiting" question), a `goto` has no loop relationship
+// to its target — only arena LEXICAL nesting (codegen->arena_stack's
+// actual push order, which for this single-pass recursive-descent codegen
+// exactly mirrors AST containment) matters, so this compares directly
+// against arena_stack position. Callers must pass a target_arena_depth
+// the type checker has already proven is <= arena_depth and whose arena
+// chain is a genuine prefix of the current one (AST_GOTO_STMT's
+// type-check case, type_checker.c's "goto into arena block is not
+// supported" diagnostic) — this function trusts that and does not
+// re-validate arena identity, only the depth bound.
+static void codegen_emit_arena_frees_to_depth(CodeGenerator* codegen, int target_arena_depth) {
+#if LLVM_AVAILABLE
+    if (!codegen || target_arena_depth < 0 || codegen->arena_depth <= target_arena_depth) return;
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef free_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_free");
+    if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_arena_free", free_fn_ty);
+    for (int i = codegen->arena_depth - 1; i >= target_arena_depth; i--) {
+        LLVMValueRef arena = codegen->arena_stack[i];
+        if (arena) LLVMBuildCall2(codegen->builder, free_fn_ty, free_fn, &arena, 1, "");
+    }
+#else
+    (void)codegen; (void)target_arena_depth;
+#endif
+}
+
 // Emit the current function's deferred calls in LIFO (last-registered-first)
 // order. Called at every function-exit path immediately before the `ret`.
 // No-op when the function registered no defers, so existing functions are
 // unaffected.
 //
 // Each deferred call's arguments were snapshotted into entry-block allocas at
-// the defer site (Go's defer-time arg evaluation), and the call's argument AST
-// nodes were rewritten to synthetic identifiers referencing those snapshots.
-// Here we (1) re-bind those synthetic names to their snapshot slots in the
-// value table (the originating block's locals are long gone), then (2) emit
-// each call guarded by its runtime "active" flag, so a defer that was never
-// reached at runtime (e.g. inside a not-taken branch) does not run.
+// the defer site (Go's defer-time arg evaluation), and synthetic identifier
+// nodes referencing those snapshots were built there too — but NOT linked
+// into the call's argument list at that point (`call` is a node in the
+// shared template AST; a permanent rewrite would corrupt it for the next
+// instantiation). Here we (1) re-bind those synthetic names to their
+// snapshot slots in the value table (the originating block's locals are long
+// gone), then (2) emit each call guarded by its runtime "active" flag (so a
+// defer that was never reached at runtime, e.g. inside a not-taken branch,
+// does not run), splicing the synthetic nodes into the call transactionally
+// for the duration of that one emission and restoring the originals
+// immediately after (see the splice/restore below).
 void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
 #if LLVM_AVAILABLE
     if (!codegen || !checker) return;
+    // Free the arenas this return is leaving BEFORE running defers. Defers'
+    // arguments escaped to the heap (a defer inside an arena block marks its
+    // args escaping — see block_escape.c), so they never point into these
+    // arenas and the ordering is immaterial for correctness. Runs on every
+    // exit path; a no-op when no arena is active (arena_depth == 0). A return
+    // exits the whole function, so it frees ALL active arenas (min_loop_depth 0).
+    codegen_emit_arena_frees(codegen, 0);
     FunctionInfo* fi = codegen->current_function_info;
-    if (!fi || fi->deferred_count == 0) return;
+    if (!fi) return;
+
+    // P3.4 stack mode: every exit path emits the SAME single call,
+    // regardless of how many (if any) defers THIS dynamic execution
+    // actually pushed — goo_defer_run is a no-op on a never-pushed
+    // (zeroed) frame (see its doc comment, include/runtime.h). This
+    // entirely replaces the static active-flag LIFO walk below for a
+    // stack-mode function; the two mechanisms are never combined in one
+    // function (FunctionInfo.defer_stack_mode's doc comment).
+    if (fi->defer_stack_mode) {
+        if (!fi->defer_frame) return;  // defensive: mode set but frame never allocated
+        LLVMContextRef ctx = codegen->context;
+        LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+        LLVMTypeRef run_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_ty, 1, 0);
+        LLVMValueRef run_fn = LLVMGetNamedFunction(codegen->module, "goo_defer_run");
+        if (!run_fn) run_fn = LLVMAddFunction(codegen->module, "goo_defer_run", run_ty);
+        LLVMBuildCall2(codegen->builder, run_ty, run_fn, &fi->defer_frame, 1, "");
+        return;
+    }
+
+    if (fi->deferred_count == 0) return;
     if (g_defer_info_owner != fi || g_defer_info_count < fi->deferred_count) return;
 
     LLVMTypeRef i1 = LLVMInt1TypeInContext(codegen->context);
@@ -1959,7 +2580,7 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
             if (!vi) continue;
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
         }
 
         // Guard the call with the runtime active flag.
@@ -1970,8 +2591,40 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
         LLVMBuildCondBr(codegen->builder, live, run_bb, cont_bb);
 
         LLVMPositionBuilderAtEnd(codegen->builder, run_bb);
+
+        // Destructive-splice fix: `call` (and its selector base, for a
+        // method-call defer) is a node in the SHARED template AST — this
+        // DeferStmtNode is revisited once per instantiation (comptime,
+        // generic, or composed), so leaving a mutation on it after this
+        // emission would corrupt the next instance's view of the same
+        // statement (the pre-fix bug: instance 2 found instance 1's synthetic
+        // `__goo_defer0_argN` identifiers where its own original argument
+        // expressions used to be). Splice the synthetic identifiers in only
+        // for this one call, and restore the saved originals immediately
+        // after — a transaction fully contained within this loop iteration,
+        // so no code outside it (including this same function's OWN next
+        // iteration, or the next instance's compilation) ever observes the
+        // mutated state. saved_args/saved_recv are borrowed pointers into the
+        // template AST — not owned here, not freed here, just parked for the
+        // duration of the transaction.
+        CallExprNode* call_expr = (CallExprNode*)call;
+        ASTNode* saved_args = call_expr->args;
+        SelectorExprNode* sel = NULL;
+        ASTNode* saved_recv = NULL;
+        if (info->recv_synth && call_expr->function &&
+            call_expr->function->type == AST_SELECTOR_EXPR) {
+            sel = (SelectorExprNode*)call_expr->function;
+            saved_recv = sel->expr;
+            sel->expr = info->recv_synth;
+        }
+        if (info->args_synth_head) call_expr->args = info->args_synth_head;
+
         ValueInfo* result = codegen_generate_expression(codegen, checker, call);
         if (result) value_info_free(result);
+
+        call_expr->args = saved_args;
+        if (sel) sel->expr = saved_recv;
+
         if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
             LLVMBuildBr(codegen->builder, cont_bb);
 
@@ -1982,6 +2635,364 @@ void codegen_emit_deferred_calls(CodeGenerator* codegen, TypeChecker* checker) {
     (void)checker;
 #endif
 }
+
+#if LLVM_AVAILABLE
+// P3.4 stack-mode defer: called once per LEXICAL defer statement (per
+// codegen pass) in a stack-mode function. Snapshots the receiver/args at
+// the CURRENT insert point (defer-TIME evaluation, Go semantics — NOT
+// entry-hoisted, so a loop body re-runs this on every iteration and each
+// dynamic execution captures its own values), heap-allocates an env cell
+// holding them, synthesizes a private per-statement thunk that unpacks the
+// env and re-emits the original call, and pushes {thunk, env} onto this
+// function's runtime defer stack. Executing this statement at runtime IS
+// the registration, so LIFO + per-iteration snapshots fall out for free —
+// no active-flag needed the way the static path needs one.
+//
+// The thunk body reuses codegen_generate_expression on the ORIGINAL call
+// AST node (transient-splice-and-restore, exactly like
+// codegen_emit_deferred_calls does for the static path — see that
+// function's doc comment for why the splice must be transactional) rather
+// than hand-rolling a raw LLVMBuildCall2: that is what makes this path
+// correct for every call shape the static path already supports — builtins
+// like fmt.Println, user functions, methods — for free, instead of
+// reimplementing call_codegen.c's builtin/method/vararg resolution here.
+//
+// CALLEE SNAPSHOT (review 2026-07-10): a callee that is itself a VALUE — a
+// func literal (capturing or not), a local variable holding a func value, a
+// method value, a call returning a func — cannot be re-emitted inside the
+// thunk: re-emission would resolve it against the OUTER function's
+// allocas/instructions (codegen's value table is flat), producing LLVM's
+// "Referring to an instruction in another function" verifier ICE. Go's own
+// rule decides the fix ("each time a defer statement executes, the function
+// value and parameters are evaluated as usual and saved anew"): the callee
+// is just one more defer-time value, so it is snapshotted into the env like
+// any argument — evaluated NOW in the outer function (it lowers to the
+// universal {fn_ptr, env_ptr} funcval pair; TYPE_FUNCTION's LLVM lowering,
+// type_mapping.c), stored as the env's leading field, and rebound in the
+// thunk to a synthetic identifier spliced into call->function for the
+// emission — call_codegen's indirect-funcval path then handles the actual
+// call (nil check, env-first ABI, variadic packing) unchanged. Callees that
+// resolve to module-global symbols from any function (package selectors,
+// named top-level functions, method selectors — the receiver, not the
+// method, is the value there) keep the plain re-emit, which also keeps the
+// static path's exact capability envelope for them.
+static int codegen_generate_defer_stmt_stack(CodeGenerator* codegen, TypeChecker* checker,
+                                             ASTNode* stmt, FunctionInfo* fi,
+                                             CallExprNode* call) {
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+
+    if (!fi->defer_frame) {
+        codegen_error(codegen, stmt->pos, "internal: stack-mode function has no defer frame");
+        return 0;
+    }
+
+    // Same receiver-detection as the static path (codegen_generate_defer_stmt
+    // below): `defer x.m(args)` snapshots the selector base at defer-time
+    // UNLESS it's a package selector (fmt.Println) whose base has no
+    // runtime value.
+    //
+    // callee_expr: non-NULL when the callee itself must be snapshotted (see
+    // the CALLEE SNAPSHOT doc block above). Mutually exclusive with
+    // recv_base by construction — a selector callee takes the recv arm, a
+    // non-selector callee the value-classification arm.
+    ASTNode* recv_base = NULL;
+    ASTNode* callee_expr = NULL;
+    if (call->function && call->function->type == AST_SELECTOR_EXPR) {
+        ASTNode* base = ((SelectorExprNode*)call->function)->expr;
+        if (base && base->node_type && base->node_type->kind != TYPE_PACKAGE)
+            recv_base = base;
+    } else if (call->function && call->function->type == AST_IDENTIFIER) {
+        // Identifier callee: a NAMED top-level function is not in codegen's
+        // value table (it lives in the type-checker's function registry and
+        // resolves to a module-global symbol from any function — safe to
+        // re-emit in the thunk). A value-table hit whose type is a function
+        // is a func-typed local/param — a value that must be snapshotted.
+        ValueInfo* cv = codegen_lookup_value(codegen,
+                                             ((IdentifierNode*)call->function)->name);
+        if (cv && cv->goo_type && cv->goo_type->kind == TYPE_FUNCTION)
+            callee_expr = call->function;
+    } else if (call->function && call->function->node_type &&
+               call->function->node_type->kind == TYPE_FUNCTION) {
+        // Any other function-typed callee expression: func literal
+        // (capturing or not), call returning a func, indexed func slot, ...
+        callee_expr = call->function;
+    }
+
+    size_t argc = 0;
+    for (ASTNode* a = call->args; a; a = a->next) argc++;
+    size_t total = argc + (recv_base ? 1 : 0) + (callee_expr ? 1 : 0);
+
+    // Evaluate every snapshot value now, in ORIGINAL-function context, at
+    // the current (possibly loop-body) insert point.
+    LLVMValueRef* vals = total ? calloc(total, sizeof(LLVMValueRef)) : NULL;
+    Type**        types = total ? calloc(total, sizeof(Type*)) : NULL;
+    if (total && (!vals || !types)) {
+        free(vals); free(types);
+        codegen_error(codegen, stmt->pos, "out of memory snapshotting defer args");
+        return 0;
+    }
+
+    size_t idx = 0;
+    if (callee_expr) {
+        // Evaluate the callee to its funcval pair (Go: the function value
+        // is evaluated when the defer statement executes). A capturing
+        // literal builds its capture env HERE, in the outer function, where
+        // the captured slots are legal to reference.
+        ValueInfo* cvv = codegen_generate_expression(codegen, checker, callee_expr);
+        if (!cvv) {
+            free(vals); free(types);
+            codegen_error(codegen, callee_expr->pos, "failed to evaluate deferred callee");
+            return 0;
+        }
+        LLVMValueRef cval = cvv->llvm_value;
+        Type* ct = cvv->goo_type ? cvv->goo_type : callee_expr->node_type;
+        if (cvv->is_lvalue && ct) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, ct);
+            if (lt) cval = LLVMBuildLoad2(codegen->builder, lt, cval, "sdefer_fn");
+        }
+        value_info_free(cvv);
+        if (!ct || ct->kind != TYPE_FUNCTION) {
+            free(vals); free(types);
+            codegen_error(codegen, callee_expr->pos,
+                          "internal: deferred callee did not resolve to a function type");
+            return 0;
+        }
+        vals[idx] = cval; types[idx] = ct; idx++;
+    }
+    if (recv_base) {
+        ValueInfo* rv = codegen_generate_expression(codegen, checker, recv_base);
+        if (!rv) {
+            free(vals); free(types);
+            codegen_error(codegen, recv_base->pos, "failed to evaluate defer receiver");
+            return 0;
+        }
+        LLVMValueRef rval = rv->llvm_value;
+        Type* rt = rv->goo_type;
+        if (rv->is_lvalue && rt) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, rt);
+            if (lt) rval = LLVMBuildLoad2(codegen->builder, lt, rval, "sdefer_recv");
+        }
+        value_info_free(rv);
+        vals[idx] = rval; types[idx] = rt; idx++;
+    }
+    for (ASTNode* a = call->args; a; a = a->next) {
+        ValueInfo* av = codegen_generate_expression(codegen, checker, a);
+        if (!av) {
+            free(vals); free(types);
+            codegen_error(codegen, a->pos, "failed to evaluate defer argument");
+            return 0;
+        }
+        LLVMValueRef val = av->llvm_value;
+        Type* gt = av->goo_type;
+        if (av->is_lvalue && gt) {
+            LLVMTypeRef lt = codegen_type_to_llvm(codegen, gt);
+            if (lt) val = LLVMBuildLoad2(codegen->builder, lt, val, "sdefer_arg");
+        }
+        value_info_free(av);
+        vals[idx] = val; types[idx] = gt; idx++;
+    }
+
+    // Build the env struct type (one field per snapshot, receiver first —
+    // same order the values were just evaluated in) and heap-allocate one
+    // instance sized to hold them all (goo_alloc via codegen_emit_alloc —
+    // the same allocator method values' bound-receiver cell uses,
+    // composite_codegen.c). A zero-arg, zero-receiver defer (e.g. `defer
+    // cleanup()`) needs no env at all — NULL, and the thunk below ignores
+    // its env param.
+    LLVMTypeRef  env_ty = NULL;
+    LLVMTypeRef* field_types = NULL;
+    LLVMValueRef env_ptr;
+    if (total > 0) {
+        field_types = malloc(sizeof(LLVMTypeRef) * total);
+        if (!field_types) {
+            free(vals); free(types);
+            codegen_error(codegen, stmt->pos, "out of memory building defer env type");
+            return 0;
+        }
+        for (size_t i = 0; i < total; i++) {
+            field_types[i] = types[i] ? codegen_type_to_llvm(codegen, types[i]) : LLVMTypeOf(vals[i]);
+            if (!field_types[i]) {
+                free(field_types); free(vals); free(types);
+                codegen_error(codegen, stmt->pos, "internal: failed to lower defer snapshot type");
+                return 0;
+            }
+        }
+        env_ty = LLVMStructTypeInContext(ctx, field_types, (unsigned)total, 0);
+
+        LLVMValueRef size = LLVMSizeOf(env_ty);
+        env_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
+        if (!env_ptr) {
+            free(field_types); free(vals); free(types);
+            codegen_error(codegen, stmt->pos, "internal: failed to allocate defer env");
+            return 0;
+        }
+        for (size_t i = 0; i < total; i++) {
+            LLVMValueRef field = LLVMBuildStructGEP2(codegen->builder, env_ty, env_ptr,
+                                                      (unsigned)i, "sdefer_env_field");
+            LLVMBuildStore(codegen->builder, vals[i], field);
+        }
+    } else {
+        env_ptr = LLVMConstNull(ptr_ty);
+    }
+
+    // Synthesize the per-statement thunk `void @<fn>.defer<N>_thunk(ptr
+    // env)` as its own LLVM function. `fi->deferred_count` is reused purely
+    // as a per-function defer-statement counter here (stack mode never
+    // touches fi->deferred_calls[]/g_defer_info — those are the static
+    // path's own bookkeeping) so every thunk name is unique within this
+    // function, and fi->name is already unique per instantiation (mangled
+    // per monomorphized instance), so the full thunk symbol is unique
+    // module-wide too.
+    char thunk_name[300];
+    snprintf(thunk_name, sizeof(thunk_name), "%s.defer%zu_thunk",
+             fi->name ? fi->name : "fn", fi->deferred_count);
+    LLVMTypeRef thunk_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_ty, 1, 0);
+    LLVMValueRef thunk_fn = LLVMAddFunction(codegen->module, thunk_name, thunk_ty);
+    LLVMSetLinkage(thunk_fn, LLVMInternalLinkage);
+
+    // --- Save every piece of ambient state this nested emission touches
+    // (mirrors codegen_generate_func_lit's save/restore block exactly —
+    // function_codegen.c). Must happen BEFORE codegen_enter_function. ---
+    LLVMValueRef       saved_function = codegen->current_function;
+    FunctionInfo*      saved_function_info = codegen->current_function_info;
+    LLVMBasicBlockRef  saved_block = LLVMGetInsertBlock(codegen->builder);
+    size_t             saved_vtab_start = codegen->value_table_function_start;
+    Scope*             enclosing_scope = checker->current_scope;
+    ControlFlowContext saved_cfctx;
+    cfctx_save(&saved_cfctx, &codegen->cfctx);
+    codegen->cfctx.loop_depth = 0;
+
+    FunctionInfo* thunk_fi = function_info_new(thunk_name, thunk_fn, NULL);
+    if (!thunk_fi) {
+        codegen_error(codegen, stmt->pos, "out of memory building defer thunk");
+        free(field_types); free(vals); free(types);
+        return 0;
+    }
+    thunk_fi->entry_block = LLVMAppendBasicBlockInContext(ctx, thunk_fn, "entry");
+    codegen_enter_function(codegen, thunk_fi);
+    codegen_set_insert_point(codegen, thunk_fi->entry_block);
+
+    scope_push(checker);
+    checker->current_scope->is_function_boundary = 1;
+
+    LLVMValueRef env_param = LLVMGetParam(thunk_fn, 0);
+
+    // Unpack each env field into a fresh entry alloca inside the THUNK
+    // (codegen_create_entry_alloca now targets thunk_fi's entry block, since
+    // codegen->current_function_info was just repointed at it), bind a
+    // synthetic identifier to it exactly the way the static path's
+    // codegen_generate_defer_stmt does for its own entry-alloca snapshots —
+    // same naming scheme (`__goo_defer<N>_recv`/`_arg<M>`, plus `_fn` for a
+    // snapshotted callee); safe to reuse verbatim because a function is
+    // EITHER fully static or fully stack-mode, never mixed, so there is no
+    // cross-mode collision risk. A snapshotted CALLEE binds as a func-typed
+    // lvalue, which is precisely the shape call_codegen's indirect-funcval
+    // arm expects — the spliced call below goes through the same nil-check +
+    // env-first indirect call any `f()` on a func-typed local takes.
+    ASTNode* callee_synth = NULL;
+    ASTNode* recv_synth = NULL;
+    ASTNode* args_synth_head = NULL;
+    ASTNode* prev_synth = NULL;
+    for (size_t i = 0; i < total; i++) {
+        LLVMTypeRef field_llvm = field_types[i];
+        LLVMValueRef field_ptr = LLVMBuildStructGEP2(codegen->builder, env_ty, env_param,
+                                                      (unsigned)i, "sdefer_thunk_field");
+        LLVMValueRef field_val = LLVMBuildLoad2(codegen->builder, field_llvm, field_ptr, "sdefer_thunk_load");
+        LLVMValueRef slot = codegen_create_entry_alloca(codegen, field_llvm, "sdefer_thunk_slot");
+        LLVMBuildStore(codegen->builder, field_val, slot);
+
+        int is_callee = (callee_expr && i == 0);
+        int is_recv = (recv_base && i == 0);  // exclusive with is_callee
+        char nm[64];
+        if (is_callee) {
+            snprintf(nm, sizeof(nm), "__goo_defer%zu_fn", fi->deferred_count);
+        } else if (is_recv) {
+            snprintf(nm, sizeof(nm), "__goo_defer%zu_recv", fi->deferred_count);
+        } else {
+            size_t argi = i - ((recv_base || callee_expr) ? 1 : 0);
+            snprintf(nm, sizeof(nm), "__goo_defer%zu_arg%zu", fi->deferred_count, argi);
+        }
+
+        ValueInfo* vi = value_info_new(nm, slot, types[i]);
+        if (vi) { vi->is_lvalue = 1; vi->is_initialized = 1; vscope_add(codegen, vi); }
+        type_checker_declare_synthetic(checker, nm, types[i]);
+
+        IdentifierNode* id = ast_identifier_new(nm, stmt->pos);
+        ((ASTNode*)id)->node_type = types[i];
+        if (is_callee) {
+            callee_synth = (ASTNode*)id;
+        } else if (is_recv) {
+            recv_synth = (ASTNode*)id;
+        } else {
+            ASTNode* idn = (ASTNode*)id;
+            if (prev_synth) prev_synth->next = idn; else args_synth_head = idn;
+            prev_synth = idn;
+        }
+    }
+    free(field_types); free(vals); free(types);
+
+    // Splice the synthetic nodes into the ORIGINAL (shared template) call
+    // node for exactly this one emission, restoring the originals right
+    // after — same transactional pattern codegen_emit_deferred_calls uses,
+    // just performed once (at thunk-build time) instead of once per exit
+    // site, since the call is emitted exactly once here (inside the
+    // thunk), not re-emitted at every function exit. A snapshotted callee
+    // splices call->function itself (the whole callee expression is
+    // replaced by the synthetic identifier); a method receiver splices only
+    // the selector's base, leaving the selector node in place.
+    ASTNode* saved_args = call->args;
+    ASTNode* saved_fn = NULL;
+    SelectorExprNode* sel = NULL;
+    ASTNode* saved_recv = NULL;
+    if (callee_synth) {
+        saved_fn = call->function;
+        call->function = callee_synth;
+    } else if (recv_synth && call->function && call->function->type == AST_SELECTOR_EXPR) {
+        sel = (SelectorExprNode*)call->function;
+        saved_recv = sel->expr;
+        sel->expr = recv_synth;
+    }
+    if (args_synth_head) call->args = args_synth_head;
+
+    ValueInfo* result = codegen_generate_expression(codegen, checker, (ASTNode*)call);
+    if (result) value_info_free(result);
+
+    call->args = saved_args;
+    if (callee_synth) call->function = saved_fn;
+    if (sel) sel->expr = saved_recv;
+
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder)))
+        LLVMBuildRetVoid(codegen->builder);
+
+    // --- Restore ambient state, mirror order of the save above. ---
+    scope_pop(checker);
+    checker->current_scope = enclosing_scope;
+
+    codegen_exit_function(codegen);
+    function_info_free(thunk_fi);
+
+    codegen->value_table_function_start = saved_vtab_start;
+    codegen->current_function = saved_function;
+    codegen->current_function_info = saved_function_info;
+    if (saved_block) codegen_set_insert_point(codegen, saved_block);
+    cfctx_restore(&codegen->cfctx, &saved_cfctx);
+
+    // Back in the outer (original) function: push {thunk, env}. THIS call
+    // site is what runs once per dynamic execution (once per loop
+    // iteration), giving Go's per-iteration defer semantics — the thunk
+    // itself is emitted only once, at compile time.
+    LLVMTypeRef push_params[] = { ptr_ty, ptr_ty, ptr_ty };
+    LLVMTypeRef push_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), push_params, 3, 0);
+    LLVMValueRef push_fn = LLVMGetNamedFunction(codegen->module, "goo_defer_push");
+    if (!push_fn) push_fn = LLVMAddFunction(codegen->module, "goo_defer_push", push_ty);
+    LLVMValueRef push_args[] = { fi->defer_frame, thunk_fn, env_ptr };
+    LLVMBuildCall2(codegen->builder, push_ty, push_fn, push_args, 3, "");
+
+    fi->deferred_count++;  // per-function thunk/synthetic-name uniquifier only
+    return 1;
+}
+#endif
 
 int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
 #if !LLVM_AVAILABLE
@@ -1999,23 +3010,47 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
         return 0;
     }
 
-    // A defer inside a loop accumulates one deferred call PER ITERATION in Go,
-    // which a single static per-defer slot cannot model. Rather than silently
-    // miscompiling (running once, with the last iteration's snapshot), reject
-    // it cleanly; once-per-iteration defers need a runtime defer stack (tracked
-    // follow-up requiring runtime support).
-    if (codegen->loop_depth > 0) {
-        codegen_error(codegen, stmt->pos,
-                      "defer inside a loop is not yet supported "
-                      "(needs a runtime defer stack)");
-        return 0;
-    }
-
     if (defer_stmt->call->type != AST_CALL_EXPR) {
         codegen_error(codegen, stmt->pos, "defer requires a function call");
         return 0;
     }
     CallExprNode* call = (CallExprNode*)defer_stmt->call;
+
+    // P3.4: a defer inside a loop accumulates one deferred call PER
+    // ITERATION in Go, which a single static per-lexical-defer slot cannot
+    // model. The pre-pass (function_codegen.c's defer_prepass_needs_stack,
+    // run before body codegen) already decided, for the WHOLE function,
+    // whether any of its defers are loop-nested — if so, EVERY defer here
+    // routes through the runtime stack instead (per-function fork, not
+    // per-statement: see FunctionInfo.defer_stack_mode's doc comment for
+    // why mixing the two mechanisms within one function is unsound). This
+    // used to be an outright rejection; loop-nested defers are now fully
+    // supported.
+    if (fi->defer_stack_mode) {
+        return codegen_generate_defer_stmt_stack(codegen, checker, stmt, fi, call);
+    }
+
+    // Fail-closed backstop (defense in depth, review 2026-07-10): the
+    // pre-pass decided this function needs no runtime stack, yet codegen is
+    // NOW inside a real loop (cfctx tracks actual loop frames independently
+    // of the pre-pass — loop_is_loop[i] is 1 only for cfctx_push_loop
+    // frames, 0 for switch/select/type-switch break-scopes, so this never
+    // fires for a defer under a plain switch). That means the pre-pass
+    // walker missed the container this loop is nested under. Emitting the
+    // static single-slot form here would run the defer ONCE with the last
+    // iteration's snapshot — the exact silent-miscompile class the walker's
+    // ARENA_BLOCK/LABEL_STMT gaps produced before they were fixed. Refuse
+    // loudly instead: a compile error is strictly better than wrong output,
+    // and matches pre-P3.4 behavior (which rejected all loop defers).
+    for (int i = 0; i < codegen->cfctx.loop_depth; i++) {
+        if (codegen->cfctx.loop_is_loop[i]) {
+            codegen_error(codegen, stmt->pos,
+                          "internal: loop-nested defer reached the static defer path "
+                          "(defer pre-pass coverage bug — see defer_prepass_walk's "
+                          "maintenance contract, function_codegen.c)");
+            return 0;
+        }
+    }
 
     // First defer of this function: reset the parallel codegen-info cache.
     if (fi->deferred_count == 0) defer_info_reset(fi);
@@ -2032,9 +3067,13 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     defer_entry_store_zero(codegen, flag, i1);
 
     // Snapshot each argument NOW (defer-time evaluation), store it into an
-    // entry-block alloca, and rewrite the argument node to a synthetic
-    // identifier that resolves to that snapshot when the call is emitted at
-    // function exit.
+    // entry-block alloca, and build (but do not yet link in) a synthetic
+    // identifier node that resolves to that snapshot when the call is
+    // emitted at function exit. The original argument node is left
+    // untouched here — `call` is shared template AST, so a permanent
+    // rewrite would corrupt it for the next instantiation; the synthetic
+    // node is only spliced in transactionally, per emission, by
+    // codegen_emit_deferred_calls.
     size_t argc = 0;
     for (ASTNode* a = call->args; a; a = a->next) argc++;
 
@@ -2068,8 +3107,14 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 
     size_t idx = 0;
 
-    // Snapshot the method receiver (if any) first, rewriting the selector base
-    // to a synthetic identifier that resolves to the snapshot at exit.
+    // Snapshot the method receiver (if any) first. A synthetic identifier
+    // that will resolve to the snapshot at exit is built now but NOT linked
+    // into call->function here — call is the shared template AST node (this
+    // DeferStmtNode is revisited once per instantiation), so splicing it in
+    // permanently would corrupt the template for the next instance (the
+    // destructive-splice bug). codegen_emit_deferred_calls links it in only
+    // for the duration of each emission and restores the original receiver
+    // immediately after.
     if (recv_base) {
         ValueInfo* rv = codegen_generate_expression(codegen, checker, recv_base);
         if (!rv) {
@@ -2096,11 +3141,18 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
 
         IdentifierNode* rid = ast_identifier_new(nm, recv_base->pos);
         ((ASTNode*)rid)->node_type = rt;
-        ((SelectorExprNode*)call->function)->expr = (ASTNode*)rid;
+        cinfo.recv_synth = (ASTNode*)rid;
         idx++;
     }
 
-    ASTNode* prev = NULL;
+    // Build (but do not splice) a synthetic identifier chain standing in for
+    // call->args, in original argument order. Same reasoning as the receiver
+    // above: `a` (the original argument nodes) is left completely untouched —
+    // still owned by the template AST, still linked exactly as the parser
+    // built it — and cinfo.args_synth_head is a SEPARATE, independent chain
+    // that codegen_emit_deferred_calls splices into call->args only for the
+    // duration of each emission.
+    ASTNode* prev_synth = NULL;
     ASTNode* a = call->args;
     while (a) {
         ASTNode* nextarg = a->next;
@@ -2139,12 +3191,13 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
         // probe never surfaced this.
         type_checker_declare_synthetic(checker, nm, gt);
 
-        // Splice a synthetic identifier in place of the original argument.
+        // Chain a synthetic identifier onto cinfo.args_synth_head, standing
+        // in for this argument. NOT linked into call->args here — see the
+        // comment above the `while (a)` loop and codegen_emit_deferred_calls.
         IdentifierNode* id = ast_identifier_new(nm, a->pos);
         ASTNode* idn = (ASTNode*)id;
-        idn->next = nextarg;
-        if (prev) prev->next = idn; else call->args = idn;
-        prev = idn;
+        if (prev_synth) prev_synth->next = idn; else cinfo.args_synth_head = idn;
+        prev_synth = idn;
 
         a = nextarg;
         idx++;
@@ -2153,8 +3206,9 @@ int codegen_generate_defer_stmt(CodeGenerator* codegen, TypeChecker* checker, AS
     // Mark this defer active at runtime (current block; runs only if reached).
     LLVMBuildStore(codegen->builder, LLVMConstInt(i1, 1, 0), flag);
 
-    // Register the (rewritten) call node on the FunctionInfo and its codegen
-    // info in the parallel cache. Both arrays grow in lock-step from index 0.
+    // Register the call node (still holding its ORIGINAL args/receiver —
+    // untouched by this function) on the FunctionInfo and its codegen info in
+    // the parallel cache. Both arrays grow in lock-step from index 0.
     if (fi->deferred_count >= fi->deferred_capacity) {
         size_t newcap = fi->deferred_capacity ? fi->deferred_capacity * 2 : 4;
         ASTNode** grown = realloc(fi->deferred_calls, newcap * sizeof(ASTNode*));
@@ -2217,9 +3271,18 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 
     // Create basic blocks for each case and the end
     LLVMBasicBlockRef* case_blocks = malloc(sizeof(LLVMBasicBlockRef) * case_count);
+    // gofmt-syntax-b Task 4 (P1.10): the receive `recv_space` alloca
+    // codegen_setup_select_case builds for each receive case (calloc'd to
+    // all-NULL so send cases and the default's unused slot stay NULL — a
+    // binding can only exist on a receive case, enforced in the type
+    // checker). The dispatch loop below reads back through this array to
+    // copy the ALREADY-RECEIVED value into the bound name/lvalue — goo_select
+    // has already performed the one and only receive by the time any case
+    // block runs, so this is a plain load, never a second goo_chan_recv.
+    LLVMValueRef* recv_spaces = calloc(case_count, sizeof(LLVMValueRef));
     LLVMBasicBlockRef default_block = NULL;
     LLVMBasicBlockRef end_block = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, "select_end");
-    
+
     // Generate case blocks
     case_node = select_stmt->cases;
     size_t case_index = 0;
@@ -2233,6 +3296,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             if (has_default) {
                 codegen_error(codegen, case_node->pos, "Select statement can only have one default case");
                 free(case_blocks);
+                free(recv_spaces);
                 return 0;
             }
             has_default = 1;
@@ -2255,8 +3319,10 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             case_blocks[case_index] = LLVMAppendBasicBlockInContext(ctx, codegen->current_function, case_name);
 
             // Setup select case data
-            if (!codegen_setup_select_case(codegen, checker, cases_array, case_index, select_case)) {
+            if (!codegen_setup_select_case(codegen, checker, cases_array, case_index, select_case,
+                                            &recv_spaces[case_index])) {
                 free(case_blocks);
+                free(recv_spaces);
                 return 0;
             }
         }
@@ -2312,9 +3378,10 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     // `break` inside a select case must terminate the SELECT (Go semantics),
     // not the enclosing loop. Push a break-only scope targeting end_block;
     // `continue` still threads through to the enclosing loop (or errors if none).
-    if (!codegen_push_break_scope(codegen, end_block)) {
+    if (!cfctx_push_break_scope(&codegen->cfctx, end_block)) {
         codegen_error(codegen, stmt->pos, "select nested too deeply for break handling");
         free(case_blocks);
+        free(recv_spaces);
         return 0;
     }
 
@@ -2326,13 +3393,100 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 
         LLVMPositionBuilderAtEnd(codegen->builder, case_blocks[case_index]);
 
+        // Case scope: a `:=` bind above must not outlive this case's body —
+        // neither past the select (if it shadows an outer variable) nor into
+        // a later case's body of the same select (codegen emits every case
+        // block regardless of which one runs at runtime, so an untruncated
+        // value table lets a later case's lookup see an earlier case's
+        // never-stored alloca). Snapshot the high-water mark now and
+        // truncate back after the body, same mechanism as the match-arm
+        // teardown in composite_codegen.c and the block-stmt teardown above
+        // in this file — the type checker already guarantees no legal
+        // cross-case reference to this binding exists, so truncation alone
+        // (no explicit lookup needed) is safe.
+        size_t pre_case_vt_size = vscope_enter(codegen);
+
+        // gofmt-syntax-b Task 4 (P1.10): copy the already-received value into
+        // the bound name/lvalue BEFORE the body runs. goo_select has already
+        // performed the ONE AND ONLY receive for this case (recv_spaces[case_
+        // index] is the buffer codegen_setup_select_case wrote it into) — this
+        // is a plain load + store/alloca, never a second goo_chan_recv (the
+        // P0.1 miscompile class). recv_spaces[case_index] is NULL for every
+        // case this arc's pre-existing fixtures exercise (no bind_name), so
+        // this block is a no-op for them.
+        if (select_case->bind_name && recv_spaces[case_index]) {
+            // `_` is a discard, like every other short-decl form (mirrors
+            // the type checker's skip-declare-for-`_` above) — the receive
+            // already happened via goo_select; nothing further to bind.
+            if (!(select_case->is_declare && strcmp(select_case->bind_name, "_") == 0)) {
+                Type* elem_type = select_case->comm->node_type;
+                LLVMTypeRef elem_llvm = elem_type
+                    ? codegen_type_to_llvm(codegen, elem_type)
+                    // mirrors codegen_setup_select_case's own i32 fallback
+                    : LLVMInt32TypeInContext(ctx);
+                LLVMValueRef loaded = LLVMBuildLoad2(codegen->builder, elem_llvm,
+                                                     recv_spaces[case_index], "select_bind_load");
+                if (select_case->is_declare) {
+                    // `:=` — fresh alloca, scoped to this case body (mirrors
+                    // the if-let / multi-assign short-decl binding pattern
+                    // elsewhere in this file). The value table is truncated
+                    // back to pre_case_vt_size after the body below, so this
+                    // binding does not leak into a later case or past the
+                    // select.
+                    LLVMValueRef slot = codegen_alloc_local(codegen, elem_llvm, select_case->bind_name);
+                    LLVMBuildStore(codegen->builder, loaded, slot);
+                    ValueInfo* vi = value_info_new(select_case->bind_name, slot, elem_type);
+                    vi->is_lvalue = 1;
+                    vi->is_initialized = 1;
+                    vscope_add(codegen, vi);
+                } else {
+                    // `=` — store into the existing variable's alloca. The
+                    // type checker already proved bind_name is a declared,
+                    // type-compatible variable in an enclosing scope.
+                    ValueInfo* existing = codegen_lookup_value(codegen, select_case->bind_name);
+                    if (!existing || !existing->is_lvalue) {
+                        codegen_error(codegen, case_node->pos,
+                                     "select case: '%s' is not an assignable variable",
+                                     select_case->bind_name);
+                        cfctx_pop(&codegen->cfctx);
+                        free(case_blocks);
+                        free(recv_spaces);
+                        return 0;
+                    }
+                    // Box a concrete received value into an interface-typed
+                    // target (mirrors the multi-assign '=' path above and
+                    // type_check_assignment_op's ordinary `x = e` path) —
+                    // same layout store otherwise (interface->interface
+                    // needs no box).
+                    LLVMValueRef sval = loaded;
+                    if (existing->goo_type && existing->goo_type->kind == TYPE_INTERFACE &&
+                        elem_type && elem_type->kind != TYPE_INTERFACE) {
+                        LLVMValueRef boxed = codegen_interface_box(codegen, checker,
+                                                                   existing->goo_type,
+                                                                   elem_type, loaded, case_node->pos);
+                        if (!boxed) {
+                            codegen_error(codegen, case_node->pos,
+                                         "failed to box select-received value into interface");
+                            cfctx_pop(&codegen->cfctx);
+                            free(case_blocks);
+                            free(recv_spaces);
+                            return 0;
+                        }
+                        sval = boxed;
+                    }
+                    LLVMBuildStore(codegen->builder, sval, existing->llvm_value);
+                }
+            }
+        }
+
         // Generate case body. The body is a ->next statement chain — loop it
         // like switch codegen does (a single codegen_generate_statement call
         // silently dropped every statement after the first).
         for (ASTNode* s = select_case->body; s; s = s->next) {
             if (!codegen_generate_statement(codegen, checker, s)) {
-                codegen_pop_loop(codegen);
+                cfctx_pop(&codegen->cfctx);
                 free(case_blocks);
+                free(recv_spaces);
                 return 0;
             }
         }
@@ -2342,15 +3496,21 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
             LLVMBuildBr(codegen->builder, end_block);
         }
 
+        // Restore the value table: this case's `:=` bind (if any) must not
+        // be visible to the next case's bind/body codegen, nor after the
+        // select once we exit this loop on the last case.
+        vscope_exit(codegen, pre_case_vt_size);
+
         case_node = case_node->next;
         case_index++;
     }
-    codegen_pop_loop(codegen);
+    cfctx_pop(&codegen->cfctx);
 
     // Position builder at end block
     LLVMPositionBuilderAtEnd(codegen->builder, end_block);
-    
+
     free(case_blocks);
+    free(recv_spaces);
     return 1;
 #endif
 }
@@ -2395,9 +3555,17 @@ LLVMValueRef codegen_get_select_function(CodeGenerator* codegen) {
 
 #if LLVM_AVAILABLE
 // Helper function to setup select case data
-int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker, 
-                              LLVMValueRef cases_array, size_t case_index, 
-                              SelectCaseNode* select_case) {
+//
+// gofmt-syntax-b Task 4 (P1.10): out_recv_space, when non-NULL, receives the
+// `recv_space` alloca built below for a RECEIVE case (untouched for a send
+// case or the default's inactive slot) — the dispatch loop in
+// codegen_generate_select_stmt reads it back to copy the already-received
+// value into a select-case value binding, without ever calling
+// goo_chan_recv a second time.
+int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
+                              LLVMValueRef cases_array, size_t case_index,
+                              SelectCaseNode* select_case,
+                              LLVMValueRef* out_recv_space) {
     // Get pointer to the case struct in the array. cases_array is a pointer to
     // the first select_case_type element (from LLVMBuildArrayAlloca), so the
     // i-th case is a single-index GEP — NOT a two-index [0, i] which would
@@ -2425,8 +3593,22 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
             // Generate channel and value
             ValueInfo* channel_val = codegen_generate_expression(codegen, checker, binary->left);
             if (!channel_val) return 0;
+
+            // Task #9: auto-load an lvalue channel operand — a struct-field
+            // or index selector (`case b.ch <- v:`) returns the channel's
+            // storage ADDRESS, not the pointer value goo_select expects.
+            // Same guard as the plain-send path (codegen_generate_channel_
+            // send, lowlevel_codegen.c).
+            if (channel_val->is_lvalue && channel_val->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+                if (ct) {
+                    channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                             channel_val->llvm_value, "select_send_chan_load");
+                    channel_val->is_lvalue = 0;
+                }
+            }
             channel = channel_val->llvm_value;
-            
+
             ValueInfo* value_val = codegen_generate_expression(codegen, checker, binary->right);
             if (!value_val) return 0;
 
@@ -2498,6 +3680,19 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
             // Generate channel
             ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
             if (!channel_val) return 0;
+
+            // Task #9: same auto-load guard as the send arm above (and
+            // codegen_generate_channel_recv, lowlevel_codegen.c) — a
+            // struct-field or index channel operand (`case v := <-b.ch:`)
+            // is an lvalue (the field's address), not the channel pointer.
+            if (channel_val->is_lvalue && channel_val->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+                if (ct) {
+                    channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                             channel_val->llvm_value, "select_recv_chan_load");
+                    channel_val->is_lvalue = 0;
+                }
+            }
             channel = channel_val->llvm_value;
 
             // Allocate space for the received value sized to the channel's
@@ -2510,6 +3705,7 @@ int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
                 if (et) recv_ty = et;
             }
             data_ptr = LLVMBuildAlloca(codegen->builder, recv_ty, "recv_space");
+            if (out_recv_space) *out_recv_space = data_ptr;
 
             value_info_free(channel_val);
         }
@@ -2560,6 +3756,68 @@ int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, A
     
     // Generate the body of the unsafe block
     return codegen_generate_statement(codegen, checker, unsafe_stmt->body);
+#endif
+}
+
+// Arena region statement generation
+//
+// Arena-regions Task 6: allocate a real arena on entry, push it so 7c's
+// gate routes the body's non-escaping allocations into it
+// (codegen_arena_eligible / codegen_emit_alloc), and free it on normal
+// fall-through exit. See docs/superpowers/specs/2026-07-07-arena-6-
+// arena-free-at-block-exit-design.md for the soundness argument.
+//
+// Free-only-on-fall-through is deliberate: a `return`/`break`/`continue`
+// inside the body already emitted a terminator and branched away before
+// reaching the free, so on those paths the arena leaks (safe — no worse
+// than today's allocate-and-leak baseline) rather than risking a
+// free-before-jump or a double free. Nothing reachable after the block can
+// still point into this arena: an escaping value (or a value embedded in
+// an escaping value, via 7b's field-taint union) is routed to the heap by
+// 7c, never the arena — so freeing the whole arena cannot dangle a live
+// pointer.
+int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt) {
+#if !LLVM_AVAILABLE
+    codegen_error(codegen, stmt->pos, "LLVM support not available");
+    return 0;
+#else
+    if (!codegen || !checker || !stmt || stmt->type != AST_ARENA_BLOCK) return 0;
+    ArenaBlockNode* arena_blk = (ArenaBlockNode*)stmt;
+
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_type = LLVMInt64TypeInContext(ctx);
+
+    // get-or-declare goo_arena_new : i8* (i64) — same LLVMGetNamedFunction-
+    // or-LLVMAddFunction pattern codegen_emit_alloc uses for goo_arena_alloc
+    // (both are already declared into the module by
+    // codegen_declare_runtime_functions, so this normally just looks them
+    // up; the fallback keeps this function safe to call standalone, e.g.
+    // from a lightweight test harness that skips that declaration pass).
+    LLVMTypeRef new_fn_ty = LLVMFunctionType(ptr_type, &size_type, 1, 0);
+    LLVMValueRef new_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_new");
+    if (!new_fn) new_fn = LLVMAddFunction(codegen->module, "goo_arena_new", new_fn_ty);
+
+    LLVMTypeRef free_fn_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr_type, 1, 0);
+    LLVMValueRef free_fn = LLVMGetNamedFunction(codegen->module, "goo_arena_free");
+    if (!free_fn) free_fn = LLVMAddFunction(codegen->module, "goo_arena_free", free_fn_ty);
+
+    // 0 lets the runtime pick GOO_ARENA_DEFAULT_BLOCK_SIZE (arena.c).
+    LLVMValueRef zero_size = LLVMConstInt(size_type, 0, 0);
+    LLVMValueRef arena = LLVMBuildCall2(codegen->builder, new_fn_ty, new_fn, &zero_size, 1, "arena_new");
+
+    codegen_arena_push(codegen, arena);
+    int ok = codegen_generate_statement(codegen, checker, arena_blk->body);
+    codegen_arena_pop(codegen);
+    if (!ok) return 0;
+
+    // Free ONLY on normal fall-through: any return/break/continue inside
+    // the body already emitted a terminator and jumped away, so this point
+    // is reachable iff control fell off the end of the body.
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
+        LLVMBuildCall2(codegen->builder, free_fn_ty, free_fn, &arena, 1, "");
+    }
+    return 1;
 #endif
 }
 

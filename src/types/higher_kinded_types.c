@@ -25,7 +25,7 @@ static char* str_dup(const char* str) {
 HigherKindedType* higher_kinded_type_new(HigherKindedTypeKind kind, Type* type_constructor) {
     if (!type_constructor) return NULL;
     
-    HigherKindedType* hkt = malloc(sizeof(HigherKindedType));
+    HigherKindedType* hkt = xmalloc(sizeof(HigherKindedType));
     if (!hkt) return NULL;
     
     hkt->kind = kind;
@@ -184,7 +184,7 @@ Type* higher_kinded_type_instantiate(HigherKindedType* hkt, Type** arguments, si
                 if (strcmp(hkt->type_constructor->name, "Function") == 0 ||
                     strcmp(hkt->type_constructor->name, "Fn") == 0) {
                     // Create function type: Fn<T, U> -> T -> U
-                    Type** param_types = malloc(sizeof(Type*));
+                    Type** param_types = xmalloc(sizeof(Type*));
                     if (param_types) {
                         param_types[0] = type_copy(arg1);
                         return type_function(param_types, 1, type_copy(arg2));
@@ -438,7 +438,7 @@ typedef struct {
 
 KindPolymorphicType* create_kind_polymorphic_type(const char* name, const char* kind_var, 
                                                  HigherKindedType* body) {
-    KindPolymorphicType* kpt = malloc(sizeof(KindPolymorphicType));
+    KindPolymorphicType* kpt = xmalloc(sizeof(KindPolymorphicType));
     if (!kpt) return NULL;
     
     kpt->name = str_dup(name);
@@ -466,7 +466,7 @@ Type* functor_map(HigherKindedType* functor_type, Type* input_element, Type* out
     if (!functor_type || !input_element || !output_element) return NULL;
     
     // Create the mapping function type A -> B
-    Type** param_types = malloc(sizeof(Type*));
+    Type** param_types = xmalloc(sizeof(Type*));
     if (!param_types) return NULL;
     param_types[0] = type_copy(input_element);
     Type* map_func_type = type_function(param_types, 1, type_copy(output_element));
@@ -494,7 +494,7 @@ Type* monad_bind(HigherKindedType* monad_type, Type* input_element, Type* output
     if (!monad_output) return NULL;
     
     // Create the binding function type A -> M<B>
-    Type** param_types = malloc(sizeof(Type*));
+    Type** param_types = xmalloc(sizeof(Type*));
     if (!param_types) {
         type_free(monad_output);
         return NULL;

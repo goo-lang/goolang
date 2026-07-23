@@ -14,10 +14,26 @@ typedef struct {
 } PackageSource;
 
 // Resolve `import_path` (e.g. "greet" or "encoding/json") to its source
-// files under GOOROOT. Returns 0 on success with `out` fully populated;
-// returns non-0 if the package directory doesn't exist or contains no
-// non-_test.go *.go files. `out` is left zeroed on failure.
-int resolve_import(const char* import_path, PackageSource* out);
+// files. `source_dir` is the directory containing the main .goo file being
+// compiled (NULL if unavailable/not applicable, e.g. a caller with no source
+// file of its own). Resolution (P4.5):
+//   - "./name" (leading dot-slash): resolved against source_dir ONLY. No
+//     GOOROOT fallback — this is the explicit "local package" spelling.
+//     Fails (returns non-0) if source_dir is NULL.
+//   - bare "name": GOOROOT tiers first (unchanged precedence — a local
+//     directory must not silently shadow a same-named stdlib package),
+//     then source_dir as a LAST-tier fallback if GOOROOT resolution fails.
+// Returns 0 on success with `out` fully populated; returns non-0 if no tier
+// resolves the path, or its directory contains no non-_test.go *.go files.
+// `out` is left zeroed on failure.
+int resolve_import(const char* import_path, const char* source_dir, PackageSource* out);
+
+// P4.4: map a Go-style nested import spelling (e.g. "unicode/utf8") to the
+// flat name goostd actually vendors it under (e.g. "utf8"). Returns
+// `import_path` unchanged for any spelling not in the alias table (including
+// every flat spelling already in use). The single choke point for import-
+// path-spelling comparisons; see the table + comment in import_resolver.c.
+const char* normalize_import_path(const char* import_path);
 
 // Free everything owned by a PackageSource populated by resolve_import
 // (the file path array + each string, `name`, `import_path`). Safe to

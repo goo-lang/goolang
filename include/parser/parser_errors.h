@@ -159,4 +159,9 @@ void parser_sync_to_expression_end(void);
 SourceLocation token_to_source_location(const Token* token);
 const char* token_type_to_string(int token_type);
 
+// Bison error hook (also declared in include/parser.h for callers outside
+// the parser subsystem, and re-declared extern in parser.y's own prologue
+// for parser.tab.c's generated yyparse()). Defined in parser_errors.c.
+void yyerror(const char* msg);
+
 #endif // GOO_PARSER_ERRORS_H

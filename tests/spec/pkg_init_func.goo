@@ -1,0 +1,18 @@
+// Spec: Program initialization / init function
+// REJECTED in v1 (clean diagnostic). History: before the fix this compiled
+// and the initializer SILENTLY never ran (Go: 42, Goo would print 1) — the
+// worst divergence class. Real init support (declaration order, multiple
+// inits, imports-first) is post-v1 design work.
+package main
+
+import "fmt"
+
+var n = 1
+
+func init() {
+	n = n + 41
+}
+
+func main() {
+	fmt.Println(n)
+}

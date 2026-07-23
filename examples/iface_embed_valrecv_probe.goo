@@ -1,0 +1,28 @@
+// iface_embed_valrecv_probe: receiver-kind soundness must NOT over-reject the
+// legitimate value case. `Greeter.Hi` has a VALUE receiver on `Inner`, promoted
+// through a VALUE-embedded field into `Outer`. A value `Outer{...}` is in the
+// value method set for a value-receiver promoted method, so it satisfies `Sayer`
+// and dispatches correctly. (The pointer-receiver-through-value-field case is the
+// one that gets rejected — see iface-recv-kind-probe.)
+package main
+
+import "fmt"
+
+type Sayer interface {
+	Hi() int
+}
+
+type Inner struct {
+	n int
+}
+
+func (g Inner) Hi() int { return g.n + 1 }
+
+type Outer struct {
+	Inner
+}
+
+func main() {
+	var s Sayer = Outer{Inner: Inner{n: 41}}
+	fmt.Println(s.Hi())
+}

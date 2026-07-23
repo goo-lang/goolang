@@ -1,0 +1,22 @@
+// arena-escape-return probe (Task 6): `p` is returned from the function
+// whose body is the arena {} block, so 7b's return-sink marks it escaping
+// and 7c routes it to the heap (goo_alloc), never the arena. main derefs
+// the result AFTER f has returned (and its arena block's fall-through free
+// has already run) — proves a returned arena-candidate genuinely survives
+// the arena free, i.e. it was never placed in the arena to begin with.
+package main
+
+import "fmt"
+
+func f() *int {
+	arena {
+		p := new(int)
+		*p = 7
+		return p
+	}
+}
+
+func main() {
+	r := f()
+	fmt.Println(*r)
+}

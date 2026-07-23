@@ -1,0 +1,47 @@
+// nil_ptr_walk_probe (P2.2 option A, T2): a linked list walked with the
+// classic Go idiom `for n != nil { ...; n = n.next }` over a BARE `*Node`
+// field (not `?*Node`) — the headline unlock of Go-compatible bare-pointer
+// nil. Exercises: zero-value pointer reads as nil, `head.next = nil`
+// reassignment (not just declaration-time init), and re-walking after the
+// list is truncated. go-run-verified byte-for-byte against an equivalent
+// .go program using the same Node/next shape (see task provenance).
+package main
+
+import "fmt"
+
+type Node struct {
+	val  int
+	next *Node
+}
+
+func main() {
+	var head *Node
+	if head != nil {
+		fmt.Println("FAIL: zero-value pointer is not nil")
+	} else {
+		fmt.Println("PASS: zero-value pointer is nil")
+	}
+
+	head = &Node{val: 1, next: &Node{val: 2, next: &Node{val: 3, next: nil}}}
+
+	sum := 0
+	n := head
+	for n != nil {
+		sum = sum + n.val
+		n = n.next
+	}
+	fmt.Println(sum)
+
+	head.next = nil
+	if head.next == nil {
+		fmt.Println("PASS: field reassigned to nil")
+	}
+
+	count := 0
+	n2 := head
+	for n2 != nil {
+		count = count + 1
+		n2 = n2.next
+	}
+	fmt.Println(count)
+}

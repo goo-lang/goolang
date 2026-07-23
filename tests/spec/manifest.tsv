@@ -1,0 +1,59 @@
+## Go spec conformance manifest (P5.9 follow-on, 2026-07-11)
+## Columns (tab-separated): id, mode, status, chapter, note
+## mode:   run    = must compile, run, match .expected.txt (+ .exit if present)
+##         reject = must FAIL to compile (nonzero exit, no binary)
+## status: works     = Go-parity behavior, verified against Go semantics
+##         divergent = compiles+runs but differs from Go; pinned Goo behavior
+##         rejected  = deliberately not in v1 (clean decision; see note)
+##         absent    = gap — construct missing, reject is incidental not designed
+## The runner enforces MODE (drift gate); STATUS feeds the conformance report.
+lex_asi	run	works	Lexical	newline-terminated statements, gofmt style
+lex_rawstring	run	works	Lexical	backquote raw strings keep \n literal
+lex_runelit	run	works	Lexical	rune literal 'A' = 65
+lex_hexesc	run	works	Lexical	\xNN escapes in string literals
+lex_blank_ident	run	works	Declarations	blank identifier in assignment and range
+decl_var_group	run	works	Declarations	grouped var ( ... ) blocks
+decl_const_iota	run	works	Declarations	const group with iota
+decl_shortvar	run	works	Declarations	short var decl from multi-return call
+decl_type	run	works	Declarations	named type declaration
+decl_multi_assign	run	works	Declarations	a, b = f() tuple assignment
+type_array	run	works	Types	fixed arrays, zero value, index assign
+type_slice	run	works	Types	literals, append, len, slicing
+type_map	run	works	Types	make, write, read, delete, comma-ok
+type_struct_embed	run	works	Types	embedding with method promotion
+type_pointer	run	works	Types	& * new, pointer-to-pointer
+type_func_closure	run	works	Types	closures capture variables by reference
+type_interface	run	works	Types	satisfaction + dynamic dispatch
+type_channel	run	works	Types	buffered chan, close, range
+type_complex	reject	absent	Types	no complex64/complex128 (Undefined variable 'complex')
+expr_composite_keyed	run	works	Expressions	keyed array elems + elided struct elems
+expr_typeassert	run	works	Expressions	comma-ok assertion to concrete type
+expr_method_value	run	works	Expressions	receiver-bound method value
+expr_method_expression	reject	absent	Expressions	T.Method unsupported; diagnostic is confusing (arity error)
+expr_conversion	run	works	Expressions	numeric + rune conversions
+expr_shift_ops	run	works	Expressions	shifts, integer div, mod
+expr_variadic_user	run	works	Expressions	user-defined variadic func ...int
+stmt_if_init	run	works	Statements	if with init statement
+stmt_for_forms	run	works	Statements	3-clause, condition-only, infinite+break
+stmt_range_forms	run	works	Statements	range slice with index+value
+str_range_runes	run	works	Statements	range string yields RUNES + byte offsets (Go parity; stale bytes note corrected 2026-07-11)
+stmt_switch_init_type	run	works	Statements	switch-init + type switch on any
+stmt_fallthrough	run	works	Statements	fallthrough in expression switch
+stmt_labels_goto	run	works	Statements	labels, goto, labeled break/continue
+stmt_defer_loop	run	works	Statements	defer in loop, LIFO order
+stmt_go_select	run	works	Statements	goroutine + select recv
+builtin_core	run	works	Builtins	len/cap/make/new/append/delete
+builtin_copy	run	works	Builtins	copy(dst, src) returns count
+builtin_panic_exit	run	works	Builtins	nil-map write panics, exit 2 (Go parity)
+builtin_recover	reject	rejected	Builtins	P3.5 decision: clean 'not supported in v1' diagnostic
+builtin_minmax	reject	absent	Builtins	min/max (Go 1.21) missing
+builtin_clear	reject	absent	Builtins	clear (Go 1.21) missing
+generic_func_infer	run	works	Generics	[T any] func, inference-only monomorphization (Tier A)
+generic_explicit_inst	reject	absent	Generics	f[int](...) explicit instantiation unsupported; poor diagnostic
+generic_constraint_union	reject	absent	Generics	int|float64 constraint (P2.10, deferred post-v1)
+generic_type	reject	absent	Generics	generic type declarations unsupported
+pkg_alias_import	reject	absent	Packages	shim-package alias import (import f "fmt") unresolved; known gap
+pkg_init_func	reject	rejected	Packages	v1 decision: init functions cleanly rejected (previously compiled but SILENTLY never ran); real init support is post-v1
+err_interface_bridge	run	works	Errors	(T, error) bridged to !T catch; e.Error() works
+div_named_result_defer	run	divergent	Statements	deferred mutation of named result not returned (Go: 6, Goo: 5); documented in 02-LANGUAGE-SPECIFICATION
+sys_unsafe	reject	rejected	System	package unsafe is a v1 Non-goal (parse reject)

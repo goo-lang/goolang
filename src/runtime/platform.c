@@ -141,6 +141,31 @@ uint64_t goo_platform_time_ns(void) {
 #endif
 }
 
+// P4.6 (packages-C, C1): wall-clock (CLOCK_REALTIME) counterpart to
+// goo_platform_time_ns's CLOCK_MONOTONIC — see platform.h's doc comment on
+// why UnixNano needs this instead. Mirrors goo_platform_time_ns's per-
+// platform structure exactly, just a different clock source.
+uint64_t goo_platform_wall_time_ns(void) {
+#ifdef GOO_PLATFORM_UNIX
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+#elif defined(GOO_PLATFORM_WINDOWS)
+    // FILETIME ticks are 100ns intervals since 1601-01-01; convert to
+    // nanoseconds since 1970-01-01 (the Unix epoch offset in 100ns ticks is
+    // the well-known constant 116444736000000000ULL).
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (ticks - 116444736000000000ULL) * 100ULL;
+#else
+    // Fallback: no wall-clock source available, so report the epoch. Better
+    // than a garbage value; callers on this fallback path already accepted a
+    // degraded goo_platform_time_ns above.
+    return 0;
+#endif
+}
+
 void goo_platform_sleep_ns(uint64_t ns) {
 #ifdef GOO_PLATFORM_UNIX
     struct timespec ts;

@@ -1,0 +1,15 @@
+// Correctness arc 4 (j), select-comm arm: the select send path checks its
+// comm's left/right individually and never routes through
+// type_check_channel_send_op (see type_check_select_stmt), so it carries its
+// own copy of the representability gate — which had the identical
+// const-identifier hole. Before the fix this printed 44.
+package main
+
+func main() {
+	const k = 300
+	ch := make_chan(int8, 1)
+	select {
+	case ch <- k:
+		println(<-ch)
+	}
+}

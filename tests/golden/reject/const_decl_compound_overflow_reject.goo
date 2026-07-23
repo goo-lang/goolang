@@ -1,0 +1,14 @@
+// Correctness arc 5 (h), compound arm: the decl gate FOLDS the RHS
+// (goo_fold_const_int_ctx) and judges the folded value, so constant
+// arithmetic that lands out of range rejects even though each literal
+// individually fits. NOTE the deliberate asymmetry with var decls:
+// `var v int8 = 200 + 100` is still accepted by the per-literal adapter
+// design (a documented deviation — see adapt_untyped_int_operand); const
+// decls had no gate at all, so they get the fold-based Go-correct rule
+// with no accepted-program to preserve.
+package main
+
+func main() {
+	const k int8 = 200 + 100
+	println(k)
+}

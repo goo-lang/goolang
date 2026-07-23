@@ -1,0 +1,42 @@
+// asi_recv_after_for_probe (Task 6 REGRESSION fix): ASI must tolerate a
+// line-starting channel receive after a `for` block's closing `}`.
+//
+// Task 6's Part 2.5 guard (src/lexer/lexer.c) inserts a SEMICOLON before a
+// line-starting `<-` when the previous token ends a value — including
+// TOKEN_RBRACE. That is exactly right for `x := 1` <nl> `<-ch` (see
+// asi_recv_probe), but a bare compound statement (`for { ... }`, `if { ... }`,
+// `switch { ... }`, `select { ... }`, a plain `{ ... }` block) has no
+// `statement SEMICOLON` production of its own — the grammar had nowhere to
+// attach the inserted `;`, so the standard Go "loop, then join on channel"
+// pattern below was a loud parse error on this branch even though it
+// compiled and ran fine on main.
+//
+// Fixed on the grammar side (parser.y `statement:`): if_stmt, for_stmt,
+// switch_stmt, select_stmt, and block each gained a `SEMICOLON`-tolerant
+// arm, mirroring how simple_stmt/return_stmt/etc. already tolerate a
+// trailing `;`. This is Go-faithful — Go's own ASI inserts a semicolon
+// after ANY statement-ending token, including a block's closing `}`, and
+// Go's grammar accepts it uniformly. Zero grammar-tripwire delta (verified:
+// SEMICOLON was not previously a valid lookahead after these bare
+// nonterminal reductions).
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1 prints to stderr via builtin println; Goo's println targets
+// stdout — see asi_recv_probe's header for the same convention). Equivalent
+// Go:
+//   func main() { ch := make(chan int, 1)
+//     go func() { ch <- 1 }()
+//     for i := 0; i < 2; i++ { println(i) }
+//     <-ch
+//     println("joined") }
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	go func() { ch <- 1 }()
+	for i := 0; i < 2; i++ {
+		println(i)
+	}
+	<-ch
+	println("joined")
+}

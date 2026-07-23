@@ -57,6 +57,20 @@ typedef enum {
     TYPE_PACKAGE,
 
     TYPE_UNKNOWN,
+
+    // P2.8 T4.2 cascade suppression: the type bound to a name whose
+    // initializer already failed type-checking (see
+    // register_declared_names_after_failure in type_checker.c). Distinct
+    // from TYPE_UNKNOWN (the nil-literal type, which carries its own
+    // specific "assignable to nilable kinds" compatibility rules that must
+    // NOT apply to a poisoned binding) — a poisoned Type exists purely so a
+    // later reference to the name resolves as a known variable instead of
+    // re-erroring "Undefined variable", and so the handful of poison-aware
+    // choke points (type_check_binary_expr) can propagate it silently
+    // rather than emit a second, spurious diagnostic. Never reaches codegen:
+    // any diagnostic at all — the root one that caused the poisoning, if
+    // nothing else — fails type_check_program and skips code generation.
+    TYPE_POISON,
     TYPE_COUNT
 } TypeKind;
 
@@ -84,6 +98,19 @@ struct Type {
         struct {
             Type* element_type;
             size_t length;
+            // Comptime value params (fix round 4): set when this array
+            // type's LENGTH expression references a comptime parameter
+            // (stamped by type_from_ast's AST_ARRAY_TYPE case and the
+            // array-literal checker via goo_expr_references_comptime_param).
+            // In a comptime TEMPLATE body, `length` is then the placeholder
+            // — const-index and literal-count validation defer to instance
+            // time (the checker skips its upper-bound rejection; codegen's
+            // index paths re-check against the instance's re-derived REAL
+            // length and hard-fail on a genuine violation). 0 for every
+            // ordinary array, whose template-time validation is unchanged.
+            // Tail-appended within the union member (type_new memsets the
+            // whole Type, so it starts 0 on every construction path).
+            int comptime_length;
         } array;
         
         // Slice type
@@ -113,6 +140,24 @@ struct Type {
             // Concept constraints for generic functions
             struct ConceptDefinition** concept_constraints;
             size_t concept_constraint_count;
+            // Fix 2 (comptime-param functions are not first-class values):
+            // set by declare_function_signature whenever the FuncDeclNode
+            // this signature was built from has ANY is_comptime_param
+            // parameter (methods included). A function/method with this set
+            // may only be the CALLEE of a direct call (identifier, method
+            // selector on a concrete receiver, or package selector) — never
+            // used as a plain value (interface satisfaction, var-decl init,
+            // assignment, argument, return, composite storage). Without this
+            // gate, aliasing such a function into a value strips away its
+            // func_decl_node back-reference (a fresh Variable — e.g. a var,
+            // a parameter, an interface method slot — has none), so
+            // type_check_call_expr's per-argument comptime-constant check
+            // (which walks checked_callee->func_decl_node) can never fire
+            // again for that alias: a runtime value silently reaches the
+            // comptime slot. New Type structs are calloc/memset-zeroed
+            // (type_new), so every OTHER creation site defaults this to 0
+            // with no explicit initialization needed.
+            int has_comptime_params;
         } function;
         
         // Pointer type
@@ -207,6 +252,28 @@ struct Type {
             size_t arg_count;        // Number of arguments
         } application;
     } data;
+
+    // P4.3 (cross-package method resolution): the Package that declared this
+    // named type, stamped by type_check_type_decl whenever
+    // checker->current_package was set (i.e. this type was minted while
+    // type-checking a source package's own body, not main). NULL for every
+    // type declared in main and for anonymous/builtin types. A method call
+    // or method-value bind on a package-owned receiver uses this to find the
+    // mangled method Variable in the DECLARING package's exports scope
+    // (type_checker_lookup_method, type_checker.c) — the package's own body
+    // scope is torn down right after it is checked+codegen'd (see
+    // compile_resolved_packages in goo.c), so main's scope chain never sees
+    // it directly — and codegen mangles the emitted call/thunk symbol as
+    // goo_pkg__<pkg>__T__m to match the DEFINITION side, which already
+    // prefixes every package method this way (function_codegen.c). NOT
+    // owned: points into TypeChecker.packages, which is freed only after
+    // codegen completes (every type_checker_free call site follows codegen;
+    // see goo.c) — so the pointer stays valid for the Type's entire
+    // lifetime. Tail-appended per the no-header-deps convention (ast.h's M10
+    // note); type_new() calloc/memsets the whole Type, so this defaults to
+    // NULL on every other construction path, and type_copy's shallow `*copy
+    // = *type` carries it along unchanged (correct for a non-owned pointer).
+    struct Package* owner_package;
 };
 
 // Struct field
@@ -312,6 +379,39 @@ typedef struct Variable {
     // no-header-deps convention.
     int has_const_int_value;
     uint64_t const_int_value;
+    // Function generics Task 4: marks this Variable as a generic function
+    // TEMPLATE (its FuncDeclNode has type_params != NULL). Set by
+    // declare_function_signature alongside registration. generic_decl is the
+    // back-reference codegen's monomorphizer (M3) will instantiate from;
+    // type_param_count is the total number of type-param names across all
+    // groups (tpn in declare_function_signature). is_generic is 0 and
+    // generic_decl is NULL for every ordinary (non-generic) function/variable.
+    int is_generic;
+    struct ASTNode* generic_decl;
+    size_t type_param_count;
+    // Comptime value parameters (Task 2): the FuncDeclNode this Variable was
+    // registered from (declare_function_signature), for EVERY function/method
+    // Variable — not just generic templates (contrast generic_decl, which
+    // stays NULL here). Lets the call-argument checker (expression_checker.c)
+    // walk the callee's real parameter list and read each VarDeclNode's
+    // is_comptime_param flag, positionally matched against param_types[idx]
+    // (recv_offset already accounts for a spliced method receiver). NULL for
+    // every non-function Variable (ordinary locals, consts, package markers).
+    // Not owned — the FuncDeclNode is owned by the AST, freed independently.
+    struct ASTNode* func_decl_node;
+    // P6 M1 (comptime-wall lift): for a function EXPORT COPY published into a
+    // package's `exports` scope (package_export_filter), the Package that owns
+    // that function — so the comptime monomorphizer (comptime_instantiate,
+    // monomorphize.c) can package-qualify the instance symbol
+    // (goo_pkg__<pkg>__<base>__n<v>) and a user `func Fill` never shares an
+    // instance with `cpkg.Fill`. NULL for every non-export Variable, including
+    // a package's OWN inner-scope function Variable (which scope_pop frees
+    // after the package's codegen) — the seed-recording guard in
+    // expression_checker.c reads exactly this NULL to reject a same-package
+    // internal comptime call whose inner-scope callee would dangle before the
+    // main-pass monomorphizer runs. Not owned — the Package is owned by
+    // TypeChecker.packages. Tail-appended per the no-header-deps convention.
+    struct Package* owner_pkg;
 } Variable;
 
 // Closures Task 2: cap on simultaneously-open func-literal nesting tracked by
@@ -345,6 +445,18 @@ typedef struct Package {
     Scope* exports;         // fresh Variable copies of exported symbols (owned)
     int state;              // 0=unvisited 1=in-progress 2=done
     struct Package* next;   // intrusive list link
+    // P6 M1 (comptime-wall lift): the package's PROGRAM AST, ownership
+    // transferred here from the PkgGraph (compile_resolved_packages, goo.c)
+    // after the package compiles. The PkgGraph is torn down (pkg_graph_free)
+    // before main is type-checked/codegen'd, but a comptime-param package
+    // function's template FuncDecl — reachable via an export copy's
+    // func_decl_node — must survive until main's monomorphizer emits its
+    // instances (codegen_monomorphize). Holding the AST on the Package, which
+    // outlives codegen (freed only at type_checker_free), is what keeps that
+    // FuncDecl (and every package-level symbol its body references) alive.
+    // NULL for a package whose AST the graph still owns (compile failed, or no
+    // transfer yet). Freed by ast_node_free in type_checker_free.
+    struct ASTNode* owned_ast;
 } Package;
 
 // Forward declarations for enhanced interface system
@@ -385,6 +497,238 @@ typedef struct ComptimeTypeContext {
     size_t computed_type_capacity;
 } ComptimeTypeContext;
 
+// Function generics Task 6: one resolved call-site instantiation, appended by
+// type_check_record_instantiation (type_checker.c) whenever a call through a
+// generic Variable (fn->is_generic) has its type arguments successfully
+// inferred. `fn` is the generic template Variable itself (fn->generic_decl is
+// the FuncDeclNode the monomorphizer instantiates from); `args[i]` is the
+// concrete Type bound to fn's type-param index i, `n` == fn->type_param_count.
+// `args` is a malloc'd COPY of the call site's inferred bindings, independent
+// of that same call's CallExprNode.type_args (expression_checker.c's
+// type_check_generic_call builds both from one calloc'd array but hands each
+// side its own copy) — this list's node and its `args` array are owned and
+// freed together by type_checker_free, entirely independent of the AST's own
+// teardown (ast_node_free), so neither free path depends on the other's
+// ordering or reasons about a shared pointer. Intrusive singly-linked list,
+// head at TypeChecker.instantiations (below); the same {fn,args} tuple may be
+// recorded more than once for repeated calls with the same type arguments —
+// deduplication is the monomorphizer's job (Task 9), not this recorder's.
+//
+// Comptime+generic composition (sub-project 2): `comptime_values`/
+// `comptime_value_n` carry the comptime axis for a function that declares
+// BOTH `[T]` type params and `comptime` value params — a composed call's
+// SINGLE seed on this list carries both payloads, keyed together (see
+// type_check_generic_call, expression_checker.c). A generic-only function
+// (no comptime params) always records `comptime_value_n == 0`,
+// `comptime_values == NULL` here — the plain ComptimeInstantiation list
+// below is untouched by generic calls and continues to serve ONLY
+// non-generic comptime-param functions (see that struct's doc comment for
+// which functions land on which list). Like `args` above, `comptime_values`
+// is a malloc'd COPY the caller hands off ownership of; freed alongside
+// `args` in type_checker_free, same non-double-free reasoning. Appended at
+// the STRUCT TAIL per the no-header-deps convention (ast.h's note) — a
+// mid-list field insertion would shift every field after it.
+typedef struct GenericInstantiation {
+    Variable* fn;
+    Type** args;
+    size_t n;
+    struct GenericInstantiation* next;
+    int64_t* comptime_values;
+    size_t comptime_value_n;
+} GenericInstantiation;
+
+// Comptime value params Task 3: one resolved call-site instantiation for a
+// comptime-parameterized function, appended by
+// type_check_record_comptime_instantiation (type_checker.c) whenever a
+// direct call to a has_comptime_params function type-checks successfully.
+// Mirrors GenericInstantiation (the type-arg axis) but keys on int64_t
+// comptime VALUES instead of concrete Types. Kept as its own list for a
+// PLAIN (non-generic) comptime-parameterized function. UPDATE (sub-project 2,
+// comptime+generic composition): the two axes CAN now coexist on one
+// FuncDeclNode (`func kernel[T any](comptime n int, data T)`), but a
+// composed function's instantiations never land here — they're recorded on
+// GenericInstantiation's comptime_values/comptime_value_n tail fields
+// instead (type_check_generic_call, expression_checker.c), since a call
+// through a generic Variable is dispatched there entirely, never reaching
+// this list's sole recording site (type_check_call_expr, gated on a plain
+// non-generic identifier callee). So the split is still exact — every
+// FuncDeclNode's instantiations live on exactly one of the two lists, keyed
+// on whether it declares `[T]` type params — and neither axis's consumer
+// (mono_instantiate's type-substitution walk vs. the comptime worklist in
+// monomorphize.c) has to guard against the other's fields being
+// absent/meaningless for the entries it actually walks. `fn` is the
+// plain-function Variable itself (fn->func_decl_node is the FuncDeclNode the
+// monomorphizer instantiates from — see that field's own doc comment: unlike
+// generic_decl, it is set for EVERY function, not just templates). `values`/
+// `n` are a malloc'd COPY of the call site's CallExprNode.comptime_value_args,
+// independently owned and freed with this list (type_checker_free), same
+// ownership split GenericInstantiation uses for its own `args`. The same
+// {fn,values} tuple may be recorded more than once for repeated calls with
+// identical comptime arguments — dedup is the monomorphizer's job (mirrors
+// GenericInstantiation here too).
+typedef struct ComptimeInstantiation {
+    Variable* fn;
+    int64_t* values;
+    size_t n;
+    struct ComptimeInstantiation* next;
+} ComptimeInstantiation;
+
+// gofmt-syntax-b Task 3 (P1.7): fallthrough legality context. Persisted
+// TypeChecker state (not a call-stack parameter) so a `fallthrough` buried
+// in a NESTED block — an if/for/block inside a case clause's own body, not
+// the clause's direct statement list — still resolves to a meaningful
+// diagnostic instead of a misleading "outside any switch" one. See
+// type_check_switch_like_body's doc comment (type_checker.c) for the full
+// design; save/restored around each of the three clause-body-walking call
+// sites (expression switch, type switch, select) and reset to NONE for the
+// duration of a nested func-literal body (expression_checker.c), mirroring
+// label_count's own independent-namespace save/restore.
+typedef enum {
+    FALLTHROUGH_CTX_NONE = 0,     // not inside any switch/select clause body
+    FALLTHROUGH_CTX_EXPR_SWITCH,  // inside an expression-switch clause body
+    FALLTHROUGH_CTX_TYPE_SWITCH,  // inside a type-switch clause body
+    FALLTHROUGH_CTX_SELECT,       // inside a select-case body
+} FallthroughContext;
+
+// Codegen-hardening R1-TC: per-function scratch state for the function (or
+// func literal) CURRENTLY being body-checked — active generic type
+// parameters, the open-func-literal stack, the label registry, the
+// goto-label registry, and the arena-nesting chain the latter snapshots.
+// Previously these were six separate field groups directly on TypeChecker
+// (active_type_params/active_type_param_count, literal_stack/
+// literal_stack_len, label_names/label_positions/label_count, goto_label_
+// names/goto_label_count, arena_chain/arena_chain_depth, goto_label_arena_
+// chain/goto_label_arena_depth); consolidating them here means
+// type_check_function_decl and type_check_func_lit save/restore the WHOLE
+// family with one struct assignment (tc_fctx_save/tc_fctx_restore) instead
+// of an enumerated local-variable save/restore per field, mirroring
+// ControlFlowContext's role for codegen (codegen_cfctx.h, R1) — see
+// docs/superpowers/specs/2026-07-09-codegen-hardening-design.md, section
+// R1-TC. NOTE this struct deliberately does NOT include fallthrough_ctx
+// (TypeChecker's own field, above): that field's independent-namespace
+// save/restore is unchanged by this refactor.
+typedef struct TcFunctionContext {
+    // Function generics Task 3: active generic type parameters, innermost
+    // function's params on top. Consulted by type_from_ast so a bare `T` in
+    // a generic function's signature/body resolves to its TYPE_PARAM Type
+    // instead of "Unknown type 'T'". Pushed by declare_function_signature
+    // and type_check_function_decl (popped on every return path of both —
+    // a missed pop leaks type params into sibling functions) via
+    // type_checker_push_type_param/type_checker_pop_type_params — NOT
+    // reset at a func-literal boundary (a closure inherits its enclosing
+    // function's type params; Go has no generic func literals of its own).
+    // Fixed array, not malloc'd: type-param-list nesting is bounded by
+    // source structure (Tier A functions are small).
+    Type* active_type_params[32];
+    size_t active_type_param_count;
+
+    // Closures Task 2: stack of func literals currently being body-checked
+    // (innermost = last, index literal_stack_len-1), pushed/popped by
+    // type_check_func_lit (expression_checker.c) around its own body check,
+    // symmetric with (and immediately alongside) that function's existing
+    // scope_push/scope_pop. Used by type_check_identifier's capture path
+    // (type_checker_record_capture) to record a capture on EVERY literal
+    // between a boundary-crossing reference and its declaring scope — the
+    // classic nested-closure "missing middle env" bug: an inner literal's
+    // own env is populated correctly, but each INTERMEDIATE literal must
+    // ALSO carry the name through its own env to relay the slot pointer
+    // inward. A fixed array (not malloc'd) since literal nesting depth is
+    // bounded by source structure, not runtime data — no realistic program
+    // nests closures anywhere near GOO_CLOSURE_MAX_NESTING deep; a program
+    // that does silently stops recording further capture relaying past the
+    // cap rather than crashing (see type_check_func_lit's push).
+    struct ASTNode* literal_stack[GOO_CLOSURE_MAX_NESTING];
+    size_t literal_stack_len;
+
+    // gofmt-syntax-b Task 1 (P1.5): per-function flat label registry. Labels
+    // are FUNCTION-scoped in Go (not block/lexical-scoped — the same name
+    // used in two disjoint sibling blocks of one function is still a
+    // duplicate), so a flat array reset at function entry (and around each
+    // func-literal body, which gets its own independent label namespace) is
+    // the right shape, not a stack. Fixed-size like active_type_params above
+    // (source-bounded, not runtime data). type_check_statement's
+    // AST_LABEL_STMT case appends here (positioned duplicate-label error on
+    // a name already present); labeled break/continue's "does this label
+    // exist and enclose me" check is a CODEGEN-time concern (mirrors the
+    // existing unlabeled break/continue, which is likewise unchecked at
+    // typecheck time — see type_check_statement's AST_BREAK_STMT case).
+    char* label_names[64];
+    Position label_positions[64];
+    size_t label_count;
+
+    // gofmt-syntax-b Task 2 (P1.6): per-function set of every label
+    // declared ANYWHERE in the body, populated by a structural pre-pass
+    // (type_check_collect_goto_labels, type_checker.c) run BEFORE the
+    // normal statement walk so a `goto` can validate against a label that
+    // appears LATER in the source (forward references are legal in Go).
+    // Deliberately a SEPARATE array from label_names above rather than
+    // reused: label_names is populated incrementally, in declaration
+    // order, by the main walk's AST_LABEL_STMT case (T1's duplicate-label
+    // diagnostic depends on that exact ordering) — pre-populating it here
+    // instead would make every label look like an immediate duplicate of
+    // itself. This array tolerates duplicate names (recorded once; T1's
+    // pass still reports the duplicate-label error at its own place).
+    // Reset (save/restore) at function entry and around each func-literal
+    // body, same convention and bound as label_names.
+    char* goto_label_names[64];
+    size_t goto_label_count;
+
+    // arena-goto fix (2026-07-09, findings "goto out of an arena{} block
+    // skips goo_arena_free" + "goto backward into an arena{} block
+    // double-frees"): current enclosing-arena-block IDENTITY chain
+    // (outermost first), maintained as scratch state by BOTH structural
+    // walks that visit AST_ARENA_BLOCK — the goto_label_names pre-pass
+    // (type_check_collect_goto_labels) and the main statement walk
+    // (type_check_statement's own AST_ARENA_BLOCK case). Safe to share one
+    // array across the two passes: each pass fully unwinds its own pushes
+    // (pop mirrors push) before returning, so by the time pass N+1 begins,
+    // arena_chain_depth is back to whatever pass N started it at. Entries
+    // are borrowed ArenaBlockNode* AST pointers (stable for the whole
+    // compilation, never freed here) used only for pointer-identity
+    // comparison — never dereferenced. Bound matches codegen's own
+    // arena_stack cap (codegen.h) since that is what ultimately emits the
+    // frees this chain drives; nesting past it silently stops being
+    // recorded (same "silently drop past the fixed depth" convention as
+    // codegen_arena_push, codegen.c), not a hard error.
+    void* arena_chain[16];
+    size_t arena_chain_depth;
+
+    // Per-goto-label-table-entry (parallel to goto_label_names/
+    // goto_label_count above — index i here matches goto_label_names[i])
+    // snapshot of arena_chain at the moment the pre-pass first recorded
+    // that label. type_check_statement's AST_GOTO_STMT case uses this to
+    // reject a `goto` whose OWN current arena_chain does not have this
+    // snapshot as a prefix — i.e. a goto that would need to silently
+    // *enter* an arena block it is not already inside (the double-free
+    // SIGSEGV shape). A goto that only *exits* one or more arenas (the
+    // snapshot IS a prefix of, or equal to, the goto's own chain) is
+    // legal; codegen frees exactly those extra arenas, mirroring how
+    // break/continue already free arenas above the target loop frame.
+    void* goto_label_arena_chain[64][16];
+    size_t goto_label_arena_depth[64];
+} TcFunctionContext;
+
+// Whole-struct save/restore — one assignment each, so type_check_function_decl
+// and type_check_func_lit save the enclosing (or outer-namespace) state,
+// reset what they must for their own fresh body-check, and restore the saved
+// state afterward, with no per-field enumeration to fall out of sync as this
+// struct grows. Mirrors cfctx_save/cfctx_restore (codegen_cfctx.h, R1)
+// exactly.
+void tc_fctx_save(TcFunctionContext* out, const TcFunctionContext* ctx);
+void tc_fctx_restore(TcFunctionContext* ctx, const TcFunctionContext* saved);
+
+// Per-function/per-func-literal reset: clears the two counters that are
+// UNCONDITIONALLY zeroed at every such boundary today (label_count,
+// goto_label_count — see their own doc comments above for why each needs an
+// explicit reset rather than self-balancing). Mirrors cfctx_reset's own
+// minimal scope (codegen_cfctx.h): active_type_params/literal_stack keep
+// their own dedicated push/pop APIs (type_checker_push_type_param et al.,
+// the literal_stack push in type_check_func_lit) untouched by this reset,
+// and arena_chain_depth's reset is func-literal-boundary-only — inlined at
+// that one call site exactly like ControlFlowContext.loop_depth's own extra
+// reset in codegen_generate_func_lit, rather than folded in here.
+void tc_fctx_reset(TcFunctionContext* ctx);
+
 // Type checker state
 struct TypeChecker {
     Scope* current_scope;
@@ -421,24 +765,55 @@ struct TypeChecker {
     Package* packages;
     Package* current_package;
 
-    // Closures Task 2: stack of func literals currently being body-checked
-    // (innermost = last, index literal_stack_len-1), pushed/popped by
-    // type_check_func_lit (expression_checker.c) around its own body check,
-    // symmetric with (and immediately alongside) that function's existing
-    // scope_push/scope_pop. Used by type_check_identifier's capture path
-    // (type_checker_record_capture) to record a capture on EVERY literal
-    // between a boundary-crossing reference and its declaring scope — the
-    // classic nested-closure "missing middle env" bug: an inner literal's
-    // own env is populated correctly, but each INTERMEDIATE literal must
-    // ALSO carry the name through its own env to relay the slot pointer
-    // inward. A fixed array (not malloc'd) since literal nesting depth is
-    // bounded by source structure, not runtime data — no realistic program
-    // nests closures anywhere near GOO_CLOSURE_MAX_NESTING deep; a program
-    // that does silently stops recording further capture relaying past the
-    // cap rather than crashing (see type_check_func_lit's push). Tail-
-    // appended per the no-header-deps convention (ast.h's M10 note).
-    struct ASTNode* literal_stack[GOO_CLOSURE_MAX_NESTING];
-    size_t literal_stack_len;
+    // Function generics Task 6: head of the linked list of resolved
+    // generic-call instantiations recorded by type_check_record_instantiation
+    // during call checking. NULL until the first generic call type-checks
+    // successfully. The monomorphizer (Task 9) walks this list after
+    // type_check_program returns to know which concrete instantiations of
+    // each generic function to emit; torn down in type_checker_free.
+    GenericInstantiation* instantiations;
+
+    // Comptime value params Task 3: head of the linked list of resolved
+    // comptime-call instantiations recorded by
+    // type_check_record_comptime_instantiation during call checking. NULL
+    // until the first comptime call type-checks successfully. The
+    // monomorphizer (codegen_monomorphize, monomorphize.c) walks this list
+    // after type_check_program returns, alongside `instantiations` above, to
+    // know which concrete value-specializations of each comptime-param
+    // function to emit; torn down in type_checker_free.
+    ComptimeInstantiation* comptime_instantiations;
+
+    // gofmt-syntax-b Task 3 (P1.7): current fallthrough legality context —
+    // see FallthroughContext's doc comment above. Explicitly set to NONE in
+    // type_checker_new (the struct is malloc'd, not calloc'd, same
+    // convention as label_count/goto_label_count just above).
+    FallthroughContext fallthrough_ctx;
+
+    // Codegen-hardening R1-TC: consolidated per-function scratch state —
+    // formerly active_type_params/active_type_param_count, literal_stack/
+    // literal_stack_len, label_names/label_positions/label_count,
+    // goto_label_names/goto_label_count, arena_chain/arena_chain_depth, and
+    // goto_label_arena_chain/goto_label_arena_depth as six separate field
+    // groups directly on TypeChecker. See TcFunctionContext's own doc
+    // comment above for the field-by-field detail and the tc_fctx_* API
+    // (save/restore/reset) that replaces the old hand-enumerated per-field
+    // save/reset/restore at each function- and func-literal-body-check
+    // boundary (type_check_function_decl, type_checker.c;
+    // type_check_func_lit, expression_checker.c) — the exact same
+    // information-leakage class R1's ControlFlowContext closes off for
+    // codegen (docs/superpowers/specs/2026-07-09-codegen-hardening-design.md,
+    // section R1-TC). Tail-appended per the no-header-deps convention
+    // (ast.h's M10 comment).
+    TcFunctionContext tc_fctx;
+
+    // P3.6 (method values): set by type_check_call_expr immediately before
+    // it type-checks a selector-expression callee (call->function), so
+    // type_check_selector_expr knows whether ITS result feeds a call
+    // directly (receiver stays spliced as params[0] — the existing wire
+    // format the call path's recv_offset logic depends on) or lands in a
+    // plain value position (`f := c.get` — receiver stripped, a callable
+    // func value). Tail-appended per the M10 convention (ast.h).
+    int selector_call_position;
 };
 
 // Type creation functions
@@ -449,6 +824,7 @@ Type* type_int(int bits, int is_signed);
 Type* type_float(int bits);
 Type* type_string_type(void);
 Type* type_char(void);
+Type* type_poison(void);  // P2.8 T4.2 cascade-suppression marker — see TYPE_POISON
 
 Type* type_array(Type* element_type, size_t length);
 Type* type_slice(Type* element_type);
@@ -485,12 +861,28 @@ size_t type_align(const Type* type);
 char* type_method_mangled_name(const char* type_name, const char* method_name);
 const char* type_receiver_name(const Type* type);
 
+// P4.3 (packages-B, cross-package methods): the Package that owns the
+// receiver type type_receiver_name resolves to (same *T-unwrap rule) — i.e.
+// type->owner_package after unwrapping a pointer receiver. NULL when the
+// type was declared in main or is anonymous/builtin.
+struct Package* type_receiver_owner_package(const Type* type);
+
 // P4-3: does `concrete`'s method set satisfy interface `iface`? Returns 1 if so
 // (or for the empty interface). On failure returns 0 and writes the offending
-// method name and reason ("missing" / "signature mismatch") to the out params.
+// method name and reason ("missing" / "signature mismatch" / "comptime" — a
+// method with a `comptime` parameter, see report_comptime_method_not_satisfied
+// below) to the out params.
 int type_interface_satisfied(TypeChecker* checker, Type* iface,
                              Type* concrete, const char** method_out,
                              const char** reason_out);
+
+// Fix 2 (comptime-param functions are not first-class values): shared
+// diagnostic for the reason_out == "comptime" case above — every caller of
+// type_interface_satisfied special-cases that reason with this instead of
+// its own generic "X does not implement Y" message, so the wording stays in
+// one place. `method` is the offending method name (method_out).
+void report_comptime_method_not_satisfied(TypeChecker* checker, Position pos,
+                                          const char* method);
 
 // Validate assigning `src` into a `target`-typed location. For an interface
 // target this accepts any concrete implementer (emitting "X does not implement
@@ -499,15 +891,36 @@ int type_interface_satisfied(TypeChecker* checker, Type* iface,
 int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
                            Position pos);
 
+// Fix 2 (comptime-param functions are not first-class values): a function
+// with any `comptime` parameter may only be the CALLEE of a direct call
+// (identifier, method selector on a concrete receiver, or package selector)
+// — never captured as a plain value. `t` is the VALUE's type at a
+// value-consuming site (var-decl init, assignment RHS, call argument, return
+// expression, composite storage — NOT the callee position of a call, which
+// must stay unchecked here). No-ops (returns 1) unless `t` is a TYPE_FUNCTION
+// with has_comptime_params set. `src_expr`, if the identifier or bound-method
+// selector the value came from, supplies the function's declared name for
+// the diagnostic; pass NULL if unavailable (falls back to the type's
+// rendered name). `context` is a short verb phrase completing "function 'x'
+// has comptime parameters and cannot be <context>" (e.g. "used as a value",
+// "passed as an argument", "returned"). Emits that diagnostic and returns 0
+// on rejection.
+int reject_comptime_function_value(TypeChecker* checker, struct ASTNode* src_expr,
+                                   Type* t, Position pos, const char* context);
+
 // Type checking utilities
 int type_is_integer(const Type* type);
 int type_is_float(const Type* type);
 int type_is_numeric(const Type* type);
 int type_is_signed(const Type* type);
 int type_is_pointer_like(const Type* type);
+int type_is_nilable_ref_kind(const Type* type);
 int type_is_nullable(const Type* type);
 int type_is_error_union(const Type* type);
 int type_is_error(const Type* type);
+int type_is_poison(const Type* type);
+int type_is_error_result_tuple(const Type* type);
+int type_struct_fields_comparable(const Type* type);
 
 // Type checker functions
 TypeChecker* type_checker_new(void);
@@ -520,7 +933,7 @@ void type_checker_free(TypeChecker* checker);
 // scopes never share ownership of the same Variable node).
 Package* type_checker_find_package(TypeChecker* checker, const char* import_path);
 Package* type_checker_add_package(TypeChecker* checker, const char* import_path, const char* name);
-void package_export_filter(Scope* pkg_scope, Scope* exports);
+void package_export_filter(Scope* pkg_scope, Scope* exports, struct Package* owner);
 
 // Seed a TYPE_PACKAGE marker for an imported package into the current scope,
 // carrying the resolved Package*. This is the SINGLE seeding path for both the
@@ -543,6 +956,82 @@ int scope_add_variable(Scope* scope, Variable* var);
 Variable* scope_lookup_variable(Scope* scope, const char* name);
 Variable* type_checker_lookup_variable(TypeChecker* checker, const char* name);
 
+// P4.3 (packages-B, cross-package methods): resolve a method Variable for
+// `recv_type`, routed by the receiver type's OWNING package (Type.owner_
+// package) — NOT by whichever scope resolves the bare name first. For a
+// CROSS-package receiver (owner set and != current_package) the declaring
+// package's exports scope is the ONLY source consulted (Go: methods on a
+// package's type can only be defined in that package) — a bare current-scope
+// hit would be a same-named MAIN type's method silently hijacking dispatch
+// (review-fix CRITICAL; see pkg_method_hijack_probe). The package's own body
+// scope is torn down right after it is checked+codegen'd (compile_resolved_
+// packages, goo.c), so main's scope chain never legitimately holds these
+// methods. Intra-package (owner == current_package) and main-owned (owner
+// NULL) receivers resolve in the current scope chain as always. The exports
+// path demands `method_name` itself start with an uppercase letter (Go's
+// per-identifier export rule): the combined mangled name can start uppercase
+// purely from an exported RECEIVER type even when the method name is
+// lowercase (unexported) — e.g. "Point__secret" — so gating on the type's
+// own leading letter (package_export_filter's check) is not sufficient here.
+// `mangled_name` is always the BARE "T__m" string, never package-symbol-
+// prefixed — callers needing the prefixed LLVM symbol derive it separately
+// (see codegen_pkg_mangled_symbol, codegen.h) with
+// type_receiver_owner_package.
+Variable* type_checker_lookup_method(TypeChecker* checker, Type* recv_type,
+                                      const char* method_name, const char* mangled_name);
+
+// Function generics Task 3: active-type-param stack (see TypeChecker's
+// active_type_params field above). Push/pop bracket a function's signature
+// and body checking; lookup is consulted by type_from_ast before it would
+// otherwise report "Unknown type '<name>'".
+void type_checker_push_type_param(TypeChecker* checker, Type* tp);
+void type_checker_pop_type_params(TypeChecker* checker, size_t to_count);
+Type* type_checker_lookup_type_param(TypeChecker* checker, const char* name);
+
+// Function generics Task 5: standalone helpers for generic-call inference
+// (Task 6 wires them in). type_substitute replaces every TYPE_PARAM of index
+// i < n with bindings[i], recursing through slice/pointer/function (Tier-A
+// scope; TYPE_ARRAY/TYPE_MAP are not recursed). unify_types structurally
+// matches a possibly-TYPE_PARAM `param` against a concrete `arg`, inferring
+// bindings; returns 0 on structural mismatch or a conflicting binding.
+Type* type_substitute(Type* t, Type** bindings, size_t n);
+int unify_types(Type* param, Type* arg, Type** bindings, size_t n);
+
+// Fix round 7 (I-r6), exposed non-static for sub-project 2: does `t` contain
+// a TYPE_PARAM anywhere in its structure (Tier-A recursion: slice/pointer/
+// array/nullable/function)? Originally private to expression_checker.c's
+// generic-call inference; declare_function_signature (type_checker.c) now
+// reuses it for the `comptime n T` declaration wall (a comptime parameter
+// typed by, or containing, a type parameter is rejected) instead of growing
+// a near-duplicate walker in a second file.
+int type_contains_type_param(const Type* t);
+
+// Function generics Task 6: append {fn, args, n} to checker->instantiations.
+// Takes ownership of `args` (the caller's calloc'd bindings array — do not
+// free or reuse it after this call). `call_site` is the call expression that
+// produced this instantiation; kept for a possible future per-callsite
+// diagnostic (not read by Task 9's monomorphizer, which only needs fn/args/n).
+//
+// Comptime+generic composition (sub-project 2): `comptime_values`/
+// `comptime_value_n` extend this same recorder to carry the comptime axis
+// for a composed call (see GenericInstantiation's doc comment above) —
+// takes ownership of `comptime_values` exactly like `args`. A generic-only
+// call passes NULL/0, matching GenericInstantiation's 0/NULL default for a
+// generic-only seed.
+void type_check_record_instantiation(TypeChecker* checker, Variable* fn,
+                                     Type** args, size_t n,
+                                     int64_t* comptime_values, size_t comptime_value_n,
+                                     struct ASTNode* call_site);
+
+// Comptime value params Task 3: append {fn, values, n} to
+// checker->comptime_instantiations. Takes ownership of `values` (a malloc'd
+// copy the caller must not free or reuse afterward) — mirrors
+// type_check_record_instantiation's ownership contract for `args` above,
+// one axis over.
+void type_check_record_comptime_instantiation(TypeChecker* checker, Variable* fn,
+                                               int64_t* values, size_t n,
+                                               struct ASTNode* call_site);
+
 // Type checking entry points
 int type_check_program(TypeChecker* checker, ASTNode* program);
 
@@ -561,6 +1050,11 @@ int type_check_package(TypeChecker* checker, Package* pkg, ASTNode* program);
 Type* type_check_expression(TypeChecker* checker, ASTNode* expr);
 int type_check_statement(TypeChecker* checker, ASTNode* stmt);
 int type_check_declaration(TypeChecker* checker, ASTNode* decl);
+// gofmt-syntax-b Task 2 (P1.6): goto forward-reference label pre-pass (see
+// its doc comment in type_checker.c). Exposed here (not static) because
+// expression_checker.c's func-literal check needs it too, mirroring
+// type_check_statement's own function-decl/func-literal dual call sites.
+void type_check_collect_goto_labels(TypeChecker* checker, ASTNode* stmt);
 
 // Declaration type checking functions
 int type_check_function_decl(TypeChecker* checker, ASTNode* decl);
@@ -576,11 +1070,22 @@ int type_check_expr_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_if_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_for_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt);
+int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_go_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_defer_stmt(TypeChecker* checker, ASTNode* stmt);
 int type_check_select_stmt(TypeChecker* checker, ASTNode* stmt);
 // Type assertions branch, Task 3: `switch [v :=] x.(type) { case … }`.
 int type_check_type_switch_stmt(TypeChecker* checker, ASTNode* stmt);
+
+// P2.4 (missing-return analysis): the Go-spec terminating-statement
+// predicate, extended for Goo (if-let, arena{}, type-switch as a distinct
+// node) — see src/types/terminating_stmt.c for the full binding-spec
+// citation and implementation. Exposed here (not static) because both
+// type_check_function_decl (type_checker.c) and type_check_func_lit
+// (expression_checker.c) need it on their own body, from their own
+// translation unit — the same cross-file-helper shape as
+// type_check_collect_goto_labels just above.
+int stmt_is_terminating(ASTNode* body);
 
 // Helper functions
 Type* type_from_ast(TypeChecker* checker, ASTNode* type_node);
@@ -608,11 +1113,19 @@ Type* type_check_catch_expr(TypeChecker* checker, ASTNode* expr);
 // Expression helper functions
 Type* type_check_arithmetic_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_comparison_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
-Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, Position pos);
+// `value_expr` is the RHS expression node (Task 1, correctness-followups arc
+// 3: needed to detect an untyped-int-constant send and representability-gate
+// it against the channel's element type — see the definition's doc comment);
+// pass NULL if unavailable, same convention as type_check_assignment_op's
+// value_expr above.
+Type* type_check_channel_send_op(TypeChecker* checker, Type* channel_type, Type* value_type, ASTNode* value_expr, Position pos);
 Type* type_check_channel_receive_op(TypeChecker* checker, Type* channel_type, Position pos);
 Type* type_check_logical_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
 Type* type_check_bitwise_op(TypeChecker* checker, Type* left_type, Type* right_type, TokenType op, Position pos);
-Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, Position pos);
+// `value_expr` is the RHS expression node (Fix 2: supplies a captured
+// comptime-parameterized function's declared name for its rejection
+// diagnostic — see reject_comptime_function_value); pass NULL if unavailable.
+Type* type_check_assignment_op(TypeChecker* checker, ASTNode* target, Type* target_type, Type* value_type, ASTNode* value_expr, Position pos);
 
 // Fold an integer constant expression at 128-bit precision (see
 // expression_helpers.c). Returns 1 and sets *out on success; 0 if the
@@ -631,6 +1144,106 @@ int goo_fold_const_int(ASTNode* expr, uint64_t* out);
 // resolution); the original context-free goo_fold_const_int above is
 // unchanged and keeps its existing (non-identifier) call sites.
 int goo_fold_const_int_ctx(TypeChecker* checker, ASTNode* expr, uint64_t* out);
+
+// Arc 12 (p): resolve a `pkg.K` selector expression to the imported
+// package's exported Variable, or NULL when the shape doesn't match
+// (not a selector, base not an identifier, base not an imported-package
+// marker, or no such export). The returned Variable is owned by the
+// package's exports scope — callers read, never free. Single resolution
+// point for cross-package const machinery: the checker-aware folder's
+// selector arm, the shared representability core's shape reconstruction,
+// and codegen's package-const materialization all route through it.
+Variable* goo_lookup_pkg_const(TypeChecker* checker, ASTNode* expr);
+
+// Go untyped-int-constant representability machinery (type_checker.c): an
+// untyped integer constant (a bare literal, a unary-minus over one, or
+// constant arithmetic recursively built from those) unifies with a
+// DIFFERENTLY-KINDED integer target iff its folded value is representable
+// there — the rule `return 300` (int8 fn), `case 300:` (int8 tag), and
+// `ch <- 300` (chan int8) all share. Originally `static` to type_checker.c
+// (return_stmt's and switch_stmt's own gates live in that TU); promoted
+// here, unchanged, for Task 1 (chan-send representability, correctness-
+// followups arc 3) so expression_checker.c's type_check_channel_send_op can
+// reuse the identical gate instead of forking a copy — see that function's
+// call site and type_check_switch_stmt's doc comment (type_checker.c) for
+// the full case tables and the negated/bare_literal conjunction rationale.
+int is_untyped_int_const_expr(ASTNode* node);
+int is_negated_int_const_expr(ASTNode* node);
+int is_bare_int_literal(ASTNode* node);
+int int_const_fits_expected(uint64_t raw, Type* expected, int negated,
+                             int bare_literal);
+
+// Stamp an untyped-int-constant-rooted expression subtree (is_untyped_int_
+// const_expr's exact shape) to `target` at every level, so codegen emits the
+// constant at the unified target's width. Only call AFTER int_const_fits_
+// expected has confirmed representability — see type_check_switch_stmt
+// (type_checker.c) for the full rationale; promoted alongside the
+// predicates above for the same cross-TU reuse (Task 1).
+void stamp_int_const_expr_type(ASTNode* node, Type* target);
+
+// Correctness arc 4 (j): the shared chan-send representability gate — the
+// arc-3 literal gate deduped from its two send-sink copies and extended to
+// const-IDENTIFIER-bearing constant expressions (admission = "the checker-
+// aware folder folds it", closing the `const k = 300; ch <- k` fail-open).
+// Returns 0 = not applicable (caller falls through to its type_compatible
+// check), 1 = representable and handled (literal-only shapes stamped),
+// -1 = rejected (diagnostic already reported). See the definition
+// (type_checker.c) for the negated/bare_literal reconstruction rules.
+int chan_send_const_int_gate(TypeChecker* checker, ASTNode* value_expr,
+                             Type* value_type, Type* elem_type);
+
+// Arc 5 (h): the shared screen->fold->reconstruct->fit core behind every
+// ident-aware constant sink (the chan-send gate above; the typed-const and
+// var decl gates). Returns 0 = not applicable (not a foldable constant /
+// non-integer target / comptime-param-tainted — caller falls back to its
+// ordinary path), 1 = folded value fits `target`, -1 = overflow (the
+// "constant %lld overflows %s" diagnostic already emitted at expr's
+// position). See the definition (type_checker.c) for the negated/
+// bare_literal reconstruction rules per shape class.
+int check_const_int_expr_fits(TypeChecker* checker, ASTNode* expr,
+                              Type* target);
+
+// Comptime value params Task 3 (fix round 2): does `t` contain a TYPE_ARRAY
+// anywhere in its structure (through nested arrays, slices, pointers,
+// nullables)? Used by comptime-instance codegen (function_codegen.c /
+// composite_codegen.c) to decide whether a template-cached Type must be
+// re-derived from its AST type node under the instance's comptime-param
+// binding — only array LENGTHS can differ per instance, so anything with no
+// array anywhere can keep the cached Type object untouched.
+int goo_type_contains_array(const Type* t);
+
+// Comptime value params (fix round 6, C-r5): does `t` contain a
+// comptime_length-FLAGGED array anywhere in its structure (recursing
+// through array ELEMENTS as well as slices/pointers/nullables — `[2][n]int`
+// is unflagged outside, flagged inside)? This — not the any-array walk
+// above — is the correct gate for the comptime instance re-derivation
+// sites: gating on ANY array re-derived types whose template resolution was
+// never placeholder-tainted, so a block-local `const n = 3` SHADOWING the
+// comptime param split-brained (the checker resolved the shadow's length,
+// while codegen's mirror-scope re-derivation resolved the PARAM instead —
+// wrong length, or a false instance-named rejection). An unflagged array's
+// template type is already correct and must be left untouched.
+int goo_type_contains_comptime_array(const Type* t);
+
+// Comptime value params (fix round 6, M-r5c): set comptime_length on an
+// array Type AND rewrite its display name so diagnostics render the
+// comptime dimension as `[<param-name>]` (identifier length expression) or
+// `[comptime]` (compound expression) instead of the template placeholder
+// ("[1]int64"). The single stamping entry point — both stamp sites
+// (type_from_ast's AST_ARRAY_TYPE case, the array-literal checker) call
+// this instead of setting the flag directly.
+void type_array_mark_comptime(Type* t, ASTNode* length_expr);
+
+// Comptime value params (fix round 3/4): does `expr` contain any identifier
+// that resolves, in checker's CURRENT scope, to a comptime PARAMETER
+// (Variable whose decl_node is a VarDeclNode with is_comptime_param)?
+// Recurses through the same expression shapes goo_fold_const_int_ctx folds.
+// Three consumers: the comptime-argument capture site (expression_checker.c
+// — keeps the const folder away from the enclosing param's placeholder),
+// the array-literal checker (defer count-vs-length validation to instance
+// time), and type_from_ast's AST_ARRAY_TYPE case (stamp
+// Type.data.array.comptime_length so const-index validation defers too).
+int goo_expr_references_comptime_param(TypeChecker* checker, ASTNode* expr);
 
 // Fold a compile-time string constant — string literals joined by `+` — into a
 // freshly malloc'd byte buffer. On success returns 1, writes *out (the buffer,

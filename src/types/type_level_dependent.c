@@ -89,7 +89,7 @@ Type* create_matrix_type(size_t rows, size_t cols, Type* element_type) {
     }
     
     // Set up the struct with the array as the only field
-    matrix_type->data.struct_type.fields = calloc(1, sizeof(StructField));
+    matrix_type->data.struct_type.fields = xcalloc(1, sizeof(StructField));
     if (matrix_type->data.struct_type.fields) {
         matrix_type->data.struct_type.field_count = 1;
         matrix_type->data.struct_type.fields[0].name = str_dup("data");
@@ -149,7 +149,7 @@ typedef struct DependentType {
 
 // Removed: dependent_type_new - defined in dependent_types.c
 // DependentType* dependent_type_new(DependentTypeKind kind, const char* name, Type* base_type) {
-//     DependentType* dep_type = malloc(sizeof(DependentType));
+//     DependentType* dep_type = xmalloc(sizeof(DependentType));
 //     if (!dep_type) return NULL;
 //     
 //     dep_type->kind = kind;
@@ -204,7 +204,7 @@ typedef struct DependentType {
 int dependent_type_add_constraint(DependentType* dep_type, const char* name, ASTNode* constraint_expr, Type* constrained_type) {
     if (!dep_type || !name || !constraint_expr) return 0;
     
-    DependentConstraint* constraint = malloc(sizeof(DependentConstraint));
+    DependentConstraint* constraint = xmalloc(sizeof(DependentConstraint));
     if (!constraint) return 0;
     
     constraint->name = str_dup(name);
@@ -274,7 +274,7 @@ Type* create_compile_time_matrix_type(Type* element_type, TypeLevelNat* rows, Ty
     }
     
     // Set up the struct with the array as the only field
-    matrix_type->data.struct_type.fields = calloc(1, sizeof(StructField));
+    matrix_type->data.struct_type.fields = xcalloc(1, sizeof(StructField));
     if (matrix_type->data.struct_type.fields) {
         matrix_type->data.struct_type.field_count = 1;
         matrix_type->data.struct_type.fields[0].name = str_dup("data");
@@ -332,7 +332,7 @@ typedef struct DependentVector {
 } DependentVector;
 
 DependentVector* dependent_vector_new(Type* element_type, size_t initial_capacity) {
-    DependentVector* vec = malloc(sizeof(DependentVector));
+    DependentVector* vec = xmalloc(sizeof(DependentVector));
     if (!vec) return NULL;
     
     vec->element_type = element_type ? type_copy(element_type) : NULL;
@@ -471,7 +471,7 @@ Type* create_phantom_type(const char* name, Type* phantom_param) {
     
     // Create a phantom field that doesn't affect layout
     phantom->data.struct_type.field_count = 1;
-    phantom->data.struct_type.fields = calloc(1, sizeof(StructField));
+    phantom->data.struct_type.fields = xcalloc(1, sizeof(StructField));
     if (phantom->data.struct_type.fields) {
         phantom->data.struct_type.fields[0].name = str_dup("_phantom");
         phantom->data.struct_type.fields[0].type = phantom_param;
@@ -492,7 +492,7 @@ typedef struct TypeComputationCache {
 } TypeComputationCache;
 
 TypeComputationCache* type_computation_cache_new(void) {
-    TypeComputationCache* cache = malloc(sizeof(TypeComputationCache));
+    TypeComputationCache* cache = xmalloc(sizeof(TypeComputationCache));
     if (!cache) return NULL;
     
     cache->input_signatures = NULL;
@@ -564,7 +564,7 @@ typedef struct CachedTypeFamily {
 } CachedTypeFamily;
 
 CachedTypeFamily* cached_type_family_new(TypeFamily* family) {
-    CachedTypeFamily* cached = malloc(sizeof(CachedTypeFamily));
+    CachedTypeFamily* cached = xmalloc(sizeof(CachedTypeFamily));
     if (!cached) return NULL;
     
     cached->family = family;

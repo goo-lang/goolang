@@ -1,0 +1,14 @@
+// range_chan_twovar_reject (P3.2): Go permits at most one iteration
+// variable when ranging over a channel — there is no index, only the
+// received element. `for i, v := range ch` must be rejected with a
+// positioned type error, mirroring Go's own "permits only one iteration
+// variable" diagnostic (go run rejects this identically).
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	for i, v := range ch {
+		_ = i
+		_ = v
+	}
+}

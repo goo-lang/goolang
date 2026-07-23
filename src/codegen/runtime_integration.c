@@ -94,6 +94,29 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
         add_runtime_function(codegen, "goo_realloc", ptr_type, params, 2);
     }
 
+    // Arena allocator (bump allocator; src/runtime/arena.c). Registered up
+    // front like every other runtime extern in this file, even though
+    // codegen doesn't emit calls to goo_arena_new/goo_arena_free yet — the
+    // arena-region routing task (codegen_emit_alloc, codegen.c) needs
+    // goo_arena_alloc declared into the module now, and goo_arena_new/
+    // goo_arena_free are declared alongside it for consistency ahead of the
+    // `arena{}` block-lowering follow-up that will call them.
+    // GooArena* goo_arena_new(size_t initial_size)  [opaque handle as i8*]
+    {
+        LLVMTypeRef params[] = { size_type };
+        add_runtime_function(codegen, "goo_arena_new", ptr_type, params, 1);
+    }
+    // void* goo_arena_alloc(GooArena* a, size_t size)  [handle passed as i8*]
+    {
+        LLVMTypeRef params[] = { ptr_type, size_type };
+        add_runtime_function(codegen, "goo_arena_alloc", ptr_type, params, 2);
+    }
+    // void goo_arena_free(GooArena* a)  [handle passed as i8*]
+    {
+        LLVMTypeRef params[] = { ptr_type };
+        add_runtime_function(codegen, "goo_arena_free", void_type, params, 1);
+    }
+
     // File I/O backing for os.WriteFile / os.ReadByte / os.FileSize.
     // Scalar signatures only (char*/int) so they cross the Goo<->C ABI cleanly.
     // int goo_sys_write_file(const char* path, const char* data)
@@ -314,6 +337,19 @@ LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen) {
     {
         LLVMTypeRef params[] = { ptr_type };
         add_runtime_function(codegen, "goo_os_getenv", string_type, params, 1);
+    }
+
+    // os.ReadFile(string) !string / os.ReadLine() !string (P4.8): same
+    // ok-flag + out-param shape as goo_string_to_int above.
+    // int goo_os_read_file(const char* path, goo_string_t* out)
+    {
+        LLVMTypeRef params[] = { ptr_type, LLVMPointerType(string_type, 0) };
+        add_runtime_function(codegen, "goo_os_read_file", i32_type, params, 2);
+    }
+    // int goo_os_read_line(goo_string_t* out)
+    {
+        LLVMTypeRef params[] = { LLVMPointerType(string_type, 0) };
+        add_runtime_function(codegen, "goo_os_read_line", i32_type, params, 1);
     }
 
     // void goo_os_args_init(int argc, char** argv) — called once from the

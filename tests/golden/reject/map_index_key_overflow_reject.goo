@@ -1,0 +1,10 @@
+// Correctness arc 9 (i): the index-key sink — `m[300] = 9` on a
+// map[int8]int must reject like Go (constant 300 overflows int8).
+// type_check_index_expr's TYPE_MAP arm is the single choke point for
+// reads, writes, and comma-ok, so one gate covers all three.
+package main
+
+func main() {
+	m := map[int8]int{}
+	m[300] = 9
+}

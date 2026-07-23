@@ -1,0 +1,12 @@
+// Spec: Built-in functions / copy
+package main
+
+import "fmt"
+
+func main() {
+	src := []int{1, 2, 3}
+	dst := make([]int, 3)
+	n := copy(dst, src)
+	fmt.Println(n)
+	fmt.Println(dst[2])
+}

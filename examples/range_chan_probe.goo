@@ -1,0 +1,42 @@
+// range_chan_probe (P3.2): `for v := range ch` receives repeatedly, binding
+// v to each element, and terminates when the channel is closed and
+// drained — no deadlock, no explicit break needed. A goroutine producer
+// sends three values on a buffered channel then close()s it; main ranges
+// over it and prints each value, then a sentinel line proving the loop
+// actually terminated on close — under Go-parity main-exit semantics
+// (P3.3, same branch) the range loop in main is itself the required
+// synchronization; the sentinel pins that the loop exited via the
+// closed-channel status, not by the process ending.
+//
+// The second loop exercises the bare `for range ch` form (no iteration
+// variables) over a SEPARATE channel that is closed immediately with
+// nothing ever sent — i.e. already closed+drained before the loop starts.
+// It must execute the loop body zero times; `count` stays 0, proving
+// immediate termination rather than, say, one spurious zero-valued
+// iteration.
+package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 3)
+	go func() {
+		ch <- 1
+		ch <- 2
+		ch <- 3
+		close(ch)
+	}()
+
+	for v := range ch {
+		fmt.Println(v)
+	}
+	fmt.Println("done")
+
+	ch2 := make(chan int, 1)
+	close(ch2)
+	count := 0
+	for range ch2 {
+		count++
+	}
+	fmt.Println(count)
+}

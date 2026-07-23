@@ -299,13 +299,36 @@ int codegen_generate_nullable_assignment(CodeGenerator* codegen, TypeChecker* ch
 
 // Generate code for null literal
 ValueInfo* codegen_generate_null_literal(CodeGenerator* codegen, TypeChecker* checker, Type* expected_type) {
-    if (!codegen || !expected_type || !type_is_nullable(expected_type)) {
+    if (!codegen) return NULL;
+
+    // Go-compatible bare nil (P2.2 option A): pointer/slice/map/channel/
+    // function all have a natural zero/nil LLVM representation per
+    // type_mapping.c's codegen_type_to_llvm — a bare null pointer for
+    // pointer/map/channel, {null,0,0} for a slice (ptr/len/cap order is
+    // load-bearing, matching goo_slice_t), {null,null} for a function
+    // value's fat-pointer pair. LLVMConstNull of the mapped LLVM type
+    // produces exactly this representation in every case, matching the
+    // existing zero-value path for an uninitialized local of these kinds
+    // (function_codegen.c's unconditional LLVMConstNull for a non-nullable
+    // local) — so explicit `= nil` and implicit zero-value agree bit-for-
+    // bit. MUST be checked before the ?T branch below: this is bare-kind
+    // nil (no tag), not ?T tag-nil — conflating the two would build an
+    // untagged nullable and silently break `?*T = nil`'s is_null flag (the
+    // hard invariant this task must not violate).
+    if (type_is_nilable_ref_kind(expected_type)) {
+        LLVMTypeRef llvm_type = codegen_type_to_llvm(codegen, expected_type);
+        if (!llvm_type) return NULL;
+        LLVMValueRef null_value = LLVMConstNull(llvm_type);
+        return value_info_new(NULL, null_value, expected_type);
+    }
+
+    if (!expected_type || !type_is_nullable(expected_type)) {
         // If no expected type or not nullable, create a generic null pointer
         LLVMValueRef null_ptr = LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0));
         Type* void_ptr_type = type_pointer(type_checker_get_builtin(checker, TYPE_VOID));
         return value_info_new(NULL, null_ptr, void_ptr_type);
     }
-    
+
     LLVMTypeRef nullable_type = codegen_type_to_llvm(codegen, expected_type);
     if (!nullable_type) return NULL;
     

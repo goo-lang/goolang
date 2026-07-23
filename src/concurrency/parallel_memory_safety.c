@@ -16,7 +16,7 @@ Result_void_ptr memory_safe_task_wrapper(TaskContext* task_ctx, void* args) {
     if (safe_args->safety_config->strict_task_isolation && !safe_args->task_memory_base) {
         // Allocate isolated memory for this task
         if (!allocate_task_memory(safe_args, safe_args->safety_config->max_memory_per_task)) {
-            Error* error = malloc(sizeof(Error));
+            Error* error = xmalloc(sizeof(Error));
             *error = (Error){
                 .code = ERROR_OUT_OF_MEMORY,
                 .severity = ERROR_SEVERITY_ERROR,
@@ -135,7 +135,7 @@ Result_void_ptr memory_safe_parallel_for(
     void* context) {
     
     if (!scope || !function) {
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -185,7 +185,7 @@ Result_void_ptr memory_safe_parallel_for(
     if (!all_safe_args || !tasks) {
         free(all_safe_args);
         free(tasks);
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_OUT_OF_MEMORY,
             .severity = ERROR_SEVERITY_ERROR,
@@ -360,7 +360,7 @@ void register_parallel_memory_regions(MemorySafetyContext* ctx,
 
 // Helper function to create violation errors
 Error* memory_safety_create_violation_error(int violation_type, void* address, size_t size) {
-    Error* error = malloc(sizeof(Error));
+    Error* error = xmalloc(sizeof(Error));
     if (!error) return NULL;
     
     char* message = malloc(256);

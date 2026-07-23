@@ -1,0 +1,47 @@
+package main
+
+import "fmt"
+
+// (r) multi-assign narrow-store probe: `x, y = a, b` into slots narrower
+// than i64 must truncate each RHS to the target width before storing.
+// Before the fix the pass-2 store wrote the raw i64 rvalue over the
+// narrow alloca (8 bytes into a 1/2/4-byte slot), corrupting the stack:
+// output printed correctly, then SIGSEGV (exit 139) in the epilogue.
+func main() {
+	var a int8 = 0
+	var b int8 = 0
+	a, b = 5, 6
+	fmt.Println(a)
+	fmt.Println(b)
+
+	var c int16 = 0
+	var d int16 = 0
+	c, d = 300, -300
+	fmt.Println(c)
+	fmt.Println(d)
+
+	var e int32 = 0
+	var f int32 = 0
+	e, f = 70000, -70000
+	fmt.Println(e)
+	fmt.Println(f)
+
+	var g uint8 = 0
+	var h uint8 = 0
+	g, h = 200, 7
+	fmt.Println(g)
+	fmt.Println(h)
+
+	// Simultaneous-evaluation semantics must survive the width fix:
+	// both rvalues are read before either target is written.
+	a, b = b, a
+	fmt.Println(a)
+	fmt.Println(b)
+
+	// int64 control (was already correct — no width change involved).
+	var i int64 = 0
+	var j int64 = 0
+	i, j = 5, 6
+	fmt.Println(i)
+	fmt.Println(j)
+}

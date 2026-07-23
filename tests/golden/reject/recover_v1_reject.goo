@@ -1,0 +1,15 @@
+// recover_v1_reject (P3.5, user decision 2026-07-10: minimum scope):
+// recover() gets a clear v1-unsupported diagnostic instead of the
+// misleading "Undefined variable 'recover'". The r := binding must not
+// spawn an "Undefined variable 'r'" cascade (P2.8 poison convention).
+package main
+
+import "fmt"
+
+func main() {
+	defer func() {
+		r := recover()
+		fmt.Println(r)
+	}()
+	panic("boom")
+}

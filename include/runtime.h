@@ -46,6 +46,52 @@ void* goo_alloc(size_t size);
 void* goo_realloc(void* ptr, size_t size);
 void goo_free(void* ptr);
 
+// Bump/arena allocator: a growable block-list bump allocator that the
+// arena-region memory model routes allocations into. Opaque; see
+// src/runtime/arena.c for the block-list layout.
+typedef struct GooArena GooArena;
+GooArena* goo_arena_new(size_t initial_size);
+void* goo_arena_alloc(GooArena* a, size_t size);
+void goo_arena_reset(GooArena* a);
+void goo_arena_free(GooArena* a);
+
+// Runtime defer stack (P3.4): backs a "stack-mode" function's defer
+// registrations — a function with at least one loop-nested `defer` routes
+// ALL of its defers through this instead of the static per-lexical-defer
+// active-flag machinery (statement_codegen.c), because a single loop
+// iteration can register more than one dynamic defer and only a growable
+// runtime stack can hold an unbounded, per-iteration count of them.
+//
+// A function's frame is a single goo_defer_frame_t, entry-block-allocated
+// and zero-initialized by codegen (function_codegen.c). Each `defer`
+// statement reached at runtime evaluates its args/receiver on the spot
+// (Go's defer-time evaluation), heap-allocates an env cell holding that
+// snapshot, and pushes {thunk, env} — so "executing the statement IS the
+// registration" and per-iteration snapshots fall out for free. Every
+// function-exit path calls goo_defer_run exactly once (LIFO unwind);
+// goo_defer_run is safe on a never-pushed (zeroed) frame.
+typedef struct goo_defer_entry {
+    void (*fn)(void* env);  // thunk: unpacks env and makes the deferred call
+    void* env;              // goo_alloc'd snapshot cell, or NULL for a no-arg defer
+} goo_defer_entry_t;
+
+typedef struct goo_defer_frame {
+    goo_defer_entry_t* entries;  // goo_realloc'd growable array
+    size_t len;
+    size_t cap;
+} goo_defer_frame_t;
+
+// Push one deferred call onto `f` (grows `entries` via goo_realloc; panics
+// via goo_realloc's own out-of-memory handling — never returns NULL to a
+// caller that then dereferences it).
+void goo_defer_push(goo_defer_frame_t* f, void (*fn)(void* env), void* env);
+
+// Run every entry in `f` in LIFO (last-pushed-first) order, freeing each
+// env right after its call and freeing the entries array afterward. Leaves
+// `f` zeroed (len=0, cap=0, entries=NULL) — safe to call again (a no-op) or
+// on a frame that was never pushed to at all.
+void goo_defer_run(goo_defer_frame_t* f);
+
 // Error handling
 void goo_panic(const char* message) __attribute__((noreturn));
 goo_error_t* goo_new_error(const char* message);
@@ -112,6 +158,18 @@ goo_string_t goo_strings_trim_space(const char* s);
 void goo_strings_split(goo_slice_t* out, const char* s, const char* sep);
 goo_string_t goo_strings_join(const goo_slice_t* parts, const char* sep);
 goo_string_t goo_os_getenv(const char* name);
+
+// os.ReadFile(path) -> !string / os.ReadLine() -> !string (P4.8). Same
+// ok-flag + out-param shape as goo_string_to_int above (mirrored deliberately
+// — see call_codegen.c's codegen_generate_string_result_call): return 1 with
+// the success value written to *out, or 0 with a human-readable error message
+// written to *out. goo_string_t is 16 bytes (ptr+len), safely by-value per
+// goo_os_getenv above; only the file content itself needs the out-param, to
+// stay byte-length honest (embedded NULs survive) the same way Split/Args use
+// an out-param for their own >16-byte aggregate, not because goo_string_t
+// itself needs one.
+int goo_os_read_file(const char* path, goo_string_t* out);
+int goo_os_read_line(goo_string_t* out);
 
 // os.Args ([]string): argc/argv captured ONCE from the generated
 // executable's entry point (see the is_entry_main prologue in
@@ -589,6 +647,51 @@ void goo_waitgroup_add(goo_waitgroup_t* wg, int delta);
 void goo_waitgroup_done(goo_waitgroup_t* wg);
 void goo_waitgroup_wait(goo_waitgroup_t* wg);
 
+// P4.7 (packages-B, B3): sync.Mutex / sync.WaitGroup shim wrappers
+// (src/runtime/sync_shim.c). `slot` is the ADDRESS of the single
+// opaque-pointer field of the Goo-visible sync.Mutex / sync.WaitGroup
+// struct — codegen passes &receiver (bitcast to void**), NOT a
+// goo_mutex_t*/goo_waitgroup_t* itself. Each wrapper lazily allocates the
+// real runtime primitive on first use, satisfying Go's zero-value contract
+// (`var mu sync.Mutex` is usable immediately, no make/new anywhere) despite
+// goo_mutex_t/goo_waitgroup_t requiring real pthread init — see the design
+// doc (2026-07-10-p4-packages-b-design.md, section B3) for the full
+// rationale and the race-safety argument for the lazy-init scheme.
+void goo_sync_mutex_lock(void** slot);
+// Go parity: panics "sync: unlock of unlocked mutex" (matching Go's own
+// message) when called on a Mutex that isn't currently locked, INCLUDING a
+// never-locked zero-value Mutex — see sync_shim.c's doc comment for why the
+// check lives here rather than in goo_mutex_unlock itself.
+void goo_sync_mutex_unlock(void** slot);
+void goo_sync_wg_add(void** slot, int64_t delta);
+void goo_sync_wg_done(void** slot);
+void goo_sync_wg_wait(void** slot);
+
+// P4.6 (packages-C, C1): time.Sleep / time.Now runtime shim
+// (src/runtime/time_shim.c), wrapping the platform primitives (platform.h).
+// goo_time_sleep_ns clamps a negative Duration to a no-op sleep (Go: a
+// negative or zero Sleep duration returns immediately). goo_time_unix_ns
+// reads the WALL clock (CLOCK_REALTIME via goo_platform_wall_time_ns), not
+// the monotonic one goo_platform_time_ns exposes internally — see that
+// function's doc comment for why UnixNano needs the distinction.
+void goo_time_sleep_ns(int64_t ns);
+int64_t goo_time_unix_ns(void);
+
 goo_runtime_stats_t goo_get_runtime_stats(void);
+
+// Zero-size allocation sentinel (Go's "zerobase" pattern): a single shared,
+// process-lifetime byte whose ADDRESS stands in for the backing pointer of
+// any zero-size heap allocation. goo_alloc/goo_arena_alloc return &goo_zerobase
+// instead of NULL when size==0, so a zero-size allocation (most visibly the
+// backing pointer of an empty-but-non-nil slice literal, `[]T{}`) is never
+// mistaken for Go nil. It is never written through (nothing has anywhere to
+// write — every consumer's length/cap is 0 too) and never handed to a real
+// free()/realloc(): goo_free treats it as a no-op and goo_realloc treats it
+// as NULL before calling the real allocator, so it is safe to share across
+// every zero-size allocation site without a real per-site allocation. Also
+// referenced directly (as an external symbol) by codegen's global-scope
+// empty-slice-literal constant path (composite_codegen.c), which builds an
+// LLVM constant with no runtime call to route through goo_alloc.
+extern unsigned char goo_zerobase;
 
 #endif // RUNTIME_H

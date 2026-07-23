@@ -1,0 +1,25 @@
+// P3.6 follow-up (sub-B review): binding a method VALUE from an interface
+// (`f := i.get`) is a v1 scope cut — it needs vtable dispatch through the
+// bound thunk. Must be rejected at TYPECHECK with an accurate positioned
+// message, not fall through to codegen's misleading struct-selector error
+// attributed to the wrong line. Interface method CALLS (i.get()) are
+// unaffected.
+package main
+
+type Getter interface {
+	get() int
+}
+
+type C struct {
+	n int
+}
+
+func (c C) get() int {
+	return c.n
+}
+
+func main() {
+	var i Getter = C{n: 7}
+	f := i.get
+	println(f())
+}

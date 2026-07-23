@@ -1,0 +1,23 @@
+// asi_recv_after_if_probe (Task 6 REGRESSION fix, sibling of
+// asi_recv_after_for_probe): same hazard, `if` block instead of `for`. See
+// asi_recv_after_for_probe's header for the full root-cause writeup.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (println is stderr in Go, stdout in Goo — see asi_recv_probe). Equivalent
+// Go:
+//   func main() { ch := make(chan int, 1)
+//     go func() { ch <- 1 }()
+//     if true { println("in") }
+//     <-ch
+//     println("done") }
+package main
+
+func main() {
+	ch := make(chan int, 1)
+	go func() { ch <- 1 }()
+	if true {
+		println("in")
+	}
+	<-ch
+	println("done")
+}

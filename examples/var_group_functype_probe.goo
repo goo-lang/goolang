@@ -1,0 +1,76 @@
+// var_group_functype_probe (Fix A): a grouped `var ( ... )` block whose
+// FIRST spec is a result-less func type (`f func(int)`) parses past the
+// second spec's name instead of the second spec's identifier being
+// absorbed as f's func_result (the newline-blind func-result hazard,
+// workarounds.md §6, newly reachable inside var groups — see
+// parser.y var_spec_list / var_member). Exercises the fix through real
+// bindings, not just parse:
+//
+//   - `f func(int)`   (no result — the absorption-prone case) directly
+//     followed on the next line by `g = 2`, an unrelated spec whose name
+//     must NOT be swallowed as f's return type.
+//   - `h func(int) int` (a result IS present, same line) directly followed
+//     by a typed spec (`k int`) on the next line — proves specs with an
+//     explicit same-line result keep parsing correctly too (the ASI fix
+//     must not special-case "no result").
+//
+// Real functions are assigned to f and h and called (f via a side-effecting
+// global so a result-less func type is meaningfully exercised) so a
+// misparse shows up as wrong output, not just a compile failure.
+//
+// Expected output produced by `go run` on the equivalent Go program:
+//
+//   package main
+//
+//   import "fmt"
+//
+//   var sink int
+//
+//   func setSink(x int) {
+//   	sink = x * 10
+//   }
+//
+//   func square(x int) int {
+//   	return x * x
+//   }
+//
+//   func main() {
+//   	var (
+//   		f func(int)
+//   		g = 2
+//   		h func(int) int
+//   		k int
+//   	)
+//   	f = setSink
+//   	h = square
+//   	k = 9
+//   	f(4)
+//   	fmt.Println(sink, g, h(5), k)
+//   }
+package main
+
+import "fmt"
+
+var sink int
+
+func setSink(x int) {
+	sink = x * 10
+}
+
+func square(x int) int {
+	return x * x
+}
+
+func main() {
+	var (
+		f func(int)
+		g = 2
+		h func(int) int
+		k int
+	)
+	f = setSink
+	h = square
+	k = 9
+	f(4)
+	fmt.Println(sink, g, h(5), k)
+}

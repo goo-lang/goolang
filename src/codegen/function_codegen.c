@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include "comptime.h"
+#include "value_scope.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -165,6 +166,234 @@ static int escape_is_promoted(const char* name) {
     return 0;
 }
 
+// ---- P3.4: defer-loop-nesting pre-pass (file-static; mirrors the M8b
+// escape pre-pass immediately above — function codegen is non-reentrant) ---
+//
+// Decides the per-function static/stack fork (design doc: "B1 (P3.4) —
+// runtime defer stack, per-function fork"): a function containing at least
+// one `defer` lexically nested under a for/range loop routes ALL of its
+// defers through the runtime stack; everything else keeps the untouched
+// static path. Only real iteration counts as "loop-nested" — switch/select/
+// if/match/try/catch/unsafe/arena/label do not repeat their body, so a
+// defer under one of THOSE alone is exactly as expressible as a defer under
+// a plain `if` (one conditional execution, no per-iteration multiplication)
+// and stays on the static path. `for_depth` therefore only increments
+// across AST_FOR_STMT (ForStmtNode covers both C-style and range `for` —
+// range_expr non-NULL selects the range-desugared form — so one case
+// handles both).
+//
+// COVERAGE / MAINTENANCE CONTRACT: this walker must reach EVERY statement
+// list a function body can transitively contain — including statement
+// bodies nested inside EXPRESSIONS (`catch { ... }` bodies, match-case
+// bodies), which is why the expression node kinds are walked too, not just
+// statement containers. A container missed here makes a loop-nested defer
+// under it silently take the static single-slot path — historically a
+// silent run-once-with-last-snapshot miscompile (review finding 2026-07-10:
+// AST_ARENA_BLOCK, AST_LABEL_STMT, and CatchExprNode.catch_body were all
+// missing). Two defenses now exist: (1) any NEW node type that carries a
+// statement list, a wrapped statement, or expression children MUST be added
+// to this switch, and (2) the static path in codegen_generate_defer_stmt
+// fail-closes — a loop-nested defer that reaches it anyway (cfctx
+// real-loop check there) is a hard "internal" error, never a silent
+// miscompile — so a future gap here surfaces at compile time.
+// AST_FUNC_LIT is the one deliberate non-recursion: a literal is codegen'd
+// as its own function with its OWN pre-pass call (codegen_generate_func_lit),
+// so its defers are that function's concern, not the enclosing one's.
+static int g_defer_needs_stack;
+
+static void defer_prepass_walk(ASTNode* n, int for_depth) {
+    for (; n; n = n->next) {
+        switch (n->type) {
+            case AST_DEFER_STMT:
+                if (for_depth > 0) g_defer_needs_stack = 1;
+                // The deferred call's arguments can themselves contain a
+                // statement-bearing expression (a catch body) — keep walking.
+                defer_prepass_walk(((DeferStmtNode*)n)->call, for_depth);
+                break;
+            case AST_FOR_STMT: {
+                ForStmtNode* s = (ForStmtNode*)n;
+                // init and range_expr evaluate once, at the loop's own
+                // depth; condition/post re-evaluate per iteration and the
+                // body runs per iteration — those three at depth + 1.
+                defer_prepass_walk(s->init, for_depth);
+                defer_prepass_walk(s->range_expr, for_depth);
+                defer_prepass_walk(s->condition, for_depth + 1);
+                defer_prepass_walk(s->post, for_depth + 1);
+                defer_prepass_walk(s->body, for_depth + 1);
+                break;
+            }
+
+            // --- statement containers ---
+            case AST_BLOCK_STMT: defer_prepass_walk(((BlockStmtNode*)n)->statements, for_depth); break;
+            case AST_EXPR_STMT:  defer_prepass_walk(((ExprStmtNode*)n)->expr, for_depth); break;
+            case AST_IF_STMT: {
+                IfStmtNode* s = (IfStmtNode*)n;
+                defer_prepass_walk(s->condition, for_depth);
+                defer_prepass_walk(s->then_stmt, for_depth);
+                defer_prepass_walk(s->else_stmt, for_depth);
+                break;
+            }
+            case AST_IF_LET_STMT: {
+                IfLetStmtNode* s = (IfLetStmtNode*)n;
+                defer_prepass_walk(s->nullable_expr, for_depth);
+                defer_prepass_walk(s->then_stmt, for_depth);
+                defer_prepass_walk(s->else_stmt, for_depth);
+                break;
+            }
+            case AST_SWITCH_STMT: {
+                SwitchStmtNode* s = (SwitchStmtNode*)n;
+                defer_prepass_walk(s->tag, for_depth);
+                defer_prepass_walk(s->cases, for_depth);
+                break;
+            }
+            case AST_CASE_CLAUSE: {
+                CaseClauseNode* c = (CaseClauseNode*)n;
+                defer_prepass_walk(c->exprs, for_depth);
+                defer_prepass_walk(c->body, for_depth);
+                break;
+            }
+            case AST_TYPE_SWITCH: {
+                TypeSwitchNode* s = (TypeSwitchNode*)n;
+                defer_prepass_walk(s->expr, for_depth);
+                defer_prepass_walk(s->cases, for_depth);
+                break;
+            }
+            case AST_TYPE_CASE:   defer_prepass_walk(((TypeCaseNode*)n)->body, for_depth); break;
+            case AST_SELECT_STMT: defer_prepass_walk(((SelectStmtNode*)n)->cases, for_depth); break;
+            case AST_SELECT_CASE: {
+                SelectCaseNode* c = (SelectCaseNode*)n;
+                defer_prepass_walk(c->comm, for_depth);
+                defer_prepass_walk(c->body, for_depth);
+                break;
+            }
+            case AST_UNSAFE_STMT:    defer_prepass_walk(((UnsafeStmtNode*)n)->body, for_depth); break;
+            case AST_ARENA_BLOCK:    defer_prepass_walk(((ArenaBlockNode*)n)->body, for_depth); break;
+            case AST_COMPTIME_BLOCK: defer_prepass_walk(((ComptimeBlockNode*)n)->body, for_depth); break;
+            case AST_CONTRACT_BLOCK: defer_prepass_walk(((ContractBlockNode*)n)->clauses, for_depth); break;
+            case AST_LABEL_STMT:     defer_prepass_walk(((LabelStmtNode*)n)->stmt, for_depth); break;
+            case AST_GO_STMT:        defer_prepass_walk(((GoStmtNode*)n)->call, for_depth); break;
+            case AST_RETURN_STMT:    defer_prepass_walk(((ReturnStmtNode*)n)->values, for_depth); break;
+            case AST_VAR_DECL:       defer_prepass_walk(((VarDeclNode*)n)->values, for_depth); break;
+            case AST_CONST_DECL:     defer_prepass_walk(((ConstDeclNode*)n)->values, for_depth); break;
+            case AST_MULTI_ASSIGN: {
+                MultiAssignNode* m = (MultiAssignNode*)n;
+                defer_prepass_walk(m->targets, for_depth);
+                defer_prepass_walk(m->values, for_depth);
+                break;
+            }
+
+            // --- expressions: can carry a statement body directly (catch/
+            // match) or reach one through their children ---
+            case AST_BINARY_EXPR: {
+                BinaryExprNode* b = (BinaryExprNode*)n;
+                defer_prepass_walk(b->left, for_depth);
+                defer_prepass_walk(b->right, for_depth);
+                break;
+            }
+            case AST_UNARY_EXPR:   defer_prepass_walk(((UnaryExprNode*)n)->operand, for_depth); break;
+            case AST_POSTFIX_EXPR: defer_prepass_walk(((PostfixExprNode*)n)->operand, for_depth); break;
+            case AST_CALL_EXPR: {
+                CallExprNode* c = (CallExprNode*)n;
+                defer_prepass_walk(c->function, for_depth);
+                defer_prepass_walk(c->args, for_depth);
+                break;
+            }
+            case AST_INDEX_EXPR: {
+                IndexExprNode* ix = (IndexExprNode*)n;
+                defer_prepass_walk(ix->expr, for_depth);
+                defer_prepass_walk(ix->index, for_depth);
+                break;
+            }
+            case AST_SELECTOR_EXPR: defer_prepass_walk(((SelectorExprNode*)n)->expr, for_depth); break;
+            case AST_SLICE_EXPR:    defer_prepass_walk(((SliceLitNode*)n)->elements, for_depth); break;
+            case AST_SLICE_INDEX_EXPR: {
+                SliceIndexExprNode* s = (SliceIndexExprNode*)n;
+                defer_prepass_walk(s->expr, for_depth);
+                defer_prepass_walk(s->low, for_depth);
+                defer_prepass_walk(s->high, for_depth);
+                break;
+            }
+            case AST_ARRAY_LITERAL: defer_prepass_walk(((ArrayLitNode*)n)->elements, for_depth); break;
+            case AST_KEYED_ELEMENT: {
+                KeyedElementNode* k = (KeyedElementNode*)n;
+                defer_prepass_walk(k->key, for_depth);
+                defer_prepass_walk(k->value, for_depth);
+                break;
+            }
+            // AST_PAREN_EXPR is a repurposed map-literal slot (MapLitNode).
+            case AST_PAREN_EXPR: {
+                MapLitNode* m = (MapLitNode*)n;
+                defer_prepass_walk(m->keys, for_depth);
+                defer_prepass_walk(m->values, for_depth);
+                break;
+            }
+            case AST_STRUCT_LITERAL: defer_prepass_walk(((StructLiteralNode*)n)->field_values, for_depth); break;
+            case AST_TRY_EXPR:       defer_prepass_walk(((TryExprNode*)n)->expr, for_depth); break;
+            case AST_CATCH_EXPR: {
+                // catch_body is a full statement list nested inside an
+                // EXPRESSION — the reason this walker recurses into
+                // expressions at all (verified miscompile shape before this
+                // coverage: `x := f() catch e { for { defer ... } ... }`).
+                CatchExprNode* ce = (CatchExprNode*)n;
+                defer_prepass_walk(ce->expr, for_depth);
+                defer_prepass_walk(ce->catch_body, for_depth);
+                break;
+            }
+            case AST_MATCH_EXPR: {
+                MatchExprNode* m = (MatchExprNode*)n;
+                defer_prepass_walk(m->expr, for_depth);
+                defer_prepass_walk(m->cases, for_depth);
+                break;
+            }
+            case AST_MATCH_CASE: {
+                MatchCaseNode* mc = (MatchCaseNode*)n;
+                defer_prepass_walk(mc->guard, for_depth);
+                defer_prepass_walk(mc->body, for_depth);
+                break;
+            }
+            case AST_TYPE_ASSERT: defer_prepass_walk(((TypeAssertNode*)n)->expr, for_depth); break;
+            case AST_ADDR_OF:     defer_prepass_walk(((AddrOfNode*)n)->operand, for_depth); break;
+
+            default: break;  // leaves (identifier, literal, type nodes) and
+                             // AST_FUNC_LIT (deliberate — see contract above)
+        }
+    }
+}
+
+static int defer_prepass_needs_stack(ASTNode* body) {
+    g_defer_needs_stack = 0;
+    defer_prepass_walk(body, 0);
+    return g_defer_needs_stack;
+}
+
+// Build the LLVM type for goo_defer_frame_t (include/runtime.h): {entries:
+// ptr, len: size_t, cap: size_t}. Literal (unnamed) struct types are
+// structurally interned per-LLVMContext, so every call site building this
+// exact field list gets back the SAME LLVMTypeRef — no cache needed, unlike
+// the named-struct hazard documented elsewhere in this codebase.
+static LLVMTypeRef codegen_get_defer_frame_type(CodeGenerator* codegen) {
+    LLVMContextRef ctx = codegen->context;
+    LLVMTypeRef ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
+    LLVMTypeRef size_ty = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef fields[] = { ptr_ty, size_ty, size_ty };
+    return LLVMStructTypeInContext(ctx, fields, 3, 0);
+}
+
+// Allocate and zero-initialize func_info->defer_frame in the CURRENT insert
+// block (must be the entry block — every caller invokes this immediately
+// after codegen_set_insert_point(entry), before any other body code, so the
+// zero-store is guaranteed to precede every later use, including an early-
+// return exit site generated later in the same linear entry-block prologue).
+// No-op unless the pre-pass decided this function needs stack mode.
+static void codegen_setup_defer_stack_mode(CodeGenerator* codegen, FunctionInfo* func_info,
+                                           ASTNode* body) {
+    func_info->defer_stack_mode = defer_prepass_needs_stack(body);
+    if (!func_info->defer_stack_mode) return;
+    LLVMTypeRef frame_ty = codegen_get_defer_frame_type(codegen);
+    func_info->defer_frame = LLVMBuildAlloca(codegen->builder, frame_ty, "defer_frame");
+    LLVMBuildStore(codegen->builder, LLVMConstNull(frame_ty), func_info->defer_frame);
+}
+
 // Allocate storage for a named local: heap (goo_alloc, leaked) if the local
 // is EITHER goroutine-escape-promoted (M8b, name-based, `force_promote=0`
 // callers) OR forced by the caller (Closures Task 2: a var-decl/param whose
@@ -181,13 +410,6 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
                                                  const char* name, int force_promote) {
     if (!force_promote && !escape_is_promoted(name))
         return codegen_create_entry_alloca(codegen, type, name);
-
-    LLVMContextRef ctx = codegen->context;
-    LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx);
-    LLVMTypeRef vp = LLVMPointerType(LLVMInt8TypeInContext(ctx), 0);
-    LLVMTypeRef alloc_ty = LLVMFunctionType(vp, &i64t, 1, 0);
-    LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-    if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
 
     LLVMValueRef size = LLVMSizeOf(type);
 
@@ -211,8 +433,7 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     // decl's zero-init/initializer store (emitted at this same position by
     // every caller) always has.
     if (force_promote) {
-        return LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1,
-                              name ? name : "captured_local");
+        return codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
     }
 
     // M8b goroutine-escape path (unchanged): emit the goo_alloc in the entry
@@ -226,8 +447,7 @@ static LLVMValueRef codegen_alloc_local_promoted(CodeGenerator* codegen, LLVMTyp
     if (first) LLVMPositionBuilderBefore(codegen->builder, first);
     else       LLVMPositionBuilderAtEnd(codegen->builder, entry);
 
-    LLVMValueRef p = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &size, 1,
-                                    name ? name : "go_escape_local");
+    LLVMValueRef p = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, NULL);
     if (cur) LLVMPositionBuilderAtEnd(codegen->builder, cur);
     return p;
 }
@@ -324,6 +544,95 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 #endif
 }
 
+// P3.6 (method values): get-or-create the BOUND thunk for method `T__m`
+// (Goo type `method_type`, receiver spliced as params[0]; `stripped_type` is
+// the same signature minus that receiver — the method VALUE's own type,
+// already computed by the checker's value-position selector arm,
+// expression_checker.c): `<mangled>.__bound_thunk(env, args...) =
+// <mangled>(<recv loaded from env>, args...)`.
+//
+// Unlike codegen_get_func_thunk's env-IGNORING body (a named function
+// captures nothing), THIS thunk's whole purpose is to read the bound
+// receiver out of env — a goo_alloc'd heap cell built at bind time
+// (codegen_generate_selector_expr's method arm, composite_codegen.c) typed
+// EXACTLY as the receiver parameter itself (`T` for a value receiver, `*T`
+// for a pointer receiver — LLVM's opaque pointers make both a same-shaped
+// `ptr` load, so one code path here covers both; which one was stored is
+// entirely the bind site's concern, not this thunk's).
+//
+// Cached via LLVMGetNamedFunction on "<mangled>.__bound_thunk", idempotent —
+// mirrors codegen_get_func_thunk's "once per (function, module)" discipline,
+// scoped here to "once per (type, method)" since `mangled_name` already
+// encodes the receiver type (type_method_mangled_name).
+LLVMValueRef codegen_get_method_bound_thunk(CodeGenerator* codegen, Type* stripped_type,
+                                            Type* method_type, LLVMValueRef named_method_fn,
+                                            const char* mangled_name) {
+#if !LLVM_AVAILABLE
+    (void)stripped_type;
+    (void)method_type;
+    (void)named_method_fn;
+    (void)mangled_name;
+    return NULL;
+#else
+    if (!codegen || !stripped_type || !method_type || !named_method_fn || !mangled_name) return NULL;
+    if (method_type->kind != TYPE_FUNCTION || stripped_type->kind != TYPE_FUNCTION) return NULL;
+    if (method_type->data.function.param_count == 0) return NULL;  // no receiver: not a method
+
+    char thunk_name[300];
+    snprintf(thunk_name, sizeof(thunk_name), "%s.__bound_thunk", mangled_name);
+    LLVMValueRef existing = LLVMGetNamedFunction(codegen->module, thunk_name);
+    if (existing) return existing;
+
+    LLVMTypeRef thunk_ty = codegen_get_funcval_call_type(codegen, stripped_type);
+    LLVMTypeRef method_llvm_ty = codegen_get_function_type(codegen, method_type);
+    if (!thunk_ty || !method_llvm_ty) return NULL;
+
+    LLVMValueRef thunk = LLVMAddFunction(codegen->module, thunk_name, thunk_ty);
+    LLVMSetLinkage(thunk, LLVMInternalLinkage);
+
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(codegen->builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(codegen->context, thunk, "entry");
+    LLVMPositionBuilderAtEnd(codegen->builder, entry);
+
+    // Thunk param 0 is env; load the bound receiver back out of it, typed
+    // exactly as the method's own receiver parameter (see doc comment).
+    Type* recv_type = method_type->data.function.param_types[0];
+    LLVMTypeRef recv_llvm = codegen_type_to_llvm(codegen, recv_type);
+    if (!recv_llvm) {
+        if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        return NULL;
+    }
+    LLVMValueRef env_param = LLVMGetParam(thunk, 0);
+    LLVMValueRef recv_arg = LLVMBuildLoad2(codegen->builder, recv_llvm, env_param, "bound_recv");
+
+    // The wrapped method's real params start at thunk param index 1 — same
+    // shift as codegen_get_func_thunk, plus the receiver prepended.
+    size_t np = stripped_type->data.function.param_count;
+    LLVMValueRef* call_args = malloc(sizeof(LLVMValueRef) * (np + 1));
+    if (!call_args) {
+        if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+        return NULL;
+    }
+    call_args[0] = recv_arg;
+    for (size_t i = 0; i < np; i++) call_args[i + 1] = LLVMGetParam(thunk, (unsigned)(i + 1));
+
+    LLVMTypeRef ret_llvm = LLVMGetReturnType(thunk_ty);
+    int is_void = LLVMGetTypeKind(ret_llvm) == LLVMVoidTypeKind;
+    LLVMValueRef call = LLVMBuildCall2(codegen->builder, method_llvm_ty, named_method_fn,
+                                       call_args, (unsigned)(np + 1), is_void ? "" : "bound_call");
+    free(call_args);
+
+    if (is_void) {
+        LLVMBuildRetVoid(codegen->builder);
+    } else {
+        LLVMBuildRet(codegen->builder, call);
+    }
+
+    if (saved) LLVMPositionBuilderAtEnd(codegen->builder, saved);
+    return thunk;
+#endif
+}
+
 // Closures Branch B, Task 1: emit a func literal `func(params) result {body}`
 // as its own LLVM function `__goo_lit_<n>` (module-unique via
 // codegen->func_lit_counter — see its doc comment in codegen.h) with the
@@ -341,7 +650,7 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 // that codegen_generate_function_decl normally owns for the FULL DURATION
 // of a function's emission must therefore be saved before entering the
 // literal and restored after, mirroring codegen_generate_global_init_
-// function's save/restore discipline (this file) with two ADDITIONS that
+// function's save/restore discipline (this file) with three ADDITIONS that
 // only matter for a nested (not sequential) emission:
 //   - value_table_function_start: codegen_enter_function OVERWRITES this
 //     with the literal's own start offset; without saving/restoring it, the
@@ -353,6 +662,31 @@ LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker
 //     whatever body it is given (it is not accumulative), so leaving it as
 //     the literal's set would misroute goroutine-escape promotion for any
 //     code emitted AFTER the literal in the enclosing function.
+//   - codegen->cfctx (ControlFlowContext, codegen_cfctx.h — Codegen
+//     hardening R1; formerly loop_depth/loop_break_bb/loop_continue_bb/
+//     loop_label/loop_is_loop from gofmt-syntax-b Task 1 and goto_label_
+//     count/goto_label_names/goto_label_blocks from Task 2, as separate
+//     CodeGenerator fields): none of this state self-resets for a NESTED
+//     emission the way codegen_enter_function resets it for a sequential
+//     one — the loop/break stack self-balances via push/pop WITHIN one
+//     function's own codegen, so a literal nested inside an outer loop/
+//     switch/select would otherwise inherit the OUTER's frames on the SAME
+//     stack (any push the literal's own body makes would land on top of
+//     them at a non-zero depth), and the goto-label table holds
+//     LLVMBasicBlockRef values scoped to the OUTER function. Left
+//     unhandled, two distinct failure modes follow: a labeled `break`/
+//     `continue` inside the literal could walk past the literal's own
+//     frames and match an OUTER label (a cross-function branch, only
+//     caught by the LLVM verifier with no source position); and a bare
+//     `break`/`continue`/`goto` with no enclosing construct of its own
+//     inside the literal would silently target the OUTER function's
+//     blocks instead of erroring. cfctx_save takes a snapshot of the
+//     WHOLE struct in one assignment (see its doc comment,
+//     codegen_cfctx.h, for why this — not a per-field memcpy enumeration —
+//     is the fix), loop_depth is reset to 0 for the literal's own
+//     emission (codegen_enter_function, next, resets goto_label_count via
+//     cfctx_reset), and cfctx_restore puts the outer function's entire
+//     saved state back afterward.
 // The type-checker scope mirror below CHAINS onto the enclosing scope (T1
 // rooted it at package/global instead — no captures) and marks the pushed
 // scope is_function_boundary=1, mirroring type_check_func_lit's real (non-
@@ -433,8 +767,30 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     Type* saved_return_type = checker->current_return_type;
     Scope* enclosing_scope = checker->current_scope;
 
+    // Codegen hardening R1: save the outer function's ENTIRE control-flow
+    // state (loop/break stack, goto-label table, pending label,
+    // fallthrough stack) in one struct assignment — see this function's
+    // top doc comment and cfctx_save's own (codegen_cfctx.h). Must happen
+    // BEFORE codegen_enter_function zeroes goto_label_count below (via
+    // cfctx_reset). loop_depth is reset to 0 explicitly here (unlike
+    // goto_label_count, nothing else resets it per-function — it self-
+    // balances via push/pop within one function's own codegen) for the
+    // literal's own emission.
+    ControlFlowContext saved_cfctx;
+    cfctx_save(&saved_cfctx, &codegen->cfctx);
+    codegen->cfctx.loop_depth = 0;
+
     codegen_enter_function(codegen, func_info);
     codegen_set_insert_point(codegen, func_info->entry_block);
+
+    // P3.4: decide (and, if needed, set up) THIS LITERAL's own static/stack
+    // defer fork, scoped to its own body — a defer inside a loop in the
+    // ENCLOSING function is that function's concern, not this nested
+    // literal's, and vice versa. Must run before any body statement is
+    // generated (a defer statement checks func_info->defer_stack_mode) and
+    // while the entry block is still the insert point (the frame's zero-
+    // store must precede every possible exit site).
+    codegen_setup_defer_stack_mode(codegen, func_info, lit->body);
 
     // M8b: compute which of the LITERAL's OWN locals escape into a
     // goroutine spawned from ITS OWN body — scoped fresh per the doc
@@ -480,7 +836,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
                     ValueInfo* param_info = value_info_new(param_name, param_alloca, pgoo_type);
                     param_info->is_lvalue = 1;
                     param_info->is_initialized = 1;
-                    codegen_add_value(codegen, param_info);
+                    vscope_add(codegen, param_info);
 
                     Variable* pv = variable_new(param_name, pgoo_type, param->pos);
                     if (pv) {
@@ -533,7 +889,7 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
             ValueInfo* cvi = value_info_new(cname, slot_ptr, cgoo_type);
             cvi->is_lvalue = 1;
             cvi->is_initialized = 1;
-            codegen_add_value(codegen, cvi);
+            vscope_add(codegen, cvi);
         }
     }
 
@@ -571,6 +927,11 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
     g_escape_count = saved_escape_count;
     g_escape_has_go = saved_escape_has_go;
 
+    // Codegen hardening R1: restore the outer function's entire saved
+    // control-flow state in one struct assignment — see this function's
+    // top doc comment and the save site above.
+    cfctx_restore(&codegen->cfctx, &saved_cfctx);
+
     function_info_free(func_info);
 
     if (!ok) {
@@ -590,12 +951,8 @@ ValueInfo* codegen_generate_func_lit(CodeGenerator* codegen, TypeChecker* checke
                                                      (unsigned)lit->captured_count, 0);
         free(env_fields);
 
-        LLVMTypeRef i64t = LLVMInt64TypeInContext(codegen->context);
-        LLVMTypeRef alloc_ty = LLVMFunctionType(vp, &i64t, 1, 0);
-        LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-        if (!alloc_fn) alloc_fn = LLVMAddFunction(codegen->module, "goo_alloc", alloc_ty);
         LLVMValueRef env_size = LLVMSizeOf(env_ty);
-        env_ptr = LLVMBuildCall2(codegen->builder, alloc_ty, alloc_fn, &env_size, 1, "closure_env");
+        env_ptr = codegen_emit_alloc(codegen, env_size, ALLOC_KIND_DEFAULT, NULL);
 
         for (size_t i = 0; i < lit->captured_count; i++) {
             // Current slot address for this name, in the ENCLOSING
@@ -675,8 +1032,38 @@ static LLVMTypeRef* codegen_append_entry_main_params(CodeGenerator* codegen,
 // codegen_generate_error_union_function when the decl is reached, and no plain
 // leaf package forward-references one (that case is deferred). Returns 1 on
 // success (including the skip), 0 on failure.
+// Comptime value params Task 3: does this (non-method) function declaration
+// carry any `comptime` parameter? Duplicated (not shared) with codegen.c's
+// identically-named static helper — per-TU static helper is this codebase's
+// existing idiom for a small single-purpose function with no shared header
+// (see e.g. monomorphize.c's str_dup). See that copy's doc comment for the
+// method-scoping rationale.
+static int func_decl_has_comptime_param(FuncDeclNode* fd) {
+    for (ASTNode* p = fd->params; p; p = p->next) {
+        if (p->type != AST_VAR_DECL) continue;
+        if (((VarDeclNode*)p)->is_comptime_param) return 1;
+    }
+    return 0;
+}
+
 static int codegen_predeclare_function(CodeGenerator* codegen, TypeChecker* checker,
                                        FuncDeclNode* func_decl) {
+    // Function generics Task 4: a generic function template's signature
+    // contains TYPE_PARAM (e.g. bare `T`), which type_from_ast below cannot
+    // lower on its own (it needs the per-call substitution the monomorphizer
+    // performs in M3) — skip the predeclare prototype entirely for a
+    // template. Without this guard, a *declared-but-never-called* generic
+    // function still reaches this pass (predeclare runs over every decl,
+    // unconditionally, before the codegen_generate_declaration loop that
+    // Task 4's other guard covers) and re-triggers "Unknown type 'T'" /
+    // return-type lowering failures even though type-checking passed.
+    if (func_decl->type_params) return 1;
+    // Comptime value params Task 3: same reasoning, for the comptime axis —
+    // a plain function's `[n]int`-shaped signature/body can't be lowered
+    // under the template's own placeholder binding either. Methods are
+    // excluded; see codegen.c's identically-scoped skip-guard.
+    if (!func_decl->receiver && func_decl_has_comptime_param(func_decl)) return 1;
+
     Type* return_type = func_decl->return_type
         ? type_from_ast(checker, func_decl->return_type)
         : type_checker_get_builtin(checker, TYPE_VOID);
@@ -803,6 +1190,16 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     const char* symbol_name = emit_name;
     char* pkg_mangled = codegen_package_symbol_name(checker, emit_name);
     if (pkg_mangled) symbol_name = pkg_mangled;
+    // Function-generics Task 9: a monomorphized instance overrides whatever
+    // symbol name was just computed with its mangled instance name (e.g.
+    // `Id__int64`) — installed by codegen_generate_function_instance
+    // (monomorphize.c) around this exact call, for the duration of stamping
+    // one concrete instantiation of a generic template. Checked last so it
+    // always wins over both the bare and package-mangled names. `emit_name`
+    // itself is untouched, so the type-checker lookup just below (which must
+    // still find the TEMPLATE's Variable, carrying its TYPE_PARAM-bearing
+    // signature) keys on the ordinary bare/method name as usual.
+    if (codegen->symbol_override) symbol_name = codegen->symbol_override;
 
     // Get function type from AST
     Type* return_type = NULL;
@@ -957,6 +1354,14 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
         }
     }
 
+    // P3.4: decide (and, if needed, set up) this function's static/stack
+    // defer fork before any body statement is generated (a defer statement
+    // checks func_info->defer_stack_mode) and while the entry block is
+    // still the insert point (the frame's zero-store must precede every
+    // possible exit site, including the global-init call and os.Args
+    // prologue above — harmless either way since those never call defer).
+    codegen_setup_defer_stack_mode(codegen, func_info, func_decl->body);
+
     // M8b: compute which locals escape into a goroutine and must be heap-promoted.
     escape_prepass_compute(func_decl->body);
 
@@ -977,6 +1382,13 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     // type_check_function_decl's identical marking (type_checker.c).
     checker->current_scope->is_function_boundary = 1;
     if (func_decl->params) {
+        // Comptime value params Task 3: which comptime parameter (0-based,
+        // declaration order) the next is_comptime_param entry below binds —
+        // matches CallExprNode.comptime_value_args' own compact ordering
+        // (ast.h) and codegen->active_comptime_values' indexing (codegen.h),
+        // both set up by codegen_generate_comptime_function_instance
+        // (monomorphize.c) before this function's body is walked.
+        size_t comptime_idx = 0;
         for (ASTNode* p = func_decl->params; p; p = p->next) {
             if (p->type != AST_VAR_DECL) continue;
             VarDeclNode* pd = (VarDeclNode*)p;
@@ -997,9 +1409,33 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
                     // real AST node instead of tripping the "unsupported
                     // binding form" rejection against a mirror-only NULL.
                     pv->decl_node = (struct ASTNode*)pd;
+                    // Comptime value params Task 3: this instance's concrete
+                    // value for a `comptime` parameter — see
+                    // codegen_generate_comptime_function_instance's doc
+                    // comment (monomorphize.c). Binds the SAME field set
+                    // type_check_function_decl's template pass binds to a
+                    // placeholder (type_checker.c); this mirror Variable's
+                    // binding is what goo_fold_const_int_ctx actually
+                    // resolves during THIS instance's codegen (e.g.
+                    // codegen_generate_var_decl's array-length re-fold,
+                    // below). Guarded on the index staying in range — always
+                    // true once a comptime-param function only ever reaches
+                    // here via codegen_generate_comptime_function_instance
+                    // (codegen.c's skip-guard keeps it off the ordinary
+                    // single-emission path); out-of-range is a silent no-op
+                    // rather than a crash if that invariant is ever violated.
+                    if (pd->is_comptime_param &&
+                        comptime_idx < codegen->active_comptime_value_n) {
+                        int64_t v = codegen->active_comptime_values[comptime_idx];
+                        pv->has_const_int_value = 1;
+                        pv->const_int_value = (uint64_t)v;
+                        pv->comptime_value = comptime_value_new(COMPTIME_VALUE_INT);
+                        if (pv->comptime_value) pv->comptime_value->int_value = v;
+                    }
                     scope_add_variable(checker->current_scope, pv);
                 }
             }
+            if (pd->is_comptime_param) comptime_idx++;
         }
     }
 
@@ -1041,7 +1477,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
                                                       func_type_info->data.function.param_types[param_index]);
                 param_info->is_lvalue = 1;
                 param_info->is_initialized = 1;
-                codegen_add_value(codegen, param_info);
+                vscope_add(codegen, param_info);
 
                 param_index++;
             }
@@ -1085,7 +1521,7 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
             ValueInfo* vi = value_info_new(rname, slot, ft);
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
             // Mirror into the type-checker scope so re-checks from codegen
             // (e.g. binary-expr type resolution) can resolve the name.
             Variable* rv = variable_new(rname, ft, fd->base.pos);
@@ -1112,20 +1548,17 @@ int codegen_generate_function_decl(CodeGenerator* codegen, TypeChecker* checker,
     
     // Add return if missing
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(codegen->builder))) {
-        if (is_entry_main) {
-            // Implicit structured-concurrency join (intentional Goo superset of
-            // Go): block until every goroutine spawned via `go` has finished, so
-            // fire-and-forget side effects are observable before the process
-            // exits — unlike Go, where main-return abandons running goroutines.
-            // The scheduler is lazily created by the first goo_go();
-            // goo_scheduler_wait() is a no-op when none ran. (A `main` that exits
-            // via an explicit `return` currently bypasses this; making the join
-            // uniform across all exit paths is a tracked follow-up.)
-            LLVMTypeRef wait_ty = LLVMFunctionType(LLVMVoidTypeInContext(codegen->context), NULL, 0, 0);
-            LLVMValueRef wait_fn = LLVMGetNamedFunction(codegen->module, "goo_scheduler_wait");
-            if (!wait_fn) wait_fn = LLVMAddFunction(codegen->module, "goo_scheduler_wait", wait_ty);
-            LLVMBuildCall2(codegen->builder, wait_ty, wait_fn, NULL, 0, "");
-        }
+        // Go-parity main exit (P3.3, user decision 2026-07-10): main's
+        // return ends the process, abandoning running goroutines — exactly
+        // like Go. This REPLACES the former M8 implicit wait-all join
+        // (goo_scheduler_wait emitted here), which was inconsistent anyway:
+        // an explicit `return` in main always bypassed it, and a busy-loop
+        // goroutine hung the program forever. Programs that need goroutine
+        // side effects must synchronize (channels, and sync.WaitGroup once
+        // P4.7 lands), as in Go. goo_scheduler_wait stays in the runtime
+        // for the C stress tests; the deadlock detector's in-main path
+        // (goo_sched_block_begin) is independent of it and still active.
+        //
         // Run any registered defers (LIFO) on the fall-off-the-end exit path.
         codegen_emit_deferred_calls(codegen, checker);
         if (LLVMGetTypeKind(llvm_return_type) == LLVMVoidTypeKind) {
@@ -1317,7 +1750,7 @@ static int codegen_defer_global_init(CodeGenerator* codegen, LLVMValueRef global
 // place, ready to store.
 static int codegen_apply_local_init_pipeline(CodeGenerator* codegen, TypeChecker* checker,
                                               Type* var_type, LLVMTypeRef llvm_type,
-                                              ValueInfo* init_value) {
+                                              ValueInfo* init_value, Position pos) {
     // 1. Auto-load an lvalue initializer to its rvalue. An index/selector
     // initializer (e.g. `tmp := s[i]`, `x := p.field`) returns the element
     // ADDRESS with is_lvalue=1; the store later — and the nullable/
@@ -1362,7 +1795,7 @@ static int codegen_apply_local_init_pipeline(CodeGenerator* codegen, TypeChecker
         init_value->goo_type && init_value->goo_type->kind != TYPE_INTERFACE) {
         LLVMValueRef boxed = codegen_interface_box(codegen, checker, var_type,
                                                    init_value->goo_type,
-                                                   init_value->llvm_value);
+                                                   init_value->llvm_value, pos);
         if (!boxed) { value_info_free(init_value); return 0; }
         init_value->llvm_value = boxed;
         init_value->goo_type = var_type;
@@ -1436,12 +1869,104 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
     if (!codegen || !checker || !decl || decl->type != AST_VAR_DECL) return 0;
     
     VarDeclNode* var_decl = (VarDeclNode*)decl;
-    
+
     // Get type from AST node (set during type checking)
     Type* var_type = decl->node_type;
     if (!var_type) {
         codegen_error(codegen, decl->pos, "Variable declaration has no type information");
         return 0;
+    }
+
+    // Comptime value params Task 3 (generalized in fix round 2): `decl->
+    // node_type` was resolved ONCE during the template body-check pass
+    // (type_check_function_decl), with any comptime parameter bound to
+    // Step 3's PLACEHOLDER value — so an array length depending on it
+    // (`var buf [n]int`, `var m [2][n]int`, `buf := [n]int{}`) is baked
+    // into this cached Type with the placeholder, shared by every
+    // monomorphized instance of this function since they all codegen from
+    // the SAME template AST node (this exact VarDeclNode). Whenever a
+    // comptime instance is active (active_comptime_value_n > 0 — set by
+    // codegen_generate_comptime_function_instance, monomorphize.c, which
+    // rebinds each comptime param's mirror Variable to THIS instance's
+    // concrete value in codegen_generate_function_decl's param loop, before
+    // the body is walked), re-derive the FULL declared type fresh from its
+    // AST type node via type_from_ast against the checker's CURRENT scope:
+    // its AST_ARRAY_TYPE case folds every length (at every nesting depth)
+    // with goo_fold_const_int_ctx, which now resolves the comptime param to
+    // this instance's literal. This is the array-length analogue of
+    // codegen_type_to_llvm's TYPE_PARAM substitution (type_mapping.c),
+    // which re-resolves a generic template's types per instance for the
+    // exact same "one shared cached Type, many instances" reason. Round 1's
+    // narrower version rebuilt only the OUTERMOST length of an explicit
+    // `[expr]elem` annotation — `var m [2][n]int` kept its placeholder
+    // INNER length and `buf := [n]int{}` (no annotation; the type rides on
+    // the literal, handled in codegen_generate_array_lit) got nothing, both
+    // compiling clean and then bounds-panicking at runtime. Gated (fix
+    // round 6, C-r5) on the cached type containing a comptime_length-FLAGGED
+    // array (goo_type_contains_comptime_array) — NOT just any array: an
+    // unflagged array's template resolution was never placeholder-tainted
+    // (its length doesn't reference the comptime param), and re-deriving it
+    // here against the MIRROR scope split-brained under a block-local
+    // `const n = 3` shadowing the param — the checker had resolved the
+    // shadow, the mirror-scope re-derivation resolved the PARAM (the mirror
+    // pre-registers params before any body statement, so at re-derivation
+    // time the shadow may not even exist yet in the mirror chain). A
+    // flagged array's length references the param by construction, so its
+    // mirror-scope resolution is exactly right. Only the LOCAL var_type is
+    // replaced, never decl->node_type: the template node is shared across
+    // instances.
+    if (codegen->active_comptime_value_n > 0 && goo_type_contains_comptime_array(var_type)) {
+        ASTNode* type_node = var_decl->type;
+        // Short decl with the type riding on an array literal
+        // (`buf := [n]int{}`): re-derive from the literal's own type node.
+        if (!type_node && var_decl->values &&
+            var_decl->values->type == AST_ARRAY_LITERAL) {
+            type_node = ((ArrayLitNode*)var_decl->values)->array_type;
+        }
+        if (type_node) {
+            Type* fresh = type_from_ast(checker, type_node);
+            // Fix round 3 (minor 3): a failed re-derivation is a HARD
+            // codegen failure, not a fall-back to the placeholder type.
+            // type_from_ast already emitted the real, positioned diagnostic
+            // (e.g. "array length must be non-negative" for a negative
+            // comptime instance value) — but on the CHECKER's error counter,
+            // which codegen success doesn't consult; continuing with the
+            // placeholder previously emitted a placeholder-sized binary
+            // with exit 0 despite the printed error.
+            if (!fresh) {
+                codegen_error(codegen, decl->pos,
+                    "cannot instantiate declared type for this comptime instance");
+                return 0;
+            }
+            var_type = fresh;
+        } else if (var_decl->values && var_decl->name_count == 1) {
+            // Fix round 5 (C-r4): an INFERRED declaration (`c := a`) has no
+            // AST type node anywhere — neither an annotation nor an
+            // array-literal RHS — so the branches above never fired and
+            // `c`'s alloca silently kept the template-cached PLACEHOLDER
+            // type while `a` (already re-derived) carried the real length:
+            // compiled clean, bounds-panicked at runtime on the first
+            // c[1] access. Resolve the RHS expression's type against the
+            // mirror scope instead: an identifier RHS resolves to the
+            // mirror Variable's already-re-derived type, and a general
+            // expression re-checks against the same instance-bound scope
+            // (the established codegen re-invocation pattern). Chained
+            // inference (`d := c`) works because each fixed decl registers
+            // its mirror Variable and ValueInfo with the re-derived type
+            // below. Scoped to single-name decls (multi-name destructures
+            // never bind a whole comptime-length array to one name — their
+            // node_type is a struct/error-union, which the contains-array
+            // gate above already filters out; the guard is belt and
+            // braces). Same hard-fail contract as the annotation branch:
+            // never fall back to the placeholder.
+            Type* fresh = type_check_expression(checker, var_decl->values);
+            if (!fresh || !goo_type_contains_array(fresh)) {
+                codegen_error(codegen, decl->pos,
+                    "cannot resolve inferred type for this comptime instance");
+                return 0;
+            }
+            var_type = fresh;
+        }
     }
 
 
@@ -1484,7 +2009,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         ValueInfo* vi0 = value_info_new(nm0, val_alloca, value_type);
         vi0->is_lvalue = 1;
         vi0->is_initialized = 1;
-        codegen_add_value(codegen, vi0);
+        vscope_add(codegen, vi0);
         Variable* tv0 = variable_new(nm0, value_type, decl->pos);
         if (tv0) {
             tv0->is_initialized = 1;
@@ -1558,7 +2083,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         ValueInfo* vi1 = value_info_new(nm1, err_alloca, err_type);
         vi1->is_lvalue = 1;
         vi1->is_initialized = 1;
-        codegen_add_value(codegen, vi1);
+        vscope_add(codegen, vi1);
         Variable* tv1 = variable_new(nm1, err_type, decl->pos);
         if (tv1) {
             tv1->is_initialized = 1;
@@ -1706,7 +2231,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 if (target->kind == TYPE_INTERFACE) {
                     LLVMValueRef built = NULL;
                     ta_match = codegen_interface_target_match(codegen, checker, iface_val, target,
-                                                              &built);
+                                                              &built, decl->pos);
                     if (!ta_match || !built) {
                         codegen_error(codegen, decl->pos,
                                       "Failed to build comma-ok interface-target assertion");
@@ -1716,7 +2241,8 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 } else {
                     LLVMValueRef ta_data = NULL;
                     ta_match = codegen_interface_assert_match(codegen, checker, iface_val,
-                                                              iface_type, target, &ta_data);
+                                                              iface_type, target, &ta_data,
+                                                              decl->pos);
                     if (!ta_match) {
                         codegen_error(codegen, decl->pos,
                                       "Failed to build comma-ok type assertion compare");
@@ -1762,6 +2288,94 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             }
         }
 
+        // comma-ok channel receive: `v, ok := <-ch` (Task 5) — sibling of the
+        // comma-ok map/type-assert arms above. Calls goo_chan_recv EXACTLY
+        // ONCE (the pre-fix behavior fell through to the generic single-LHS
+        // loop below, which evaluates var_decl->values once per name — for
+        // name_count==2 that is TWICE — so the second call blocked on the
+        // now-drained channel and the runtime aborted with a spurious
+        // deadlock). Its i32 status return feeds `ok` (truncated to i1) and
+        // its void* out-param feeds `v`, packed into the same {V, i1}
+        // aggregate the generic ExtractValue loop below unpacks.
+        //
+        // Deliberately NOT routed through codegen_generate_channel_recv
+        // (lowlevel_codegen.c) — that helper discards the status and is the
+        // single-value receive's only caller (expression_codegen.c); reusing
+        // it here would need either a second call (the bug) or an ABI change
+        // that risks perturbing the single-value receive's IR, which must
+        // stay byte-identical (FROZEN, Task 5 brief). Duplicating the small
+        // alloca/call/load sequence at this destructuring site keeps that
+        // path untouched — the same trade-off the map/type-assert arms above
+        // already made.
+        if (var_decl->name_count == 2 && var_decl->is_short_decl &&
+            var_decl->values->type == AST_UNARY_EXPR &&
+            ((UnaryExprNode*)var_decl->values)->operator == TOKEN_ARROW) {
+            UnaryExprNode* unary = (UnaryExprNode*)var_decl->values;
+
+            ValueInfo* channel_val = codegen_generate_expression(codegen, checker, unary->operand);
+            if (!channel_val) {
+                codegen_error(codegen, decl->pos, "Failed to evaluate comma-ok channel receive operand");
+                return 0;
+            }
+
+            // Task #9: auto-load an lvalue channel operand — a struct-field
+            // or index selector (`v, ok := <-b.ch`) returns the channel's
+            // storage ADDRESS, not the pointer value goo_chan_recv expects.
+            // Same guard as codegen_generate_channel_recv/send
+            // (lowlevel_codegen.c) and the close() builtin (call_codegen.c).
+            if (channel_val->is_lvalue && channel_val->goo_type) {
+                LLVMTypeRef ct = codegen_type_to_llvm(codegen, channel_val->goo_type);
+                if (ct) {
+                    channel_val->llvm_value = LLVMBuildLoad2(codegen->builder, ct,
+                                                             channel_val->llvm_value, "commaok_chan_load");
+                    channel_val->is_lvalue = 0;
+                }
+            }
+
+            Type* chan_goo = channel_val->goo_type;
+            Type* elem_goo = (chan_goo && chan_goo->kind == TYPE_CHANNEL)
+                             ? chan_goo->data.channel.element_type : NULL;
+            LLVMTypeRef element_type = elem_goo
+                ? codegen_type_to_llvm(codegen, elem_goo)
+                : LLVMInt32TypeInContext(codegen->context);  // fallback, mirrors codegen_generate_channel_recv
+
+            LLVMValueRef result_alloca = LLVMBuildAlloca(codegen->builder, element_type, "recv_result");
+            LLVMTypeRef void_ptr_type = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMValueRef result_ptr = LLVMBuildBitCast(codegen->builder, result_alloca, void_ptr_type, "result_as_void_ptr");
+
+            LLVMTypeRef param_types_recv[] = { void_ptr_type, void_ptr_type };
+            LLVMTypeRef recv_func_type = LLVMFunctionType(LLVMInt32TypeInContext(codegen->context), param_types_recv, 2, 0);
+            LLVMValueRef recv_func = LLVMGetNamedFunction(codegen->module, "goo_chan_recv");
+            if (!recv_func) {
+                recv_func = LLVMAddFunction(codegen->module, "goo_chan_recv", recv_func_type);
+            }
+
+            // The one and only goo_chan_recv call for this statement.
+            LLVMValueRef recv_args[] = { channel_val->llvm_value, result_ptr };
+            LLVMValueRef status = LLVMBuildCall2(codegen->builder, recv_func_type, recv_func,
+                                                  recv_args, 2, "commaok_recv_status");
+            LLVMValueRef received_value = LLVMBuildLoad2(codegen->builder, element_type, result_alloca, "commaok_received_value");
+
+            value_info_free(channel_val);
+
+            // goo_chan_recv returns 1 on success, 0 on failure (runtime.c:
+            // closed channel with no data parked). No `close()` builtin
+            // reaches user code in v1 yet, so on every currently-reachable
+            // path this receive either delivers a value (status=1, ok=true)
+            // or blocks forever — status=0/ok=false is wired correctly for
+            // when close() ships but is not exercised by any v1 program.
+            LLVMTypeRef i1t = LLVMInt1TypeInContext(codegen->context);
+            LLVMValueRef ok_bit = LLVMBuildTrunc(codegen->builder, status, i1t, "commaok_recv_ok");
+
+            LLVMTypeRef agg_fields[2] = { element_type, i1t };
+            LLVMTypeRef agg_type = LLVMStructTypeInContext(codegen->context, agg_fields, 2, 0);
+            LLVMValueRef agg = LLVMGetUndef(agg_type);
+            agg = LLVMBuildInsertValue(codegen->builder, agg, received_value, 0, "commaok_recv_v");
+            agg = LLVMBuildInsertValue(codegen->builder, agg, ok_bit,         1, "commaok_recv_agg");
+
+            rhs = value_info_new(NULL, agg, var_type);
+        }
+
         // Non-map-ok path: generic struct-return destructure (e.g. `a, b := f()`).
         if (!rhs) {
             rhs = codegen_generate_expression(codegen, checker, var_decl->values);
@@ -1782,7 +2396,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
             ValueInfo* vi = value_info_new(nm, field_alloca, field_type);
             vi->is_lvalue = 1;
             vi->is_initialized = 1;
-            codegen_add_value(codegen, vi);
+            vscope_add(codegen, vi);
             Variable* tv = variable_new(nm, field_type, decl->pos);
             if (tv) {
                 tv->is_initialized = 1;
@@ -1887,8 +2501,9 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                     // reprocessing stale entries alongside) another
                     // package's goo.global_init.
                     codegen_error(codegen, decl->pos,
-                        "Package-level variable '%s' requires a constant initializer "
-                        "(non-constant package-scope globals are not yet supported)",
+                        "Package-level variable '%s' in an imported package requires a "
+                        "constant initializer (non-constant globals are supported in the "
+                        "main package only; per-package init is not yet implemented)",
                         var_name);
                     return 0;
                 }
@@ -1905,7 +2520,12 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 // receives the declared ?T type and emits {is_null=1, zero_value}.
                 // Without this intercept the generic nil fallback (a void* null pointer)
                 // lands in the auto-wrap block below and causes an LLVM type mismatch.
-                if (var_type && var_type->kind == TYPE_NULLABLE &&
+                // P2.2 option A: same intercept, widened to a bare (non-?T)
+                // pointer/slice/map/channel/function declared type — e.g.
+                // `var p *Node = nil` — for the same reason (a slice/func's
+                // aggregate representation mismatches the untyped fallback).
+                if (var_type &&
+                    (var_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(var_type)) &&
                     var_decl->values->type == AST_LITERAL &&
                     ((LiteralNode*)var_decl->values)->literal_type == TOKEN_NIL) {
                     init_value = codegen_generate_null_literal(codegen, checker, var_type);
@@ -1918,11 +2538,34 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                     return 0;
                 }
 
+                // Fix round 6 (M-r5b): instance-time enforcement of the
+                // array-length compatibility the checker DEFERRED for a
+                // comptime-length array initializer (`var b [4]int = a` —
+                // type_check_var_decl's comptime_len_deferred). Both types
+                // here are instance-real; a genuine mismatch is a clean,
+                // instance-named compile failure instead of an invalid-IR
+                // store. Mirrors the assignment arm (expression_codegen.c)
+                // and the call-argument arm (call_codegen.c) exactly.
+                if (var_type && init_value->goo_type &&
+                    var_type->kind == TYPE_ARRAY &&
+                    init_value->goo_type->kind == TYPE_ARRAY &&
+                    (var_type->data.array.comptime_length ||
+                     init_value->goo_type->data.array.comptime_length) &&
+                    var_type->data.array.length != init_value->goo_type->data.array.length) {
+                    codegen_error(codegen, decl->pos,
+                        "cannot initialize [%zu]-length array from [%zu]-length array in comptime instance '%s'",
+                        var_type->data.array.length,
+                        init_value->goo_type->data.array.length,
+                        codegen->symbol_override ? codegen->symbol_override : "?");
+                    value_info_free(init_value);
+                    return 0;
+                }
+
                 // Shared local-scope pipeline (lvalue auto-load, nullable
                 // auto-wrap, interface box, width-coerce) — see
                 // codegen_apply_local_init_pipeline. On failure it has already
                 // freed init_value.
-                if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value)) {
+                if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value, decl->pos)) {
                     return 0;
                 }
 
@@ -1957,7 +2600,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
         // as initialized even without an explicit `= …` initializer.
         value_info->is_initialized = (var_decl->values != NULL) || (var_decl->type != NULL);
 
-        if (!codegen_add_value(codegen, value_info)) {
+        if (!vscope_add(codegen, value_info)) {
             codegen_error(codegen, decl->pos, "Failed to add variable '%s' to symbol table", var_name);
             value_info_free(value_info);
             return 0;
@@ -2067,7 +2710,8 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
         }
 
         ValueInfo* init_value;
-        if (var_type && var_type->kind == TYPE_NULLABLE &&
+        if (var_type &&
+            (var_type->kind == TYPE_NULLABLE || type_is_nilable_ref_kind(var_type)) &&
             d->expr->type == AST_LITERAL &&
             ((LiteralNode*)d->expr)->literal_type == TOKEN_NIL) {
             init_value = codegen_generate_null_literal(codegen, checker, var_type);
@@ -2080,7 +2724,7 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
             break;
         }
 
-        if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value)) {
+        if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value, d->pos)) {
             ok = 0;
             break;
         }
@@ -2138,10 +2782,26 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 const char* const_name = const_decl->names[i];
                 Variable* known = type_checker_lookup_variable(checker, const_name);
                 Type* ct = known ? known->type : NULL;
+                // Arc 11 (q): honor the DECLARED type before falling back
+                // to the untyped default — a LOCAL typed const's checker
+                // Variable is torn down by codegen time (known == NULL), so
+                // `const k int8 = 5` re-registered below as int64 and every
+                // codegen-phase re-check (call args, returns) saw the wrong
+                // kind. Package consts never hit this (their Variable
+                // survives, ct != NULL).
+                if (!ct && const_decl->type) {
+                    ct = type_from_ast(checker, const_decl->type);
+                }
                 if (!ct) {
                     // Untyped int const default type is `int` (int64 here);
-                    // a value past int64's signed range takes uint64.
-                    ct = (folded <= 9223372036854775807ULL)
+                    // a value past int64's signed range takes uint64 — unless
+                    // the RHS is negative-ROOTED: the fold is 64-bit modular,
+                    // so `-5` also lands past INT64_MAX (0xFFFF...FB) and must
+                    // stay int64. Mirrors type_check_const_decl's identical
+                    // disambiguation (see its comment for the convention and
+                    // the `0 - 5` residual deviation).
+                    ct = (folded <= 9223372036854775807ULL ||
+                          is_negated_int_const_expr(const_decl->values))
                              ? type_checker_get_builtin(checker, TYPE_INT64)
                              : type_checker_get_builtin(checker, TYPE_UINT64);
                 }
@@ -2160,7 +2820,7 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 if (!vi) { codegen_error(codegen, decl->pos, "value info alloc failed"); return 0; }
                 vi->is_lvalue = 0;
                 vi->is_initialized = 1;
-                if (!codegen_add_value(codegen, vi)) {
+                if (!vscope_add(codegen, vi)) {
                     codegen_error(codegen, decl->pos,
                                   "Failed to add constant '%s' to symbol table", const_name);
                     value_info_free(vi);
@@ -2170,6 +2830,16 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                     Variable* tcv = variable_new(const_name, ct, decl->pos);
                     if (tcv) {
                         tcv->is_initialized = 1;
+                        // Arc 11 (q): cache the folded value on the
+                        // re-registered Variable, exactly as
+                        // type_check_const_decl does on the original — the
+                        // codegen-phase re-checks' const gates (call args,
+                        // returns, multi-assign) resolve identifiers through
+                        // this Variable via goo_fold_const_int_ctx, and an
+                        // uncached one made every such fold fail (fit == 0,
+                        // false-rejecting a representable local const).
+                        tcv->has_const_int_value = 1;
+                        tcv->const_int_value = folded;
                         scope_add_variable(checker->current_scope, tcv);
                     }
                 }
@@ -2203,7 +2873,7 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 if (!vi) { codegen_error(codegen, decl->pos, "value info alloc failed"); return 0; }
                 vi->is_lvalue = 0;
                 vi->is_initialized = 1;
-                if (!codegen_add_value(codegen, vi)) {
+                if (!vscope_add(codegen, vi)) {
                     codegen_error(codegen, decl->pos,
                                   "Failed to add constant '%s' to symbol table", const_name);
                     value_info_free(vi);
@@ -2276,7 +2946,7 @@ int codegen_generate_const_decl(CodeGenerator* codegen, TypeChecker* checker, AS
                 }
                 value_info->is_lvalue = 0;
                 value_info->is_initialized = 1;
-                if (!codegen_add_value(codegen, value_info)) {
+                if (!vscope_add(codegen, value_info)) {
                     codegen_error(codegen, decl->pos,
                                   "Failed to add comptime constant '%s' to symbol table",
                                   const_name);
@@ -2347,7 +3017,7 @@ fallback:;
         value_info->is_lvalue = 0;  // Constants are not lvalues
         value_info->is_initialized = 1;
         
-        if (!codegen_add_value(codegen, value_info)) {
+        if (!vscope_add(codegen, value_info)) {
             codegen_error(codegen, decl->pos, "Failed to add constant '%s' to symbol table", const_name);
             value_info_free(value_info);
             value_info_free(const_value);

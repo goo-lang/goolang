@@ -1,0 +1,15 @@
+// Correctness arc 5 (h) sibling: var decls DO range-check literal shapes
+// (adapt_untyped_int_operand -> check_literal_range rejects
+// `var v int8 = 300`) but a CONST IDENTIFIER is not a literal leaf, so
+// `var v int8 = a` fell through to the any-int type_compatible and codegen
+// truncated the store — this printed 44. The ident-bearing shapes now route
+// through the shared fold-based core; PURE literal shapes deliberately keep
+// the per-literal adapter semantics (including its documented `100 + 100`
+// deviation) — no previously-accepted literal program changes behavior.
+package main
+
+func main() {
+	const a = 300
+	var v int8 = a
+	println(v)
+}

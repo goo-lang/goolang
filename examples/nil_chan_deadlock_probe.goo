@@ -1,0 +1,18 @@
+// nil_chan_deadlock_probe (P3 sub-A review fix): receive from a NIL
+// channel blocks forever (Go spec) — it must NOT behave like a closed
+// channel and silently deliver a zero value with exit 0, which is what
+// the pre-P3 runtime did (goo_chan_recv returned status 0 for NULL,
+// bitwise identical to closed+drained; range-over-channel made that
+// silently reachable from idiomatic code). In this main-only program Go
+// aborts with the deadlock error, and so do we: blocking on nil routes
+// through goo_sched_block_begin, whose instant check fires when nothing
+// could ever wake main.
+package main
+
+import "fmt"
+
+func main() {
+	var ch chan int
+	v := <-ch
+	fmt.Println(v) // never reached
+}

@@ -171,6 +171,8 @@ typedef enum {
     // Appended at the tail (see memory: new enum values go last so existing
     // object files don't silently miscompile against a shifted enum).
     TOKEN_AND_NOT,      // &^  (Go bit-clear / and-not)
+    TOKEN_ARENA,        // arena (bump-allocated scope block)
+    TOKEN_FAT_ARROW,    // =>  (value-yielding catch fallback: `f() catch => -1`)
 
     TOKEN_COUNT         // Total number of token types
 } TokenType;

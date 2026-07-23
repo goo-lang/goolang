@@ -1,0 +1,12 @@
+// Correctness arc 4 (j), compound arm: constant arithmetic OVER a const
+// identifier (`k + 100`) is still a compile-time constant — the checker-aware
+// folder resolves the leaf — and must hit the same representability gate.
+// Before the fix this printed 44 (300 mod 256).
+package main
+
+func main() {
+	const k = 200
+	ch := make_chan(int8, 1)
+	ch <- k + 100
+	println(<-ch)
+}

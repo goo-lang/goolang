@@ -1,0 +1,47 @@
+// try_two_frames_probe (P2.11/T5): `try` propagates a real error across TWO
+// nested frames before a catch observes it — top() try-calls middle(), which
+// itself try-calls leaf(). Existing try fixtures (erru_try_probe,
+// tuple_try_probe) only exercise ONE try-propagation hop between the
+// catch-observing frame and the failing call; this closes the "try across
+// two frames" capstone row by chaining a second hop (top -> middle -> leaf)
+// so the propagated error/value crosses two intervening !int-returning
+// functions, neither of which itself binds a catch.
+//
+// Goo-only (!int); expected output derived by running the compiled binary
+// (try's error-path message passthrough matches erru_try_probe's documented
+// same-type propagation: no re-wrapping when the propagating function's
+// error-union type matches the source).
+package main
+
+import "fmt"
+
+func leaf(bad bool) !int {
+	if bad {
+		return error("leaf failed")
+	}
+	return 10
+}
+
+func middle(bad bool) !int {
+	v := try leaf(bad)
+	return v + 1
+}
+
+func top(bad bool) !int {
+	w := try middle(bad)
+	return w + 1
+}
+
+func main() {
+	// success path: value crosses two try frames unwrapped (10 -> 11 -> 12).
+	s := top(false) catch e {
+		fmt.Println("unexpected:", e)
+	}
+	fmt.Println("ok:", s)
+
+	// error path: leaf's error propagates through middle's try, then through
+	// top's try, and is finally observed by main's catch.
+	top(true) catch e {
+		fmt.Println("caught:", e)
+	}
+}

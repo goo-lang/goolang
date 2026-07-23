@@ -1,0 +1,16 @@
+// P1.5 reject: labels are function-scoped (not block/lexical-scoped), so
+// the SAME label name used twice in one function is a duplicate even
+// though the two labeled statements are siblings, not nested. Mirrors
+// Go's own "label L already defined" rejection.
+package main
+
+func main() {
+L:
+	for i := 0; i < 3; i++ {
+		println(i)
+	}
+L:
+	for i := 0; i < 3; i++ {
+		println(i)
+	}
+}

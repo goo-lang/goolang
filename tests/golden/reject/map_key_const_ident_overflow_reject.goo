@@ -1,0 +1,12 @@
+// Correctness arc 9 (i): a CONST IDENTIFIER map-literal key is not a
+// literal leaf, so the rooted adapter alone would skip it — it must be
+// judged by the shared representability core (check_const_int_expr_fits),
+// exactly like arc-7 composite VALUES.
+package main
+
+const K = 300
+
+func main() {
+	m := map[int8]int{K: 1}
+	_ = m
+}

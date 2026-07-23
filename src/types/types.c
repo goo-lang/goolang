@@ -19,7 +19,7 @@ static char* str_dup(const char* str) {
 // Type creation functions
 
 Type* type_new(TypeKind kind) {
-    Type* type = malloc(sizeof(Type));
+    Type* type = xmalloc(sizeof(Type));
     if (!type) return NULL;
     
     memset(type, 0, sizeof(Type));
@@ -45,6 +45,20 @@ Type* type_bool(void) {
         type->size = 1;
         type->align = 1;
         type->name = str_dup("bool");
+    }
+    return type;
+}
+
+// P2.8 T4.2: the cascade-suppression marker bound to a name whose
+// initializer already failed (see register_declared_names_after_failure).
+// Zero size/no real representation — it must never reach codegen, since any
+// diagnostic at all fails type_check_program and codegen never runs.
+Type* type_poison(void) {
+    Type* type = type_new(TYPE_POISON);
+    if (type) {
+        type->size = 0;
+        type->align = 1;
+        type->name = str_dup("<poisoned>");
     }
     return type;
 }
@@ -149,6 +163,31 @@ Type* type_array(Type* element_type, size_t length) {
     return type;
 }
 
+// Comptime value params (fix round 6, M-r5c): mark `t` as a comptime-length
+// array AND rewrite its display name so template-time diagnostics never
+// print the meaningless placeholder length ("[1]int64") — the dimension
+// renders as the comptime parameter's name when the length expression is a
+// plain identifier (`[n]int64`), or "[comptime]" for a compound length
+// expression (`[n+1]...`). Safe to rewrite: type_equals compares arrays
+// STRUCTURALLY (length + element), never by name, and the name is this
+// type's own malloc from type_array.
+void type_array_mark_comptime(Type* t, ASTNode* length_expr) {
+    if (!t || t->kind != TYPE_ARRAY) return;
+    t->data.array.comptime_length = 1;
+    const char* dim = (length_expr && length_expr->type == AST_IDENTIFIER &&
+                       ((IdentifierNode*)length_expr)->name)
+                          ? ((IdentifierNode*)length_expr)->name
+                          : "comptime";
+    const char* elem = (t->data.array.element_type && t->data.array.element_type->name)
+                           ? t->data.array.element_type->name : "?";
+    size_t cap = strlen(dim) + strlen(elem) + 3;
+    char* name = malloc(cap);
+    if (!name) return; // keep the old (placeholder-length) name on OOM
+    snprintf(name, cap, "[%s]%s", dim, elem);
+    free(t->name);
+    t->name = name;
+}
+
 Type* type_slice(Type* element_type) {
     if (!element_type) return NULL;
     
@@ -158,10 +197,14 @@ Type* type_slice(Type* element_type) {
         type->size = sizeof(void*) + sizeof(size_t) + sizeof(size_t);  // ptr + len + cap
         type->align = sizeof(void*);
         
-        // Create name like "[]int"
+        // Create name like "[]int". Render via type_to_string, not bare
+        // ->name: structs keep their declared name in data.struct_type.name
+        // and have a NULL ->name, so the bare field rendered every []Struct
+        // as "[]?" in diagnostics (P2.8 sibling-constructor rendering pass;
+        // see type_nullable above for the original fix this mirrors).
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "[]%s", element_type->name ? element_type->name : "?");
+            snprintf(name, 64, "[]%s", type_to_string(element_type));
             type->name = name;
         }
     }
@@ -170,20 +213,21 @@ Type* type_slice(Type* element_type) {
 
 Type* type_map(Type* key_type, Type* value_type) {
     if (!key_type || !value_type) return NULL;
-    
+
     Type* type = type_new(TYPE_MAP);
     if (type) {
         type->data.map.key_type = key_type;
         type->data.map.value_type = value_type;
         type->size = sizeof(void*);  // Map is a pointer to internal structure
         type->align = sizeof(void*);
-        
-        // Create name like "map[string]int"
+
+        // Create name like "map[string]int". type_to_string, not bare
+        // ->name — see type_slice above (P2.8 sibling-constructor pass).
         char* name = malloc(128);
         if (name) {
-            snprintf(name, 128, "map[%s]%s", 
-                    key_type->name ? key_type->name : "?",
-                    value_type->name ? value_type->name : "?");
+            snprintf(name, 128, "map[%s]%s",
+                    type_to_string(key_type),
+                    type_to_string(value_type));
             type->name = name;
         }
     }
@@ -251,28 +295,34 @@ Type* type_function(Type** param_types, size_t param_count, Type* return_type) {
         // signature identically — a func(int,int)int assigned to a
         // func(int)int var reported "Cannot assign func to func" instead of
         // naming the actual mismatch.
+        //
+        // Param/return names render via type_to_string, not bare ->name (P2.8
+        // sibling-constructor pass): structs carry their declared name in
+        // data.struct_type.name and have a NULL ->name, so a func(Node) int
+        // otherwise rendered as "func(?) int". A NULL param_types[i] entry
+        // (defensive only — never produced by the parser) still falls back
+        // to "?" rather than type_to_string's "null", to keep the fallback
+        // glyph consistent with the historical local convention here.
         int has_return = return_type && return_type->kind != TYPE_VOID;
         size_t name_size = strlen("func()") + 1;
         for (size_t i = 0; i < param_count; i++) {
             if (i > 0) name_size += 2;  // ", "
-            name_size += strlen(param_types[i] && param_types[i]->name
-                                 ? param_types[i]->name : "?");
+            name_size += strlen(param_types[i] ? type_to_string(param_types[i]) : "?");
         }
         if (has_return) {
-            name_size += 1 + strlen(return_type->name ? return_type->name : "?");  // " " + name
+            name_size += 1 + strlen(type_to_string(return_type));  // " " + name
         }
         char* name = malloc(name_size);
         if (name) {
             strcpy(name, "func(");
             for (size_t i = 0; i < param_count; i++) {
                 if (i > 0) strcat(name, ", ");
-                strcat(name, param_types[i] && param_types[i]->name
-                             ? param_types[i]->name : "?");
+                strcat(name, param_types[i] ? type_to_string(param_types[i]) : "?");
             }
             strcat(name, ")");
             if (has_return) {
                 strcat(name, " ");
-                strcat(name, return_type->name ? return_type->name : "?");
+                strcat(name, type_to_string(return_type));
             }
             type->name = name;
         } else {
@@ -291,10 +341,13 @@ Type* type_pointer(Type* pointee_type) {
         type->size = sizeof(void*);
         type->align = sizeof(void*);
         
-        // Create name like "*int"
+        // Create name like "*int". type_to_string, not bare ->name — see
+        // type_slice above (P2.8 sibling-constructor rendering pass): a
+        // *Struct otherwise rendered as "*?" since structs carry their name
+        // in data.struct_type.name, not the shared ->name field.
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "*%s", pointee_type->name ? pointee_type->name : "?");
+            snprintf(name, 64, "*%s", type_to_string(pointee_type));
             type->name = name;
         }
     }
@@ -303,21 +356,22 @@ Type* type_pointer(Type* pointee_type) {
 
 Type* type_reference(Type* referenced_type, int is_mutable) {
     if (!referenced_type) return NULL;
-    
+
     Type* type = type_new(TYPE_REFERENCE);
     if (type) {
         type->data.reference.referenced_type = referenced_type;
         type->data.reference.is_mutable = is_mutable;
         type->size = sizeof(void*);
         type->align = sizeof(void*);
-        
-        // Create name like "&int" or "mut &int"
+
+        // Create name like "&int" or "mut &int". type_to_string, not bare
+        // ->name — see type_slice above (P2.8 sibling-constructor pass).
         char* name = malloc(80);
         if (name) {
             if (is_mutable) {
-                snprintf(name, 80, "mut &%s", referenced_type->name ? referenced_type->name : "?");
+                snprintf(name, 80, "mut &%s", type_to_string(referenced_type));
             } else {
-                snprintf(name, 80, "&%s", referenced_type->name ? referenced_type->name : "?");
+                snprintf(name, 80, "&%s", type_to_string(referenced_type));
             }
             type->name = name;
         }
@@ -339,10 +393,12 @@ Type* type_error_union(Type* value_type, Type* error_type) {
         type->size = value_type->size + sizeof(int);  // value + error flag
         type->align = (value_type->align > sizeof(int)) ? value_type->align : sizeof(int);
         
-        // Create name like "!int"
+        // Create name like "!int". type_to_string, not bare ->name — see
+        // type_slice above (P2.8 sibling-constructor pass): a !Struct
+        // otherwise rendered as "!?".
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "!%s", value_type->name ? value_type->name : "?");
+            snprintf(name, 64, "!%s", type_to_string(value_type));
             type->name = name;
         }
     }
@@ -360,10 +416,15 @@ Type* type_nullable(Type* base_type) {
         type->size = base_type->size + sizeof(char);  // value + null flag
         type->align = base_type->align;
         
-        // Create name like "?int"
+        // Create name like "?int". Render the base via type_to_string, not
+        // bare ->name: structs keep their declared name in
+        // data.struct_type.name and have a NULL ->name, so the bare field
+        // rendered every ?Struct as the two-character string "??" in
+        // diagnostics (found by the P2.5 review on the ?Struct==?Struct
+        // reject path).
         char* name = malloc(64);
         if (name) {
-            snprintf(name, 64, "?%s", base_type->name ? base_type->name : "?");
+            snprintf(name, 64, "?%s", type_to_string(base_type));
             type->name = name;
         }
     }
@@ -586,7 +647,7 @@ void type_free(Type* type) {
 Type* type_copy(const Type* type) {
     if (!type) return NULL;
     
-    Type* copy = malloc(sizeof(Type));
+    Type* copy = xmalloc(sizeof(Type));
     if (!copy) return NULL;
     
     *copy = *type;
@@ -682,6 +743,81 @@ int type_equals(const Type* a, const Type* b) {
     }
 }
 
+// Function generics Task 5: type_substitute and unify_types — the two
+// standalone helpers generic-call inference (Task 6) builds on. Neither has a
+// caller yet; both are exercised directly once Task 6 wires them into call
+// checking. Deliberately Tier-A scoped: only TYPE_PARAM/SLICE/POINTER/FUNCTION
+// recurse structurally (TYPE_ARRAY/TYPE_MAP are not — the Tier-A goldens only
+// exercise slice/pointer/function/scalar generics), everything else is a
+// concrete type handled via type_equals/identity.
+
+// Returns a new Type* with every TYPE_PARAM of index i < n replaced by
+// bindings[i], recursing through slice/pointer/function. A TYPE_PARAM with no
+// binding (index out of range, or bindings[i] NULL) is returned as-is —
+// callers see an un-substituted param rather than a silent NULL.
+Type* type_substitute(Type* t, Type** bindings, size_t n) {
+    if (!t) return NULL;
+    switch (t->kind) {
+        case TYPE_PARAM: {
+            int i = t->data.type_param.index;
+            if (i >= 0 && (size_t)i < n && bindings[i]) return bindings[i];
+            return t;
+        }
+        case TYPE_SLICE:
+            return type_slice(type_substitute(t->data.slice.element_type, bindings, n));
+        case TYPE_POINTER:
+            return type_pointer(type_substitute(t->data.pointer.pointee_type, bindings, n));
+        case TYPE_FUNCTION: {
+            size_t pc = t->data.function.param_count;
+            Type** ps = pc ? calloc(pc, sizeof(Type*)) : NULL;
+            for (size_t i = 0; i < pc; i++)
+                ps[i] = type_substitute(t->data.function.param_types[i], bindings, n);
+            Type* r = type_substitute(t->data.function.return_type, bindings, n);
+            Type* ft = type_function(ps, pc, r);
+            if (ft) ft->data.function.is_variadic = t->data.function.is_variadic;
+            return ft;
+        }
+        default:
+            return t; // concrete types are shared unchanged
+    }
+}
+
+// Structurally matches param (may contain TYPE_PARAM) against concrete arg,
+// writing inferred concrete types into bindings[index]. Returns 1 on success;
+// 0 on a structural mismatch (differing kind/shape) or a conflicting binding
+// (bindings[i] already set to a type that isn't type_equals to arg).
+int unify_types(Type* param, Type* arg, Type** bindings, size_t n) {
+    if (!param || !arg) return 0;
+    if (param->kind == TYPE_PARAM) {
+        int i = param->data.type_param.index;
+        if (i < 0 || (size_t)i >= n) return 0;
+        if (bindings[i]) return type_equals(bindings[i], arg);
+        bindings[i] = arg;
+        return 1;
+    }
+    if (param->kind != arg->kind) return 0;
+    switch (param->kind) {
+        case TYPE_SLICE:
+            return unify_types(param->data.slice.element_type,
+                               arg->data.slice.element_type, bindings, n);
+        case TYPE_POINTER:
+            return unify_types(param->data.pointer.pointee_type,
+                               arg->data.pointer.pointee_type, bindings, n);
+        case TYPE_FUNCTION: {
+            if (param->data.function.param_count != arg->data.function.param_count)
+                return 0;
+            for (size_t i = 0; i < param->data.function.param_count; i++)
+                if (!unify_types(param->data.function.param_types[i],
+                                 arg->data.function.param_types[i], bindings, n))
+                    return 0;
+            return unify_types(param->data.function.return_type,
+                               arg->data.function.return_type, bindings, n);
+        }
+        default:
+            return type_equals(param, arg);
+    }
+}
+
 int type_compatible(const Type* from, const Type* to) {
     if (type_equals(from, to)) return 1;
     
@@ -708,7 +844,19 @@ int type_compatible(const Type* from, const Type* to) {
         if (from->kind == TYPE_UNKNOWN) return 1;
         return type_compatible(from, to->data.nullable.base_type);
     }
-    
+
+    // Go-compatible bare nil (P2.2 option A): nil literal (TYPE_UNKNOWN) is
+    // assignable to any of the five kinds that have a natural zero/nil LLVM
+    // representation (codegen materializes it per-kind; see
+    // codegen_generate_null_literal). This is a SEPARATE path from the ?T
+    // tag-nil arm above: that one sets an is_null flag on a {i1,T} wrapper,
+    // this one is a bare zero value with no tag at all — never conflate the
+    // two (a `?*T = nil` must keep hitting the TYPE_NULLABLE arm above, not
+    // this one).
+    if (from->kind == TYPE_UNKNOWN && type_is_nilable_ref_kind(to)) {
+        return 1;
+    }
+
     // Handle ownership qualifiers
     if (from->kind == TYPE_QUALIFIED && to->kind == TYPE_QUALIFIED) {
         return type_compatible(from->data.qualified.base_type, to->data.qualified.base_type);
@@ -768,6 +916,23 @@ int type_is_pointer_like(const Type* type) {
            type->kind == TYPE_STRING;
 }
 
+// Go-compatible bare-nil kinds (P2.2 option A): pointer, slice, map,
+// channel, function — the five kinds with a natural zero/nil LLVM
+// representation (see codegen_generate_null_literal) that nil is now
+// assignment- and EQ/NE-comparable to. Distinct from type_is_pointer_like
+// just above: that one also counts TYPE_STRING (not nilable — a string is
+// always a valid, non-nil {ptr,len} even when empty) and omits
+// TYPE_FUNCTION (which is nilable). Single source of truth for every
+// codegen intercept site that must widen its existing ?T-only nil-literal
+// handling to also cover bare-kind nil, so the kind list can't drift
+// between call sites.
+int type_is_nilable_ref_kind(const Type* type) {
+    if (!type) return 0;
+    return type->kind == TYPE_POINTER || type->kind == TYPE_SLICE ||
+           type->kind == TYPE_MAP || type->kind == TYPE_CHANNEL ||
+           type->kind == TYPE_FUNCTION;
+}
+
 int type_is_nullable(const Type* type) {
     if (!type) return 0;
     return type->kind == TYPE_NULLABLE;
@@ -783,6 +948,69 @@ int type_is_error_union(const Type* type) {
 // error-printing recognize errors identically.
 int type_is_error(const Type* t) {
     return t && t->name && strcmp(t->name, "error") == 0;
+}
+
+// P2.8 T4.2: true for the cascade-suppression marker bound to a name whose
+// initializer already failed. See TYPE_POISON's doc comment in types.h.
+int type_is_poison(const Type* type) {
+    return type && type->kind == TYPE_POISON;
+}
+
+// P2.6 (T2): a user-declared `(T, error)` result tuple — the structural shape
+// `func f(...) (T, error)` produces (type_from_ast's AST_STRUCT_TYPE case;
+// a >=2-field is_result_tuple struct keeps its struct ABI — see ast.h's
+// is_result_tuple doc comment). Identified STRUCTURALLY (2 fields, 2nd is
+// the `error` interface) rather than via a flag on Type itself: Type carries
+// no is_result_tuple bit (only the parser's AST StructTypeNode does), and the
+// existing n,err destructure path (type_checker.c's per_name_types build) is
+// already purely structural for the identical reason — a plain 2-field user
+// struct whose 2nd field happens to be `error`-typed is indistinguishable
+// from a function's declared multi-return, and both mechanisms accept it
+// uniformly. Central predicate so try/catch (expression_checker.c) and their
+// codegen (error_union_codegen.c) recognize the tuple identically.
+int type_is_error_result_tuple(const Type* type) {
+    return type && type->kind == TYPE_STRUCT &&
+           type->data.struct_type.field_count == 2 &&
+           type_is_error(type->data.struct_type.fields[1].type);
+}
+
+// Can a value comparator (`==`) be synthesized for this STRUCT? True iff
+// EVERY declared field is a comparator-safe kind: string, a scalar
+// (integer/uint/bool/char), a float, a pointer, or a nested struct that is
+// itself value-comparable. A slice/map/func/interface field is never
+// comparable in Go; an ARRAY field is Go-comparable in principle but v1's
+// comparator (codegen_get_or_emit_struct_key_eq) has no per-element loop, so
+// it is treated as not-yet-comparable here too — keeping this predicate in
+// exact lockstep with what that comparator can actually lower. Returns 0 for
+// a non-struct.
+//
+// Two callers, one truth: (1) the checker's static `==` gate
+// (type_check_comparison_op) rejects a non-comparable struct comparison with
+// a positioned Go-parity diagnostic instead of letting it reach codegen; (2)
+// codegen's per-type equality synthesis (codegen_get_or_emit_type_eq) routes
+// a NON-comparable boxed struct to the runtime uncomparable-panic stub rather
+// than emitting an illegal icmp over an aggregate field. The map-key path has
+// its own sibling predicate (struct_is_comparable_key, type_checker.c) that
+// additionally distinguishes the array-deferral diagnostic; the two agree on
+// the accept/reject boundary for every non-array field.
+int type_struct_fields_comparable(const Type* type) {
+    if (!type || type->kind != TYPE_STRUCT) return 0;
+    for (size_t i = 0; i < type->data.struct_type.field_count; i++) {
+        Type* f = type->data.struct_type.fields[i].type;
+        if (!f) return 0;
+        switch (f->kind) {
+            case TYPE_STRING: case TYPE_BOOL: case TYPE_CHAR:
+            case TYPE_FLOAT32: case TYPE_FLOAT64: case TYPE_POINTER:
+                break;
+            case TYPE_STRUCT:
+                if (!type_struct_fields_comparable(f)) return 0;
+                break;
+            default:
+                if (type_is_integer(f)) break;
+                return 0;  // slice/map/func/interface/array/... not v1-comparable
+        }
+    }
+    return 1;
 }
 
 // Method name mangling: `func (T) m()` is lowered to an ordinary function
@@ -811,10 +1039,23 @@ const char* type_receiver_name(const Type* type) {
     return type->name;
 }
 
+// P4.3 (packages-B): same *T-unwrap rule as type_receiver_name, but returns
+// the owning Package* (see Type.owner_package's doc comment, types.h) so
+// codegen and the checker can decide whether a method call/value on this
+// receiver needs the cross-package (goo_pkg__<pkg>__) symbol/export-scope
+// treatment.
+struct Package* type_receiver_owner_package(const Type* type) {
+    if (!type) return NULL;
+    if (type->kind == TYPE_POINTER && type->data.pointer.pointee_type) {
+        type = type->data.pointer.pointee_type;
+    }
+    return type->owner_package;
+}
+
 // Variable management
 
 Variable* variable_new(const char* name, Type* type, Position pos) {
-    Variable* var = malloc(sizeof(Variable));
+    Variable* var = xmalloc(sizeof(Variable));
     if (!var) return NULL;
 
     var->name = str_dup(name);
@@ -835,6 +1076,10 @@ Variable* variable_new(const char* name, Type* type, Position pos) {
     var->is_loop_var = 0;   // Closures Task 2: set by type_check_for_stmt's loop-binding sites
     var->has_const_int_value = 0;  // fix/const-array-length: set by type_check_const_decl
     var->const_int_value = 0;
+    var->is_generic = 0;       // Function generics Task 4: set by declare_function_signature
+    var->generic_decl = NULL;
+    var->type_param_count = 0;
+    var->func_decl_node = NULL;  // Comptime value params Task 2: set by declare_function_signature
 
     return var;
 }
@@ -850,7 +1095,7 @@ void variable_free(Variable* var) {
 // Scope management
 
 Scope* scope_new(Scope* parent) {
-    Scope* scope = malloc(sizeof(Scope));
+    Scope* scope = xmalloc(sizeof(Scope));
     if (!scope) return NULL;
     
     scope->variables = NULL;

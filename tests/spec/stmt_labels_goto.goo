@@ -1,0 +1,27 @@
+// Spec: Statements / Labeled statements, goto, labeled break/continue
+package main
+
+import "fmt"
+
+func main() {
+	total := 0
+outer:
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			if j == 2 {
+				continue outer
+			}
+			if i == 2 {
+				break outer
+			}
+			total = total + 1
+		}
+	}
+	n := 0
+	if total > 0 {
+		goto done
+	}
+	n = 99
+done:
+	fmt.Println(total + n)
+}

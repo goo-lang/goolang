@@ -17,7 +17,7 @@ int goo_lexer_error_count = 0;
 
 Lexer* lexer_new(const char* input, const char* filename) {
     goo_lexer_error_count = 0;
-    Lexer* lexer = malloc(sizeof(Lexer));
+    Lexer* lexer = xmalloc(sizeof(Lexer));
     if (!lexer) return NULL;
     
     lexer->input = input;
@@ -92,24 +92,40 @@ static int token_ends_value(TokenType t) {
         case TOKEN_CHAR:
         case TOKEN_TRUE:
         case TOKEN_FALSE:
+        case TOKEN_NIL:         // P5.10: `= nil` ends a statement (Go: nil is
+                                // an identifier, so Go's rule covers it too)
         case TOKEN_RPAREN:
         case TOKEN_RBRACKET:
         case TOKEN_RBRACE:
+        case TOKEN_INCREMENT:   // x++  — postfix, value-ending
+        case TOKEN_DECREMENT:   // x--  — postfix, value-ending
             return 1;
         default:
             return 0;
     }
 }
 
-// True if a character begins a binary operator that could continue the
-// previous expression across a newline (`*`, `+`, `-`, `/`, `%`, `&`, `|`,
-// `^`). When the next line starts with one of these after a value-ending
-// token, ASI inserts a semicolon so e.g. `p := &x` <nl> `*p = v` is two
-// statements, not the multiplication `&x * p`. Mirrors Go's rule: a line may
-// only be continued by leaving the operator at the END of the line.
-static int char_starts_continuation_op(char c) {
-    return c == '*' || c == '+' || c == '-' || c == '/' ||
-           c == '%' || c == '&' || c == '|' || c == '^';
+// (P5.10: char_starts_continuation_op was deleted — the generalized rule-1
+// ASI below no longer discriminates by the next line's first character
+// beyond the ')' / '}' / `...` / `else` leniency exceptions.)
+
+// P5.10: true when the upcoming characters spell the keyword `else` at a
+// word boundary — the one keyword allowed to CONTINUE the previous
+// statement across a newline (`}` <nl> `else {`), a pinned Goo leniency
+// (asi_else_probe; Go itself rejects that shape). Non-consuming bounded
+// lookahead over the raw input buffer.
+static int lexer_line_starts_with_else(Lexer* lexer) {
+    if (lexer->ch != 'e') return 0;
+    if (lexer->read_position + 2 >= lexer->input_length) return 0;
+    if (lexer->input[lexer->read_position] != 'l' ||
+        lexer->input[lexer->read_position + 1] != 's' ||
+        lexer->input[lexer->read_position + 2] != 'e') return 0;
+    if (lexer->read_position + 3 < lexer->input_length) {
+        char after = lexer->input[lexer->read_position + 3];
+        if ((after >= 'a' && after <= 'z') || (after >= 'A' && after <= 'Z') ||
+            (after >= '0' && after <= '9') || after == '_') return 0;
+    }
+    return 1;
 }
 
 Token* lexer_next_token(Lexer* lexer) {
@@ -146,19 +162,64 @@ Token* lexer_next_token(Lexer* lexer) {
             while (lexer->ch == ' ' || lexer->ch == '\t' || lexer->ch == '\r') {
                 lexer_read_char(lexer);
             }
-            // A leading `/` that starts a comment (`//` or `/*`) is not a
-            // continuation operator — don't let it trigger insertion.
-            if (token_ends_value(lexer->prev_token_type) &&
-                char_starts_continuation_op(lexer->ch) &&
-                !(lexer->ch == '/' &&
-                  (lexer_peek_char(lexer) == '/' || lexer_peek_char(lexer) == '*'))) {
+            // Part 1 — keyword terminators (unconditional). Go always ends the
+            // statement after these keywords; their operand (a return
+            // expression, a break/continue label) must sit on the same line, so
+            // a newline here is unambiguously a boundary. This is separate from
+            // the value-ending guard below because `return` <nl> `expr` has an
+            // identifier (not an operator/bracket) starting line 2, which the
+            // next-char guard would not catch.
+            if (lexer->prev_token_type == TOKEN_RETURN ||
+                lexer->prev_token_type == TOKEN_BREAK ||
+                lexer->prev_token_type == TOKEN_CONTINUE ||
+                lexer->prev_token_type == TOKEN_FALLTHROUGH) {
                 lexer->prev_token_type = TOKEN_SEMICOLON;
                 return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
             }
-            // Struct-body ASI (embedding): inside a struct body, a newline
-            // after a field-ending token ends the field — Go's semicolon rule
-            // scoped to struct bodies, so a 1-token embedded field (`Base`)
-            // stops at the line break instead of absorbing the next line.
+            // Part 2 — generalized rule-1 ASI (P5.10). Go's actual rule: a
+            // newline after a value-ending token terminates the statement,
+            // period. This replaced the old hazard-targeted guard (insert
+            // only before continuation ops / `(` `[` `.` / `<-`) when the
+            // grammar moved to Go-shaped SEMICOLON-terminated statement
+            // lists — the parser now NEEDS the terminator between any two
+            // statements, so the lexer supplies it at every value-ending
+            // newline. Two deliberate exceptions, both pinned by golden
+            // fixtures (Goo is more lenient than Go here — Go would insert
+            // and then reject):
+            //   ')'  — a multi-line call's closing paren may follow the last
+            //          argument without a trailing comma (asi_multiline_probe).
+            //   '}'  — a composite literal's closing brace may follow the last
+            //          element without a trailing comma, and a block's final
+            //          statement needs no terminator (the grammar's final_stmt
+            //          arm consumes the bare form).
+            // EOF (ch == 0) deliberately gets the semicolon: the top-level
+            // decl arms carry member-attached trailing-SEMICOLON tolerance.
+            // Two more pinned Goo leniencies survive from the old targeted
+            // rule (both are loud Go errors, tolerated here by fixtures):
+            //   `...`  — a spread flowing onto its own line (`sum(a` <nl>
+            //            `...)`, asi_spread_probe). There is no `..` operator
+            //            in Goo, so the two-char peek is unambiguous.
+            //   `else` — an else on the line after the closing `}`
+            //            (asi_else_probe). Word-boundary checked so an
+            //            identifier merely STARTING with "else" still gets
+            //            the terminator.
+            if (token_ends_value(lexer->prev_token_type) &&
+                lexer->ch != ')' && lexer->ch != '}' &&
+                !(lexer->ch == '.' && lexer_peek_char(lexer) == '.') &&
+                !lexer_line_starts_with_else(lexer)) {
+                lexer->prev_token_type = TOKEN_SEMICOLON;
+                return token_new(TOKEN_SEMICOLON, ";", 1, current_pos);
+            }
+            // Struct/interface-body and var-group ASI (embedding; method
+            // specs; grouped var specs): inside a struct body, interface
+            // body, or `var ( ... )` group, a newline after a value-ending
+            // token ends the member — Go's semicolon rule scoped to these
+            // bodies, so a 1-token embedded field (`Base`), a void method
+            // spec (`Inc()`), or a result-less func-typed var spec (`f
+            // func(int)`) stops at the line break instead of absorbing the
+            // next line's token (e.g. a following method/spec name mistaken
+            // for a return type via func_result's identifier-starting FIRST
+            // set).
             if (lexer->asi_depth > 0 &&
                 lexer->asi_depth <= (int)sizeof(lexer->asi_ctx) &&
                 lexer->asi_ctx[lexer->asi_depth - 1] &&
@@ -171,17 +232,29 @@ Token* lexer_next_token(Lexer* lexer) {
         // Single character tokens
         case '(':
             token = token_new(TOKEN_LPAREN, "(", 1, current_pos);
+            // Var-group-scoped ASI: a '(' immediately following `var` opens a
+            // grouped var block (`var ( ... )`), sharing the same depth stack
+            // as struct/interface '{' (see include/lexer.h asi_ctx). All
+            // other '(' (call args, parenthesized expressions, const/import
+            // groups, func param lists) push a no-emit (0) entry.
+            if (lexer->asi_depth >= 0 && lexer->asi_depth < (int)sizeof(lexer->asi_ctx)) {
+                lexer->asi_ctx[lexer->asi_depth] =
+                    (lexer->prev_token_type == TOKEN_VAR) ? 1 : 0;
+            }
+            lexer->asi_depth++;
             lexer_read_char(lexer);
             break;
         case ')':
             token = token_new(TOKEN_RPAREN, ")", 1, current_pos);
+            if (lexer->asi_depth > 0) lexer->asi_depth--;
             lexer_read_char(lexer);
             break;
         case '{':
             token = token_new(TOKEN_LBRACE, "{", 1, current_pos);
             if (lexer->asi_depth >= 0 && lexer->asi_depth < (int)sizeof(lexer->asi_ctx)) {
                 lexer->asi_ctx[lexer->asi_depth] =
-                    (lexer->prev_token_type == TOKEN_STRUCT) ? 1 : 0;
+                    (lexer->prev_token_type == TOKEN_STRUCT ||
+                     lexer->prev_token_type == TOKEN_INTERFACE) ? 1 : 0;
             }
             lexer->asi_depth++;
             lexer_read_char(lexer);
@@ -282,7 +355,19 @@ Token* lexer_next_token(Lexer* lexer) {
                 while (lexer->ch != '\n' && lexer->ch != 0) {
                     lexer_read_char(lexer);
                 }
-                return lexer_next_token(lexer); // Recursively get next token
+                // P0-5: iterate rather than tail-recurse over skipped comments,
+                // mirroring the newline path above (P0-3). A run of consecutive
+                // `//` comments previously recursed once per comment (`return
+                // lexer_next_token(lexer)`), overflowing the stack on large
+                // inputs (400,000 comment lines -> SIGSEGV). `continue` re-enters
+                // the enclosing `for (;;)` at the top, which re-runs
+                // lexer_skip_whitespace and re-derives current_pos exactly as the
+                // recursive call did — same behavior, no new stack frame.
+                // prev_token_type is untouched here (as it was in the recursive
+                // version, which only updates it via the `if (token) ...` line
+                // below on the eventual real token), so ASI across a skipped
+                // comment behaves identically to ASI across a skipped blank line.
+                continue;
             } else if (lexer_peek_char(lexer) == '*') {
                 // Block comment - skip to */
                 lexer_read_char(lexer); // skip /
@@ -295,7 +380,17 @@ Token* lexer_next_token(Lexer* lexer) {
                     }
                     lexer_read_char(lexer);
                 }
-                return lexer_next_token(lexer); // Recursively get next token
+                // See the P0-5 note above the `//` case: same iterate-not-
+                // recurse fix, same prev_token_type preservation. A block
+                // comment may itself span newlines (e.g. `/* line1\nline2 */`);
+                // those interior newlines are consumed silently by the skip loop
+                // above and never reach the '\n' case's ASI logic — this matches
+                // the pre-existing recursive behavior exactly (the recursive
+                // call also started scanning fresh AFTER the closing `*/`, never
+                // seeing the interior newlines as lexer_next_token input), so a
+                // block comment spanning a newline does not trigger ASI even
+                // when it sits where a real newline would have.
+                continue;
             } else {
                 token = token_new(TOKEN_DIVIDE, "/", 1, current_pos);
                 lexer_read_char(lexer);
@@ -318,6 +413,13 @@ Token* lexer_next_token(Lexer* lexer) {
                 lexer_read_char(lexer);
                 lexer_read_char(lexer);
                 token = token_new(TOKEN_EQ, "==", 2, current_pos);
+            } else if (lexer_peek_char(lexer) == '>') {
+                // `=>` (fat arrow): the value-yielding catch fallback form,
+                // `f() catch => -1` (P2.9). Lexed as one token so `catch =`
+                // followed by `>` can never split into ASSIGN then GT.
+                lexer_read_char(lexer);
+                lexer_read_char(lexer);
+                token = token_new(TOKEN_FAT_ARROW, "=>", 2, current_pos);
             } else {
                 token = token_new(TOKEN_ASSIGN, "=", 1, current_pos);
                 lexer_read_char(lexer);
@@ -459,6 +561,28 @@ Token* lexer_next_token(Lexer* lexer) {
             }
             break;
             
+        case '`':
+            {
+                // Go spec raw string literal: content between backticks is
+                // taken literally — backslashes are ordinary data, never an
+                // escape introducer (`\n` here is backslash+n, two bytes,
+                // not a newline). May span multiple lines; those interior
+                // newlines are content and never reach the '\n' case above
+                // (the whole literal is consumed in this one call), so they
+                // cannot trigger ASI — this token still ends as TOKEN_STRING,
+                // matching a regular string, so prev_token_type is
+                // value-ending afterward exactly like `"..."` is.
+                size_t length;
+                char* raw_literal = lexer_read_raw_string(lexer, &length);
+                if (raw_literal) {
+                    token = token_new(TOKEN_STRING, raw_literal, length, current_pos);
+                    free(raw_literal);
+                } else {
+                    token = token_new(TOKEN_ERROR, "unterminated raw string", 24, current_pos);
+                }
+            }
+            break;
+
         case '\'':
             {
                 size_t length;
@@ -507,23 +631,39 @@ Token* lexer_next_token(Lexer* lexer) {
                     token = token_new(TOKEN_ERROR, "invalid number", 14, current_pos);
                 }
             } else {
-                token = token_new(TOKEN_UNKNOWN, NULL, 0, current_pos);
+                // Capture the offending byte as the token's literal (instead of
+                // NULL) so the P0.4 gate below can name it in the diagnostic —
+                // e.g. `#` — rather than printing an empty/placeholder string.
+                char unknown_ch[2] = { lexer->ch, '\0' };
+                token = token_new(TOKEN_UNKNOWN, unknown_ch, 1, current_pos);
                 lexer_read_char(lexer);
             }
             break;
     }
 
-    // Surface lexical errors so the Bison bridge's silent skip of TOKEN_ERROR
-    // cannot drop a malformed token (e.g. '', '\z', an unterminated 'a) and let
-    // the surrounding program compile to a running binary. We record the error
-    // (and print a positioned diagnostic); the type checker refuses to emit code
-    // while the count is non-zero, which is the actual "rejected cleanly" gate.
+    // Surface lexical errors so the Bison bridge's silent skip of TOKEN_ERROR /
+    // TOKEN_UNKNOWN cannot drop a malformed or unrecognized token (e.g. '',
+    // '\z', an unterminated 'a, or a stray '#') and let the surrounding
+    // program compile to a running binary. We record the error (and print a
+    // positioned diagnostic); the type checker refuses to emit code while the
+    // count is non-zero, which is the actual "rejected cleanly" gate.
+    // TOKEN_UNKNOWN is only ever produced by the `default` case above, for a
+    // byte that is neither a letter, digit, nor any recognized punctuation —
+    // there is no legitimate Goo construct that lexes to it (a `#` inside a
+    // string literal, for instance, is consumed byte-for-byte by
+    // lexer_read_string and never reaches this switch).
     if (token && token->type == TOKEN_ERROR) {
         goo_lexer_error_count++;
         fprintf(stderr, "%s:%d:%d: error: %s\n",
                 token->pos.filename ? token->pos.filename : "<input>",
                 token->pos.line, token->pos.column,
                 token->literal ? token->literal : "lexical error");
+    } else if (token && token->type == TOKEN_UNKNOWN) {
+        goo_lexer_error_count++;
+        fprintf(stderr, "%s:%d:%d: error: unknown token '%s'\n",
+                token->pos.filename ? token->pos.filename : "<input>",
+                token->pos.line, token->pos.column,
+                token->literal ? token->literal : "?");
     }
 
     if (token) lexer->prev_token_type = token->type; // for newline-driven ASI
@@ -694,6 +834,45 @@ char* lexer_read_string(Lexer* lexer, size_t* length) {
     if (length) *length = out_len;
 
     lexer_read_char(lexer); // consume closing quote
+    return out;
+}
+
+// Raw string literal (backtick-delimited), per the Go spec: content is taken
+// literally between the backticks — no escape processing at all, so a
+// backslash is just a data byte (unlike lexer_read_string above, which
+// interprets `\n`, `\xNN`, etc.). May span multiple source lines; interior
+// newlines are copied through as content. The one transformation the spec
+// still requires is dropping carriage-return bytes (0x0D) so that raw
+// strings read from CRLF source files are line-ending-independent, matching
+// gc's cmd/compile behavior. Returns NULL on EOF before the closing
+// backtick (unterminated), mirroring lexer_read_string's contract so the
+// caller's TOKEN_ERROR path is identical.
+char* lexer_read_raw_string(Lexer* lexer, size_t* length) {
+    lexer_read_char(lexer); // consume opening backtick
+    size_t start_pos = lexer->position;
+
+    while (lexer->ch != '`' && lexer->ch != 0) {
+        lexer_read_char(lexer);
+    }
+
+    if (lexer->ch != '`') {
+        return NULL; // Unterminated raw string
+    }
+
+    size_t raw_len = lexer->position - start_pos;
+    char* out = malloc(raw_len + 1); // CR-stripping only ever shrinks
+    if (!out) return NULL;
+
+    size_t out_len = 0;
+    for (size_t i = 0; i < raw_len; i++) {
+        char c = lexer->input[start_pos + i];
+        if (c == '\r') continue; // Go spec: CR bytes are dropped, not content
+        out[out_len++] = c;
+    }
+    out[out_len] = '\0';
+    if (length) *length = out_len;
+
+    lexer_read_char(lexer); // consume closing backtick
     return out;
 }
 

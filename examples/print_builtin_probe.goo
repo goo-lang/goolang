@@ -1,0 +1,13 @@
+// Go builtin `print`: variadic, no separators between operands, no trailing
+// newline. Structs/pointers format via the shared formatter. (Distinct from
+// `println`, which adds spaces + a newline.)
+package main
+type N struct { v int }
+func main() {
+	print("hi")
+	print("|")
+	print(1, 2)
+	print("|")
+	print(&N{v: 5})
+	println("")
+}

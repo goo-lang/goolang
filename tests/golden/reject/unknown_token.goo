@@ -1,0 +1,10 @@
+// P0.4: an unrecognized byte (here `#`, which Goo has no meaning for) must be
+// REJECTED at compile time with a positioned diagnostic, not silently dropped
+// by the Bison bridge's TOKEN_UNKNOWN skip (which used to let `x := 1 # 2`
+// compile and run as if the `# 2` were never there, printing 1).
+package main
+
+func main() {
+	x := 1 # 2
+	println(x)
+}

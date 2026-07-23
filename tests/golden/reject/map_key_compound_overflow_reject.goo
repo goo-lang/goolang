@@ -1,0 +1,10 @@
+// Correctness arc 13 (s): compound key at the index sink — m[1<<8] on a
+// map[int8]int silently stored key int8(0); the arc-9 key gate routes
+// through the adapter, so the fold-then-check covers it. Go rejects.
+package main
+
+func main() {
+	m := map[int8]int{}
+	m[1<<8] = 77
+	println(len(m))
+}

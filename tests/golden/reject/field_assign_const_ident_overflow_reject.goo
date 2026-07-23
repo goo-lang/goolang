@@ -1,0 +1,15 @@
+// Correctness arc 7 (n): assignment THROUGH a field selector — left_type is
+// the field's declared type, so the same assignment gate covers it (the
+// composite-literal fixture covers construction; this covers mutation).
+package main
+
+type S struct {
+	x int8
+}
+
+func main() {
+	const a = 300
+	var s S
+	s.x = a
+	println(s.x)
+}

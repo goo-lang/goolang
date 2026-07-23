@@ -18,7 +18,7 @@ static uint64_t get_current_time_ms(void) {
 
 // Recovery configuration builders
 RecoveryConfig* recovery_config_retry(int max_attempts, double initial_delay_ms, double backoff_factor) {
-    RecoveryConfig* config = calloc(1, sizeof(RecoveryConfig));
+    RecoveryConfig* config = xcalloc(1, sizeof(RecoveryConfig));
     if (!config) return NULL;
     
     config->pattern_type = RECOVERY_RETRY;
@@ -37,7 +37,7 @@ RecoveryConfig* recovery_config_retry(int max_attempts, double initial_delay_ms,
 }
 
 RecoveryConfig* recovery_config_circuit_breaker(int failure_threshold, uint64_t timeout_ms) {
-    RecoveryConfig* config = calloc(1, sizeof(RecoveryConfig));
+    RecoveryConfig* config = xcalloc(1, sizeof(RecoveryConfig));
     if (!config) return NULL;
     
     config->pattern_type = RECOVERY_CIRCUIT_BREAKER;
@@ -60,7 +60,7 @@ RecoveryConfig* recovery_config_circuit_breaker(int failure_threshold, uint64_t 
 }
 
 RecoveryConfig* recovery_config_timeout(uint64_t timeout_ms) {
-    RecoveryConfig* config = calloc(1, sizeof(RecoveryConfig));
+    RecoveryConfig* config = xcalloc(1, sizeof(RecoveryConfig));
     if (!config) return NULL;
     
     config->pattern_type = RECOVERY_TIMEOUT;
@@ -76,7 +76,7 @@ RecoveryConfig* recovery_config_timeout(uint64_t timeout_ms) {
 }
 
 RecoveryConfig* recovery_config_fallback(void* (*fallback_func)(const Error*, void*), void* context) {
-    RecoveryConfig* config = calloc(1, sizeof(RecoveryConfig));
+    RecoveryConfig* config = xcalloc(1, sizeof(RecoveryConfig));
     if (!config) return NULL;
     
     config->pattern_type = RECOVERY_FALLBACK;
@@ -92,7 +92,7 @@ RecoveryConfig* recovery_config_fallback(void* (*fallback_func)(const Error*, vo
 }
 
 RecoveryConfig* recovery_config_rate_limit(int max_requests, uint64_t window_ms) {
-    RecoveryConfig* config = calloc(1, sizeof(RecoveryConfig));
+    RecoveryConfig* config = xcalloc(1, sizeof(RecoveryConfig));
     if (!config) return NULL;
     
     config->pattern_type = RECOVERY_RATE_LIMIT;
@@ -114,7 +114,7 @@ RecoveryConfig* recovery_config_rate_limit(int max_requests, uint64_t window_ms)
 
 // Recovery context management
 RecoveryContext* recovery_context_new(RecoveryConfig* config, ErgoErrorContext* error_context) {
-    RecoveryContext* context = calloc(1, sizeof(RecoveryContext));
+    RecoveryContext* context = xcalloc(1, sizeof(RecoveryContext));
     if (!context) return NULL;
     
     context->config = config;
@@ -352,7 +352,7 @@ RecoveryResult recovery_execute_int(RecoveryContext* context,
     
     if (!context || !func) {
         result.is_error = true;
-        Error* error = malloc(sizeof(Error));
+        Error* error = xmalloc(sizeof(Error));
         *error = (Error){
             .code = ERROR_INVALID_EXPRESSION,
             .severity = ERROR_SEVERITY_ERROR,
@@ -391,7 +391,7 @@ RecoveryResult recovery_execute_int(RecoveryContext* context,
         
         // Store error for history
         if (context->error_count < context->error_capacity) {
-            Error* error_copy = malloc(sizeof(Error));
+            Error* error_copy = xmalloc(sizeof(Error));
             *error_copy = *func_result.error;
             error_copy->message = func_result.error->message ? strdup(func_result.error->message) : NULL;
             error_copy->hint = func_result.error->hint ? strdup(func_result.error->hint) : NULL;
@@ -426,7 +426,7 @@ RecoveryResult recovery_execute_int(RecoveryContext* context,
     result.total_time_ms = get_current_time_ms() - start_time;
     
     // Create aggregated error
-    Error* aggregated_error = malloc(sizeof(Error));
+    Error* aggregated_error = xmalloc(sizeof(Error));
     *aggregated_error = (Error){
         .code = ERROR_INTERNAL,
         .severity = ERROR_SEVERITY_ERROR,
@@ -450,7 +450,7 @@ RecoveryResult recovery_execute_int(RecoveryContext* context,
 
 // Recovery registry management
 RecoveryRegistry* recovery_registry_new(void) {
-    RecoveryRegistry* registry = calloc(1, sizeof(RecoveryRegistry));
+    RecoveryRegistry* registry = xcalloc(1, sizeof(RecoveryRegistry));
     if (!registry) return NULL;
     
     registry->capacity = 100;

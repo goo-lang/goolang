@@ -1,0 +1,24 @@
+// P1.5/closures reject: `break L` inside a func literal (closure) nested in
+// the OUTER function's own labeled loop must NOT resolve to the outer
+// function's label via the ambient loop-context stack
+// (codegen_generate_func_lit did not save/restore loop_depth/loop_label[]
+// around the nested emission, so a labeled break inside the closure could
+// walk past the closure's own — empty — frames and match the outer L,
+// producing a cross-function branch that only the LLVM verifier caught,
+// with no source position). The type checker gives closures their own
+// label namespace, so this L is genuinely undefined inside the closure;
+// real Go rejects the equivalent program too (`break label not defined: L`).
+// Codegen must reject it with the same clean, positioned error the
+// same-function case already gets (see tests/golden/reject/
+// break_unknown_label.err.txt), not a Module-verification failure.
+package main
+
+func main() {
+L:
+	for i := 0; i < 3; i++ {
+		f := func() {
+			break L
+		}
+		f()
+	}
+}

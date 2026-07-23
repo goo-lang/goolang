@@ -1,0 +1,59 @@
+// spmd_defer_probe: the fix's end-to-end pin (SPMD harness sub-project,
+// Task 1 — defer arg-stash destructive-splice fix).
+//
+// `lane` is a comptime-specialized kernel that reduces a `tile`-sized slice
+// window into a local `[tile]int64` array and uses `defer` (closure-literal
+// form) to send its result on a channel — the natural SPMD cleanup/send
+// idiom. `main` partitions a 6-element slice into UNEVEN tiles (4 + 2, the
+// natural remainder-tile shape) and dispatches both lanes via `go` — two
+// DISTINCT comptime tuples (tile=4, tile=2) of the SAME shared template,
+// launched as goroutines, each executing its own `defer`.
+//
+// This is exactly the shape that used to fail on the second lane: the defer
+// arg-stash (statement_codegen.c) destructively spliced synthetic
+// `__goo_defer0_argN` identifier nodes into the SHARED template AST while
+// emitting the tile=4 instance; the tile=2 instance's emission then found
+// those synthetic identifiers where its own `defer` argument expression
+// used to be, and failed closed with "Undefined identifier
+// '__goo_defer0_arg0'" / "failed to evaluate defer argument". The fix makes
+// the splice transactional (scoped to a single emission, restored
+// immediately after) so every instantiation of a template sees pristine
+// argument nodes regardless of how many other instances ran before it.
+//
+// Buffered-channel fan-in (cap 2) is the join: both sends land before main
+// reads, so the two receives are order-independent — the reduction result
+// (1+2+3+4 = 10, 5+6 = 11) sums deterministically to 21 regardless of
+// goroutine interleaving.
+package main
+
+import "fmt"
+
+func lane(comptime tile int, xs []int64, out chan int64) {
+	var buf [tile]int64
+	i := 0
+	for i < tile {
+		buf[i] = xs[i]
+		i = i + 1
+	}
+	sum := int64(0)
+	j := 0
+	for j < tile {
+		sum = sum + buf[j]
+		j = j + 1
+	}
+	defer func(v int64) {
+		out <- v
+	}(sum)
+}
+
+func main() {
+	xs := []int64{1, 2, 3, 4, 5, 6}
+	out := make(chan int64, 2)
+
+	go lane(4, xs[0:4], out)
+	go lane(2, xs[4:6], out)
+
+	a := <-out
+	b := <-out
+	fmt.Println(a + b)
+}

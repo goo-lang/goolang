@@ -26,7 +26,7 @@ static char* str_dup(const char* str) {
 
 HigherOrderConstraint* higher_order_constraint_new(HigherOrderConstraintKind kind, 
                                                    Type* function_type, Position pos) {
-    HigherOrderConstraint* constraint = malloc(sizeof(HigherOrderConstraint));
+    HigherOrderConstraint* constraint = xmalloc(sizeof(HigherOrderConstraint));
     if (!constraint) return NULL;
     
     constraint->kind = kind;
@@ -238,7 +238,7 @@ int infer_generator_constraints(ConstraintInferenceEngine* engine, ASTNode* gene
 // =============================================================================
 
 VariadicTypePattern* variadic_type_pattern_new(const char* name, TypeVariableKind element_kind, Position pos) {
-    VariadicTypePattern* pattern = malloc(sizeof(VariadicTypePattern));
+    VariadicTypePattern* pattern = xmalloc(sizeof(VariadicTypePattern));
     if (!pattern) return NULL;
     
     pattern->name = str_dup(name);
@@ -293,7 +293,7 @@ int infer_variadic_constraints(ConstraintInferenceEngine* engine, VariadicTypePa
 }
 
 NestedGenericPattern* nested_generic_pattern_new(const char* name, Type* outer, Type* inner, Position pos) {
-    NestedGenericPattern* pattern = malloc(sizeof(NestedGenericPattern));
+    NestedGenericPattern* pattern = xmalloc(sizeof(NestedGenericPattern));
     if (!pattern) return NULL;
     
     pattern->pattern_name = str_dup(name);
@@ -369,7 +369,7 @@ int infer_nested_generic_constraints(ConstraintInferenceEngine* engine, NestedGe
 // =============================================================================
 
 ConstraintError* constraint_error_new(ConstraintErrorKind kind, const char* message, Position pos) {
-    ConstraintError* error = malloc(sizeof(ConstraintError));
+    ConstraintError* error = xmalloc(sizeof(ConstraintError));
     if (!error) return NULL;
     
     error->kind = kind;
@@ -535,7 +535,7 @@ void print_constraint_error_with_context(ConstraintError* error, TypeChecker* ch
 // =============================================================================
 
 ConstraintHint* constraint_hint_new(ConstraintHintKind kind, const char* target, Position pos) {
-    ConstraintHint* hint = malloc(sizeof(ConstraintHint));
+    ConstraintHint* hint = xmalloc(sizeof(ConstraintHint));
     if (!hint) return NULL;
     
     hint->kind = kind;
@@ -642,7 +642,7 @@ int parse_constraint_hint_from_annotation(const char* annotation, ConstraintHint
 // =============================================================================
 
 AdvancedConstraintSolver* advanced_constraint_solver_new(ConstraintInferenceEngine* base_engine, ConstraintSolverStrategy strategy) {
-    AdvancedConstraintSolver* solver = malloc(sizeof(AdvancedConstraintSolver));
+    AdvancedConstraintSolver* solver = xmalloc(sizeof(AdvancedConstraintSolver));
     if (!solver) return NULL;
     
     solver->base_engine = base_engine;
@@ -795,7 +795,7 @@ Type* lookup_cached_solution(AdvancedConstraintSolver* solver, InterfaceConstrai
 // =============================================================================
 
 LanguageFeatureIntegration* create_error_handling_integration(Type* error_union_type, Position pos) {
-    LanguageFeatureIntegration* integration = malloc(sizeof(LanguageFeatureIntegration));
+    LanguageFeatureIntegration* integration = xmalloc(sizeof(LanguageFeatureIntegration));
     if (!integration) return NULL;
     
     integration->context = INTEGRATION_ERROR_HANDLING;
@@ -810,7 +810,7 @@ LanguageFeatureIntegration* create_error_handling_integration(Type* error_union_
 }
 
 LanguageFeatureIntegration* create_nullable_integration(Type* nullable_type, Position pos) {
-    LanguageFeatureIntegration* integration = malloc(sizeof(LanguageFeatureIntegration));
+    LanguageFeatureIntegration* integration = xmalloc(sizeof(LanguageFeatureIntegration));
     if (!integration) return NULL;
     
     integration->context = INTEGRATION_NULLABLE_TYPES;
@@ -825,7 +825,7 @@ LanguageFeatureIntegration* create_nullable_integration(Type* nullable_type, Pos
 }
 
 LanguageFeatureIntegration* create_ownership_integration(Type* owned_type, OwnershipKind ownership, Position pos) {
-    LanguageFeatureIntegration* integration = malloc(sizeof(LanguageFeatureIntegration));
+    LanguageFeatureIntegration* integration = xmalloc(sizeof(LanguageFeatureIntegration));
     if (!integration) return NULL;
     
     integration->context = INTEGRATION_OWNERSHIP_SYSTEM;
@@ -833,7 +833,7 @@ LanguageFeatureIntegration* create_ownership_integration(Type* owned_type, Owner
     integration->related_types = NULL;
     integration->related_count = 0;
     integration->integration_constraints = constraint_set_new();
-    integration->feature_specific_data = malloc(sizeof(OwnershipKind));
+    integration->feature_specific_data = xmalloc(sizeof(OwnershipKind));
     if (integration->feature_specific_data) {
         *(OwnershipKind*)integration->feature_specific_data = ownership;
     }
@@ -843,7 +843,7 @@ LanguageFeatureIntegration* create_ownership_integration(Type* owned_type, Owner
 }
 
 LanguageFeatureIntegration* create_async_integration(Type* future_type, Position pos) {
-    LanguageFeatureIntegration* integration = malloc(sizeof(LanguageFeatureIntegration));
+    LanguageFeatureIntegration* integration = xmalloc(sizeof(LanguageFeatureIntegration));
     if (!integration) return NULL;
     
     integration->context = INTEGRATION_ASYNC_SYSTEM;
@@ -858,7 +858,7 @@ LanguageFeatureIntegration* create_async_integration(Type* future_type, Position
 }
 
 LanguageFeatureIntegration* create_concurrency_integration(Type* channel_type, Position pos) {
-    LanguageFeatureIntegration* integration = malloc(sizeof(LanguageFeatureIntegration));
+    LanguageFeatureIntegration* integration = xmalloc(sizeof(LanguageFeatureIntegration));
     if (!integration) return NULL;
     
     integration->context = INTEGRATION_CONCURRENCY;

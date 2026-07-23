@@ -1,0 +1,16 @@
+// Correctness arc 10 (o rider): a SAME-WIDTH, differently-signed constant
+// bypassed the width guard entirely (same_kind/same_width ignore
+// signedness), so uint64-max passed into an int64 parameter reinterpreted
+// as -1. The guard now also consults the shared core when only the
+// signedness differs; non-constant values keep the existing laxness.
+package main
+
+func f(x int64) int64 {
+	return x
+}
+
+const B = 18446744073709551615
+
+func main() {
+	f(B)
+}

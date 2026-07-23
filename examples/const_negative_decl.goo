@@ -1,0 +1,25 @@
+// Correctness arc 4, T1 (const-decl negative typing): an untyped const whose
+// RHS folds NEGATIVE must take the signed default type (int64), not uint64.
+// goo_fold_const_int is 64-bit modular, so -5 folds to 0xFFFF...FB — a raw
+// pattern > INT64_MAX — and the decl's int64-vs-uint64 choice used to look at
+// the raw magnitude alone, mis-typing every negative const as uint64
+// (`println(k)` printed 18446744073709551611). The negated-shape conjunction
+// (is_negated_int_const_expr) disambiguates, exactly as it does for
+// int_const_fits_expected's uint64 arm: negative-ROOTED folds take int64; a
+// huge literal actually written >= 2^63 (MaxUint64 below) keeps uint64.
+// `- -5` folds back to +5 (<= INT64_MAX) so the shape check is never
+// consulted — first disjunct already picks int64.
+package main
+
+func main() {
+	const k = -5
+	println(k)
+	const m = -(1 + 2)
+	println(m)
+	const p = - -5
+	println(p)
+	const big = -9223372036854775808
+	println(big)
+	const huge = 18446744073709551615
+	println(huge)
+}

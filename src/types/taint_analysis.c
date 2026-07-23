@@ -51,7 +51,7 @@ TaintAnalysisConfig taint_analysis_config_permissive(void) {
 
 // TaintInfo operations
 TaintInfo* taint_info_create(TaintLevel level, TaintSourceType source_type, const char* source_location) {
-    TaintInfo* info = calloc(1, sizeof(TaintInfo));
+    TaintInfo* info = xcalloc(1, sizeof(TaintInfo));
     if (!info) return NULL;
     
     info->level = level;
@@ -120,7 +120,7 @@ TaintInfo* taint_info_combine(TaintInfo* taint1, TaintInfo* taint2) {
 TaintInfo* taint_info_clone(TaintInfo* taint_info) {
     if (!taint_info) return NULL;
     
-    TaintInfo* clone = calloc(1, sizeof(TaintInfo));
+    TaintInfo* clone = xcalloc(1, sizeof(TaintInfo));
     if (!clone) return NULL;
     
     memcpy(clone, taint_info, sizeof(TaintInfo));
@@ -139,7 +139,7 @@ TaintInfo* taint_info_clone(TaintInfo* taint_info) {
 
 // AST annotation operations
 ASTTaintAnnotation* ast_taint_annotation_create(ASTNode* node, TaintInfo* taint_info) {
-    ASTTaintAnnotation* annotation = calloc(1, sizeof(ASTTaintAnnotation));
+    ASTTaintAnnotation* annotation = xcalloc(1, sizeof(ASTTaintAnnotation));
     if (!annotation) return NULL;
     
     annotation->node = node;
@@ -171,7 +171,7 @@ void ast_taint_annotation_destroy(ASTTaintAnnotation* annotation) {
 
 // Taint inference engine operations
 TaintInferenceEngine* taint_inference_engine_create(void) {
-    TaintInferenceEngine* engine = calloc(1, sizeof(TaintInferenceEngine));
+    TaintInferenceEngine* engine = xcalloc(1, sizeof(TaintInferenceEngine));
     if (!engine) return NULL;
     
     // Initialize function signatures with common patterns
@@ -211,7 +211,7 @@ void taint_inference_engine_destroy(TaintInferenceEngine* engine) {
 
 // Main taint analyzer operations
 TaintAnalyzer* taint_analyzer_create(SecurityContext* security_context) {
-    TaintAnalyzer* analyzer = calloc(1, sizeof(TaintAnalyzer));
+    TaintAnalyzer* analyzer = xcalloc(1, sizeof(TaintAnalyzer));
     if (!analyzer) return NULL;
     
     analyzer->security_context = security_context;
@@ -265,7 +265,7 @@ void taint_analyzer_destroy(TaintAnalyzer* analyzer) {
 
 Result_void_ptr taint_analyzer_initialize(TaintAnalyzer* analyzer) {
     if (!analyzer) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid analyzer pointer";
@@ -293,7 +293,7 @@ Result_void_ptr taint_analyzer_initialize(TaintAnalyzer* analyzer) {
 // Built-in taint sources registration
 Result_void_ptr taint_register_builtin_sources(TaintAnalyzer* analyzer) {
     if (!analyzer || !analyzer->inference_engine) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid analyzer or inference engine";
@@ -343,7 +343,7 @@ Result_void_ptr taint_register_builtin_sources(TaintAnalyzer* analyzer) {
 // Built-in taint sinks registration
 Result_void_ptr taint_register_builtin_sinks(TaintAnalyzer* analyzer) {
     if (!analyzer || !analyzer->inference_engine) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid analyzer or inference engine";
@@ -408,7 +408,7 @@ Result_void_ptr taint_register_builtin_sinks(TaintAnalyzer* analyzer) {
 // Built-in sanitization functions registration
 Result_void_ptr taint_register_builtin_sanitizers(TaintAnalyzer* analyzer) {
     if (!analyzer || !analyzer->inference_engine) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid analyzer or inference engine";
@@ -472,7 +472,7 @@ Result_void_ptr taint_register_builtin_sanitizers(TaintAnalyzer* analyzer) {
 
 // Built-in propagation rules
 TaintPropagationRule* taint_rule_create_assignment(void) {
-    TaintPropagationRule* rule = calloc(1, sizeof(TaintPropagationRule));
+    TaintPropagationRule* rule = xcalloc(1, sizeof(TaintPropagationRule));
     if (!rule) return NULL;
     
     strncpy(rule->rule_name, "assignment", sizeof(rule->rule_name) - 1);
@@ -486,7 +486,7 @@ TaintPropagationRule* taint_rule_create_assignment(void) {
 }
 
 TaintPropagationRule* taint_rule_create_arithmetic(void) {
-    TaintPropagationRule* rule = calloc(1, sizeof(TaintPropagationRule));
+    TaintPropagationRule* rule = xcalloc(1, sizeof(TaintPropagationRule));
     if (!rule) return NULL;
     
     strncpy(rule->rule_name, "arithmetic", sizeof(rule->rule_name) - 1);
@@ -500,7 +500,7 @@ TaintPropagationRule* taint_rule_create_arithmetic(void) {
 }
 
 TaintPropagationRule* taint_rule_create_string_operation(void) {
-    TaintPropagationRule* rule = calloc(1, sizeof(TaintPropagationRule));
+    TaintPropagationRule* rule = xcalloc(1, sizeof(TaintPropagationRule));
     if (!rule) return NULL;
     
     strncpy(rule->rule_name, "string_operation", sizeof(rule->rule_name) - 1);
@@ -515,7 +515,7 @@ TaintPropagationRule* taint_rule_create_string_operation(void) {
 
 // Compiler integration operations
 CompilerTaintIntegration* compiler_taint_integration_create(TaintAnalyzer* analyzer) {
-    CompilerTaintIntegration* integration = calloc(1, sizeof(CompilerTaintIntegration));
+    CompilerTaintIntegration* integration = xcalloc(1, sizeof(CompilerTaintIntegration));
     if (!integration) return NULL;
     
     integration->analyzer = analyzer;
@@ -551,7 +551,7 @@ void compiler_taint_integration_destroy(CompilerTaintIntegration* integration) {
 // Configuration function
 Result_void_ptr taint_analyzer_configure(TaintAnalyzer* analyzer, TaintAnalysisConfig config) {
     if (!analyzer) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid analyzer pointer";
@@ -569,7 +569,7 @@ Result_void_ptr taint_analyzer_configure(TaintAnalyzer* analyzer, TaintAnalysisC
 // Stub implementations for complex analysis functions that would require full AST traversal
 Result_void_ptr taint_analyze_ast(TaintAnalyzer* analyzer, ASTNode* root) {
     if (!analyzer || !root) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid analyzer or AST node";
@@ -586,7 +586,7 @@ Result_void_ptr taint_analyze_ast(TaintAnalyzer* analyzer, ASTNode* root) {
 
 Result_bool taint_is_source(TaintAnalyzer* analyzer, ASTNode* node, TaintSourceType* source_type) {
     if (!analyzer || !node || !source_type) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";
@@ -601,7 +601,7 @@ Result_bool taint_is_source(TaintAnalyzer* analyzer, ASTNode* node, TaintSourceT
 
 Result_bool taint_is_sink(TaintAnalyzer* analyzer, ASTNode* node, TaintSinkType* sink_type) {
     if (!analyzer || !node || !sink_type) {
-        Error* err = malloc(sizeof(Error));
+        Error* err = xmalloc(sizeof(Error));
         if (err) {
             err->code = ERROR_INTERNAL;
             err->message = "Invalid parameters";

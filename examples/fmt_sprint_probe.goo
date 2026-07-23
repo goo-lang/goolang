@@ -1,0 +1,14 @@
+// fmt.Sprint (space iff neither operand a string) and fmt.Sprintln (always
+// space-separated + trailing newline), both returning a string and using the
+// shared string-building formatter (structs/pointers).
+package main
+import "fmt"
+type N struct { v int }
+func main() {
+	fmt.Println(fmt.Sprint("a", "b"))  // ab
+	fmt.Println(fmt.Sprint(1, 2))      // 1 2
+	fmt.Println(fmt.Sprint(1, "x", 2)) // 1x2
+	fmt.Println(fmt.Sprint(&N{v: 5}))  // &{5}
+	fmt.Print(fmt.Sprintln("a", "b"))  // a b\n
+	fmt.Print(fmt.Sprintln(1, 2, 3))   // 1 2 3\n
+}

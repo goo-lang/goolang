@@ -1,0 +1,37 @@
+// fwd_type_ref_probe (P2.3, T1): `type A struct { b *B }` declared BEFORE
+// `type B struct{...}` — the headline forward-type-reference case. Exercises
+// traversal (not just construction): field reads walk through the
+// forward-referenced B chain, and a `for` loop over B.next proves the
+// pointer fields resolved to the real (non-shell) struct layout, not a
+// stale/incomplete definition. go-run-verified byte-for-byte against an
+// equivalent .go program (same A/B shape; Go itself allows forward type
+// references within a file, so this is valid Go too).
+package main
+
+import "fmt"
+
+type A struct {
+	name string
+	b    *B
+}
+
+type B struct {
+	name string
+	next *B
+}
+
+func main() {
+	tail := &B{name: "b2", next: nil}
+	head := &B{name: "b1", next: tail}
+	a := &A{name: "a1", b: head}
+
+	fmt.Println(a.name, a.b.name, a.b.next.name)
+
+	sum := 0
+	n := a.b
+	for n != nil {
+		sum++
+		n = n.next
+	}
+	fmt.Println(sum)
+}

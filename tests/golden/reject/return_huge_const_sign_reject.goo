@@ -1,0 +1,14 @@
+// Correctness arc 10 (o rider): same-width sign-mismatch constant at the
+// RETURN sink — uint64-max returned from an int64 function must reject
+// (Go: constant overflows int64), not bit-reinterpret to -1.
+package main
+
+const B = 18446744073709551615
+
+func g() int64 {
+	return B
+}
+
+func main() {
+	g()
+}

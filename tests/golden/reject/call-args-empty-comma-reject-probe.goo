@@ -1,0 +1,10 @@
+// Task 4 (trailing comma in call args): `f(,)` — a lone comma with no
+// preceding argument — must stay a parse error. The new COMMA-before-RPAREN
+// call arms all require a non-empty expression_list/type_call_arg before
+// the COMMA (mirrors workarounds.md §5's `{,}` rule for composite
+// literals); there is no `LPAREN COMMA RPAREN` arm.
+package main
+func f(a int) int { return a }
+func main() {
+	_ = f(,)
+}

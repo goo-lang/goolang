@@ -1,0 +1,1 @@
+Package 'fmt' has no exported type 'Something'

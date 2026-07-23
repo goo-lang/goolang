@@ -1,0 +1,28 @@
+// defer_loop_cond_probe (P3.4): a conditional defer inside a loop only
+// pushes onto the runtime defer stack when its branch actually runs — the
+// stack path's "executing the statement IS the registration" replaces the
+// static path's runtime active-flag for the same effect. An early `return`
+// from inside the loop (after i==2) proves the stack unwinds whatever was
+// pushed so far (partial-loop LIFO), not a fixed per-iteration count.
+//
+// i=0: even -> push "even 0". i=1: odd -> no push. i=2: even -> push
+// "even 2", then i==2 triggers the early return. Pushed, in order: "even 0",
+// "even 2". LIFO unwind: "even 2" then "even 0".
+package main
+
+import "fmt"
+
+func run() {
+    for i := 0; i < 5; i++ {
+        if i%2 == 0 {
+            defer fmt.Println("even", i)
+        }
+        if i == 2 {
+            return
+        }
+    }
+}
+
+func main() {
+    run()
+}

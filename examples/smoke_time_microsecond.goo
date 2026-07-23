@@ -1,0 +1,18 @@
+// smoke_time_microsecond: P4.11 coverage-drift-catch fixture for
+// time.Microsecond — the one Duration constant time_sleep_probe.goo does
+// NOT exercise (it covers Nanosecond, Millisecond, Second). Pure constant
+// arithmetic, no wall-clock/sleep involved, so it's fully deterministic
+// (unlike time_sleep_probe's elapsed-time assertion).
+package main
+
+import "fmt"
+import "time"
+
+func main() {
+	// Go: Nanosecond=1, Microsecond=1000*Nanosecond.
+	fmt.Println(time.Microsecond == 1000*time.Nanosecond)
+	fmt.Println(1000*time.Microsecond == time.Millisecond)
+
+	d := 5 * time.Microsecond
+	fmt.Println(d == 5000)
+}

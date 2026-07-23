@@ -1,0 +1,33 @@
+// pkg_method_probe (P4.3/B2): cross-package method resolution. shapes.Point
+// (goostd/shapes/shapes.go) exports a value-receiver method (Sum) and a
+// pointer-receiver method (Scale) — this probes the method-CALL path for
+// both receiver kinds across a package boundary, plus method VALUES (P3.6
+// bound thunks) on a package-owned receiver: a plain bind-then-call and a
+// bind passed as a callback argument. Expected output derived from the
+// equivalent real-Go program (pkg_method_probe_ref.go, `go run`-verified) —
+// NOT itself `go run`-able since `import "shapes"` here resolves a Goo
+// source package (GOOROOT), not a real Go module.
+package main
+
+import "fmt"
+import "shapes"
+
+func callWithCallback(f func() int) int {
+	return f()
+}
+
+func main() {
+	p := shapes.NewPoint(3, 4)
+	fmt.Println(p.Sum()) // value-receiver method call
+
+	p.Scale(2) // pointer-receiver method mutating through auto-&
+	fmt.Println(p.X)
+	fmt.Println(p.Y)
+	fmt.Println(p.Sum())
+
+	f := p.Sum  // method value: bound receiver snapshot
+	p.Scale(10) // mutate AFTER binding — bound value must NOT see this
+	fmt.Println(f())
+
+	fmt.Println(callWithCallback(f)) // method value passed as callback
+}

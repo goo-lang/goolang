@@ -14,6 +14,7 @@ typedef struct {
     Type* type;                        // struct type at this node
     const char* path[EMBED_MAX_DEPTH]; // field-name hops to reach it
     size_t len;
+    int via_ptr;                       // 1 if any hop so far crossed a pointer field
 } QueueEntry;
 
 // The nameable identity of a type for the visited set / method mangling.
@@ -59,7 +60,14 @@ static int embed_direct_member(TypeChecker* checker, Type* t, const char* name,
     const char* tn = embed_type_name(t);
     if (tn) {
         char* mangled = type_method_mangled_name(tn, name);
-        Variable* m = mangled ? type_checker_lookup_variable(checker, mangled) : NULL;
+        // P4.3 review-fix (MAJOR): owner-routed lookup so a package-owned
+        // embedded member's methods (declared in ITS package, visible only
+        // through its exports scope) resolve during promotion and
+        // interface-satisfaction-via-embedding — same routing as every
+        // other method-existence site (see type_checker_lookup_method).
+        Variable* m = mangled
+            ? type_checker_lookup_method(checker, t, name, mangled)
+            : NULL;
         free(mangled);
         if (m && m->type && m->type->kind == TYPE_FUNCTION) {
             *member_type = m->type;
@@ -90,6 +98,7 @@ EmbedResult embedding_resolve(TypeChecker* checker, Type* struct_type,
 
     queue[tail].type = struct_type;
     queue[tail].len = 0;
+    queue[tail].via_ptr = 0;
     tail++;
     const char* rootname = embed_type_name(struct_type);
     if (rootname && visited_count < EMBED_MAX_VISITED) {
@@ -120,6 +129,7 @@ EmbedResult embedding_resolve(TypeChecker* checker, Type* struct_type,
                         res.kind = ism ? EMBED_METHOD : EMBED_FIELD;
                         res.type = mt;
                         res.owner = t;
+                        res.via_pointer = queue[q].via_ptr;
                         // Path to the OWNER: all hops (the member itself is
                         // resolved at the last hop's type).
                         res.len = queue[q].len;
@@ -164,6 +174,7 @@ EmbedResult embedding_resolve(TypeChecker* checker, Type* struct_type,
                 if (tail >= EMBED_MAX_QUEUE) continue; // bounded; silently deep
                 queue[tail].type = child;
                 queue[tail].len = queue[q].len + 1;
+                queue[tail].via_ptr = queue[q].via_ptr || (f->type->kind == TYPE_POINTER);
                 for (size_t p = 0; p < queue[q].len; p++)
                     queue[tail].path[p] = queue[q].path[p];
                 queue[tail].path[queue[q].len] = f->name;

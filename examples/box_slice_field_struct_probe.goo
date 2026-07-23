@@ -1,0 +1,47 @@
+// box_slice_field_struct_probe (correctness follow-ups arc3 Task 2): boxing a
+// struct that contains a []T field into `any` used to CRASH the compiler with
+// raw LLVM verifier output ("Module verification failed: Invalid operand types
+// for ICmp instruction  %eq = icmp eq { ptr, i64, i64 } ...") — a live verifier
+// leak reaching users. Root cause: boxing eagerly bakes a value-equality
+// comparator (eq_fn) into the concrete type's descriptor
+// (codegen_get_or_emit_type_desc -> codegen_get_or_emit_type_eq); the struct
+// arm delegated UNCONDITIONALLY to codegen_get_or_emit_struct_key_eq, whose
+// per-field `icmp eq` is illegal over a slice aggregate ({ptr,len,cap}). The
+// crash fired at BOXING time, before any comparison, and even without a print.
+//
+// Fix (arc3 Task 2): a NON-comparable struct (slice/map/func/interface/array
+// field) now routes its descriptor eq_fn to the shared uncomparable-panic stub
+// instead of synthesizing an illegal comparator — boxing is legal Go, only an
+// actual interface `==` on the boxed value panics at runtime (Go-faithful; v1
+// does not yet lower interface `==` at all, so that panic path is unreachable
+// from source today). The %v formatter reached AFTER boxing prints the slice
+// field correctly.
+//
+// Each pair below prints the CONCRETE value then the SAME value boxed into
+// `any`; the two lines must be byte-identical and match Go's `{...}` %v shape.
+// Static `==` on such a struct is a positioned checker rejection (Go parity) —
+// see tests/golden/reject/struct_slice_eq_reject.goo.
+package main
+
+import "fmt"
+
+type WithSlice struct {
+	Items []int
+}
+
+type Mixed struct {
+	Name  string
+	Items []int
+}
+
+func main() {
+	ws := WithSlice{Items: []int{1, 2, 3}}
+	fmt.Println(ws)
+	var xw any = ws
+	fmt.Println(xw)
+
+	mx := Mixed{Name: "go", Items: []int{4, 5}}
+	fmt.Println(mx)
+	var xm any = mx
+	fmt.Println(xm)
+}

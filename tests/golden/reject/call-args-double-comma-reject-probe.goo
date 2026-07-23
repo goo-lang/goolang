@@ -1,0 +1,9 @@
+// Task 4 (trailing comma in call args): `f(1,,)` — two consecutive commas —
+// must stay a parse error. The new arms tolerate exactly ONE trailing
+// comma (`expression_list COMMA RPAREN`); a second COMMA has no element
+// between it and the first, so no production consumes it.
+package main
+func f(a int, b int) int { return a + b }
+func main() {
+	_ = f(1,,)
+}

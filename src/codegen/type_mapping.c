@@ -6,10 +6,36 @@
 
 // Type mapping from Goo types to LLVM types
 
+// Function-generics Task 8: resolve a TYPE_PARAM through the codegen's
+// active substitution environment (Task 9/10 populate active_subst /
+// active_subst_n around a monomorphized instantiation's codegen). Identity
+// for any non-TYPE_PARAM type, and identity for a TYPE_PARAM when there is
+// no active env, the index is out of range, or that slot is unbound
+// (NULL) — callers detect "unbound" by comparing the result against `t`.
+const Type* codegen_resolve_type(CodeGenerator* codegen, const Type* t) {
+    if (t && t->kind == TYPE_PARAM && codegen->active_subst) {
+        int i = t->data.type_param.index;
+        if (i >= 0 && (size_t)i < codegen->active_subst_n && codegen->active_subst[i])
+            return codegen->active_subst[i];
+    }
+    return t;
+}
+
 LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type) {
     if (!codegen || !type) return NULL;
-    
+
     switch (type->kind) {
+        case TYPE_PARAM: {
+            // Never occurs on the non-generic path (active_subst == NULL
+            // there), so this branch is exercised starting with Task 9's
+            // monomorphization worklist. Recursing on the resolved concrete
+            // type lets it be anything codegen_type_to_llvm otherwise
+            // handles, including another (bound) TYPE_PARAM one level in.
+            const Type* r = codegen_resolve_type(codegen, type);
+            if (r == type) return NULL; // unbound TYPE_PARAM at lowering = internal error
+            return codegen_type_to_llvm(codegen, r);
+        }
+
         case TYPE_VOID:
         case TYPE_BOOL:
         case TYPE_INT8:

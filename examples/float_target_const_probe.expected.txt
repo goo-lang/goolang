@@ -1,0 +1,16 @@
+1
+2
+0
+-3
+3
+zero
+one
+three
+other
+neg-three
+two
+other
+mixed-one
+mixed-two-point-five
+mixed-neg-three
+mixed-other

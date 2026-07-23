@@ -8,7 +8,7 @@
 // Flow-sensitive ownership analyzer implementation
 
 FlowSensitiveAnalyzer* flow_analyzer_new(TypeChecker* type_checker) {
-    FlowSensitiveAnalyzer* analyzer = malloc(sizeof(FlowSensitiveAnalyzer));
+    FlowSensitiveAnalyzer* analyzer = xmalloc(sizeof(FlowSensitiveAnalyzer));
     if (!analyzer) return NULL;
     
     analyzer->type_checker = type_checker;
@@ -58,7 +58,7 @@ void flow_analyzer_free(FlowSensitiveAnalyzer* analyzer) {
 ControlFlowGraph* cfg_build(ASTNode* function_body) {
     if (!function_body) return NULL;
     
-    ControlFlowGraph* cfg = malloc(sizeof(ControlFlowGraph));
+    ControlFlowGraph* cfg = xmalloc(sizeof(ControlFlowGraph));
     if (!cfg) return NULL;
     
     cfg->blocks = NULL;
@@ -134,7 +134,7 @@ BasicBlock* cfg_add_block(ControlFlowGraph* cfg) {
         if (!cfg->blocks) return NULL;
     }
     
-    BasicBlock* block = malloc(sizeof(BasicBlock));
+    BasicBlock* block = xmalloc(sizeof(BasicBlock));
     if (!block) return NULL;
     
     block->id = cfg->block_count;
@@ -275,7 +275,7 @@ void cfg_compute_dominators(ControlFlowGraph* cfg) {
 ValueState* value_state_new(const char* name, ValueStateKind initial_state) {
     if (!name) return NULL;
     
-    ValueState* state = malloc(sizeof(ValueState));
+    ValueState* state = xmalloc(sizeof(ValueState));
     if (!state) return NULL;
     
     state->name = malloc(strlen(name) + 1);
@@ -367,7 +367,7 @@ void value_state_merge(ValueState* target, const ValueState* source) {
 // Ownership State Management
 
 OwnershipState* ownership_state_new(OwnershipState* parent) {
-    OwnershipState* state = malloc(sizeof(OwnershipState));
+    OwnershipState* state = xmalloc(sizeof(OwnershipState));
     if (!state) return NULL;
     
     state->values = NULL;

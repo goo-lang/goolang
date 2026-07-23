@@ -1,0 +1,33 @@
+// fmt_struct_map_field_via_assert_reject (Arc 15 item l, review finding):
+// sibling of fmt_struct_map_field_reject.goo, but the struct-with-map-field
+// type's %v formatter is FIRST synthesized via a type-switch CASE (which
+// routes through codegen_interface_assert_match), not via a direct
+// codegen_interface_box call site. WithMap is never boxed into `any`
+// anywhere in this program — `check`'s parameter only ever receives an int
+// (see main), so the ONLY codegen path that ever requests WithMap's vtable/
+// type-descriptor/formatter is the `case WithMap:` compare inside the type
+// switch. codegen_get_or_emit_type_desc unconditionally synthesizes the
+// type's %v formatter (interface_codegen.c ~505) as a side effect of that
+// vtable lookup, so the unsupported-map-field diagnostic still fires here —
+// but before the fix, codegen_interface_assert_match's call into
+// codegen_interface_vtable passed a hardcoded (Position){0}, so the
+// diagnostic reported "<unknown>:0:0" instead of a real file:line, even
+// though this reject fixture's sibling (fmt_struct_map_field_reject.goo)
+// already carries a real position for the direct-box leg. This fixture
+// pins that the assert/type-switch leg is positioned too.
+package main
+
+type WithMap struct {
+	M map[string]int
+}
+
+func check(x any) {
+	switch v := x.(type) {
+	case WithMap:
+		_ = v
+	}
+}
+
+func main() {
+	check(42)
+}

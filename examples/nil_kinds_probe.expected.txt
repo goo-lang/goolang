@@ -1,0 +1,21 @@
+PASS: ptr zero is nil
+PASS: ptr assigned nil
+PASS: ptr assigned non-nil
+PASS: ptr reassigned nil
+PASS: slice zero is nil
+PASS: slice assigned nil
+PASS: slice assigned non-nil
+PASS: slice reassigned nil
+PASS: map zero is nil
+PASS: map assigned nil
+PASS: map assigned non-nil
+PASS: map reassigned nil
+PASS: chan zero is nil
+PASS: chan assigned nil
+PASS: chan assigned non-nil
+PASS: chan reassigned nil
+PASS: func zero is nil
+PASS: func assigned nil
+PASS: func assigned non-nil
+PASS: func still callable
+PASS: func reassigned nil

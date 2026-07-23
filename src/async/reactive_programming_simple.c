@@ -31,7 +31,7 @@ static uint64_t generate_id(void) {
 ReactiveSystemExtension* reactive_system_create(const char* name, ActorSystem* actor_system) {
     if (!actor_system) return NULL;
     
-    ReactiveSystemExtension* reactive_system = calloc(1, sizeof(ReactiveSystemExtension));
+    ReactiveSystemExtension* reactive_system = xcalloc(1, sizeof(ReactiveSystemExtension));
     if (!reactive_system) return NULL;
     
     reactive_system->id = generate_id();
@@ -123,7 +123,7 @@ Result_void_ptr reactive_system_shutdown(ReactiveSystemExtension* reactive_syste
 // Event Stream Implementation
 
 EventStream* event_stream_create(const char* name, EventType type) {
-    EventStream* stream = calloc(1, sizeof(EventStream));
+    EventStream* stream = xcalloc(1, sizeof(EventStream));
     if (!stream) return NULL;
     
     stream->id = generate_id();
@@ -211,7 +211,7 @@ Result_void_ptr event_stream_close(EventStream* stream) {
 // Event Implementation
 
 Event* event_create(EventType type, const char* name, void* data, size_t data_size) {
-    Event* event = calloc(1, sizeof(Event));
+    Event* event = xcalloc(1, sizeof(Event));
     if (!event) return NULL;
     
     event->id = generate_id();
@@ -320,7 +320,7 @@ Result_void_ptr event_stream_publish(EventStream* stream, Event* event) {
 // Reactive Component Implementation
 
 ReactiveComponent* reactive_component_create(const char* name, ReactiveComponentConfig* config) {
-    ReactiveComponent* component = calloc(1, sizeof(ReactiveComponent));
+    ReactiveComponent* component = xcalloc(1, sizeof(ReactiveComponent));
     if (!component) return NULL;
     
     component->id = generate_id();

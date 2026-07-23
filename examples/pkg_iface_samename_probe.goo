@@ -1,0 +1,33 @@
+// pkg-iface-samename-probe (P4.3 review fix, CRITICAL-class hardening):
+// main declares its OWN `Rect` with an `Area` method whose BODY differs
+// from kinds.Rect's (add vs multiply), and BOTH are boxed into the same
+// kinds.Shaper interface. Dispatch must stay per-owner: the vtable global
+// and thunk cache keys are package-qualified (goo.vtable.kinds__Rect.Shaper
+// vs goo.vtable.Rect.Shaper, interface_codegen.c) — with bare keys the
+// first boxing to run would have interned its thunks under the shared name
+// and the OTHER type's calls would silently run the wrong body (and
+// vtable-identity type asserts would cross-match). Expected output verified
+// via `go run` on the equivalent two-package Go module.
+package main
+
+import "fmt"
+import "kinds"
+
+type Rect struct {
+	W int
+	H int
+}
+
+func (r Rect) Area() int {
+	return r.W + r.H // ADD — distinguishes main's Rect from kinds' (multiply)
+}
+
+func main() {
+	var s kinds.Shaper
+	s = kinds.NewRect(3, 5)
+	fmt.Println(s.Area()) // kinds' Rect: 3*5 = 15
+
+	m := Rect{W: 3, H: 5}
+	s = m
+	fmt.Println(s.Area()) // main's Rect: 3+5 = 8
+}

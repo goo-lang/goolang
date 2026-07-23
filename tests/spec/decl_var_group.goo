@@ -1,0 +1,13 @@
+// Spec: Declarations / Variable declarations — grouped var
+package main
+
+import "fmt"
+
+var (
+	a = 10
+	b = 20
+)
+
+func main() {
+	fmt.Println(a + b)
+}

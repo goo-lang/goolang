@@ -1,0 +1,18 @@
+// arena-escape-store probe (Task 6): `keep` is a pre-block outer local;
+// storing the new(int) into it inside the arena {} block is 7b's
+// store-to-outer-local sink, so the site escapes and 7c routes it to the
+// heap. The arena block itself falls through (its own fall-through free
+// runs), and `keep` is dereferenced AFTER the block — proving the
+// store-escaped allocation survives the arena free that just ran.
+package main
+
+import "fmt"
+
+func main() {
+	var keep *int
+	arena {
+		keep = new(int)
+		*keep = 5
+	}
+	fmt.Println(*keep)
+}

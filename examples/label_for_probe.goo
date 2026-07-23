@@ -1,0 +1,37 @@
+// label_for_probe (P1.5 behavioral probe): `L: for { ... }` — a label
+// directly wrapping a bare infinite `for` loop, no init/cond/post. Proves
+// the M10 LBRACE_BODY lexer bridge (SKILL.md workarounds.md §1) is not
+// confused by the label's `identifier COLON` prefix immediately preceding
+// the FOR keyword: the bridge must still push/pop FOR's cond-frame and
+// emit LBRACE_BODY for the loop's own `{` exactly as it would unlabeled.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the
+// VALUE below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func main() {
+//   	n := 0
+//   L:
+//   	for {
+//   		n++
+//   		if n == 3 {
+//   			break L
+//   		}
+//   	}
+//   	println(n)
+//   }
+// `go run` stderr: "3\n"
+package main
+
+func main() {
+	n := 0
+L:
+	for {
+		n++
+		if n == 3 {
+			break L
+		}
+	}
+	println(n)
+}

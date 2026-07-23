@@ -1,0 +1,11 @@
+// nil_map_write_abort_probe (P3.9, USER DECIDED: Go parity): writing to a
+// nil map must panic with Go's exact message, not silently vanish — mirrors
+// divzero_abort_probe/close_twice_abort_probe's .exit + .stderr.txt
+// convention (expected exit code: 2 — Go-conformant panic exit; see
+// nil_map_write_abort_probe.exit and .stderr.txt).
+package main
+
+func main() {
+	var m map[string]int
+	m["x"] = 1
+}

@@ -28,7 +28,7 @@
 // =============================================================================
 
 OptimizationContext* optimization_context_new(OptimizationSafetyLevel safety_level) {
-    OptimizationContext* ctx = malloc(sizeof(OptimizationContext));
+    OptimizationContext* ctx = xmalloc(sizeof(OptimizationContext));
     if (!ctx) {
         return NULL;
     }
@@ -191,7 +191,7 @@ int enable_hardware_verification(OptimizationContext* ctx, HardwareCapabilities 
 }
 
 HardwareVerifier* hardware_verifier_new(HardwareCapabilities caps) {
-    HardwareVerifier* verifier = malloc(sizeof(HardwareVerifier));
+    HardwareVerifier* verifier = xmalloc(sizeof(HardwareVerifier));
     if (!verifier) return NULL;
     
     memset(verifier, 0, sizeof(HardwareVerifier));
@@ -239,7 +239,7 @@ void hardware_verifier_free(HardwareVerifier* verifier) {
 BoundsCheckInfo* analyze_bounds_check(OptimizationContext* ctx, struct ASTNode* index_access) {
     if (!ctx || !index_access) return NULL;
     
-    BoundsCheckInfo* info = malloc(sizeof(BoundsCheckInfo));
+    BoundsCheckInfo* info = xmalloc(sizeof(BoundsCheckInfo));
     if (!info) return NULL;
     
     memset(info, 0, sizeof(BoundsCheckInfo));
@@ -389,7 +389,7 @@ int eliminate_null_check(OptimizationContext* ctx, struct ASTNode* pointer_acces
 BranchInfo* analyze_branch(OptimizationContext* ctx, struct ASTNode* branch_node) {
     if (!ctx || !branch_node) return NULL;
     
-    BranchInfo* info = malloc(sizeof(BranchInfo));
+    BranchInfo* info = xmalloc(sizeof(BranchInfo));
     if (!info) return NULL;
     
     memset(info, 0, sizeof(BranchInfo));
@@ -461,7 +461,7 @@ void branch_info_free(BranchInfo* info) {
 LoopOptInfo* analyze_loop(OptimizationContext* ctx, struct ASTNode* loop_node) {
     if (!ctx || !loop_node) return NULL;
     
-    LoopOptInfo* info = malloc(sizeof(LoopOptInfo));
+    LoopOptInfo* info = xmalloc(sizeof(LoopOptInfo));
     if (!info) return NULL;
     
     memset(info, 0, sizeof(LoopOptInfo));
@@ -551,7 +551,7 @@ void loop_opt_info_free(LoopOptInfo* info) {
 // =============================================================================
 
 SpeculationContext* speculation_context_new(struct ASTNode* speculation_point) {
-    SpeculationContext* spec_ctx = malloc(sizeof(SpeculationContext));
+    SpeculationContext* spec_ctx = xmalloc(sizeof(SpeculationContext));
     if (!spec_ctx) return NULL;
     
     memset(spec_ctx, 0, sizeof(SpeculationContext));
@@ -734,7 +734,7 @@ struct ProofReport* generate_optimization_safety_proof(OptimizationContext* ctx,
     
     // This would integrate with the proof generation system
     // For now, return a stub proof result
-    struct ProofReport* result = malloc(sizeof(struct ProofReport));
+    struct ProofReport* result = xmalloc(sizeof(struct ProofReport));
     if (!result) return NULL;
     
     memset(result, 0, sizeof(struct ProofReport));
@@ -757,7 +757,7 @@ ContractExpression* create_optimization_contract(OptimizationContext* ctx,
                                                 struct ASTNode* target) {
     if (!ctx || !target) return NULL;
     
-    ContractExpression* contract = malloc(sizeof(ContractExpression));
+    ContractExpression* contract = xmalloc(sizeof(ContractExpression));
     if (!contract) return NULL;
     
     memset(contract, 0, sizeof(ContractExpression));
@@ -780,7 +780,7 @@ int verify_optimization_memory_safety(OptimizationContext* ctx, struct ASTNode* 
 // =============================================================================
 
 ProfileData* profile_data_new(const char* function_name) {
-    ProfileData* data = malloc(sizeof(ProfileData));
+    ProfileData* data = xmalloc(sizeof(ProfileData));
     if (!data) return NULL;
     
     memset(data, 0, sizeof(ProfileData));
@@ -874,7 +874,7 @@ void optimization_clear_error(OptimizationContext* ctx) {
 AdaptiveOptimizer* adaptive_optimizer_new(OptimizationContext* ctx) {
     if (!ctx) return NULL;
     
-    AdaptiveOptimizer* optimizer = malloc(sizeof(AdaptiveOptimizer));
+    AdaptiveOptimizer* optimizer = xmalloc(sizeof(AdaptiveOptimizer));
     if (!optimizer) return NULL;
     
     memset(optimizer, 0, sizeof(AdaptiveOptimizer));
@@ -920,7 +920,7 @@ OptimizationDiagnostic* optimization_diagnostic_new(OptimizationType opt_type,
                                                    struct ASTNode* target,
                                                    OptimizationError error,
                                                    const char* message) {
-    OptimizationDiagnostic* diag = malloc(sizeof(OptimizationDiagnostic));
+    OptimizationDiagnostic* diag = xmalloc(sizeof(OptimizationDiagnostic));
     if (!diag) return NULL;
     
     memset(diag, 0, sizeof(OptimizationDiagnostic));
@@ -1000,7 +1000,7 @@ OptimizationBenchmark* benchmark_optimization(OptimizationContext* ctx,
                                              struct ASTNode* target) {
     if (!ctx || !target) return NULL;
     
-    OptimizationBenchmark* benchmark = malloc(sizeof(OptimizationBenchmark));
+    OptimizationBenchmark* benchmark = xmalloc(sizeof(OptimizationBenchmark));
     if (!benchmark) return NULL;
     
     memset(benchmark, 0, sizeof(OptimizationBenchmark));

@@ -11,7 +11,7 @@
 // =============================================================================
 
 ComptimeTypeContext* comptime_type_context_new(ComptimeContext* comptime_ctx) {
-    ComptimeTypeContext* ctx = malloc(sizeof(ComptimeTypeContext));
+    ComptimeTypeContext* ctx = xmalloc(sizeof(ComptimeTypeContext));
     if (!ctx) return NULL;
     
     ctx->comptime_ctx = comptime_ctx;
@@ -49,7 +49,7 @@ void comptime_type_context_free(ComptimeTypeContext* ctx) {
 
 TypeFunction* type_function_new(const char* name, Type** param_types, size_t param_count, 
                                 Type* return_type, ASTNode* body) {
-    TypeFunction* func = malloc(sizeof(TypeFunction));
+    TypeFunction* func = xmalloc(sizeof(TypeFunction));
     if (!func) return NULL;
     
     func->name = strdup(name);
@@ -112,7 +112,7 @@ TypeFunction* comptime_type_lookup_function(ComptimeTypeContext* ctx, const char
 // =============================================================================
 
 ComptimeTypeResult* comptime_type_result_new(Type* type, ComptimeValue* value) {
-    ComptimeTypeResult* result = malloc(sizeof(ComptimeTypeResult));
+    ComptimeTypeResult* result = xmalloc(sizeof(ComptimeTypeResult));
     if (!result) return NULL;
     
     result->type = type;

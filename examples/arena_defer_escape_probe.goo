@@ -1,0 +1,32 @@
+// arena-defer-escape regression probe. A `defer` runs at the enclosing
+// FUNCTION's exit — AFTER this arena block closes and frees its arena — so a
+// value passed to a deferred call outlives the block and MUST be heap-promoted,
+// not arena-allocated. `check` is non-retaining (it dereferences q but keeps
+// the result local), so before the block-escape fix for defer it was wrongly
+// classified as a block-local, routed `p` into the arena, and the deferred
+// check(p) at function exit read arena memory freed at block exit — a
+// use-after-free that valgrind catches (it "worked by luck" because the freed
+// byte still held 5). After the fix, `defer`'d call arguments escape the block
+// (like goroutine args), so `p` is heap-promoted and survives to the deferred
+// read. The golden output is identical either way; the arena-valgrind-probe
+// gate is what distinguishes the UAF from the fix.
+package main
+
+import "fmt"
+
+func check(q *int) {
+	if *q == 5 {
+		fmt.Println("defer read ok")
+	} else {
+		fmt.Println("CORRUPT")
+	}
+}
+
+func main() {
+	arena {
+		p := new(int)
+		*p = 5
+		defer check(p)
+	}
+	fmt.Println("after")
+}

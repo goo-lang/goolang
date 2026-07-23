@@ -10,12 +10,22 @@ context-sensitive lexer workarounds. Grammar changes are safe here ONLY when
 run through this procedure — the failure mode otherwise is a silent parse
 behavior change, not a build break.
 
+Rule ACTION bodies are C code that lives in `src/parser/parser_actions.c`
+(helpers called from `parser.y`'s actions) and `src/parser/parser_errors.c`
+(`yyerror`); grammar RULES themselves — structure, ordering, token usage —
+stay in `parser.y`. This split moves C code around only: it never changes
+what parses, so it carries no tripwire risk by itself, but every `parser.y`
+line-number anchor below still has to point at the current file.
+
 ## Procedure
 
 1. **Before editing**: confirm a clean baseline.
 
    ```bash
-   ./scripts/grammar-tripwire.sh    # expect: PASS (81 S/R + 256 R/R — baseline exact)
+   ./scripts/grammar-tripwire.sh    # expect: PASS (the exact counts recorded in
+                                     # scripts/grammar-tripwire.sh's EXPECTED_SR/
+                                     # EXPECTED_RR — see the ledger for the current
+                                     # baseline number)
    ```
 
    If it fails BEFORE your edit, stop — the tree is already off-baseline;
@@ -48,12 +58,21 @@ behavior change, not a build break.
    make test                         # 76 passed / 1 skipped
    ```
 
-5. **If you touched ANY header** (`include/ast.h` above all): `make clean`
-   first — the Makefile has no header dependencies; stale objects silently
-   miscompile. In `ast.h`, append enum values and struct fields at the TAIL
-   only. If you added a field to a parser-allocated node, audit every
-   `malloc(sizeof(<Node>))` site to initialize it — malloc garbage in a flag
-   is a heisenbug factory (see the `has_spread` audit precedent).
+5. **If you touched ANY header** (`include/ast.h` above all): dependency
+   tracking exists (-MMD/-MP since PR #123), so dependents rebuild
+   automatically — but in `ast.h`, still append enum values and struct
+   fields at the TAIL only (out-of-tree consumers and dep-tracking
+   regressions fail silently on mid-enum renumbering). If you added a field
+   to a parser-allocated node, audit every `malloc(sizeof(<Node>))` site to
+   initialize it — malloc garbage in a flag is a heisenbug factory (see the
+   `has_spread` audit precedent).
+
+   **Statement termination is Go-shaped since P5.10** (PR #183): statement
+   lists require terminators except a bare FINAL statement; the lexer's ASI
+   is generalized rule-1 with four pinned leniency exceptions (`)` `}` `...`
+   `else`). Before adding any statement/decl production, read
+   `references/workarounds.md` §4 — new newline-separated constructs need
+   member-attached trailing-SEMICOLON arms or they will not parse.
 
 6. **New reject behavior** gets a Makefile reject-probe (compile-must-fail +
    message grep) wired into the `verify:` list; new accept behavior gets a

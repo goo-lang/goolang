@@ -4,6 +4,7 @@
 #include "ast.h"
 #include "types.h"
 #include "runtime.h"
+#include "codegen_cfctx.h"
 #include <stddef.h>
 
 // LLVM C API includes (only if LLVM is available)
@@ -15,6 +16,7 @@
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 #define LLVM_AVAILABLE 1
 #else
 #define LLVM_AVAILABLE 0
@@ -28,6 +30,20 @@
 typedef struct CodeGenerator CodeGenerator;
 typedef struct FunctionInfo FunctionInfo;
 typedef struct ValueInfo ValueInfo;
+// Arena-regions Task 7c: block_escape.h owns the full definition; codegen.h
+// only needs a pointer-sized member, so a forward declaration avoids a
+// codegen.h -> block_escape.h -> ast.h/param_escape.h header dependency.
+struct BlockEscapeResult;
+
+// Allocation routing (arena-regions groundwork): every heap-allocation call
+// site funnels through codegen_emit_alloc via one of these kinds. DEFAULT is
+// the only kind today (always routes to goo_alloc) — a later task adds
+// region-aware kinds that branch inside that single helper instead of at
+// each of the ~9 call sites that used to inline the goo_alloc lookup+call
+// idiom themselves.
+typedef enum {
+    ALLOC_KIND_DEFAULT = 0,
+} AllocKind;
 
 #if LLVM_AVAILABLE
 // Deferred global initializer (Task 2 / var-init cluster): a package-level
@@ -84,12 +100,6 @@ struct CodeGenerator {
     LLVMTypeRef* struct_cache_vals;
     size_t struct_cache_size;
     size_t struct_cache_cap;
-
-    // Loop-context stack for break/continue targets (depth-bounded; nesting
-    // deeper than 32 is rejected with a codegen error).
-    LLVMBasicBlockRef loop_break_bb[32];
-    LLVMBasicBlockRef loop_continue_bb[32];
-    int loop_depth;
 
     // Error reporting
     char* current_file;
@@ -157,6 +167,112 @@ struct CodeGenerator {
     // concrete types (slice/map/func) boxed into an interface; emitted at
     // most once per module. NULL until first requested.
     LLVMValueRef uncmpeq_fn;
+
+    // Function-generics Task 8: substitution environment for lowering a
+    // generic function's TYPE_PARAM types to their concrete bindings during
+    // monomorphized codegen (Task 9/10 set these around a given
+    // instantiation's codegen). active_subst[i] holds the concrete Type*
+    // bound to TYPE_PARAM index i; active_subst_n is its length. NULL/0
+    // (the default — see codegen_new) means "no active substitution", in
+    // which case codegen_resolve_type is the identity function and
+    // TYPE_PARAM never reaches codegen_type_to_llvm on the non-generic path.
+    Type** active_subst;     // TYPE_PARAM index -> concrete Type*, or NULL
+    size_t active_subst_n;
+
+    // Function-generics Task 9: when non-NULL, codegen_generate_function_decl
+    // (function_codegen.c, at the symbol_name finalization site) uses this
+    // verbatim as the emitted LLVM symbol instead of computing the ordinary
+    // bare/package-mangled name from the AST. Set (and cleared) by
+    // codegen_generate_function_instance (monomorphize.c) around the single
+    // call that stamps one concrete instantiation's body under its mangled
+    // name (e.g. `Id__int64`) — this is what lets the shared template
+    // FuncDeclNode be lowered more than once, under a different symbol each
+    // time, without touching codegen_generate_function_decl's ordinary path.
+    // NULL (the default — see codegen_new) preserves that ordinary path
+    // byte-for-byte for every non-generic function.
+    const char* symbol_override;
+
+    // Arena-regions Task 3 (hybrid-memory): stack of currently active
+    // arenas. arena_stack[i] is the SSA LLVMValueRef of the i-th enclosing
+    // `arena{}` block's arena pointer — the value a future goo_arena_new
+    // call returns (Task 6 wires the block that pushes/pops it; nothing
+    // pushes yet). codegen_arena_current returns the top
+    // (arena_stack[arena_depth - 1]) or NULL when empty, which is what
+    // keeps codegen_emit_alloc (codegen.c) on the plain goo_alloc path for
+    // every program today. Fixed-depth like cfctx.loop_break_bb/
+    // cfctx.loop_continue_bb (ControlFlowContext, codegen_cfctx.h), for the
+    // same reason (simple, depth-bounded, no growable-array bookkeeping
+    // needed for a stack this shallow in practice).
+    LLVMValueRef arena_stack[16];
+    int arena_depth;
+
+    // Arena-regions Task 7c: per-alloc-site block-escape decisions (7b),
+    // computed once at codegen entry (codegen_generate_program) over the
+    // SAME program AST codegen emits from, so site node pointers match by
+    // identity. Consulted by codegen_arena_eligible; NULL (the default —
+    // see codegen_new, and the fail-safe path if the analysis itself
+    // returns NULL) makes block_escape_site_escapes conservatively return
+    // true for every site, i.e. every allocation stays on the heap path.
+    // Tail-appended per the no-header-deps convention (ast.h's M10 comment
+    // / func_lit_counter's comment above) — the Makefile lacks header
+    // dependencies, so inserting mid-struct would shift every later field.
+    struct BlockEscapeResult* block_escape;
+
+    // Arena-regions early-exit free: arena_loop_depth[i] is
+    // codegen->cfctx.loop_depth at the moment arena_stack[i] was pushed. A
+    // `break`/`continue` exits only the innermost loop, so it frees exactly
+    // the active arenas pushed INSIDE that loop (arena_loop_depth[i] >= the
+    // current loop_depth) — never an arena enclosing the loop, which the
+    // loop keeps using. `return` frees all active arenas regardless
+    // (min_loop_depth 0). Parallel to arena_stack; tail-appended per the
+    // no-header-deps convention above.
+    int arena_loop_depth[16];
+
+    // Comptime value params Task 3: substitution environment for binding a
+    // comptime-param function's parameter(s) to their concrete int64_t
+    // value(s) during monomorphized codegen — the comptime-value analogue of
+    // active_subst above (Task 8's TYPE_PARAM substitution). Set (and
+    // restored) by codegen_generate_comptime_function_instance
+    // (monomorphize.c) around a single instance's codegen;
+    // active_comptime_values[i] is the value bound to the i-th comptime
+    // parameter ENCOUNTERED IN DECLARATION ORDER (matching
+    // CallExprNode.comptime_value_args' own compact ordering — see that
+    // field's doc comment, ast.h). NULL/0 (the default — see codegen_new)
+    // means "no active comptime instance", which is the state for every
+    // ordinary (non-comptime) function's codegen.
+    const int64_t* active_comptime_values;
+    size_t active_comptime_value_n;
+
+    // Codegen hardening R1: consolidated control-flow scratch state for the
+    // function currently being generated — formerly loop_break_bb/loop_
+    // continue_bb/loop_label/loop_is_loop/loop_depth/pending_label (gofmt-
+    // syntax-b Task 1), goto_label_names/goto_label_blocks/goto_label_count
+    // (Task 2), and fallthrough_target_bb/fallthrough_depth (Task 3) as 20+
+    // separate parallel-array fields directly on CodeGenerator. See
+    // ControlFlowContext's own doc comment (codegen_cfctx.h) for the field-
+    // by-field detail and the cfctx_* API (push_loop/push_break_scope/pop,
+    // find_label/find_loop_label, get_or_create_goto_block, reset, save/
+    // restore) that replaces the old direct field access and codegen_push_
+    // loop/codegen_pop_loop/codegen_push_break_scope/codegen_get_or_create_
+    // label_block helpers. Tail-appended per the no-header-deps convention
+    // (ast.h's M10 comment / func_lit_counter's comment above).
+    ControlFlowContext cfctx;
+
+    // P3.10: optimization level requested via -O (driver-set, right after
+    // codegen_new, before codegen_generate_program runs). 0 (default) keeps
+    // codegen_optimize a no-op and the target machine at
+    // LLVMCodeGenLevelDefault — the exact pre-P3.10 path, byte-identical for
+    // every existing fixture. >0 selects a new-PM optimization pipeline in
+    // codegen_optimize and (only at 3) raises the target machine's own
+    // codegen aggressiveness too.
+    int opt_level;
+
+    // P3.11: extra libraries to link (driver-set from -l/--link flags, e.g.
+    // "m"), appended to the link argv after the runtime archive. Borrowed
+    // from CompilerOptions (src/compiler/goo.c) — codegen does not own or
+    // free these strings, only the driver does.
+    const char** link_libs;
+    size_t link_lib_count;
 };
 
 // Function information for code generation
@@ -191,6 +307,22 @@ struct FunctionInfo {
     ASTNode** deferred_calls;
     size_t deferred_count;
     size_t deferred_capacity;
+
+    // P3.4 runtime defer stack (per-function fork): non-zero when the
+    // defer-loop pre-pass (function_codegen.c's defer_prepass_needs_stack,
+    // run before body codegen) found a `defer` lexically nested under a
+    // for/range loop. When set, EVERY defer in this function routes through
+    // defer_frame (a goo_defer_frame_t alloca, entry-block-allocated and
+    // zeroed before any body statement runs) via goo_defer_push/
+    // goo_defer_run — never the static deferred_calls[] machinery above.
+    // Per-function, not per-statement: LIFO across a mixed top-level +
+    // loop-nested defer sequence can't be honored if half the entries are
+    // static inline emissions and half live on a runtime stack (see
+    // docs/superpowers/specs/2026-07-10-p3-runtime-b-design.md, B1). A
+    // loop-free function leaves both fields 0/NULL, so its defers take the
+    // untouched static path — byte-identical IR (differential-gated).
+    int defer_stack_mode;
+    LLVMValueRef defer_frame;
 };
 
 // Value information for variables and expressions
@@ -237,6 +369,119 @@ int codegen_initialize_target(CodeGenerator* codegen);
 // main package (callers keep the bare `base`). Single source of truth shared by
 // the plain-function and error-union codegen paths. Caller frees the result.
 char* codegen_package_symbol_name(TypeChecker* checker, const char* base);
+
+// P4.3 (packages-B): same `goo_pkg__<pkg>__<base>` scheme, taking the
+// package name directly (for a cross-package method call/value site, where
+// the OWNING package of the receiver type is not checker->current_package —
+// see type_receiver_owner_package, types.h). Malloc'd; caller frees. NULL if
+// either argument is NULL/empty.
+char* codegen_pkg_mangled_symbol(const char* pkg_name, const char* base);
+
+// Task 7: monomorphization name mangling (src/codegen/monomorphize.c). Used
+// by Tasks 9-10 to name each concrete instantiation of a generic function.
+// Both return a malloc'd string; caller frees.
+//
+// codegen_type_mangle_token: a nameable token for one concrete type --
+// `int`, `string`, `float64`, `ptr_<tok>`, `slice_<tok>`, etc.
+char* codegen_type_mangle_token(const Type* t);
+// codegen_mangle_instance: `base` + type args -> `base__tok0__tok1...`, e.g.
+// `Map` + {int, string} -> `Map__int__string`.
+char* codegen_mangle_instance(const char* base, Type* const* args, size_t n);
+
+// Comptime+generic composition (sub-project 2), decision 3: `base` + type
+// args + comptime int values -> `base__tok0__tok1..__n<v0>__n<v1>...` — types
+// first, then `__n<value>` segments, e.g. `kernel` + {int64} + {4} ->
+// `kernel__int64__n4`. Pure composition of the two existing schemes (each
+// reused verbatim as a segment, in the order the spec fixes: types before
+// values), not a third mangling scheme — collision-safe because a single
+// function's type-arity and value-arity are both fixed by its declaration,
+// so segment counts are unambiguous, and distinct base names already share
+// one symbol namespace unambiguously (codegen_monomorphize below). Returns a
+// malloc'd string; caller frees. `nv == 0` degenerates to
+// codegen_mangle_instance's own output byte-for-byte (no `__n` suffix).
+char* codegen_mangle_combined_instance(const char* base, Type* const* targs, size_t nt,
+                                        const int64_t* values, size_t nv);
+
+// Function-generics Task 9: stamp ONE concrete instantiation of a generic
+// function template `tmpl` under mangled symbol `sym`, with `args[i]` bound
+// to `tmpl`'s type-param index i (n == the template's type-param count).
+// Installs the substitution on BOTH sides that need it: the checker's
+// active-type-param stack (so a raw AST type node inside the template that
+// re-resolves a bare param name via type_from_ast — e.g. the return-type
+// node — yields a TYPE_PARAM instead of "Unknown type") and the codegen's
+// active_subst env (so codegen_type_to_llvm's TYPE_PARAM case, Task 8, lowers
+// that TYPE_PARAM to the concrete `args[i]`). Both are restored before
+// returning. Returns 1 on success, 0 on codegen failure (mirrors
+// codegen_generate_function_decl, which this calls directly — so it is NOT
+// blocked by the Task 4 "skip generic template" guard living in
+// codegen_generate_declaration).
+//
+// Comptime+generic composition (sub-project 2), decision 4: `comptime_values`/
+// `comptime_value_n` extend this SAME generator (not a separate one) to also
+// install codegen->active_comptime_values(_n) — mirroring
+// codegen_generate_comptime_function_instance's own install below — for the
+// duration of the call, alongside active_subst/symbol_override. Both axes'
+// fields are saved and restored UNCONDITIONALLY, regardless of whether this
+// particular call is generic-only (comptime_value_n == 0, NULL) or composed:
+// a generic-only call installs NULL/0, which is the value these fields
+// already carry between top-level instantiations (see codegen_new / the
+// driver's non-overlapping call sequencing), so the generic-only path is
+// byte-for-byte unchanged. Once installed, the existing comptime mirror-scope
+// rebinding (function_codegen.c) and `[n]T` re-derivation
+// (function_codegen.c, composite_codegen.c) — both gated purely on
+// active_comptime_value_n > 0 — pick the values up with no further changes.
+int codegen_generate_function_instance(CodeGenerator* codegen, TypeChecker* checker,
+                                       FuncDeclNode* tmpl, const char* sym,
+                                       Type** args, size_t n,
+                                       const int64_t* comptime_values, size_t comptime_value_n);
+// Function-generics Task 9: worklist over checker->instantiations (Task 6) —
+// emits one specialized LLVM function per unique {template, args} tuple
+// recorded during type-checking, skipping any symbol already present in the
+// module (LLVMGetNamedFunction dedup — the same {fn,args} pair may have been
+// recorded more than once for repeated call sites). A no-op when
+// checker->instantiations is NULL (the worklist loop simply never executes)
+// — so an ordinary non-generic program is unaffected. Must run BEFORE the
+// body-emitting declaration loop in
+// codegen_generate_program: a caller's body emitted in that loop may
+// (Task 10) call a mangled instance symbol, which must already exist.
+int codegen_monomorphize(CodeGenerator* codegen, TypeChecker* checker);
+
+// Comptime value params Task 3: `base` + comptime int values -> mangled
+// instance symbol, e.g. `fill` + {4} -> `fill__n4`. Mirrors
+// codegen_mangle_instance (the type-arg axis) but for int64_t values. `__n`
+// is a fixed axis marker, NOT the source parameter's own name: the mangled
+// symbol must be determined by the function's identity plus these
+// instantiation values alone, independent of what the comptime parameter
+// happened to be called. Returns a malloc'd string; caller frees.
+char* codegen_mangle_comptime_instance(const char* base, const int64_t* values, size_t n);
+
+// Comptime value params Task 3: stamp ONE concrete instantiation of a
+// comptime-parameterized function template `tmpl` under mangled symbol
+// `sym`, with `values[i]` bound to the i-th comptime parameter encountered
+// in declaration order (n == that function's comptime-param count).
+// Installs `values`/`n` on codegen->active_comptime_values(_n) for the
+// duration of the call — codegen_generate_function_decl's parameter
+// mirror-scope loop (function_codegen.c) reads it to bind each comptime
+// parameter's Variable to its concrete value (has_const_int_value /
+// const_int_value / comptime_value), which is what lets an array length
+// depending on it (`[n]int`) and any other compile-time use resolve to THIS
+// instance's literal instead of the template body-check's placeholder.
+// Restored before returning, mirroring codegen_generate_function_instance's
+// active_subst/symbol_override save-restore exactly (comptime values are a
+// second, independent instantiation axis — a comptime-param function is
+// never itself generic, so the two never need to combine on one call).
+// Returns 1 on success, 0 on codegen failure.
+//
+// Comptime+generic composition (sub-project 2): this generator remains for
+// PLAIN (non-generic) comptime-param functions only — still true post-
+// composition, since a composed function IS generic (is_generic) and its
+// instantiations are recorded on GenericInstantiation, never
+// ComptimeInstantiation (see that struct's doc comment, types.h). A composed
+// instance is stamped by codegen_generate_function_instance's own extended
+// comptime payload above instead.
+int codegen_generate_comptime_function_instance(CodeGenerator* codegen, TypeChecker* checker,
+                                                FuncDeclNode* tmpl, const char* sym,
+                                                const int64_t* values, size_t n);
 
 // Code generation entry points
 int codegen_generate_program(CodeGenerator* codegen, TypeChecker* checker, ASTNode* program);
@@ -289,14 +534,16 @@ int codegen_generate_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, A
 int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_unsafe_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 int codegen_generate_asm_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
+int codegen_generate_arena_stmt(CodeGenerator* codegen, TypeChecker* checker, ASTNode* stmt);
 
 // Select statement helper functions
 #if LLVM_AVAILABLE
 LLVMTypeRef codegen_get_select_case_type(CodeGenerator* codegen);
 LLVMValueRef codegen_get_select_function(CodeGenerator* codegen);
-int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker, 
-                              LLVMValueRef cases_array, size_t case_index, 
-                              SelectCaseNode* select_case);
+int codegen_setup_select_case(CodeGenerator* codegen, TypeChecker* checker,
+                              LLVMValueRef cases_array, size_t case_index,
+                              SelectCaseNode* select_case,
+                              LLVMValueRef* out_recv_space);
 #endif
 
 // Expression generation
@@ -400,20 +647,49 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen, TypeChecker* c
 // is a single extra deref; type_name is a C string (e.g. "int", "*Point");
 // fmt_fn is null until a later task fills it. Name-deduped by concrete type,
 // like the vtable globals — see interface_codegen.c.
+// `pos`: the boxing call site that first requests this concrete type's
+// descriptor (Arc 15 item l). The per-type descriptor/formatter is cached
+// (dedup by concrete+pointer_form), so `pos` is only the FIRST box site's
+// position — acceptable, since the goal is a real file:line reaching the
+// user instead of none, not attribution to every box site.
 LLVMValueRef codegen_get_or_emit_type_desc(CodeGenerator* codegen, TypeChecker* checker,
-                                           Type* concrete, int pointer_form);
+                                           Type* concrete, int pointer_form, Position pos);
 // Per-type %v formatter reached via the descriptor's fmt_fn field (field
 // index 2). Emits (or reuses) `goo.fmt.<T>` / `goo.fmt.$ptr$<T>` of LLVM
 // type `goo_string(ptr)`: loads the concrete value from the `data` param
-// and returns its %v string. v1 scalar kinds only (int/uint widths, bool,
-// float32/64, string); pointer_form or any other concrete kind falls back
-// to a goo_string copy of the type name. See interface_codegen.c.
+// and returns its %v string. v1 scalar kinds and (Task 3 / B5) value-boxed
+// STRUCT concretes, via codegen_fmt_value_to_string below; pointer_form or
+// any other concrete kind (slice, map, ...) falls back to a goo_string copy
+// of the type name. See interface_codegen.c.
+// `pos`: see codegen_get_or_emit_type_desc's `pos` doc above — threaded down
+// so the unsupported-kind diagnostic codegen_fmt_value_to_string may emit
+// (struct field of an unsupported kind, e.g. map/func) carries a real
+// file:line instead of a hardcoded zero position (Arc 15 item l).
 LLVMValueRef codegen_get_or_emit_type_fmt(CodeGenerator* codegen, TypeChecker* checker,
-                                          Type* concrete, int pointer_form);
+                                          Type* concrete, int pointer_form, Position pos);
+// Public entry point onto call_codegen.c's recursive %v value-to-string
+// formatter (codegen_build_fmt_value_string — struct/pointer-to-struct/
+// slice/array, the same machinery fmt.Sprintf's %v verb uses), for callers
+// in other codegen files. Seeds an empty accumulator and formats `val` (of
+// goo type `ty`) as a single goo_string. See call_codegen.c for the full
+// contract; `pos` is only used for a codegen_error should `ty` contain an
+// unsupported shape.
+LLVMValueRef codegen_fmt_value_to_string(CodeGenerator* codegen, TypeChecker* checker,
+                                         LLVMValueRef val, Type* ty, Position pos);
+// `pos`: see codegen_get_or_emit_type_desc's `pos` doc above — threaded
+// through to it (Arc 15 item l).
 LLVMValueRef codegen_interface_vtable(CodeGenerator* codegen, TypeChecker* checker,
-                                      Type* iface, Type* concrete, int pointer_form);
+                                      Type* iface, Type* concrete, int pointer_form,
+                                      Position pos);
+// `pos`: the boxing expression's own source position (e.g. a var-decl
+// initializer, call argument, or struct/slice/map literal element) —
+// threaded through codegen_interface_vtable to the per-type descriptor/
+// formatter synthesis so a user-facing diagnostic from the boxed %v leg
+// (codegen_get_or_emit_type_fmt) carries a real file:line instead of a
+// hardcoded zero position (Arc 15 item l).
 LLVMValueRef codegen_interface_box(CodeGenerator* codegen, TypeChecker* checker,
-                                   Type* iface, Type* concrete, LLVMValueRef value);
+                                   Type* iface, Type* concrete, LLVMValueRef value,
+                                   Position pos);
 ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* checker,
                                       LLVMValueRef iface_val, Type* iface_type,
                                       const char* method_name,
@@ -421,19 +697,32 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
 // Task 2 (type assertions): shared vtable-pointer-compare + unbox lowering
 // for `x.(T)` (comma-ok and single-return) and Task 3's type switch. See
 // interface_codegen.c's doc comments on each for the exact contract.
+// `pos`: the assertion/type-switch-case expression's own source position
+// (review finding on Arc 15 item l — d30a22e threaded a real Position into
+// the codegen_interface_box leg only; this function ALSO cascades into
+// codegen_interface_vtable -> codegen_get_or_emit_type_desc ->
+// codegen_get_or_emit_type_fmt, which unconditionally synthesizes `target`'s
+// %v formatter as a side effect of the vtable lookup, so a program that
+// first reaches `target`'s formatter via `x.(target)` / `case target:`
+// rather than a direct box needs a real position here too, not a hardcoded
+// zero).
 LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* iface_type,
-                                            Type* target, LLVMValueRef* data_out);
+                                            Type* target, LLVMValueRef* data_out,
+                                            Position pos);
 LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
                                             LLVMValueRef data);
 // Interface-target RTTI, Task 1: `x.(I)` where I is itself an INTERFACE
 // (closed-world enumeration of I's concrete implementers), as opposed to
 // codegen_interface_assert_match's concrete-target vtable-pointer compare.
 // See interface_codegen.c's doc comments on each for the exact contract.
+// `pos`: see codegen_interface_assert_match's `pos` doc above — same
+// rationale (this function also enumerates each implementer through
+// codegen_get_or_emit_type_desc / codegen_interface_vtable).
 size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Type*** out);
 LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* target_iface,
-                                            LLVMValueRef* built_out);
+                                            LLVMValueRef* built_out, Position pos);
 
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
@@ -451,6 +740,11 @@ ValueInfo* codegen_generate_mmio_access(CodeGenerator* codegen, TypeChecker* che
 #if LLVM_AVAILABLE
 // Type mapping functions
 LLVMTypeRef codegen_type_to_llvm(CodeGenerator* codegen, const Type* type);
+// Function-generics Task 8: resolves a TYPE_PARAM through codegen's active
+// substitution environment (active_subst/active_subst_n), one level deep.
+// Returns `t` itself (identity) for any non-TYPE_PARAM type, or for a
+// TYPE_PARAM with no active env / an out-of-range or unbound index.
+const Type* codegen_resolve_type(CodeGenerator* codegen, const Type* t);
 LLVMTypeRef codegen_get_basic_type(CodeGenerator* codegen, TypeKind kind);
 LLVMTypeRef codegen_get_array_type(CodeGenerator* codegen, const Type* type);
 LLVMTypeRef codegen_get_struct_type(CodeGenerator* codegen, const Type* type);
@@ -491,6 +785,15 @@ LLVMValueRef codegen_alloc_local(CodeGenerator* codegen, LLVMTypeRef type, const
 LLVMValueRef codegen_get_func_thunk(CodeGenerator* codegen, TypeChecker* checker,
                                     Type* fn_type, LLVMValueRef named_fn,
                                     const char* name);
+// P3.6 (method values): get-or-create the BOUND thunk for method `mangled_name`
+// (`<mangled_name>.__bound_thunk(env, args...) = <mangled_name>(<recv from
+// env>, args...)`) — `stripped_type` is the method value's own (receiver-
+// less) func type, `method_type` is the method's full signature (receiver
+// spliced as params[0]). See its definition (function_codegen.c) for the
+// env-cell contract the bind site (composite_codegen.c) must uphold.
+LLVMValueRef codegen_get_method_bound_thunk(CodeGenerator* codegen, Type* stripped_type,
+                                            Type* method_type, LLVMValueRef named_method_fn,
+                                            const char* mangled_name);
 
 // Map values ride an 8-byte runtime slot (i64). Convert a value of the
 // declared map value-type V to the slot (ptrtoint / zext-or-trunc) and back
@@ -582,6 +885,13 @@ LLVMValueRef codegen_string_from_cstr(CodeGenerator* codegen, LLVMValueRef cptr)
 LLVMBasicBlockRef codegen_create_block(CodeGenerator* codegen, const char* name);
 void codegen_set_insert_point(CodeGenerator* codegen, LLVMBasicBlockRef block);
 
+// Codegen hardening R1 (src/codegen/cfctx.c): get-or-create the
+// LLVMBasicBlockRef for goto-label `name` within codegen->current_function,
+// via codegen->cfctx's goto-label table. Declared here (not in
+// codegen_cfctx.h) because it needs the positioned module/current_function
+// that only CodeGenerator carries — see codegen_cfctx.h's own note on this.
+LLVMBasicBlockRef cfctx_get_or_create_goto_block(CodeGenerator* codegen, const char* name);
+
 // Conversion and casting
 LLVMValueRef codegen_convert_value(CodeGenerator* codegen, LLVMValueRef value, 
                                  LLVMTypeRef from_type, LLVMTypeRef to_type);
@@ -622,8 +932,36 @@ LLVMValueRef codegen_error_union_get_error(CodeGenerator* codegen, LLVMValueRef 
 #if LLVM_AVAILABLE
 LLVMValueRef codegen_declare_runtime_functions(CodeGenerator* codegen);
 LLVMValueRef codegen_get_runtime_function(CodeGenerator* codegen, const char* name);
-LLVMValueRef codegen_call_runtime_function(CodeGenerator* codegen, const char* name, 
+LLVMValueRef codegen_call_runtime_function(CodeGenerator* codegen, const char* name,
                                           LLVMValueRef* args, unsigned arg_count);
+
+// Arena-regions Task 3: push/pop/current for codegen->arena_stack. Stack
+// discipline only (push on `arena{}` entry, pop on exit — Task 6); current
+// returns NULL when the stack is empty (arena_depth == 0), which is what
+// keeps codegen_emit_alloc on the goo_alloc path when no arena is active.
+void codegen_arena_push(CodeGenerator* codegen, LLVMValueRef arena);
+void codegen_arena_pop(CodeGenerator* codegen);
+LLVMValueRef codegen_arena_current(CodeGenerator* codegen);
+
+// Arena-regions Task 7c: true iff an allocation for `alloc_site` should be
+// routed to the active arena rather than the heap. Touches only
+// arena_stack/arena_depth/block_escape — never the builder/module — so it
+// is safe to call against a lightweight (non-LLVM-initialized)
+// CodeGenerator, which is exactly what arena_routing_test.c does. `kind`
+// must be ALLOC_KIND_DEFAULT (the only arena-eligible kind today) and
+// `alloc_site` must not be classified as escaping its enclosing arena block
+// (block_escape_site_escapes — conservatively true on a NULL/unknown site,
+// so an unclassified site or a NULL alloc_site falls through to heap).
+bool codegen_arena_eligible(CodeGenerator* codegen, ASTNode* alloc_site, AllocKind kind);
+
+// Single funnel for every direct goo_alloc call site (new(T), &StructLiteral,
+// slice-literal backing, closure env, escape-promoted locals, map value/key
+// boxing, interface boxing, go-arg boxing). When `alloc_site` is arena-
+// eligible (codegen_arena_eligible), routes to goo_arena_alloc instead of
+// goo_alloc — see definition in codegen.c. `alloc_site` is the AST node the
+// allocation originates from (NULL for any call site not yet classified by
+// block_escape.c — always falls through to heap).
+LLVMValueRef codegen_emit_alloc(CodeGenerator* codegen, LLVMValueRef size, AllocKind kind, ASTNode* alloc_site);
 #else
 int codegen_declare_runtime_functions(CodeGenerator* codegen);
 int codegen_get_runtime_function(CodeGenerator* codegen, const char* name);
@@ -639,6 +977,10 @@ ValueInfo* codegen_generate_make_chan_call(CodeGenerator* codegen, TypeChecker* 
 // Built-in function helpers
 ValueInfo* codegen_generate_println_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 ValueInfo* codegen_generate_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
+// fmt.Print: variadic, no trailing newline; a space separates two operands only
+// when neither is a string (Go's fmt.Print rule). Distinct from the builtin
+// `print` (codegen_generate_print_call) and from Println.
+ValueInfo* codegen_generate_fmt_print_call(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);
 
 // Error return helper - works with LLVM types
 LLVMValueRef codegen_generate_error_return(CodeGenerator* codegen, LLVMValueRef return_value, 

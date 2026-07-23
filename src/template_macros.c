@@ -43,7 +43,7 @@ bool register_template_macros(MacroRegistry* registry) {
 TemplateContext* create_template_context(const char* template_code) {
     if (!template_code) return NULL;
     
-    TemplateContext* ctx = (TemplateContext*)calloc(1, sizeof(TemplateContext));
+    TemplateContext* ctx = (TemplateContext*)xcalloc(1, sizeof(TemplateContext));
     if (!ctx) return NULL;
     
     ctx->template_code = strdup(template_code);
@@ -167,6 +167,10 @@ char* process_template_string(const char* template_str, TemplateContext* ctx) {
             // Extract the expression
             size_t expr_len = end - start;
             char* expr = (char*)malloc(expr_len + 1);
+            if (!expr) { // allocation failure: emit the char literally, don't substitute
+                *out++ = *in++;
+                continue;
+            }
             strncpy(expr, start, expr_len);
             expr[expr_len] = '\0';
             
@@ -237,7 +241,7 @@ char* process_template_string(const char* template_str, TemplateContext* ctx) {
 TemplateExpansionResult* expand_template(TemplateContext* ctx) {
     if (!ctx) return NULL;
     
-    TemplateExpansionResult* result = (TemplateExpansionResult*)calloc(1, sizeof(TemplateExpansionResult));
+    TemplateExpansionResult* result = (TemplateExpansionResult*)xcalloc(1, sizeof(TemplateExpansionResult));
     if (!result) return NULL;
     
     // Process the template
@@ -399,7 +403,7 @@ ComptimeValue* template_macro_evaluator(MacroContext* ctx, ComptimeValue** args)
     // Add parameters from remaining arguments
     for (size_t i = 1; i < ctx->arg_count; i++) {
         char param_name[32];
-        sprintf(param_name, "param%zu", i);
+        snprintf(param_name, sizeof(param_name), "param%zu", i);
         add_template_parameter(template_ctx, param_name, TEMPLATE_PARAM_VALUE, args[i]);
     }
     

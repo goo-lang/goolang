@@ -1,0 +1,27 @@
+// Spec: Types / Interface types — satisfaction + dynamic dispatch
+package main
+
+import "fmt"
+
+type Shape interface {
+	Area() int
+	Name() string
+}
+
+type Square struct {
+	side int
+}
+
+func (s Square) Area() int {
+	return s.side * s.side
+}
+
+func (s Square) Name() string {
+	return "square"
+}
+
+func main() {
+	var sh Shape = Square{side: 4}
+	fmt.Println(sh.Name())
+	fmt.Println(sh.Area())
+}

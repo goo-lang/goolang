@@ -1,0 +1,37 @@
+// asi_recv_after_structlit_probe: the ambiguous shape from the Task 6
+// REGRESSION fix's constraint set — `x := T{f: 1}` <nl> `<-ch`, where the
+// short_var_decl's RHS composite literal ALSO ends in TOKEN_RBRACE.
+//
+// Unlike a bare block statement (see asi_recv_after_for_probe), this `}`
+// closes a VALUE (a composite literal) nested inside a simple_stmt, which
+// already has its own `SEMICOLON`-tolerant arm in the grammar
+// (`simple_stmt SEMICOLON`) independent of the Task-6b block-statement fix.
+// So Part 2.5's inserted `;` after the literal's `}` correctly terminates
+// the short_var_decl, and `<-ch` parses as the next, separate statement —
+// the "compiles correctly as two statements" outcome, which is strictly
+// better than main's behavior for this shape (main has no Part 2.5 guard at
+// all and misparses this into `T{f: 1} <- ch`, a send-to-non-channel-type
+// LOUD type error).
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (println is stderr in Go, stdout in Goo — see asi_recv_probe). Equivalent
+// Go:
+//   type T struct { f int }
+//   func main() { ch := make(chan int, 1)
+//     go func() { ch <- 1 }()
+//     x := T{f: 1}
+//     <-ch
+//     println(x.f) }
+package main
+
+type T struct {
+	f int
+}
+
+func main() {
+	ch := make(chan int, 1)
+	go func() { ch <- 1 }()
+	x := T{f: 1}
+	<-ch
+	println(x.f)
+}

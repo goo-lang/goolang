@@ -80,7 +80,7 @@ static float* extract_reputation_features(const char* peer_id, ReputationSystem*
 }
 
 ReputationSystem* reputation_system_create(void) {
-    ReputationSystem* system = calloc(1, sizeof(ReputationSystem));
+    ReputationSystem* system = xcalloc(1, sizeof(ReputationSystem));
     if (!system) return NULL;
     
     // Default configuration
@@ -495,7 +495,7 @@ char** reputation_system_filter_trusted_peers(ReputationSystem* system,
 PeerReputation* peer_reputation_create(const char* peer_id) {
     if (!peer_id) return NULL;
     
-    PeerReputation* rep = calloc(1, sizeof(PeerReputation));
+    PeerReputation* rep = xcalloc(1, sizeof(PeerReputation));
     if (!rep) return NULL;
     
     rep->peer_id = strdup(peer_id);
@@ -548,7 +548,7 @@ ReputationEvent* reputation_event_create(ReputationEventType type,
                                         const char* reporter_id) {
     if (!subject_id || !reporter_id) return NULL;
     
-    ReputationEvent* event = calloc(1, sizeof(ReputationEvent));
+    ReputationEvent* event = xcalloc(1, sizeof(ReputationEvent));
     if (!event) return NULL;
     
     event->event_id = generate_event_id();
@@ -586,7 +586,7 @@ void reputation_event_free(ReputationEvent* event) {
 }
 
 ReputationScore* reputation_score_create(void) {
-    ReputationScore* score = calloc(1, sizeof(ReputationScore));
+    ReputationScore* score = xcalloc(1, sizeof(ReputationScore));
     if (!score) return NULL;
     
     // Initialize with neutral scores
@@ -611,7 +611,7 @@ void reputation_score_free(ReputationScore* score) {
 ReputationStats* reputation_system_get_stats(ReputationSystem* system) {
     if (!system) return NULL;
     
-    ReputationStats* stats = calloc(1, sizeof(ReputationStats));
+    ReputationStats* stats = xcalloc(1, sizeof(ReputationStats));
     if (!stats) return NULL;
     
     pthread_mutex_lock(&g_reputation_mutex);

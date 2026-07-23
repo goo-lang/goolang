@@ -1,0 +1,22 @@
+package main
+
+import "fmt"
+
+// Regression golden for the ASI greedy-join guard's `.` branch: it must not
+// fire on the first char of `...` (TOKEN_ELLIPSIS). A spread argument split
+// onto its own line (`sum(a` <nl> `...)`) previously regressed from
+// compiling to a parse error because the guard inserted a spurious `;`
+// between `a` and `...`, splitting `sum(a` from `...)`.
+func sum(xs ...int) int {
+	t := 0
+	for _, x := range xs {
+		t += x
+	}
+	return t
+}
+
+func main() {
+	a := []int{1, 2, 3}
+	fmt.Println(sum(a
+		...))
+}

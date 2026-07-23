@@ -1,0 +1,26 @@
+// nil_slice_probe (P2.2 option A, T2): a nil slice has len 0, append()
+// grows it in place from the zero {nil,0,0} representation, and `== nil`
+// flips to false once append has allocated a backing array — Go's rule is
+// "the backing pointer is nil", independent of len/cap. go-run-verified
+// byte-for-byte against an equivalent .go program using the same shape.
+package main
+
+import "fmt"
+
+func main() {
+	var s []int
+	fmt.Println(len(s))
+	if s == nil {
+		fmt.Println("PASS: nil slice")
+	}
+	s = append(s, 1)
+	fmt.Println(len(s))
+	if s != nil {
+		fmt.Println("PASS: non-nil after append")
+	}
+	s = append(s, 2)
+	s = append(s, 3)
+	fmt.Println(len(s))
+	fmt.Println(s[0])
+	fmt.Println(s[2])
+}

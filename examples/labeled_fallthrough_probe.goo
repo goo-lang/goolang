@@ -1,0 +1,55 @@
+// labeled_fallthrough_probe (gofmt-syntax-b Fix 5b): `fallthrough` as a case
+// clause's final statement, wrapped in a labeled statement (`L: fallthrough`)
+// because it is itself the target of an earlier `goto` in the same clause
+// body. Valid Go (LabeledStmt wrapping a fallthrough still counts as the
+// clause's final statement per the spec); type_check_switch_like_body must
+// unwrap AST_LABEL_STMT when classifying the final statement instead of only
+// recognizing a bare AST_FALLTHROUGH_STMT.
+//
+// Expected output derived from `go run` on the equivalent Go program
+// (go1.26.1; Go's builtin println writes to stderr, Goo's targets stdout —
+// documented stream convention, see examples/asi_recv_probe.goo — the VALUE
+// below is the go-run-derived artifact). Equivalent Go:
+//   package main
+//   func classify(x int) {
+//   	switch x {
+//   	case 1:
+//   		if x > 0 {
+//   			goto L
+//   		}
+//   		println("skipped")
+//   	L:
+//   		fallthrough
+//   	case 2:
+//   		println("two")
+//   	default:
+//   		println("other")
+//   	}
+//   }
+//   func main() {
+//   	classify(1)
+//   	println("done")
+//   }
+// `go run` stderr: "two\ndone\n"
+package main
+
+func classify(x int) {
+	switch x {
+	case 1:
+		if x > 0 {
+			goto L
+		}
+		println("skipped")
+	L:
+		fallthrough
+	case 2:
+		println("two")
+	default:
+		println("other")
+	}
+}
+
+func main() {
+	classify(1)
+	println("done")
+}

@@ -1,0 +1,19 @@
+// defer_arena_loop_probe (P3.4 review R1): a for-loop wrapped in an
+// `arena { }` block still counts as loop-nesting for the defer-stack fork.
+// AST_ARENA_BLOCK was missing from the defer pre-pass walker's container
+// coverage, so this exact shape silently took the static single-slot path
+// and ran the loop defer ONCE with the last iteration's snapshot (printed
+// only "loop-defer 1") — a miscompile, and a regression vs the pre-P3.4
+// fail-closed rejection. Pins the full global-LIFO unwind instead.
+package main
+
+import "fmt"
+
+func main() {
+    defer fmt.Println("fn-exit-defer")
+    arena {
+        for i := 0; i < 2; i++ {
+            defer fmt.Println("loop-defer", i)
+        }
+    }
+}

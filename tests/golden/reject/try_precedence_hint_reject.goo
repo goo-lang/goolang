@@ -1,0 +1,22 @@
+// try_precedence_hint_reject (P2.8 T4.4): TRY is %right and binds looser
+// than arithmetic (parser.y), so `try f() + 1` parses as `try (f() + 1)` —
+// the arithmetic check sees the raw !int operand (try hasn't run yet; it
+// wraps the WHOLE `f() + 1`) and dies with "Arithmetic operation requires
+// numeric operands". Precedence itself is unchanged (out of scope per the
+// design doc) — this fixture only pins the added hint text pointing at the
+// fix: `(try f()) + 1`.
+package main
+
+func f() !int {
+	return 1
+}
+
+func g() !int {
+	x := try f() + 1
+	_ = x
+	return 1
+}
+
+func main() {
+	_ = g()
+}

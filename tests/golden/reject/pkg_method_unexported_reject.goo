@@ -1,0 +1,17 @@
+package main
+
+// P4.3/B2: an UNEXPORTED (lowercase) method of an imported package's
+// exported struct type must stay inaccessible cross-package, exactly like
+// Go's per-identifier export rule for any other member. shapes.Point.secret
+// (goostd/shapes/shapes.go) is lowercase — its combined mangled name
+// "Point__secret" starts with an uppercase letter purely because the
+// RECEIVER type (Point) is exported, so a naive "does the mangled name
+// start uppercase" check would wrongly let this leak; the checker must gate
+// on the method name itself instead.
+
+import "shapes"
+
+func main() {
+	p := shapes.NewPoint(1, 2)
+	_ = p.secret()
+}

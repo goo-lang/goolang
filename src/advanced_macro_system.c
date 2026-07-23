@@ -7,7 +7,7 @@
 
 // Registry management
 MacroRegistry* create_macro_registry(void) {
-    MacroRegistry* registry = (MacroRegistry*)calloc(1, sizeof(MacroRegistry));
+    MacroRegistry* registry = (MacroRegistry*)xcalloc(1, sizeof(MacroRegistry));
     if (!registry) {
         // Memory allocation failure - return NULL
         return NULL;
@@ -39,7 +39,7 @@ void destroy_macro_registry(MacroRegistry* registry) {
 
 // Macro template management
 MacroTemplate* create_macro_template(const char* name, MacroType type) {
-    MacroTemplate* macro = (MacroTemplate*)calloc(1, sizeof(MacroTemplate));
+    MacroTemplate* macro = (MacroTemplate*)xcalloc(1, sizeof(MacroTemplate));
     if (!macro) {
         // Memory allocation failure - return NULL
         return NULL;
@@ -168,7 +168,7 @@ bool set_parameter_default(MacroTemplate* macro, const char* param_name, Comptim
 
 // Context management
 MacroContext* create_macro_context(MacroTemplate* macro, ComptimeValue** args, size_t arg_count) {
-    MacroContext* context = (MacroContext*)calloc(1, sizeof(MacroContext));
+    MacroContext* context = (MacroContext*)xcalloc(1, sizeof(MacroContext));
     if (!context) {
         // Memory allocation failure - return NULL
         return NULL;
@@ -204,7 +204,7 @@ MacroExpansion* expand_macro(MacroRegistry* registry, const char* macro_name,
                             ComptimeValue** args, size_t arg_count, ASTNode* call_site) {
     if (!registry || !macro_name) return NULL;
     
-    MacroExpansion* expansion = (MacroExpansion*)calloc(1, sizeof(MacroExpansion));
+    MacroExpansion* expansion = (MacroExpansion*)xcalloc(1, sizeof(MacroExpansion));
     if (!expansion) {
         // Memory allocation failure - return NULL
         return NULL;
@@ -463,6 +463,10 @@ char* process_template(const char* template_str, MacroContext* context) {
             if (end) {
                 size_t name_len = end - start;
                 char* param_name = (char*)malloc(name_len + 1);
+                if (!param_name) { // allocation failure: skip this {{...}} substitution
+                    in = end + 2;
+                    continue;
+                }
                 strncpy(param_name, start, name_len);
                 param_name[name_len] = '\0';
                 
@@ -492,15 +496,20 @@ char* process_template(const char* template_str, MacroContext* context) {
 
 ASTNode* substitute_template_ast(ASTNode* template_ast, MacroContext* context) {
     if (!template_ast || !context) return NULL;
-    
+
     // Deep copy AST and substitute parameters
     // This is a simplified implementation
-    ASTNode* result = ast_node_copy(template_ast);
-    
-    // Substitute parameters in the copied AST
-    // Real implementation would traverse and substitute
-    
-    return result;
+    //
+    // Was: ast_node_copy(template_ast). That helper has been deleted (it
+    // allocated only sizeof(ASTNode) then wrote derived-struct fields past
+    // the allocation — a latent heap overflow). There is no safe drop-in
+    // replacement: a real fix means a typed-constructor deep copy over the
+    // full node-kind switch (see ast_type_clone / clone_const_value for the
+    // pattern), which is unwarranted here since this whole path is dead
+    // code — expand_macro_ast (the only way to reach this function) has no
+    // callers anywhere in the compiler. Substitute parameters in the copied
+    // AST — real implementation would traverse and substitute.
+    return NULL;
 }
 
 // Error handling

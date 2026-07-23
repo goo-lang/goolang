@@ -1,0 +1,12 @@
+// Task 4 (trailing comma in call args): the spread arm
+// (`primary_expr LPAREN expression_list ELLIPSIS RPAREN`, workarounds.md
+// §7) is deliberately UNTOUCHED by this task — `f(xs...,)` must stay a
+// parse error. ELLIPSIS sits directly before RPAREN in that arm with no
+// COMMA-before-RPAREN alternative, so a trailing comma after the spread
+// operand has no production to reduce through.
+package main
+func f(xs ...int) int { return len(xs) }
+func main() {
+	s := []int{1, 2, 3}
+	_ = f(s...,)
+}

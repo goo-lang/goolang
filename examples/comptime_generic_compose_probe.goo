@@ -1,0 +1,91 @@
+// comptime_generic_compose_probe: per-type x per-value composition (sub-project 2
+// of the SPMD/parallel-lanes keystone). A function may declare BOTH a generic
+// type parameter `[T any]` and a `comptime` value parameter; instance identity
+// is the tuple (function, type-args, comptime-values) — same tuple at two call
+// sites shares one instance, any differing component gets its own. `[n]T` in
+// the body is the composition's forcing function: the array length comes from
+// the comptime axis, the element type from the generic axis, and both must be
+// resolved together per instance for the body to codegen at all.
+//
+// `T` is unconstrained (`any`), so the body never does arithmetic on a T-typed
+// value (that wall is covered separately by generics-reject-probe) — `buf[i] =
+// seed` (plain assignment) is the only T-typed operation needed to force real
+// per-instance array codegen; `n` (a plain `int`) is free to use in ordinary
+// arithmetic for indices and loop bounds.
+//
+// Call-site inference only: explicit type-argument call syntax
+// (`kernel[int64](4, x)`) does not parse today (design doc open point 1), so
+// every T below is inferred from the value argument's own type.
+package main
+
+import "fmt"
+
+// kernel: the canonical composed function. Three distinct (T, n) tuples are
+// exercised across FOUR call sites below (kernel(4,10) and kernel(4,77) share
+// the int64/n=4 instance — same type-arg and comptime-value, different
+// ordinary runtime `seed` — proving dedup keys on (T, n) only, not on the
+// runtime argument), plus a fifth and sixth call site from the go/defer
+// section further down, all still resolving to one of the same three
+// instances. See the IR pin (`comptime-generic-compose-ir-pin` in Makefile)
+// for the codegen-level proof: exactly one `define` per (T, n) tuple with
+// distinct alloca sizes/types.
+func kernel[T any](comptime n int, seed T) T {
+	var buf [n]T
+	i := 0
+	for i < n {
+		buf[i] = seed
+		i = i + 1
+	}
+	return buf[n-1]
+}
+
+// inner/outer: nested composed -> composed. `outer` calls `inner` with a
+// LITERAL comptime value (3), not by forwarding its own `n` — transitive
+// comptime forwarding stays rejected per the design doc's wall table, so this
+// is the only nested shape in scope. `T` threads through unchanged (outer's
+// inferred T becomes inner's inferred T too).
+func inner[T any](comptime m int, seed T) T {
+	var buf [m]T
+	buf[0] = seed
+	return buf[0]
+}
+
+func outer[T any](comptime n int, seed T) T {
+	var buf [n]T
+	buf[0] = seed
+	return inner(3, buf[0])
+}
+
+// sendKernel: dispatched via `go`, this ordinary (non-generic, non-comptime)
+// function calls the composed `kernel` internally and reports the result
+// through a channel. The channel is a CONCRETE `chan int64`, not `chan T` —
+// `chan T` does not infer T at a call site (a pre-existing generics gap, out
+// of this sub-project's scope), so the collection channel's element type is
+// pinned to the int64 instance this call site always produces.
+func sendKernel(seed int64, ch chan int64) {
+	ch <- kernel(4, seed)
+}
+
+func main() {
+	fmt.Println(kernel(4, int64(10)))  // instance kernel__int64__n4
+	fmt.Println(kernel(4, int64(77)))  // same instance, different seed (dedup proof)
+	fmt.Println(kernel(2, int64(100))) // instance kernel__int64__n2
+	fmt.Println(kernel(4, 3.5))        // instance kernel__float64__n4 (float infers cleanly)
+
+	fmt.Println(outer(4, int64(55))) // nested composed -> composed, literal inner arg
+
+	ch := make(chan int64, 1)
+	go sendKernel(int64(30), ch) // go dispatch; composed result collected via channel
+	fmt.Println(<-ch)
+
+	// A composed function itself as the direct `go`/`defer` target (the
+	// three-way call-site rewrite in statement_codegen.c). Both are
+	// fire-and-forget: neither call's return value is observed (Go/Goo
+	// semantics discard it), so this pins link-time dispatch correctness —
+	// a wrong mangled symbol here is an undefined-reference compile/link
+	// failure, which fails this golden's compile step outright.
+	go kernel(2, int64(5))
+	defer kernel(2, int64(999))
+
+	fmt.Println("done")
+}

@@ -1,0 +1,11 @@
+// rawstring_unterminated (Task 5, negative gate): a raw string literal with
+// no closing backtick before EOF must be REJECTED, not silently dropped.
+// The lexer's lexer_read_raw_string returns NULL on EOF before the closing
+// backtick, and the caller emits TOKEN_ERROR positioned at the OPENING
+// backtick ("unterminated raw string") — same contract as the existing
+// unterminated double-quoted string path.
+package main
+
+func main() {
+	s := `never closed
+}

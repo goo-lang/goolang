@@ -1,0 +1,3 @@
+15
+PASS: func reassigned to nil
+PASS: nil funcval propagates through assignment

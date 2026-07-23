@@ -1,0 +1,18 @@
+// P2.4 reject: an expression switch WITH a default clause, but whose LAST
+// clause body does not itself terminate — every case up to the last one
+// returns, but the final (default) clause falls off the end, so the switch
+// as a whole is not terminating. Go: "missing return at end of function".
+package main
+
+func classify(x int) string {
+	switch x {
+	case 1:
+		return "one"
+	default:
+		println("other")
+	}
+}
+
+func main() {
+	println(classify(1))
+}

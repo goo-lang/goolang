@@ -1,0 +1,9 @@
+// P4.1: shim signature checking — fmt.Printf's REQUIRED first param (the
+// format string) rejects a non-string arg; the variadic tail stays unchecked.
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Printf(42)
+}

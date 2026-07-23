@@ -1,0 +1,13 @@
+// Spec: Expressions / Conversions — numeric + rune
+package main
+
+import "fmt"
+
+func main() {
+	var i int = 65
+	f := float64(i)
+	r := rune(i)
+	b := int64(f)
+	fmt.Println(b)
+	fmt.Println(r)
+}

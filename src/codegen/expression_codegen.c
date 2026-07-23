@@ -256,7 +256,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             if (target->kind == TYPE_INTERFACE) {
                 LLVMValueRef built = NULL;
                 LLVMValueRef itm_match = codegen_interface_target_match(codegen, checker,
-                                                                        iface_val, target, &built);
+                                                                        iface_val, target, &built,
+                                                                        expr->pos);
                 if (!itm_match || !built) {
                     codegen_error(codegen, expr->pos,
                                   "internal: cannot build interface-target type assertion");
@@ -297,7 +298,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
 
             LLVMValueRef data = NULL;
             LLVMValueRef match = codegen_interface_assert_match(codegen, checker, iface_val,
-                                                                iface_type, target, &data);
+                                                                iface_type, target, &data,
+                                                                expr->pos);
             if (!match) {
                 codegen_error(codegen, expr->pos,
                               "internal: cannot build type assertion vtable compare");
@@ -490,7 +492,7 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                     LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                                val_type,
                                                                vv->goo_type,
-                                                               vv->llvm_value);
+                                                               vv->llvm_value, expr->pos);
                     if (!boxed) {
                         codegen_error(codegen, expr->pos,
                                       "failed to box map literal value into interface");
@@ -744,6 +746,27 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
         case TOKEN_FLOAT: {
             // Parse float value from string
             double value = atof(literal->value);
+            Type* nt = expr->node_type;
+            // Arc 14 (f): an INTEGRAL float literal used as a switch case
+            // against an integer tag (`case 2.0:` on an int tag) is stamped
+            // to the tag's INTEGER type by adapt_switch_case_float_into_int
+            // (expression_checker.c) via stamp_int_const_expr_type — the
+            // exact mirror image of the TOKEN_INT arm's `nt && type_is_
+            // float(nt)` case above (an int-literal case on a float tag).
+            // check_conversion_operand_range has already confirmed the
+            // value is both in-range for `nt` and integral (a non-integral
+            // literal like `2.5` is rejected — "truncated to integer" —
+            // before codegen ever runs), so the truncating cast below is
+            // exact, never lossy.
+            if (nt && type_is_integer(nt)) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
+                if (lt) {
+                    llvm_value = LLVMConstInt(lt, (unsigned long long)(long long)value,
+                                              type_is_signed(nt));
+                    goo_type = nt;
+                    break;
+                }
+            }
             // Narrow float-literal adaptation (mirrors the TOKEN_INT arm
             // above): when type-checking retyped this literal to float32
             // (e.g. `g * 2.0` with g float32 — see
@@ -752,7 +775,6 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             // codegen's computed type matches what the checker stamped.
             // Unadapted literals default to float64 (Go's untyped-float
             // default type), the path below.
-            Type* nt = expr->node_type;
             if (nt && nt->kind == TYPE_FLOAT32) {
                 llvm_value = LLVMConstReal(LLVMFloatTypeInContext(codegen->context), value);
                 goo_type = nt;
@@ -1018,6 +1040,27 @@ ValueInfo* codegen_emit_lvalue_address(CodeGenerator* codegen, TypeChecker* chec
         LLVMValueRef idx64 = codegen_widen_index(codegen, index_val);
 
         if (base_type->kind == TYPE_ARRAY) {
+            // Fix round 4: instance-time const-index enforcement for a
+            // comptime-length array's WRITE path (`buf[3] = s`), mirroring
+            // codegen_generate_index_expr's read-path check exactly — see
+            // the comment there for the deferral contract
+            // (type_check_index_expr skips the upper bound for
+            // comptime_length arrays; this re-derived type carries the
+            // instance's real length).
+            if (base_type->data.array.comptime_length) {
+                uint64_t ci;
+                if (goo_fold_const_int_ctx(checker, ix->index, &ci) &&
+                    ci >= (uint64_t)base_type->data.array.length) {
+                    codegen_error(codegen, ix->index->pos,
+                        "array index %llu out of bounds [0:%zu] in comptime instance '%s'",
+                        (unsigned long long)ci, base_type->data.array.length,
+                        codegen->symbol_override ? codegen->symbol_override : "?");
+                    value_info_free(base);
+                    value_info_free(index_val);
+                    return NULL;
+                }
+            }
+
             // base->llvm_value is a pointer to the array; GEP the element.
             // Bounds-check against the fixed length (static N) first — mirrors
             // the slice-write arm; arr[i]=x aborts on out-of-range.
@@ -1346,6 +1389,62 @@ static void codegen_emit_divzero_check(CodeGenerator* codegen, LLVMValueRef divi
 
     codegen_set_insert_point(codegen, cont_bb);
 }
+
+// T3 (P2.5): widen the narrower of an int/float pair to match the wider —
+// the same widen-narrower-to-wider rule the ordinary binary-expr path below
+// applies to its two operands, but standalone: the nullable-equality path
+// extracts its operands from struct fields (a payload) rather than the
+// plain evaluated-expression shape that inline logic operates on, so it
+// can't be reused directly. Signedness for each side comes from its own
+// Goo type. No-ops when the LLVM types already match, or for kinds this
+// doesn't apply to (pointer, bool-as-i1, string aggregate) — those always
+// arrive with matching LLVM types already (the checker's
+// type_nullable_bases_comparable requires an exact type_equals for them).
+static void codegen_widen_narrower_operand(CodeGenerator* codegen,
+                                           LLVMValueRef* a, int a_signed,
+                                           LLVMValueRef* b, int b_signed) {
+    LLVMTypeRef at = LLVMTypeOf(*a), bt = LLVMTypeOf(*b);
+    if (at == bt) return;
+    LLVMTypeKind ak = LLVMGetTypeKind(at), bk = LLVMGetTypeKind(bt);
+    if (ak == LLVMIntegerTypeKind && bk == LLVMIntegerTypeKind) {
+        unsigned aw = LLVMGetIntTypeWidth(at), bw = LLVMGetIntTypeWidth(bt);
+        if (aw < bw) *a = codegen_coerce_to_type(codegen, *a, a_signed, bt);
+        else if (bw < aw) *b = codegen_coerce_to_type(codegen, *b, b_signed, at);
+        return;
+    }
+    if ((ak == LLVMFloatTypeKind || ak == LLVMDoubleTypeKind) &&
+        (bk == LLVMFloatTypeKind || bk == LLVMDoubleTypeKind)) {
+        if (ak == LLVMFloatTypeKind) *a = codegen_coerce_to_type(codegen, *a, 1, bt);
+        else                          *b = codegen_coerce_to_type(codegen, *b, 1, at);
+    }
+}
+
+// T3 (P2.5): compare two already-extracted payload values for equality per
+// their Goo kind, mirroring the scalar arms of the TOKEN_EQ case in the
+// generic switch further below (int ICmp, float FCmp, bool ICmp, string via
+// goo_string_eq, pointer ICmp) — duplicated in miniature here because this
+// call site needs a single i1 "payload equal" answer BEFORE it can combine
+// it with the tag comparison, rather than falling out of the switch's own
+// control flow. `payload_type` is one the checker already restricted to
+// int/float/bool/string/pointer (type_nullable_payload_supports_equality);
+// any other kind is unreachable for a program that passed type checking.
+static LLVMValueRef codegen_nullable_payload_eq(CodeGenerator* codegen, Type* payload_type,
+                                                LLVMValueRef a, LLVMValueRef b, ASTNode* expr) {
+    if (payload_type->kind == TYPE_STRING) {
+        return codegen_string_eq_to_i1(codegen, a, b, /*want_equal=*/1, expr);
+    }
+    if (payload_type->kind == TYPE_BOOL) {
+        return LLVMBuildICmp(codegen->builder, LLVMIntEQ, a, b, "nulleq.booleq");
+    }
+    if (type_is_integer(payload_type) || payload_type->kind == TYPE_POINTER) {
+        return LLVMBuildICmp(codegen->builder, LLVMIntEQ, a, b, "nulleq.eq");
+    }
+    if (type_is_float(payload_type)) {
+        return LLVMBuildFCmp(codegen->builder, LLVMRealOEQ, a, b, "nulleq.feq");
+    }
+    codegen_error(codegen, expr->pos, "internal: unsupported nullable payload type for equality -- compiler bug");
+    return NULL;
+}
 #endif
 
 ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
@@ -1517,7 +1616,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                     LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                                val_type,
                                                                vv->goo_type,
-                                                               vv->llvm_value);
+                                                               vv->llvm_value, expr->pos);
                     if (!boxed) {
                         codegen_error(codegen, expr->pos,
                                       "failed to box value into interface map value");
@@ -1597,6 +1696,27 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             return value;
         }
 
+        // Reassignment of a bare nil literal to a pointer/slice/map/channel/
+        // function lvalue (P2.2 option A: e.g. `p = nil`, `s = nil`,
+        // `f = nil`). Not just a var-decl init — Go code commonly clears an
+        // existing pointer/slice/func this way. Intercept BEFORE the generic
+        // RHS path below: the untyped nil fallback (codegen_generate_expression
+        // with no expected-type context) produces a bare scalar null, which
+        // matches a pointer/map/chan store by LLVM-opaque-pointer coincidence
+        // but is the WRONG shape for slice ({ptr,len,cap}) and func
+        // ({fn,env}) — an aggregate store target fed a scalar fails LLVM
+        // verification. Mirrors the ?T intercept immediately above.
+        if (target->goo_type && type_is_nilable_ref_kind(target->goo_type) &&
+            binary->right->type == AST_LITERAL &&
+            ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL) {
+            ValueInfo* nil_val = codegen_generate_null_literal(codegen, checker, target->goo_type);
+            if (!nil_val) return NULL;
+            LLVMBuildStore(codegen->builder, nil_val->llvm_value, target->llvm_value);
+            ValueInfo* ret = value_info_new(NULL, nil_val->llvm_value, target->goo_type);
+            value_info_free(nil_val);
+            return ret;
+        }
+
         // Generate the right side value. If it is itself an lvalue (e.g.
         // `a[i] = b[j]` or `x = s.y`), dereference it to the scalar value
         // before storing — mirroring the auto-load consumers do elsewhere.
@@ -1610,6 +1730,31 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             }
         }
 
+        // Fix round 5 (M-r4): instance-time enforcement of the array-length
+        // compatibility the checker DEFERRED for a comptime-length array
+        // assignment (type_check_assignment_op's comptime_len_deferred —
+        // see there). Both goo_types here are the instance's re-derived
+        // REAL types, so a genuine length mismatch at THIS instance is a
+        // clean, instance-named compile failure instead of an invalid-IR
+        // store of a differently-sized aggregate. Matching lengths store
+        // like any ordinary whole-array assignment. Gated on the
+        // comptime_length flag (either side) — an ordinary mismatched
+        // array assignment never reaches codegen (the checker rejected it).
+        if (target->goo_type && value->goo_type &&
+            target->goo_type->kind == TYPE_ARRAY &&
+            value->goo_type->kind == TYPE_ARRAY &&
+            (target->goo_type->data.array.comptime_length ||
+             value->goo_type->data.array.comptime_length) &&
+            target->goo_type->data.array.length != value->goo_type->data.array.length) {
+            codegen_error(codegen, expr->pos,
+                "cannot assign [%zu]-length array to [%zu]-length array in comptime instance '%s'",
+                value->goo_type->data.array.length,
+                target->goo_type->data.array.length,
+                codegen->symbol_override ? codegen->symbol_override : "?");
+            value_info_free(value);
+            return NULL;
+        }
+
         // Box a concrete implementer into an interface-typed lvalue's
         // {vtable, data} value (mirrors var-decl init / call-arg boxing).
         // interface→interface needs no box — same layout, store directly.
@@ -1619,7 +1764,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                        target->goo_type,
                                                        value->goo_type,
-                                                       value->llvm_value);
+                                                       value->llvm_value, expr->pos);
             if (!boxed) {
                 codegen_error(codegen, expr->pos,
                               "failed to box value into interface on assignment");
@@ -1773,6 +1918,65 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
         }
     }
 
+    // pointer/slice/map/chan == nil / nil == ... (P2.2 option A). Mirrors
+    // the funcval block above: do NOT evaluate the nil side (an untyped nil
+    // has no expected-type context here, so codegen_generate_expression
+    // would emit a generic i8* null of the wrong shape for a slice) —
+    // evaluate only the reference-kind operand and test its nil-ness
+    // directly. Pointer/map/chan lower to a bare LLVM pointer, so a
+    // straight icmp-eq-null suffices; slice lowers to {ptr,len,cap}, so
+    // extract field 0 (the backing pointer) first — Go defines `s == nil`
+    // as "the backing array pointer is nil", independent of len/cap (an
+    // empty-but-non-nil slice, e.g. `[]int{}`, is != nil).
+    if (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE) {
+        bool right_is_nil = (binary->right->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->right)->literal_type == TOKEN_NIL);
+        bool left_is_nil  = (binary->left->type == AST_LITERAL &&
+                             ((LiteralNode*)binary->left)->literal_type == TOKEN_NIL);
+
+        ASTNode* refkind_node = NULL;
+        if (right_is_nil) {
+            Type* lt = type_check_expression(checker, binary->left);
+            if (lt && (lt->kind == TYPE_POINTER || lt->kind == TYPE_SLICE ||
+                       lt->kind == TYPE_MAP || lt->kind == TYPE_CHANNEL)) {
+                refkind_node = binary->left;
+            }
+        } else if (left_is_nil) {
+            Type* rt = type_check_expression(checker, binary->right);
+            if (rt && (rt->kind == TYPE_POINTER || rt->kind == TYPE_SLICE ||
+                       rt->kind == TYPE_MAP || rt->kind == TYPE_CHANNEL)) {
+                refkind_node = binary->right;
+            }
+        }
+
+        if (refkind_node) {
+            ValueInfo* rv = codegen_generate_expression(codegen, checker, refkind_node);
+            if (!rv) return NULL;
+
+            // Auto-load if the operand is an lvalue (e.g. a plain identifier).
+            if (rv->is_lvalue && rv->goo_type) {
+                LLVMTypeRef rt2 = codegen_type_to_llvm(codegen, rv->goo_type);
+                if (rt2) {
+                    rv->llvm_value = LLVMBuildLoad2(codegen->builder, rt2, rv->llvm_value, "refkind_load");
+                    rv->is_lvalue = 0;
+                }
+            }
+
+            LLVMValueRef ptr_word = (rv->goo_type && rv->goo_type->kind == TYPE_SLICE)
+                ? LLVMBuildExtractValue(codegen->builder, rv->llvm_value, 0, "slice_ptr")
+                : rv->llvm_value;
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(codegen->context), 0);
+            LLVMValueRef null_ptr = LLVMConstPointerNull(i8ptr);
+            LLVMValueRef result = LLVMBuildICmp(codegen->builder,
+                binary->operator == TOKEN_EQ ? LLVMIntEQ : LLVMIntNE,
+                ptr_word, null_ptr, "refkind_nilcmp");
+
+            Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+            value_info_free(rv);
+            return value_info_new(NULL, result, bool_type);
+        }
+    }
+
     // iface == nil / nil == iface (RTTI follow-up). An interface value is the
     // pair { ptr vtable, ptr data }; its nil (zero) value has both words null.
     // Mirror the nullable/funcval paths: do NOT evaluate the nil side (a bare
@@ -1824,6 +2028,118 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
 
             Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
             value_info_free(iv);
+            return value_info_new(NULL, result, bool_type);
+        }
+    }
+
+    // ?a == ?b / T == ?b / ?a == T (T3, P2.5): tag-aware nullable equality,
+    // any operand order. Neither operand is a bare nil literal here (the
+    // nullable-vs-nil block above already returned for that shape), so
+    // BOTH sides need evaluating — unlike the nil-literal special cases
+    // above, there is no "wrong LLVM shape" side to avoid touching.
+    // Semantics (checker-enforced, mirrored exactly):
+    //   ?a == ?b  =>  (both nil) || (neither nil && payload(a)==payload(b))
+    //   t == ?b   =>  !nil(b) && t == payload(b)      (symmetric for ?a==t)
+    // `!=` is computed as the negation of `==`, matching the design's
+    // "!= is the negation" rule and every other nil-comparison arm's
+    // want_equal-then-negate shape above.
+    if (binary->operator == TOKEN_EQ || binary->operator == TOKEN_NE) {
+        // Read the checker's recording (binary->{left,right}->node_type)
+        // rather than re-invoking type_check_expression, mirroring the
+        // CHANGE-TOGETHER invariant this function already applies to
+        // `expr->node_type` itself (see the comment further below, at the
+        // generic path's `result_type = expr->node_type`). This isn't
+        // optional here the way it's a hygiene nicety there: EVERY == / !=
+        // in the program reaches this unconditional check (unlike the
+        // nil-literal arms above, which only re-check a side already known
+        // non-literal from the AST shape), and type_check_literal
+        // unconditionally resets a literal's node_type to its untyped
+        // default on every call — re-invoking it here on an operand like
+        // the `3` in `g != 3` (g float32) would silently undo the cross-kind
+        // FLOAT32 adaptation type_check_binary_expr already stamped during
+        // the one true pass, handing codegen_generate_literal a stale INT64
+        // and producing a mismatched `fcmp float, i64` the LLVM verifier
+        // rejects. node_type is guaranteed populated here: the whole
+        // program type-checks before codegen ever runs.
+        Type* lt = binary->left->node_type;
+        Type* rt = binary->right->node_type;
+        bool left_nullable = lt && type_is_nullable(lt);
+        bool right_nullable = rt && type_is_nullable(rt);
+
+        if (left_nullable || right_nullable) {
+            ValueInfo* lv = codegen_generate_expression(codegen, checker, binary->left);
+            if (!lv) return NULL;
+            if (lv->is_lvalue && lv->goo_type) {
+                LLVMTypeRef llt = codegen_type_to_llvm(codegen, lv->goo_type);
+                if (llt) {
+                    lv->llvm_value = LLVMBuildLoad2(codegen->builder, llt, lv->llvm_value, "nulleq.lload");
+                    lv->is_lvalue = 0;
+                }
+            }
+            ValueInfo* rv = codegen_generate_expression(codegen, checker, binary->right);
+            if (!rv) { value_info_free(lv); return NULL; }
+            if (rv->is_lvalue && rv->goo_type) {
+                LLVMTypeRef rlt = codegen_type_to_llvm(codegen, rv->goo_type);
+                if (rlt) {
+                    rv->llvm_value = LLVMBuildLoad2(codegen->builder, rlt, rv->llvm_value, "nulleq.rload");
+                    rv->is_lvalue = 0;
+                }
+            }
+
+            LLVMValueRef eq_result = NULL;
+
+            if (left_nullable && right_nullable) {
+                LLVMValueRef l_null = LLVMBuildExtractValue(codegen->builder, lv->llvm_value, 0, "nulleq.lnull");
+                LLVMValueRef r_null = LLVMBuildExtractValue(codegen->builder, rv->llvm_value, 0, "nulleq.rnull");
+                LLVMValueRef l_payload = LLVMBuildExtractValue(codegen->builder, lv->llvm_value, 1, "nulleq.lpayload");
+                LLVMValueRef r_payload = LLVMBuildExtractValue(codegen->builder, rv->llvm_value, 1, "nulleq.rpayload");
+                Type* l_base = lt->data.nullable.base_type;
+                Type* r_base = rt->data.nullable.base_type;
+
+                codegen_widen_narrower_operand(codegen, &l_payload, type_is_signed(l_base),
+                                               &r_payload, type_is_signed(r_base));
+                // Widening may have swapped which side is now the wider
+                // LLVM type; either base's Goo kind is equally valid for
+                // codegen_nullable_payload_eq's kind dispatch (the checker
+                // already required the same category).
+                LLVMValueRef payload_eq = codegen_nullable_payload_eq(codegen, l_base, l_payload, r_payload, expr);
+                if (!payload_eq) { value_info_free(lv); value_info_free(rv); return NULL; }
+
+                LLVMValueRef both_nil = LLVMBuildAnd(codegen->builder, l_null, r_null, "nulleq.bothnil");
+                LLVMValueRef l_notnull = LLVMBuildNot(codegen->builder, l_null, "nulleq.lnotnull");
+                LLVMValueRef r_notnull = LLVMBuildNot(codegen->builder, r_null, "nulleq.rnotnull");
+                LLVMValueRef neither_nil = LLVMBuildAnd(codegen->builder, l_notnull, r_notnull, "nulleq.neithernil");
+                LLVMValueRef value_eq = LLVMBuildAnd(codegen->builder, neither_nil, payload_eq, "nulleq.valueeq");
+                eq_result = LLVMBuildOr(codegen->builder, both_nil, value_eq, "nulleq.result");
+            } else {
+                // T == ?b / ?a == T (mixed order, symmetric).
+                ValueInfo* nv = left_nullable ? lv : rv;
+                ValueInfo* pv = left_nullable ? rv : lv;
+                Type* nullable_type = left_nullable ? lt : rt;
+                Type* plain_type = left_nullable ? rt : lt;
+                Type* payload_type = nullable_type->data.nullable.base_type;
+
+                LLVMValueRef n_null = LLVMBuildExtractValue(codegen->builder, nv->llvm_value, 0, "nulleq.nnull");
+                LLVMValueRef n_payload = LLVMBuildExtractValue(codegen->builder, nv->llvm_value, 1, "nulleq.npayload");
+                LLVMValueRef p_value = pv->llvm_value;
+
+                codegen_widen_narrower_operand(codegen, &n_payload, type_is_signed(payload_type),
+                                               &p_value, plain_type && type_is_signed(plain_type));
+
+                LLVMValueRef payload_eq = codegen_nullable_payload_eq(codegen, payload_type, n_payload, p_value, expr);
+                if (!payload_eq) { value_info_free(lv); value_info_free(rv); return NULL; }
+
+                LLVMValueRef n_notnull = LLVMBuildNot(codegen->builder, n_null, "nulleq.nnotnull");
+                eq_result = LLVMBuildAnd(codegen->builder, n_notnull, payload_eq, "nulleq.result");
+            }
+
+            LLVMValueRef result = (binary->operator == TOKEN_EQ)
+                ? eq_result
+                : LLVMBuildNot(codegen->builder, eq_result, "nulleq.ne");
+
+            Type* bool_type = type_checker_get_builtin(checker, TYPE_BOOL);
+            value_info_free(lv);
+            value_info_free(rv);
             return value_info_new(NULL, result, bool_type);
         }
     }
@@ -1976,6 +2292,39 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
     if ((binary->operator == TOKEN_LSHIFT || binary->operator == TOKEN_RSHIFT) &&
         LLVMGetTypeKind(LLVMTypeOf(left_llvm)) == LLVMIntegerTypeKind &&
         LLVMGetTypeKind(LLVMTypeOf(right_llvm)) == LLVMIntegerTypeKind) {
+        // Go: a NEGATIVE shift count is a runtime panic ("runtime error:
+        // negative shift amount"), distinct from an in-range-but-huge count
+        // (which saturates — the width guard in the operator switch below).
+        // Checked on the ORIGINAL count value BEFORE the width coercion
+        // beneath: the coercion zero-extends narrower counts and truncates
+        // wider ones, both of which destroy the sign bit this check needs.
+        // Only a SIGNED count type can be negative; unsigned counts skip the
+        // check entirely (zero extra IR). A count that is a compile-time
+        // NON-NEGATIVE constant also skips it (the common `x << 3` shape
+        // stays guard-free; constant NEGATIVE counts are rejected at compile
+        // time by the checker, so codegen never sees them — the guard here
+        // is the runtime-value path).
+        if (right_val->goo_type && type_is_signed(right_val->goo_type) &&
+            !(LLVMIsAConstantInt(right_llvm) &&
+              LLVMConstIntGetSExtValue(right_llvm) >= 0)) {
+            LLVMValueRef panic_fn = LLVMGetNamedFunction(codegen->module, "goo_panic");
+            if (panic_fn) {
+                LLVMValueRef zero_c = LLVMConstInt(LLVMTypeOf(right_llvm), 0, 0);
+                LLVMValueRef isneg = LLVMBuildICmp(codegen->builder, LLVMIntSLT,
+                                                   right_llvm, zero_c, "shneg");
+                LLVMBasicBlockRef panic_bb = codegen_create_block(codegen, "shneg.panic");
+                LLVMBasicBlockRef cont_bb = codegen_create_block(codegen, "shneg.cont");
+                LLVMBuildCondBr(codegen->builder, isneg, panic_bb, cont_bb);
+                codegen_set_insert_point(codegen, panic_bb);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(codegen->builder,
+                    "runtime error: negative shift amount", "shneg_msg");
+                LLVMValueRef pargs[1] = { msg };
+                LLVMBuildCall2(codegen->builder, LLVMGlobalGetValueType(panic_fn),
+                               panic_fn, pargs, 1, "");
+                LLVMBuildUnreachable(codegen->builder);
+                codegen_set_insert_point(codegen, cont_bb);
+            }
+        }
         unsigned lw = LLVMGetIntTypeWidth(LLVMTypeOf(left_llvm));
         unsigned rw = LLVMGetIntTypeWidth(LLVMTypeOf(right_llvm));
         if (rw < lw) {
@@ -2115,6 +2464,20 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
                                                  /*want_equal=*/1, expr);
                 if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
+            } else if (left_val->goo_type &&
+                       (left_val->goo_type->kind == TYPE_POINTER ||
+                        left_val->goo_type->kind == TYPE_CHANNEL)) {
+                // Reference identity (F2 follow-up to P2.2): two non-nil
+                // pointers or two non-nil channels compare by address. Reached
+                // only when neither operand is a nil literal (the dedicated
+                // <ref-kind> == nil block above already returned for that
+                // case). Under LLVM's opaque-pointer model every pointer/chan
+                // VALUE is already a bare `ptr` regardless of pointee/element
+                // type (see codegen_get_pointer_type / codegen_get_channel_type),
+                // so a direct icmp on the already-loaded operands suffices —
+                // no field extraction needed (unlike slice, which is a
+                // {ptr,len,cap} struct and stays nil-only comparable).
+                result = LLVMBuildICmp(codegen->builder, LLVMIntEQ, left_llvm, right_llvm, "refeq");
             }
             break;
 
@@ -2131,9 +2494,16 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                 result = codegen_string_eq_to_i1(codegen, left_llvm, right_llvm,
                                                  /*want_equal=*/0, expr);
                 if (!result) { value_info_free(left_val); value_info_free(right_val); return NULL; }
+            } else if (left_val->goo_type &&
+                       (left_val->goo_type->kind == TYPE_POINTER ||
+                        left_val->goo_type->kind == TYPE_CHANNEL)) {
+                // Reference identity, inequality direction — see the TOKEN_EQ
+                // case above for the full rationale; same lowering, opposite
+                // predicate.
+                result = LLVMBuildICmp(codegen->builder, LLVMIntNE, left_llvm, right_llvm, "refne");
             }
             break;
-            
+
         case TOKEN_LT:
             if (type_is_integer(left_val->goo_type)) {
                 if (type_is_signed(left_val->goo_type)) {
@@ -2226,17 +2596,60 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             result = LLVMBuildXor(codegen->builder, left_llvm, right_llvm, "xor");
             break;
             
-        case TOKEN_LSHIFT:
-            result = LLVMBuildShl(codegen->builder, left_llvm, right_llvm, "shl");
+        // Go defines shift by count >= the operand's width as "shifted 1 bit
+        // at a time, n times" — which saturates to 0 (both directions,
+        // unsigned right shift) or to the sign (0 / -1, signed right shift).
+        // LLVM's shl/lshr/ashr are POISON for such a count, not 0 — a
+        // divergence that's invisible at -O0 (x86 shift instructions mask
+        // the count mod the operand width in hardware, so the poison value
+        // often happens to look right) but exploitable once real
+        // optimization passes run and assume in-range shifts (found via the
+        // P3.10 -O0/-O2 differential golden gate: math/bits Div64's s==0
+        // fast path does lo >> (64-s) == lo >> 64, corrupted only at -O2).
+        // Guard explicitly with select rather than relying on hardware
+        // wraparound. right_llvm is already coerced to left_llvm's width
+        // above, so a single same-width comparison suffices.
+        //
+        // A NEGATIVE count is a separate case, handled separately: it panics
+        // at runtime ("runtime error: negative shift amount") rather than
+        // saturating. That guard is emitted above, before the width
+        // coercion, on the count's original (uncoerced, sign-preserving)
+        // value — by the time control reaches here, any negative count has
+        // already been caught, so the ULT comparison below only ever needs
+        // to distinguish in-range from huge-but-non-negative.
+        case TOKEN_LSHIFT: {
+            LLVMTypeRef shty = LLVMTypeOf(left_llvm);
+            unsigned width = LLVMGetIntTypeWidth(shty);
+            LLVMValueRef width_c = LLVMConstInt(shty, width, 0);
+            LLVMValueRef in_range = LLVMBuildICmp(codegen->builder, LLVMIntULT,
+                                                  right_llvm, width_c, "shl.inrange");
+            LLVMValueRef raw = LLVMBuildShl(codegen->builder, left_llvm, right_llvm, "shl");
+            result = LLVMBuildSelect(codegen->builder, in_range, raw,
+                                     LLVMConstInt(shty, 0, 0), "shl.guarded");
             break;
-            
-        case TOKEN_RSHIFT:
+        }
+
+        case TOKEN_RSHIFT: {
+            LLVMTypeRef shty = LLVMTypeOf(left_llvm);
+            unsigned width = LLVMGetIntTypeWidth(shty);
+            LLVMValueRef width_c = LLVMConstInt(shty, width, 0);
+            LLVMValueRef in_range = LLVMBuildICmp(codegen->builder, LLVMIntULT,
+                                                  right_llvm, width_c, "shr.inrange");
             if (type_is_signed(left_val->goo_type)) {
-                result = LLVMBuildAShr(codegen->builder, left_llvm, right_llvm, "ashr");
+                LLVMValueRef raw = LLVMBuildAShr(codegen->builder, left_llvm, right_llvm, "ashr");
+                // Out-of-range saturates to the sign fill (0 or -1), exactly
+                // what ashr by width-1 produces — and width-1 is always a
+                // valid, non-poison shift amount.
+                LLVMValueRef sat = LLVMBuildAShr(codegen->builder, left_llvm,
+                                                 LLVMConstInt(shty, width - 1, 0), "ashr.sat");
+                result = LLVMBuildSelect(codegen->builder, in_range, raw, sat, "ashr.guarded");
             } else {
-                result = LLVMBuildLShr(codegen->builder, left_llvm, right_llvm, "lshr");
+                LLVMValueRef raw = LLVMBuildLShr(codegen->builder, left_llvm, right_llvm, "lshr");
+                result = LLVMBuildSelect(codegen->builder, in_range, raw,
+                                         LLVMConstInt(shty, 0, 0), "lshr.guarded");
             }
             break;
+        }
             
         default:
             codegen_error(codegen, expr->pos, "Unsupported binary operator");
@@ -2392,16 +2805,8 @@ ValueInfo* codegen_generate_unary_expr(CodeGenerator* codegen, TypeChecker* chec
                     lit_val = LLVMBuildLoad2(codegen->builder, struct_llvm,
                                              lit_val, "addr_lit_load");
                 }
-                LLVMValueRef alloc_fn = LLVMGetNamedFunction(codegen->module, "goo_alloc");
-                if (!alloc_fn) {
-                    codegen_error(codegen, expr->pos, "&literal: goo_alloc unavailable");
-                    value_info_free(operand);
-                    return NULL;
-                }
                 LLVMValueRef size = LLVMSizeOf(struct_llvm);
-                LLVMValueRef heap_ptr = LLVMBuildCall2(codegen->builder,
-                                                       LLVMGlobalGetValueType(alloc_fn),
-                                                       alloc_fn, &size, 1, "addr_lit");
+                LLVMValueRef heap_ptr = codegen_emit_alloc(codegen, size, ALLOC_KIND_DEFAULT, expr);
                 LLVMBuildStore(codegen->builder, lit_val, heap_ptr);
                 result = heap_ptr;
                 result_type = type_pointer(operand->goo_type);

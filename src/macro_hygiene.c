@@ -21,7 +21,7 @@ static const char* BUILTIN_RESERVED[] = {
 
 // Create hygiene context
 MacroHygieneContext* create_hygiene_context(void) {
-    MacroHygieneContext* ctx = (MacroHygieneContext*)calloc(1, sizeof(MacroHygieneContext));
+    MacroHygieneContext* ctx = (MacroHygieneContext*)xcalloc(1, sizeof(MacroHygieneContext));
     if (!ctx) return NULL;
     
     // Create global scope
@@ -66,7 +66,7 @@ void destroy_hygiene_context(MacroHygieneContext* ctx) {
 
 // Create hygiene scope
 HygieneScope* create_hygiene_scope(HygieneScopeType type, const char* scope_id, HygieneScope* parent) {
-    HygieneScope* scope = (HygieneScope*)calloc(1, sizeof(HygieneScope));
+    HygieneScope* scope = (HygieneScope*)xcalloc(1, sizeof(HygieneScope));
     if (!scope) return NULL;
     
     scope->type = type;
@@ -142,7 +142,7 @@ HygieneScope* exit_hygiene_scope(MacroHygieneContext* ctx) {
 HygieneBinding* create_hygiene_binding(const char* name, Type* type, HygieneScopeType scope) {
     if (!name) return NULL;
     
-    HygieneBinding* binding = (HygieneBinding*)calloc(1, sizeof(HygieneBinding));
+    HygieneBinding* binding = (HygieneBinding*)xcalloc(1, sizeof(HygieneBinding));
     if (!binding) return NULL;
     
     binding->name = strdup(name);
@@ -297,6 +297,9 @@ bool check_macro_hygiene(MacroExpansion* expansion, MacroHygieneContext* ctx) {
                     if (var_end) {
                         size_t var_len = var_end - var_start;
                         char* var_name = (char*)malloc(var_len + 1);
+                        if (!var_name) {
+                            return false;
+                        }
                         strncpy(var_name, var_start, var_len);
                         var_name[var_len] = '\0';
                         
@@ -351,7 +354,7 @@ bool check_name_collision(const char* name, MacroHygieneContext* ctx) {
 HygieneViolation* detect_hygiene_violation(const char* var_name, MacroHygieneContext* ctx) {
     if (!var_name || !ctx) return NULL;
     
-    HygieneViolation* violation = (HygieneViolation*)calloc(1, sizeof(HygieneViolation));
+    HygieneViolation* violation = (HygieneViolation*)xcalloc(1, sizeof(HygieneViolation));
     if (!violation) return NULL;
     
     violation->variable_name = strdup(var_name);
@@ -629,7 +632,7 @@ MacroExpansion* expand_macro_with_hygiene(MacroTemplate* macro, MacroContext* ct
     enter_hygiene_scope(hygiene_ctx, HYGIENE_SCOPE_MACRO, scope_name);
     
     // Perform normal macro expansion - simplified for testing
-    MacroExpansion* expansion = (MacroExpansion*)calloc(1, sizeof(MacroExpansion));
+    MacroExpansion* expansion = (MacroExpansion*)xcalloc(1, sizeof(MacroExpansion));
     if (expansion) {
         expansion->success = true;
         expansion->expanded_code = strdup("int hygienic_var = 42;");

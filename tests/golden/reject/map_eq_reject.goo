@@ -1,0 +1,13 @@
+// map_eq_reject (F2): a map is comparable to nil ONLY, never to another
+// map — Go: "invalid operation: m1 == m2 (map can only be compared to
+// nil)". Two non-nil, identically-typed maps used to slip past the type
+// checker (type_equals treats same-key/value-type maps as compatible) and
+// die in codegen with a generic "Failed to generate binary operation"
+// instead of a positioned, Go-shaped diagnostic.
+package main
+
+func main() {
+	m1 := map[string]int{"a": 1}
+	m2 := map[string]int{"a": 1}
+	_ = m1 == m2
+}

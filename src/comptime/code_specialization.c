@@ -41,7 +41,7 @@ static uint64_t hash_param(const SpecializationParam* param) {
 
 // Context management
 SpecializationContext* specialization_context_create(void) {
-    SpecializationContext* context = calloc(1, sizeof(SpecializationContext));
+    SpecializationContext* context = xcalloc(1, sizeof(SpecializationContext));
     if (!context) return NULL;
     
     // Create cache with default size
@@ -52,7 +52,7 @@ SpecializationContext* specialization_context_create(void) {
     }
     
     // Initialize heuristics with defaults
-    context->heuristics = calloc(1, sizeof(SpecializationHeuristics));
+    context->heuristics = xcalloc(1, sizeof(SpecializationHeuristics));
     if (!context->heuristics) {
         specialization_cache_free(context->cache);
         free(context);
@@ -211,7 +211,7 @@ SpecializedFunction* generate_specialization(SpecializationContext* context,
     if (!context || !function || !params) return NULL;
     
     // Create specialized function
-    SpecializedFunction* specialized = calloc(1, sizeof(SpecializedFunction));
+    SpecializedFunction* specialized = xcalloc(1, sizeof(SpecializedFunction));
     if (!specialized) return NULL;
     
     // Create key
@@ -390,7 +390,7 @@ bool auto_vectorize_loops(ASTNode* ast, int vector_width) {
 
 // Cache management
 SpecializationCache* specialization_cache_create(size_t capacity) {
-    SpecializationCache* cache = calloc(1, sizeof(SpecializationCache));
+    SpecializationCache* cache = xcalloc(1, sizeof(SpecializationCache));
     if (!cache) return NULL;
     
     cache->bucket_count = capacity;
@@ -504,7 +504,7 @@ SpecializationKey* create_specialization_key(const char* function_name,
                                            size_t param_count) {
     if (!function_name || !params) return NULL;
     
-    SpecializationKey* key = calloc(1, sizeof(SpecializationKey));
+    SpecializationKey* key = xcalloc(1, sizeof(SpecializationKey));
     if (!key) return NULL;
     
     key->function_name = strdup(function_name);
@@ -630,7 +630,7 @@ ComptimeValue* comptime_specialize_for(ComptimeValue* function, ComptimeValue* p
     if (!function || !params) return NULL;
     
     // This would trigger specialization at compile time
-    ComptimeValue* result = malloc(sizeof(ComptimeValue));
+    ComptimeValue* result = xmalloc(sizeof(ComptimeValue));
     if (!result) return NULL;
     
     result->type = COMPTIME_VALUE_FUNCTION;

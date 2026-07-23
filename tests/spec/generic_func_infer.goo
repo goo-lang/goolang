@@ -1,0 +1,13 @@
+// Spec: Type parameters / Generic function with inference ([T any])
+package main
+
+import "fmt"
+
+func first[T any](a T, b T) T {
+	return a
+}
+
+func main() {
+	fmt.Println(first(7, 8))
+	fmt.Println(first("x", "y"))
+}

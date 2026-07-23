@@ -1,0 +1,61 @@
+// spmd_composed_probe: composed (generic x comptime) lane in the SPMD shape
+// (SPMD harness sub-project, Task 2 — the pinned pattern; scout P5c). Pins
+// composition-in-SPMD within today's limits: arithmetic on a `T any` value
+// inside a template body is rejected (the Scope section's Wall A), so
+// `kernel` is DATA MOVEMENT ONLY — it copies `seed` into a local `[n]T`
+// buffer and returns the last-written slot, which is enough to force real
+// per-instance array codegen without touching T-typed arithmetic.
+//
+// `chan T` cannot infer T from a concrete channel argument at a call site
+// (pre-existing unify_types gap), so each call site uses the CLOSURE-WRAPPER
+// idiom (`go func(){ ch <- kernel(n, x) }()`) to collect the composed
+// result on a CONCRETE channel instead: `chan int64` for the int64
+// instance, `chan float64` for the float64 instance. Both share n=4; T
+// differs, so this exercises TWO DISTINCT (T, n) instances of the same
+// composed template (kernel__int64__n4, kernel__float64__n4), each
+// dispatched via `go` inside the closure wrapper — the SPMD shape applied
+// to a composed kernel. BOTH closures are spawned before either channel is
+// drained (fan-out first, then fan-in — the same discipline as the other
+// SPMD goldens), so the two composed instances are genuinely in flight
+// concurrently.
+//
+// Output is deterministic: buf[n-1] always equals the seed that was copied
+// into every slot, so a=42 (the int64 seed) and b=2.5 (the float64 seed).
+// Each lane owns its own single-purpose channel, so draining ich then fch
+// fixes the print order without depending on which goroutine's send lands
+// first — the receives don't race each other.
+package main
+
+import "fmt"
+
+func kernel[T any](comptime n int, seed T) T {
+	var buf [n]T
+	i := 0
+	for i < n {
+		buf[i] = seed
+		i = i + 1
+	}
+	return buf[n-1]
+}
+
+func main() {
+	ich := make(chan int64, 1)
+	fch := make(chan float64, 1)
+	x := int64(42)
+	y := 2.5
+
+	// Fan-out: both composed instances dispatched before any receive.
+	go func() {
+		ich <- kernel(4, x)
+	}()
+	go func() {
+		fch <- kernel(4, y)
+	}()
+
+	// Fan-in: drain in a fixed order (separate channels, so no race).
+	a := <-ich
+	b := <-fch
+
+	fmt.Println(a)
+	fmt.Println(b)
+}

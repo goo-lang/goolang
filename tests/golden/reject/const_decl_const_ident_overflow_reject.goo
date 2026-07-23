@@ -1,0 +1,12 @@
+// Correctness arc 5 (h), const-identifier arm: the RHS resolves through the
+// checker-aware folder, so a typed const initialized FROM an untyped const
+// identifier is judged by the referenced constant's value — the same
+// admission rule arc 4's chan-send gate established (shared core:
+// check_const_int_expr_fits). Before the fix this printed 300.
+package main
+
+func main() {
+	const a = 300
+	const b int8 = a
+	println(b)
+}

@@ -1,0 +1,7 @@
+0
+PASS: nil slice
+1
+PASS: non-nil after append
+3
+1
+3

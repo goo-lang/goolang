@@ -1,0 +1,9 @@
+// Spec: Lexical elements / String literals — raw strings
+package main
+
+import "fmt"
+
+func main() {
+	s := `raw \n not escaped`
+	fmt.Println(s)
+}

@@ -1,0 +1,17 @@
+// divzero_abort_probe (P1-7): integer divide-by-zero must abort (non-zero
+// exit + panic message), not return garbage. Migrated from the standalone
+// `divzero-probe` Makefile target into the golden suite (Phase 0 Task 1) —
+// see examples/divzero_abort_probe.exit (expected exit code: 2 — Go-
+// conformant panic exit per Task 6, GOO_PANIC_ABORT=1 restores the prior
+// SIGABRT/134 abort() for debugging) and .stderr.txt (panic message
+// substring).
+package main
+
+import "fmt"
+
+func main() {
+	a := 10
+	b := 0
+	c := a / b
+	fmt.Println(c)
+}

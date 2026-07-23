@@ -37,7 +37,7 @@ int asprintf(char **strp, const char *fmt, ...) {
 
 // Create a new compile-time context
 ComptimeContext* comptime_context_new(ComptimeContext* parent) {
-    ComptimeContext* ctx = malloc(sizeof(ComptimeContext));
+    ComptimeContext* ctx = xmalloc(sizeof(ComptimeContext));
     if (!ctx) return NULL;
     
     // Initialize variable bindings
@@ -120,7 +120,7 @@ void comptime_context_free(ComptimeContext* ctx) {
 
 // Create a new compile-time value
 ComptimeValue* comptime_value_new(ComptimeValueType type) {
-    ComptimeValue* value = malloc(sizeof(ComptimeValue));
+    ComptimeValue* value = xmalloc(sizeof(ComptimeValue));
     if (!value) return NULL;
     
     value->type = type;
@@ -478,7 +478,7 @@ char* comptime_value_to_string(const ComptimeValue* value) {
 
 // Create a new compile-time error
 ComptimeError* comptime_error_new(const char* message, Position pos) {
-    ComptimeError* error = malloc(sizeof(ComptimeError));
+    ComptimeError* error = xmalloc(sizeof(ComptimeError));
     if (!error) return NULL;
     
     error->message = strdup(message);
@@ -507,7 +507,7 @@ void comptime_context_add_error(ComptimeContext* ctx, ComptimeError* error) {
 
 // Create a new compile-time result
 ComptimeResult* comptime_result_new(ComptimeValue* value, ComptimeError* error, char* generated_code) {
-    ComptimeResult* result = malloc(sizeof(ComptimeResult));
+    ComptimeResult* result = xmalloc(sizeof(ComptimeResult));
     if (!result) return NULL;
     
     result->value = value;
