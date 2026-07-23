@@ -256,7 +256,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
             if (target->kind == TYPE_INTERFACE) {
                 LLVMValueRef built = NULL;
                 LLVMValueRef itm_match = codegen_interface_target_match(codegen, checker,
-                                                                        iface_val, target, &built);
+                                                                        iface_val, target, &built,
+                                                                        expr->pos);
                 if (!itm_match || !built) {
                     codegen_error(codegen, expr->pos,
                                   "internal: cannot build interface-target type assertion");
@@ -297,7 +298,8 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
 
             LLVMValueRef data = NULL;
             LLVMValueRef match = codegen_interface_assert_match(codegen, checker, iface_val,
-                                                                iface_type, target, &data);
+                                                                iface_type, target, &data,
+                                                                expr->pos);
             if (!match) {
                 codegen_error(codegen, expr->pos,
                               "internal: cannot build type assertion vtable compare");

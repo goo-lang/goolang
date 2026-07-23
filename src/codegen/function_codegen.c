@@ -2231,7 +2231,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 if (target->kind == TYPE_INTERFACE) {
                     LLVMValueRef built = NULL;
                     ta_match = codegen_interface_target_match(codegen, checker, iface_val, target,
-                                                              &built);
+                                                              &built, decl->pos);
                     if (!ta_match || !built) {
                         codegen_error(codegen, decl->pos,
                                       "Failed to build comma-ok interface-target assertion");
@@ -2241,7 +2241,8 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 } else {
                     LLVMValueRef ta_data = NULL;
                     ta_match = codegen_interface_assert_match(codegen, checker, iface_val,
-                                                              iface_type, target, &ta_data);
+                                                              iface_type, target, &ta_data,
+                                                              decl->pos);
                     if (!ta_match) {
                         codegen_error(codegen, decl->pos,
                                       "Failed to build comma-ok type assertion compare");

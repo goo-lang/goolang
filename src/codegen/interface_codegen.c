@@ -741,9 +741,16 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
 // Returns the i1 match value, or NULL if the vtable global couldn't be
 // resolved (should not happen for a type-checked assertion — the checker's
 // type_interface_satisfied gate already ruled out a non-implementing target).
+// `pos`: the assertion/case expression's own source position — see this
+// function's declaration in codegen.h for why it must be threaded through
+// (review finding on Arc 15 item l: this function cascades into
+// codegen_get_or_emit_type_desc/_fmt exactly like codegen_interface_box
+// does, so `target`'s %v formatter may be synthesized HERE first if this is
+// the first codegen site to ever request `target`'s vtable).
 LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* iface_type,
-                                            Type* target, LLVMValueRef* data_out) {
+                                            Type* target, LLVMValueRef* data_out,
+                                            Position pos) {
     if (!codegen || !iface_type || iface_type->kind != TYPE_INTERFACE || !target) return NULL;
 
     // Task 5 (replaces df41fb2's unwrap-to-pointee-and-use-value-form): a
@@ -767,14 +774,22 @@ LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker*
         vt_pointer_form = 1;
     }
 
-    // (Position){0}: this is a type-assertion lookup, not a boxing call
-    // site — no user-facing expression position is threaded into this
-    // function (Arc 15 item l scoped the box path only), and the vtable
-    // global this resolves is expected to already exist (see the doc
-    // comment above), so its internal "cannot name concrete type" error
-    // path is not reachable here in practice.
+    // `pos` (review fix, Arc 15 item l): this vtable lookup cascades into
+    // codegen_get_or_emit_type_desc -> codegen_get_or_emit_type_fmt, which
+    // unconditionally synthesizes `vt_target`'s %v formatter (interface_
+    // codegen.c, codegen_get_or_emit_type_desc, above) as a side effect —
+    // NOT just a "cannot name concrete type" internal assert. If this
+    // assertion/case is the FIRST codegen site to ever request
+    // `vt_target`'s vtable (e.g. a struct type that is type-switched/
+    // asserted on but never directly boxed via codegen_interface_box), the
+    // formatter's cache entry is created HERE, so a real position must
+    // reach it. The vtable global itself is still expected to already
+    // exist for the common case (boxing is what put the runtime value in
+    // hand), but the cached descriptor/formatter is genuinely first-
+    // synthesized on this leg for that shape — hence threading `pos`
+    // rather than defaulting to zero.
     LLVMValueRef vt_want = codegen_interface_vtable(codegen, checker, iface_type, vt_target,
-                                                    vt_pointer_form, (Position){0});
+                                                    vt_pointer_form, pos);
     if (!vt_want) return NULL;
 
     LLVMValueRef vt_have = LLVMBuildExtractValue(codegen->builder, iface_val, 0, "ta.vt");
@@ -889,9 +904,14 @@ size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Typ
 // hard internal failure (e.g. `target_iface`'s LLVM type can't be
 // resolved) — should not happen for a type-checked interface-target
 // assertion.
+// `pos`: the assertion/case expression's own source position — see
+// codegen_interface_assert_match's `pos` doc above (same rationale: the
+// per-candidate loop below calls codegen_get_or_emit_type_desc /
+// codegen_interface_vtable for each closed-world implementer, and either
+// call may be that implementer's FIRST descriptor/formatter synthesis).
 LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* target_iface,
-                                            LLVMValueRef* built_out) {
+                                            LLVMValueRef* built_out, Position pos) {
     if (!codegen || !checker || !target_iface || target_iface->kind != TYPE_INTERFACE ||
         !built_out) {
         return NULL;
@@ -982,12 +1002,19 @@ LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker*
             // descriptor matches at most one of the two forms, so trying both is
             // safe: exactly one `eq` (or neither, on a genuine miss) is true.
             for (int form = 0; form <= 1; form++) {
-                // (Position){0}: RTTI enumeration over already-declared
-                // implementer types, not a boxing call site — see the
-                // matching comment on codegen_interface_assert_match's call
-                // above (Arc 15 item l scoped the box path only).
-                LLVMValueRef desc_T = codegen_get_or_emit_type_desc(codegen, checker, base, form, (Position){0});
-                LLVMValueRef vt_TI = codegen_interface_vtable(codegen, checker, target_iface, base, form, (Position){0});
+                // `pos` (review fix, Arc 15 item l): RTTI enumeration over
+                // already-declared implementer types, not a boxing call
+                // site — but codegen_get_or_emit_type_desc unconditionally
+                // synthesizes `base`'s %v formatter as a side effect
+                // (interface_codegen.c, codegen_get_or_emit_type_desc,
+                // above), so if `x.(target_iface)` / `case target_iface:`
+                // is the FIRST codegen site to ever reach `base` as an
+                // implementer candidate, that formatter (and its
+                // unsupported-field diagnostic, if `base` has one) is
+                // synthesized HERE, not at some later boxing site. Thread
+                // the real position through instead of defaulting to zero.
+                LLVMValueRef desc_T = codegen_get_or_emit_type_desc(codegen, checker, base, form, pos);
+                LLVMValueRef vt_TI = codegen_interface_vtable(codegen, checker, target_iface, base, form, pos);
                 if (!desc_T || !vt_TI) continue;
 
                 LLVMValueRef eq = LLVMBuildICmp(codegen->builder, LLVMIntEQ, desc_have, desc_T, "itm.eq");

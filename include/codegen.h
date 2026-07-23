@@ -697,19 +697,32 @@ ValueInfo* codegen_interface_dispatch(CodeGenerator* codegen, TypeChecker* check
 // Task 2 (type assertions): shared vtable-pointer-compare + unbox lowering
 // for `x.(T)` (comma-ok and single-return) and Task 3's type switch. See
 // interface_codegen.c's doc comments on each for the exact contract.
+// `pos`: the assertion/type-switch-case expression's own source position
+// (review finding on Arc 15 item l — d30a22e threaded a real Position into
+// the codegen_interface_box leg only; this function ALSO cascades into
+// codegen_interface_vtable -> codegen_get_or_emit_type_desc ->
+// codegen_get_or_emit_type_fmt, which unconditionally synthesizes `target`'s
+// %v formatter as a side effect of the vtable lookup, so a program that
+// first reaches `target`'s formatter via `x.(target)` / `case target:`
+// rather than a direct box needs a real position here too, not a hardcoded
+// zero).
 LLVMValueRef codegen_interface_assert_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* iface_type,
-                                            Type* target, LLVMValueRef* data_out);
+                                            Type* target, LLVMValueRef* data_out,
+                                            Position pos);
 LLVMValueRef codegen_interface_assert_unbox(CodeGenerator* codegen, Type* target,
                                             LLVMValueRef data);
 // Interface-target RTTI, Task 1: `x.(I)` where I is itself an INTERFACE
 // (closed-world enumeration of I's concrete implementers), as opposed to
 // codegen_interface_assert_match's concrete-target vtable-pointer compare.
 // See interface_codegen.c's doc comments on each for the exact contract.
+// `pos`: see codegen_interface_assert_match's `pos` doc above — same
+// rationale (this function also enumerates each implementer through
+// codegen_get_or_emit_type_desc / codegen_interface_vtable).
 size_t codegen_collect_iface_implementers(TypeChecker* checker, Type* iface, Type*** out);
 LLVMValueRef codegen_interface_target_match(CodeGenerator* codegen, TypeChecker* checker,
                                             LLVMValueRef iface_val, Type* target_iface,
-                                            LLVMValueRef* built_out);
+                                            LLVMValueRef* built_out, Position pos);
 
 // Goo extension expression generation
 ValueInfo* codegen_generate_try_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr);

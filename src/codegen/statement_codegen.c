@@ -1022,7 +1022,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                     // single_concrete check).
                     LLVMValueRef built = NULL;
                     match = codegen_interface_target_match(codegen, checker, iface_val,
-                                                           case_type, &built);
+                                                           case_type, &built, t->pos);
                     if (!match) {
                         codegen_error(codegen, t->pos,
                             "internal: cannot build type switch interface-target match");
@@ -1035,7 +1035,7 @@ int codegen_generate_type_switch_stmt(CodeGenerator* codegen, TypeChecker* check
                     }
                 } else {
                     match = codegen_interface_assert_match(codegen, checker, iface_val,
-                                                           iface_type, case_type, NULL);
+                                                           iface_type, case_type, NULL, t->pos);
                     if (!match) {
                         codegen_error(codegen, t->pos, "internal: cannot build type switch vtable compare");
                         free(body_blocks);
