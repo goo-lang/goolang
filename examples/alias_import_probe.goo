@@ -30,6 +30,8 @@
 package main
 
 import f "fmt"
+import "fmt"
+import g "fmt"
 import mt "math"
 import sy "sync"
 import tm "time"
@@ -49,6 +51,12 @@ func (c *Counter) Inc() {
 
 func main() {
 	f.Println("hello from aliased fmt")
+	// T-B review pin: the SAME shim package imported bare, and under a
+	// second alias, in one file — three independent markers, one canonical
+	// path, no cross-talk. (Go itself allows this; a same-ALIAS collision
+	// is the separate, still-open duplicate-import gap in the report.)
+	fmt.Println("bare fmt coexists")
+	g.Println("second alias coexists")
 	f.Println(int(mt.Sqrt(16.0)))
 	f.Println(mt.Pi)
 

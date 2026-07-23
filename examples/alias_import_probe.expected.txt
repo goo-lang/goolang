@@ -1,4 +1,6 @@
 hello from aliased fmt
+bare fmt coexists
+second alias coexists
 4
 3.14159
 2
