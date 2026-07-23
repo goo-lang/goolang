@@ -1,0 +1,21 @@
+// switch_array_tag_reject (correctness burndown arc 14, k): Mandate B's
+// struct-tag wall (type_check_switch_stmt) only covered TYPE_STRUCT, but
+// codegen_generate_switch_stmt's fallback LLVMBuildICmp(IntEQ) is exactly
+// as illegal for an array-typed tag ("Invalid operand types for ICmp
+// instruction  icmp eq [3 x i64] ..."), a raw verifier leak reaching users.
+// Unlike the slice/map/func case, a FIXED-size array IS comparable in Go
+// (switching on one is legal there) — this wall is a v1 LOWERING gap, not
+// a language restriction, mirroring the struct wall's comparable leg; a
+// future task should remove it once array-equality codegen exists.
+package main
+
+func main() {
+	a := [3]int{1, 2, 3}
+	other := [3]int{1, 2, 3}
+	switch a {
+	case other:
+		println("match")
+	default:
+		println("no match")
+	}
+}

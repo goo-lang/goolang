@@ -1,0 +1,1 @@
+switch on a slice-typed value is not supported

@@ -1,0 +1,21 @@
+// switch_slice_tag_reject (correctness burndown arc 14, k): Mandate B's
+// struct-tag wall (type_check_switch_stmt) only covered TYPE_STRUCT, but
+// codegen_generate_switch_stmt's fallback LLVMBuildICmp(IntEQ) is exactly
+// as illegal for a slice-typed tag ("Invalid operand types for ICmp
+// instruction  icmp eq { ptr, i64, i64 } ..."), a raw verifier leak
+// reaching users. Unlike the struct case, a slice tag has no comparable
+// branch at all — Go itself rejects `==` on slices ("slice can only be
+// compared to nil"), so this is a real language restriction, not just a v1
+// lowering gap.
+package main
+
+func main() {
+	s := []int{1, 2, 3}
+	other := []int{1, 2, 3}
+	switch s {
+	case other:
+		println("match")
+	default:
+		println("no match")
+	}
+}

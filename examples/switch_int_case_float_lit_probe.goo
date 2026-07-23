@@ -1,0 +1,23 @@
+// switch_int_case_float_lit_probe (correctness burndown arc 14, f, positive
+// control): an INTEGRAL float-literal case against an integer tag (`case
+// 2.0:`) is Go-legal — the constant converts exactly — and must be accepted
+// (stamped to the tag's width so codegen emits an integer ICmp), unlike the
+// non-integral sibling pinned by switch_float_case_int_tag_reject.goo.
+package main
+
+func classify(n int) string {
+	switch n {
+	case 2.0:
+		return "two"
+	case 3:
+		return "three"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	println(classify(2))
+	println(classify(3))
+	println(classify(9))
+}

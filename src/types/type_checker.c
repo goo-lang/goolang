@@ -1737,6 +1737,15 @@ int check_interface_assign(TypeChecker* checker, Type* src, Type* target,
 // changes, and this is the only external caller.
 extern int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* declared);
 
+// Arc 14 (f/g) bridges into expression_checker.c's untyped-float-constant
+// adapter — see that file's adapt_switch_case_float_into_int and adapt_
+// return_float_literal doc comments. Same forward-declared-`extern`
+// convention as adapt_var_decl_initializer just above (one external caller
+// each, no header change).
+extern int adapt_switch_case_float_into_int(TypeChecker* checker, ASTNode* case_expr,
+                                             Type* tag_type);
+extern int adapt_return_float_literal(TypeChecker* checker, ASTNode* value, Type* expected);
+
 // Registers a single var-decl name in scope, mirroring the bindings the
 // success path has always set (ownership, is_initialized). Both the
 // success path and the Task 3 failure-recovery path (below) construct a
@@ -3731,12 +3740,13 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                 // untyped FLOAT constants (`3.9`) have no folder
                 // (`goo_fold_const_int` is int-only) and are NOT covered by
                 // this gate. Narrowing an untyped FLOAT constant into
-                // func() float32 (e.g. `return 3.9` from a float32 fn) is a
-                // KNOWN FALSE-REJECT here (Go accepts: constant conversion
-                // with rounding); out of scope here because no untyped-FLOAT
-                // constant folder exists to reuse — backlog item, see the
-                // mirror float-case-on-int-tag crash (see the arc's task
-                // report).
+                // func() float32 (e.g. `return 3.9` from a float32 fn) used
+                // to be a KNOWN FALSE-REJECT here (Go accepts: constant
+                // conversion with rounding) — closed by float_lit_coerce
+                // below, arc 14 (g), which reuses expression_checker.c's
+                // is_untyped_float_rooted/adapt_untyped_float_operand (this
+                // gate's own goo_fold_const_int is int-only and was never
+                // going to cover a float-literal-rooted return value).
                 int float_const_coerce =
                     type_is_float(expected) &&
                     is_untyped_int_const_expr(ret_stmt->values);
@@ -3753,6 +3763,30 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                     stamp_int_const_expr_type(ret_stmt->values, expected);
                 }
 
+                // Untyped FLOAT constant into a (possibly differently-sized)
+                // FLOAT return type (`return 3.9` from a func() float32 —
+                // correctness burndown arc 14, g). Disjoint from float_
+                // const_coerce above: is_untyped_float_rooted requires a
+                // float-literal LEAF somewhere in the expression, which
+                // is_untyped_int_const_expr's pure-integer-literal shape can
+                // never contain (so `return 1 + 0.5`, mixed and float-
+                // rooted per Go's kind-promotion rule, is caught HERE, not
+                // by the int path above). Bridges into expression_checker.c's
+                // adapt_untyped_float_operand, which range-checks (so
+                // `return 1e40` from a float32 function still rejects,
+                // "overflows float32") and recursively stamps every float-
+                // rooted node in the subtree — including an int-rooted
+                // sibling leaf of a mixed expression — to `expected`, so
+                // codegen_generate_literal emits the constant at the
+                // declared return width directly.
+                int float_lit_coerce = 0;
+                if (type_is_float(expected)) {
+                    int adapted = adapt_return_float_literal(checker, ret_stmt->values,
+                                                              expected);
+                    if (adapted < 0) return 0; // overflow — already reported
+                    float_lit_coerce = (adapted > 0);
+                }
+
                 // Arc 10 (o) rider: like the call-arg guard, a SAME-width
                 // differently-SIGNED pair (uint64 const returned from an
                 // int64 function) slid past the width test untouched and
@@ -3764,7 +3798,7 @@ int type_check_return_stmt(TypeChecker* checker, ASTNode* stmt) {
                                        type_is_signed(return_type) !=
                                            type_is_signed(expected);
                 if ((!same_kind || !same_width || ret_sign_differs) &&
-                    !int_const_coerce && !float_const_coerce) {
+                    !int_const_coerce && !float_const_coerce && !float_lit_coerce) {
                     // Arc 10 (o): a const-IDENT-bearing constant return
                     // value is judged by the shared core, mirroring the
                     // call-arg site — `return K` (K = 5) from an int8
@@ -4118,6 +4152,50 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
         ok = 0;
     }
 
+    // Mandate B extension (arc 14, k): the struct wall above covers only
+    // TYPE_STRUCT, but codegen_generate_switch_stmt's fallback
+    // LLVMBuildICmp(IntEQ) is exactly as illegal for a slice/map/function/
+    // array/channel-typed tag — the same raw "Invalid operand types for
+    // ICmp instruction" verifier leak the struct wall exists to close.
+    // Slice/map/function are genuinely NON-comparable in Go (`==` itself is
+    // a compile error on them: "invalid operation: slice can only be
+    // compared to nil") — a real language restriction, same wording shape
+    // as the struct wall's non-comparable leg. Array and channel ARE
+    // comparable in Go (switching on either is legal there); walling them
+    // off here is a v1 LOWERING gap, not a language restriction — same
+    // wording shape as the struct wall's comparable leg, and removable by
+    // the same future task. Falls through (no early return), matching the
+    // struct wall's cascade-suppression convention just above.
+    if (tag_type && !type_is_poison(tag_type) && tag_type->kind != TYPE_UNKNOWN) {
+        const char* kind_word = NULL;
+        const char* article = "a";  // "an array" is the one vowel-led kind below
+        int go_comparable = 0;
+        switch (tag_type->kind) {
+            case TYPE_SLICE:    kind_word = "slice";    go_comparable = 0; break;
+            case TYPE_MAP:      kind_word = "map";      go_comparable = 0; break;
+            case TYPE_FUNCTION: kind_word = "function"; go_comparable = 0; break;
+            case TYPE_ARRAY:    kind_word = "array";    go_comparable = 1; article = "an"; break;
+            case TYPE_CHANNEL:  kind_word = "channel";  go_comparable = 1; break;
+            default: break;
+        }
+        if (kind_word) {
+            if (go_comparable) {
+                type_error(checker, sw->tag->pos,
+                           "switch on %s %s-typed value is not supported "
+                           "(v1 limitation: %s-tag switch lowering is not "
+                           "implemented; Go allows this)",
+                           article, kind_word, kind_word);
+            } else {
+                type_error(checker, sw->tag->pos,
+                           "switch on %s %s-typed value is not supported "
+                           "(%s is not comparable, so Go would reject this "
+                           "too)",
+                           article, kind_word, type_to_string(tag_type));
+            }
+            ok = 0;
+        }
+    }
+
     // Mandate A's per-switch dup table — see the doc comment above.
 #define SWITCH_DUP_CASE_MAX_VALUES 64
     uint64_t dup_values[SWITCH_DUP_CASE_MAX_VALUES];
@@ -4221,6 +4299,24 @@ int type_check_switch_stmt(TypeChecker* checker, ASTNode* stmt) {
             if (type_is_float(tag_type) && is_untyped_int_const_expr(e)) {
                 stamp_int_const_expr_type(e, tag_type);
                 continue;
+            }
+
+            // Untyped float-literal case against an INTEGER tag (`switch n {
+            // case 2.5: }`, n an int — correctness burndown arc 14, f).
+            // Mirror image of the FLOAT-tag branch just above. Left
+            // unguarded, this fell through to type_check_comparison_op
+            // (which accepts a float-vs-int comparison) and codegen's
+            // switch lowering built an ICmp with a float operand, crashing
+            // the LLVM verifier. Bridges into expression_checker.c's
+            // conversion-operand range check so the diagnostic and
+            // representability rule match int(2.5)'s own rejection.
+            // Tri-state: 0 = e is not float-rooted, fall through to the
+            // ordinary comparison-op path below; >0 = fits, stamped to
+            // tag_type; <0 = rejected (already reported at e->pos).
+            if (type_is_integer(tag_type)) {
+                int adapted = adapt_switch_case_float_into_int(checker, e, tag_type);
+                if (adapted < 0) { ok = 0; continue; }
+                if (adapted > 0) continue;
             }
 
             // Any other kind mismatch (e.g. a string case against an int tag)

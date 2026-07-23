@@ -1878,6 +1878,66 @@ int adapt_var_decl_initializer(TypeChecker* checker, ASTNode* value, Type* decla
     return 1;
 }
 
+// Arc 14 (f) bridge for type_checker.c's type_check_switch_stmt: a float-
+// literal case expression compared against an INTEGER switch tag (`switch n
+// { case 2.5: }`, n an int) had no adapter — the checker fell through to
+// type_check_comparison_op, which accepts a float-vs-int comparison, and
+// codegen_generate_switch_stmt's fallback LLVMBuildICmp(IntEQ) then took a
+// float operand, crashing the LLVM verifier instead of reporting a clean
+// diagnostic. Go's rule for a float CONSTANT meeting an integer context is
+// the conversion rule (`int(2.5)`'s rule): magnitude must fit AND the value
+// must be integral — reuse check_conversion_operand_range (the exact check
+// a conversion already gets) instead of duplicating it, then stamp the case
+// subtree to the tag's width so codegen emits an integer constant in place
+// of a float one.
+//
+// Tri-state, mirroring check_const_int_expr_fits's contract (this file's
+// other cross-TU bridge with the same "does this gate even apply" question):
+// 0 when `case_expr` is not float-rooted (gate doesn't apply — caller falls
+// back to its ordinary type_check_comparison_op path so a genuine kind
+// mismatch like a string case still rejects there); 1 when it is float-
+// rooted and fits (stamped); -1 when it is float-rooted but rejected (a
+// positioned diagnostic was already emitted by check_conversion_operand_
+// range, e.g. "constant 2.5 truncated to integer").
+//
+// Declared non-static and NOT forward-declared at the top of this file —
+// same convention as adapt_var_decl_initializer just above: one external
+// caller, in type_checker.c, which forward-declares its own `extern`
+// prototype rather than a header change.
+int adapt_switch_case_float_into_int(TypeChecker* checker, ASTNode* case_expr,
+                                      Type* tag_type) {
+    if (!case_expr || !tag_type || !is_untyped_float_rooted(case_expr)) return 0;
+    if (!check_conversion_operand_range(checker, case_expr, tag_type, 0))
+        return -1; // overflow or truncation — diagnostic already emitted
+    stamp_int_const_expr_type(case_expr, tag_type);
+    return 1;
+}
+
+// Arc 14 (g) bridge for type_checker.c's type_check_return_stmt: an untyped
+// FLOAT-literal return value narrowing into (or widening to) a differently-
+// sized float return type had no adapter — float_const_coerce (type_
+// checker.c) only covers an untyped INT constant meeting a float target, so
+// `return 3.9` from a `func() float32` defaulted to float64, failed the
+// width check, and landed in the numeric-mismatch reject block: a Go-legal
+// program (constant conversion with rounding) falsely rejected. Mirrors
+// adapt_var_decl_initializer's float leg above, but for a return
+// statement's single value expression instead of a var-decl initializer —
+// same adapt_untyped_float_operand call, which range-checks (so `return
+// 1e40` from a float32 function still rejects, "overflows float32") and
+// recursively stamps the whole float-rooted subtree (so a mixed `return 1 +
+// 0.5` computes at the target width, not just a leaf literal).
+//
+// Tri-state, same contract as adapt_switch_case_float_into_int just above:
+// 0 when `value` is not float-rooted (gate doesn't apply — caller keeps its
+// ordinary width-mismatch path); 1 when it is and range-checks clean
+// (stamped to `expected`); -1 when it is float-rooted but out of range
+// (diagnostic already emitted).
+int adapt_return_float_literal(TypeChecker* checker, ASTNode* value, Type* expected) {
+    if (!value || !expected || !type_is_float(expected) || !is_untyped_float_rooted(value))
+        return 0;
+    return adapt_untyped_float_operand(checker, value, expected, 0) ? 1 : -1;
+}
+
 // Go rejects a CONSTANT negative shift count at compile time ("invalid
 // negative shift count"); a runtime-value count panics instead (codegen's
 // shneg guard). Returns 0 (and reports) iff the count folds to a constant

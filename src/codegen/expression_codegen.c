@@ -744,6 +744,27 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
         case TOKEN_FLOAT: {
             // Parse float value from string
             double value = atof(literal->value);
+            Type* nt = expr->node_type;
+            // Arc 14 (f): an INTEGRAL float literal used as a switch case
+            // against an integer tag (`case 2.0:` on an int tag) is stamped
+            // to the tag's INTEGER type by adapt_switch_case_float_into_int
+            // (expression_checker.c) via stamp_int_const_expr_type — the
+            // exact mirror image of the TOKEN_INT arm's `nt && type_is_
+            // float(nt)` case above (an int-literal case on a float tag).
+            // check_conversion_operand_range has already confirmed the
+            // value is both in-range for `nt` and integral (a non-integral
+            // literal like `2.5` is rejected — "truncated to integer" —
+            // before codegen ever runs), so the truncating cast below is
+            // exact, never lossy.
+            if (nt && type_is_integer(nt)) {
+                LLVMTypeRef lt = codegen_type_to_llvm(codegen, nt);
+                if (lt) {
+                    llvm_value = LLVMConstInt(lt, (unsigned long long)(long long)value,
+                                              type_is_signed(nt));
+                    goo_type = nt;
+                    break;
+                }
+            }
             // Narrow float-literal adaptation (mirrors the TOKEN_INT arm
             // above): when type-checking retyped this literal to float32
             // (e.g. `g * 2.0` with g float32 — see
@@ -752,7 +773,6 @@ ValueInfo* codegen_generate_literal(CodeGenerator* codegen, TypeChecker* checker
             // codegen's computed type matches what the checker stamped.
             // Unadapted literals default to float64 (Go's untyped-float
             // default type), the path below.
-            Type* nt = expr->node_type;
             if (nt && nt->kind == TYPE_FLOAT32) {
                 llvm_value = LLVMConstReal(LLVMFloatTypeInContext(codegen->context), value);
                 goo_type = nt;
