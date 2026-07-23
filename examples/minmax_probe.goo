@@ -27,6 +27,15 @@ func main() {
 	fmt.Println(min(b, 100, -50))
 	fmt.Println(max(b, 100, -50))
 
+	// Two-pass regression pin (Task A review): the concrete-typed variable
+	// appears LAST, so a naive left-to-right fold would have already typed
+	// the untyped literals (as int) before discovering the int32 target —
+	// the two-pass checker re-stamps every node to int32 after pass 1
+	// resolves the common type. A fold rewrite that loses this prints a
+	// width/type error or wrong value here.
+	fmt.Println(min(200, 300, b))
+	fmt.Println(max(200, 300, b))
+
 	// Float (untyped-default float64).
 	fmt.Println(min(3.5, 1.25))
 	fmt.Println(max(3.5, 1.25))
