@@ -2822,9 +2822,19 @@ static int type_check_capture_comptime_arg(TypeChecker* checker,
     return 1;
 }
 
-static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
-                                      CallExprNode* call, Variable* callee_var,
-                                      const char* callee_name) {
+// Task C (explicit generic instantiation, f[T](...)): shared core behind
+// BOTH type_check_generic_call (inference-only, `f(7, 8)`) and
+// type_check_generic_call_explicit (`f[int](7, 8)`) below. `preseeded_
+// bindings`, when non-NULL, is a caller-allocated `n`-slot array with one or
+// more slots already bound (explicit instantiation's single type argument)
+// — this function takes OWNERSHIP of it exactly as it already owns a
+// freshly calloc'd array on the inference-only path (frees it on every
+// error return, hands it off to call->type_args on success). Passing NULL
+// reproduces type_check_generic_call's pre-Task-C behavior byte-for-byte.
+static Type* type_check_generic_call_core(TypeChecker* checker, ASTNode* expr,
+                                           CallExprNode* call, Variable* callee_var,
+                                           const char* callee_name,
+                                           Type** preseeded_bindings) {
     // Comptime+generic composition (sub-project 2): honor the same
     // first-visit contract type_check_call_expr enforces before dispatching
     // here (its own comptime_first_check/entry-reset, above the callee-kind
@@ -2864,7 +2874,16 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
         return NULL;
     }
 
-    Type** bindings = calloc(n ? n : 1, sizeof(Type*));
+    // Task C: an explicit-instantiation caller already allocated `bindings`
+    // with the bracketed type argument bound in (see the doc comment above)
+    // — reuse it instead of calloc'ing a fresh all-NULL array. `explicit_
+    // inst` also gates the widening-adaptation step in the per-argument
+    // loop below: it must fire ONLY for a binding that came from an
+    // explicit type argument, never for one an earlier argument's own
+    // checked type already inferred (see that step's doc comment for why).
+    int explicit_inst = (preseeded_bindings != NULL);
+    Type** bindings = explicit_inst ? preseeded_bindings
+                                     : calloc(n ? n : 1, sizeof(Type*));
     if (!bindings) return NULL;
 
     size_t k = 0;
@@ -2952,6 +2971,41 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
 
         if (pt && pt->kind == TYPE_PARAM) {
             int idx = pt->data.type_param.index;
+            // Task C — explicit-instantiation widening: `f[float64](7)`
+            // pre-binds T=float64 (idx 0) before this loop ever runs, but
+            // the literal `7` was just checked (type_check_expression
+            // above) at ITS OWN default type, int64 — inference alone never
+            // needs this step (a binding there always came FROM an earlier
+            // argument's own checked type, so a later mismatch is always a
+            // genuine conflict), but an explicit binding is independent of
+            // every argument and legitimately wider than an untyped
+            // literal's default width/kind. Adapt the literal node in
+            // place — the SAME is_untyped_int_rooted/adapt_untyped_int_
+            // operand pair the ordinary fixed-arity call-arg loop uses
+            // further down this file (type_check_call_expr) for a
+            // non-generic parameter — so `at` reflects the adapted type
+            // before the conflict check below runs. A non-literal argument
+            // (a variable, a call result, ...) is never int-rooted and
+            // falls through unchanged, keeping the ordinary
+            // conflicting-types rejection for a genuine mismatch
+            // (`f[int]("hello")`).
+            if (explicit_inst && idx >= 0 && (size_t)idx < n && bindings[idx] &&
+                !type_equals(bindings[idx], at)) {
+                Type* bt = bindings[idx];
+                if (type_is_integer(bt) && is_untyped_int_rooted(a, 0)) {
+                    if (!adapt_untyped_int_operand(checker, a, bt, 0, 1)) {
+                        free(bindings);
+                        return NULL;
+                    }
+                    at = bt;
+                } else if (type_is_float(bt) && is_untyped_int_rooted(a, 1)) {
+                    if (!adapt_untyped_int_operand(checker, a, bt, 0, 1)) {
+                        free(bindings);
+                        return NULL;
+                    }
+                    at = bt;
+                }
+            }
             if (idx >= 0 && (size_t)idx < n && bindings[idx] &&
                 !type_equals(bindings[idx], at)) {
                 type_error(checker, expr->pos,
@@ -3080,6 +3134,60 @@ static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
     Type* result = type_substitute(gsig->data.function.return_type, bindings, n);
     expr->node_type = result;
     return result;
+}
+
+// Function generics Task 6 (unchanged wrapper — see the shared-core doc
+// comment above): ordinary inference-only call site, `f(7, 8)`. No
+// pre-seeded bindings; every type parameter is inferred from the arguments.
+static Type* type_check_generic_call(TypeChecker* checker, ASTNode* expr,
+                                      CallExprNode* call, Variable* callee_var,
+                                      const char* callee_name) {
+    return type_check_generic_call_core(checker, expr, call, callee_var,
+                                         callee_name, NULL);
+}
+
+// Task C: explicit instantiation `f[T](...)` — single type parameter only.
+// The grammar's index_expr holds exactly one bracketed expression (`f[int,
+// string](...)` does not parse — a pre-existing grammar limit, out of this
+// task's scope; the caller's own gate never reaches here for it), which is
+// why explicit instantiation is restricted to a generic callee declaring
+// exactly one type parameter (checked below).
+//
+// `type_arg_node` is the bracketed AST node — resolved as a TYPE via
+// type_from_ast, NOT type_check_expression, which would evaluate it as a
+// VALUE and reject a bare type name like `int` with "Undefined variable
+// 'int'" (the exact diagnostic this task replaces). The caller
+// (type_check_call_expr) only reaches this function once its own
+// disambiguation gate has already confirmed callee_var->is_generic, so a
+// genuine index expression (`arr[i]()`) never routes through here — see
+// that call site's doc comment for the full safety argument.
+//
+// Reuses every other line of type_check_generic_call_core's machinery —
+// per-argument checking (including the widening adaptation gated on
+// explicit_inst there), Tier-B constraint enforcement, monomorphizer
+// recording, and result substitution — completely unchanged.
+static Type* type_check_generic_call_explicit(TypeChecker* checker, ASTNode* expr,
+                                               CallExprNode* call, Variable* callee_var,
+                                               const char* callee_name,
+                                               ASTNode* type_arg_node) {
+    if (callee_var->type_param_count != 1) {
+        type_error(checker, expr->pos,
+                   "%s declares %zu type parameters; explicit instantiation "
+                   "with a single bracketed type argument is only supported "
+                   "for single-type-parameter generic functions",
+                   callee_name, callee_var->type_param_count);
+        return NULL;
+    }
+
+    Type* explicit_type = type_from_ast(checker, type_arg_node);
+    if (!explicit_type) return NULL; // type_from_ast already reported the error
+
+    Type** bindings = calloc(1, sizeof(Type*));
+    if (!bindings) return NULL;
+    bindings[0] = explicit_type;
+
+    return type_check_generic_call_core(checker, expr, call, callee_var,
+                                         callee_name, bindings);
 }
 
 // min(a, b, ...) / max(a, b, ...) -> the smallest/largest argument (Go
@@ -3319,6 +3427,55 @@ Type* type_check_call_expr(TypeChecker* checker, ASTNode* expr) {
         free(call->comptime_value_args);
         call->comptime_value_args = NULL;
         call->comptime_value_arg_count = 0;
+    }
+
+    // Task C: explicit generic instantiation `f[T](...)` parses as
+    // CallExpr(IndexExpr(f, T), args) — Go's own grammar shape, unchanged
+    // here (no parser work; see the goo-grammar tripwire). Recognize it
+    // BEFORE the ordinary callee check further down (`func_type =
+    // type_check_expression(checker, call->function)`), which would
+    // otherwise recurse into type_check_index_expr and type-check the
+    // bracketed TYPE as a VALUE expression — a bare type name like `int`
+    // has no Variable binding, so that path failed with "Undefined
+    // variable 'int'" (the manifest-documented gap this task closes).
+    //
+    // Disambiguation safety: this block fires only when the index base
+    // identifier resolves to a Variable that is a FUNCTION — an ordinary
+    // index expression `arr[i]()` (calling an element of a function-slice)
+    // can never satisfy that, since `arr` there is a TYPE_SLICE/TYPE_ARRAY/
+    // TYPE_MAP Variable, not TYPE_FUNCTION — so this is a purely syntactic
+    // dispatch with zero risk of misclassifying real indexing.
+    // type_from_ast (inside type_check_generic_call_explicit) is only ever
+    // invoked once this gate has already confirmed the base names a
+    // function, so a genuine index expression never reaches it and never
+    // risks a spurious "Unknown type" diagnostic on its index operand.
+    if (call->function && call->function->type == AST_INDEX_EXPR) {
+        IndexExprNode* idx_expr = (IndexExprNode*)call->function;
+        if (idx_expr->expr && idx_expr->expr->type == AST_IDENTIFIER) {
+            IdentifierNode* base_ident = (IdentifierNode*)idx_expr->expr;
+            Variable* base_var = type_checker_lookup_variable(checker, base_ident->name);
+            if (base_var && base_var->is_generic) {
+                return type_check_generic_call_explicit(checker, expr, call,
+                                                         base_var, base_ident->name,
+                                                         idx_expr->index);
+            }
+            // A NON-generic function indexed (`notGeneric[int](...)`): Go's
+            // own grammar shape again, but there is no generic
+            // instantiation to perform. Reject cleanly here, with a single
+            // diagnostic regardless of what the bracketed content happens
+            // to be — rather than falling through to the ordinary
+            // index-expr path, which gives an inconsistent diagnostic
+            // depending on the bracket's content (a bare type name like
+            // `int` fails as "Undefined variable"; a real in-scope value
+            // fails later as "Cannot index type function(...)").
+            if (base_var && base_var->type && base_var->type->kind == TYPE_FUNCTION) {
+                type_error(checker, expr->pos,
+                           "%s is not generic; it cannot be explicitly "
+                           "instantiated with a type argument",
+                           base_ident->name);
+                return NULL;
+            }
+        }
     }
 
     // A type in call-argument position (map_type/slice_type/chan_type — the

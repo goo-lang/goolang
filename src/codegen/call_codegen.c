@@ -447,6 +447,31 @@ static ValueInfo* codegen_generate_time_method_call(CodeGenerator* codegen, Type
 }
 #endif
 
+// Task C (explicit generic instantiation, f[T](...)): every generic/comptime
+// call-rewiring branch below extracts an IdentifierNode from call->function
+// to mangle the monomorphized instance symbol — historically always a bare
+// AST_IDENTIFIER (`f(...)`). An explicitly instantiated call's function is
+// instead an AST_INDEX_EXPR wrapping that same identifier (`f[int](...)`
+// parses as CallExpr(IndexExpr(f, int), args) — Go's own grammar shape, see
+// the checker-side dispatch in expression_checker.c for the full design).
+// This helper recognizes BOTH shapes so every mangling site below stays a
+// single mirrored guard change rather than a duplicated branch per shape.
+// Returns NULL for anything else (a genuine index expression, e.g. `arr[i]
+// ()` calling a function-slice element) — safe to call unconditionally:
+// `arr` there is never `is_generic`/never routed through call->type_arg_
+// count > 0 by the checker, so these call sites never even reach this
+// helper for that shape (each guard below is additionally conditioned on
+// call->type_arg_count > 0 or call->comptime_value_arg_count > 0).
+static IdentifierNode* codegen_call_ident_callee(ASTNode* func_node) {
+    if (!func_node) return NULL;
+    if (func_node->type == AST_IDENTIFIER) return (IdentifierNode*)func_node;
+    if (func_node->type == AST_INDEX_EXPR) {
+        ASTNode* base = ((IndexExprNode*)func_node)->expr;
+        if (base && base->type == AST_IDENTIFIER) return (IdentifierNode*)base;
+    }
+    return NULL;
+}
+
 ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* checker, ASTNode* expr) {
 #if !LLVM_AVAILABLE
     codegen_error(codegen, expr->pos, "LLVM support not available");
@@ -1998,9 +2023,10 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
     // for a given call, so `func_val` is unambiguous going into the fallback
     // below.
     ValueInfo* func_val = NULL;
+    IdentifierNode* gid_base = codegen_call_ident_callee(call->function);
     if (call->type_arg_count > 0 && call->comptime_value_arg_count > 0 &&
-        call->function->type == AST_IDENTIFIER) {
-        IdentifierNode* gid = (IdentifierNode*)call->function;
+        gid_base) {
+        IdentifierNode* gid = gid_base;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return NULL;
         // Same substitution discipline as the generic-only branch below:
@@ -2035,8 +2061,8 @@ ValueInfo* codegen_generate_call_expr(CodeGenerator* codegen, TypeChecker* check
             func_val = value_info_new(gid->name, inst, concrete_sig);
         }
         free(concrete_args);
-    } else if (call->type_arg_count > 0 && call->function->type == AST_IDENTIFIER) {
-        IdentifierNode* gid = (IdentifierNode*)call->function;
+    } else if (call->type_arg_count > 0 && gid_base) {
+        IdentifierNode* gid = gid_base;
         Type** concrete_args = malloc(sizeof(Type*) * call->type_arg_count);
         if (!concrete_args) return NULL;
         for (size_t i = 0; i < call->type_arg_count; i++) {

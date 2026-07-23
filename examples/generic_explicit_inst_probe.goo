@@ -1,0 +1,73 @@
+// generic_explicit_inst_probe: explicit generic instantiation `f[T](...)`
+// (Task C, spec-conformance branch) — single type parameter only. Parses as
+// CallExpr(IndexExpr(f, T), args), exactly like Go's own grammar (no parser
+// changes); the checker disambiguates it from an ordinary index expression
+// (`arr[i]()`, calling a function-slice element) by resolving the index
+// base identifier and checking `is_generic` — a plain slice/array/map
+// Variable can never be `is_generic`, so that disambiguation is purely
+// syntactic and carries zero risk of misclassifying real indexing (see
+// expression_checker.c's type_check_call_expr dispatch for the full
+// argument).
+//
+// Four shapes pinned here:
+//   1. Explicit matching inference: `first[int64](7, 8)` must behave
+//      identically to inferred `first(7, 8)` — both resolve to the SAME
+//      monomorphized instance (first__int64), proven by the IR pin in the
+//      Makefile (exactly one `define` for it).
+//   2. Explicit widening: `first[float64](7, 8)` binds T=float64 via the
+//      bracketed type argument, then ADAPTS the untyped int literals `7`/`8`
+//      to float64 — a widening inference ALONE could never produce (with no
+//      explicit type argument, both literals default to int64 and T would
+//      infer as int64). Division by 2 afterward (3.5, not the truncating
+//      integer-division 3) is the observable proof.
+//   3. Explicit on a comptime-adjacent (composed generic x comptime) shape:
+//      `kernel[int64](4, seed)` — the SAME instance a plain inferred
+//      `kernel(4, seed)` call resolves to (second IR pin: exactly one
+//      `define` for kernel__int64__n4, proving both call syntaxes dedup to
+//      one instance).
+//   4. Nested explicit instantiation inside another generic's body,
+//      resolving the outer template's OWN type parameter as the explicit
+//      argument (`Id[T](x)` inside `Wrap[T]`) — exercises the monomorphizer's
+//      nested-call discovery (monomorphize.c), not just the top-level
+//      instantiation seed list.
+package main
+
+import "fmt"
+
+func first[T any](a T, b T) T {
+	return a
+}
+
+func kernel[T any](comptime n int, seed T) T {
+	var buf [n]T
+	i := 0
+	for i < n {
+		buf[i] = seed
+		i = i + 1
+	}
+	return buf[n-1]
+}
+
+func Id[T any](x T) T { return x }
+
+func Wrap[T any](x T) T {
+	return Id[T](x)
+}
+
+func main() {
+	// 1. Explicit matching inference.
+	fmt.Println(first(7, 8))
+	fmt.Println(first[int64](7, 8))
+
+	// 2. Explicit widening.
+	widened := first[float64](7, 8)
+	fmt.Println(widened / 2)
+
+	// 3. Comptime-adjacent (generic x comptime composition).
+	fmt.Println(kernel(4, int64(10)))
+	fmt.Println(kernel[int64](4, int64(10)))
+
+	// 4. Nested explicit instantiation (outer's own type parameter).
+	fmt.Println(Wrap(int64(42)))
+	fmt.Println(Wrap("hi"))
+}

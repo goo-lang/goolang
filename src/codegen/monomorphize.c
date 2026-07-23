@@ -21,6 +21,30 @@ static char* str_dup(const char* str) {
     return dup;
 }
 
+// Task C (explicit generic instantiation, f[T](...)): per-file static copy
+// of call_codegen.c's identically-named/identically-bodied helper (same
+// per-TU-duplication convention str_dup above already follows). Recognizes
+// a call's function node as either a bare AST_IDENTIFIER (`f(...)`) or an
+// AST_INDEX_EXPR wrapping one (`f[int](...)`, Go's own grammar shape — see
+// the checker-side dispatch in expression_checker.c). Every call site below
+// that uses this helper is reached only for a CallExprNode already filtered
+// to type_arg_count > 0 || comptime_value_arg_count > 0 (collect_generic_
+// calls' own gate, below) — an ordinary index expression callee (`arr[i]
+// ()`) never satisfies that, so no extra gating is needed at the use sites,
+// unlike the defer-stack callee-snapshot site in statement_codegen.c (which
+// classifies EVERY call, not just already-filtered generic/comptime ones,
+// and guards this helper's use with an explicit call->type_arg_count > 0
+// check for that reason).
+static IdentifierNode* codegen_call_ident_callee(ASTNode* func_node) {
+    if (!func_node) return NULL;
+    if (func_node->type == AST_IDENTIFIER) return (IdentifierNode*)func_node;
+    if (func_node->type == AST_INDEX_EXPR) {
+        ASTNode* base = ((IndexExprNode*)func_node)->expr;
+        if (base && base->type == AST_IDENTIFIER) return (IdentifierNode*)base;
+    }
+    return NULL;
+}
+
 // A nameable, unique-enough token for a concrete type, suitable for splicing
 // into an LLVM symbol name. Recurses through pointer/slice wrappers so
 // `*[]int` -> "ptr_slice_int"; every other kind falls to the scalar/struct
@@ -652,9 +676,10 @@ static int mono_instantiate(CodeGenerator* codegen, TypeChecker* checker,
     int ok = 1;
     for (MonoCallRef* nc = calls; nc && ok; nc = nc->next) {
         CallExprNode* ncall = nc->call;
-        if (!ncall->function || ncall->function->type != AST_IDENTIFIER) continue;
+        IdentifierNode* ncall_ident = codegen_call_ident_callee(ncall->function);
+        if (!ncall_ident) continue;
         Variable* nested_var = type_checker_lookup_variable(checker,
-            ((IdentifierNode*)ncall->function)->name);
+            ncall_ident->name);
 
         // Comptime+generic composition (sub-project 2), decision 7: a nested
         // COMBINED call (`kernel(4, x)` from inside another template's body,
@@ -830,9 +855,10 @@ static int comptime_instantiate(CodeGenerator* codegen, TypeChecker* checker,
     int ok = 1;
     for (MonoCallRef* nc = calls; nc && ok; nc = nc->next) {
         CallExprNode* ncall = nc->call;
-        if (!ncall->function || ncall->function->type != AST_IDENTIFIER) continue;
+        IdentifierNode* ncall_ident = codegen_call_ident_callee(ncall->function);
+        if (!ncall_ident) continue;
         Variable* nested_var = type_checker_lookup_variable(checker,
-            ((IdentifierNode*)ncall->function)->name);
+            ncall_ident->name);
         if (!nested_var) continue;
 
         // Comptime+generic composition (sub-project 2), decision 7: nested
