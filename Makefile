@@ -4430,6 +4430,14 @@ far-transport-test: $(RUNTIME_LIB)
 	$(CC) $(CFLAGS) -Iinclude -I$(NNG_BUILD)/include tests/runtime/far_transport_test.c $(RUNTIME_LIB) -o $(BINDIR)/far_transport_test -lm -lpthread
 	@$(BINDIR)/far_transport_test && echo "far-transport-test: PASS"
 
+# Pinned to clang, not $(CC): clang is already a hard project dependency
+# (the LLVM toolchain builds the compiler itself), and its ASan runtime
+# ships bundled with it. gcc's ASan needs the separate libasan runtime
+# package, which is optional and often absent (it is on this machine) —
+# pinning to clang keeps this target's default invocation portable across
+# any machine that can already build goo, instead of depending on a gcc
+# extra that may or may not be installed.
+#
 # detect_leaks=0: the test's goo_string_t out-params (recv error strings)
 # are never freed, matching the documented v1 memory model (malloc, no
 # systematic reclamation — see CLAUDE.md). LeakSanitizer would flag that
@@ -4438,7 +4446,7 @@ far-transport-test: $(RUNTIME_LIB)
 # stay fully active.
 far-transport-asan: $(NNG_LIB)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -g -fsanitize=address -Iinclude -I$(NNG_BUILD)/include \
+	clang $(CFLAGS) -g -fsanitize=address -Iinclude -I$(NNG_BUILD)/include \
 	  tests/runtime/far_transport_test.c src/runtime/far_transport.c src/runtime/runtime.c src/runtime/platform.c src/runtime/deadlock.c src/runtime/concurrency.c src/runtime/sync.c \
 	  $(NNG_LIB) -o $(BINDIR)/far_transport_asan -lm -lpthread
 	@ASAN_OPTIONS=detect_leaks=0 $(BINDIR)/far_transport_asan && echo "far-transport-asan: PASS"
