@@ -175,7 +175,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                 field_goo && field_goo->kind != TYPE_INTERFACE) {
                 LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                            target->goo_type,
-                                                           field_goo, field);
+                                                           field_goo, field, t->pos);
                 if (!boxed) {
                     codegen_error(codegen, t->pos,
                                   "failed to box value into interface on destructure");
@@ -275,7 +275,7 @@ int codegen_generate_multi_assign(CodeGenerator* codegen, TypeChecker* checker, 
                 rtypes[i] && rtypes[i]->kind != TYPE_INTERFACE) {
                 LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                            target->goo_type,
-                                                           rtypes[i], rvals[i]);
+                                                           rtypes[i], rvals[i], t->pos);
                 if (!boxed) {
                     codegen_error(codegen, t->pos,
                                   "failed to box value into interface on assignment");
@@ -1839,7 +1839,7 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                     vv->goo_type && vv->goo_type->kind != TYPE_INTERFACE) {
                     LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                                field_type,
-                                                               vv->goo_type, raw);
+                                                               vv->goo_type, raw, v->pos);
                     if (!boxed) {
                         codegen_error(codegen, v->pos,
                                       "failed to box concrete return value into interface");
@@ -1949,7 +1949,8 @@ int codegen_generate_return_stmt(CodeGenerator* codegen, TypeChecker* checker, A
         if (function_return_type && function_return_type->kind == TYPE_INTERFACE &&
             return_value->goo_type && return_value->goo_type->kind != TYPE_INTERFACE) {
             LLVMValueRef boxed = codegen_interface_box(codegen, checker, function_return_type,
-                                                       return_value->goo_type, final_return_value);
+                                                       return_value->goo_type, final_return_value,
+                                                       return_stmt->values->pos);
             if (!boxed) { value_info_free(return_value); return 0; }
             final_return_value = boxed;
         }
@@ -3462,7 +3463,7 @@ int codegen_generate_select_stmt(CodeGenerator* codegen, TypeChecker* checker, A
                         elem_type && elem_type->kind != TYPE_INTERFACE) {
                         LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                                    existing->goo_type,
-                                                                   elem_type, loaded);
+                                                                   elem_type, loaded, case_node->pos);
                         if (!boxed) {
                             codegen_error(codegen, case_node->pos,
                                          "failed to box select-received value into interface");

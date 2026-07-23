@@ -490,7 +490,7 @@ ValueInfo* codegen_generate_expression(CodeGenerator* codegen, TypeChecker* chec
                     LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                                val_type,
                                                                vv->goo_type,
-                                                               vv->llvm_value);
+                                                               vv->llvm_value, expr->pos);
                     if (!boxed) {
                         codegen_error(codegen, expr->pos,
                                       "failed to box map literal value into interface");
@@ -1594,7 +1594,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
                     LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                                val_type,
                                                                vv->goo_type,
-                                                               vv->llvm_value);
+                                                               vv->llvm_value, expr->pos);
                     if (!boxed) {
                         codegen_error(codegen, expr->pos,
                                       "failed to box value into interface map value");
@@ -1742,7 +1742,7 @@ ValueInfo* codegen_generate_binary_expr(CodeGenerator* codegen, TypeChecker* che
             LLVMValueRef boxed = codegen_interface_box(codegen, checker,
                                                        target->goo_type,
                                                        value->goo_type,
-                                                       value->llvm_value);
+                                                       value->llvm_value, expr->pos);
             if (!boxed) {
                 codegen_error(codegen, expr->pos,
                               "failed to box value into interface on assignment");

@@ -905,7 +905,7 @@ static LLVMValueRef codegen_build_struct_value(CodeGenerator* codegen, TypeCheck
         if (field_type && field_type->kind == TYPE_INTERFACE &&
             val->goo_type && val->goo_type->kind != TYPE_INTERFACE) {
             LLVMValueRef boxed = codegen_interface_box(codegen, checker, field_type,
-                                                       val->goo_type, val->llvm_value);
+                                                       val->goo_type, val->llvm_value, v->pos);
             if (!boxed) {
                 codegen_error(codegen, v->pos,
                               "failed to box value into interface field");
@@ -1375,7 +1375,7 @@ ValueInfo* codegen_build_slice_from_elems(CodeGenerator* codegen,
                 }
             }
             LLVMValueRef boxed = codegen_interface_box(codegen, checker, elem_type,
-                                                       v->goo_type, v->llvm_value);
+                                                       v->goo_type, v->llvm_value, e->pos);
             if (!boxed) {
                 codegen_error(codegen, e->pos,
                               "failed to box value into interface slice element");

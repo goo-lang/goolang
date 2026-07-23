@@ -1,0 +1,24 @@
+// fmt_struct_map_field_reject (Arc 15 item l — positioned diagnostics on the
+// boxed-fmt codegen leg): a struct whose field is a map-typed value can't be
+// formatted by the %v machinery (only string, integer, bool, float, struct,
+// pointer-to-struct, slice, and array are supported in v1). Boxing the
+// struct into `any` synthesizes its per-type %v formatter EAGERLY at the
+// box site (codegen_interface_box -> codegen_interface_vtable ->
+// codegen_get_or_emit_type_desc -> codegen_get_or_emit_type_fmt), so the
+// unsupported-field error fires at compile time from that boxed leg, not
+// from the direct/unboxed fmt.Println leg (codegen_emit_fmt_value, which
+// formats the struct's own fields correctly-positioned already). Before the
+// fix, this diagnostic carried a hardcoded zero position (`<unknown>:0:0`);
+// this fixture pins that the boxed leg now reports a real file:line.
+package main
+
+import "fmt"
+
+type WithMap struct {
+	M map[string]int
+}
+
+func main() {
+	var x any = WithMap{M: map[string]int{"a": 1}}
+	fmt.Println(x)
+}

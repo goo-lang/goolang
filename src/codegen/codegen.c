@@ -1322,7 +1322,7 @@ int codegen_box_map_key_if_needed(CodeGenerator* codegen, TypeChecker* checker,
         if (!llvm_t) return 0;
         raw = LLVMBuildLoad2(codegen->builder, llvm_t, raw, "mapkey_concrete_load");
     }
-    LLVMValueRef boxed = codegen_interface_box(codegen, checker, key_type, key_val->goo_type, raw);
+    LLVMValueRef boxed = codegen_interface_box(codegen, checker, key_type, key_val->goo_type, raw, pos);
     if (!boxed) {
         codegen_error(codegen, pos, "failed to box map key into interface key type");
         return 0;

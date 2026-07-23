@@ -1750,7 +1750,7 @@ static int codegen_defer_global_init(CodeGenerator* codegen, LLVMValueRef global
 // place, ready to store.
 static int codegen_apply_local_init_pipeline(CodeGenerator* codegen, TypeChecker* checker,
                                               Type* var_type, LLVMTypeRef llvm_type,
-                                              ValueInfo* init_value) {
+                                              ValueInfo* init_value, Position pos) {
     // 1. Auto-load an lvalue initializer to its rvalue. An index/selector
     // initializer (e.g. `tmp := s[i]`, `x := p.field`) returns the element
     // ADDRESS with is_lvalue=1; the store later — and the nullable/
@@ -1795,7 +1795,7 @@ static int codegen_apply_local_init_pipeline(CodeGenerator* codegen, TypeChecker
         init_value->goo_type && init_value->goo_type->kind != TYPE_INTERFACE) {
         LLVMValueRef boxed = codegen_interface_box(codegen, checker, var_type,
                                                    init_value->goo_type,
-                                                   init_value->llvm_value);
+                                                   init_value->llvm_value, pos);
         if (!boxed) { value_info_free(init_value); return 0; }
         init_value->llvm_value = boxed;
         init_value->goo_type = var_type;
@@ -2564,7 +2564,7 @@ int codegen_generate_var_decl(CodeGenerator* codegen, TypeChecker* checker, ASTN
                 // auto-wrap, interface box, width-coerce) — see
                 // codegen_apply_local_init_pipeline. On failure it has already
                 // freed init_value.
-                if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value)) {
+                if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value, decl->pos)) {
                     return 0;
                 }
 
@@ -2723,7 +2723,7 @@ int codegen_generate_global_init_function(CodeGenerator* codegen, TypeChecker* c
             break;
         }
 
-        if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value)) {
+        if (!codegen_apply_local_init_pipeline(codegen, checker, var_type, llvm_type, init_value, d->pos)) {
             ok = 0;
             break;
         }
