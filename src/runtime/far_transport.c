@@ -8,7 +8,6 @@
 #include <nng/protocol/pair1/pair.h>
 #include <pthread.h>
 #include <stdio.h>
-#include <string.h>
 
 // Handle table: small, mutex-guarded, index-stable. FAR_MAX_SOCKETS bounds
 // sockets per PROCESS: a rank needs at most 2 halo + (world-1 or 1) coll
@@ -56,11 +55,27 @@ static void far_slot_free(int i) {
     pthread_mutex_unlock(&far_mu);
 }
 
+// Safety envelope this lookup relies on (review-mandated, T2 round 2):
+// handles are closed only at teardown, after every caller that might still
+// be using them has stopped — quit pumps, then close, then join — with one
+// sanctioned exception: far.Close may run concurrently with a thread
+// already blocked inside this same handle's nng_recv/nng_send, to unblock
+// it (that's the whole point of the "far: closed" path). That specific
+// close-while-blocked race is safe because NNG's sockets are internally
+// thread-safe — nng_close is documented to wake blocked callers with
+// NNG_ECLOSED rather than racing their in-flight I/O. What this table
+// lock protects is different and narrower: our own slot bookkeeping
+// (far_used[]/far_socks[]), so a *new* far_sock(h) lookup never races a
+// concurrent far_slot_alloc/far_slot_free touching the same index.
 static nng_socket far_sock(int64_t h) {
+    pthread_mutex_lock(&far_mu);
     if (h < 0 || h >= FAR_MAX_SOCKETS || !far_used[h]) {
+        pthread_mutex_unlock(&far_mu);
         goo_panic("far: invalid socket handle");
     }
-    return far_socks[h];
+    nng_socket s = far_socks[h];
+    pthread_mutex_unlock(&far_mu);
+    return s;
 }
 
 static int far_open_common(const char* op, const char* url,
@@ -73,10 +88,26 @@ static int far_open_common(const char* op, const char* url,
         *out_err = goo_string_new(buf);
         return 0;
     }
+    // `opened` tracks whether nng_pair1_open itself succeeded, separately
+    // from `rv`'s later listen/dial outcome. far_socks[] is a static,
+    // slot-recycled array: on a fresh open failure (e.g. NNG_ENOMEM),
+    // nng_pair1_open leaves far_socks[slot] UNTOUCHED (see NNG's
+    // nni_proto_open — *sip is only written on success), so it still holds
+    // whatever stale, already-closed socket ID a prior occupant of this
+    // slot left behind. Closing on the open-failed path would nng_close()
+    // that stale ID, which — since NNG recycles socket IDs — could be a
+    // different, currently-live socket elsewhere in the process. Only
+    // nng_close on the listen/dial-failed path, where far_socks[slot]
+    // genuinely holds this call's own freshly opened socket.
     int rv = nng_pair1_open(&far_socks[slot]);
-    if (rv == 0) {
-        nng_socket_set_int(far_socks[slot], NNG_OPT_SENDBUF, FAR_BUF_DEPTH);
-        nng_socket_set_int(far_socks[slot], NNG_OPT_RECVBUF, FAR_BUF_DEPTH);
+    int opened = (rv == 0);
+    if (opened) {
+        if (nng_socket_set_int(far_socks[slot], NNG_OPT_SENDBUF, FAR_BUF_DEPTH) != 0) {
+            goo_panic("far: failed to set NNG_OPT_SENDBUF (buffering envelope not configurable)");
+        }
+        if (nng_socket_set_int(far_socks[slot], NNG_OPT_RECVBUF, FAR_BUF_DEPTH) != 0) {
+            goo_panic("far: failed to set NNG_OPT_RECVBUF (buffering envelope not configurable)");
+        }
         if (is_listen) {
             rv = nng_listen(far_socks[slot], url, NULL, 0);
         } else {
@@ -86,7 +117,9 @@ static int far_open_common(const char* op, const char* url,
         }
     }
     if (rv != 0) {
-        nng_close(far_socks[slot]);
+        if (opened) {
+            nng_close(far_socks[slot]);
+        }
         far_slot_free(slot);
         *out_err = far_errf(op, url, rv);
         return 0;
