@@ -380,6 +380,46 @@ func (l *Lane) AllReduceMax(local float64) float64 {
 //
 // len(coeffs) must be exactly 2*radius+1; anything else is a programming
 // error and panics (explicit, never silent).
+//
+// Fix round (M2-B2 Task 4, boundary peel): the tap-accumulation sweep below
+// is split into three loops instead of one dispatching sweep over all of
+// `own`. Reason: with a single loop, every tap access carried the full
+// idx<0 / idx>=w halo-boundary dispatch, live inside the innermost loop for
+// every cell — including the vast interior majority where neither branch
+// can ever be taken. Splitting the sweep gives the interior loop
+// (radius <= i < w-radius) a tap body that is provably in-bounds by
+// construction — i-radius >= 0 and i+radius <= w-1 hold for every i in that
+// range — so the halo dispatch is dropped entirely there (not merely
+// never-taken), leaving a branch-free accumulation. The two boundary loops
+// (i < radius, and i >= max(radius, w-radius)) keep the original full
+// dispatch body unchanged, since only cells within `radius` of a tile edge
+// can ever actually read a halo buffer. The right loop's start is clamped
+// to max(radius, w-radius) rather than always starting at w-radius: when
+// radius <= w < 2*radius the tile is narrower than two radii, so a plain
+// w-radius start would fall short of radius and re-walk (double-compute)
+// cells the left loop already wrote; the clamp makes the two boundary loops
+// meet or abut with no gap and no overlap in that case (verified for
+// w == 2*radius and radius <= w < 2*radius). Each loop's accumulation is
+// textually identical to the original per-cell body (`acc := 0.0` then
+// k-ascending `acc = acc + coeffs[k]*v`) — no reassociation, no hoisting of
+// the coefficient multiply — so this is a pure control-flow restructuring,
+// not a numeric one: the golden/differential bit-identity contract is
+// unaffected.
+//
+// Measured result (-O2, goo_pkg__lanes__StencilStep__n2, see
+// task-4-report.md's fix-round IR evidence): the interior loop's dispatch
+// is confirmed gone in the IR, but none of the three tap loops unrolls or
+// vectorizes even so — each remains a genuine loop (3 total `fmul double`,
+// one per loop, zero vector types). Two independent blockers survive the
+// peel: (1) `goo_bounds_check` calls remain on every tap access (both
+// `own[...]` and `coeffs[k]`) with no readnone/speculatable attributes, and
+// (2) this specialized instance's radius is still passed as a runtime i64
+// parameter rather than folded to the literal 2 in the function body — so
+// even the interior loop's trip count is not a compile-time constant to
+// LLVM despite the symbol being per-radius-mangled. (2) is a codegen fact
+// about how comptime parameters lower today, not something a library-level
+// loop restructuring can address; branch removal alone was necessary but
+// not sufficient here.
 func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 	if len(coeffs) != 2*radius+1 {
 		panic("lanes.StencilStep: len(coeffs) must equal 2*radius+1")
@@ -419,7 +459,47 @@ func StencilStep(ctx *Lane, comptime radius int, coeffs []float64) {
 		}
 	}
 
-	for i := 0; i < w; i++ {
+	// Left boundary: only cells within `radius` of the left tile edge can
+	// ever read a halo buffer, so this keeps the full dispatch body.
+	for i := 0; i < radius; i++ {
+		acc := 0.0
+		for k := 0; k <= 2*radius; k++ {
+			idx := i + k - radius
+			v := 0.0
+			if idx < 0 {
+				v = ctx.haloBufL[(0-idx)-1]
+			} else {
+				if idx >= w {
+					v = ctx.haloBufR[idx-w]
+				} else {
+					v = own[idx]
+				}
+			}
+			acc = acc + coeffs[k]*v
+		}
+		ctx.scratch[i] = acc
+	}
+	// Interior: branch-free by construction. i-radius >= 0 and
+	// i+radius <= w-1 hold for every i in [radius, w-radius), so idx is
+	// always in [0, w) and no halo read is ever reachable — the dispatch
+	// is dropped, not merely never-taken.
+	for i := radius; i < w-radius; i++ {
+		acc := 0.0
+		for k := 0; k <= 2*radius; k++ {
+			acc = acc + coeffs[k]*own[i+k-radius]
+		}
+		ctx.scratch[i] = acc
+	}
+	// Right boundary: same full dispatch body as the left loop. Start is
+	// clamped to max(radius, w-radius) — not always w-radius — so that when
+	// radius <= w < 2*radius (tile narrower than two radii) this loop picks
+	// up exactly where the left loop left off instead of re-walking cells
+	// the left loop already computed.
+	start := w - radius
+	if start < radius {
+		start = radius
+	}
+	for i := start; i < w; i++ {
 		acc := 0.0
 		for k := 0; k <= 2*radius; k++ {
 			idx := i + k - radius
