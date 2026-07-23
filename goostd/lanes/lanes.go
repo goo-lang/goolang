@@ -304,24 +304,12 @@ func (l *Lane) Step() bool {
 // times, in the same program position — all lanes or none, like the
 // Publish -> HaloLeft/HaloRight -> compute order.
 func (l *Lane) allReduce(local float64, useMax bool) float64 {
-	// Dialect adaptation (compiler codegen gap, not a language-spec issue):
-	// codegen_generate_index_expr (src/codegen/composite_codegen.c) is the
-	// READ-path index lowering and — unlike the WRITE-path in
-	// expression_codegen.c's codegen_emit_lvalue_address, which explicitly
-	// loads an lvalue index before widening it — never loads an lvalue
-	// index; it hands the raw field-address straight to
-	// codegen_widen_index, which then calls LLVMBuildSExt on a `ptr`, and
-	// LLVM's module verifier rejects that ("SExt only operates on
-	// integer"). `l.id` used directly as an index (`l.partials[l.id]`)
-	// triggers this because a struct-field selector always codegens as an
-	// lvalue (composite_codegen.c's codegen_generate_selector_expr).
-	// Binding it to a local first sidesteps the gap: a plain identifier's
-	// codegen path loads its value, so id below arrives as an rvalue.
-	// Confirmed general (not lanes-specific) with a one-field-struct minimal
-	// repro; no src/ change made — see task-1-report.md.
-	id := l.id
-	l.partials[id] <- local
-	if id == 0 {
+	// Arc 16 fixed the compiler codegen gap this used to work around:
+	// codegen_generate_index_expr now loads an lvalue index (e.g. the
+	// struct-field selector l.id) before widening it, so l.id can be used
+	// directly as an index again.
+	l.partials[l.id] <- local
+	if l.id == 0 {
 		acc := <-l.partials[0]
 		for i := 1; i < l.count; i++ {
 			v := <-l.partials[i]
@@ -338,7 +326,7 @@ func (l *Lane) allReduce(local float64, useMax bool) float64 {
 		}
 		return acc
 	}
-	r := <-l.results[id]
+	r := <-l.results[l.id]
 	return r
 }
 
